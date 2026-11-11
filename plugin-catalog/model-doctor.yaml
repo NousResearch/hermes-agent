@@ -1,7 +1,7 @@
 name: model-doctor
 title: Model Doctor
 repo: https://github.com/ChainShieldSn/Model-Doctor
-sha: 3edfa1b49158431066307c81f93eac80df3f8c12
+sha: 454c8c3c4879c38aae8319161dbff17e12ca2333
 description: "Proactive LLM health monitor: observes every provider API request Hermes makes via the pre_api_request / post_api_request / api_request_error hooks, records per-model uptime, latency and failure verdicts — AUTH (HTTP 401/403, e.g. a truncated or expired API key), RATE (429), UPSTREAM (5xx), EMPTY (200 with zero content, stalled model or max_tokens too small), SLOW — and exposes model_doctor_status / model_doctor_refresh so the agent or the operator can ask which models are sick and why. This is the diagnostic layer round-robin routing lacks: rotation moves you off a dead model, Model Doctor tells you it died, why, and which alternatives are healthy. Disclosure — passive only: the plugin makes no network calls of its own, requires no credentials and sends no telemetry; it writes a JSON snapshot of health stats to <HERMES_HOME>/model-doctor/health.json and returns only per-model request statistics (counts, verdicts, latencies, base_url/model names) — never prompt or response content. MIT licensed; includes a runnable selfcheck.py."
 maintainer: ChainShieldSn
 tier: community

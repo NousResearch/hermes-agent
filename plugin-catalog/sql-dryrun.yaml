@@ -1,0 +1,18 @@
+name: sql-dryrun
+repo: https://github.com/aoyamari/hermes-sql-dryrun
+sha: "ec3052694e1a6240db7c6ca653459e343a269fd8"
+subdir: ""
+description: "Shows how many rows a DELETE/UPDATE/DROP/TRUNCATE will touch before it runs, and sends it to Hermes' approval prompt when it is too many. Built-in approval matches command shape only, so UPDATE with no WHERE, DELETE ... WHERE 1=1, a WHERE that matches every row, and DELETE FROM t; SELECT ... WHERE ... all run unprompted; sql-dryrun flags them with the real count (\"228,789 of 250,000 rows\"). Covers sqlite3, psql and mysql/mariadb (inline -c/-e, heredoc, piped), execute_code, and tools passing SQL in a sql/query/statement argument. Settings: row_threshold (default 100), mode approve|block, count timeout. Adds a sql_impact tool for dry-running a statement and a /sql-dryrun command. Tested on SQLite, Postgres and MariaDB. MIT licensed. Disclosure — reads the arguments of terminal, execute_code and tools with a sql/query/statement argument. For a destructive statement whose database it can reach, it runs read-only SELECT COUNT(*) queries: SQLite in-process with mode=ro; Postgres/MySQL by running the same client (psql/mysql/mariadb) with the connection flags the agent used, in a read-only session, with a timeout and no password prompt. No network calls of its own, no files written, no data changed, no credentials stored; the flagged SQL appears in the approval message."
+maintainer: Aoyama
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/aoyamari/hermes-sql-dryrun
+version: "0.1.0"
+capabilities:
+  provides_tools:
+    - sql_impact
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

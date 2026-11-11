@@ -1,6 +1,6 @@
 name: sauce-vids
 repo: https://github.com/Davemafy/sauce-vids
-sha: 82c0b8f4e2d764cf00bda96693cd05c35f4690ee
+sha: 9e9224e9a2d47bef9431f0b686d2007a2db7e80f
 description: Capture real browser workflows and render SaaS demo footage with locally licensed visual assets under Hermes direction.
 maintainer: Davemafy
 tier: community

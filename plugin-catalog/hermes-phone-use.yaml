@@ -1,7 +1,7 @@
 name: hermes-phone-use
 title: Hermes Phone Use
 repo: https://github.com/brucexu-eth/hermes-phone-use
-sha: d5868cd2976ea896d7efde85c26bfdbdc47b3160
+sha: a2fc998c4a23351d8659654d8db3338a05a8b349
 description: "Operate your real iPhone or Android from any Hermes (for example one on a Linux server) through Pinky on the Mac the phone is connected to. Approvals and hand-offs wait for the person and are announced in chat; screenshots come back as images. Disclosure — talks only to the Pinky URL you set (plain HTTP intended for a private network such as Tailscale), sending PINKY_TOKEN read through Hermes's secret route; Pinky decides which apps the agent may use, gates risky steps behind the person's approval and never lets the agent type passwords or codes; screen text and screenshots reach your model provider like any tool output, and screenshots are saved under $HERMES_HOME/plugin-data/hermes-phone-use/screenshots/; while Pinky waits for an approval the tool posts one line to the chat and waits up to 10 minutes (cron runs return approval_pending at once); no shell commands, no background processes, no telemetry, no self-update."
 maintainer: brucexu-eth
 tier: community

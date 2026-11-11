@@ -20,8 +20,8 @@ CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'client'})
 # Sections a ``follow_profile_config`` session re-reads from the owning profile's CURRENT config each
 # turn (main's Bot Chat row), credentials included: a frozen key never crosses a profile route change.
-FOLLOW_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases',
-                   'platform_toolsets')
+FOLLOW_MODEL_SECTIONS = ('model', 'providers', 'custom_providers', 'fallback_providers', 'fallback_model', 'model_aliases')
+FOLLOW_SECTIONS = (*FOLLOW_MODEL_SECTIONS, 'platform_toolsets')
 # A Bot Chat an earlier build committed frozen follows its profile once a client opens it (``follow_bot_chat``).
 # The marker sits in the policy's own config, so no other receipt changes shape (an older owner restores
 # them all, and reads this chat as frozen), and the creation request, the exact-retry identity, stays as sent.
@@ -208,7 +208,7 @@ class LocalSessionPolicy:
             chosen = session_pinned(config, 'reasoning', 'reasoning' in request)
             pinned |= {'reasoning_effort', 'reasoning_overrides'} if chosen else set()
             pinned |= {'service_tier'} if 'service_tier' in request else set()
-            for key in FOLLOW_SECTIONS:
+            for key in self.followed_sections:
                 if key in pinned:
                     continue
                 if key in live:
@@ -221,7 +221,7 @@ class LocalSessionPolicy:
                 from gateway.run import _resolve_gateway_model
                 model = _resolve_gateway_model(live) or self.model
             agent, live_agent = config.setdefault('agent', {}), live.get('agent') or {}
-            for key in FOLLOW_AGENT_KEYS:
+            for key in FOLLOW_AGENT_KEYS if self.follows_profile else ():
                 if key in pinned:
                     continue
                 if key in live_agent:
@@ -244,10 +244,18 @@ class LocalSessionPolicy:
         return (json.loads(self.request_json).get('follow_profile_config') is True
                 or json.loads(self.config_json).get(FOLLOW_ADOPTED) is True)
 
+    @property
+    def followed_sections(self):
+        # The hosted member's stored policy already identifies its owner, including
+        # rooms created before route following. Keep its tool and approval policy frozen.
+        if self.source == 'bot_room' and not self.ignore_user_config:
+            return FOLLOW_MODEL_SECTIONS
+        return FOLLOW_SECTIONS if self.follows_profile else ()
+
     def read_profile(self, authority):
         """The owning profile's current config for a following session, else None; inside this policy's
         turn scope, the turn's one read."""
-        if authority is None or not self.follows_profile:
+        if authority is None or not self.followed_sections:
             return None
         held = _TURN_PROFILE.get()
         if held is not None and held[0] == self:

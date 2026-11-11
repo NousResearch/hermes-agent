@@ -168,9 +168,9 @@ def _rebind(authority, session_id, old, policy, fresh, replaced):
     refreshed sections' private values are the profile's current ones (the stored ones there are neither
     re-read nor checked: a rotated key is what the refresh picks up, not a revoked credential). A policy
     that follows its profile from this open on keeps none of its followed sections' frozen values."""
-    from gateway.session_policy import FOLLOW_SECTIONS, bind_launch_key, launch_key
+    from gateway.session_policy import bind_launch_key, launch_key
     from gateway.session_policy_credentials import recover_config_secrets
-    skip = (*(FOLLOW_SECTIONS if policy.follows_profile else ()), *replaced)
+    skip = (*policy.followed_sections, *replaced)
     secrets = recover_config_secrets(authority, old, skip) if old.config_secret_ref else {}
     secrets.update(fresh)
     return bind_launch_key(authority, session_id, policy, launch_key(authority, old), config_secrets=secrets)

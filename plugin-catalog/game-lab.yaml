@@ -1,15 +1,15 @@
 name: game-lab
 title: "Game Lab"
 repo: https://github.com/flabanabba8/game-lab
-sha: 0ecbaaf8b68e2d449fd68e32aa3aa47592977353
+sha: 7507cf26c54e6f9208f6b22d09f6c3950da187cd
 version: "0.1.0"
 description: "Work on games with Hermes: mod a game on a safe copy, translate its text without breaking it, and playtest it by pressing and holding keys and reporting honestly. Bundles three plugins (ModLab, Game Localization Studio, Playtest Pilot). Disclosure: Works on a copy of a game folder you own and drives Universal Modder and Reverse Engineer Anything (ModLab); reads RPG Maker data files you select and keeps translation drafts in plugin storage; presses and holds keys and clicks in the one window you select through Hermes computer use and xdotool on X11, each hold behind the plugin's own approval rule, and grabs that window with ffmpeg. No network calls of its own, no credentials, no bundled game files."
 maintainer: flabanabba8
 tier: community
 category: tools
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/flabanabba8/game-lab/blob/0ecbaaf8b68e2d449fd68e32aa3aa47592977353/README.md
-image: https://raw.githubusercontent.com/flabanabba8/game-lab/0ecbaaf8b68e2d449fd68e32aa3aa47592977353/assets/thumbnail.jpg
+docs_url: https://github.com/flabanabba8/game-lab/blob/7507cf26c54e6f9208f6b22d09f6c3950da187cd/README.md
+image: https://raw.githubusercontent.com/flabanabba8/game-lab/7507cf26c54e6f9208f6b22d09f6c3950da187cd/assets/thumbnail.jpg
 platforms: [linux]
 capabilities:
   provides_tools:

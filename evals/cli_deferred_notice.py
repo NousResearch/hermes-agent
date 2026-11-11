@@ -29,11 +29,9 @@ def run_case(root, output, name, behind, early=False, cancel=False):
             "  base_url: http://127.0.0.1:9/v1\n"
             "display:\n  interface: cli\n  skip_banner: false\n"
             "memory:\n  provider: ''\n", encoding="utf-8")
-        cache = hh / ".update_check"
-        # The version comes from the checkout, not an invented cache identity.
-        from hermes_cli.banner import VERSION
-        payload = json.dumps({"ts": time.time(), "behind": behind,
-                              "rev": None, "ver": VERSION}).encode()
+        cache = hh / "notice-result.json"
+        # This harness tests display timing, not source-check cache policy.
+        payload = json.dumps({"behind": behind}).encode()
         if early:
             cache.write_bytes(payload)
         else:
@@ -44,7 +42,9 @@ def run_case(root, output, name, behind, early=False, cancel=False):
                "OPENAI_API_KEY": "local-not-used", "PROMPT_TOOLKIT_NO_CPR": "1"}
         master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
-        bootstrap = ("import hermes_cli.main as m; import hermes_cli.banner as b; "
+        bootstrap = ("import json; from pathlib import Path; import hermes_cli.main as m; "
+                     "import hermes_cli.banner as b; from hermes_cli import source_check; "
+                     f"source_check.check_for_updates = lambda **kw: json.loads(Path({str(cache)!r}).read_text()); "
                      "print('LOADED', m.__file__, b.__file__, flush=True); m.main()")
         proc = subprocess.Popen([sys.executable, "-c", bootstrap, "chat"], cwd=root,
                                 env=env, stdin=slave, stdout=slave, stderr=slave,

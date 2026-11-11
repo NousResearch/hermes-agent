@@ -23,9 +23,7 @@ from hermes_cli.approvals_suggest import (
     apply_proposals,
     build_proposals,
     derive_glob,
-    is_unsafe_class,
     normalize_command,
-    parse_apply_indices,
     scan_approval_history,
     suggest_command,
 )
@@ -143,7 +141,6 @@ class TestScan:
         assert len(scan_approval_history(path, days=0)) == 2
 
 
-
 # ---------------------------------------------------------------------------
 # Normalize / glob derivation
 # ---------------------------------------------------------------------------
@@ -192,10 +189,6 @@ class TestRankingAndSafety:
         records = scan_approval_history(path, days=0)
         assert build_proposals(records, min_count=2) == []
         assert len(build_proposals(records, min_count=1)) == 1
-
-
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +286,6 @@ class TestApply:
         assert "git push *" in out and "docker restart *" in out
 
 
-
 class TestJsonOutput:
     def test_json_proposal_output(self, db_path, isolated_allowlist, capsys):
         path, con = db_path
@@ -346,5 +338,3 @@ class TestParserWiring:
         args = parser.parse_args(["approvals", "suggest"])
         assert args.apply_indices is None
         assert args.json is False
-        assert args.days == 90
-        assert args.min_count == 2

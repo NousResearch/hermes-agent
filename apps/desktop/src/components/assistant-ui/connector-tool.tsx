@@ -2,12 +2,19 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react'
 import type { ConnectionTargetState, ConnectorsConnectResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
+import { useInRouterContext, useNavigate } from 'react-router'
 
+import { accountRenameRoute } from '@/app/capabilities/connectors/data/deep-link'
 import { useSessionView } from '@/app/chat/session-view'
 import { sessionRoute } from '@/app/routes'
+import { ConnectorDirectoryCard } from '@/components/assistant-ui/connector-directory-card'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
+import { TypedAnswer } from '@/components/assistant-ui/typed-answer'
+import { useConnectionOwner } from '@/components/assistant-ui/use-connection-owner'
+import { SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard, ConnectorRow, type ConnectorRowMark, ConnectorSummary } from '@/components/ui/connector-card'
+import { ConnectorLogo } from '@/components/ui/connector-logo'
 import { useI18n } from '@/i18n'
 import {
   connectorAuthorizationUrl,
@@ -20,44 +27,17 @@ import {
 } from '@/lib/connector-tools'
 import {
   $connectionRequests,
+  connectionOpOf,
   type ConnectionOwner,
   connectionOwnerFor,
   type ConnectionRequest,
   connectionRequestOpen,
   type ConnectionTarget,
   continueConnectionRequest,
-  sessionConnectionRequest
+  toolConnectionRequest
 } from '@/store/connection-request'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-
-/** Resolve that owner. Null until it resolves and null when it cannot: a card RPC must reach the
- *  gateway that holds the operation, never whichever one the window happens to have in front. */
-export function useConnectionOwner(sessionId: null | string, active: boolean): ConnectionOwner | null {
-  const [owner, setOwner] = useState<ConnectionOwner | null>(null)
-
-  useEffect(() => {
-    if (!sessionId || !active) {
-      setOwner(null)
-
-      return
-    }
-
-    let cancelled = false
-
-    void connectionOwnerFor(sessionId, 'connectors.connect').then(resolved => {
-      if (!cancelled) {
-        setOwner(resolved)
-      }
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [active, sessionId])
-
-  return owner
-}
 
 /** The browser leg of a connection came back through `hermes://connections/done`. Show the session
  *  that opened the operation and tell its backend to read the account now instead of at its next
@@ -148,7 +128,14 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
-  const $request = useMemo(() => sessionConnectionRequest(runtimeId), [runtimeId])
+  const opId = connectionOpOf(props.args)
+  const running = props.result === undefined
+
+  const $request = useMemo(
+    () => toolConnectionRequest(runtimeId, props.toolCallId, opId, running),
+    [opId, props.toolCallId, running, runtimeId]
+  )
+
   const request = useStore($request)
   const targetNames = requestedConnectorNames(props.args)
 
@@ -161,11 +148,85 @@ export function ConnectorTool(props: ToolCallMessagePartProps) {
   // Owner routes and hints are keyed by the stored id, not the runtime id the events carry.
   const owner = useConnectionOwner(storedId, live)
 
+  if (recordOf(props.args).action === 'display') {
+    return <ConnectorDirectoryTool live={live} part={props} request={request} />
+  }
+
   if (!live || !request) {
     return <ToolFallback {...props} />
   }
 
   return owner ? <ConnectorOffer owner={owner} request={request} /> : null
+}
+
+interface ConnectorDirectoryToolProps {
+  live: boolean
+  part: ToolCallMessagePartProps
+  request: ConnectionRequest | null
+}
+
+/** The display card while its operation is open; afterwards the one line the result says, or the generic row
+ *  for a call that failed. */
+function ConnectorDirectoryTool({ live, part, request }: ConnectorDirectoryToolProps) {
+  if (live && request && !request.settled) {
+    return (
+      <ConnectorDirectoryCard
+        onContinue={() => void continueConnectionRequest(request)}
+        suggested={request.display?.suggested}
+      />
+    )
+  }
+
+  if (part.result === undefined) {
+    return null
+  }
+
+  return part.isError || recordOf(part.result).error !== undefined ? (
+    <ToolFallback {...part} />
+  ) : (
+    <ConnectorDirectoryReceipt result={part.result} />
+  )
+}
+
+// A timed-out card still names what the user connected before walking away.
+function receiptText(copy: ConnectorCopy['directory'], outcome: ReturnType<typeof recordOf>, added: string[]): string {
+  if (added.length > 0) {
+    return copy.receiptConnected(added.map(connectorTitle).join(', '))
+  }
+
+  return outcome.timed_out === true ? copy.receiptTimedOut : copy.receiptNone
+}
+
+export function ConnectorDirectoryReceipt({ result }: { result: unknown }) {
+  const { t } = useI18n()
+  const copy = t.connectors.directory
+  const outcome = recordOf(result)
+
+  const added = Array.isArray(outcome.newly_connected)
+    ? outcome.newly_connected.flatMap(name => connectorText(name) ?? [])
+    : []
+
+  const said = connectorText(outcome.said)?.trim()
+
+  return (
+    <>
+      {added.length > 0 || !said ? (
+        <div data-conversation-scaffold="" data-slot="connector-directory-receipt">
+          <ScaffoldRow>
+            {added.map(name => (
+              <ConnectorLogo
+                className="size-4 rounded-[0.25rem]"
+                connector={{ iconUrl: connectorIconUrl(name), name, title: connectorTitle(name) }}
+                key={name}
+              />
+            ))}
+            <span className={SCAFFOLD_LABEL_CLASS}>{receiptText(copy, outcome, added)}</span>
+          </ScaffoldRow>
+        </div>
+      ) : null}
+      {said ? <TypedAnswer text={said} /> : null}
+    </>
+  )
 }
 
 type ConnectorCopy = ReturnType<typeof useI18n>['t']['connectors']
@@ -264,6 +325,10 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   const { t } = useI18n()
   const copy = t.connectors
   const [reissuing, setReissuing] = useState<ReadonlySet<string>>(new Set())
+  // Rows whose link the user opened from this card. `initiated` only means a link was minted: the
+  // connect-first handoff (D85) mints on the watcher's first pass, before anyone clicks, so the
+  // "Waiting for your browser…" cue belongs to a row the user actually opened.
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set())
   const unresolved = request.targets.some(target => !CONNECTOR_CARD_PHASES[target.state].resolved)
   // A DOM handle for the focus handoff, never rendered state.
   const cardRef = useRef<HTMLDivElement | null>(null)
@@ -274,6 +339,12 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   // A refused re-mint is a click that changed nothing, so it gets a toast; the row stays as it was.
   const reissue = async (target: ConnectionTarget): Promise<void> => {
     setReissuing(current => new Set(current).add(target.name))
+    setOpened(current => {
+      const next = new Set(current)
+      next.delete(target.name)
+
+      return next
+    })
 
     try {
       await reissueConnectionTarget(owner, request, target.name)
@@ -309,6 +380,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
             />
           )
         })}
+        <NamedAccountNotices owner={owner} targets={request.targets} />
       </div>
     )
   }
@@ -319,6 +391,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
         {request.targets.map(target => {
           const phase = CONNECTOR_CARD_PHASES[target.state]
           const busy = reissuing.has(target.name)
+          const mark = phase.mark === 'waiting' && !opened.has(target.name) ? 'idle' : phase.mark
 
           const action =
             phase.verb === 'none'
@@ -331,6 +404,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
                   onClick: () => {
                     if (phase.verb === 'open' && target.connectUrl && window.hermesDesktop?.openExternal) {
                       void window.hermesDesktop.openExternal(target.connectUrl)
+                      setOpened(current => new Set(current).add(target.name))
                     }
 
                     if (phase.verb === 'reissue') {
@@ -347,14 +421,15 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
                 name: target.name,
                 title: connectorTitle(target.name)
               }}
-              cue={phase.mark === 'waiting' ? copy.waiting : undefined}
+              cue={mark === 'waiting' ? copy.waiting : undefined}
               key={target.name}
-              mark={phase.mark}
-              markLabel={MARK_LABEL[phase.mark](copy)}
+              mark={mark}
+              markLabel={MARK_LABEL[mark](copy)}
             />
           )
         })}
       </ConnectorCard>
+      <NamedAccountNotices owner={owner} targets={request.targets} />
       {unresolved ? (
         <div className="px-3.5">
           <Button onClick={() => void continueConnectionRequest(request)} size="xs" variant="textStrong">
@@ -363,6 +438,63 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
         </div>
       ) : null}
     </div>
+  )
+}
+
+/** One line per account Hermes named and connected; Rename opens that account's editor on the Connectors tab. */
+function NamedAccountNotices({ owner, targets }: { owner: ConnectionOwner; targets: readonly ConnectionTarget[] }) {
+  const named = targets.filter(target => target.state === 'connected' && target.alias)
+
+  if (named.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="grid gap-1 px-3.5" data-slot="connector-named-account">
+      {named.map(target => (
+        <NamedAccountNotice
+          alias={target.alias ?? ''}
+          connectionId={target.connectionId}
+          key={target.name}
+          name={target.name}
+          owner={owner}
+        />
+      ))}
+    </div>
+  )
+}
+
+interface NamedAccountProps {
+  alias: string
+  /** The account the line is about; the Rename link goes by it, since the name can change hands. */
+  connectionId: string
+  name: string
+  owner: ConnectionOwner
+}
+
+function NamedAccountNotice({ alias, connectionId, name, owner }: NamedAccountProps) {
+  const { t } = useI18n()
+  const inRouter = useInRouterContext()
+
+  return (
+    <p className="flex flex-wrap items-center gap-x-1.5 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)">
+      {t.connectors.namedAccount(connectorTitle(name), alias)}
+      {inRouter && connectionId ? (
+        <RenameAccountLink alias={alias} connectionId={connectionId} name={name} owner={owner} />
+      ) : null}
+    </p>
+  )
+}
+
+// useNavigate() throws outside a Router; the parent mounts this only inside one.
+function RenameAccountLink({ connectionId, name, owner }: NamedAccountProps) {
+  const { t } = useI18n()
+  const navigate = useNavigate()
+
+  return (
+    <Button onClick={() => navigate(accountRenameRoute(name, connectionId, owner))} size="inline" variant="textStrong">
+      {t.connectors.renameAccount}
+    </Button>
   )
 }
 
@@ -396,6 +528,7 @@ export function ConnectorExecution(props: ToolCallMessagePartProps) {
           <ToolFallback
             {...props}
             args={recordOf(recordOf(batch[index]).arguments ?? props.args)}
+            innerToolName={props.toolName === 'tool_call' ? label.name : props.toolName}
             isError={Boolean(result.error) || props.isError === true}
             key={`${props.toolCallId}:${index}`}
             result={item}

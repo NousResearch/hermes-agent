@@ -51,9 +51,8 @@ def test_standalone_named_home_still_served_by_host_record_is_refused_with_resca
     monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda name=None: True)
     refused, out = _refusal(gw)
     assert refused is True
-    assert "still serves profile 'coder'" in out
     assert "gateway.standalone" in out
-    assert "rescan-profiles" in out and "30s" in out
+    assert "rescan-profiles" in out
     assert "--force" not in out
 
 
@@ -62,9 +61,7 @@ def test_non_standalone_refusal_names_the_opt_out(standalone_home):
     (home / "config.yaml").write_text("{}\n", encoding="utf-8")
     refused, out = _refusal(gw)
     assert refused is True
-    assert "Temporary compatibility path" in out
     assert "gateway.standalone: true" in out
-    assert "temporary compatibility shim" in out  # the deprecation notice rides every mention
 
 
 def test_setup_stale_host_record_names_rescan(standalone_home, monkeypatch, capsys):

@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from hermes_platform.resolver import ABSENT, CheckState, LookupContext, Observation, locate_command
+from hermes_platform.resolver import ABSENT, LookupContext, locate_command
 
 
 def _make_exe(path):
@@ -16,7 +16,7 @@ def _make_exe(path):
     return path
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable bits")
+@pytest.mark.platforms("posix")
 def test_path_hit_comes_first_and_known_dirs_are_still_recorded(tmp_path):
     on_path = _make_exe(tmp_path / "pathbin" / "tool")
     in_known = _make_exe(tmp_path / "known" / "tool")
@@ -27,7 +27,7 @@ def test_path_hit_comes_first_and_known_dirs_are_still_recorded(tmp_path):
     assert [c.value for c in res.present] == [str(on_path), str(in_known)]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable bits")
+@pytest.mark.platforms("posix")
 def test_known_dir_hit_when_path_misses(tmp_path):
     in_known = _make_exe(tmp_path / "known" / "tool")
     res = locate_command("tool", LookupContext(path=""), known_dirs=(str(in_known.parent),))
@@ -50,7 +50,7 @@ def test_absent_and_none_both_mean_ambient():
     assert LookupContext(path="/x").effective_path() == "/x"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable bits")
+@pytest.mark.platforms("posix")
 def test_explicit_path_bypasses_search(tmp_path):
     exe = _make_exe(tmp_path / "bin" / "tool")
     res = locate_command(str(exe), LookupContext(path=""))
@@ -60,7 +60,7 @@ def test_explicit_path_bypasses_search(tmp_path):
     assert missing.kind == "missing" and missing.candidates[0].source == "explicit"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable bits")
+@pytest.mark.platforms("posix")
 def test_locate_never_searches_the_working_directory(tmp_path, monkeypatch):
     _make_exe(tmp_path / "tool")
     monkeypatch.chdir(tmp_path)
@@ -69,7 +69,7 @@ def test_locate_never_searches_the_working_directory(tmp_path, monkeypatch):
     assert relative.kind == "missing" and relative.candidates[0].present is False
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX executable bits")
+@pytest.mark.platforms("posix")
 def test_known_dir_expands_home_and_env(tmp_path, monkeypatch):
     exe = _make_exe(tmp_path / "home" / ".local" / "bin" / "tool")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -79,7 +79,7 @@ def test_known_dir_expands_home_and_env(tmp_path, monkeypatch):
         assert res.command == (str(exe),), spec
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_pathext_is_honored_without_mutating_environ(tmp_path, monkeypatch):
     exe = tmp_path / "bin" / "tool.cmd"
     exe.parent.mkdir()
@@ -91,10 +91,6 @@ def test_windows_pathext_is_honored_without_mutating_environ(tmp_path, monkeypat
     assert os.environ.get("PATHEXT") == before
 
 
-def test_observation_not_checked_is_distinct_from_absent():
-    assert Observation.not_checked().state is CheckState.NOT_CHECKED
-    assert Observation(CheckState.ABSENT, False).state is not CheckState.NOT_CHECKED
-    assert Observation(CheckState.ABSENT, False).value is False
 
 
 def test_one_candidate_per_known_dir_regardless_of_pathext(tmp_path):

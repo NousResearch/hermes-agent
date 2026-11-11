@@ -15,7 +15,7 @@ import {
   ensureGatewayProfile,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
-import { $projectScope, ALL_PROJECTS } from '@/store/projects'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
   $activeSessionId,
   $sessions,
@@ -64,6 +64,7 @@ function mountActions() {
       navigate,
       requestGateway,
       resetViewSync: vi.fn(),
+      routedSessionId: null,
       runtimeIdByStoredSessionIdRef: ref(new Map()),
       selectedStoredSessionId: null,
       selectedStoredSessionIdRef: ref<string | null>(null),

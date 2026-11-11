@@ -12,6 +12,24 @@ interface NotificationHost {
   platform?: NodeJS.Platform
 }
 
+const flashingWindows = new WeakSet<BrowserWindow>()
+
+export function requestAttention(window: BrowserWindow | null | undefined): void {
+  if (!window || window.isDestroyed() || window.isFocused() || flashingWindows.has(window)) {
+    return
+  }
+
+  flashingWindows.add(window)
+  window.flashFrame(true)
+  window.once('focus', () => {
+    flashingWindows.delete(window)
+
+    if (!window.isDestroyed()) {
+      window.flashFrame(false)
+    }
+  })
+}
+
 export function registerNativeNotifications({
   getMainWindow,
   focusWindow,
@@ -108,6 +126,9 @@ export function registerNativeNotifications({
       })
     })
     notifications.retain(notification)
+
+    // The toast is transient; flash the taskbar/dock entry until the window is focused.
+    requestAttention(targetWindow())
 
     // Peers share the actual outcome, including pending/failed Linux delivery.
     const delivery = Promise.resolve(notification.show()).then(result => result !== false)

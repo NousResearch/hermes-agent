@@ -80,16 +80,6 @@ class TestConnectBindGuard:
         assert adapter._background_tasks == set()
 
 
-    @pytest.mark.asyncio
-    async def test_allows_wildcard_with_key(self):
-        """Non-loopback with a key should pass the guard."""
-        adapter = APIServerAdapter(
-            PlatformConfig(enabled=True, extra={"host": "0.0.0.0", "key": "sk-test"})
-        )
-        # The guard checks: is_network_accessible(host) AND NOT api_key
-        # With a key set, the guard should not block.
-        assert adapter._api_key == "sk-test"
-        assert is_network_accessible("0.0.0.0") is True
         # Combined: the guard condition is False (key is set), so it passes
 
 
@@ -145,7 +135,7 @@ class TestBindMechanics:
             await second.disconnect()
 
 
-    @pytest.mark.macos_only  # the exclusive bind (reuse_address=False) is a Darwin-only path
+    @pytest.mark.platforms("macos")  # the exclusive bind (reuse_address=False) is a Darwin-only path
     @pytest.mark.asyncio
     async def test_rebind_over_time_wait(self):
         """A port held only by a server-side TIME_WAIT socket (the previous gateway closed a

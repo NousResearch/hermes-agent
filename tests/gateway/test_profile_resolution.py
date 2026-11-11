@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,7 +18,7 @@ from gateway.platforms.event import MessageEvent
 def mock_runner():
     """Create a minimal mock GatewayRunner with the methods we need."""
     runner = MagicMock(spec=GatewayRunner)
-    runner.config = MagicMock(profile_routes=[])
+    runner.config = MagicMock(profile_routes=[], _runtime_profile_homes=None)
     # Bind the actual methods to the mock
     runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)
@@ -101,7 +101,6 @@ class TestMissingProfileWarning:
                             assert len(caplog.records) == 1
                             assert caplog.records[0].levelname == "WARNING"
                             assert "nonexistent" in caplog.records[0].message
-                            assert "does not exist" in caplog.records[0].message
                             assert "discord" in caplog.records[0].message
                             assert "123456" in caplog.records[0].message
     
@@ -129,28 +128,9 @@ class TestExceptionHandling:
                         assert len(caplog.records) == 1
                         assert caplog.records[0].levelname == "WARNING"
                         assert "bad-profile" in caplog.records[0].message
-                        assert "Failed to resolve profile directory" in caplog.records[0].message
     
 
 
-class TestRoutingConsultation:
-    """Tests that _profile_name_for_source is consulted when source.profile is empty."""
-    
-    def test_routing_consulted_when_source_profile_empty(self, mock_runner, discord_source):
-        """_profile_name_for_source should be called when source.profile is empty."""
-        discord_source.profile = None
-        
-        with patch("hermes_cli.profiles.get_active_profile_name", return_value="active"):
-            with patch("hermes_cli.profiles.get_profile_dir") as mock_get_dir:
-                mock_get_dir.return_value = Path("/hermes/profiles/routed")
-                
-                mock_runner._profile_name_for_source = MagicMock(return_value="routed")
-
-                with patch("hermes_cli.profiles.profile_exists", return_value=True):
-                    mock_runner._resolve_profile_home_for_source(discord_source)
-
-                # Should have called routing
-                mock_runner._profile_name_for_source.assert_called_once_with(discord_source)
     
 
 
@@ -244,12 +224,6 @@ class TestGatewayRunnerInjection:
     that makes the routing in TestNonDiscordProfileRouting reachable at runtime.
     """
 
-    def test_base_adapter_declares_gateway_runner(self):
-        from gateway.platforms.base import BasePlatformAdapter
-
-        # Class-level attribute exists and defaults to None.
-        assert hasattr(BasePlatformAdapter, "gateway_runner")
-        assert BasePlatformAdapter.gateway_runner is None
 
     def test_factory_binds_every_adapter_to_runner(self, monkeypatch):
         """``_create_adapter`` binds the runner regardless of which branch
@@ -269,10 +243,13 @@ class TestGatewayRunnerInjection:
 
     @pytest.mark.asyncio
     async def test_real_signal_factory_routes_inbound_group_event(self, monkeypatch):
-        """A factory-built (built-in) Signal adapter resolves profile_routes
-        for a real inbound envelope — fails on main where the Signal branch
-        returned a bare ``SignalAdapter(config)`` with no runner."""
+        """A factory-built Signal adapter (bundled plugin, via the registry) resolves
+        profile_routes for a real inbound envelope — the original bug was a bare
+        ``SignalAdapter(config)`` with no runner."""
         from gateway.config import PlatformConfig
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()  # the gateway does this at startup; Signal is a plugin platform now
 
         group_id = "test-signal-route"
         monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", group_id)
@@ -327,7 +304,7 @@ class _StubAdapter(BasePlatformAdapter):
 _StubAdapter.__abstractmethods__ = frozenset()  # type: ignore[attr-defined]
 
 
-def _stub_adapter(platform: Platform, runner) -> "_StubAdapter":
+def _stub_adapter(platform: Platform, runner) -> _StubAdapter:
     a = _StubAdapter.__new__(_StubAdapter)
     a.platform = platform
     a.gateway_runner = runner

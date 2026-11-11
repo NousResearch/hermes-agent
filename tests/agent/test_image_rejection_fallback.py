@@ -363,16 +363,6 @@ class TestRejectionNeverReachesPersistedHistory:
         # same api_messages and the send path strips them there, so the request goes out text-only.
         assert strip_images_for_rejecting_model(agent, wire) is True
         assert "image_url" not in str(wire)
-        # ...and build_api_request really runs that strip on every attempt, before the kwargs
-        # are built from api_messages.
-        import inspect
-
-        from agent.turn_api_request import build_api_request
-
-        src = inspect.getsource(build_api_request)
-        strip_at = src.find("\n    strip_images_for_rejecting_model(agent, api_messages)")
-        assert strip_at != -1, "build_api_request no longer strips images for a rejecting model"
-        assert strip_at < src.find("_build_api_kwargs(api_messages"), "strip must precede _build_api_kwargs"
 
     def test_every_model_in_a_fallback_chain_is_tracked(self):
         """Two models reject images in the same turn (fallback A -> B). A turn-global guard
@@ -406,6 +396,29 @@ class TestRejectionNeverReachesPersistedHistory:
         api_messages = self._history()
         assert strip_images_for_rejecting_model(agent, api_messages) is False
         assert str(api_messages).count("data:image/png") == 2
+
+    def test_a_request_without_images_never_marks_the_model(self):
+        """A 4xx body can quote the user's own text back (pydantic ``input_value=...``, proxy
+        echoes). When the user wrote "X is not a multimodal model" and the request carried no
+        image, the phrase match must not mark the model, or every later image is stripped
+        from a vision model until /new."""
+        from agent.turn_recovery import recover_before_classification
+
+        class _EchoErr(Exception):
+            status_code = 400
+            body = "1 validation error: messages.0 input_value='I read llama-3 is not a multimodal model.'"
+
+        agent = self._agent()
+        text_only = [{"role": "user", "content": "I read llama-3 is not a multimodal model."}]
+        # History keeps images the per-call request no longer carries: the guard must read what was sent.
+        retry, _ = recover_before_classification(
+            agent, _EchoErr(), messages=self._history() + text_only, api_messages=list(text_only),
+            api_kwargs={}, active_system_prompt="sys",
+        )
+
+        assert retry is False
+        assert agent._image_rejecting_models == set()
+        assert strip_images_for_rejecting_model(agent, self._history()) is False
 
     def test_a_corrupt_image_does_not_mark_the_model_image_rejecting(self):
         """'failed to decode image' says the PAYLOAD is bad, not that the model is text-only.

@@ -29,6 +29,7 @@ import { $settingsScopeProfile } from '@/store/settings-scope'
 
 import { CONTROL_TEXT } from './constants'
 import { ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
+import { SettingsProfileScope } from './profile-scope'
 
 // Vault data is private to one (connection, profile); the cache key carries that owner so a
 // late response from profile A can never paint under profile B.
@@ -389,6 +390,10 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
 
   return (
     <SettingsContent>
+      {/* The vault is per profile (its RPCs ride the (connection, profile) owner above), so the
+          page must SAY which profile it is showing — without the chip a non-default selection
+          looked like the default vault with entries missing (#121966). */}
+      <SettingsProfileScope className="mb-5" />
       {(subpage === undefined || subpage === 'credentials') && (
         <>
           <SectionHeading

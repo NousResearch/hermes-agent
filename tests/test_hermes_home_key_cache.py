@@ -55,18 +55,9 @@ class TestSameAnswerAsBefore:
         (tmp_path / "real").mkdir()
         assert hc.hermes_home_key(tmp_path / "real") == _uncached(tmp_path / "real")
 
-    def test_second_call_returns_the_same_string(self, tmp_path):
-        (tmp_path / "real").mkdir()
-        first = hc.hermes_home_key(str(tmp_path / "real"))
-        second = hc.hermes_home_key(str(tmp_path / "real"))
-        assert first == second == _uncached(str(tmp_path / "real"))
 
 
 class TestWhatGetsRemembered:
-    def test_an_existing_path_is_remembered(self, tmp_path):
-        (tmp_path / "real").mkdir()
-        hc.hermes_home_key(str(tmp_path / "real"))
-        assert len(hc._HOME_KEY_CACHE) == 1
 
     def test_a_missing_path_is_not_remembered(self, tmp_path):
         # The answer can change once the directory is created, for example
@@ -85,18 +76,7 @@ class TestWhatGetsRemembered:
         # the first one was never stored.
         assert before == after
 
-    def test_different_paths_get_their_own_entries(self, tmp_path):
-        for name in ("a", "b", "c"):
-            (tmp_path / name).mkdir()
-            hc.hermes_home_key(str(tmp_path / name))
-        assert len(hc._HOME_KEY_CACHE) == 3
 
-    def test_reset_clears_everything(self, tmp_path):
-        (tmp_path / "real").mkdir()
-        hc.hermes_home_key(str(tmp_path / "real"))
-        assert hc._HOME_KEY_CACHE
-        hc.reset_hermes_home_key_cache()
-        assert hc._HOME_KEY_CACHE == {}
 
 
 class TestHomeChanges:

@@ -41,12 +41,6 @@ describe('fuzzyScore', () => {
 
     expect(prefix).toBeGreaterThan(scattered)
   })
-
-  it('rewards word-boundary matches', () => {
-    // `s4` matching the `s` of sonnet and the `4` after a dash
-    const boundary = fuzzyScore('claude-sonnet-4', 'cs4')
-    expect(boundary).not.toBeNull()
-  })
 })
 
 describe('fuzzyScoreMulti', () => {

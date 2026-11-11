@@ -112,50 +112,60 @@ const plugin: HermesPlugin = {
         render: () => <KanbanBoardPage />
       },
       {
-        id: 'nav',
-        area: SIDEBAR_NAV_AREA,
-        order: 50,
-        data: { codicon: 'project', label: 'Kanban', path: '/kanban' } satisfies SidebarNavContribution
-      },
-      {
         id: 'count',
         area: STATUSBAR_AREAS.right,
         order: 80,
         render: () => <KanbanCount />
-      },
-      {
-        id: 'open',
-        area: PALETTE_AREA,
-        data: {
-          id: 'kanban.open',
-          label: 'Kanban: Open board',
-          keywords: ['kanban', 'board', 'tasks', 'agents'],
-          run: () => host.navigate('/kanban')
-        } satisfies PaletteContribution
-      },
-      {
-        id: 'new-task',
-        area: PALETTE_AREA,
-        data: {
-          id: 'kanban.newTask',
-          action: 'kanban.newTask',
-          label: ctx.i18n.t('newTaskCommand'),
-          keywords: ['kanban', 'task', 'new', 'create', 'triage'],
-          run: newTask
-        } satisfies PaletteContribution
-      },
-      {
-        id: 'new-task',
-        area: KEYBINDS_AREA,
-        data: {
-          id: 'kanban.newTask',
-          category: 'view',
-          defaults: ['mod+alt+n'],
-          label: ctx.i18n.t('newTaskCommand'),
-          run: newTask
-        } satisfies KeybindContribution
       }
     ])
+
+    const registerLabels = () =>
+      ctx.registerMany([
+        {
+          id: 'nav',
+          area: SIDEBAR_NAV_AREA,
+          order: 50,
+          data: { codicon: 'project', label: ctx.i18n.t('nav'), path: '/kanban' } satisfies SidebarNavContribution
+        },
+        {
+          id: 'open',
+          area: PALETTE_AREA,
+          data: {
+            id: 'kanban.open',
+            label: ctx.i18n.t('openBoard'),
+            keywords: ['kanban', 'board', 'tasks', 'agents'],
+            run: () => host.navigate('/kanban')
+          } satisfies PaletteContribution
+        },
+        {
+          id: 'new-task',
+          area: PALETTE_AREA,
+          data: {
+            id: 'kanban.newTask',
+            action: 'kanban.newTask',
+            label: ctx.i18n.t('newTaskCommand'),
+            keywords: ['kanban', 'task', 'new', 'create', 'triage'],
+            run: newTask
+          } satisfies PaletteContribution
+        },
+        {
+          id: 'new-task',
+          area: KEYBINDS_AREA,
+          data: {
+            id: 'kanban.newTask',
+            category: 'view',
+            defaults: ['mod+alt+n'],
+            label: ctx.i18n.t('newTaskCommand'),
+            run: newTask
+          } satisfies KeybindContribution
+        }
+      ])
+
+    let disposeLabels = registerLabels()
+    ctx.i18n.onLocaleChange(() => {
+      disposeLabels()
+      disposeLabels = registerLabels()
+    })
   }
 }
 

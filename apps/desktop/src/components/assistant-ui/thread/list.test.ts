@@ -16,7 +16,6 @@ import {
   shouldRePinOnTranscriptReload,
   shouldSnapOnRunStart,
   subscribeToThreadForeground,
-  transcriptBackfillFrameCount,
   transcriptPaneBudget
 } from './list'
 
@@ -266,20 +265,6 @@ describe('firstVisibleGroupIndex', () => {
     expect(firstVisibleGroupIndex(groups, 600, 8)).toBe(groups.length - 8)
   })
 
-  it.each([8, 10])('keeps the visible-turn floor at %i mounted panes on the shared page budget', panes => {
-    // #117067 dropped the quarter-page floor from transcriptPaneBudget; its safety
-    // argument is that this floor, not the budget, guards against a degenerate
-    // pane. Control: at high pane counts the per-pane budget covers only ~3 of
-    // these turns, yet 8 stay visible and "Show earlier" still has history to reach.
-    const paneBudget = transcriptPaneBudget(panes, false)
-    const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 20))
-
-    expect(paneBudget * panes).toBeLessThanOrEqual(600 + panes) // shared page, ceil slack only
-    expect(Math.floor(paneBudget / 20)).toBeLessThan(8)
-    expect(firstVisibleGroupIndex(groups, paneBudget, 8)).toBe(groups.length - 8)
-    expect(firstVisibleGroupIndex(groups, paneBudget, 8)).toBeGreaterThan(0)
-  })
-
   it('does not force the floor to hide turns the budget already showed', () => {
     const groups = Array.from({ length: 20 }, (_, i) => group(`g${i}`, 1))
 
@@ -376,12 +361,6 @@ describe('liveTailStart', () => {
 
       expect(rendered(liveTailStart(groups))).toBeLessThanOrEqual(rendered(oldStart))
     }
-  })
-})
-
-describe('transcriptBackfillFrameCount', () => {
-  it('settles a full pane in at most three prepend commits', () => {
-    expect(transcriptBackfillFrameCount()).toBeLessThanOrEqual(3)
   })
 })
 
@@ -509,5 +488,53 @@ describe('resolveThreadScrollTarget while selecting', () => {
     window.getSelection()?.removeAllRanges()
 
     expect(resolveThreadScrollTarget(999, contextFor())).toBe(999)
+  })
+})
+
+// Regression guard for #90473 / #96606 / #96875: after "Show earlier" has paged
+// a session to its very top, the opening user message must still be rendered
+// and head the visible set — it must never be swallowed by the hidden-slice
+// cut. The store window keeps at least TRANSCRIPT_WINDOW_MIN_MESSAGES (30) and
+// the DOM budget only hides a contiguous prefix, so for a light transcript that
+// fits the budget the first user message is the first visible group.
+describe('first user message is never swallowed (Show-earlier paging)', () => {
+  it('keeps the opening user greeting visible when the render budget covers the whole transcript', () => {
+    const groups = buildGroups(
+      signature([
+        ['u1', 'user', 1],
+        ['a1', 'assistant', 4],
+        ['a2', 'assistant', 2],
+        ['u2', 'user', 1],
+        ['a3', 'assistant', 3]
+      ])
+    )
+
+    // A render budget at or above the total weight hides nothing — the state
+    // after "Show earlier" has paged to the top of a light session.
+    const totalWeight = groups.reduce((sum, g) => sum + g.weight, 0)
+    const hidden = firstVisibleGroupIndex(groups, totalWeight)
+
+    expect(hidden).toBe(0)
+    // The first user message is the head of the visible set, not dropped.
+    expect(groups[0]?.id).toBe('u1')
+  })
+
+  it('a leading assistant message (tool-only opening turn) does not hide the first user message', () => {
+    const groups = buildGroups(
+      signature([
+        ['a0', 'assistant', 2],
+        ['u1', 'user', 1],
+        ['a1', 'assistant', 4],
+        ['u2', 'user', 1],
+        ['a2', 'assistant', 3]
+      ])
+    )
+
+    const totalWeight = groups.reduce((sum, g) => sum + g.weight, 0)
+    const hidden = firstVisibleGroupIndex(groups, totalWeight)
+
+    expect(hidden).toBe(0)
+    // The first user message survives as a distinct visible group.
+    expect(groups.some(g => g.id === 'u1')).toBe(true)
   })
 })

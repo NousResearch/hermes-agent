@@ -10,6 +10,7 @@
 
 import * as sdk from '@hermes/plugin-sdk'
 import { host } from '@hermes/plugin-sdk'
+import type { SessionListRow } from '@hermes/plugin-sdk'
 
 import { $botMeta, botMetaKey, botOwner, persistBotMetaSnapshot } from './data'
 import { botsText } from './i18n'
@@ -54,7 +55,34 @@ export const CANONICAL_CHAT_TITLE = 'Bot Chat'
  *  read through an aliased guard, which TS only narrows for immutable
  *  properties. */
 interface CanonicalChatRow extends CanonicalSession {
-  readonly message_count?: number
+  readonly message_count?: SessionListRow['message_count']
+  /** Absent on older gateways, which only report the denormalized total. */
+  readonly live_message_count?: SessionListRow['live_message_count']
+}
+
+/** A Bot Chat tile left on an old compression segment: titled as the canonical
+ *  chat but keyed to none of the lineage ids the owner currently resolves to. */
+export const isStaleBotChatTile =
+  (canonicalIds: readonly string[]) => (tile: { storedSessionId: string; workspaceTabTitle?: string }) =>
+    tile.workspaceTabTitle === CANONICAL_CHAT_TITLE && !canonicalIds.includes(String(tile.storedSessionId))
+
+/** Should the open wait for a painted transcript? The paintable row count
+ *  decides when the gateway reports it; the denormalized total is the only
+ *  fallback older gateways offer, and no count at all means the row is
+ *  guesswork anyway — wait, so an empty paint still surfaces as an error
+ *  instead of a silent blank chat. */
+export function resolveExpectHistory(
+  summary: null | undefined | Pick<SessionListRow, 'live_message_count' | 'message_count'>
+): boolean {
+  if (typeof summary?.live_message_count === 'number' && Number.isFinite(summary.live_message_count)) {
+    return summary.live_message_count > 0
+  }
+
+  if (typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)) {
+    return summary.message_count > 0
+  }
+
+  return true
 }
 
 /** Is the chat on screen the given bot's forever-chat?
@@ -79,10 +107,26 @@ export function isCanonicalChatOnScreen(
   return [canonical.id, canonical.resolved_id].filter(Boolean).map(String).includes(String(storedSessionId))
 }
 
+interface OpenStoredBotChatOptions {
+  /** Background re-resume: thread refreshInPlace to host.openSession so the
+   *  refresh never navigates (issue 121874). Await the transcript refresh
+   *  only for explicit opens — a background wake resolves once the resume
+   *  is requested, never blocking on a cold backend. */
+  background?: boolean
+  /** `tab`: open BESIDE the current chat as a stacked tab instead of loading
+   *  into main. The default `in-place` spends main, so a second Bot Chat
+   *  always replaced the first; ⌘-click / "Open in new tab" on a bot row
+   *  pass `tab` so two Bot Chats can stay open side by side. */
+  intent?: BotChatOpenIntent
+}
+
+export type BotChatOpenIntent = 'in-place' | 'tab'
+
 async function openStoredBotChat(
   owner: RosterRow | string,
   storedId: string,
-  summary: CanonicalChatRow
+  summary: CanonicalChatRow,
+  { background = false, intent = 'in-place' }: OpenStoredBotChatOptions = {}
 ): Promise<string> {
   if (!storedId || typeof host.openSession !== 'function') {
     throw new Error('This Hermes Desktop version cannot open stored sessions')
@@ -90,8 +134,11 @@ async function openStoredBotChat(
 
   const { bot, name, route } = botOwner(owner)
   const ownerKey = botWorkspaceOwnerKey(bot)
-  const hasAuthoritativeCount = typeof summary?.message_count === 'number' && Number.isFinite(summary.message_count)
-  const expectHistory = hasAuthoritativeCount ? summary.message_count > 0 : true
+  // Paintable rows decide the wait, not the denormalized total: a chat whose rows
+  // are all folded (orphaned compaction marks, a full rewind) paints nothing, and
+  // demanding its history wedges the open for the whole hydration budget before
+  // failing closed. Older gateways report only the total — keep trusting it there.
+  const expectHistory = resolveExpectHistory(summary)
 
   // Current SDKs export the Bot-specific budget. The fallback preserves
   // compatibility with older hosts and isolated plugin test harnesses.
@@ -113,6 +160,16 @@ async function openStoredBotChat(
   // previous time this bot was open — which left the pane showing old messages
   // until an app restart (hermes-agent#93604). A resume is cheap and
   // idempotent, so on this explicit user navigation we always request one.
+  //
+  // Compression rotates the tip while tiles stay keyed by segment, and hidden
+  // Bot Chats never reach the sidebar listing the lineage guard reads, so the
+  // old-segment tile is discarded here or it survives beside the tip
+  // (hermes-agent#120810). Same owner-scoped probe the roster click runs, but
+  // discard-only (`[]` fronts nothing): a background refresh must never take
+  // the tab strip (#121874), and the openSession below fronts explicit opens.
+  const canonicalIds = [...new Set([summary?.id, storedId].filter(Boolean).map(String))]
+  host.focusOpenWorkspaceSession?.(ownerKey, isStaleBotChatTile(canonicalIds), [])
+
   await host.openSession(storedId, {
     ...(route
       ? {
@@ -120,19 +177,15 @@ async function openStoredBotChat(
         }
       : {}),
     profile: name,
-    // Same intent a session row click uses. `tab` stacked a fresh tile every
-    // time focusOpenSession missed, so bot chats piled up beside each other and
-    // beside the untouched "New session" draft, which then kept focus —
-    // clicking a bot appeared to do nothing. `in-place` still fronts an
-    // already-open tile first, so Bot tabs survive owner lifecycles (#a81854a2,
-    // the reason this stopped being `main`); it just loads into main instead of
-    // minting a second tab when there is nothing to front.
-    intent: 'in-place',
-    awaitHydration: true,
+    // Default to the same in-place behavior as a session row. Explicit tab
+    // opens preserve main; either intent fronts an already-open session first.
+    intent,
+    awaitHydration: !background,
     expectHistory,
     forceResume: true,
     hydrationTimeoutMs,
     keepAllProfilesScope: true,
+    ...(background ? { refreshInPlace: true } : {}),
     workspaceMode: 'bots',
     workspaceOwnerKey: ownerKey,
     retryHydrationTimeoutOnce: true,
@@ -150,6 +203,47 @@ function isCanonicalBotChatHistory(history: CanonicalChatRow) {
   const title = String(history?.title || '').trim()
 
   return rootTitle === CANONICAL_CHAT_TITLE || (!rootTitle && title === CANONICAL_CHAT_TITLE)
+}
+
+function confirmRegistryError(name: string): Error {
+  return new Error(`Could not confirm ${name}'s Bot Chat registry — not starting a new chat`)
+}
+
+/** Definitive "this id is gone" — not a transport blip. Probe throws that
+ *  are not this stay fail-closed so a mid-restart cannot mint (#98383). */
+function isMissingSessionError(error: unknown): boolean {
+  if (error == null) {
+    return false
+  }
+
+  const obj = typeof error === 'object' ? (error as { data?: unknown; message?: unknown }) : null
+  const data = obj?.data
+  const reason = data && typeof data === 'object' ? (data as { reason?: unknown }).reason : undefined
+
+  if (reason === 'not_found') {
+    return true
+  }
+
+  const message = (typeof obj?.message === 'string' ? obj.message : String(error)).trim()
+
+  return /^(?:4001\s*[:,-]?\s*)?(?:not_found|session not found)[.!]?$/i.test(message)
+}
+
+/** A get-by-id probe of the roster pointer. Live hidden "Bot Chat" → the
+ *  title lookup lied and minting would fork. Archived, missing-shaped, or
+ *  title≠Bot Chat (tombstone / title=NULL) → confirmed absence. */
+function isLiveHiddenBotChatProbe(info: unknown): boolean {
+  if (!info || typeof info !== 'object') {
+    return false
+  }
+
+  const row = info as { archived?: unknown; title?: unknown }
+
+  if (row.archived === true) {
+    return false
+  }
+
+  return String(row.title || '').trim() === CANONICAL_CHAT_TITLE
 }
 
 function botModeGatewayNeedsUpdate(error: unknown) {
@@ -279,11 +373,35 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
   // answer `session.list` successfully with an empty list rather than
   // failing it, and `|| null` used to read that identically to "this bot
   // never had a chat" (#98383). The roster's own `canonical_session` is the
-  // last positive confirmation this profile HAD one — when that exists,
-  // an empty lookup is unconfirmed absence, not confirmed absence, so fail
-  // closed the same way a thrown RPC error already does instead of minting.
+  // last positive confirmation this profile HAD one. Probe that id:
+  // a still-live hidden "Bot Chat" (lookup lied / backend mid-restart) stays
+  // fail-closed so minting cannot fork. An archived, missing, or tombstoned
+  // (title=NULL / no longer "Bot Chat") pointer is confirmed absence — mint
+  // is allowed (#139779). A thrown list or probe (other than not_found)
+  // stays fail-closed.
   if (bot?.canonical_session?.id) {
-    throw new Error(`Could not confirm ${name}'s Bot Chat registry — not starting a new chat`)
+    let probe: unknown
+
+    try {
+      probe = await requestForBot(
+        bot,
+        'session.info',
+        { session_id: bot.canonical_session.id },
+        { spawnPriority: 'foreground' }
+      )
+    } catch (error) {
+      if (isMissingSessionError(error)) {
+        return null
+      }
+
+      throw confirmRegistryError(name)
+    }
+
+    if (!isLiveHiddenBotChatProbe(probe)) {
+      return null
+    }
+
+    throw confirmRegistryError(name)
   }
 
   return null
@@ -292,6 +410,21 @@ async function findExistingCanonicalChat(owner: RosterRow | string): Promise<Can
 interface CreateCanonicalChatOptions {
   kickoff?: boolean
   openingStillCurrent?: (() => boolean) | null
+}
+
+interface OpenCanonicalChatOptions {
+  /** Re-resolve and REFRESH the open chat without any navigation: the wake
+   *  was triggered by a background event (session.reclaimed, roster
+   *  activity), and a background event must never take the route or the
+   *  foreground away from whatever the user is reading (issue 121874 —
+   *  /kanban was replaced by the Bot Chat route). Threaded to
+   *  host.openSession's refreshInPlace; without an SDK that supports it the
+   *  open degrades to the old navigating shape. */
+  background?: boolean
+  openingStillCurrent?: (() => boolean) | null
+  /** See OpenStoredBotChatOptions.intent. Only honored for an EXISTING Bot
+   *  Chat; a freshly minted one always lands in main. */
+  intent?: BotChatOpenIntent
 }
 
 /** The self-introduction a brand-new bot is born with (#91827).
@@ -546,7 +679,7 @@ export function createCanonicalChat(
  *  bot's chat opens without re-homing Desktop's chrome. */
 export async function openBotCanonicalChat(
   owner: RosterRow | string,
-  openingStillCurrent: (() => boolean) | null = null
+  { background = false, openingStillCurrent = null, intent = 'in-place' }: OpenCanonicalChatOptions = {}
 ): Promise<{ openedId: string; registryId: string } | null> {
   const existing = await findExistingCanonicalChat(owner)
 
@@ -556,7 +689,7 @@ export async function openBotCanonicalChat(
     }
 
     const openedId = existing.resolved_id || existing.id
-    await openStoredBotChat(owner, openedId, existing)
+    await openStoredBotChat(owner, openedId, existing, { background, intent })
 
     // Both identities matter downstream: the durable registry row names the
     // chat; the resolved lineage tip is what actually takes session focus.
@@ -566,6 +699,13 @@ export async function openBotCanonicalChat(
       registryId: String(existing.id),
       openedId: String(openedId)
     }
+  }
+
+  // A background re-resume never MINTS: it fires while nobody asked for this
+  // bot, so a resolution miss keeps whatever the user is looking at instead
+  // of creating a fresh forever-chat under their feet.
+  if (background) {
+    return null
   }
 
   const created = await createCanonicalChat(owner, {
@@ -607,20 +747,34 @@ export async function prepareBotSource(bot: RosterRow) {
 }
 
 export async function ensureBotMetadata(bot: RosterRow): Promise<BotMeta> {
+  await readServerProfileRow(bot)
+
+  return botRosterMeta(bot, $botMeta.get()) || {}
+}
+
+/** The row with the description its own backend holds now. SSH rows never carry one (roster
+ *  polling must not dial them) and any row can be stale, so Edit and Duplicate read it here. */
+export async function ensureBotProfile(bot: RosterRow): Promise<RosterRow> {
+  const row = await readServerProfileRow(bot)
+
+  return typeof row?.description === 'string' ? { ...bot, description: row.description } : bot
+}
+
+async function readServerProfileRow(bot: RosterRow) {
   if (!bot?.sourceScoped) {
-    return botRosterMeta(bot, $botMeta.get()) || {}
+    return null
   }
 
   const route = botConnectionRoute(bot)
   const backendProfile = backendTargetProfile(route, bot.name)
 
-  const result = await requestForBot<{ profiles?: Array<Pick<RosterRow, 'name' | 'ui_meta'>> }>(
+  const result = await requestForBot<{ profiles?: Array<Pick<RosterRow, 'description' | 'name' | 'ui_meta'>> }>(
     bot,
     'profiles.list',
     {}
   )
 
-  const row = (result?.profiles || []).find(profile => profile?.name === backendProfile)
+  const row = (result?.profiles || []).find(profile => profile?.name === backendProfile) || null
   const server = row?.ui_meta?.['hermes-bots']
 
   if (server && typeof server === 'object') {
@@ -635,5 +789,5 @@ export async function ensureBotMetadata(bot: RosterRow): Promise<BotMeta> {
     persistBotMetaSnapshot($botMeta.get(), true)
   }
 
-  return botRosterMeta(bot, $botMeta.get()) || {}
+  return row
 }

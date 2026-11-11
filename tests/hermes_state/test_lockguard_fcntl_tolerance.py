@@ -75,7 +75,7 @@ def test_guard_degrades_to_a_no_op_instead_of_killing_every_importer(monkeypatch
         os.close(fd)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_never_arms_the_guard_even_with_an_importable_fcntl(monkeypatch):
     # Stock CPython for Windows has no fcntl, so the lookalike is the only way this branch can
     # see an importable module; the platform gate must decide before the import does.

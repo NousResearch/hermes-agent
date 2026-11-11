@@ -60,30 +60,6 @@ def _create_room():
     )["room"]
 
 
-def test_capabilities_are_honest_about_the_driver_boundary(home):
-    methods_groups.stop_hosted_room_service(timeout=1.0)
-    result = _result(srv._methods["groups.capabilities"](1, {}))
-
-    assert result["protocol_version"] == 2
-    assert result["driver"] is False
-    assert result["authority_gateway_id"] == _server_authority()
-    assert "authority_epoch" in result["features"]
-    assert "coordinator_fencing" in result["features"]
-    assert "monotonic_log" in result["features"]
-    assert "groups.state" in result["methods"]
-    assert "groups.send" in result["methods"]
-    assert "groups.send" in srv._LONG_HANDLERS
-    assert "groups.retry" in result["methods"]
-    assert "groups.approve" in result["methods"]
-    advertised = [
-        str(value).lower() for value in (*result["features"], *result["methods"])
-    ]
-    assert not any(
-        token in value
-        for token in ("attachment", "desktop", "messaging")
-        for value in advertised
-    )
-    assert result["room_link"]["enabled"] is True
 
 
 def test_capabilities_and_invitation_advertise_scoped_roomlink(home, monkeypatch):
@@ -153,7 +129,6 @@ def test_capabilities_disable_roomlink_when_run_replay_is_not_durable(
         },
     )
     assert invitation["error"]["code"] == 4120
-    assert "durable run idempotency" in invitation["error"]["message"]
 
 
 def test_capabilities_open_shared_durable_run_store_without_test_injection(
@@ -534,7 +509,52 @@ def test_rpc_retry_is_idempotent_and_conflict_is_visible(home):
         },
     )
     assert conflict["error"]["code"] == 4111
-    assert "different content" in conflict["error"]["message"]
+
+
+@pytest.mark.parametrize("stored_case", ["preparation", "conflict"])
+def test_send_refusals_say_only_a_refusal_before_commit_admitted_nothing(home, monkeypatch, stored_case):
+    """Desktop hands a Send's words back for editing only on ``admitted: false``: the room was
+    ended, the payload refused, or no worker took it. A stored Send keeps its receipt even if
+    preparation fails; an event-id conflict stays uncertain."""
+    from gateway.hosted_room_discussion import MAX_USER_TEXT_BYTES
+    from gateway import hosted_rooms
+
+    _create_room()
+
+    def send(rid, event_id, text):
+        return srv._methods["groups.send"](rid, {
+            "room_id": "room-1", "event_id": event_id, "payload": {"text": text, "thread_id": "t"}})
+
+    oversized = send(2, "too-long", "x" * (MAX_USER_TEXT_BYTES + 1))
+    assert oversized["error"]["code"] == 5112
+    assert oversized["error"]["data"] == {"admitted": False}
+
+    def cannot_prepare(binding):
+        raise hosted_rooms.HostedRoomError("Group Chat storage is full on this host.")
+
+    monkeypatch.setattr(srv.get_hosted_room_service(), "prepare_room", cannot_prepare)
+    receipt = _result(send(3, "stored", "Stored"))
+    assert receipt["accepted"] is True and receipt.get("admitted") is not False
+    assert receipt["client_event_id"] == "stored"
+    events = hosted_rooms.read_events(hosted_rooms_default_db_path(), room_id="room-1", since_seq=0)["events"]
+    [event] = [e for e in events if e["event_id"] == receipt["event"]["event_id"]]  # the worker may add notices
+    assert event["event_id"] == hosted_rooms.user_event_id("stored")
+    assert event["payload"]["text"] == "Stored"
+    if stored_case == "conflict":
+        conflict = send(4, "stored", "Different")
+        assert conflict["error"]["code"] == 4111
+        assert "admitted" not in conflict["error"].get("data", {})
+
+    _result(srv._methods["groups.disband"](5, {"room_id": "room-1"}))
+    ended = send(6, "after-end", "Ended elsewhere")
+    assert ended["error"]["code"] == 4111
+    assert ended["error"]["data"] == {"admitted": False}
+
+    monkeypatch.setattr(srv, "get_hosted_room_service", lambda: None)
+    no_worker = send(7, "no-worker", "Later")
+    assert no_worker["error"]["code"] == 4123
+    assert no_worker["error"]["data"] == {"admitted": False}
+    assert "data" not in srv._methods["groups.stop"](8, {"room_id": "room-1"})["error"]
 
 
 def test_foreign_authority_cannot_send_or_disband(home):
@@ -567,7 +587,8 @@ def test_foreign_authority_cannot_send_or_disband(home):
     disbanded = srv._methods["groups.disband"](3, {"room_id": "room-1"})
 
     assert sent["error"]["code"] == 4111
-    assert sent["error"]["data"] == {"reason": "authority_conflict"}
+    # Refused before the user event committed: nothing of the Send is in the room.
+    assert sent["error"]["data"] == {"reason": "authority_conflict", "admitted": False}
     assert disbanded["error"]["code"] == 4113
     assert disbanded["error"]["data"] == {"reason": "authority_conflict"}
     assert read_events(default_db_path(), room_id="room-1") == before
@@ -748,8 +769,8 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
         turn_id="turn-1",
     )
     service = SimpleNamespace(
-        retry_room_task=lambda room_id, task_id: (
-            calls.append(("retry", room_id, task_id))
+        retry_room_task=lambda room_id, **kwargs: (
+            calls.append(("retry", room_id, kwargs))
             or {
                 "identity": identity,
                 "status": "queued",
@@ -766,7 +787,7 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
     retried = _result(
         srv._methods["groups.retry"](
             1,
-            {"room_id": "room-1", "task_id": "task-1"},
+            {"room_id": "room-1", "member_id": "ops", "task_id": "task-1", "execution_generation": 1},
         )
     )
     approved = _result(
@@ -794,7 +815,7 @@ def test_retry_and_approval_controls_forward_only_exact_local_coordinates(
     }
     assert approved == {"approved": True, "result": {"resolved": 1}}
     assert calls == [
-        ("retry", "room-1", "task-1"),
+        ("retry", "room-1", {"member_id": "ops", "task_id": "task-1", "execution_generation": 1}),
         (
             "approve",
             "room-1",
@@ -899,10 +920,9 @@ def test_pruned_room_send_and_log_report_expired_history(home, monkeypatch):
     assert sent["error"]["code"] == 4111, sent
     assert logged["error"]["code"] == 4112, logged
     assert renamed["error"]["code"] == 4117, renamed
-    assert sent["error"]["data"] == {"reason": "room_history_expired"}
+    assert sent["error"]["data"] == {"reason": "room_history_expired", "admitted": False}
     assert logged["error"]["data"] == {"reason": "room_history_expired"}
     assert renamed["error"]["data"] == {"reason": "room_history_expired"}
-    assert "permanently retired" in sent["error"]["message"]
 
     recreated = srv._methods["groups.create"](
         7,

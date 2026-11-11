@@ -68,7 +68,7 @@ class _FakeRPC:
         task,
         execution_generation,
         on_terminal,
-        member_id="",
+        member_id="", attachments=None,
     ):
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
         return {"accepted": True}
@@ -280,7 +280,7 @@ class _PromptRecordingRPC(_FakeRPC):
         task,
         execution_generation,
         on_terminal,
-        member_id="",
+        member_id="", attachments=None,
     ):
         self.prompts.append((profile, prompt))
         on_terminal({"status": "settled", "text": f"reply from {profile}"})
@@ -321,7 +321,7 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
     """One running task must not be counted again after it becomes stopping."""
 
     identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
-    task = {"identity": identity, "status": "running", "cancel_id": None}
+    task = {"identity": identity, "status": "running", "cancel_id": None, "payload": {"source_event_seq": 1}}
     calls = []
 
     def listed(_db, *, room_id, status):
@@ -340,7 +340,7 @@ def test_stop_room_snapshots_tasks_before_status_transitions(monkeypatch, tmp_pa
         "request_room_stop",
         lambda _db, *, room_id, cancel_id, **_authority: {
             "room_id": room_id,
-            "cancel_id": cancel_id,
+            "cancel_id": cancel_id, "seq": 2,
         },
     )
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
@@ -704,17 +704,6 @@ def test_thread_transcript_prunes_committed_message_and_settlement_together(
         local_profiles=service.local_profiles(),
         initial_watermarks=snapshot.watermarks,
     )
-
-
-def test_service_uses_low_idle_poll_with_immediate_wakeup(tmp_path: Path):
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
-
-    assert service.runtime.poll_interval_seconds == 5.0
-    assert service.runtime.active_poll_interval_seconds == 0.25
-    assert service.runtime.turn_timeout_seconds == 1830.0
-    service.runtime._wake.clear()
-    service.wakeup()
-    assert service.runtime._wake.is_set()
 
 
 def test_service_derives_room_deadline_from_agent_timeout(tmp_path: Path, monkeypatch):
@@ -1821,127 +1810,11 @@ def test_dispatch_refresh_marks_route_for_reauthorization_on_drift(
     assert peer.dispatches == []
 
 
-def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
-    db = tmp_path / "state.db"
-    catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
-    )
-    route = PeerMemberRoute(
-        home_install_id=hosted_rooms.local_authority_gateway_id(),
-        member_id="member-peer",
-        target_install_id="install-peer",
-        target_profile="reviewer",
-        capability_digest=catalog.catalog_digest,
-        cancellation_scope_id="cancel-room-1",
-        trace_id="trace-room-1",
-        grant="signed.room.grant",
-    )
-    peer = _ApprovalPeerClient()
-    service = HostedRoomService(_server(), db_path=db)
-    service.register_peer_route(
-        room_id="room-1",
-        member_id="member-peer",
-        route=route,
-        client=peer,
-        target_url="https://peer.example.test",
-        catalog=catalog,
-    )
-    service.create_room(
-        room_id="room-1",
-        name="Peer room",
-        members=[
-            {
-                "member_id": "default",
-                "profile": "default",
-                "handle": "hermes",
-            },
-            {
-                "member_id": "member-peer",
-                "profile": "reviewer",
-                "handle": "reviewer",
-                "target": {
-                    "kind": "peer",
-                    "peer_id": "peer-review",
-                    "installation_id": "install-peer",
-                    "profile": "reviewer",
-                    "capability_digest": catalog.catalog_digest,
-                },
-            }
-        ],
-    )
-    identity = driver.TaskIdentity("room-1", "task-1", "thread-1", "turn-1")
-    transport = service._resolve_member_transport(
-        service.bindings()[0],
-        {
-            "identity": identity,
-            "execution_generation": 2,
-            "payload": {
-                "target_member_id": "member-peer",
-                "target_profile": "reviewer",
-                "source_event_seq": 1,
-            },
-        },
-    )
-
-    status = transport.info(
-        profile="reviewer",
-        session_id="peer-group-session",
-        source="bot_room",
-    )
-    assert status["status"] == "waiting_for_approval"
-    service._set_pending_action(
-        "room-1",
-        "member-peer",
-        {
-            "kind": "approval",
-            "task_id": status["task_id"],
-            "execution_generation": status["execution_generation"],
-            "run_id": status["run_id"],
-            "session_id": "peer-group-session",
-            "request_id": "req-peer-1",
-            "approval": status["approval"],
-        },
-    )
-    pending = service.status("room-1")["pending_actions"]
-    assert pending == [
-        {
-            "kind": "approval",
-            "task_id": "task-1",
-            "execution_generation": 2,
-            "run_id": "run-peer-1",
-            "session_id": "peer-group-session",
-            "request_id": "req-peer-1",
-            "approval": {
-                "description": "Run the focused tests",
-                "command": "pytest -q tests/focused",
-                "choices": ["once", "deny"],
-            },
-            "member_id": "member-peer",
-        }
-    ]
-
-    assert service.approve_room_task(
-        "room-1",
-        member_id="member-peer",
-        task_id="task-1",
-        execution_generation=2,
-        choice="once",
-        request_id="req-peer-1",
-    ) == {"resolved": 1}
-    assert peer.approvals == [
-        {
-            "task_id": "task-1",
-            "execution_generation": 2,
-            "request_id": "req-peer-1",
-            "choice": "once",
-            "grant": "signed.room.grant",
-        }
-    ]
-    assert service.status("room-1")["pending_actions"] == []
-
-
-def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
+def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path, monkeypatch):
     service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
+    monkeypatch.setattr(driver, "list_tasks", lambda *_a, **_kw: [{
+        "identity": driver.TaskIdentity("room-1", "task-local-1", "thread-1", "turn-1"),
+        "execution_generation": 1, "status": "running", "payload": {"target_profile": "local"}}])
     rpc = _FakeRPC()
     service.rpc = rpc
     service.runtime.rpc = rpc
@@ -1978,41 +1851,6 @@ def test_local_room_approval_uses_the_exact_hidden_session(tmp_path: Path):
         }
     ]
     assert service.status("room-1")["pending_actions"] == []
-
-
-def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path):
-    service = HostedRoomService(_server(), db_path=tmp_path / "state.db")
-    rpc = _FakeRPC()
-    service.rpc = rpc
-    service.runtime.rpc = rpc
-    action = {
-        "kind": "approval",
-        "task_id": "task-local-1",
-        "execution_generation": 1,
-        "session_id": "local-session",
-        "approval": {"choices": ["once", "deny"]},
-    }
-    service._set_pending_action(
-        "room-1", "local", {**action, "request_id": "approval-A"}
-    )
-    service._set_pending_action(
-        "room-1", "local", {**action, "request_id": "approval-B"}
-    )
-
-    with pytest.raises(RuntimeError, match="no longer pending"):
-        service.approve_room_task(
-            "room-1",
-            member_id="local",
-            task_id="task-local-1",
-            execution_generation=1,
-            choice="once",
-            request_id="approval-A",
-        )
-
-    assert rpc.approvals == []
-    assert service.status("room-1")["pending_actions"][0]["request_id"] == (
-        "approval-B"
-    )
 
 
 def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):

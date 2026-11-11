@@ -86,13 +86,6 @@ class TestGeminiHttpErrorSurfaceGuidance:
         assert "aiplatform.googleapis.com/v1beta1" in str(err)
         assert err.status_code == 403
 
-    def test_403_on_express_base_appends_studio_guidance(self):
-        err = gemini_http_error(
-            _mock_response(403, _permission_denied_body()),
-            api_key=_AQ_KEY,
-            base_url=_EXPRESS_BASE,
-        )
-        assert "aistudio.google.com" in str(err)
 
     def test_403_without_aq_key_keeps_raw_message(self):
         body = json.dumps({

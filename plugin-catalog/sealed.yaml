@@ -1,0 +1,19 @@
+name: sealed
+title: Sealed
+repo: https://github.com/kailashrajh/hermes-sealed
+sha: 9ab8bd2e6c81d055905e9558358177fca2cee5e2
+subdir: plugins/sealed
+version: "1.0.0"
+description: "Secret source that keeps provider credentials in one AES-256-GCM encrypted file instead of plaintext .env: a 32-byte key file unlocks the store at startup and the Hermes secret orchestrator applies the values, so precedence and provenance behave like any other source. Ships `hermes sealed init/set/unset/list/status/rotate`; values are read from a prompt or stdin and are never printed or passed in argv. Disclosure — no network, no helper CLI, no subprocesses. Reads the configured store and key file only (default $HERMES_HOME/secrets/sealed.{store,key}, both 0600); refuses to load when a file is group/world readable if secrets.sealed.strict_permissions is on. The CLI writes those two paths (plus .bak copies on init --force and rotate); values are entered by prompt or stdin. By default sealed values overwrite .env / shell values for the same variable (secrets.sealed.override_existing). No telemetry, no self-updater, no daemon. Requires the `cryptography` package, declared as a plugin dependency."
+maintainer: kailashrajh
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/kailashrajh/hermes-sealed#readme
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -16,6 +16,7 @@ import time
 from typing import Any, Dict, Optional
 
 from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable
+from hermes_state_errors import is_sqlite_lock_error
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -181,7 +182,7 @@ class WalUnsupportedError(sqlite3.OperationalError):
 # unreadable, the answer is False and behaviour is unchanged. Nothing else (ext4/btrfs/xfs/zfs/tmpfs/overlay/nfs)
 # is ever flagged here — those keep the existing reactive paths.
 _CROSS_VM_FSTYPES = frozenset({"virtiofs", "fuse.virtiofs", "9p", "9p2000", "9p2000.l", "9p2000.u"})
-_cross_vm_fs_cache: Dict[str, bool] = {}  # per DB directory; kanban_db.connect() opens per operation
+_cross_vm_fs_cache: dict[str, bool] = {}  # per DB directory; kanban_db.connect() opens per operation
 _cross_vm_fs_cache_lock = threading.Lock()
 _cross_vm_warned_paths: set[str] = set()
 _cross_vm_warned_lock = threading.Lock()
@@ -273,7 +274,29 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
     still documents the WAL-reset bug as real through 3.51.2 with serious consequences. Until a fixed
     runtime is delivered, keep new databases out of WAL.
     """
-    configured = resolve_journal_mode()
+    config_module = sys.modules.get("hermes_cli.config")
+    if getattr(getattr(config_module, "__spec__", None), "_initializing", False):
+        config_module = None
+    config_lock = getattr(config_module, "_CONFIG_LOCK", None)
+    acquired = config_lock is not None and config_lock.acquire(blocking=False)
+    try:
+        if config_lock is not None and not acquired:
+            # A config writer cannot hold up work on an initialized database.
+            # Preserve its observed mode; defer configuration-driven transitions.
+            current_mode = _on_disk_journal_mode(conn)
+            if current_mode == "wal":
+                if is_sqlite_wal_reset_vulnerable():
+                    return _apply_delete_for_wal_reset_bug(conn, db_label=db_label)
+                _apply_wal_companions(conn)
+                return "wal"
+            if current_mode == "delete" and not require_wal and _database_has_content(conn):
+                if is_sqlite_wal_reset_vulnerable():
+                    _log_wal_reset_bug_once(db_label, kept_wal=False)
+                return "delete"
+        configured = resolve_journal_mode()
+    finally:
+        if acquired:
+            config_lock.release()
 
     # Vulnerable SQLite: never enable WAL on non-WAL files (configured mode resolved first so an explicit DELETE
     # request is still verified).
@@ -451,7 +474,7 @@ def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, 
     except sqlite3.OperationalError as exc:
         if require_delete:
             raise
-        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+        if is_sqlite_lock_error(exc):
             # A concurrent opener appeared between probe and flip: leave the mode as is.
             _log_wal_reset_bug_once(db_label, kept_wal=True, indeterminate=True)
             return current or "delete"
@@ -576,8 +599,8 @@ _log_configured_delete_overridden_once = functools.partial(_log_once, "delete_ov
 
 
 # Operators write synchronous as a name; mapped so a typo becomes a warning, not a silently different level.
-_SYNCHRONOUS_LEVELS: Dict[str, int] = {"OFF": 0, "NORMAL": 1, "FULL": 2, "EXTRA": 3}
-_SYNCHRONOUS_NAMES: Dict[int, str] = {v: k for k, v in _SYNCHRONOUS_LEVELS.items()}
+_SYNCHRONOUS_LEVELS: dict[str, int] = {"OFF": 0, "NORMAL": 1, "FULL": 2, "EXTRA": 3}
+_SYNCHRONOUS_NAMES: dict[int, str] = {v: k for k, v in _SYNCHRONOUS_LEVELS.items()}
 _SYNCHRONOUS_FULL = 2
 
 

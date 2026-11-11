@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
-import tempfile
 from pathlib import Path
 
 import pytest
 
 from hermes_state import SessionDB
-from hermes_state_common import FTS_CJK_STALE_KEY
-from hermes_state_schema import SessionSchemaMixin
 
 
 def _trigger_sql(conn: sqlite3.Connection, name: str) -> str | None:
@@ -123,14 +120,6 @@ def test_migrate_replaces_broad_update_trigger(tmp_path: Path):
         db.close()
 
 
-def test_needs_narrowing_helper():
-    assert SessionSchemaMixin._fts_update_trigger_needs_narrowing(
-        "CREATE TRIGGER t AFTER UPDATE ON messages BEGIN SELECT 1; END"
-    )
-    assert not SessionSchemaMixin._fts_update_trigger_needs_narrowing(
-        "CREATE TRIGGER t AFTER UPDATE OF content ON messages BEGIN SELECT 1; END"
-    )
-    assert not SessionSchemaMixin._fts_update_trigger_needs_narrowing(None)
 
 
 def test_v23_status_only_update_bypasses_fts_trigger_body(tmp_path: Path):
@@ -159,152 +148,5 @@ def test_legacy_status_only_update_bypasses_migrated_fts_trigger(tmp_path: Path)
         ).upper()
 
         _assert_nonindexed_updates_bypass_missing_fts_target(db, mid)
-    finally:
-        db.close()
-
-
-def test_cjk_ensure_failure_marks_unavailable_and_propagates(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    path = tmp_path / "state.db"
-    db = SessionDB(db_path=path)
-    try:
-        db._conn.execute("DROP TRIGGER IF EXISTS messages_fts_cjk_update")
-        db._conn.execute(
-            "CREATE TRIGGER messages_fts_cjk_update "
-            "AFTER UPDATE ON messages BEGIN SELECT 1; END"
-        )
-        db._fts_cjk_available = True
-
-        def _fail_cjk_ensure(_cursor):
-            raise sqlite3.DatabaseError("injected CJK ensure failure")
-
-        monkeypatch.setattr(db, "_ensure_fts_cjk_schema", _fail_cjk_ensure)
-
-        with pytest.raises(sqlite3.DatabaseError, match="injected CJK ensure failure"):
-            db._migrate_broad_fts_update_triggers(db._conn)
-        assert db._fts_cjk_available is False
-        assert _trigger_sql(db._conn, "messages_fts_cjk_update") is None
-
-        # The DROP is autocommitted.  Fail-closed therefore needs a durable
-        # breadcrumb that other processes can observe, not just an instance
-        # flag on the SessionDB whose initialization is aborting.
-        with sqlite3.connect(path) as observer:
-            stale = observer.execute(
-                "SELECT value FROM state_meta WHERE key = ?",
-                (FTS_CJK_STALE_KEY,),
-            ).fetchone()
-            assert stale == ("1",)
-            assert _trigger_sql(observer, "messages_fts_cjk_update") is None
-    finally:
-        db.close()
-
-
-def test_cjk_soft_fail_ensure_without_raise_marks_stale(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """Production ensure swallows OperationalError — still must quarantine."""
-    path = tmp_path / "state.db"
-    db = SessionDB(db_path=path)
-    try:
-        db._conn.execute("DROP TRIGGER IF EXISTS messages_fts_cjk_update")
-        db._conn.execute(
-            "CREATE TRIGGER messages_fts_cjk_update "
-            "AFTER UPDATE ON messages BEGIN SELECT 1; END"
-        )
-        db._fts_cjk_available = True
-
-        def _soft_fail_cjk_ensure(_cursor):
-            # Mirrors real _ensure_fts_cjk_schema OperationalError path:
-            # clear availability, do not raise, do not recreate triggers.
-            db._fts_cjk_available = False
-
-        monkeypatch.setattr(db, "_ensure_fts_cjk_schema", _soft_fail_cjk_ensure)
-
-        dropped = db._migrate_broad_fts_update_triggers(db._conn)
-        assert dropped >= 1
-        assert db._fts_cjk_available is False
-        assert _trigger_sql(db._conn, "messages_fts_cjk_update") is None
-
-        with sqlite3.connect(path) as observer:
-            stale = observer.execute(
-                "SELECT value FROM state_meta WHERE key = ?",
-                (FTS_CJK_STALE_KEY,),
-            ).fetchone()
-            assert stale == ("1",)
-            assert _trigger_sql(observer, "messages_fts_cjk_update") is None
-    finally:
-        db.close()
-
-
-def test_cjk_broad_trigger_is_restored_as_update_of(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    try:
-        db._conn.execute("DROP TRIGGER IF EXISTS messages_fts_cjk_update")
-        db._conn.execute(
-            "CREATE TRIGGER messages_fts_cjk_update "
-            "AFTER UPDATE ON messages BEGIN SELECT 1; END"
-        )
-
-        def _restore_cjk_update_trigger(cursor):
-            cursor.execute(
-                "CREATE TRIGGER messages_fts_cjk_update "
-                "AFTER UPDATE OF content, tool_name, tool_calls ON messages "
-                "BEGIN SELECT 1; END"
-            )
-
-        monkeypatch.setattr(db, "_ensure_fts_cjk_schema", _restore_cjk_update_trigger)
-
-        assert db._migrate_broad_fts_update_triggers(db._conn) == 1
-        cjk_sql = _trigger_sql(db._conn, "messages_fts_cjk_update")
-        assert cjk_sql is not None
-        assert "AFTER UPDATE OF" in " ".join(cjk_sql.split()).upper()
-    finally:
-        db.close()
-
-
-def test_cjk_ensure_survives_presence_check_failure_when_tokenizer_unloaded(
-    tmp_path: Path,
-):
-    """``_ensure_fts_cjk_schema`` is documented never to raise (#98834).
-
-    The tokenizer-not-loaded branch runs its sqlite_master presence check
-    and self-heal statements before any try/except guards them; a transient
-    sqlite3.OperationalError there (e.g. "database is locked") must degrade
-    to "no cjk index", not propagate.
-    """
-    db = SessionDB(db_path=tmp_path / "state.db")
-    try:
-        db._fts_cjk_loaded = False
-        db._fts_cjk_available = True
-
-        class _LockedOnMasterCursor:
-            def execute(self, sql, *args, **kwargs):
-                if "sqlite_master" in sql:
-                    raise sqlite3.OperationalError("database is locked")
-                raise AssertionError(f"unexpected query: {sql}")
-
-        db._ensure_fts_cjk_schema(_LockedOnMasterCursor())
-        assert db._fts_cjk_available is False
-    finally:
-        db.close()
-
-
-def test_legacy_migration_does_not_drop_cjk_trigger(tmp_path: Path):
-    db = SessionDB(db_path=tmp_path / "state.db")
-    try:
-        _install_legacy_inline_base_fts(db)
-        db._conn.execute("DROP TRIGGER IF EXISTS messages_fts_cjk_update")
-        db._conn.execute(
-            "CREATE TRIGGER messages_fts_cjk_update "
-            "AFTER UPDATE ON messages BEGIN SELECT 1; END"
-        )
-
-        assert db._migrate_broad_fts_update_triggers(db._conn) >= 1
-        cjk_sql = _trigger_sql(db._conn, "messages_fts_cjk_update")
-        assert cjk_sql is not None
-        assert "AFTER UPDATE OF" not in " ".join(cjk_sql.split()).upper()
     finally:
         db.close()

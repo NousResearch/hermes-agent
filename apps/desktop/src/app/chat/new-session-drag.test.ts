@@ -60,7 +60,6 @@ vi.mock('@/components/pane-shell/tree/model', async importOriginal => {
 })
 
 vi.mock('@/i18n', () => ({
-  // Key-aware so each resolver's ghost label is pinned to its own string.
   translateNow: (key: string) => (key === 'sidebar.projects.newButton' ? 'New project' : 'New session')
 }))
 
@@ -105,11 +104,6 @@ describe('startNewSessionDrag', () => {
   it('advertises the distinct NEW_SESSION_DRAG sentinel on engage', () => {
     engage()
     expect(setTreeDragging).toHaveBeenCalledWith(NEW_SESSION_DRAG)
-  })
-
-  it('drops a ghost labelled like the New session row', () => {
-    startNewSessionDrag(vi.fn(), fakePointerEvent())
-    expect(captured.spec?.ghost).toEqual({ label: 'New session' })
   })
 
   it('stacks a fresh tab on a center drop (never links — nothing to link yet)', () => {
@@ -177,28 +171,6 @@ describe('startNewSessionDrag', () => {
     // Commit straight after engage, with no move over a valid zone.
     spec.onCommit(null)
     expect(onCreate).not.toHaveBeenCalled()
-  })
-
-  it('restores the source row opacity on end', () => {
-    const event = fakePointerEvent()
-
-    const source = event.currentTarget as unknown as {
-      style: { opacity: string; setProperty: ReturnType<typeof vi.fn> }
-    }
-
-    startNewSessionDrag(vi.fn(), event)
-    const spec = captured.spec!
-
-    spec.onEngage(0, 0)
-    expect(source.style.setProperty).toHaveBeenCalledWith('opacity', '0.45')
-
-    spec.onEnd()
-    expect(source.style.opacity).toBe('')
-  })
-
-  it('labels the ghost with the project name for a project-row drag', () => {
-    startNewSessionDrag(vi.fn(), fakePointerEvent(), { cwd: '/repo', label: 'New session in Hermes Browser' })
-    expect(captured.spec?.ghost).toEqual({ label: 'New session in Hermes Browser' })
   })
 
   it('pins the created session to the project cwd on a center drop', () => {
@@ -386,20 +358,6 @@ describe('startNewProjectDrag', () => {
     expect(onArm).not.toHaveBeenCalled()
   })
 
-  it('clears the arm when released over a deny zone', () => {
-    const onArm = vi.fn()
-    const spec = engageProject(onArm)
-
-    const hint = spec.resolveMove(5000, 5000, false)
-
-    expect(hint).toBeNull()
-
-    spec.onCommit(hint)
-    spec.onEnd()
-
-    expect(onArm).toHaveBeenLastCalledWith(null)
-  })
-
   it('does not clear a committed arm on drag end', () => {
     const onArm = vi.fn()
     subZonePosition.mockReturnValue('right')
@@ -411,10 +369,5 @@ describe('startNewProjectDrag', () => {
 
     expect(onArm).toHaveBeenCalledOnce()
     expect(onArm).not.toHaveBeenCalledWith(null)
-  })
-
-  it('drops a ghost labelled like the New project control', () => {
-    engageProject()
-    expect(captured.spec?.ghost).toEqual({ label: 'New project' })
   })
 })

@@ -1,28 +1,115 @@
 """Telegram admission before every PTB handler group, including native plugins.
 
 Claims belong to the receiving adapter across Application rebuilds. Completed
-history is bounded and has no TTL; dispatch and its PTB tasks pin active claims.
-No disk receipt, cross-process coordination or exactly-once effects are promised.
+history is bounded and has no TTL in memory; dispatch and its PTB tasks pin active
+claims. Completed IDs are also written to a per-bot receipt file under the adapter's
+Hermes home, so a replacement adapter or a restarted gateway still drops updates that
+Telegram redelivers because their getUpdates/webhook acknowledgement never landed.
+No cross-process coordination or exactly-once effects are promised.
 """
 
 import asyncio
+import json
+import logging
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
 
 from telegram import Update
-from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler
+from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler, SimpleUpdateProcessor
 
+from gateway.platforms._shared import coerce_port
 from gateway.platforms.helpers import bounded_put
+from utils import atomic_json_write
 
+logger = logging.getLogger(__name__)
 
 _DEFAULT_BLOCK = object()
+DEFAULT_MAX_CONCURRENT_UPDATES = 32
+_SEEN_CAP = 4096
+# The Bot API keeps an unconfirmed update for at most 24 hours (getUpdates), so an older
+# receipt can never match a redelivery. That is also well inside the week of silence after
+# which Telegram may restart update IDs at a random value, so a set lookup stays safe
+# where a persisted numeric high-watermark would not.
+RECEIPT_TTL_SECONDS = 24 * 60 * 60
+
+
+def _receipt_path(adapter, bot_id):
+    return adapter._update_receipt_dir / f"telegram_update_receipts_{bot_id}.json"
+
+
+def _load_receipts(adapter, bot_id) -> None:
+    """Seed completed history from disk once per bot, before its first admission check."""
+    if bot_id in adapter._update_receipts_loaded:
+        return
+    adapter._update_receipts_loaded.add(bot_id)
+    path = _receipt_path(adapter, bot_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError):
+        logger.warning("[Telegram] Ignoring unreadable update receipts at %s", path, exc_info=True)
+        return
+    ids = payload.get("update_ids") if isinstance(payload, dict) else None
+    if not isinstance(ids, dict):
+        return
+    cutoff = time.time() - RECEIPT_TTL_SECONDS
+    fresh = sorted((float(ts), uid) for uid, ts in ids.items()
+                   if isinstance(ts, (int, float)) and ts > cutoff and str(uid).lstrip("-").isdigit())
+    seen = adapter._seen_update_ids
+    for ts, uid in fresh:
+        key = f"{bot_id}:{uid}"
+        if key not in seen:
+            bounded_put(seen, key, ts, _SEEN_CAP)
+
+
+def _field_names(update: Update) -> str:
+    """Field names of an update and of its objects (e.g. its message), never values.
+
+    PTB serializes unset service flags as False; those are left out as absent.
+    """
+    def names(data):
+        return [name for name, value in sorted(data.items()) if value is not False]
+
+    data = update.to_dict()
+    return ", ".join(f"{name}({','.join(names(data[name]))})" if isinstance(data[name], dict) else name
+                     for name in names(data))
+
+
+def _record_receipt(adapter, key: str) -> None:
+    bounded_put(adapter._seen_update_ids, key, time.time(), _SEEN_CAP)
+    adapter._update_receipts_dirty.add(key.split(":", 1)[0])
+    task = adapter._update_receipt_flush
+    if task is None or task.done():
+        # One writer per adapter coalesces bursts; the fsync stays off the event loop.
+        adapter._update_receipt_flush = asyncio.get_running_loop().create_task(
+            _flush_receipts(adapter), name="telegram-update-receipts")
+
+
+async def _flush_receipts(adapter) -> None:
+    from hermes_constants import mkdir_under_hermes_home
+
+    while adapter._update_receipts_dirty:
+        bot_id = adapter._update_receipts_dirty.pop()
+        prefix, cutoff = f"{bot_id}:", time.time() - RECEIPT_TTL_SECONDS
+        # Snapshot on the loop: admission mutates this dict only from loop callbacks.
+        ids = {key[len(prefix):]: ts for key, ts in adapter._seen_update_ids.items()
+               if key.startswith(prefix) and isinstance(ts, float) and ts > cutoff}
+        path = _receipt_path(adapter, bot_id)
+        try:
+            mkdir_under_hermes_home(path.parent)
+            await asyncio.to_thread(atomic_json_write, path, {"update_ids": ids}, indent=None)
+        except Exception:
+            logger.warning("[Telegram] Failed to persist update receipts to %s", path, exc_info=True)
 
 
 @dataclass
 class _Claim:
     key: str
     dispatch_task: asyncio.Task | None
+    update: Update
     accepted: bool = False
     completed: bool = False
     failed: bool = False
@@ -53,27 +140,120 @@ class _ErrorCallback:
         return await self.__wrapped__(update, context)
 
 
+def _topic_lane(message):
+    """Forum/DM topic id that gets its own FIFO lane, else None (the chat's shared lane).
+
+    Only real topic messages split off: a plain group reply's ``message_thread_id`` is a reply
+    anchor, not a topic, and a ``forum_topic_created`` service message stays on the chat lane so
+    the thread-less opener that follows it is still processed after it (telegram_topic_routing).
+    """
+    if getattr(message, "is_topic_message", False) is not True or getattr(message, "forum_topic_created", None):
+        return None
+    return getattr(message, "message_thread_id", None)
+
+
+class PerChatUpdateProcessor(SimpleUpdateProcessor):
+    """Concurrent across chats and Telegram topics, FIFO within one topic.
+
+    PTB's default processor (max_concurrent_updates=1) awaits every update inline, so one slow
+    handler deafens all chats; plain concurrency fixes that but lets a chat's second update finish
+    before its first. Each update here waits for the previous update in the same ``(chat, thread)`` lane; updates
+    without a chat (inline queries) run unchained.
+    """
+
+    __slots__ = ("_adopt", "_tails")
+
+    def __init__(self, max_concurrent_updates: int, adopt=None):
+        super().__init__(max_concurrent_updates)
+        self._tails: dict[tuple, asyncio.Future] = {}
+        # The adapter's _admit_topic_follow: called here, in arrival order, it is the single decision
+        # on which client-created DM topic a thread-less opener belongs to (telegram_topic_routing).
+        self._adopt = adopt
+
+    def _lane_keys(self, chat, message) -> tuple:
+        """FIFO lanes this update waits on and holds. A thread-less private-chat message adopted into a
+        just-created topic holds the chat lane (behind the creation service message) AND that topic's
+        lane, so a later explicitly-threaded message cannot overtake a slow opener."""
+        lane = _topic_lane(message)
+        adopted = self._adopt(message) if self._adopt is not None and message is not None else None
+        if adopted is not None:
+            return ((chat.id, None), (chat.id, adopted))
+        return ((chat.id, None if lane is None else str(lane)),)
+
+    async def do_process_update(self, update, coroutine) -> None:
+        chat = getattr(update, "effective_chat", None)
+        if chat is None:
+            await coroutine
+            return
+        keys = self._lane_keys(chat, getattr(update, "effective_message", None))
+        prevs = [prev for prev in (self._tails.get(key) for key in keys) if prev is not None]
+        done = asyncio.get_running_loop().create_future()
+        for key in keys:
+            self._tails[key] = done
+        try:
+            for prev in prevs:
+                # shield: cancelling this waiter must not cancel the predecessor's tail future.
+                try:
+                    await asyncio.shield(prev)
+                except BaseException:
+                    # Cancelled before handler entry: the coroutine still belongs to this waiter (#146716).
+                    if asyncio.iscoroutine(coroutine):
+                        coroutine.close()
+                    raise
+            await coroutine
+        finally:
+            waiting = [prev for prev in prevs if not prev.done()]
+
+            def release(_prev=None):
+                if done.done() or any(not prev.done() for prev in waiting):
+                    return
+                done.set_result(None)
+                for key in keys:
+                    if self._tails.get(key) is done:
+                        del self._tails[key]
+
+            # A cancelled waiter hands its turn on only once its predecessors finish (per-lane FIFO).
+            if not waiting:
+                release()
+            for prev in waiting:
+                prev.add_done_callback(release)
+
+
+def build_update_processor(adapter) -> PerChatUpdateProcessor:
+    """``platforms.telegram.extra.max_concurrent_updates`` (default 32); bad values warn and fall back."""
+    name = adapter.name
+    raw = adapter.config.extra.get("max_concurrent_updates", DEFAULT_MAX_CONCURRENT_UPDATES)
+    limit = coerce_port(raw, 0)
+    if limit < 1:
+        logger.warning("[%s] Invalid max_concurrent_updates=%r; using %d",
+                       name, raw, DEFAULT_MAX_CONCURRENT_UPDATES)
+        limit = DEFAULT_MAX_CONCURRENT_UPDATES
+    return PerChatUpdateProcessor(limit, adopt=adapter._admit_topic_follow)
+
+
 class TelegramApplication(Application):
-    __slots__ = ("adapter", "_current_claim")
+    __slots__ = ("_claim_completions", "_current_claim", "adapter")
 
     def __init__(self, *, adapter, **kwargs):
         super().__init__(**kwargs)
         self.adapter = adapter
+        self._claim_completions: set[asyncio.Future] = set()
         if adapter._update_admission is None:
             adapter._update_admission = ContextVar[_Claim | None]("telegram_update_claim", default=None)
         self._current_claim: ContextVar[_Claim | None] = adapter._update_admission
 
     def add_handler(self, handler, group=0):
         super().add_handler(handler, group)
-        self._admit_callbacks(handler)
+        # Core handlers live in group 0; the adapter's group-99 observer only watches.
+        self._admit_callbacks(handler, observer=group != 0)
 
-    def _admit_callbacks(self, handler):
+    def _admit_callbacks(self, handler, observer=False):
         # ConversationHandler has no callback. Keep its identity (including persistence,
         # state transitions and block resolution) and instrument its selected children.
         if isinstance(handler, ConversationHandler):
             for child in [*handler.entry_points, *handler.fallbacks,
                           *(child for handlers in handler.states.values() for child in handlers)]:
-                self._admit_callbacks(child)
+                self._admit_callbacks(child, observer)
             return
         callback = getattr(handler, "callback", None)
         if callback is None or getattr(callback, "_telegram_admitted", False):
@@ -97,7 +277,8 @@ class TelegramApplication(Application):
                     # groups already scheduled via block=False; their outcomes settle below.
                     if asyncio.current_task() is claim.dispatch_task:
                         raise ApplicationHandlerStop
-                else:
+                elif not observer:
+                    # An observer returning is not service: unserved updates stay unreceipted.
                     claim.completed = True
             return result
 
@@ -122,15 +303,26 @@ class TelegramApplication(Application):
         if claim is not None and claim.owners:
             # Pin scheduled work before callback entry, including cancellation before entry.
             claim.owners += 1
+            completion = asyncio.get_running_loop().create_future()
+            self._claim_completions.add(completion)
 
             def finished(done):
                 # PTB's task wrapper may never start, leaving its callback unawaited.
                 if done.cancelled() and asyncio.iscoroutine(coroutine):
                     coroutine.close()
                 self._release_claim(claim, done)
+                self._claim_completions.discard(completion)
+                completion.set_result(None)
 
             task.add_done_callback(finished)
         return task
+
+    async def stop(self):
+        await super().stop()
+        # Gathering already-done PTB tasks need not have run their done callbacks yet: wait for the
+        # claim releases themselves (shielded, so a cancelled stop waiter cannot strand them) (#146716).
+        while self._claim_completions:
+            await asyncio.gather(*(asyncio.shield(c) for c in tuple(self._claim_completions)))
 
     def _release_claim(self, claim, task=None):
         if task is not None and task.cancelled():
@@ -140,7 +332,11 @@ class TelegramApplication(Application):
             return
         del self.adapter._inflight_update_ids[claim.key]
         if claim.accepted or (claim.completed and not claim.failed):
-            bounded_put(self.adapter._seen_update_ids, claim.key, None, 4096)
+            _record_receipt(self.adapter, claim.key)
+        elif not claim.failed:
+            # No receipt, so a redelivery is not suppressed. Names only: no content or ids.
+            logger.info("[Telegram] Update %s matched no core handler; not receipted (fields: %s)",
+                        claim.update.update_id, _field_names(claim.update))
 
     async def process_error(self, update, error, job=None, coroutine=None):
         claim = self._current_claim.get()
@@ -153,14 +349,16 @@ class TelegramApplication(Application):
     async def process_update(self, update):
         if not isinstance(update, Update):
             return await super().process_update(update)
-        key = f"{self.bot.id}:{update.update_id}"
+        bot_id = self.bot.id
+        key = f"{bot_id}:{update.update_id}"
+        _load_receipts(self.adapter, bot_id)
         # Dispatch happened even when preparation fails before the group-99 observer.
         self.adapter._updates_dispatched_total += 1
         seen = self.adapter._seen_update_ids
         pending = self.adapter._inflight_update_ids
         if key in seen or key in pending:
             return
-        claim = _Claim(key, asyncio.current_task())
+        claim = _Claim(key, asyncio.current_task(), update)
         # Atomic on PTB's event loop: no await between lookup and claim. Dispatch and its
         # PTB tasks share ownership; completed-history pressure cannot evict active work.
         pending[key] = claim

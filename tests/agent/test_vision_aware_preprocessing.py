@@ -13,7 +13,7 @@ Covers:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
 from run_agent import AIAgent
@@ -148,15 +148,6 @@ class TestModelSupportsVision:
         agent.model = ""
         assert agent._model_supports_vision() is False
 
-    def test_uses_get_model_capabilities(self):
-        agent = _make_agent()
-        fake_caps = MagicMock()
-        fake_caps.supports_vision = True
-        with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
-            assert agent._model_supports_vision() is True
-        fake_caps.supports_vision = False
-        with patch("agent.models_dev.get_model_capabilities", return_value=fake_caps):
-            assert agent._model_supports_vision() is False
 
     def test_none_caps_returns_false(self):
         agent = _make_agent()

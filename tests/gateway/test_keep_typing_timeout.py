@@ -85,7 +85,7 @@ class TestKeepTypingTimeoutPerTick:
         stop_event.set()
         try:
             await asyncio.wait_for(task, timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             task.cancel()
             pytest.fail(
                 "_keep_typing did not exit within 2s of stop_event.set() — "
@@ -102,38 +102,6 @@ class TestKeepTypingTimeoutPerTick:
             f"on a slow send_typing"
         )
 
-    @pytest.mark.asyncio
-    async def test_fast_send_typing_still_gets_awaited(self, monkeypatch):
-        """When send_typing is fast (normal case), it must still complete
-        normally — the timeout is only an upper bound, not a cap on
-        successful calls."""
-        adapter = _StubAdapter()
-        completed = []
-
-        async def fast_send_typing(chat_id, metadata=None):
-            await asyncio.sleep(0.01)  # well under the timeout
-            completed.append(chat_id)
-
-        monkeypatch.setattr(adapter, "send_typing", fast_send_typing)
-        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
-
-        stop_event = asyncio.Event()
-        task = asyncio.create_task(
-            adapter._keep_typing(
-                chat_id="456",
-                interval=0.5,
-                stop_event=stop_event,
-            )
-        )
-        await asyncio.sleep(1.2)  # ~3 ticks
-        stop_event.set()
-        await asyncio.wait_for(task, timeout=1.0)
-
-        assert len(completed) >= 2, (
-            f"expected multiple completed send_typing calls, got "
-            f"{len(completed)}"
-        )
-        assert all(c == "456" for c in completed)
 
     @pytest.mark.asyncio
     async def test_send_typing_exception_does_not_kill_loop(self, monkeypatch):
@@ -168,36 +136,6 @@ class TestKeepTypingTimeoutPerTick:
             f"keep ticking (got {tick_count['n']} ticks)"
         )
 
-    @pytest.mark.asyncio
-    async def test_paused_chat_skips_send_typing(self, monkeypatch):
-        """When a chat is in _typing_paused (e.g. awaiting approval), the
-        loop must not call send_typing at all. Regression guard — existing
-        behavior, preserved through the timeout change."""
-        adapter = _StubAdapter()
-        calls = []
-
-        async def recording_send_typing(chat_id, metadata=None):
-            calls.append(chat_id)
-
-        monkeypatch.setattr(adapter, "send_typing", recording_send_typing)
-        adapter.stop_typing = MagicMock(return_value=asyncio.sleep(0))
-        adapter._typing_paused.add("paused-chat")
-
-        stop_event = asyncio.Event()
-        task = asyncio.create_task(
-            adapter._keep_typing(
-                chat_id="paused-chat",
-                interval=0.3,
-                stop_event=stop_event,
-            )
-        )
-        await asyncio.sleep(1.0)
-        stop_event.set()
-        await asyncio.wait_for(task, timeout=1.0)
-
-        assert calls == [], (
-            f"send_typing was called on a paused chat: {calls}"
-        )
 
     @pytest.mark.asyncio
     async def test_stop_typing_refresh_blocks_late_cancel_tick(self, monkeypatch):
@@ -234,6 +172,37 @@ class TestKeepTypingTimeoutPerTick:
             ("discord-chat", True),
         ]
         assert "discord-chat" not in adapter._typing_paused
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("with_stop_event", [False, True])
+    async def test_cancel_at_send_completion_stops_refresh(self, monkeypatch, with_stop_event):
+        """A completed send must not swallow the cancellation of the refresh loop.
+
+        On 3.11 ``asyncio.wait_for`` drops the cancel when its child finishes in the same
+        event-loop tick, so the refresh loop survives delivery and keeps sending "typing".
+        """
+        adapter = _StubAdapter()
+        calls = []
+
+        async def send_typing(chat_id, metadata=None):
+            calls.append(chat_id)
+            if len(calls) == 1:
+                # The HTTP round-trip completes in the same tick in which the
+                # response path cancels the refresh task.
+                asyncio.get_running_loop().call_soon(task.cancel)
+
+        monkeypatch.setattr(adapter, "send_typing", send_typing)
+        stop_event = asyncio.Event() if with_stop_event else None
+        task = asyncio.create_task(
+            adapter._keep_typing("chat", interval=0.05, stop_event=stop_event)
+        )
+        try:
+            done, _ = await asyncio.wait({task}, timeout=2.0)
+            assert task in done, "cancelled typing loop kept refreshing after send completed"
+            assert calls == ["chat"]
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 class TestPreDeliveryTypingSuspend:

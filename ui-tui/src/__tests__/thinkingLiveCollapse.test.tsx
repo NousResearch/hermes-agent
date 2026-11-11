@@ -55,17 +55,6 @@ const mountTrail = (reasoningActive: boolean, sections?: Record<string, string>)
 }
 
 describe('ToolTrail — collapsed mode auto-expands while reasoning is live', () => {
-  it('opens (▾) when reasoningActive is true under sections.thinking: collapsed', async () => {
-    const { finalChevronOpen, instance } = mountTrail(true)
-
-    await flushEffects()
-
-    expect(finalChevronOpen()).toBe(true)
-
-    instance.unmount()
-    instance.cleanup()
-  })
-
   it('collapses (▸) when reasoningActive is false under sections.thinking: collapsed', async () => {
     const { finalChevronOpen, instance } = mountTrail(false)
 

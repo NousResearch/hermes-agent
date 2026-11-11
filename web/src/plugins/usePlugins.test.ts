@@ -4,7 +4,9 @@ import {
   cacheManifests,
   canSeedLoadedFromCache,
   MANIFEST_CACHE_KEY,
+  pluginAssetUrl,
 } from "./usePlugins";
+import { HERMES_BASE_PATH } from "@/lib/api";
 import type { PluginManifest } from "./types";
 
 function makeStorage(): Storage {
@@ -56,40 +58,41 @@ describe("plugin manifest cache helpers", () => {
   });
 
   it("getCachedManifests returns null when nothing is cached", () => {
-    expect(getCachedManifests()).toBeNull();
+    expect(getCachedManifests("default")).toBeNull();
   });
 
   it("getCachedManifests returns null for invalid JSON", () => {
-    storage.setItem(MANIFEST_CACHE_KEY, "not-json");
-    expect(getCachedManifests()).toBeNull();
+    storage.setItem(`${MANIFEST_CACHE_KEY}:default`, "not-json");
+    expect(getCachedManifests("default")).toBeNull();
   });
 
   it("getCachedManifests returns null for non-array JSON", () => {
-    storage.setItem(MANIFEST_CACHE_KEY, JSON.stringify({ foo: "bar" }));
-    expect(getCachedManifests()).toBeNull();
-  });
-
-  it("getCachedManifests returns null for scalar JSON", () => {
-    storage.setItem(MANIFEST_CACHE_KEY, JSON.stringify(42));
-    expect(getCachedManifests()).toBeNull();
+    storage.setItem(`${MANIFEST_CACHE_KEY}:default`, JSON.stringify({ foo: "bar" }));
+    expect(getCachedManifests("default")).toBeNull();
   });
 
   it("getCachedManifests returns a valid manifest array", () => {
     const list: PluginManifest[] = [exampleManifest];
-    cacheManifests(list);
-    expect(getCachedManifests()).toEqual(list);
+    cacheManifests("default", list);
+    expect(getCachedManifests("default")).toEqual(list);
+  });
+
+  it("keeps each profile's list apart", () => {
+    cacheManifests("work", [exampleManifest]);
+    expect(getCachedManifests("default")).toBeNull();
+    expect(getCachedManifests("work")).toEqual([exampleManifest]);
   });
 
   it("cacheManifests overwrites a previous cache on refresh", () => {
     const first: PluginManifest[] = [exampleManifest];
-    cacheManifests(first);
-    expect(getCachedManifests()).toEqual(first);
+    cacheManifests("default", first);
+    expect(getCachedManifests("default")).toEqual(first);
 
     const second: PluginManifest[] = [
       { ...exampleManifest, name: "updated", label: "Updated" },
     ];
-    cacheManifests(second);
-    expect(getCachedManifests()).toEqual(second);
+    cacheManifests("default", second);
+    expect(getCachedManifests("default")).toEqual(second);
   });
 
   it("cacheManifests swallows storage errors", () => {
@@ -98,7 +101,7 @@ describe("plugin manifest cache helpers", () => {
       throw new Error("QuotaExceededError");
     };
     vi.stubGlobal("sessionStorage", badStorage);
-    expect(() => cacheManifests([exampleManifest])).not.toThrow();
+    expect(() => cacheManifests("default", [exampleManifest])).not.toThrow();
   });
 });
 
@@ -140,5 +143,30 @@ describe("canSeedLoadedFromCache (loading seed gate)", () => {
       { ...exampleManifest, tab: undefined },
     ] as unknown as PluginManifest[];
     expect(canSeedLoadedFromCache(malformed)).toBe(true);
+  });
+});
+
+describe("pluginAssetUrl", () => {
+  it("names the profile whose plugin list described the plugin in its path", () => {
+    expect(pluginAssetUrl("kanban", "dist/index.js", "work bench")).toBe(
+      `${HERMES_BASE_PATH}/dashboard-plugins/@work%20bench/kanban/dist/index.js`,
+    );
+  });
+
+  it("keeps the profile for URLs relative to a stylesheet or bundle", () => {
+    // url("./icon.svg") in a stylesheet, or a chunk import, drops the sheet's query string.
+    const sheet = new URL(pluginAssetUrl("kanban", "dist/style.css", "beta"), "http://127.0.0.1:9119");
+    expect(new URL("./icon.svg", sheet).pathname).toBe(
+      `${HERMES_BASE_PATH}/dashboard-plugins/@beta/kanban/dist/icon.svg`,
+    );
+    expect(new URL("../fonts/a.woff2", sheet).pathname).toBe(
+      `${HERMES_BASE_PATH}/dashboard-plugins/@beta/kanban/fonts/a.woff2`,
+    );
+  });
+
+  it("stays unscoped when no profile is known", () => {
+    expect(pluginAssetUrl("kanban", "style.css", "")).toBe(
+      `${HERMES_BASE_PATH}/dashboard-plugins/kanban/style.css`,
+    );
   });
 });

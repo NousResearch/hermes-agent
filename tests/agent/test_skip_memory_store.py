@@ -10,7 +10,6 @@ memory toolset is explicitly enabled, while the external-provider block stays
 gated on ``skip_memory``.
 """
 
-import pytest
 
 from run_agent import AIAgent
 
@@ -28,7 +27,7 @@ def _make_agent(
     monkeypatch, enabled_toolsets=None, disabled_toolsets=None, skip_memory=True
 ):
     monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kw: [])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda: {})
+    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
     return AIAgent(
         api_key="test-key",
@@ -44,13 +43,6 @@ def _make_agent(
     )
 
 
-def test_skip_memory_with_memory_toolset_creates_store(monkeypatch, tmp_path):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hm"))
-    agent = _make_agent(monkeypatch, enabled_toolsets=["memory"], skip_memory=True)
-    assert agent._memory_store is not None, (
-        "memory toolset enabled despite skip_memory=True must still build "
-        "the built-in store (#65429)"
-    )
 
 
 

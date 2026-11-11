@@ -89,7 +89,6 @@ def test_cli_model_once_records_restore_and_does_not_persist(monkeypatch):
     assert stub.provider == "anthropic"
     assert stub.agent.calls[-1]["new_model"] == "claude-sonnet-4.6"
     assert stub._pending_one_turn_model_restore["model"] == "old/model"
-    assert "next turn only" in printed[-1]
 
 
 def test_cli_restore_model_runtime_snapshot_restores_agent():

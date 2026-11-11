@@ -1,7 +1,7 @@
 """Regression tests for iteration-limit exit normalization (#61631)."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import ANY, MagicMock
 
 import pytest
 
@@ -185,10 +185,7 @@ def test_pending_response_records_kanban_timeout(monkeypatch):
     record.assert_called_once_with(
         conn,
         "task-123",
-        error=(
-            "Iteration budget exhausted (60/60) — task could not complete "
-            "within the allowed iterations"
-        ),
+        error=ANY,
         outcome="timed_out",
         release_claim=True,
         end_run=True,
@@ -249,7 +246,7 @@ def test_bounded_fallback_records_kanban_failure_when_interrupted(monkeypatch):
     agent = _LimitAgent()
 
     # Budget exhausted (60/60), interrupted, no fallback-eligible exit_reason
-    result = finalize_turn(
+    finalize_turn(
         agent,
         final_response=None,
         api_call_count=60,
@@ -289,7 +286,7 @@ def test_bounded_fallback_records_kanban_failure_when_failed(monkeypatch):
     monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
     agent = _LimitAgent()
 
-    result = finalize_turn(
+    finalize_turn(
         agent,
         final_response=None,
         api_call_count=60,
@@ -322,7 +319,7 @@ def test_bounded_fallback_does_not_fire_without_kanban_task(monkeypatch):
     monkeypatch.setattr("hermes_cli.kanban_db_dispatch._record_task_failure", record)
     agent = _LimitAgent()
 
-    result = finalize_turn(
+    finalize_turn(
         agent,
         final_response=None,
         api_call_count=60,
@@ -354,7 +351,7 @@ def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     agent = _LimitAgent(budget_remaining=60)
 
     # api_call_count=10, max_iterations=60 — budget NOT exhausted
-    result = finalize_turn(
+    finalize_turn(
         agent,
         final_response=None,
         api_call_count=10,

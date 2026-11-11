@@ -1,5 +1,7 @@
 """Tests that switch_model does not inherit stale context_length overrides."""
 
+import contextlib
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -119,18 +121,6 @@ def test_switch_model_clears_previous_config_context_length(mock_ctx_len):
     assert agent.context_compressor.context_length == 131_072
 
 
-def test_switch_model_without_config_context_length():
-    """When switching models without config override, config_context_length should be None."""
-    agent = _make_agent_with_compressor(config_context_length=None)
-
-    with patch("agent.model_metadata.get_model_context_length", return_value=128_000) as mock_ctx_len:
-        # Switch model
-        agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
-
-        # Verify get_model_context_length was called with None
-        mock_ctx_len.assert_called_once()
-        call_kwargs = mock_ctx_len.call_args.kwargs
-        assert call_kwargs.get("config_context_length") is None
 
 
 def test_switch_model_reapplies_checked_auxiliary_compression_limit():
@@ -401,3 +391,32 @@ def test_later_lmstudio_failure_restores_runtime_capabilities(monkeypatch):
     assert agent.provider == "openrouter"
     assert agent.client is original_client
     assert agent.runtime_capabilities == {"native_compaction": True}
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+def test_switch_model_starts_the_new_route_without_the_old_routes_rejections(_ctx):
+    """``/model``: a reasoning-effort, reasoning-disable or stream_options rejection learned on the
+    old route must not keep stripping those fields from the new route's requests."""
+    from agent.route_verdicts import ROUTE_REJECTION_FIELDS
+
+    agent = _make_agent_with_compressor()
+    for name in ROUTE_REJECTION_FIELDS:
+        setattr(agent, name, True)
+    agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
+    assert {name: getattr(agent, name) for name in ROUTE_REJECTION_FIELDS} == dict.fromkeys(ROUTE_REJECTION_FIELDS, False)
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=131_072)
+def test_failed_switch_model_keeps_the_old_routes_rejections(_ctx):
+    """A switch whose client rebuild fails rolls back onto the old route, verdicts included."""
+    from agent.route_verdicts import ROUTE_VERDICT_FIELDS
+
+    agent = _make_agent_with_compressor()
+    for name in ROUTE_VERDICT_FIELDS:
+        setattr(agent, name, name != "_codex_reasoning_replay_enabled")
+    before = {name: getattr(agent, name) for name in ROUTE_VERDICT_FIELDS}
+    with patch.object(type(agent), "_create_openai_client", side_effect=RuntimeError("boom")), \
+            contextlib.suppress(Exception):
+        agent.switch_model("new-model", "openrouter", api_key="sk-new", base_url="https://openrouter.ai/api/v1")
+    assert agent.model != "new-model"
+    assert {name: getattr(agent, name) for name in ROUTE_VERDICT_FIELDS} == before

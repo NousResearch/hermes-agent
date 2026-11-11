@@ -6,8 +6,7 @@ import { Component, type ErrorInfo, type ReactNode } from 'react'
  * Same job as `ErrorBoundary`, none of its weight. That one renders the app's
  * rich fallback, so importing it pulls `Button`, `ErrorState` and the i18n
  * provider — the app shell these windows exist to avoid, and which their own
- * docs claim they don't load. Under the dev server that chain WAS most of the
- * intro cinematic's module graph, queued ahead of the surface trying to paint.
+ * docs claim they don't load.
  *
  * An overlay also has nowhere to put a fallback and nobody to click Retry: it
  * is a see-through window over the user's desktop. So a failure renders

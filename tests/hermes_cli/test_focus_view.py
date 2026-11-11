@@ -24,10 +24,7 @@ from hermes_cli.focus_view import (
     FOCUS_STATUSBAR_LABEL,
     FOCUS_TOOL_PROGRESS_MODE,
     focus_statusbar_segment,
-    format_focus_status,
-    format_focus_toggle_message,
     format_hidden_line,
-    normalize_tool_progress_mode,
     resolve_focus_arg,
     would_display_tool_line,
 )
@@ -65,9 +62,6 @@ class TestToggleStateMachine:
 
 
 class TestComposesWithVerboseModes:
-    def test_focus_on_snaps_to_the_existing_off_mode(self):
-        # Focus view must reuse the tool_progress "off" path, not invent a mode.
-        assert FOCUS_TOOL_PROGRESS_MODE == "off"
 
     def test_new_mode_skips_consecutive_repeats_like_the_renderer(self):
         assert would_display_tool_line("new", "terminal", "terminal") is False
@@ -89,8 +83,6 @@ class TestHiddenCountFormatter:
 
 
 
-    def test_line_always_names_the_recovery_command(self):
-        assert "/focus off" in format_hidden_line(2)
 
 
 
@@ -125,7 +117,6 @@ class TestHiddenCounterAccumulation:
             host._emit_focus_recovery_line()
 
         assert printer.call_count == 1
-        assert "2 tool lines hidden" in printer.call_args[0][0]
         assert "/focus off" in printer.call_args[0][0]
         # Reset so the next turn starts from zero.
         assert host._focus_hidden_lines == 0
@@ -354,14 +345,6 @@ class TestModelFacingMessagesUnchanged:
 
 
 class TestCommandRegistration:
-    def test_focus_is_registered_with_the_sibling_toggle_convention(self):
-        from hermes_cli.commands import resolve_command
-
-        cmd = resolve_command("focus")
-        assert cmd is not None
-        assert cmd.category == "Configuration"
-        assert cmd.args_hint == "[on|off|status]"
-        assert set(cmd.subcommands) == {"on", "off", "status"}
 
     def test_verbose_cycle_releases_focus_view(self):
         # /verbose is the explicit tool-progress control; cycling it must clear

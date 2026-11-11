@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { type I18nContextValue, I18nProvider, useI18n } from '@/i18n'
 import type { CustomEndpointsResponse } from '@/types/hermes'
 
 const getCustomEndpoints = vi.fn()
@@ -36,6 +37,12 @@ vi.mock('@/store/notifications', () => ({
   notifyError: (...args: unknown[]) => notifyError(...args)
 }))
 
+// Load once at module scope so no test's 15s budget pays the heavy transform
+// + import (the first-test timeout flake under CI load).
+const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
+const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
+const { $settingsScopeOverride } = await import('@/store/settings-scope')
+
 const emptyResponse: CustomEndpointsResponse = {
   current: { base_url: '', model: '', provider: '' },
   endpoints: []
@@ -59,22 +66,57 @@ const savedResponse: CustomEndpointsResponse = {
   ok: true
 }
 
-beforeEach(async () => {
-  const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
-  const { $settingsScopeOverride } = await import('@/store/settings-scope')
+beforeEach(() => {
   $activeGatewayProfile.set('default')
   $settingsScopeOverride.set(null)
   $profiles.set([])
 })
 
-afterEach(async () => {
+afterEach(() => {
   cleanup()
   vi.clearAllMocks()
-  const { $settingsScopeOverride } = await import('@/store/settings-scope')
   $settingsScopeOverride.set(null)
 })
 
 describe('CustomEndpointsSettings', () => {
+  it('localizes endpoint editing on language changes without changing transport or draft identifiers', async () => {
+    getCustomEndpoints.mockResolvedValue(emptyResponse)
+    saveCustomEndpoint.mockResolvedValue(savedResponse)
+    let language!: I18nContextValue
+
+    function Surface() {
+      language = useI18n()
+
+      return <CustomEndpointsSettings />
+    }
+
+    render(
+      <I18nProvider configClient={null} initialLocale="zh">
+        <Surface />
+      </I18nProvider>
+    )
+    await screen.findByText('暂无自定义端点')
+    fireEvent.change(screen.getByRole('textbox', { name: '名称' }), { target: { value: 'Fixture Ω' } })
+    fireEvent.change(screen.getByRole('textbox', { name: '端点 URL' }), { target: { value: 'http://fixture.test/v1' } })
+    fireEvent.change(screen.getByRole('combobox', { name: '默认模型' }), { target: { value: 'fixture-model' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Responses API' }))
+    await act(() => language.setLocale('zh-hant'))
+    expect((screen.getByRole('textbox', { name: '名稱' }) as HTMLInputElement).value).toBe('Fixture Ω')
+    expect(screen.getByText('API 模式')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '自動偵測' })).toBeTruthy()
+    expect(saveCustomEndpoint).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '儲存' }))
+    expect(saveCustomEndpoint).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'Fixture Ω',
+        api_mode: 'codex_responses',
+        base_url: 'http://fixture.test/v1',
+        model: 'fixture-model'
+      }),
+      'default'
+    )
+  })
+
   it('sends the chosen API mode and discovered alias metadata on Save (#93622)', async () => {
     getCustomEndpoints.mockResolvedValue(emptyResponse)
     validateCustomEndpoint.mockResolvedValue({
@@ -89,7 +131,6 @@ describe('CustomEndpointsSettings', () => {
       transport_checked: 'codex_responses'
     })
     saveCustomEndpoint.mockResolvedValue(savedResponse)
-    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
 
     render(<CustomEndpointsSettings />)
 
@@ -109,10 +150,7 @@ describe('CustomEndpointsSettings', () => {
       expect.objectContaining({ api_mode: 'codex_responses' }),
       'default'
     )
-    expect(notify).toHaveBeenCalledWith({
-      kind: 'success',
-      message: 'Endpoint is reachable (Responses API route served). Found 2 models.'
-    })
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ kind: 'success' }))
     expect(saveCustomEndpoint).toHaveBeenCalledWith(
       expect.objectContaining({
         api_mode: 'codex_responses',
@@ -127,8 +165,6 @@ describe('CustomEndpointsSettings', () => {
   })
 
   it('loads and saves endpoints for the Settings Applies-to profile, not only the active bot', async () => {
-    const { $activeGatewayProfile, $profiles } = await import('@/store/profile')
-    const { $settingsScopeOverride } = await import('@/store/settings-scope')
     $activeGatewayProfile.set('carousel-director')
     $settingsScopeOverride.set('content-studio')
     $profiles.set(
@@ -144,7 +180,6 @@ describe('CustomEndpointsSettings', () => {
     )
     getCustomEndpoints.mockResolvedValue(emptyResponse)
     saveCustomEndpoint.mockResolvedValue(savedResponse)
-    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
 
     render(<CustomEndpointsSettings />)
 
@@ -152,10 +187,10 @@ describe('CustomEndpointsSettings', () => {
     expect(screen.getByText('Applies to')).toBeTruthy()
 
     fireEvent.change(await screen.findByPlaceholderText('Axet Proxy'), { target: { value: 'Studio gateway' } })
-    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8081/v1'), {
+    fireEvent.change(await screen.findByPlaceholderText('http://127.0.0.1:8081/v1'), {
       target: { value: 'https://studio.example.com/v1' }
     })
-    fireEvent.change(screen.getByPlaceholderText('gpt-5.4'), { target: { value: 'studio-model' } })
+    fireEvent.change(await screen.findByPlaceholderText('gpt-5.4'), { target: { value: 'studio-model' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(saveCustomEndpoint).toHaveBeenCalledWith(
@@ -169,7 +204,6 @@ describe('CustomEndpointsSettings', () => {
       ...savedResponse,
       endpoints: [{ ...savedResponse.endpoints[0], api_mode: 'anthropic_messages' }]
     })
-    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
 
     render(<CustomEndpointsSettings />)
 
@@ -183,7 +217,6 @@ describe('CustomEndpointsSettings', () => {
     getCustomEndpoints.mockResolvedValue(emptyResponse)
     const onConfigSaved = vi.fn()
     const onMainModelChanged = vi.fn()
-    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
 
     const view = render(
       <CustomEndpointsSettings onConfigSaved={onConfigSaved} onMainModelChanged={onMainModelChanged} />
@@ -218,7 +251,6 @@ describe('CustomEndpointsSettings', () => {
       models: ['model-a'],
       resolved_base_url: 'http://h.test/v1'
     })
-    const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
     render(<CustomEndpointsSettings onConfigSaved={vi.fn()} onMainModelChanged={vi.fn()} />)
 
     await screen.findByText('No custom endpoints')

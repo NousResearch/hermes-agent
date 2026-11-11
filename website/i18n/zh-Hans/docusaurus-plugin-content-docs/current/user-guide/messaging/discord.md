@@ -214,8 +214,8 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+application
 
 | 级别 | 权限整数 | 包含内容 |
 |-------|-------------------|-----------------|
-| 最低 | `117760` | View Channels、Send Messages、Read Message History、Attach Files |
-| 推荐 | `309237763136` | 以上所有权限，加上 Embed Links、Send Messages in Threads、Add Reactions, Create Public Threads |
+| 最低 | `117760` | View Channels、Send Messages、Embed Links、Attach Files、Read Message History |
+| 推荐 | `309237763136` | 以上所有权限，加上 Create Public Threads、Send Messages in Threads、Add Reactions |
 
 ## 第六步：邀请到你的服务器
 
@@ -694,7 +694,7 @@ discord:
 
 点击编号按钮作答，或点击**其他**输入自由格式的响应（你在该频道中发送的下一条消息将成为答案）。开放式的 `clarify` 调用（没有预设选项）会跳过按钮，直接捕获你的下一条消息。
 
-按钮在做出选择后会自动禁用，防止重复点击导致重复解析提示。通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `3600` 秒；`0` 或更小 = 不限时）。如果你在超时内没有响应，agent 会以一条哨兵消息解除阻塞并自行调整，而不是一直挂起。
+按钮在做出选择后会自动禁用，防止重复点击导致重复解析提示。通过 `~/.hermes/config.yaml` 中的 `agent.clarify_timeout` 配置响应超时（默认 `90` 秒；`0` 或更小 = 不限时）。如果你在超时内没有响应，agent 会以一条哨兵消息解除阻塞并自行调整，而不是一直挂起。
 
 ## 主频道
 

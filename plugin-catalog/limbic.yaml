@@ -1,0 +1,18 @@
+name: limbic
+repo: https://github.com/dyiapanis/limbic
+sha: ce33cf5f01ea49a03ec593a31beaf8ee403b5dde
+description: "Local long-term memory for Hermes agents: facts and preferences stay on your machine in one SQLite file with bundled embedding and natural language inference (NLI) models, decaying and reconsolidating organically with use and abstaining rather than guessing. No LLM calls.\n\nDisclosures\n- Network: ~1.0GB of pinned, sha256-verified ONNX models download from huggingface.co on first session start (Arctic 2.0 L int8 ~570MB; MiniLMv2 NLI ~430MB). Optional spaCy models pip-install ~14.5MB from spaCy's GitHub releases \u2014 version not hash-pinned.\n- Local files: everything lives under HERMES_HOME (limbic.db, backup VACUUM snapshots) except the model cache ~/.cache/limbic, which is pruned at every model load \u2014 files not in the pinned manifest are deleted, so never point cache_dir at a shared folder. Memories at trust zero are deleted.\n- forget: user-scoped two-step (list candidates, pick one) that appends a hash-only receipt (sha256, length, user id, fact id) to limbic.db.deletions.jsonl beside the database.\n- Agent surface is exactly remember, recall, forget \u2014 no shell commands, no background services, no stored credentials, no telemetry."
+maintainer: dyiapanis
+tier: community
+category: memory
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/dyiapanis/limbic#readme
+version: "0.9.5"
+image: https://raw.githubusercontent.com/dyiapanis/limbic/03ae74f6e1a1f323e65d8aed1c6f12cdcc8b3300/assets/banner.png
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

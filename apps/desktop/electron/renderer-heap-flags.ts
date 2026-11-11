@@ -11,6 +11,10 @@
 export interface DesktopLaunchConfig {
   electronFlags: string[]
   rendererMaxOldSpaceMb: number
+  /** `desktop.renderer_accessibility`; unset when the key is absent or unreadable. */
+  rendererAccessibility?: boolean
+  /** `desktop.ssh_path`: explicit Windows ssh client (#103288); unset when absent. */
+  sshPath?: string
 }
 
 export interface PlannedSwitch {
@@ -62,7 +66,24 @@ export function readDesktopLaunchConfig(yamlText: string): DesktopLaunchConfig {
     const [, key, rawValue] = keyed
     const value = rawValue.replace(/\s+#.*$/, '')
 
-    if (key === 'renderer_max_old_space_mb') {
+    if (key === 'ssh_path') {
+      // YAML double quotes escape backslashes ("C:\\Git\\usr\\bin\\ssh.exe");
+      // plain and single-quoted scalars keep them literally.
+      const doubleQuoted = /^"(.*)"$/.exec(value)
+      const sshPath = doubleQuoted ? doubleQuoted[1].replace(/\\\\/g, '\\') : unquote(value)
+
+      if (sshPath) {
+        out.sshPath = sshPath
+      }
+    } else if (key === 'renderer_accessibility') {
+      const word = unquote(value).toLowerCase()
+
+      if (['0', 'false', 'no', 'off', 'disabled'].includes(word)) {
+        out.rendererAccessibility = false
+      } else if (['1', 'true', 'yes', 'on', 'enabled'].includes(word)) {
+        out.rendererAccessibility = true
+      }
+    } else if (key === 'renderer_max_old_space_mb') {
       const mb = Number.parseInt(unquote(value), 10)
       out.rendererMaxOldSpaceMb = Number.isFinite(mb) && mb > 0 ? mb : 0
     } else if (key === 'electron_flags') {
@@ -186,4 +207,23 @@ export function planLaunchSwitches(cfg: DesktopLaunchConfig, argv: readonly stri
   }
 
   return planned
+}
+
+/** Apply {@link planLaunchSwitches} to the browser's command line, logging each switch. */
+export function applyLaunchSwitches(
+  commandLine: { appendSwitch(name: string, value?: string): void },
+  cfg: DesktopLaunchConfig,
+  argv: readonly string[]
+): void {
+  for (const planned of planLaunchSwitches(cfg, argv)) {
+    if (planned.value === undefined) {
+      commandLine.appendSwitch(planned.name)
+    } else {
+      commandLine.appendSwitch(planned.name, planned.value)
+    }
+
+    console.log(
+      `[hermes] desktop launch switch from config.yaml: --${planned.name}${planned.value === undefined ? '' : `=${planned.value}`}`
+    )
+  }
 }

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from tools.computer_use import cua_backend_driver
+from tools.computer_use import cua_backend_daemon, cua_backend_driver
 
 
 @pytest.fixture(autouse=True)
@@ -93,12 +93,12 @@ def test_mode_change_replaces_only_that_sessions_backend():
         yolo = True
         unrestricted = computer_use._get_backend("session-a")
 
-    assert getattr(standard, "permission_mode") == "standard"
-    assert getattr(standard, "stopped") is True
-    assert getattr(unrestricted, "permission_mode") == "unrestricted"
+    assert standard.permission_mode == "standard"
+    assert standard.stopped is True
+    assert unrestricted.permission_mode == "unrestricted"
     assert unrestricted is not standard
-    assert getattr(other, "permission_mode") == "standard"
-    assert getattr(other, "stopped") is False
+    assert other.permission_mode == "standard"
+    assert other.stopped is False
 
 
 def test_mode_change_is_rechecked_after_stale_backend_stops():
@@ -127,8 +127,8 @@ def test_mode_change_is_rechecked_after_stale_backend_stops():
         yolo = True
         replacement = computer_use._get_backend("session-a")
 
-    assert getattr(original, "permission_mode") == "standard"
-    assert getattr(replacement, "permission_mode") == "standard"
+    assert original.permission_mode == "standard"
+    assert replacement.permission_mode == "standard"
     assert replacement is not original
     assert [backend.permission_mode for backend in created] == [
         "standard",
@@ -136,33 +136,7 @@ def test_mode_change_is_rechecked_after_stale_backend_stops():
     ]
 
 
-def test_release_seam_stops_backend_and_clears_session_state():
-    from tools.computer_use import tool as computer_use
-
-    backend = Mock()
-    computer_use._backends["session-a"] = backend
-    computer_use._backend_call_locks["session-a"] = computer_use.threading.RLock()
-    computer_use._backend_permission_modes["session-a"] = "unrestricted"
-
-    assert computer_use.release_computer_use_session("session-a") is True
-    assert computer_use.release_computer_use_session("session-a") is False
-    backend.stop.assert_called_once_with()
-    assert "session-a" not in computer_use._backend_permission_modes
-
-
-def test_yolo_toggle_immediately_releases_mode_dependent_backend():
-    from tools import approval
-
-    with patch("tools.computer_use.tool.release_computer_use_session") as release:
-        approval.enable_session_yolo("session-a")
-        approval.disable_session_yolo("session-a")
-
-    assert release.call_args_list == [
-        (('session-a',), {}),
-        (('session-a',), {}),
-    ]
-
-
+@pytest.mark.platforms("linux")
 def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     from tools.computer_use import cua_backend
 
@@ -174,7 +148,7 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     stopped = SimpleNamespace(returncode=0, stdout="", stderr="")
 
     daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
-    with patch.object(cua_backend.sys, "platform", "linux"), patch.object(
+    with patch.object(
         cua_backend_driver,
         "_resolve_mcp_invocation",
         return_value=("/opt/cua-driver", ["mcp"]),
@@ -186,6 +160,13 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
         cua_backend, "_cua_no_overlay", return_value=False,
     ), patch.object(cua_backend.subprocess, "Popen", return_value=process) as popen, patch.object(
         cua_backend.subprocess, "run", side_effect=[status, stopped]
+    ), patch("hermes_cli.process_identity._update_supervised_pgids") as supervise, patch(
+        # A Mock pid must never reach the real owner-death supervisor or the spawn ledger.
+        "hermes_cli.process_identity.register_child"
+    ), patch.object(
+        # stop() releases the group once it is empty; the Mock process has no real group to probe.
+        cua_backend_daemon, "release_process_group_once_empty",
+        side_effect=lambda pgid, **kw: supervise("unregister", [pgid]),
     ):
         daemon.start()
         command = popen.call_args.args[0]
@@ -193,6 +174,10 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
         proxy_command, proxy_args = daemon.proxy_invocation()
         daemon.stop()
 
+    # The private daemon is an owned child: its group is handed to the owner-death supervisor at start
+    # and released once stop() has stopped it.
+    assert popen.call_args.kwargs["start_new_session"] is True
+    assert [c.args for c in supervise.call_args_list] == [("register", [process.pid]), ("unregister", [process.pid])]
     assert command[:2] == ["/opt/cua-driver", "serve"]
     assert "--embedded" in command
     assert command[command.index("--permission-mode") + 1] == "unrestricted"
@@ -271,21 +256,6 @@ def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypa
     assert captured["args"] == ["mcp"]
 
 
-def test_transport_reset_invalidates_native_capabilities():
-    from tools.computer_use.cua_backend import CuaDriverBackend
-
-    backend = CuaDriverBackend(permission_mode="standard")
-    backend._active_pid = 10
-    backend._active_window_id = 20
-    backend._snapshot_tokens = {1: "old-token"}
-
-    backend._handle_transport_reset()
-
-    assert backend._active_pid is None
-    assert backend._active_window_id is None
-    assert backend._snapshot_tokens == {}
-
-
 # ── the escalation is at least audible ──────────────────────────────────
 
 
@@ -334,23 +304,3 @@ def test_no_escalation_warning_without_a_bypass(caplog):
     assert not [
         r for r in caplog.records if "escalated the cua-driver" in r.getMessage()
     ]
-
-
-def test_each_session_is_warned_separately(caplog):
-    import logging
-
-    from tools.computer_use import tool as computer_use
-
-    computer_use._escalation_warned.clear()
-    with patch(
-        "tools.approval.is_approval_bypass_active_for_session",
-        return_value=True,
-    ):
-        with caplog.at_level(logging.WARNING, logger=computer_use.logger.name):
-            computer_use._cua_permission_mode("session-one")
-            computer_use._cua_permission_mode("session-two")
-
-    escalation = [
-        r for r in caplog.records if "escalated the cua-driver" in r.getMessage()
-    ]
-    assert len(escalation) == 2

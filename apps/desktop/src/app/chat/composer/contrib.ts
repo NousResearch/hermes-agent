@@ -13,6 +13,7 @@
  *   data kinds (`data`):      composer.middleware    (ComposerMiddleware)
  *                             composer.attachments   (ComposerAttachmentProvider)
  *                             composer.microActions  (ComposerMicroActionProvider)
+ *                             composer.contextMenu   (ComposerContextMenuProvider)
  *
  * Core keeps ownership of the transcript, input, and submit engine — these
  * seams AUGMENT the composer, they never replace it. Middleware runs as an
@@ -37,8 +38,46 @@ export const COMPOSER_AREAS = {
   middleware: 'composer.middleware',
   attachments: 'composer.attachments',
   microActions: 'composer.microActions',
-  atCompletions: 'composer.atCompletions'
+  atCompletions: 'composer.atCompletions',
+  modelPill: 'composer.modelPill',
+  contextMenu: 'composer.contextMenu'
 } as const
+
+/** What a `composer.contextMenu` provider sees when the user right-clicks the
+ *  composer: the word under the caret and the selection INSIDE the composer,
+ *  nothing else — no element, no range, no other field's text. Every field
+ *  is a standing compatibility promise to the plugins reading it. */
+export interface ComposerContextMenuContext {
+  /** Selected composer text at the click ('' when the caret is collapsed). */
+  readonly selection: string
+  /** The word under the caret (or at the selection's start), or null. */
+  readonly word: null | string
+}
+
+/** Handed to an item's `onSelect` after the menu has closed and the composer
+ *  has the caret back. */
+export interface ComposerContextMenuAction extends ComposerContextMenuContext {
+  /** Replace the right-clicked `word` with `text` (one line). Works once, and
+   *  only while the composer still holds that word where it was — false
+   *  otherwise, never an edit somewhere else. */
+  replaceWord: (text: string) => boolean
+}
+
+/** One row the app renders for a plugin in the composer's context menu. */
+export interface ComposerContextMenuItem {
+  /** Plain text; control characters are stripped and it is clamped. */
+  label: string
+  disabled?: boolean
+  onSelect: (action: ComposerContextMenuAction) => void
+}
+
+/** Payload of a `composer.contextMenu` data contribution. `items` runs once
+ *  per right-click on the composer; return `[]` for "nothing from me". The
+ *  app renders each plugin's rows as its own section (plugins ordered by id,
+ *  at most six rows each) between its own spell-check rows and the edit verbs. */
+export interface ComposerContextMenuProvider {
+  items: (context: ComposerContextMenuContext) => ComposerContextMenuItem[]
+}
 
 export interface ComposerDraft {
   text: string
@@ -61,6 +100,12 @@ export interface ComposerAtCompletionItem {
   meta?: string
   /** Icon slug understood by the completion popover; defaults to 'simple'. */
   icon?: string
+  /** Other `@handle` texts that resolve to the SAME target as `insert` —
+   *  e.g. a bot's raw profile name alongside the title slug it is listed
+   *  under. The `@` popover drops a gateway row whose handle is claimed
+   *  here, so one routable identity is never offered twice under two
+   *  labels. Only claim handles this row really owns. */
+  handles?: string[]
 }
 
 /** Payload of a `composer.atCompletions` data contribution — an extra source
@@ -158,4 +203,63 @@ export function useComposerMicroActionProviders(): ComposerMicroActionProvider[]
     () => contributions.map(c => c.data as ComposerMicroActionProvider).filter(p => typeof p?.resolve === 'function'),
     [contributions]
   )
+}
+
+/** What a model-pill label provider gets to branch on. Deliberately small:
+ *  every field here is a standing compatibility promise to the plugins using it. */
+export interface ComposerModelPillContext {
+  /** The model slug the pill would show. */
+  model: string
+  /** The session's live reasoning effort ('' when the model has none). */
+  reasoningEffort: string
+  /** Floating-composer mode renders only the chevron; providers are not consulted. */
+  compact: boolean
+}
+
+/** Payload of a `composer.modelPill` data contribution — the pill's label text.
+ *  Return the label to show, or `null` to let the next provider (then the core
+ *  label) win. The pill keeps its chrome and menu; only the label changes. */
+export interface ComposerModelPillProvider {
+  label: (ctx: ComposerModelPillContext) => null | string
+}
+
+/** The first provider-supplied pill label, or `null` for the core label. A
+ *  throwing provider is treated as declining — a broken plugin can't blank the
+ *  pill. */
+export function useComposerModelPillLabel({
+  compact,
+  model,
+  reasoningEffort
+}: ComposerModelPillContext): null | string {
+  const contributions = useContributions(COMPOSER_AREAS.modelPill)
+
+  // Memoised on the primitive fields (the caller builds a fresh ctx object
+  // every render) so providers run only when the registry or the pill's
+  // inputs actually change — a plugin's label() must not run per keystroke.
+  return useMemo(() => {
+    if (compact) {
+      return null
+    }
+
+    const ctx: ComposerModelPillContext = { compact, model, reasoningEffort }
+
+    for (const contribution of contributions) {
+      const provider = contribution.data as ComposerModelPillProvider | undefined
+
+      try {
+        const label = provider?.label?.(ctx)
+
+        // Only a non-empty string is a label. ModelPill renders the value
+        // straight into JSX with no error boundary, so an object/array/number
+        // from a plugin would throw and blank the composer — treat it as declining.
+        if (typeof label === 'string' && label.trim() !== '') {
+          return label
+        }
+      } catch {
+        // Decline on throw: the next provider, then the core label, wins.
+      }
+    }
+
+    return null
+  }, [contributions, compact, model, reasoningEffort])
 }

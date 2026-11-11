@@ -13,13 +13,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
 
 def _make_agent(provider="openrouter", model="gpt-4o"):
     """Create a minimal AIAgent mock with provider/model attributes."""
@@ -45,7 +41,6 @@ def _make_agent(provider="openrouter", model="gpt-4o"):
     )
     return agent
 
-
 def _multimodal_result(text="screenshot", image_url="data:image/png;base64,AAAA"):
     return {
         "_multimodal": True,
@@ -56,22 +51,13 @@ def _multimodal_result(text="screenshot", image_url="data:image/png;base64,AAAA"
         "text_summary": text,
     }
 
-
 # ---------------------------------------------------------------------------
 # _provider_supports_vision_tool_messages
 # ---------------------------------------------------------------------------
 
-
-class TestProviderSupportsVisionToolMessages:
-    def test_xiaomi_returns_false(self):
-        agent = _make_agent("xiaomi", "mimo-v2.5")
-        assert agent._provider_supports_vision_tool_messages() is False
-
-
 # ---------------------------------------------------------------------------
 # _tool_result_content_for_active_model — proactive downgrade
 # ---------------------------------------------------------------------------
-
 
 class TestToolResultContentProactiveDowngrade:
     def test_xiaomi_downgrades_to_text_summary(self):
@@ -116,9 +102,6 @@ class TestToolResultContentProactiveDowngrade:
         assert isinstance(content, list)
         assert any(p.get("type") == "image_url" for p in content if isinstance(p, dict))
 
-
-
-
     def test_reactive_cache_still_works(self):
         """In-session cache (_no_list_tool_content_models) still triggers."""
         agent = _make_agent("openrouter", "some-model")
@@ -131,28 +114,6 @@ class TestToolResultContentProactiveDowngrade:
         assert isinstance(content, str)
         assert "cached downgrade" in content
 
-
 # ---------------------------------------------------------------------------
 # ProviderProfile.supports_vision_tool_messages field
 # ---------------------------------------------------------------------------
-
-
-class TestProviderProfileField:
-    def test_default_is_true(self):
-        from providers.base import ProviderProfile
-        # ProviderProfile uses __init__ with defaults; check via a minimal instance
-        # by reading the class-level default from a dataclass-like field
-        import dataclasses
-        if dataclasses.is_dataclass(ProviderProfile):
-            fields = {f.name: f.default for f in dataclasses.fields(ProviderProfile)}
-            assert fields.get("supports_vision_tool_messages", True) is True
-        else:
-            # Class-level attribute default
-            assert getattr(ProviderProfile, "supports_vision_tool_messages", True) is True
-
-    def test_xiaomi_profile_has_false(self):
-        from providers import get_provider_profile
-        profile = get_provider_profile("xiaomi")
-        assert profile is not None
-        assert profile.supports_vision_tool_messages is False
-

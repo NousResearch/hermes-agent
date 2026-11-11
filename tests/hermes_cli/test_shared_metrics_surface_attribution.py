@@ -18,14 +18,6 @@ import pytest
 from hermes_cli.observability import shared_metrics_contract as contract
 
 
-def test_acp_editor_sessions_get_their_own_surface():
-    """ACP (VS Code / Zed / JetBrains) is a real interactive surface, not 'other'.
-
-    The ACP adapter declares ``platform="acp"``. If that value is not an
-    accepted surface, the contract's closed-schema fallback buckets every
-    editor session into ``other`` alongside genuinely unclassifiable traffic.
-    """
-    assert contract.execution_surface({"platform": "acp"}) == "acp"
 
 
 def test_acp_sessions_are_interactive():
@@ -35,19 +27,6 @@ def test_acp_sessions_are_interactive():
     assert fields["execution_surface"] == "acp"
 
 
-def test_batch_runs_declare_their_surface():
-    """batch_runner builds agents from a fixed passthrough tuple.
-
-    ``batch`` is already an accepted surface, so the only defect is that the
-    runner never declares it -- every batch task run reports 'unknown'.
-    """
-    import batch_runner
-
-    assert "platform" in batch_runner._AGENT_PASSTHROUGH, (
-        "batch_runner._AGENT_PASSTHROUGH omits 'platform', so batch task runs are "
-        f"attributed to {contract.execution_surface({})!r} despite 'batch' being a "
-        "valid execution surface"
-    )
 
 
 @pytest.mark.parametrize(

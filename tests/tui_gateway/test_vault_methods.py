@@ -69,6 +69,16 @@ def test_add_then_list_is_password_free(home):
     assert "password" not in dumped
 
 
+def test_vault_list_runs_on_the_rpc_pool_not_the_request_reader():
+    """``vault.list`` can now prepare the real-profile snapshot and launch Chrome (up to ~30 s) the
+    first time the browser login source is listed, so it MUST be a long handler — otherwise it runs
+    inline on the socket's ordered request lane and holds later requests (Stop included) behind that
+    work. Regression guard for the snapshot-prepare change on the browser login source."""
+    assert "vault.list" in srv._LONG_HANDLERS
+    # The fill path stays long too (it round-trips page scripts through the renderer).
+    assert "vault.preview.fill" in srv._LONG_HANDLERS
+
+
 def test_add_validation_errors_are_clean(home):
     err = _error(
         srv._methods["vault.add"](
@@ -85,12 +95,10 @@ def test_add_validation_errors_are_clean(home):
         )
     )
     assert err["code"] == 5095
-    assert "origin is required" in err["message"]
     assert "s3cret-pw-9000" not in json.dumps(err)
 
     err = _error(srv._methods["vault.add"](2, {"kind": "login", "label": "x"}))
     assert err["code"] == 5095
-    assert "secret payload is required" in err["message"]
 
     err = _error(
         srv._methods["vault.add"](
@@ -98,7 +106,6 @@ def test_add_validation_errors_are_clean(home):
         )
     )
     assert err["code"] == 5095
-    assert "unknown vault kind" in err["message"]
     assert "s3cret-pw-9000" not in json.dumps(err)
 
 

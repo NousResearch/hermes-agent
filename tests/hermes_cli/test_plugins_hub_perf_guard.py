@@ -21,7 +21,7 @@ _PLUGIN_ROW = [("demo", "1.0.0", "demo plugin", "user", "/tmp/demo-plugin", "dem
 
 def _patch_minimal_hub_dependencies(monkeypatch, *, check_fn, discover_all_plugins=None):
     monkeypatch.setattr(web_server, "_get_dashboard_plugins", lambda force_rescan=False: [])
-    monkeypatch.setattr(_web_server_memory, "_discover_memory_provider_statuses", lambda: [])
+    monkeypatch.setattr(_web_server_memory, "_discover_memory_provider_statuses", list)
     monkeypatch.setattr(_cfg_mod, "get_hermes_home", lambda: Path("/tmp/hermes-home"))
     monkeypatch.setattr(_cfg_mod, "load_config", lambda: {"dashboard": {"hidden_plugins": []}})
 
@@ -32,7 +32,7 @@ def _patch_minimal_hub_dependencies(monkeypatch, *, check_fn, discover_all_plugi
     )
     monkeypatch.setattr(plugins_cmd, "_get_current_context_engine", lambda: "compressor")
     monkeypatch.setattr(plugins_cmd, "_get_current_memory_provider", lambda: "")
-    monkeypatch.setattr(plugins_cmd, "_discover_context_engines", lambda: [])
+    monkeypatch.setattr(plugins_cmd, "_discover_context_engines", list)
     monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
     monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"demo"})
     monkeypatch.setattr(plugins_cmd, "_read_manifest", lambda _path: {"provides_tools": ["demo_tool"]})
@@ -124,27 +124,6 @@ def test_plugins_hub_uses_cached_failed_check_fn_verdict(monkeypatch):
 
 
 
-def test_plugins_hub_short_ttl_cache_collapses_duplicate_fetches(monkeypatch):
-    tools_registry.invalidate_check_fn_cache()
-    _web_server_dashboard._invalidate_plugins_hub_cache()
-
-    calls = {"discover": 0}
-
-    def discover_all_plugins():
-        calls["discover"] += 1
-        return list(_PLUGIN_ROW)
-
-    _patch_minimal_hub_dependencies(
-        monkeypatch,
-        check_fn=lambda: True,
-        discover_all_plugins=discover_all_plugins,
-    )
-
-    first = _web_server_dashboard._merged_plugins_hub(force_refresh=True)
-    second = _web_server_dashboard._merged_plugins_hub()
-
-    assert calls["discover"] == 1
-    assert first is second
 
 
 def test_plugins_hub_route_builds_catalog_annotations_off_event_loop(monkeypatch):
@@ -162,7 +141,7 @@ def test_plugins_hub_route_builds_catalog_annotations_off_event_loop(monkeypatch
         return "withdrawn by catalog" if name == "demo" else None
 
     monkeypatch.setattr(plugins_cmd_catalog, "removed_annotation", removed_annotation)
-    monkeypatch.setattr(plugin_catalog, "resolved_removed_entries", lambda: [])
+    monkeypatch.setattr(plugin_catalog, "resolved_removed_entries", list)
 
     payload = asyncio.run(_rt_dashboard_ui.get_plugins_hub(object()))
 

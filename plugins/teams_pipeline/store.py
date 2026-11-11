@@ -7,7 +7,7 @@ import json
 import os
 import threading
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from functools import partialmethod
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -22,7 +22,7 @@ _BUCKETS = ("subscriptions", "notification_receipts", "event_timestamps", "jobs"
 
 
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def resolve_teams_pipeline_store_path(path: str | Path | None = None) -> Path:
@@ -37,14 +37,17 @@ class TeamsPipelineStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self._lock = threading.RLock()
-        self._state: Dict[str, Dict[str, Any]] = {bucket: {} for bucket in _BUCKETS}
+        self._state: dict[str, dict[str, Any]] = {bucket: {} for bucket in _BUCKETS}
         self._load()
 
     def _load(self) -> None:
         with self._lock:
-            data = json.loads(self.path.read_text(encoding="utf-8") or "{}") if self.path.exists() else None
-            if isinstance(data, dict):
-                self._state = {bucket: dict(data.get(bucket) or {}) for bucket in _BUCKETS}
+            if not self.path.exists():
+                return
+            data = json.loads(self.path.read_text(encoding="utf-8-sig") or "{}")
+            if not isinstance(data, dict):
+                return
+            self._state = {bucket: dict(data.get(bucket) or {}) for bucket in _BUCKETS}
 
     def _persist(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,16 +57,16 @@ class TeamsPipelineStore:
             tmp_path = Path(tmp.name)
         tmp_path.replace(self.path)
 
-    def _list(self, bucket: str) -> Dict[str, Dict[str, Any]]:
+    def _list(self, bucket: str) -> dict[str, dict[str, Any]]:
         with self._lock:
             return deepcopy(self._state[bucket])
 
-    def _get(self, bucket: str, key: str) -> Optional[Dict[str, Any]]:
+    def _get(self, bucket: str, key: str) -> Optional[dict[str, Any]]:
         with self._lock:
             record = self._state[bucket].get(key)
             return deepcopy(record) if isinstance(record, dict) else None
 
-    def _upsert(self, bucket: str, id_field: str, key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _upsert(self, bucket: str, id_field: str, key: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Merge ``payload`` over the existing record, stamping ``id_field`` and created/updated timestamps."""
         with self._lock:
             existing = self._state[bucket].get(key, {})
@@ -92,13 +95,13 @@ class TeamsPipelineStore:
             return True
 
     @classmethod
-    def build_notification_receipt_key(cls, notification: Dict[str, Any]) -> str:
+    def build_notification_receipt_key(cls, notification: dict[str, Any]) -> str:
         if explicit_id := notification.get("id"):
             return f"id:{explicit_id}"
         canonical = json.dumps(notification, sort_keys=True, separators=(",", ":"))
         return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
 
-    def record_notification_receipt(self, receipt_key: str, payload: Optional[Dict[str, Any]] = None, *, received_at: Optional[str] = None) -> bool:
+    def record_notification_receipt(self, receipt_key: str, payload: Optional[dict[str, Any]] = None, *, received_at: Optional[str] = None) -> bool:
         """Record a receipt once; returns False when the key was already seen (duplicate delivery)."""
         with self._lock:
             if receipt_key in self._state["notification_receipts"]:
@@ -108,6 +111,6 @@ class TeamsPipelineStore:
             self._persist()
             return True
 
-    def stats(self) -> Dict[str, int]:
+    def stats(self) -> dict[str, int]:
         with self._lock:
             return {bucket: len(self._state[bucket]) for bucket in _BUCKETS}

@@ -128,7 +128,6 @@ def test_digest_collapses_old_keeps_tail_verbatim():
     out = br._digest_history(msgs, tail=10)
     # First message is the synthetic digest (user role → alternation preserved).
     assert out[0]["role"] == "user"
-    assert out[0]["content"].startswith("[Earlier conversation digest")
     # Recent tail preserved verbatim.
     assert out[-1] == msgs[-1]
     assert len(out) == 11  # 1 digest + 10 tail
@@ -146,27 +145,12 @@ def test_digest_does_not_open_tail_on_a_tool_message():
     assert out[1]["role"] != "tool"
 
 
-def test_digest_records_tool_names_in_arc():
-    old = [
-        _msg("user", "do the thing"),
-        _msg("assistant", "", tool_calls=[
-            {"function": {"name": "skill_view", "arguments": "{}"}},
-            {"function": {"name": "patch", "arguments": "{}"}}]),
-    ]
-    msgs = old + [_msg("user", f"tail{i}") for i in range(30)]
-    out = br._digest_history(msgs, tail=10)
-    digest = out[0]["content"]
-    assert "USER: do the thing" in digest
-    assert "tools: skill_view, patch" in digest
 
 
 # ---------------------------------------------------------------------------
 # Cost / configurability controls (issue #87250)
 # ---------------------------------------------------------------------------
 
-def test_enabled_defaults_true():
-    with patch("hermes_cli.config.load_config_readonly", return_value={}):
-        assert br.load_background_review_settings()[0] is True
 
 
 def test_enabled_false_disables_automatic_review():

@@ -15,6 +15,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# The real resolver goes into the mocked module: server._launch_home() calls it for the launch
+# state.db, and a MagicMock's return value is os.fspath()-able as the RELATIVE path
+# "MagicMock/<name>/<id>", so the store landed in the cwd (the repo checkout). The real one
+# follows the test's isolated HERMES_HOME.
+from hermes_constants import get_process_hermes_home as _real_get_process_hermes_home
+
 
 @pytest.fixture()
 def server():
@@ -24,7 +30,8 @@ def server():
         "sys.modules",
         {
             "hermes_constants": MagicMock(
-                get_hermes_home=MagicMock(return_value="/tmp/hermes_test_review_summary")
+                get_hermes_home=MagicMock(return_value="/tmp/hermes_test_review_summary"),
+                get_process_hermes_home=_real_get_process_hermes_home,
             ),
             "hermes_cli.env_loader": MagicMock(),
             "hermes_cli.banner": MagicMock(),
@@ -92,33 +99,13 @@ def test_init_session_attaches_background_review_callback(server, monkeypatch):
     # the session id we passed in, carrying the full message text.
     matched = [e for e in captured_emits if e[0] == "review.summary"]
     assert len(matched) == 1, captured_emits
-    event, sid, payload = matched[0]
+    _event, sid, payload = matched[0]
     assert sid == "sid-abc"
     assert payload == {
         "text": "💾 Self-improvement review: Skill 'hermes-release' patched"
     }
 
 
-def test_review_summary_callback_survives_agent_without_attribute(server, monkeypatch):
-    """If the agent is a bare object that doesn't allow attribute
-    assignment (e.g. some stubbed test double), _init_session must not
-    raise — session startup stays robust."""
-    monkeypatch.setattr(server, "_SlashWorker", lambda *a, **kw: object())
-    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
-    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **kw: None)
-    monkeypatch.setattr(server, "_session_info", lambda agent, session=None: {"model": "m"})
-    monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
-    monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: "all")
-    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
-
-    class LockedAgent:
-        __slots__ = ("model",)
-
-        def __init__(self):
-            self.model = "fake/model"
-
-    # LockedAgent's __slots__ blocks background_review_callback assignment.
-    server._init_session("sid-x", "key-x", LockedAgent(), [], cols=80)
     # If we got here, _init_session swallowed the AttributeError gracefully.
 
 

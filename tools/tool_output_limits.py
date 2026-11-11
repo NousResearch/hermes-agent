@@ -15,7 +15,7 @@ DEFAULT_MAX_LINES = 2000         # file_operations.MAX_LINES
 DEFAULT_MAX_LINE_LENGTH = 2000   # file_operations.MAX_LINE_LENGTH
 # Keyed by profile home: the multiplexed gateway serves every profile from one process, so a
 # single slot would hand the launch profile's limits to every other profile.
-_cached_limits: Dict[str, Dict[str, int]] = {}
+_cached_limits: dict[str, dict[str, int]] = {}
 
 
 def _coerce_int(value: Any, default: int, minimum: int) -> int:
@@ -31,7 +31,7 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     return _coerce_int(value, default, 1)  # positive int, or ``default`` on any issue
 
 
-def get_tool_output_limits() -> Dict[str, int]:
+def get_tool_output_limits() -> dict[str, int]:
     """Resolved ``{max_bytes, max_lines, max_line_length}``; never raises. Cached per profile
     home for the process — ``_reset_tool_output_limits_cache()`` forces a fresh read."""
     key = hermes_home_key()

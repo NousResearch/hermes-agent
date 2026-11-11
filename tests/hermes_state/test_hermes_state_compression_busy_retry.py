@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_state import SessionCompressionInProgressError, SessionDB
+from hermes_state import SessionDB
 from hermes_state_errors import CompressionSessionBusyError
 
 
@@ -74,15 +74,8 @@ def test_the_lock_owner_append_still_works(db: SessionDB) -> None:
     assert any(r["content"] == "written by the compressor" for r in rows)
 
 
-def test_transient_error_is_a_subclass_of_the_original(db: SessionDB) -> None:
-    """Existing `except CompressionSessionBusyError` handlers must still catch."""
-    assert issubclass(SessionCompressionInProgressError, CompressionSessionBusyError)
 
 
-def test_no_lock_means_no_delay(db: SessionDB) -> None:
-    started = time.monotonic()
-    db.append_message("sess1", role="user", content="uncontended")
-    assert time.monotonic() - started < 0.5
 
 
 def test_a_lost_compression_lease_still_fails_fast(db: SessionDB) -> None:

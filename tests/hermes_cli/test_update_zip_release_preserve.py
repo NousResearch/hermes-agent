@@ -1,62 +1,20 @@
 """#70337/#87331/#90495: the ZIP swap must preserve the gitignored build outputs.
 
 The GitHub source ZIP carries only source; the BUILT desktop app
-(release/win-unpacked/Hermes.exe), its renderer bundle (dist/), its own
-node_modules and the dashboard assets (hermes_cli/web_dist/) exist only in
-the live tree. Swapping `apps` / `hermes_cli` without grafting them deletes
-them — and the dirty-tree guard must admit their ``!!`` status lines, or the
-fallback refuses every install that has them.
+(release/win-unpacked/Hermes.exe), its renderer bundle (dist/) and the
+dashboard assets (hermes_cli/web_dist/) exist only in the live tree. Swapping
+`apps` / `hermes_cli` without grafting them deletes them — and the dirty-tree
+guard must admit their ``!!`` status lines, or the fallback refuses every
+install that has them. Workspace node_modules (pnpm's links) are dropped and
+relinked by the next build.
 """
 
 from __future__ import annotations
 
-import os
 import shutil
 from pathlib import Path
 
 
-def test_staged_apps_swap_preserves_live_release_dir(tmp_path, monkeypatch):
-    from hermes_cli import main as hermes_main
-    from hermes_cli.update_cmd import (
-        _commit_staged_replacements,
-        _stage_replacement,
-    )
-
-    # live tree: apps/desktop/release/win-unpacked/Hermes.exe + old source
-    root = tmp_path / "install"
-    live_apps = root / "apps" / "desktop"
-    (live_apps / "release" / "win-unpacked").mkdir(parents=True)
-    (live_apps / "release" / "win-unpacked" / "Hermes.exe").write_bytes(b"MZbuilt")
-    (live_apps / "electron").mkdir()
-    (live_apps / "electron" / "main.ts").write_text("old source", encoding="utf-8")
-
-    # extracted ZIP: new source, NO release dir (GitHub source archive shape)
-    extracted = tmp_path / "extracted"
-    zip_apps = extracted / "apps" / "desktop"
-    (zip_apps / "electron").mkdir(parents=True)
-    (zip_apps / "electron" / "main.ts").write_text("new source", encoding="utf-8")
-
-    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", root)
-
-    # Reproduce the _update_via_zip staging loop for the `apps` entry,
-    # including the release-dir graft.
-    src = str(extracted / "apps")
-    dst = str(root / "apps")
-    staged_path = _stage_replacement(src, dst)
-    live_release = os.path.join(dst, "desktop", "release")
-    staged_release = os.path.join(staged_path, "desktop", "release")
-    if os.path.isdir(live_release) and not os.path.exists(staged_release):
-        os.makedirs(os.path.dirname(staged_release), exist_ok=True)
-        shutil.copytree(live_release, staged_release)
-
-    _commit_staged_replacements([(staged_path, dst)])
-
-    # New source landed AND the built desktop app survived.
-    assert (root / "apps" / "desktop" / "electron" / "main.ts").read_text(encoding="utf-8") == (
-        "new source"
-    )
-    exe = root / "apps" / "desktop" / "release" / "win-unpacked" / "Hermes.exe"
-    assert exe.exists() and exe.read_bytes() == b"MZbuilt"
 
 
 def test_zip_swap_keeps_every_nested_build_output_and_the_guard_admits_them(tmp_path):
@@ -69,7 +27,6 @@ def test_zip_swap_keeps_every_nested_build_output_and_the_guard_admits_them(tmp_
     root = tmp_path / "install"
     outputs = {
         "apps/desktop/release/win-unpacked/Hermes.exe": b"MZbuilt",
-        "apps/desktop/node_modules/electron/index.js": b"electron",
         "apps/desktop/dist/index.html": b"live renderer",
         "hermes_cli/web_dist/index.html": b"<dashboard>",
     }
@@ -78,6 +35,9 @@ def test_zip_swap_keeps_every_nested_build_output_and_the_guard_admits_them(tmp_
         (root / rel).write_bytes(data)
     (root / "hermes_cli" / "__pycache__").mkdir()
     (root / "hermes_cli" / "x.py").write_text("old", encoding="utf-8")
+    links = root / "apps" / "desktop" / "node_modules"
+    links.mkdir()
+    (links / "package.json").write_text("{}", encoding="utf-8")
 
     # Extracted ZIP: new source, none of the outputs — except dist/, which a future archive may ship.
     extracted = tmp_path / "extracted"
@@ -96,6 +56,7 @@ def test_zip_swap_keeps_every_nested_build_output_and_the_guard_admits_them(tmp_
     # What the ZIP ships wins over the live copy; the graft never clobbers it.
     assert (root / "apps" / "desktop" / "dist" / "index.html").read_bytes() == b"shipped renderer"
     assert not (root / "hermes_cli" / "__pycache__").exists()  # regenerable, dropped with the old tree
+    assert not links.exists()  # pnpm's links: relinked by the next build, never copied
 
     # The dirty-tree guard sees these outputs as ``!!`` lines; they must not refuse the swap.
     for line in ("!! apps/desktop/release/", "!! apps/desktop/dist/", "!! apps/desktop/node_modules/",

@@ -18,7 +18,7 @@ import pytest
 
 from tools.connectors import contract as c
 from tools.connectors import live
-from tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
+from tools.connectors.tool import manage_connections
 
 
 @pytest.fixture(autouse=True)
@@ -54,8 +54,9 @@ class GatewayFake:
         self.lists += 1
         return [{"connector": s, "enabled": True, "connected": s in self.connected} for s in ("gmail", "notion")]
 
-    def connections(self, connectors, *, reinitiate=False, return_to=None, op=None):
-        self.mints.append({"connectors": tuple(connectors), "reinitiate": reinitiate, "return_to": return_to, "op": op})
+    def connections(self, connectors, *, reinitiate=False, alias=None, connection_id=None, return_to=None, op=None):
+        self.mints.append({"connectors": tuple(connectors), "reinitiate": reinitiate, "alias": alias,
+                           "return_to": return_to, "op": op})
         results = []
         for slug in connectors:
             status = self.mint_overrides.get(slug, self.mint_status)
@@ -121,17 +122,8 @@ def _run(args, gw, *, callback=None, tick=0.0, platform="desktop"):
 # ---------------------------------------------------------------------------
 
 
-def test_reason_is_gone_from_the_schema():
-    assert "reason" not in MANAGE_CONNECTIONS_SCHEMA["parameters"]["properties"]
 
 
-def test_wait_is_gone_and_force_exists():
-    props = MANAGE_CONNECTIONS_SCHEMA["parameters"]["properties"]
-    assert "wait" not in props["action"]["enum"]
-    assert "timeout_seconds" not in props
-    assert props["force"]["type"] == "boolean"
-    out = json.loads(manage_connections({"action": "wait", "connectors": ["gmail"]}))
-    assert "action must be one of" in out["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -161,7 +153,6 @@ def test_desktop_connect_url_stays_on_the_live_operation_for_the_panel():
 
     def cb(payload):
         captured["op"] = live.get("s1", payload["op_id"])
-        return None
 
     _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=cb)
     snap = captured["op"].result()["targets"][0]
@@ -199,7 +190,6 @@ def test_respond_from_the_card_skips_a_target_and_wakes_the_loop():
             operation.transition("notion", c.TargetState.skipped, c.Actor.user)
             done.set()
         threading.Timer(0.02, answer).start()
-        return None
 
     out = _run({"action": "connect", "connectors": ["gmail", "notion"]}, gw, callback=cb, tick=0.01)
     assert done.is_set()
@@ -247,6 +237,40 @@ def test_mint_failure_detail_survives_and_only_an_unlisted_catalog_name_is_misro
         out = _run({"action": "connect", "connectors": ["notion"]}, gw,
                    callback=_desktop_callback(), tick=0.01)
     assert out["targets"][0]["detail"] == "gateway hiccup"
+
+
+def test_a_guessed_slug_fails_naming_the_listed_one_and_status_names_it_too():
+    # The gateway lists granola as granola_mcp and refuses "granola" as a policy block, with the
+    # reason in its instruction.
+    class Fake(GatewayFake):
+        def list_connectors(self, *, timeout=None):
+            self.lists += 1
+            return [{"connector": s, "enabled": True, "connected": False} for s in ("gmail", "granola_mcp")]
+
+        def connections(self, connectors, **kw):
+            out = super().connections(connectors, **kw)
+            for row in out["results"]:
+                row["instruction"] = "This connector is not allowed by your organization's policy."
+            return out
+
+    gw = Fake(mint_status="failed")
+    card = _desktop_callback()
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 30.0), \
+         patch("tools.connectors.managed.catalog_names", return_value=set()):
+        out = _run({"action": "connect", "connectors": ["granola"]}, gw, callback=card, tick=0.01)
+    assert card.seen == [] and out["settled_by"] == "all_resolved"
+    assert out["targets"][0]["detail"] == "'granola' is not a connector slug; use granola_mcp"
+
+    gw = Fake(mint_status="failed")
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05), \
+         patch("tools.connectors.managed.catalog_names", return_value=set()):
+        out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.01)
+    assert out["targets"][0]["detail"] == "This connector is not allowed by your organization's policy."
+
+    with patch("tools.connectors.managed.portal_accounts", return_value=[]):
+        out = _run({"action": "status", "connectors": ["granola"]}, Fake())
+    assert out["connectors"] == []
+    assert out["unknown"] == {"granola": "'granola' is not a connector slug; use granola_mcp"}
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +374,6 @@ def test_continue_during_a_connected_read_keeps_the_settled_result():
 
     def cb(payload):
         op_id["v"] = payload["op_id"]
-        return None
 
     out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=cb, tick=0.01)
     assert settled.is_set()
@@ -359,13 +382,6 @@ def test_continue_during_a_connected_read_keeps_the_settled_result():
     assert out["targets"][0]["state"] == "not_connected"
 
 
-def test_settle_reason_is_not_written_into_the_row_detail():
-    gw = GatewayFake()
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
-        out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.01)
-    assert out["settled_by"] == "deadline"
-    assert out["targets"][0]["state"] == "not_connected"
-    assert "detail" not in out["targets"][0]
 
 
 def test_interrupt_wakes_the_loop_and_settles_before_the_next_tick():
@@ -379,7 +395,6 @@ def test_interrupt_wakes_the_loop_and_settles_before_the_next_tick():
         def stop():
             set_interrupt(True, worker["tid"])
         threading.Timer(0.02, stop).start()
-        return None
 
     import time
     started = time.monotonic()

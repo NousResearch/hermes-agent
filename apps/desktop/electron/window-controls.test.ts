@@ -2,12 +2,7 @@ import assert from 'node:assert/strict'
 
 import { describe, test } from 'vitest'
 
-import {
-  customWindowControlsEnabled,
-  performWindowControl,
-  registerWindowControlIpc,
-  windowControlState
-} from './window-controls'
+import { customWindowControlsEnabled, performWindowControl, registerWindowControlIpc } from './window-controls'
 
 class FakeWindow {
   closed = false
@@ -87,16 +82,6 @@ describe('performWindowControl', () => {
   })
 })
 
-test('windowControlState exposes the custom-control and maximize state', () => {
-  const win = new FakeWindow()
-  win.maximized = true
-
-  assert.deepEqual(windowControlState(win, true), {
-    customWindowControls: true,
-    isMaximized: true
-  })
-})
-
 test('custom window controls use the same WSL kernel fallback as the main process', () => {
   assert.equal(
     customWindowControlsEnabled({ env: {}, kernelRelease: '6.6.87.2-microsoft-standard-WSL2', platform: 'linux' }),
@@ -121,14 +106,6 @@ describe('registerWindowControlIpc', () => {
       }
     }
   }
-
-  test('registers the hermes:window-control channel', () => {
-    const ipc = fakeIpc()
-
-    registerWindowControlIpc(ipc as Parameters<typeof registerWindowControlIpc>[0], () => new FakeWindow())
-
-    assert.equal(ipc.handlers.has('hermes:window-control'), true)
-  })
 
   test('dispatches the incoming action to performWindowControl on the resolved window', () => {
     const ipc = fakeIpc()

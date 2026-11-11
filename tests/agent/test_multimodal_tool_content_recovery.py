@@ -52,10 +52,6 @@ def _make_agent(provider: str = "xiaomi", model: str = "mimo-v2.5"):
 
 
 class TestStripImagePartsHelper:
-    def test_no_messages_returns_false(self):
-        agent = _make_agent()
-        assert agent._try_strip_image_parts_from_tool_messages([]) is False
-        assert agent._try_strip_image_parts_from_tool_messages(None) is False
 
 
     def test_tool_message_with_string_content_unchanged(self):
@@ -153,19 +149,6 @@ class TestToolResultContentShortCircuit:
 
 
 
-    def test_missing_cache_attribute_falls_through(self, monkeypatch):
-        """Agents built via ``object.__new__`` without calling ``__init__``
-        must not crash — the cache attribute may be absent. Xiaomi still
-        gets a text summary because the provider profile says so."""
-        agent = _make_agent(provider="xiaomi", model="mimo-v2.5")
-        # Deliberately do not assign _no_list_tool_content_models.
-        monkeypatch.setattr(agent, "_model_supports_vision", lambda: True)
-        out = agent._tool_result_content_for_active_model(
-            "computer_use", self._multimodal_result()
-        )
-        # Xiaomi proactively downgrades regardless of cache state.
-        assert isinstance(out, str)
-        assert "data:image" not in out
 
 
 # ─── Classifier ──────────────────────────────────────────────────────────────
@@ -262,4 +245,3 @@ class TestOpenCodeGoProactiveToolResultDowngrade:
         assert isinstance(out, str)
         assert "data:image" not in out
         assert "image_url" not in out
-

@@ -18,13 +18,14 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from gateway.config import PlatformConfig  # noqa: E402
-from plugins.platforms.telegram import adapter as tg  # noqa: E402
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from gateway.config import PlatformConfig
+from plugins.platforms.telegram import adapter as tg
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda *a, **k: True)
     a = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
     a._bot = MagicMock()
     a._metadata_thread_id = lambda metadata: None
@@ -43,10 +44,19 @@ def _stub_download(monkeypatch, size: int):
     """Make the fallback's SSRF-safe client return ``size`` bytes."""
 
     class _Resp:
-        content = b"x" * size
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
 
         def raise_for_status(self):
             return None
+
+        async def aiter_bytes(self):
+            yield b"x" * size
 
     class _Client:
         async def __aenter__(self):
@@ -55,10 +65,10 @@ def _stub_download(monkeypatch, size: int):
         async def __aexit__(self, *exc):
             return False
 
-        async def get(self, url):
+        def stream(self, method, url):
             return _Resp()
 
-    import tools.url_safety as url_safety
+    from tools import url_safety
 
     monkeypatch.setattr(url_safety, "create_ssrf_safe_async_client", lambda **kw: _Client())
 

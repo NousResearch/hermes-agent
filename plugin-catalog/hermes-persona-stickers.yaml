@@ -1,0 +1,24 @@
+name: hermes-persona-stickers
+title: Persona Stickers
+repo: https://github.com/EricBlack47/hermes-persona-stickers
+sha: 7db126a7bfb51d21e53d1520da46c346b0a72611
+description: >-
+  Instant persona-aware emotion reaction stickers for Hermes: stamps pre-baked
+  chibi bases with comic captions in about 13 ms, and falls back to a pure
+  Pillow vector path when the pool misses. Slash command /sticker and tool
+  generate_persona_sticker return MEDIA:<path> PNG/WebP. Disclosure: writes
+  sticker PNG/WebP files under the active profile at
+  get_hermes_home()/plugin-data/hermes-persona-stickers; no third-party
+  network, no telemetry, no self-update, no shell commands; ships pre-baked
+  RGBA persona assets in-repo.
+maintainer: EricBlack47
+tier: community
+category: tools
+requires_hermes: ">=0.20.0"
+docs_url: https://github.com/EricBlack47/hermes-persona-stickers#readme
+version: "1.0.1"
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: [generate_persona_sticker]
+  provides_hooks: []
+  requires_env: []

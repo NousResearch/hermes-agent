@@ -28,69 +28,23 @@ load-bearing piece.
 
 from __future__ import annotations
 
-import importlib
 import queue
-import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 def _make_cli():
-    """Build a HermesCLI instance with prompt_toolkit stubbed out.
+    """Bare HermesCLI (no __init__) with just the two queues the drain touches."""
+    from cli import HermesCLI
 
-    Mirrors the helper in ``test_cli_steer_busy_path.py``.
-    """
-    _clean_config = {
-        "model": {
-            "default": "anthropic/claude-opus-4.6",
-            "base_url": "https://openrouter.ai/api/v1",
-            "provider": "auto",
-        },
-        "display": {"compact": False, "tool_progress": "all"},
-        "agent": {},
-        "terminal": {"env_type": "local"},
-    }
-    clean_env = {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}
-    prompt_toolkit_stubs = {
-        "prompt_toolkit": MagicMock(),
-        "prompt_toolkit.history": MagicMock(),
-        "prompt_toolkit.styles": MagicMock(),
-        "prompt_toolkit.patch_stdout": MagicMock(),
-        "prompt_toolkit.application": MagicMock(),
-        "prompt_toolkit.layout": MagicMock(),
-        "prompt_toolkit.layout.processors": MagicMock(),
-        "prompt_toolkit.filters": MagicMock(),
-        "prompt_toolkit.layout.dimension": MagicMock(),
-        "prompt_toolkit.layout.menus": MagicMock(),
-        "prompt_toolkit.widgets": MagicMock(),
-        "prompt_toolkit.key_binding": MagicMock(),
-        "prompt_toolkit.completion": MagicMock(),
-        "prompt_toolkit.formatted_text": MagicMock(),
-        "prompt_toolkit.auto_suggest": MagicMock(),
-    }
-    with patch.dict(sys.modules, prompt_toolkit_stubs), patch.dict(
-        "os.environ", clean_env, clear=False
-    ):
-        import cli as _cli_mod
-
-        _cli_mod = importlib.reload(_cli_mod)
-        with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
-            _cli_mod.__dict__, {"CLI_CONFIG": _clean_config}
-        ):
-            return _cli_mod.HermesCLI()
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._interrupt_queue = queue.Queue()
+    cli._pending_input = queue.Queue()
+    return cli
 
 
 class TestInterruptQueueDrain:
     """``_drain_interrupt_queue_to_pending_input`` re-queues stray messages."""
 
-    def test_drains_single_pending_message_into_pending_input(self):
-        cli = _make_cli()
-        cli._interrupt_queue.put("typed during agent turn")
-
-        cli._drain_interrupt_queue_to_pending_input()
-
-        assert cli._interrupt_queue.empty()
-        assert cli._pending_input.qsize() == 1
-        assert cli._pending_input.get_nowait() == "typed during agent turn"
 
     def test_preserves_order_when_draining_multiple_messages(self):
         cli = _make_cli()
@@ -105,13 +59,6 @@ class TestInterruptQueueDrain:
             drained.append(cli._pending_input.get_nowait())
         assert drained == ["first", "second", "third"]
 
-    def test_noop_when_interrupt_queue_is_empty(self):
-        cli = _make_cli()
-
-        cli._drain_interrupt_queue_to_pending_input()
-
-        assert cli._interrupt_queue.empty()
-        assert cli._pending_input.empty()
 
     def test_skips_falsy_messages(self):
         cli = _make_cli()

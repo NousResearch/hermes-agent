@@ -1,0 +1,23 @@
+name: rh-preflight
+repo: https://github.com/quotumorg/rh-preflight
+sha: 594a01f54de46691c1903589fa988dd347ff11ff
+title: rh-preflight
+description: "rh-preflight by quotum with HEY Research Lab. Before Hermes acts on Robinhood Chain (chain 4663), a pre_tool_call hook reads HEY Research Lab's builder record and ten Robinhood Chain projects for the addresses, agent ids, pools or repositories in the call, then applies your own rules: go, ask (a human approval prompt) or stop when unattended. The card lists each source's line with its link; builder_card and /rh-preflight read a card without acting. Desktop page shows recent checks and human answers. Disclosure: sends only the identifiers you act on to the source hosts listed in the README, plus read-only Robinhood Chain RPC, DexScreener and GeckoTerminal reads; keyless and free, no payments, signatures, subprocesses or writes. Stores a local SQLite ledger of checks in its own plugin data folder. Source records describe what each project published; rh-preflight does not call a token good or bad."
+maintainer: quotumorg
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.5.3"
+docs_url: https://github.com/quotumorg/rh-preflight/blob/594a01f54de46691c1903589fa988dd347ff11ff/README.md
+image: https://raw.githubusercontent.com/quotumorg/rh-preflight/594a01f54de46691c1903589fa988dd347ff11ff/docs/banner.png
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - "Fail-closed: when a source does not answer inside the shared timeout (default 4 s), the card says so and your rule may ask instead of go."
+  - "Detection covers up to five addresses per call in configured action tools; tool names are matched by the tool_patterns setting."
+  - "The approval adapter reads private Hermes approval helpers; tested on Hermes v0.23.0 and v0.23.1, the floor does not establish later compatibility."
+capabilities:
+  provides_tools: [builder_card]
+  provides_hooks: [pre_tool_call, transform_tool_result, post_approval_response]
+  provides_middleware: []
+  requires_env: []

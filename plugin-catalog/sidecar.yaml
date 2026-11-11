@@ -28,6 +28,8 @@ image: https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/245b3f16503285
 screenshots:
   - https://raw.githubusercontent.com/rkfshakti/hermes-sidecar/245b3f16503285ea2f5103037c02f6db725445d3/demo/demo.gif
 platforms: [linux, macos]
+known_issues:
+  - "Under plugins.isolation: host, Hermes skips plugin CLI subcommands and hands the provider an opaque placeholder; run Sidecar in the default in-process plugin isolation."
 capabilities:
   provides_tools: [sidecar_status, sidecar_audit]
   provides_hooks: []

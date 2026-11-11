@@ -129,17 +129,7 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
           paddingX={0}
           paddingY={0}
           rowGap={0}
-          widgets={[
-            { children: <ArtLines lines={logoLines} />, id: 'banner-art' },
-            {
-              children: (
-                <Text color={t.color.muted} wrap="truncate-end">
-                  {t.brand.icon} {T.tagFull}
-                </Text>
-              ),
-              id: 'banner-tagline'
-            }
-          ]}
+          widgets={[{ children: <ArtLines lines={logoLines} />, id: 'banner-art' }]}
         />
       </Box>
     )

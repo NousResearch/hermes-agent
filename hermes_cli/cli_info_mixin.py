@@ -918,7 +918,7 @@ class CLIInfoMixin:
         (tool schemas are baked into the system prompt), hence the warning."""
         choice = _gated_confirm(
             self, "reload-mcp", "mcp_reload_confirm",
-            title=t("cli.reload_mcp.title"),
+            title=t("cli.reload_mcp.title").replace("⚠️", "⚠"),
             detail=t("cli.reload_mcp.detail"),
             choices=_reload_mcp_choices(),
             unchanged=t("cli.reload_mcp.unchanged"),

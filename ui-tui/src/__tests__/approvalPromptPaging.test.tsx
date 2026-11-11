@@ -6,7 +6,7 @@ import React from 'react'
 import stripAnsi from 'strip-ansi'
 import { describe, expect, it, vi } from 'vitest'
 
-import { ApprovalPrompt } from '../components/prompts.js'
+import { ApprovalPrompt, ConfirmPrompt } from '../components/prompts.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 class FakeInput extends EventEmitter {
@@ -51,6 +51,7 @@ describe('ApprovalPrompt long commands', () => {
       <ApprovalPrompt
         cols={80}
         onChoice={onChoice}
+        onTell={vi.fn()}
         req={{ command, description: 'recursive delete', requestId: 'r1' }}
         t={DEFAULT_THEME}
       />,
@@ -63,6 +64,8 @@ describe('ApprovalPrompt long commands', () => {
 
     await settle()
     const first = stripAnsi(frames.join(''))
+    expect(first).toContain('! approval required · recursive delete')
+    expect(first).not.toContain('⚠')
     expect(first).not.toContain('rm -rf ~/important')
     expect(first).toContain('lines 1–10 of 11 · press v to see the rest before choosing')
     expect(first).not.toContain('full text above')
@@ -77,5 +80,28 @@ describe('ApprovalPrompt long commands', () => {
 
     instance.unmount()
     instance.cleanup()
+  })
+})
+
+describe('ConfirmPrompt warning glyph', () => {
+  it('renders an ASCII danger marker and keeps ordinary confirmations distinct', async () => {
+    for (const danger of [true, false]) {
+      const stdin = new FakeInput()
+      const stdout = Object.assign(new PassThrough(), { columns: 80, isTTY: false, rows: 40 })
+      const frames: string[] = []
+      stdout.on('data', chunk => frames.push(chunk.toString()))
+      const instance = renderSync(
+        <ConfirmPrompt onCancel={vi.fn()} onConfirm={vi.fn()} req={{ danger, onConfirm: vi.fn(), title: 'Delete session?' }} t={DEFAULT_THEME} />,
+        {
+          patchConsole: false,
+          stdin: stdin as unknown as NodeJS.ReadStream,
+          stdout: stdout as unknown as NodeJS.WriteStream
+        }
+      )
+      await settle()
+      expect(stripAnsi(frames.join(''))).toContain(`${danger ? '!' : '?'} Delete session?`)
+      instance.unmount()
+      instance.cleanup()
+    }
   })
 })

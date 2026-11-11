@@ -154,6 +154,8 @@ def test_confirm_destructive_slash_no_skip_token_still_prompts():
 
     self_ = _make_self(prompt_response="3")  # cancel
     self_._split_destructive_skip = HermesCLI._split_destructive_skip
+    modal = []
+    self_._prompt_text_input_modal = lambda **kwargs: modal.append(kwargs) or "3"
 
     with patch(
         "cli.load_cli_config",
@@ -165,3 +167,21 @@ def test_confirm_destructive_slash_no_skip_token_still_prompts():
 
     # Prompt was reached and returned cancel → None.
     assert result is None
+    assert "⚠️" not in modal[0]["title"]
+    assert "/new" in modal[0]["title"]
+
+
+def test_reload_mcp_cancel_uses_text_warning():
+    from cli import HermesCLI
+
+    modal = []
+    self_ = _make_self(prompt_response="3")
+    self_._prompt_text_input_modal = lambda **kwargs: modal.append(kwargs) or "3"
+    with patch(
+        "cli.load_cli_config",
+        return_value={"approvals": {"mcp_reload_confirm": True}},
+    ):
+        _bound(HermesCLI._confirm_and_reload_mcp, self_)()
+
+    assert "/reload-mcp" in modal[0]["title"]
+    assert "⚠️" not in modal[0]["title"]

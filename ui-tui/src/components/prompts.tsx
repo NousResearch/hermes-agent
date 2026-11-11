@@ -166,7 +166,7 @@ export function ApprovalPrompt({ cols = 80, onChoice, onTell, req, t }: Approval
   return (
     <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
       <Text bold color={t.color.warn}>
-        {T.prompt.approval.title} · {req.description}
+        {T.prompt.approval.title.replace(/⚠️?/g, '!')} · {req.description}
       </Text>
 
       <Box flexDirection="column" paddingLeft={1}>
@@ -484,7 +484,7 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   return (
     <Box borderColor={accent} borderStyle="double" flexDirection="column" paddingX={1}>
       <Text bold color={accent}>
-        {req.danger ? '⚠' : '?'} {req.title}
+        {req.danger ? '!' : '?'} {req.title}
       </Text>
 
       {req.detail ? (

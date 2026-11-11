@@ -198,6 +198,22 @@ class TestRepeatedBackgroundRejection:
 
         assert _backgrounded_command(command) == expected
 
+    def test_exact_resend_keeps_the_rejected_calls_workdir(self, run, tmp_path):
+        workdir = str(tmp_path / "srv app")
+        results = [run("npm run dev", workdir=workdir, task_id="t") for _ in range(3)]
+        assert [self._escalated(r) for r in results] == [False, False, True]
+        assert results[0]["error"] == results[1]["error"]
+        expected = (f'Resend exactly this: terminal(command="npm run dev", workdir="{workdir}", background=true, '
+                    'notify_on_complete=true)')
+        assert expected in results[2]["error"]
+
+    def test_unrenderable_workdir_falls_back_to_the_placeholder(self, run, tmp_path):
+        workdir = str(tmp_path / "a\nb")
+        results = [run("npm run dev", workdir=workdir, task_id="t") for _ in range(3)]
+        assert "Resend exactly this" not in results[2]["error"]
+        assert ('terminal(command="<cmd>", workdir=<same workdir>, background=true, '
+                'notify_on_complete=true)') in results[2]["error"]
+
     def test_escalation_uses_the_placeholder_when_no_exact_resend_exists(self, run):
         command = 'echo "$(sleep 9 & echo $!)" &'
         results = [run(command, task_id="t") for _ in range(3)]

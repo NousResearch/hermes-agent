@@ -190,10 +190,15 @@ def _backgrounded_command(command: str) -> str | None:
     return fixed if _approval_identity(fixed) == _approval_identity(command) else None
 
 
-def _escalated_guidance(command: str, msg: str, count: int) -> str:
-    fixed = _backgrounded_command(command)
-    call = 'terminal(command={}, background=true, notify_on_complete=true)'.format(
-        json.dumps(fixed, ensure_ascii=False) if fixed else '"<cmd>"'
+def _escalated_guidance(command: str, msg: str, count: int, workdir: Any = None) -> str:
+    # The resend must run where the rejected call would have: workdir is per-call, never the
+    # session cwd. A workdir that cannot be quoted back verbatim drops to the placeholder form.
+    exact_dir = isinstance(workdir, str) and workdir.isprintable() and len(workdir) <= _CORRECTED_CALL_MAX_CHARS
+    fixed = _backgrounded_command(command) if exact_dir or not workdir else None
+    where = (f", workdir={json.dumps(workdir, ensure_ascii=False)}" if exact_dir else
+             ", workdir=<same workdir>" if workdir else "")
+    call = 'terminal(command={}{}, background=true, notify_on_complete=true)'.format(
+        json.dumps(fixed, ensure_ascii=False) if fixed else '"<cmd>"', where
     )
     how = (
         f"Resend exactly this: {call}" if fixed else
@@ -208,7 +213,7 @@ def _escalated_guidance(command: str, msg: str, count: int) -> str:
     )
 
 
-def _foreground_background_guidance(command: str, task_id: str = "") -> str | None:
+def _foreground_background_guidance(command: str, task_id: str = "", workdir: Any = None) -> str | None:
     """Guidance text when a foreground command looks long-lived or uses shell
     backgrounding (it should be a managed background session), else None.
 
@@ -237,7 +242,7 @@ def _foreground_background_guidance(command: str, task_id: str = "") -> str | No
             del _FG_BG_REJECTIONS[next(iter(_FG_BG_REJECTIONS))]
     if count < _FG_BG_ESCALATE_AFTER:
         return msg
-    return _escalated_guidance(command, msg, count)
+    return _escalated_guidance(command, msg, count, workdir)
 
 
 def reset_foreground_background_guard(task_id: str) -> None:

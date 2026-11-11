@@ -1178,7 +1178,7 @@ _PROMOTED_NOTE = (
 
 def _plan_execution(
     command: Any, *, task_id: Optional[str], timeout: Optional[int],
-    background: bool, _host_local: bool,
+    background: bool, _host_local: bool, workdir: Optional[str] = None,
 ) -> _ExecPlan:
     """Resolve backend, env-cache key, image, cwd and timeout for one call.
 
@@ -1252,7 +1252,7 @@ def _plan_execution(
         # background=true does), so run it that way instead of spending a model turn on a resend.
         auto_bg = trailing_amp_background_command(command)
         if auto_bg is None:
-            guidance = _foreground_background_guidance(command, task_id)
+            guidance = _foreground_background_guidance(command, task_id, workdir)
             if guidance:
                 raise _Rejected(_error_json(guidance, status="error"))
             # No counter reset for a compliant foreground call: an unrelated command is not
@@ -1517,6 +1517,7 @@ def terminal_tool(
     try:
         plan = _plan_execution(
             command, task_id=task_id, timeout=timeout, background=background, _host_local=_host_local,
+            workdir=workdir,
         )
         auto_bg = getattr(plan, "auto_background_command", None)
         if auto_bg is not None:

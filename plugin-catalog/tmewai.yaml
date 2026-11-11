@@ -1,6 +1,6 @@
 name: tmewai
 repo: https://github.com/tonidan369-maker/hermes-tmewai
-sha: d8a75bcb77d57bc7f115baded8a604a6a0616e86
+sha: f5c1018023d334ac765495ba8959c823d356ff64
 subdir: tmewai
 description: >-
   Local, offline index for your own Facebook JSON export (Meta's
@@ -11,7 +11,9 @@ description: >-
   paths, NUL bytes, duplicate names and symlinks rejected) and give each entry
   exactly one source_files row so nothing is silently dropped; archive_search
   runs FTS5 over text folded for Arabic (harakat, alef variants, taa marbuta,
-  alef maqsura, tatweel) while stored text keeps its original spelling;
+  alef maqsura, tatweel, Arabic-Indic and Persian digits, and the presentation
+  forms that PDF/Office pastes carry) while stored text keeps its original
+  spelling;
   archive_person and archive_overview aggregate over people, conversations,
   events and attachments; archive_evidence builds a hard-capped bundle (20
   events, 4000 characters) with a metadata-only consent row that cannot carry
@@ -26,7 +28,7 @@ maintainer: tonidan369-maker
 tier: community
 category: memory
 docs_url: https://github.com/tonidan369-maker/hermes-tmewai#readme
-version: "1.0.0"
+version: "1.0.1"
 platforms: []
 readme: true
 capabilities:

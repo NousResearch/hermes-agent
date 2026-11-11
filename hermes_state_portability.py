@@ -268,7 +268,10 @@ class SessionPortabilityMixin:
         )
         rows = self._read_rows(query, {"prefix": prefix, "prefix_hi": prefix_hi, "request_lo": request_lo,
                                        "request_hi": request_hi, "job_id": job_id, "limit": limit, "offset": offset})
-        return [{**self._rich_row(row), "cron_job_id": job_id} for row in rows]
+        runs = [{**self._rich_row(row), "cron_job_id": job_id} for row in rows]
+        for run in runs:
+            run["cron_finalized"] = self.cron_finalized_outcome(run["id"]) is not None
+        return runs
 
     def cron_run_identity(self, session_id: str) -> Optional[dict[str, Any]]:
         """``{"cron_job_id", "cron_execution_id"}`` of a cron run session, else None: a legacy id

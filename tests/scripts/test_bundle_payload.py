@@ -68,3 +68,25 @@ def test_both_launchers_keep_active_home_and_call_declared_function(tmp_path, ta
                             env={**os.environ, "HERMES_HOME": str(tmp_path / "custom/profiles/memory")}, capture_output=True, text=True, check=False)
     assert result.returncode == 7, result.stderr
     assert json.loads(result.stdout) == [str(tmp_path / "custom/profiles/memory"), ["two words", "$(nope)", ""]]
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("baked", [True, False])
+def test_launcher_reads_baked_bytecode_in_place(tmp_path, baked):
+    """A baked payload's pycs sit beside its sources; the user-level prefix would hide them, so only an
+    unbaked payload gets it (the Windows wrapper's rule, test_baked_bytecode.py)."""
+    from scripts.bundles.bytecode import MARKER
+
+    root = tmp_path / "payload"
+    (root / "bin").mkdir(parents=True)
+    (root / "app").mkdir()
+    (root / "python").symlink_to(sys.executable)
+    (root / "app/entry.py").write_text("import os\ndef run():\n print(os.environ.get('PYTHONPYCACHEPREFIX', '')); return 0\n", encoding="utf-8")
+    if baked:
+        (root / MARKER).write_text("timestamp\n", encoding="utf-8")
+    launcher = root / "bin/custom"
+    launcher.write_text(posix_launcher("custom", "entry:run", python="python", repo="app", site="deps", target="linux-x64"), encoding="utf-8")
+    env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPYCACHEPREFIX", "XDG_CACHE_HOME"}}
+    result = subprocess.run(["sh", str(launcher)], env={**env, "HOME": str(tmp_path / "home")},
+                            capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == ("" if baked else str(tmp_path / "home/.cache/hermes-pycache"))

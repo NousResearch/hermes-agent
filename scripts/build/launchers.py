@@ -69,7 +69,9 @@ export PYTHONPATH="$REPO:$SITE"
 # `import pywintypes` on Windows bundles; the win32 wrapper mirrors this
 # in launcher_wrapper.py). The -c bootstrap below runs addsitedir() on it.
 export HERMES_SITE="$SITE"
-export PYTHONPYCACHEPREFIX="${{PYTHONPYCACHEPREFIX:-${{XDG_CACHE_HOME:-$HOME/.cache}}/hermes-pycache}}"
+# A baked payload reads its own source-adjacent bytecode; the prefix would relocate those reads
+# too (launcher_wrapper.py keeps the same rule on Windows).
+[ -e "$root/.hermes-baked-pycache" ] || export PYTHONPYCACHEPREFIX="${{PYTHONPYCACHEPREFIX:-${{XDG_CACHE_HOME:-$HOME/.cache}}/hermes-pycache}}"
 {extra}exec "$PYTHON" -P -c {shlex.quote(code)} "$@"
 '''
 

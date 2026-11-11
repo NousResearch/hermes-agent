@@ -1,0 +1,31 @@
+name: deck-diff
+title: Deck Diff
+repo: https://github.com/Baophan00/deck-diff
+sha: 70db4e36348e2c9cdfbea5ac920062fde07955e5
+version: "0.1.0"
+description: >-
+  Content integrity for courseware: compare a source .pptx with the lesson data generated from it
+  (canvas.json or a simple slide list) and report drift slide by slide — missing text, reworded
+  lines, sentences pasted onto the wrong slide, missing/extra images, orphan lesson slides, and
+  slides that never made it into the lesson. Slides are matched by content rather than index, so
+  cover slides and skipped pages still line up, and asymmetry between a short divider and a full
+  lesson page is penalised. Three local tools: deck_slides (index a deck), deck_diff (compare,
+  JSON issues with severities) and deck_report (self-contained HTML report with deck thumbnails and
+  a MEDIA attachment). Pure Python standard library, no network calls, no API keys, read-only on
+  the source deck; the only file it writes is the HTML report at the path the user asks for.
+  Disclosure — the report embeds thumbnails of the deck's own images.
+maintainer: Baophan00
+tier: community
+category: tools
+docs_url: https://github.com/Baophan00/deck-diff#readme
+readme: true
+requires_hermes: ">=0.23.0"
+platforms: []
+capabilities:
+  provides_tools:
+    - deck_slides
+    - deck_diff
+    - deck_report
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,48 @@
+name: offense
+repo: https://github.com/offense-research/offense-hermes-plugin
+sha: 0ec5ee48170986db7c70061b1127448d642e2bfc
+version: "0.2.0"
+description: >-
+  Spin up isolated Offense security sandboxes and summon swarms of independent
+  investigators against a verified staging target: register and verify control
+  of the target, launch a focused sandbox or a broad swarm with per-agent
+  budgets, read deduplicated findings and checksummed evidence, verify a
+  candidate in a fresh sandbox, and retest after a fix. Disclosure — the plugin
+  sends assessment tasks, the registered target URL, and run results to the
+  configured Offense API (https://app.offense.sh by default, overridable for
+  self-hosted); it reads OFFENSE_API_KEY through Hermes'
+  agent.secret_scope.get_secret and never a key file or another tool's
+  credential store; it runs no shell commands and reads no local files;
+  launches spend real money on the user's Offense account ($1 per sandbox by
+  default, agents x $1 per swarm, stated before launch and refunded when
+  stopped); no telemetry.
+maintainer: offense-research
+tier: community
+category: tools
+requires_hermes: ">=0.19.0"
+docs_url: https://github.com/offense-research/offense-hermes-plugin/blob/0ec5ee48170986db7c70061b1127448d642e2bfc/README.md
+readme: true
+capabilities:
+  provides_tools:
+    - offense_status
+    - offense_register_target
+    - offense_verify_target
+    - offense_launch_sandbox
+    - offense_list_sandboxes
+    - offense_get_sandbox
+    - offense_wait_sandbox
+    - offense_sandbox_findings
+    - offense_sandbox_evidence
+    - offense_stop_sandbox
+    - offense_verify_finding
+    - offense_retest_finding
+    - offense_list_swarms
+    - offense_summon_swarm
+    - offense_get_swarm
+    - offense_wait_swarm
+    - offense_stop_swarm
+  provides_hooks:
+    - pre_llm_call
+  provides_middleware: []
+  requires_env:
+    - OFFENSE_API_KEY

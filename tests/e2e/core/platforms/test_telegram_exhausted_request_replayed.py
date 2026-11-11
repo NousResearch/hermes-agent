@@ -1,7 +1,7 @@
 """A Telegram request whose turn exhausts context compression is re-run once on the fresh session the
 auto-reset creates, so it is answered without the user resending it (#137565). A re-run that
 exhausts the fresh session too is not re-run again. REAL gateway + adapter against the Bot API
-stand-in; the fake model rejects every request carrying the request's token as too long while armed.
+stand-in; the fake model rejects the request as too long (on the fresh session too in the second leg).
 """
 
 from __future__ import annotations
@@ -25,12 +25,16 @@ _TOO_LONG = "prompt is too long: 233153 tokens > 200000 maximum"
 
 
 class _Overflowing(Director):
-    armed = True
-    overflows = 0
+    """Rejects the request as too long on the exhausted session (its transcript holds the warm-up
+    turn); on the fresh session only when ``fresh_too``. Decided per request, never by timing."""
+
+    def __init__(self, fresh_too: bool) -> None:
+        super().__init__()
+        self.fresh_too = fresh_too
 
     def __call__(self, record):
-        if self.armed and "[in:ex]" in json.dumps(record["body"].get("messages", [])):
-            self.overflows += 1
+        wire = json.dumps(record["body"].get("messages", []))
+        if "[in:ex]" in wire and (self.fresh_too or "[in:warm]" in wire):
             return Error(400, _TOO_LONG)
         return super().__call__(record)
 
@@ -43,7 +47,7 @@ def _text(v) -> str:
 def test_exhausted_request_is_answered_on_the_fresh_session(tmp_path, fits_after_reset):
     drv = TelegramDriver()
     drv.start()
-    director = _Overflowing()
+    director = _Overflowing(fresh_too=not fits_after_reset)
     llm = FakeLLMServer(director)
     llm.start()
     gw = GatewayUnderTest(tmp_path / "rig", llm_base_url=llm.base_url, config=drv.gateway_config(),
@@ -56,7 +60,6 @@ def test_exhausted_request_is_answered_on_the_fresh_session(tmp_path, fits_after
         drv.dm(_REQUEST)
         wait_until(lambda: any("auto-reset" in _text(v).lower() for v in drv.standin.visible(drv.user_id)),
                    "the auto-reset notice", timeout=120, on_timeout=gw.tail)
-        director.armed = not fits_after_reset
         if fits_after_reset:
             wait_until(lambda: director.turns.get("ex"), "the request re-ran", timeout=60, on_timeout=gw.tail)
         # health: allow HX013 -- absence proof: a second replay or duplicate answer would land in this window

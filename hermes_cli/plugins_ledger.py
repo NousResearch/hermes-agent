@@ -124,6 +124,10 @@ class PluginLedgerMixin:
             if registration.active and registration.publish is not None:
                 registration.publish()
         ctx._staged.clear()  # a provider that keeps its ctx must not keep the provider it replaced
+    def _owns_registration(self, plugin_key: str, kind: str, key: str) -> bool:
+        """Whether ``plugin_key`` holds a live ``(kind, key)`` registration in this manager."""
+        return any(r.kind == kind and r.key == key and r.active
+                   for r in self._ownership_ledger.get(plugin_key, ()))
 
     def _active_persistent(self) -> list[PluginRegistration]:
         """Live persistent registrations across every plugin in the ownership ledger."""
@@ -322,7 +326,8 @@ class PluginLedgerMixin:
             self._ownership_ledger, self._plugins, self._hooks, self._middleware,
             self._plugin_tool_names, self._plugin_platform_names, self._cli_commands,
             self._plugin_commands, self._plugin_skills, self._automation_blueprints, self._portable_mcp_servers,
-            self._portable_mcp_server_plugins, self._aux_tasks, self._system_prompt_sections, self._approval_transports,
+            self._portable_mcp_server_plugins, self._aux_tasks, self._system_prompt_sections,
+            self._review_destinations, self._approval_transports,
             self._slack_action_handlers, self._predeclared_modules, self._predeclared_tools,
             self._platform_handler_factories,
         ):

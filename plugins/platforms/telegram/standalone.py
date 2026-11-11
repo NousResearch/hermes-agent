@@ -439,7 +439,10 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return {"error": "python-telegram-bot not installed. Run: "
                 f"{install_hint('telegram')}"}
     except Exception as e:
-        return _error(f"Telegram send failed: {e}")
+        from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
+        # A lost answer (timeout, reset after the write) may already be in the chat: callers that
+        # would replay a failed send (cron's reconnect queue) must not.
+        return {**_error(f"Telegram send failed: {e}"), **({"delivery_uncertain": True} if may_have_delivered(e) else {})}
 
 
 async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,

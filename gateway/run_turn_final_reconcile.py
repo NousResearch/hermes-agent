@@ -20,6 +20,11 @@ logger = logging.getLogger("gateway.run")
 _FLOOD_WAIT_SLACK_SECS = 1.0
 _MAX_FLOOD_WAITS = 2
 
+# ``edit_preview_to_final`` result when the turn was replaced (/new, /stop) before or during a wait:
+# nothing more is owed. Distinct from an adapter edit that returned no receipt (``None``), which the
+# callers keep treating as they did before this helper existed.
+TURN_REPLACED = object()
+
 
 def _flood_wait(result: Any) -> Optional[float]:
     """Seconds a flood-refused edit asked to wait, or ``None`` for any other failure."""
@@ -31,19 +36,39 @@ def _flood_wait(result: Any) -> Optional[float]:
     return flood_wait_seconds(getattr(result, "error", None))
 
 
-def owns_reconcilable_preview(consumer: Any) -> bool:
+def _edit_carries_whole(adapter: Any, chat_id: str, content: str) -> bool:
+    """Whether one ``edit_message(finalize=True)`` can show all of *content*: the adapter splits an
+    oversized final edit into continuations itself (``SPLITS_OVERSIZED_FINAL_EDIT``, Telegram), or
+    *content* fits one message in the adapter's own length units. Google Chat, Slack and DingTalk
+    cut an oversized edit short and still report success, so only the normal send is whole there."""
+    if getattr(adapter, "SPLITS_OVERSIZED_FINAL_EDIT", False) is True:
+        return True
+    from gateway.platforms.base import BasePlatformAdapter
+    limit, len_fn = getattr(adapter, "MAX_MESSAGE_LENGTH", 4096), len
+    if isinstance(adapter, BasePlatformAdapter):
+        limit, len_fn = adapter.max_message_length_for_chat(chat_id), adapter.message_len_fn_for_chat(chat_id)
+    return isinstance(limit, int) and len_fn(content) <= limit
+
+
+def owns_reconcilable_preview(consumer: Any, chat_id: str = "", content: Optional[str] = None) -> bool:
     """The consumer still holds ONE real preview of this answer, with nothing that may already
     show the answer elsewhere (a timed-out send that may have landed, a split whose id is only the
-    last chunk, a native stream). Editing that preview never adds a message, so it cannot
-    duplicate anything."""
+    last chunk, a native stream), and one edit of it can carry the whole final *content* (as the
+    consumer displays it). Editing that
+    preview never adds a message, so it cannot duplicate anything."""
     if consumer is None or getattr(consumer, "_turn_split_delivery", False) is True:
         return False
     message_id = getattr(consumer, "message_id", None)
     if not message_id or message_id == "__no_edit__" or getattr(consumer, "adapter", None) is None:
         return False
-    return not any(getattr(consumer, flag, False) is True for flag in (
-        "_use_native_streaming", "_delivery_ambiguous", "delivery_uncertain", "_preview_uncertain",
-        "_egress_declined"))
+    if any(getattr(consumer, flag, False) is True for flag in (
+            "_use_native_streaming", "_delivery_ambiguous", "delivery_uncertain", "_preview_uncertain",
+            "_egress_declined")):
+        return False
+    if content is None:
+        return True
+    clean = getattr(consumer, "_clean_for_display", None)
+    return _edit_carries_whole(consumer.adapter, chat_id, clean(content) if callable(clean) else content)
 
 
 def _accepts_metadata(edit_message: Any) -> bool:
@@ -65,7 +90,7 @@ async def edit_preview_to_final(adapter: Any, chat_id: str, message_id: str, con
     to the caller's normal send (a repeated head beats a lost tail). Routing ``metadata`` rides on
     every call (a split's continuations stay in the topic). ``still_current`` is re-checked before
     the first edit and after every wait: a turn ``/new`` or ``/stop`` replaced meanwhile publishes
-    nothing more (``None`` is returned, which callers treat as not delivered)."""
+    nothing more and :data:`TURN_REPLACED` is returned."""
     def _current() -> bool:
         return still_current is None or bool(still_current())
 
@@ -73,7 +98,7 @@ async def edit_preview_to_final(adapter: Any, chat_id: str, message_id: str, con
     if metadata and _accepts_metadata(adapter.edit_message):
         kwargs["metadata"] = metadata
     if not _current():
-        return None
+        return TURN_REPLACED
     result = await adapter.edit_message(**kwargs)
     for _ in range(_MAX_FLOOD_WAITS):
         if getattr(result, "success", True):
@@ -85,7 +110,7 @@ async def edit_preview_to_final(adapter: Any, chat_id: str, message_id: str, con
         await asyncio.sleep(wait + _FLOOD_WAIT_SLACK_SECS)
         if not _current():
             logger.info("Streamed preview %s: turn no longer current after the flood wait; not finishing it", message_id)
-            return None
+            return TURN_REPLACED
         raw = getattr(result, "raw_response", None)
         if isinstance(raw, dict) and raw.get("partial_overflow"):
             resumed = await adapter._resume_partial_send(chat_id, result, reply_to=None, metadata=metadata)
@@ -110,8 +135,8 @@ async def edit_streamed_message(consumer: Any, source: Any, response: dict, cont
     except Exception as edit_err:  # health: allow BLE001 -- any edit failure falls back to the normal final send
         logger.warning(fail_exc, sk, edit_err)
         return
-    if result is None:
-        return  # the turn was replaced: its stale-run discard owns what happens next
+    if result is TURN_REPLACED:
+        return  # its stale-run discard owns what happens next
     if not getattr(result, "success", True):
         logger.warning(fail_result, sk, getattr(result, "error", None))
         return

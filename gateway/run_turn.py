@@ -1970,7 +1970,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                     fail_result="Transformed-final edit failed for session %s (%s); sending transformed response via normal final send.",
                     fail_exc="Failed to edit streamed message for session %s: %s",
                 )
-        elif not _transformed and owns_reconcilable_preview(_sc):
+        elif not _transformed and owns_reconcilable_preview(_sc, getattr(source, "chat_id", ""), _final):
             # Unconfirmed final, one real preview on screen (a flood-frozen bubble, a cancelled
             # consumer): finish it in place; a plain final send would post the answer twice.
             await edit_streamed_message(

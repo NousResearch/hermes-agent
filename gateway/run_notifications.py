@@ -355,11 +355,11 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                     and not getattr(stream_consumer, "_turn_split_delivery", False)
                 ):
                     try:
-                        from gateway.run_turn_final_reconcile import edit_preview_to_final
+                        from gateway.run_turn_final_reconcile import TURN_REPLACED, edit_preview_to_final
                         _edit_res = await edit_preview_to_final(
                             adapter, source.chat_id, _sc_msg_id, text_content, metadata,
                             still_current=getattr(stream_consumer, "_run_still_current", None))
-                        if _edit_res is None:
+                        if _edit_res is TURN_REPLACED:
                             # The turn was replaced (/new, /stop) during a flood wait: nothing more is
                             # owed, and False would make the caller re-send this stale answer.
                             return True

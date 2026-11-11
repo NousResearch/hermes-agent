@@ -466,9 +466,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     _IMG_COMPRESS_THRESHOLD_BYTES = 1_048_576  # 1MB
 
     # edit_message applies MarkdownV2 only on finalize=True; without this flag stream_consumer skips
-    # the final edit when raw text is unchanged.
-    # Fixes #25710.
+    # the final edit when raw text is unchanged (#25710).
     REQUIRES_EDIT_FINALIZE: bool = True
+    SPLITS_OVERSIZED_FINAL_EDIT: bool = True  # edit_message(finalize=True) posts the overflow as continuations
     FALLBACK_ON_FINAL_EDIT_FLOOD: bool = True  # retrying a final edit burns the same flood budget
     RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True  # a failed final edit may leave a partial preview
 

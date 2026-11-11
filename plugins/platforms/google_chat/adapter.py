@@ -127,7 +127,7 @@ from gateway.config import Platform, PlatformConfig
 # Register the dynamic enum member at import time so ``Platform.GOOGLE_CHAT``
 # resolves before any adapter instance exists.
 Platform("google_chat")
-from gateway.platforms.helpers import MessageDeduplicator, numbered_clarify_choices
+from gateway.platforms.helpers import MessageDeduplicator, numbered_clarify_choices, send_chunks
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, SendResult, describe_proxy_error, env_proxy_for_redaction,
     cache_audio_from_bytes_async, cache_document_from_bytes_async, cache_image_from_bytes_async,
@@ -727,6 +727,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
             except (gax_exceptions.Unauthenticated, gax_exceptions.PermissionDenied) as exc:
                 code, message = pubsub_fatals[type(exc)]
                 self._set_fatal_error(code=code, message=message, retryable=False)
+                await self._notify_fatal_error()
                 return
             except Exception as exc:
                 attempt += 1
@@ -735,8 +736,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 if attempt >= self._MAX_RECONNECT_ATTEMPTS:
                     self._set_fatal_error(
                         code="pubsub_reconnect_exhausted", message=f"Pub/Sub reconnect failed {attempt} times; giving up",
-                        retryable=False,
+                        retryable=True,
                     )
+                    await self._notify_fatal_error()
                     return
                 delay = min(self._RECONNECT_MAX_DELAY, self._RECONNECT_BASE_DELAY * (2 ** (attempt - 1)))
                 try:
@@ -1077,35 +1079,33 @@ class GoogleChatAdapter(BasePlatformAdapter):
             chunks = self._chunk_text(self.format_message(content))
             if not chunks:
                 return SendResult(success=False, error="empty message")
-            last_result: Optional[SendResult] = None
             typing_msg_name = self._typing_messages.pop(chat_id, None)
             if typing_msg_name == _TYPING_CONSUMED_SENTINEL:
                 typing_msg_name = None
             patched_typing = False
-            for idx, chunk in enumerate(chunks):
+
+            async def _send_one(indexed: tuple[int, str]) -> SendResult:
+                nonlocal typing_msg_name, patched_typing
+                idx, chunk = indexed
                 # Only set thread on the create path; patch inherits.
                 body = _thread_body(chunk, thread_id if (idx > 0 or not typing_msg_name) else None)
                 try:
                     if idx == 0 and typing_msg_name:
-                        last_result = await self._patch_message(typing_msg_name, body)
+                        result = await self._patch_message(typing_msg_name, body)
                         patched_typing = True
-                    else:
-                        last_result = await self._create_message(chat_id, body)
+                        return result
+                    return await self._create_message(chat_id, body)
                 except HttpError as exc:
                     status = _http_status(exc)
                     if status == 403:
-                        self._set_fatal_error(
-                            code="chat_forbidden", message="Bot lacks access (removed from space or perms revoked)",
-                            retryable=False,
-                        )
-                        return SendResult(success=False, error=str(exc))
+                        # Per space (bot removed from it); a revoked credential surfaces on the Pub/Sub stream.
+                        return SendResult(success=False, error=str(exc), retryable=False)
                     if status == 404:
                         # Typing card deleted under us: fall back to a fresh message.
                         if idx == 0 and typing_msg_name:
                             logger.info("[GoogleChat] Typing card disappeared; creating new message")
                             typing_msg_name = None
-                            last_result = await self._create_message(chat_id, body)
-                            continue
+                            return await self._create_message(chat_id, body)
                         logger.info("[GoogleChat] send target 404; skipping")
                         return SendResult(success=False, error="target not found")
                     if status == 429:
@@ -1113,13 +1113,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
                         if hits >= _RATE_LIMIT_WARN_THRESHOLD:
                             logger.warning("[GoogleChat] Rate limit hit %d times on chat; throttling", hits)
                     raise
-            if last_result is None:
-                return SendResult(success=False, error="empty message")
+            result = await send_chunks(list(enumerate(chunks)), _send_one)
             # Sentinel keeps a trailing _keep_typing tick from posting a fresh marker that
             # stop_typing would then delete and tombstone. Cleared in on_processing_complete.
-            if patched_typing:
+            if result.success and patched_typing:
                 self._typing_messages[chat_id] = _TYPING_CONSUMED_SENTINEL
-            return last_result
+            return result
         finally:
             self.resume_typing_for_chat(chat_id)
 

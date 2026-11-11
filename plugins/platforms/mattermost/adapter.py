@@ -21,7 +21,7 @@ from typing import Any, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
-from gateway.platforms.helpers import cancel_task
+from gateway.platforms.helpers import cancel_task, send_chunks
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
@@ -286,12 +286,10 @@ class MattermostAdapter(BasePlatformAdapter):
         """Send a message (or multiple chunks) to a channel; reply_to / metadata["thread_id"] is the root post."""
         if not content:
             return SendResult(success=True)
-        result = SendResult(success=True)
-        for chunk in self.truncate_message(self.format_message(content), MAX_POST_LENGTH):
-            result = _post_result(await self._post_message(chat_id, chunk, reply_to, metadata), "Failed to create post")
-            if not result.success:
-                break
-        return result
+
+        async def _post(chunk: str) -> SendResult:
+            return _post_result(await self._post_message(chat_id, chunk, reply_to, metadata), "Failed to create post")
+        return await send_chunks(self.truncate_message(self.format_message(content), MAX_POST_LENGTH), _post)
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         data = await self._api_get(f"channels/{chat_id}")

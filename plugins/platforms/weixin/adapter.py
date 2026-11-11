@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - dependency gate
 CRYPTO_AVAILABLE = Cipher is not None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_pack_blocks
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task, greedy_pack_blocks, send_chunks
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from agent.i18n import t
 from gateway.platforms.base import (
@@ -1040,7 +1040,6 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not self._send_session or not self._token:
             return SendResult(success=False, error="Not connected")
         context_token = self._token_store.get(self._account_id, chat_id)
-        last_message_id: Optional[str] = None
         # Extract MEDIA: tags and bare local file paths before text delivery, under the routed
         # profile's scope: Docker MEDIA translation infers the sandbox from the active profile (#109024).
         with self._media_delivery_scope(self.build_source(chat_id=chat_id)):
@@ -1057,16 +1056,24 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 except Exception as exc:
                     logger.warning("[%s] %s delivery failed for %s: %s", self.name, label, path, exc)
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
-            for idx, chunk in enumerate(chunks):
-                client_id = f"hermes-weixin-{uuid.uuid4().hex}"
-                await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
-                last_message_id = client_id
-                if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
+
+            async def _send_one(indexed: tuple[int, str]) -> SendResult:
+                idx, chunk = indexed
+                if idx and self._send_chunk_delay_seconds > 0:
                     await asyncio.sleep(self._send_chunk_delay_seconds)
-            return SendResult(success=True, message_id=last_message_id)
-        except Exception as exc:
-            logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), shown := describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or str(exc))
-            return SendResult(success=False, error=shown)  # the text may echo the proxy URL
+                client_id = f"hermes-weixin-{uuid.uuid4().hex}"
+                try:
+                    await self._send_text_chunk(chat_id=chat_id, chunk=chunk, context_token=context_token, client_id=client_id)
+                except Exception as exc:  # health: allow BLE001 -- adapter boundary: an SDK send failure becomes a failed SendResult
+                    return self._send_failure(chat_id, exc)
+                return SendResult(success=True, message_id=client_id)
+            return await send_chunks(list(enumerate(chunks)), _send_one) if chunks else SendResult(success=True)
+        except Exception as exc:  # health: allow BLE001 -- adapter boundary: an SDK send failure becomes a failed SendResult
+            return self._send_failure(chat_id, exc)
+
+    def _send_failure(self, chat_id: str, exc: Exception) -> SendResult:
+        logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), shown := describe_proxy_error(exc, env_proxy_for_redaction(self._base_url, self._cdn_base_url, trust_env=gateway_trust_env())) or str(exc))
+        return SendResult(success=False, error=shown)  # the text may echo the proxy URL
 
     async def _ensure_typing_ticket(self, chat_id: str) -> Optional[str]:
         """Return a valid typing ticket, refreshing via getConfig once the 600s TTL evicts it —

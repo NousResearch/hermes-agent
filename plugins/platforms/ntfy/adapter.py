@@ -167,7 +167,7 @@ class NtfyAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 return
             except _FatalStreamError:
-                self._running = False
+                await self._notify_fatal_error()
                 return
             except Exception as e:
                 if not self._running:

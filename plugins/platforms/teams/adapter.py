@@ -55,7 +55,7 @@ HttpRequest = HttpResponse = HttpRouteHandler = AdaptiveCard = ExecuteAction = T
 HttpMethod = str  # type: ignore[assignment,misc]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.helpers import MessageDeduplicator, send_chunks
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
     describe_proxy_error, env_proxy_for_redaction)
@@ -728,23 +728,22 @@ class TeamsAdapter(BasePlatformAdapter):
     ) -> SendResult:
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
-        last_message_id = None
-        for chunk in self.truncate_message(self.format_message(content)):
+
+        async def _send_one(chunk: str) -> SendResult:
             try:
                 if reply_to and reply_to.isdigit() and reply_to != "0":
                     try:
                         result = await self._app.reply(chat_id, reply_to, chunk)
-                    except Exception as reply_err:
-                        # Group chats 400 on threaded sends; the SDK has no typed HTTP errors → fall back on any.
+                    except Exception as reply_err:  # health: allow BLE001 -- group chats reject threaded sends and the SDK has no typed HTTP errors
                         logger.debug("Teams reply() failed, falling back to flat send: %s", reply_err)
                         result = await self._app.send(chat_id, chunk)
                 else:
                     result = await self._app.send(chat_id, chunk)
-                last_message_id = getattr(result, "id", None)
                 self._remember_sent(result)
-            except Exception as e:  # the SDK's httpx client reads HTTPS_PROXY: the text may echo it
+                return SendResult(success=True, message_id=getattr(result, "id", None))
+            except Exception as e:  # health: allow BLE001 -- adapter boundary: an SDK send failure becomes a failed SendResult
                 return SendResult(success=False, error=describe_proxy_error(e, env_proxy_for_redaction(*_TEAMS_SDK_URLS)) or str(e), retryable=True)
-        return SendResult(success=True, message_id=last_message_id)
+        return await send_chunks(self.truncate_message(self.format_message(content)), _send_one)
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
         if self._app:

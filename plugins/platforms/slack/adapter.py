@@ -48,7 +48,7 @@ from gateway.platforms._shared import (
     platform_gate_env as _scoped_gate_env, send_error
 )
 from gateway.platforms.base_log_safety import safe_url_for_log
-from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices
+from gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices, send_chunks
 from plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from gateway.platforms.base import (
@@ -2217,7 +2217,6 @@ class SlackAdapter(BasePlatformAdapter):
         if blocked:
             return blocked
         chat_id = await self._dm_target(chat_id, metadata)
-        thread_ts = None
         try:
             team_id = self._metadata_team_id(metadata)
             slash_ctx = self._pop_slash_context(chat_id, team_id)
@@ -2230,20 +2229,20 @@ class SlackAdapter(BasePlatformAdapter):
                 return stream_result
             formatted = self.format_message(content)
             if not formatted or not formatted.strip():
-                # Slack returns ``no_text`` for blank posts; still the end of a
-                # delivery attempt, so the "is thinking..." status must clear.
+                # Slack returns ``no_text`` for blank posts; still the end of a delivery attempt (e.g. "(empty)"
+                # final responses are filtered upstream), so the "is thinking..." status must clear (#24117).
                 await self._clear_thread_status_quietly(chat_id, metadata)
-                # This is still the end of a delivery attempt: if the turn produced no visible text (e.g.
-                # "(empty)" final responses are filtered upstream), the assistant thread status must not
-                # stay stuck on "is thinking..." (#24117).
                 return SendResult(success=True)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            last_result = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts)
+            posted = await self._post_chunks(chat_id, team_id, content, formatted, thread_ts)
+            if not posted.success:
+                await self._clear_thread_status_quietly(chat_id, metadata)
+                return posted
+            last_result = posted.raw_response
             # Clear Slack Assistant status as soon as the final message is posted.
             if thread_ts:
                 await self.stop_typing(chat_id, metadata=metadata)
-            # Track sent ts (and the thread root) so thread replies get answered
-            # without an @mention.
+            # Track sent ts (and the thread root) so thread replies get answered without an @mention.
             sent_ts = last_result.get("ts") if last_result else None
             if sent_ts:
                 self._bot_message_ts.add(self._workspace_message_marker(team_id, sent_ts))
@@ -2251,32 +2250,31 @@ class SlackAdapter(BasePlatformAdapter):
                     self._bot_message_ts.add(self._workspace_message_marker(team_id, thread_ts))
                 self._trim_bot_message_timestamps()
             return SendResult(success=True, message_id=sent_ts, raw_response=last_result)
-        except Exception as e:  # pragma: no cover - defensive logging
-            # Clear the status even when the failure preceded thread_ts resolution:
-            # stop_typing falls back to metadata / the uniquely tracked status.
+        except Exception as e:  # health: allow BLE001 -- adapter boundary: an SDK send failure becomes a failed SendResult
+            # Clear the status even when the failure preceded thread_ts resolution (formatting, slash-context,
+            # DM resolution): stop_typing falls back to metadata / the uniquely tracked status (#24117).
             await self._clear_thread_status_quietly(chat_id, metadata)
-            # Clear the assistant status even when the failure happened BEFORE thread_ts was resolved
-            # (formatting, slash-context, DM resolution): stop_typing falls back to metadata / the uniquely
-            # tracked status for this channel, so a failed turn cannot leave "is thinking..." visible
-            # (#24117).
-            logger.error("[Slack] Send error: %s", e, exc_info=True)
-            _retryable = self._is_retryable_upload_error(e)
-            return SendResult(
-                success=False, error=str(e), retryable=_retryable,
-                retry_after=self._retry_after_from_exc(e) if _retryable else None)
+            return self._send_error_result(e)
+
+    def _send_error_result(self, e: Exception) -> SendResult:
+        logger.error("[Slack] Send error: %s", e, exc_info=True)
+        retryable = self._is_retryable_upload_error(e)
+        return SendResult(success=False, error=str(e), retryable=retryable,
+                          retry_after=self._retry_after_from_exc(e) if retryable else None)
 
     async def _post_chunks(
         self, chat_id: str, team_id: str, content: str, formatted: str, thread_ts: Optional[str]
-    ) -> Any:
-        """``chat.postMessage`` each ``MAX_MESSAGE_LENGTH`` chunk; returns the last response.
+    ) -> SendResult:
+        """``chat.postMessage`` each ``MAX_MESSAGE_LENGTH`` chunk via ``send_chunks`` (last response: ``raw_response``).
         Block Kit only for single-chunk messages (a >39k response is pathological for the 50-block /
         3000-char limits); ``text`` stays the notification/accessibility fallback. With
         ``reply_broadcast`` only the first chunk is also posted to the main channel."""
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         broadcast = self.config.extra.get("reply_broadcast", False)
         blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
-        last_result = None
-        for i, chunk in enumerate(chunks):
+
+        async def _post(indexed: tuple[int, str]) -> SendResult:
+            i, chunk = indexed
             kwargs = {
                 "channel": chat_id, "text": chunk,
                 "mrkdwn": True, **_slack_unfurl_kwargs(self.config.extra)}
@@ -2286,10 +2284,12 @@ class SlackAdapter(BasePlatformAdapter):
                 kwargs["thread_ts"] = thread_ts
                 if broadcast and i == 0:
                     kwargs["reply_broadcast"] = True
-            client_fn = lambda: self._get_client(chat_id, team_id=team_id)
-            last_result = await self._call_with_block_fallback(
-                client_fn, "chat_postMessage", kwargs, "send")
-        return last_result
+            try:
+                return SendResult(success=True, raw_response=await self._call_with_block_fallback(
+                    lambda: self._get_client(chat_id, team_id=team_id), "chat_postMessage", kwargs, "send"))
+            except Exception as e:  # health: allow BLE001 -- adapter boundary: an SDK send failure becomes a failed SendResult
+                return self._send_error_result(e)
+        return await send_chunks(list(enumerate(chunks)), _post)
 
     @staticmethod
     def _retry_after_from_exc(e: BaseException) -> Optional[float]:

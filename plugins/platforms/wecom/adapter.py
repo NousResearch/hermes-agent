@@ -346,7 +346,8 @@ class WeComAdapter(WeComStreamMixin, WeComMediaMixin, ChatSendQueueMixin, OwnAcc
             # Kicked by server (another connection exists): suppress reconnect like the official SDK.
             if str((payload.get("body") or {}).get("event_type") or "") == "disconnected_event":
                 logger.warning("[%s] Kicked by server (another WS connection established). Suppressing reconnect to avoid mutual kicking. Check for duplicate gateway instances.", self.name)
-                self._running = False
+                self._set_fatal_error("wecom_kicked", "Another WeCom connection for this bot replaced this one; check for duplicate gateway instances.", retryable=False)
+                await self._notify_fatal_error()
         elif cmd != APP_CMD_PING:
             logger.info("[%s] Unrouted websocket payload dropped: cmd=%r req_id=%s body_keys=%s", self.name, cmd or "(empty)", req_id or "(none)", list(body_dict.keys()) if body_dict is not None else None)
 

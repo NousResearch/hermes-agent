@@ -77,7 +77,7 @@ from gateway.platforms.base import (
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, safe_proxy_url_for_log, ssrf_redirect_guard, describe_proxy_error,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from gateway.platforms.helpers import ThreadParticipationTracker
+from gateway.platforms.helpers import ThreadParticipationTracker, send_chunks
 from plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
 from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
@@ -1376,26 +1376,28 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
         if not content:
             return SendResult(success=True)
-        last_event_id = None
-        for chunk in self.truncate_message(
-                self.format_message(content), self.max_message_length, len_fn=self.message_len_fn):
+
+        async def _send_one(chunk: str) -> SendResult:
             msg_content = self._build_text_message_content(chunk)
             self._apply_relation_metadata(msg_content, reply_to=reply_to, metadata=metadata)
             try:
-                last_event_id = await self._send_room_message(chat_id, msg_content)
-                logger.info("Matrix: sent event %s to %s", last_event_id, chat_id)
-            except Exception as exc:
+                event_id = await self._send_room_message(chat_id, msg_content)
+                logger.info("Matrix: sent event %s to %s", event_id, chat_id)
+                return SendResult(success=True, message_id=event_id)
+            except Exception as exc:  # health: allow BLE001 -- adapter boundary: an SDK send failure becomes a failed SendResult
                 if not (self._encryption and getattr(self._client, "crypto", None)):
                     logger.error("Matrix: failed to send to %s: %s", chat_id, exc)
                     return SendResult(success=False, error=str(exc))
                 try:  # E2EE error: retry once after sharing keys
                     await self._client.crypto.share_keys()
-                    last_event_id = await self._send_room_message(chat_id, msg_content)
-                    logger.info("Matrix: sent event %s to %s (after key share)", last_event_id, chat_id)
-                except Exception as retry_exc:
+                    event_id = await self._send_room_message(chat_id, msg_content)
+                    logger.info("Matrix: sent event %s to %s (after key share)", event_id, chat_id)
+                    return SendResult(success=True, message_id=event_id)
+                except Exception as retry_exc:  # health: allow BLE001 -- adapter boundary: an SDK send failure becomes a failed SendResult
                     logger.error("Matrix: failed to send to %s after retry: %s", chat_id, retry_exc)
                     return SendResult(success=False, error=str(retry_exc))
-        return SendResult(success=True, message_id=last_event_id)
+        return await send_chunks(self.truncate_message(
+            self.format_message(content), self.max_message_length, len_fn=self.message_len_fn), _send_one)
 
     async def _send_room_message(self, chat_id: str, msg_content: dict[str, Any]) -> str:
         """Send one m.room.message event (45s cap) and return its event ID as str."""
@@ -1867,6 +1869,8 @@ class MatrixAdapter(BasePlatformAdapter):
                 # Detect permanent auth/permission failures. Transient 5xx outages must retry.
                 if _is_permanent_matrix_auth_error(exc):
                     logger.error("Matrix: permanent auth error, stopping sync: %s", describe_proxy_error(exc, matrix_redaction_proxy(self._proxy_url, self._homeserver)) or exc)
+                    self._set_fatal_error("matrix_auth_error", "Matrix homeserver rejected the bot's credentials; check MATRIX_ACCESS_TOKEN or MATRIX_PASSWORD.", retryable=False)
+                    await self._notify_fatal_error()
                     return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", describe_proxy_error(exc, matrix_redaction_proxy(self._proxy_url, self._homeserver)) or exc)
                 await asyncio.sleep(5)

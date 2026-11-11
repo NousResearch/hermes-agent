@@ -115,6 +115,12 @@ The adapter is a subclass of `BasePlatformAdapter` from `gateway/platforms/base.
 | `send_image(chat_id, image_url, caption) -> SendResult` | Send an image |
 | `get_chat_info(chat_id) -> dict` | Return `{name, type, chat_id}` for a chat |
 
+A receive loop that stops for good calls `self._set_fatal_error(code, message, retryable=...)` and then
+`await self._notify_fatal_error()`: the gateway learns of a failure after startup only through that
+handler, which reconnects a retryable failure in the background and parks or exits on the rest. A
+`send()` that splits a message sends the chunks through `gateway.platforms.helpers.send_chunks`, so a
+failure after earlier chunks landed is never re-sent from the start.
+
 ### Optional methods (have default stubs in base)
 
 | Method | Purpose |

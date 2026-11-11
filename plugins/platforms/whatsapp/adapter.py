@@ -285,7 +285,7 @@ from gateway.whatsapp_identity import normalize_whatsapp_mention_jid, to_whatsap
 from gateway.platforms.base import (
     BasePlatformAdapter, SendResult, SUPPORTED_DOCUMENT_TYPES, cache_image_from_url, cache_audio_from_url,
 )
-from gateway.platforms.helpers import cancel_task
+from gateway.platforms.helpers import cancel_task, send_chunks
 from gateway.platforms.event import MessageEvent, MessageType
 from utils import env_int
 
@@ -907,20 +907,24 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         try:
             chunks = self.truncate_message(self.format_message(content), self._outgoing_chunk_limit())
             sent_message_ids: list[str] = []
-            last_message_id = None
-            for idx, chunk in enumerate(chunks):
+
+            async def _send_one(indexed: tuple[int, str]) -> SendResult:
+                idx, chunk = indexed
+                if idx:
+                    await asyncio.sleep(0.3)  # avoid rate limiting between chunks
                 payload: dict[str, Any] = {"chatId": chat_id, "message": chunk}
                 if reply_to and idx == 0:
                     payload["replyTo"] = reply_to  # Reply-to on the first chunk only.
                 result = await self._post_bridge_message("send", payload, timeout=30)
                 if not result.success:
                     return SendResult(success=False, error=result.error)
-                last_message_id = result.message_id
-                if last_message_id:
-                    sent_message_ids.append(str(last_message_id))
-                if len(chunks) > 1:
-                    await asyncio.sleep(0.3)  # avoid rate limiting between chunks
-            return SendResult(success=True, message_id=last_message_id, continuation_message_ids=tuple(sent_message_ids[:-1]),
+                if result.message_id:
+                    sent_message_ids.append(str(result.message_id))
+                return result
+            result = await send_chunks(list(enumerate(chunks)), _send_one)
+            if not result.success:
+                return result
+            return SendResult(success=True, message_id=result.message_id, continuation_message_ids=tuple(sent_message_ids[:-1]),
                               raw_response={"message_ids": sent_message_ids})
         except Exception as e:
             return SendResult(success=False, error=str(e))

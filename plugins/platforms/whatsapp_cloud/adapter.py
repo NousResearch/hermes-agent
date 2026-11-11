@@ -44,7 +44,7 @@ from gateway.platforms._shared import config_connected_extra
 from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
 from gateway.platforms.base_exec_approval import ea_header_text
-from gateway.platforms.helpers import bounded_put
+from gateway.platforms.helpers import bounded_put, send_chunks
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
@@ -370,7 +370,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         formatted = self.format_message(content)
         last_message_id: Optional[str] = None
-        for idx, chunk in enumerate(self.truncate_message(formatted, self._outgoing_chunk_limit())):
+
+        async def _send_one(indexed: tuple[int, str]) -> SendResult:
+            nonlocal last_message_id
+            idx, chunk = indexed
             # Quote the user's message on the first chunk only.
             payload = self._outbound_payload(
                 chat_id, "text", {"body": chunk, "preview_url": True}, reply_to if idx == 0 else None
@@ -383,6 +386,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if err is not None:
                 return SendResult(success=False, error=err)
             last_message_id = ids[0].get("id") if ids else last_message_id
+            return SendResult(success=True, message_id=last_message_id)
+        result = await send_chunks(list(enumerate(self.truncate_message(formatted, self._outgoing_chunk_limit()))), _send_one)
+        if not result.success:
+            return result
         # Index (chat_id, wamid) → text: Meta's inbound ``context`` carries only the
         # quoted message's id, so this is how replies to our messages resolve text.
         if last_message_id:

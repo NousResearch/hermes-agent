@@ -45,7 +45,7 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import strip_markdown
-from gateway.platforms.helpers import MessageDeduplicator, cancel_task, platform_http_client
+from gateway.platforms.helpers import MessageDeduplicator, cancel_task, platform_http_client, send_chunks
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from gateway.platforms.media_cache import ext_for_mime
 
@@ -358,6 +358,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                         self._set_fatal_error(
                             "qq_quick_disconnect", "Too many quick disconnects — check bot permissions", retryable=True
                         )
+                        await self._notify_fatal_error()
                         return
                 else:
                     quick_disconnect_count = 0
@@ -369,12 +370,13 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 if desc:
                     logger.error("[%s] Bot is %s. Check QQ Open Platform.", self._log_tag, desc)
                     self._set_fatal_error(f"qq_{desc}", f"Bot is {desc}", retryable=False)
+                    await self._notify_fatal_error()
                     return
 
                 if code == 4008:
                     logger.info("[%s] Rate limited (4008), waiting %ds", self._log_tag, RATE_LIMIT_DELAY)
                     if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        self._mark_disconnected()
+                        await self._reconnect_exhausted()
                         return
                     await asyncio.sleep(RATE_LIMIT_DELAY)
                     await reconnect()
@@ -393,7 +395,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                 await reconnect()
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached (QQCloseError)", self._log_tag)
-                    self._mark_disconnected()
+                    await self._reconnect_exhausted()
                     return
 
             except Exception as exc:
@@ -405,9 +407,14 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
                 if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
                     logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                    self._mark_disconnected()
+                    await self._reconnect_exhausted()
                     return
                 await reconnect()
+
+    async def _reconnect_exhausted(self) -> None:
+        """Hand the dead connection to the gateway, whose reconnect watcher retries it."""
+        self._set_fatal_error("qq_reconnect_exhausted", "QQ Bot WebSocket reconnect attempts exhausted", retryable=True)
+        await self._notify_fatal_error()
 
     async def _reconnect(self, backoff_idx: int) -> bool:
         delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
@@ -1368,13 +1375,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             return SendResult(success=True)
 
         chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH)
-        last_result = SendResult(success=False, error="No chunks")
-        for chunk in chunks:
-            last_result = await self._send_chunk(chat_id, chunk, reply_to)
-            if not last_result.success:
-                return last_result
-            reply_to = None  # only reply_to the first chunk
-        return last_result
+        reply_targets = iter([reply_to])  # only the first chunk replies
+        return await send_chunks(chunks, lambda chunk: self._send_chunk(chat_id, chunk, next(reply_targets, None)))
 
     _PERMANENT_SEND_ERRORS = ("invalid", "forbidden", "not found")
 

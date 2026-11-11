@@ -3,7 +3,7 @@ repo: https://github.com/mindsocket/hermes-live-artifacts
 sha: a5f163e9f403053c3b3886557ca8d84fda5e8fae
 subdir: plugin
 title: Live Artifacts
-description: Create and use interactive artifacts - pages, designs and dashboards - in your sessions.
+description: "Create and use interactive artifacts - pages, designs and dashboards - in your sessions. Disclosure — runs a local web listener (default 127.0.0.1:47318) serving agent-written pages; anyone holding a page link can open it and write to its data store with no sign-in, so keep it on loopback or a private tailnet; pages may load scripts from public CDNs (cdnjs, jsdelivr, unpkg, Tailwind, jQuery, Plotly) inside a sandboxed frame; page-side MCP tool calls run only for servers you add to `plugins.entries.live-artifacts.mcp_allowlist`."
 maintainer: mindsocket
 tier: community
 category: tools

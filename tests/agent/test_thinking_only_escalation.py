@@ -120,6 +120,44 @@ def test_reasoning_off_override_is_one_shot_on_the_wire():
     assert _reasoning_config_for_wire(agent) == {"enabled": True, "effort": "medium"}
 
 
+def test_post_tool_reminder_is_its_own_block_on_anthropic_messages():
+    from agent.turn_empty_response import add_empty_response_retry_hint
+
+    tool_tail = [
+        {"role": "user", "content": "Read the file"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "t1", "type": "function",
+                                                            "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "The secret word is PELICAN."},
+    ]
+
+    agent = _FakeAgent()
+    agent.api_mode = "anthropic_messages"
+    agent._empty_response_retry_hint = _CODEX_INCOMPLETE_NUDGE
+    sent = [dict(m) for m in tool_tail]
+    add_empty_response_retry_hint(agent, sent)
+    assert sent[2]["content"] == "The secret word is PELICAN."  # tool output untouched
+    assert sent[3] == {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE}
+
+    from agent.anthropic_message_convert import convert_messages_to_anthropic
+
+    _, converted = convert_messages_to_anthropic(sent)
+    last = converted[-1]
+    assert last["role"] == "user"
+    kinds = [b.get("type") for b in last["content"]]
+    assert kinds[0] == "tool_result" and "text" in kinds[1:]  # one user turn: tool_result, then the reminder
+
+
+def test_post_tool_reminder_stays_on_the_tail_for_chat_completions():
+    from agent.turn_empty_response import add_empty_response_retry_hint
+
+    agent = _FakeAgent()  # api_mode chat_completions
+    agent._empty_response_retry_hint = _CODEX_INCOMPLETE_NUDGE
+    sent = [{"role": "user", "content": "q"}, {"role": "tool", "tool_call_id": "t1", "content": "out"}]
+    add_empty_response_retry_hint(agent, sent)
+    assert [m["role"] for m in sent] == ["user", "tool"]
+    assert sent[-1]["content"].endswith(_CODEX_INCOMPLETE_NUDGE)
+
+
 def test_reasoning_off_reaches_request_on_reasoning_capable_route():
     from agent.transports.chat_completions import ChatCompletionsTransport
 

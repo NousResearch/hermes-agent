@@ -1,21 +1,21 @@
 name: voicestudio-tts
 repo: https://github.com/EternalShade3D/voicestudio-hermes-plugin
-sha: "8d97e1ff69fb20f20812cfddec4e2c4e0d216fa4"
+sha: "ddb3f362d2bc85fb64ed6abc81b17ca1778f8924"
 description: >-
   VoiceStudio TTS provider for Hermes: registers a TTS provider so replies can be read aloud, or
-  auto-spoken, in the user's own voices from the local VoiceStudio app, per profile. Reads saved
-  voices from GET /profiles and synthesizes through POST /generate; /voicestudio refresh writes
-  those names into the manifest's choices list, which turns the voice setting into a dropdown.
-  Disclosure — sends the reply text, the voice id (profile_id) and the engine name when one is
-  configured to the local server (default http://127.0.0.1:3900, plain HTTP), and reads the voice
-  list from that same server; no credentials, no telemetry, no other network calls, and no
-  self-update of code. Rewrites only the choices list inside its own plugin.yaml, and only on the
-  user's explicit command.
+  auto-spoken, in the user's own voices from the local VoiceStudio app, per profile. Settings are
+  read through ctx.get_config, voices through GET /profiles, audio through POST /generate.
+  /voicestudio refresh stores the voice list in the plugin's own state; it copies the list into the
+  plugin's plugin.yaml only when the user turns on sync_dropdown, which is off by default and is
+  what turns the voice setting into a dropdown. Disclosure - sends the reply text, the voice id and
+  the engine name when one is configured to the local server (default http://127.0.0.1:3900, plain
+  HTTP); no credentials, no telemetry, no other network calls, no extra dependency, no self-update
+  of code.
 maintainer: EternalShade3D
 tier: community
 category: voice
 requires_hermes: ">=0.21"
-version: "1.1.0"
+version: "1.2.0"
 docs_url: https://github.com/EternalShade3D/voicestudio-hermes-plugin#readme
 readme: true
 platforms: []

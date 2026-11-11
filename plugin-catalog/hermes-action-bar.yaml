@@ -1,6 +1,6 @@
 name: hermes-action-bar
 repo: https://github.com/fquresh/hermes-action-bar
-sha: 9faefea7c01007c1eb0e25e1b7693e5e0c3a2ceb
+sha: 49297c042fa6fbdd45ba5f0504ae33f2c22e66e6
 title: "Action Bar"
 description: 'A selection bar for Hermes Desktop with two kinds of action. Select text in a chat and a small bar appears: Reply, Ask, Explain, Summarize, Fact-check, Copy. Reply keeps the quote and one comment as a card above the composer; the cards go in front of your message as Markdown blockquotes when you send, so several passages each get their own comment in one message. Ask and the fixed actions open an answer card next to the highlight, with follow-up questions: the answer does not enter the chat and the agent does not see it, unless you click Send to chat, which puts it in the composer without sending. Actions are a label and a prompt, editable on a settings page, with an optional research set. Desktop-only (desktop/plugin.js inside the plugin SDK surface): no agent tools, hooks or env vars. Disclosure: reads window.getSelection() and the selection rectangle; an answer card sends the selected text (cut at 6000 characters), up to 4000 characters of the text around it and the earlier turns of that card to your configured model through the stateless llm.oneshot request (the model of the open chat, else the auxiliary model), and writes nothing to the session; Reply and Copy send nothing; a composer.middleware handler prepends pending replies on send and defuses @kind: references in quotes so a quote cannot attach a file; the action list and the scope setting are saved in ctx.storage; a link in an answer opens through ctx.os.openExternal only on click; Copy writes the clipboard. No other network calls, no credentials, no telemetry.'
 maintainer: fquresh
@@ -8,11 +8,12 @@ tier: community
 category: desktop
 version: "0.1.0"
 docs_url: https://github.com/fquresh/hermes-action-bar#readme
+image: https://raw.githubusercontent.com/fquresh/hermes-action-bar/49297c042fa6fbdd45ba5f0504ae33f2c22e66e6/docs/media/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/9faefea7c01007c1eb0e25e1b7693e5e0c3a2ceb/docs/media/bar.jpg
-  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/9faefea7c01007c1eb0e25e1b7693e5e0c3a2ceb/docs/media/reply-cards.jpg
-  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/9faefea7c01007c1eb0e25e1b7693e5e0c3a2ceb/docs/media/answer-card.jpg
-  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/9faefea7c01007c1eb0e25e1b7693e5e0c3a2ceb/docs/media/settings.jpg
+  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/49297c042fa6fbdd45ba5f0504ae33f2c22e66e6/docs/media/bar.jpg
+  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/49297c042fa6fbdd45ba5f0504ae33f2c22e66e6/docs/media/reply-cards.jpg
+  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/49297c042fa6fbdd45ba5f0504ae33f2c22e66e6/docs/media/answer-card.jpg
+  - https://raw.githubusercontent.com/fquresh/hermes-action-bar/49297c042fa6fbdd45ba5f0504ae33f2c22e66e6/docs/media/settings.jpg
 platforms: [linux, macos, windows]
 capabilities:
   provides_tools: []

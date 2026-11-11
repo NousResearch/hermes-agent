@@ -584,7 +584,7 @@ services.hermes-agent = {
 
 - **插件。** `plugins.enabled` 和 `plugins.disabled` 按集合合并。你在运行时启用或禁用的插件保持不变，之后 Nix 新增的插件仍会加入。
 - **`.env`。** 每个变量都适用相同的规则。你自己的变量和注释保持原位。新的 Nix 变量追加在 `# Added by the Nix base` 注释下方。如果某个 `environmentFiles` 条目在激活时无法读取（例如密钥尚未解密），它提供的变量保持原样。
-- **恢复为 Nix 值。** 执行 `hermes config unset <key>`。Nix 值会在下一次激活时恢复，或者运行 `hermes-nix-sync` 立即恢复。Home Manager 上的 `programs.hermes-agent.enable` 和 NixOS 上的 `addToSystemPackages` 会安装 `hermes-nix-sync`。
+- **恢复为 Nix 值。** 执行 `hermes config unset <key>`。Nix 值会在下一次激活时恢复，或者运行 `hermes-nix-sync` 立即恢复。Home Manager 上的 `programs.hermes-agent.enable` 和 NixOS 上的 `addToSystemPackages` 会安装 `hermes-nix-sync`。在 NixOS 上，请以 root（`sudo hermes-nix-sync`）或服务用户身份运行它。root 可以读取所有密钥文件，命令结束后会把文件交还给服务用户。
 - **删除 Nix 设置的键。** 请改为设置一个明确的值。被删除的键会从 Nix 恢复。
 
 激活不会写入 `.managed` 标记，服务带有 `HERMES_MANAGED=false`。以下几点仍然成立：

@@ -822,6 +822,12 @@ let
   # `hermes-nix-sync`: the merge of the current generation, on demand. Use it
   # after `hermes config unset` to get the Nix value back without a rebuild.
   # A secret file that the caller cannot read keeps its keys as they are.
+  #
+  # owner is "user:group" when a service user owns the state (NixOS), else
+  # null. The record in .nix-base is 0700 to that user. So only root or that
+  # user can run the merge. Root reads every secret file and then returns the
+  # files to the owner, like activation does. Any other user gets the command
+  # to run, and not a Python traceback.
   mkSyncCommand =
     {
       pkgs,
@@ -829,9 +835,19 @@ let
       hermesHome,
       configWorkingDirectory,
       modes,
+      owner ? null,
     }:
+    let
+      user = lib.head (lib.splitString ":" owner);
+    in
     pkgs.writeShellScriptBin "hermes-nix-sync" ''
       set -eu
+      ${lib.optionalString (owner != null) ''
+        if [ "$(id -u)" != 0 ] && [ "$(id -un)" != ${lib.escapeShellArg user} ]; then
+          echo "hermes-nix-sync: run it as root (sudo hermes-nix-sync) or as ${user}" >&2
+          exit 1
+        fi
+      ''}
       ${mkLayerCommands {
         inherit
           pkgs
@@ -841,6 +857,13 @@ let
           modes
           ;
       }}
+      ${lib.optionalString (owner != null) ''
+        if [ "$(id -u)" = 0 ]; then
+          chown ${owner} ${hermesHome}/config.yaml
+          chown ${owner} ${hermesHome}/.env 2>/dev/null || true
+          chown -R ${owner} ${hermesHome}/.nix-base
+        fi
+      ''}
     '';
 
   # ── Documents ───────────────────────────────────────────────────────────

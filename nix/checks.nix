@@ -1413,6 +1413,7 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             activation = cfg.system.activationScripts."hermes-agent-setup".text;
             unitEnv = cfg.systemd.services.hermes-agent.environment;
             packageNames = map (p: p.name or "") cfg.environment.systemPackages;
+            sync = lib.findFirst (p: (p.name or "") == "hermes-nix-sync") null cfg.environment.systemPackages;
 
             failures =
               lib.optional (!lib.hasInfix "hermes-config-layer" activation)
@@ -1436,6 +1437,17 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
             else
               ''
                 echo "PASS: the imperative configMode merges, and keeps the group modes"
+
+                # The build user is neither root nor the service user. The
+                # state is 0700 to the service user, so the command must stop
+                # with the command to run, and touch nothing.
+                if OUTPUT=$(${sync}/bin/hermes-nix-sync 2>&1); then
+                  echo "FAIL: hermes-nix-sync ran as a user that cannot own the state"; exit 1
+                fi
+                echo "$OUTPUT" | grep -q "sudo hermes-nix-sync" \
+                  || (echo "FAIL: hermes-nix-sync must name the command to run"; echo "$OUTPUT"; exit 1)
+                echo "PASS: hermes-nix-sync refuses a foreign user with the command to run"
+
                 mkdir -p $out
                 echo "ok" > $out/result
               ''

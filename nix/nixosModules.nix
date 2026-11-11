@@ -79,6 +79,7 @@
         inherit pkgs cfg hermesHome;
         configWorkingDirectory = effectiveWorkDir;
         modes = stateModes;
+        owner = "${cfg.user}:${cfg.group}";
       };
 
       containerName = "hermes-agent";

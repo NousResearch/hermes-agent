@@ -646,7 +646,7 @@ Other rules:
 
 - **Plugins.** `plugins.enabled` and `plugins.disabled` merge as sets. A plugin you enable or disable at runtime stays that way, and a plugin that Nix adds later still arrives.
 - **`.env`.** The same rules apply per variable. Your own variables and comments stay where they are. New Nix variables are appended under a `# Added by the Nix base` comment. If an `environmentFiles` entry cannot be read at activation, for example because a secret is not decrypted yet, its variables are left as they were.
-- **Return to the Nix value.** Run `hermes config unset <key>`. The Nix value comes back at the next activation, or at once with `hermes-nix-sync`. `programs.hermes-agent.enable` on Home Manager and `addToSystemPackages` on NixOS install `hermes-nix-sync`.
+- **Return to the Nix value.** Run `hermes config unset <key>`. The Nix value comes back at the next activation, or at once with `hermes-nix-sync`. `programs.hermes-agent.enable` on Home Manager and `addToSystemPackages` on NixOS install `hermes-nix-sync`. On NixOS, run it as root (`sudo hermes-nix-sync`) or as the service user. Root can read every secret file, and the command gives the files back to the service user afterwards.
 - **Remove a key that Nix sets.** Set it to an explicit value instead. A deleted key comes back from Nix.
 
 Activation writes no `.managed` marker, and the services carry `HERMES_MANAGED=false`. These still hold:

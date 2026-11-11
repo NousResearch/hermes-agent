@@ -7,6 +7,7 @@ messages can instead arrive with an empty ``text`` and their content in ``rich_m
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
@@ -16,70 +17,112 @@ from typing import Any
 # (valid JSON thousands of levels deep) cannot hit the recursion limit and drop the whole update.
 _MAX_RICH_DEPTH = 64
 _CODE_TYPES = frozenset({"code", "pre"})
+# A rich link label is a text_link, not a bot_command or mention. Only the
+# entity-synthesis view masks it; the agent-visible text keeps its anchor.
+_ADDRESSING_MASK_TYPES = _CODE_TYPES | frozenset({"url", "link", "text_link"})
+# Stands in for skipped code: leading content like the code in plain text, never whitespace, a separator or a handle.
+_CODE_PLACEHOLDER = "\ufffc"
 
 
-def _rich_inline(value: Any, depth: int = 0, skip_code: bool = False) -> str:
+def _rich_inline(value: Any, depth: int = 0, skip_code: bool = False, urls: bool = True) -> str:
     """Plain text of a rich ``text`` value: a string, a list of runs, or a span dict (bold, link…)
     whose content sits in ``text`` or ``children``, falling back to a link's ``url``, a math
-    ``expression`` or a custom emoji's ``alternative_text``. ``skip_code`` blanks ``code``/``pre`` spans."""
+    ``expression`` or a custom emoji's ``alternative_text``. ``skip_code`` masks ``code``/``pre`` and linked-label spans with a placeholder;
+    ``urls`` inlines a hidden link's URL after its anchor."""
     if depth > _MAX_RICH_DEPTH:
         return ""
     if isinstance(value, str):
         return value
     if isinstance(value, list):
-        return "".join(_rich_inline(part, depth + 1, skip_code) for part in value)
+        return "".join(_rich_inline(part, depth + 1, skip_code, urls) for part in value)
     if isinstance(value, Mapping):
-        if skip_code and value.get("type") in _CODE_TYPES:
-            return " "
+        if skip_code and value.get("type") in _ADDRESSING_MASK_TYPES:
+            return _CODE_PLACEHOLDER
         for key in ("text", "children"):
             if value.get(key) is not None:
-                text = _rich_inline(value[key], depth + 1, skip_code)
+                text = _rich_inline(value[key], depth + 1, skip_code, urls)
                 # A hidden link keeps its URL, as ``expand_link_entities`` inlines a ``text_link``; the
-                # mention scan leaves it out so ``?u=@bot`` in a URL cannot wake the bot.
-                url = None if skip_code else value.get("url")
+                # addressing views leave it out so ``?u=@bot`` in a URL cannot wake the bot.
+                url = value.get("url") if urls else None
                 return f"{text} ({url})" if isinstance(url, str) and url and url != text else text
         return str(value.get("url") or value.get("expression") or value.get("alternative_text") or "")
     return ""
 
 
-def _rich_lines(blocks: Any, prefix: str = "", depth: int = 0, skip_code: bool = False) -> list[str]:
+def _rich_lines(blocks: Any, prefix: str = "", depth: int = 0, skip_code: bool = False, urls: bool = True) -> list[str]:
     """One line per paragraph-like block (``details`` summary and math included) and per table row; a
     list item's ``label`` (bullet/number) prefixes its first line."""
     lines: list[str] = []
     if depth > _MAX_RICH_DEPTH:
         return lines
     for block in blocks if isinstance(blocks, list) else []:
-        if not isinstance(block, Mapping) or (skip_code and block.get("type") in _CODE_TYPES):
+        if not isinstance(block, Mapping):
+            continue
+        if skip_code and block.get("type") in _ADDRESSING_MASK_TYPES:
+            lines.append(prefix + _CODE_PLACEHOLDER)
+            prefix = ""
             continue
         for key in ("text", "summary", "expression"):  # paragraph-like, details summary, math block
             if key in block:
-                lines.append(prefix + _rich_inline(block[key], skip_code=skip_code))
+                lines.append(prefix + _rich_inline(block[key], skip_code=skip_code, urls=urls))
                 prefix = ""
         cells, items = block.get("cells"), block.get("items")
         for row in cells if isinstance(cells, list) else []:  # table: one line per row
             if isinstance(row, list):
-                lines.append(" | ".join(_rich_inline(c.get("text"), skip_code=skip_code)
+                lines.append(" | ".join(_rich_inline(c.get("text"), skip_code=skip_code, urls=urls)
                                         for c in row if isinstance(c, Mapping)))
         for item in items if isinstance(items, list) else []:
             if isinstance(item, Mapping):
                 label = str(item.get("label") or "-")
-                lines += _rich_lines(item.get("blocks") or [item], f"{label} ", depth + 1, skip_code)
+                lines += _rich_lines(item.get("blocks") or [item], f"{label} ", depth + 1, skip_code, urls)
         if block.get("blocks"):
-            lines += _rich_lines(block["blocks"], prefix, depth + 1, skip_code)
+            lines += _rich_lines(block["blocks"], prefix, depth + 1, skip_code, urls)
     return lines
 
 
-def rich_message_text(message: Any, skip_code: bool = False) -> str:
+def rich_message_text(message: Any, skip_code: bool = False, urls: bool | None = None) -> str:
     """Flattened text of a ``rich_message`` payload ("" when there is none), for inbound messages and
-    the replied-to message alike; ``skip_code`` leaves out ``code``/``pre`` spans (mention scanning).
-    PTB keeps the Bot API field in ``api_kwargs``, a ``mappingproxy`` (not a ``dict``), when it has no
-    attribute for it."""
+    the replied-to message alike; ``skip_code`` masks ``code``/``pre`` and linked-label spans with a placeholder, ``urls`` (default: not
+    ``skip_code``) inlines hidden link URLs. PTB keeps the Bot API field in ``api_kwargs``, a
+    ``mappingproxy`` (not a ``dict``), when it has no attribute for it."""
     rich = getattr(message, "rich_message", None)
     if rich is None and isinstance(kwargs := getattr(message, "api_kwargs", None), Mapping):
         rich = kwargs.get("rich_message")
     if not isinstance(rich, Mapping):
         return ""
-    return "\n".join(_rich_lines(rich.get("blocks"), skip_code=skip_code)).strip()
+    return "\n".join(_rich_lines(rich.get("blocks"), skip_code=skip_code,
+                                 urls=not skip_code if urls is None else urls)).strip()
+
+
+# What Telegram itself marks as a mention / bot command in plain text; a rich-only message carries no entities.
+_RICH_MENTION_RE = re.compile(r"(?<![A-Za-z0-9_`/])@[A-Za-z0-9_]{2,31}\b")
+_RICH_COMMAND_RE = re.compile(r"(?<!\S)/[A-Za-z0-9_]{1,64}(?:@[A-Za-z0-9_]{2,32})?(?![A-Za-z0-9_@/\\])")
+
+
+def _rich_addressing_entities(text: str) -> list[SimpleNamespace]:
+    found = [SimpleNamespace(type=etype, offset=_utf16_length(text[:m.start()]), length=_utf16_length(m.group()))
+             for etype, pattern in (("bot_command", _RICH_COMMAND_RE), ("mention", _RICH_MENTION_RE))
+             for m in pattern.finditer(text)]
+    return sorted(found, key=lambda entity: entity.offset)
+
+
+def addressing_sources(message: Any) -> list[tuple[str, list]]:
+    """``(text, entities)`` every mention / command / addressee check reads: the text and the caption, or for a
+    text-less ``rich_message`` its blocks with code and linked labels as placeholders and hidden URLs left out, carrying the
+    ``mention``/``bot_command`` entities Telegram would have sent for that text as plain text (#151730)."""
+    text, caption = getattr(message, "text", None) or "", getattr(message, "caption", None) or ""
+    sources = [(text, getattr(message, "entities", None) or []), (caption, getattr(message, "caption_entities", None) or [])]
+    if not text and not caption:
+        rich = rich_message_text(message, skip_code=True)
+        sources.append((rich, _rich_addressing_entities(rich)))
+    return sources
+
+
+def addressing_text(message: Any) -> str:
+    """The text wake-word patterns and the group ``?``/``/`` reply rules read: text, caption, else the rich
+    blocks with code kept and hidden link URLs left out (a link to ``chompy.example.com`` is not a wake word)."""
+    return (getattr(message, "text", None) or getattr(message, "caption", None)
+            or rich_message_text(message, urls=False))
 
 
 def rich_message_filter(filters: Any) -> Any:

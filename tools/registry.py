@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, Iterable, List, Optional, Set
 
 from hermes_constants import hermes_home_key, normalize_scope
 
@@ -230,6 +230,13 @@ class ToolEntry:
     # — for fields tracking runtime config (delegate_task's description reflects limits).
     dynamic_schema_overrides: Optional[Callable] = None
     execution_timeout: float | None = None
+    # Argument names the handler accepts that the schema does not advertise (legacy call
+    # shapes, wrong-tool guards). tools/arg_validation.py never flags them, and a call that
+    # carries one is left for the handler to judge instead of the required-argument check.
+    compat_args: frozenset = frozenset()
+    # Required arguments whose absence the handler answers with its own guidance; the generic
+    # refusal leaves those to it.
+    self_checked_args: frozenset = frozenset()
 
 
 class _PluginOverridePolicy:
@@ -759,6 +766,12 @@ class ToolRegistry:
         mod = self._callable_module(handler)
         return self._plugin_namespace_of_module(mod) if mod else None
 
+    def is_builtin(self, entry: ToolEntry) -> bool:
+        """True for a tool Hermes ships: handler defined in the ``tools`` package, and not an
+        MCP server's tool (those handlers live in ``tools`` too, under an ``mcp-*`` toolset)."""
+        return (not entry.toolset.startswith("mcp-")
+                and self._callable_module(entry.handler).partition(".")[0] == "tools")
+
     @staticmethod
     def _callable_module(handler: Callable) -> str:
         """Resolve defining module through wrappers, partials, and objects."""
@@ -834,7 +847,8 @@ class ToolRegistry:
         check_fn: Callable | None = None, requires_env: list | None = None, is_async: bool = False,
         description: str = "", emoji: str = "", max_result_size_chars: float | None = None,
         dynamic_schema_overrides: Callable | None = None, override: bool = False,
-        scope: Optional[str] = None, execution_timeout: float | None = None):
+        scope: Optional[str] = None, execution_timeout: float | None = None,
+        compat_args: Iterable[str] = (), self_checked_args: Iterable[str] = ()):
         """Register a tool (called at import time by each tool file). ``override=True`` is an
         explicit opt-in for plugins replacing a built-in implementation (e.g. a headed-Chrome
         browser backend); without it, cross-toolset shadowing is rejected."""
@@ -899,7 +913,8 @@ class ToolRegistry:
                 requires_env=requires_env or [], is_async=is_async,
                 description=description or schema.get("description", ""), emoji=emoji,
                 max_result_size_chars=max_result_size_chars, execution_timeout=execution_timeout,
-                dynamic_schema_overrides=dynamic_schema_overrides)
+                dynamic_schema_overrides=dynamic_schema_overrides, compat_args=frozenset(compat_args),
+                self_checked_args=frozenset(self_checked_args))
             # Availability is derived per-tool (_toolset_has_exposable_tools), so this map no
             # longer gates a toolset; it still feeds get_toolset_requirements ->
             # TOOLSET_REQUIREMENTS["check_fn"], which banner.py reads (presence only,
@@ -1073,6 +1088,10 @@ class ToolRegistry:
         entry = self.get_entry(name, scope=scope)
         if not entry:
             return tool_error(f"Unknown tool: {name}")
+        from tools.arg_validation import check_tool_args, flag_unknown_args
+        refusal, unknown, valid = check_tool_args(entry, args)
+        if refusal is not None:
+            return refusal
         try:
             # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
             # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
@@ -1083,7 +1102,7 @@ class ToolRegistry:
                 result = _run_async(entry.handler(args, **kwargs))
             else:
                 result = entry.handler(args, **kwargs)
-            return self._normalize_handler_result(name, result)
+            return flag_unknown_args(self._normalize_handler_result(name, result), name, unknown, valid)
         except Exception as e:
             # exc_info already renders the exception, so keep the message copy bounded.
             logger.exception("Tool %s dispatch error: %s", name, _bound_error_text(str(e)))

@@ -1,0 +1,30 @@
+name: voice-unleashed
+title: "Voice Unleashed"
+repo: https://github.com/TacoTakumi/hermes-voice-unleashed
+sha: f5573c909023be48dddb03fa36ad85dd80ca70ea
+description: "A hands-free voice interface to Hermes, for any model, on your own VoiceManager server. The plugin serves a web page, so any device with a browser, a microphone and a speaker is the client, a phone, a tablet on a wall or a spare laptop: you talk, Hermes answers out loud while the model writes, and you talk over a reply to stop it. The page shows the conversation, each tool call and the model's reasoning, speaks approval prompts and the model's questions and takes spoken answers, and picks up any session of the profile or starts a new one. Hermes Desktop and Webapp chats get a voice toggle. Disclosure - adds the voice_unleashed gateway platform, which listens on VOICE_UNLEASHED_HOST:VOICE_UNLEASHED_PORT (default 127.0.0.1:8765) for the page, its session list and its WebSocket, all behind the VOICE_UNLEASHED_TOKEN access token; microphone audio and reply text go only to the VoiceManager server you set (VOICE_UNLEASHED_VOICEMANAGER_URL, bearer VOICE_UNLEASHED_VOICEMANAGER_TOKEN); the session list and history are read from the profile's own Hermes state and nothing is stored. It registers stream observers (on_stream_delta, on_stream_end, on_session_end), which makes Hermes use streaming requests on every surface, tool observers (pre_tool_call, post_tool_call) that run for every conversation and never block a call, and pre_llm_call, which adds one instruction (start the reply with a short spoken summary) only to a Desktop or Webapp chat that has voice on. The Desktop half ships switched off. No Python dependencies beyond Hermes core (websockets, httpx); VoiceManager's client is vendored. Disclosure — adds the voice_unleashed gateway platform, which listens on VOICE_UNLEASHED_HOST:VOICE_UNLEASHED_PORT (default 127.0.0.1:8765) for the page, its session list and its WebSocket, all behind the VOICE_UNLEASHED_TOKEN access token carried in the page URL; whoever holds the token is the platform's one gateway user (owner), is made its slash-command admin, can list, resume and read the history of every session of the profile, and answers approval prompts by voice, where a single spoken approval word (including \"always\") is sent as the reply, so a misheard word can approve a command; microphone audio and reply text go only to the VoiceManager server you set (VOICE_UNLEASHED_VOICEMANAGER_URL, bearer VOICE_UNLEASHED_VOICEMANAGER_TOKEN), and nothing is stored; it registers stream observers (on_stream_delta, on_stream_end, on_session_end), which makes Hermes use streaming requests on every surface, tool observers (pre_tool_call, post_tool_call) that run for every conversation and never block a call, and pre_llm_call, which adds one instruction only to a Desktop or Webapp chat that has voice on; it reads a few undocumented core helpers and the gateway's session DB read-only, so a Hermes release can break it; the Desktop half ships switched off."
+maintainer: TacoTakumi
+tier: community
+category: voice
+requires_hermes: ">=0.22.7"
+version: "0.3.2"
+docs_url: https://github.com/TacoTakumi/hermes-voice-unleashed#readme
+readme: true
+platforms: []
+known_issues:
+  - "Needs a VoiceManager server (0.7.0 or later)."
+  - "A browser gives the microphone only to a page it treats as secure. On the machine Hermes runs on, localhost works as it is. From another device, either put HTTPS in front of the page (tailscale serve or a reverse proxy; the README has both) or add an exception for the page's address in the browser, for example Chrome's flag unsafely-treat-insecure-origin-as-secure. HTTPS is not required when the browser has such an exception."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - on_stream_delta
+    - on_stream_end
+    - on_session_end
+    - pre_llm_call
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env:
+    - VOICE_UNLEASHED_TOKEN
+    - VOICE_UNLEASHED_VOICEMANAGER_URL
+    - VOICE_UNLEASHED_ALLOWED_USERS

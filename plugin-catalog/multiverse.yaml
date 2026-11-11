@@ -1,0 +1,27 @@
+name: multiverse
+title: Multiverse
+repo: https://github.com/vdimarco/hermes-plugin-hackathon
+subdir: plugins/multiverse
+sha: a3e6c9aa8d2033382400fb94db26892c45fdc643
+version: "1.1.0"
+description: "Best-of-N for coding agents, with real checks. multiverse_race makes one git worktree per attempt (2 to 6) from the same base (HEAD, or the uncommitted working tree through git stash create), starts one delegate_task subagent per worktree with its own approach, pins each subagent to its worktree (pre_tool_call rewrites terminal workdir, file paths and V4A patch paths, and blocks access to the other worktrees and nested delegation), runs the same check commands in every worktree, ranks them by checks passed and then by the smallest real diff, and multiverse_adopt applies the winner with git apply. With delegation.backend: multiverse, each attempt can use its own model and provider. Hermes Desktop: a live race board pane (each attempt's status and tool-call count, then checks passed, diff and the winner), a status-bar chip while racing, and a toast when judging ends. Disclosure — no network calls of its own, no credentials, no telemetry, no background threads. Runs git (rev-parse, stash create, worktree add/remove/prune, add -A inside the worktrees, diff, apply), mkdir, rm -f of its own .patch files and rmdir, plus your check commands, through the Hermes terminal tool, so approvals and the configured terminal backend apply. Creates worktrees next to the repository in .<repo>.multiverse/<run id>/. Starts subagents through delegate_task, which uses your configured model(s) and costs tokens per attempt. Stores run metadata (goal, checks, worktree paths, scores, the last 1500 characters of each subagent summary) in its plugin state under HERMES_HOME/plugin-data. Sends plugin.multiverse.run snapshots (goal, checks, per-attempt label, model, approach, status, tool-call count, scores and diff stats; no subagent text) to Desktop windows attached to the same Hermes process, at most once a second while attempts run; the desktop half keeps the last 10 runs in Desktop plugin storage."
+maintainer: vdimarco
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+image: "https://raw.githubusercontent.com/vdimarco/hermes-plugin-hackathon/a3e6c9aa8d2033382400fb94db26892c45fdc643/assets/catalog/multiverse.png"
+readme: true
+platforms: [linux, macos]
+capabilities:
+  provides_tools:
+    - multiverse_race
+    - multiverse_open
+    - multiverse_judge
+    - multiverse_adopt
+    - multiverse_close
+  provides_hooks:
+    - subagent_start
+    - subagent_stop
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

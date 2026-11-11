@@ -1,0 +1,24 @@
+name: salesforce-guard
+title: Salesforce Guard
+repo: https://github.com/sforceai/salesforce-release-guard
+subdir: hermes-plugin
+sha: da0a581c82b070680219a1adfb2f91815fba0581
+version: "0.4.3"
+maintainer: sforceai
+tier: community
+category: tools
+requires_hermes: ">=0.21.2"
+description: "Salesforce release-impact and scoped-access review: explicit-scope snapshot comparison, source-reference maps, local access evidence and HTML reports. Bounded security heuristics and partial OWASP mappings produce review signals, not org-wide assurance. Dedicated review profile blocks unrelated tools while the plugin is enabled. Custom native inputs require separate operator folder approval with model-sharing acknowledgement. Disclosure — while enabled, its pre_tool_call hook blocks every tool except its nine sfg_* tools and tool/skill discovery in that profile (terminal, files, browser, memory, delegation included), so install it in a dedicated review profile; reads only Salesforce source folders the operator approves in the plugin's input-approvals.json and sends requested source excerpts to the active model; writes reports under the plugin's own data folder; no network, shell or credential access from the plugin; the separate operator CLI in the repo (not installed by the catalog) runs the user's Salesforce CLI, which keeps its own login."
+capabilities:
+  provides_tools: [sfg_scan, sfg_demo, sfg_report, sfg_policy, sfg_impact, sfg_compare, sfg_compare_demo, sfg_changes, sfg_access]
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []
+docs_url: https://github.com/sforceai/salesforce-release-guard/blob/da0a581c82b070680219a1adfb2f91815fba0581/README.md
+readme: false
+known_issues:
+  - Use a dedicated review profile. On deferred-tool Hermes clients, set tools.tool_search.enabled to off to expose native schemas; the guard remains enabled.
+  - On Windows, use the documented short-folder route. Arbitrary deep paths are not verified supported.
+screenshots:
+  - https://raw.githubusercontent.com/sforceai/salesforce-release-guard/da0a581c82b070680219a1adfb2f91815fba0581/docs/assets/comparison-desktop.png
+  - https://raw.githubusercontent.com/sforceai/salesforce-release-guard/da0a581c82b070680219a1adfb2f91815fba0581/docs/assets/access-desktop.png

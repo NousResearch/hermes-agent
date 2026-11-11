@@ -6,6 +6,7 @@ Split out of ``tools/terminal_tool.py``; every public/patched name is re-importe
 so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
 """
 
+import functools
 import logging
 import json
 import os
@@ -202,6 +203,32 @@ def _in_sandbox_home(cwd: Any, env: Any) -> bool:
     return cwd == home or cwd.startswith(home + "/")
 
 
+@functools.lru_cache(maxsize=32)
+def _launch_dirs(home: str, native_home: str) -> frozenset[str]:
+    """The lexical launch set for one Hermes home. The root depends on that home and the platform default home
+    (``native_home``, which keys the cache too); the install root is fixed per process. Cached: the shared root
+    memo holds a single entry and thrashed when called once per command."""
+    from hermes_cli._startup_fast import project_root_str
+    from hermes_constants import get_default_hermes_root
+
+    root = posixpath.normpath(str(get_default_hermes_root(home=home)))
+    return frozenset({home, root, posixpath.join(home, "home"), posixpath.join(root, "home"), project_root_str()})
+
+
+def _is_container_launch_dir(path: str) -> bool:
+    """True when *path* (absolute) IS a directory Hermes starts in inside a container: the Hermes home, the
+    Hermes root (``/opt/data`` in the official image, which is also the image user's HOME), ``home/`` under
+    each, or the install root (``/opt/hermes``, as its real path). Those exist only in the container, never on
+    an SSH target. The candidate is compared lexically: a symlink on this machine says nothing about the target.
+    On a host they are left alone, since an SSH target may share the layout (``~/.hermes`` on an NFS home)."""
+    from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, is_container
+
+    if not is_container():
+        return False
+    home = posixpath.normpath(str(get_hermes_home()))
+    return posixpath.normpath(path) in _launch_dirs(home, str(_get_platform_default_hermes_home()))
+
+
 @overload
 def coerce_ssh_remote_cwd(cwd: str, env_type: str | None) -> str: ...
 @overload
@@ -213,19 +240,27 @@ def coerce_ssh_remote_cwd(cwd: str | None, env_type: str | None) -> str | None:
     SSH user's home. The Hermes process's subprocess home (``/opt/data/home``
     in the official Docker image) is a directory on the machine running
     Hermes: it and anything under it are rewritten onto the remote ``~``, since
-    ``cd`` into the host path exits 126 on the target. A subprocess home that is
-    the OS user's real home is left alone: a remote path may legitimately match
-    it. Other backends are unchanged.
+    ``cd`` into the host path exits 126 on the target. In a container, the
+    directories Hermes starts in (the Hermes home, its root ``/opt/data``,
+    which is also the image user's HOME, ``home/`` under each, the install
+    root) map to ``~`` too; folders below them are kept, except under the
+    subprocess home (above), since a remote may use the same path. A
+    subprocess home that is the OS user's real home is left alone: a remote
+    path may legitimately match it. Other backends are unchanged.
     """
     if not isinstance(cwd, str) or (env_type or "").strip().lower() != "ssh":
         return cwd
     text = cwd.strip()
     if not text or text.startswith("~"):
         return text or "~"
+    if not posixpath.isabs(text):
+        return text
+    if _is_container_launch_dir(text):
+        return "~"
     from hermes_constants import get_real_home, get_subprocess_home
 
     home = get_subprocess_home()
-    if not home or not posixpath.isabs(text) or posixpath.normpath(home) == posixpath.normpath(get_real_home()):
+    if not home or posixpath.normpath(home) == posixpath.normpath(get_real_home()):
         return text
     rel = posixpath.relpath(posixpath.normpath(text), posixpath.normpath(home))
     if rel == ".":

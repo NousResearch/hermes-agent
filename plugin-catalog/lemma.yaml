@@ -1,0 +1,17 @@
+name: lemma
+repo: https://github.com/udirobert/lemma
+sha: 98b061de2d5353db14c903ba489c6e31035e889b
+subdir: hermes-plugin
+title: Lemma — Audit What Agents Read
+description: "An AI-scientist plugin that audits what your agent reads. Paste or mention a paper link and the ambient pre-LLM hook offers an audit unprompted; six tools (quick_audit, audit, doctor, status, judge, improve) extract testable claims, generate and run honest audit scripts behind a mandatory positive control, and render verdicts — supported, falsified, inconclusive — over an append-only evidence trail. The Desktop Audit Room pane shows live runs (stage, attempts, trace tail) and self-distrust flags (verify_gain) when a post-feedback flip to supported needs eyeballing. Everything stays local under plugin_data_dir. Disclosure — paper text and audit prompts go to your configured LLM provider (Anthropic, or any OpenAI-compatible endpoint you set via OPENAI_BASE_URL); papers are fetched from arxiv.org, export.arxiv.org and openreview.net; LLM-written audit scripts run inside a sandbox (bubblewrap on Linux, sandbox-exec on macOS: no network, workdir-only writes, minimal env) and are refused where no sandbox exists unless you turn on the plugin's `host_exec` setting, which runs them on the host without isolation; `lemma_audit` and `lemma_improve` run as detached background processes; a pre-LLM hook adds an \"offer an audit\" hint when a paper link appears in the conversation; all artifacts stay under the plugin data directory."
+maintainer: udirobert
+tier: community
+category: tools
+version: "0.3.0"
+docs_url: https://github.com/udirobert/lemma/tree/main/hermes-plugin
+platforms: []
+capabilities:
+  provides_tools: [lemma_quick_audit, lemma_audit, lemma_doctor, lemma_status, lemma_judge, lemma_improve]
+  provides_hooks: [pre_llm_call]
+  provides_middleware: []
+  requires_env: [ANTHROPIC_API_KEY]

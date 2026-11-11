@@ -65,6 +65,30 @@ def test_split_handles_code_spans_and_escaped_pipes_together():
 
 
 
+def test_split_preserves_cells_when_backticks_pair_across_boundaries():
+    # Regression for NousResearch/hermes-agent#151724 (kshitijk4poor).
+    assert split_table_row("| don`t | it`s | 3 |") == ["don`t", "it`s", "3"]
+    # A real code span still keeps its spaced pipe (review of #152466).
+    assert split_table_row("| pipe | `ls | grep x` |") == ["pipe", "`ls | grep x`"]
+    assert split_table_row("| x `a | b` | c |") == ["x `a | b`", "c"]
+    assert split_table_row("| `--out | path | `x` |") == ["`--out", "path", "`x`"]
+    assert split_table_row("| `` | x | `` |") == ["``", "x", "``"]
+    # Code glued to the text around it (CJK has no spaces around inline code) is still code.
+    assert split_table_row("| 2 | 运行`ps aux | grep py`即可 |") == ["2", "运行`ps aux | grep py`即可"]
+    assert split_table_row("| 2 | run`ls | grep`now |") == ["2", "run`ls | grep`now"]
+
+
+def test_split_keeps_code_cell_whose_content_starts_or_ends_with_a_pipe():
+    assert split_table_row("| cmd | `| grep py | wc -l` | note |") == ["cmd", "`| grep py | wc -l`", "note"]
+    assert split_table_row("| cmd | `cat x | grep py |` | note |") == ["cmd", "`cat x | grep py |`", "note"]
+    assert split_table_row(r"| \``a | b` | c |") == [r"\``a | b`", "c"]
+
+
+def test_split_many_distinct_unmatched_backtick_runs():
+    cells = ["`" * width for width in range(1, 160)]
+    assert split_table_row("| " + " | ".join(cells) + " |") == cells
+
+
 def test_looks_like_table_row():
     assert looks_like_table_row("| a | b |")
     assert looks_like_table_row("a | b | c")          # no leading pipe, ≥2 pipes

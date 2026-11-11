@@ -1,7 +1,7 @@
 name: local-system-one-hermes
 title: Local System One
 repo: https://github.com/NMTZ-z/system-one-benchmark-lab
-sha: a1fd0a2c39e1d9057949cf1584aa7a0557e44965
+sha: da9f0d474aa4d5d7baa19b13d338cc1d8a0cbd8e
 subdir: integrations/hermes/local-system-one-hermes
 description: >-
   Local System One observes selected Hermes decisions through a separate local
@@ -19,7 +19,7 @@ tier: community
 category: automation
 requires_hermes: ">=0.21.4"
 version: "0.10.0"
-docs_url: https://github.com/NMTZ-z/system-one-benchmark-lab/tree/a1fd0a2c39e1d9057949cf1584aa7a0557e44965/integrations/hermes/local-system-one-hermes
+docs_url: https://github.com/NMTZ-z/system-one-benchmark-lab/tree/da9f0d474aa4d5d7baa19b13d338cc1d8a0cbd8e/integrations/hermes/local-system-one-hermes
 readme: true
 platforms: [macos]
 capabilities:

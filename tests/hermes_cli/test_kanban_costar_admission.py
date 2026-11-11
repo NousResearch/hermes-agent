@@ -267,3 +267,33 @@ def test_generic_costar_helper_denial_records_provider_hold(kanban_home: Path) -
         holds = [event for event in kb.list_events(conn, task.id) if event.kind == "costar_provider_hold"]
         assert holds
         assert holds[-1].payload == {"task_id": task.id, "reason": "access_denied", "immutable": True}
+
+
+def test_claim_task_refuses_costar_provider_hold_and_second_owner(kanban_home: Path) -> None:
+    """The public claim seam cannot bypass CoStar dispatch admission."""
+    with kbc.connect() as conn:
+        denied = kb.create_task(conn, title="CoStar denied", body=_costar_body(), assignee="operator")
+        assert kb.claim_task(conn, denied) is not None
+        denied_task = kb.get_task(conn, denied)
+        assert denied_task is not None
+        assert kb.block_task(
+            conn, denied, reason="Access Denied", expected_run_id=denied_task.current_run_id,
+        )
+
+        waiting = kb.create_task(conn, title="CoStar waiting", body=_costar_body(), assignee="operator")
+        assert kb.claim_task(conn, waiting) is None
+        waiting_task = kb.get_task(conn, waiting)
+        assert waiting_task is not None and waiting_task.status == "ready"
+        rejected = [event for event in kb.list_events(conn, waiting) if event.kind == "claim_rejected"]
+        assert rejected
+        provider_rejection = rejected[-1].payload
+        assert provider_rejection is not None and provider_rejection["reason"] == "provider_hold"
+
+        assert kb.unblock_task(conn, denied)
+        owner = kb.create_task(conn, title="CoStar owner", body=_costar_body(), assignee="operator")
+        assert kb.claim_task(conn, owner) is not None
+        assert kb.claim_task(conn, waiting) is None
+        rejected = [event for event in kb.list_events(conn, waiting) if event.kind == "claim_rejected"]
+        assert rejected
+        owner_rejection = rejected[-1].payload
+        assert owner_rejection is not None and owner_rejection["reason"] == "single_owner"

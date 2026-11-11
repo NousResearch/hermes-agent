@@ -2171,6 +2171,16 @@ def claim_task(
             )
             _append_event(conn, task_id, "claim_rejected", {"reason": "parents_not_done"})
             return None
+        task_row = conn.execute(
+            "SELECT title, body FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if task_row is not None:
+            from hermes_cli.kanban_costar_policy import admission_reason
+
+            reason = admission_reason(conn, task_id, task_row["title"], task_row["body"])
+            if reason is not None:
+                _append_event(conn, task_id, "claim_rejected", {"reason": reason})
+                return None
         # Close a leaked prior run so the CAS below doesn't strand it.
         _reclaim_dangling_run(
             conn, task_id, statuses=("ready",), now=now, note="invariant recovery on re-claim",

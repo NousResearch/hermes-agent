@@ -188,6 +188,7 @@ from plugins.platforms.telegram.telegram_polling_probe import TelegramPendingPro
 from plugins.platforms.telegram.telegram_intake import effective_update_message
 from plugins.platforms.telegram.telegram_media_group import (
     add_item_note, flush_media_group_event, inline_item_text, queue_media_group_event)
+from plugins.platforms.telegram.telegram_live_location import is_redundant_live_refresh
 from plugins.platforms.telegram.telegram_text_photo_pairing import (
     IMAGE_EXTENSIONS as _TELEGRAM_IMAGE_EXTENSIONS, absorb_claimed_text, claim_pending_text, is_image_document, tracking_media_items,
     wait_text_flush)
@@ -6018,10 +6019,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         location = getattr(venue, "location", None) if venue else getattr(msg, "location", None)
         if not location:
             return
-        lat = getattr(location, "latitude", None)
-        lon = getattr(location, "longitude", None)
-        if lat is None or lon is None:
-            return
+        lat, lon = getattr(location, "latitude", None), getattr(location, "longitude", None)
+        if lat is None or lon is None or is_redundant_live_refresh(self, msg, location, lat, lon):
+            return  # a live-location GPS tick in place is not a new input (#151333)
         parts = ["[The user shared a location pin.]"]
         if venue:
             title = getattr(venue, "title", None)

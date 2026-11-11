@@ -117,3 +117,18 @@ def test_fresh_conversation_after_reset_is_still_reachable(db: SessionDB):
     )
     db.append_message(successor, "user", "a brand new conversation")
     assert _route(db) == successor
+
+
+def test_a_branch_child_still_owns_the_route_it_was_created_on(db: SessionDB):
+    """``/branch`` writes the route into its child at create time so a crash before the switch
+    still recovers the branch: unlike a delegate, it IS the user-facing conversation."""
+    parent = _parent(db)
+    db.end_session(parent, "session_switch")
+    branch = "20261014_050000_" + uuid.uuid4().hex[:6]
+    db.create_session(
+        branch, source="telegram", parent_session_id=parent, session_key=PEER["session_key"],
+        chat_id=PEER["chat_id"], chat_type=PEER["chat_type"], thread_id=THREAD_ID, user_id=PEER["user_id"],
+        model_config={"_branched_from": parent},
+    )
+    db.append_message(branch, "user", "the branched conversation")
+    assert _route(db) == branch

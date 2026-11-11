@@ -491,9 +491,15 @@ class GatewayTurnPrepareMixin:
             # A binding whose sessions row is gone (deleted with foreign_keys OFF, so ON DELETE CASCADE
             # never fired) is stale, not a resume target: switching onto it lets the next peer refresh
             # re-create the row and the topic silently re-adopts an old transcript (#139283).
-            if self._session_db is not None and not await self._session_db.get_session(bound_session_id):
-                logger.warning("Telegram topic binding for %s points at session %s with no sessions row; "
-                               "keeping the current session and rebinding", session_key, bound_session_id)
+            # A binding naming a delegate subagent's row (written while the route was captured by it,
+            # #138210) is not the topic's conversation either: following it hands the user to the worker.
+            bound_row = await self._session_db.get_session(bound_session_id) if self._session_db is not None else None
+            from hermes_state_sessions import _parse_model_config
+            if self._session_db is not None and (
+                    not bound_row or _parse_model_config(bound_row.get("model_config")).get("_delegate_from")):
+                logger.warning("Telegram topic binding for %s points at session %s with %s; keeping the "
+                               "current session and rebinding", session_key, bound_session_id,
+                               "a delegate subagent's row" if bound_row else "no sessions row")
                 try:  # CAS on the stale id: a /new that rebound the topic during the await wins
                     await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry,
                                             expected_session_id=stored_session_id)

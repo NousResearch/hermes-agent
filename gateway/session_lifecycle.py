@@ -59,8 +59,8 @@ class SessionLifecycleMixin:
     """SessionStore explicit boundaries and crash-recovery markers."""
 
     def _is_session_ended_in_db(self, session_id: str, session_key: Optional[str] = None) -> bool:
-        """True iff state.db says the session is gone: ended (non-null end_reason) or hard-deleted
-        (no row in a readable owning DB). No DB or a DB error -> False (same failure mode as
+        """True iff state.db says the session is gone: ended (non-null end_reason), hard-deleted
+        (no row in a readable owning DB), or a delegate subagent's row (never a chat's route). No DB or a DB error -> False (same failure mode as
         ``_prune_stale_sessions_locked``). Lets routing self-heal a session finalized or deleted
         while the gateway stays alive. Store resolved from the owning profile.
 
@@ -93,7 +93,11 @@ class SessionLifecycleMixin:
             row = db.get_session(session_id)
         except Exception:
             return False
-        return row is None or row.get("end_reason") is not None
+        # A delegate subagent's row is never a chat's conversation: a route left naming one (written while
+        # the subagent captured the thread, #138210) is stale, so recovery hands the chat back to its owner.
+        from hermes_state_sessions import _parse_model_config
+        return (row is None or row.get("end_reason") is not None
+                or bool(_parse_model_config(row.get("model_config")).get("_delegate_from")))
 
     def _local_receipt_target(self, entry: Optional[SessionEntry]) -> Optional[str]:
         """The physical target the authority's receipt names for *entry*'s local route, else None

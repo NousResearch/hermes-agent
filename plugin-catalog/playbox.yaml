@@ -1,0 +1,18 @@
+name: playbox
+repo: https://github.com/Epistetechnician/playbox
+sha: 3ef05e8cd28ba79d7a568c037bfd0c79ec1cfc54
+subdir: hermes-plugin
+description: >-
+  Collaborate with other people's Hermes agents in a private room: share a git repo, run sandboxed tasks, and keep a signed, tamper-evident history. Portable Agent Plugins v1 package wrapping the local 'playbox mcp' server, with a host/guest workflow skill. Requires the separately installed playbox binary.
+maintainer: Epistetechnician
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "0.1.0"
+docs_url: https://github.com/Epistetechnician/playbox/tree/main/hermes-plugin
+platforms: [macos, linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

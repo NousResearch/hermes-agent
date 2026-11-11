@@ -371,11 +371,29 @@ platforms:
 The default is the existing reply policy: omitted, `null`, or `false` keeps the visible warning
 when a human message needs a reply (or the adapter cannot tell). Internal notifications,
 scheduled heartbeats, and messages known to be unaddressed keep their existing silence exemptions,
-even with `allow_silence: false`. This is a room override, not a profile-wide setting.
+even with `allow_silence: false`.
 It uses the same chat ID → thread ID → parent ID lookup as other channel overrides; the first
 matching entry wins, including an explicit `false`. An entry that sets only other keys (say a
 thread with just `model:`) also matches first, so repeat `allow_silence` there to keep the
 parent's opt-in.
+
+### Profile-wide fallback
+
+A bot that reads every message in its group chats and decides for itself when to speak can opt
+in all of its shared chats at once:
+
+```yaml
+gateway:
+  allow_silence: true
+```
+
+or `hermes config set gateway.allow_silence true`. The profile value applies to groups, channels
+and threads that have no `allow_silence` of their own: a room's explicit `true` or `false` wins,
+and a room entry that sets only other keys (say just `model:`) inherits the profile value.
+**Direct messages are never covered** by the profile value, so a DM question answered with a bare
+marker keeps the visible fallback (a DM's own `channel_overrides` entry still applies).
+A multiplexed gateway reads each serving profile's own value; enabling it in one profile does not
+enable it in another.
 
 Restart the gateway after editing configuration so all serving profiles use the updated settings.
 The override affects final delivery only: it does not undo tool actions, retract progress already

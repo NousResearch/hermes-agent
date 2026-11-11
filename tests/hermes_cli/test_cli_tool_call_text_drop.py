@@ -48,3 +48,16 @@ def test_suffix_only_still_prints(monkeypatch):
     cli._chat_print_response_panel(turn, "footer line")
     # no extra accumulated prefix; panel may or may not print depending on already_streamed
     assert True
+
+
+def test_disjoint_final_response_is_not_dropped(monkeypatch):
+    """A later final answer must survive earlier tool-call-turn text."""
+    cli, _emitted, printed = _cli_stub(monkeypatch)
+    cli._streamed_text_this_turn = "The tool finished processing and saved the requested file."
+    turn = SimpleNamespace(use_streaming_tts=False, box_opened=False,
+                           result={"completed": True, "final_response": "Done."})
+    cli._chat_print_response_panel(turn, "Done.")
+    panels = [getattr(p, "renderable", None) for p in printed]
+    assert len(panels) == 1, printed
+    assert "The tool finished processing" in str(panels[0])
+    assert "Done." in str(panels[0]), panels[0]

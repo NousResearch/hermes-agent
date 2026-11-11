@@ -755,6 +755,10 @@ class CLIChatTurnMixin:
                         and _norm_streamed != _norm_response
                         and len(_norm_streamed) > len(_norm_response)):
                     _render_response = _streamed.strip()
+                    # A separate final message may not be a suffix of the streamed text.
+                    # Keep both rather than dropping the final answer.
+                    if not _norm_streamed.endswith(_norm_response):
+                        _render_response += "\n\n" + response
             modern = getattr(self, "_modern_layout", False)
             # A gateway refusal is Hermes's own copy (quoted user text, a /discard line to copy):
             # markdown stripping or rendering would rewrite the quote and merge the lines.

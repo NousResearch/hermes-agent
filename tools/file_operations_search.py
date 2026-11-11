@@ -5,6 +5,7 @@
 """
 
 import contextlib
+import logging
 import os
 import posixpath
 import re
@@ -19,6 +20,8 @@ from typing import Any, List, Optional
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 from tools import interrupt as tool_interrupt
 from tools.file_operations_common import ExecuteResult, SearchMatch, SearchResult
+
+logger = logging.getLogger(__name__)
 
 _MACOS_TCC_PROTECTED_HOME_DIRS = (
     "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures",
@@ -1444,7 +1447,12 @@ class SearchMixin:
             diagnostics, payload = _split_tool_diagnostics(result.stdout or "")
             if payload.strip() or not diagnostics.strip():
                 return None
-            probe = self._exec(" ".join([*grep_parts, "/dev/null", "2>&1", ">/dev/null"]), timeout=30)
-            return (probe.stdout.strip() or "grep error") if probe.exit_code >= 2 else None
+            try:  # fail open: only grep's own exit 2 with its message is conclusive
+                probe = self._exec(" ".join([*grep_parts, "/dev/null", "2>&1", ">/dev/null"]), timeout=5)
+            except Exception:
+                logger.debug("pruned grep validation rerun failed; keeping the result", exc_info=True)
+                return None
+            message = (probe.stdout or "").strip()
+            return message if probe.exit_code == 2 and message else None
         return self._run_search_pipeline(find_parts, output_mode, limit, offset, context, line_cap=True,
                                          folded_error=grep_failed)

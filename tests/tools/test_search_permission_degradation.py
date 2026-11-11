@@ -517,3 +517,55 @@ def test_pruned_grep_invalid_regex_is_a_search_error(tmp_path):
     ops, root = _pruned_grep_ops(tmp_path)
     result = ops.search("foo(", path=str(root), target="content")
     assert result.error and result.error.startswith("Search failed: grep: "), result
+
+
+def _pruned_grep_ops_with_probe(tmp_path, probe):
+    """Pruned grep lane whose find run reports a traversal diagnostic and no matches;
+    ``probe`` stands in for the /dev/null validation rerun (a result or an exception)."""
+    from tools.file_operations_common import ExecuteResult
+
+    ops, root = _pruned_grep_ops(tmp_path)
+    real_exec = ops._exec
+    seen = {}
+
+    def fake_exec(command, **kwargs):
+        if command.startswith("set -o pipefail; find "):
+            return ExecuteResult(stdout=f"find: {root}/locked: Operation not permitted\n", exit_code=1)
+        if command.startswith("grep ") and "/dev/null" in command:
+            seen["timeout"] = kwargs.get("timeout")
+            if isinstance(probe, BaseException):
+                raise probe
+            return probe
+        return real_exec(command, **kwargs)
+    ops._exec = fake_exec
+    return ops, root, seen
+
+
+@pytest.mark.skipif(os.name != "posix", reason="find -exec grep lane is POSIX")
+@pytest.mark.parametrize("probe", [
+    ("timeout", 124, "Command timed out"),
+    ("transport", 255, "ssh: connect to host: Connection refused"),
+    ("raised", None, TimeoutError("probe timed out")),
+    ("raised-other", None, RuntimeError("backend gone")),
+], ids=lambda p: p[0])
+def test_pruned_grep_inconclusive_validation_keeps_empty_result(tmp_path, probe):
+    """Only grep's own exit 2 marks the invocation broken; a validation rerun that times
+    out, loses its transport or raises leaves the completed empty search as it was."""
+    from tools.file_operations_common import ExecuteResult
+
+    _, code, payload = probe
+    fake = payload if isinstance(payload, BaseException) else ExecuteResult(stdout=payload, exit_code=code)
+    ops, root, seen = _pruned_grep_ops_with_probe(tmp_path, fake)
+    result = ops.search("needle", path=str(root), target="content")
+    assert result.error is None and result.total_count == 0, result
+    assert seen["timeout"] is not None and seen["timeout"] <= 10
+
+
+@pytest.mark.skipif(os.name != "posix", reason="find -exec grep lane is POSIX")
+def test_pruned_grep_validation_exit_2_is_a_search_error(tmp_path):
+    from tools.file_operations_common import ExecuteResult
+
+    ops, root, _ = _pruned_grep_ops_with_probe(
+        tmp_path, ExecuteResult(stdout="grep: Unmatched ( or \\(", exit_code=2))
+    result = ops.search("needle", path=str(root), target="content")
+    assert result.error == "Search failed: grep: Unmatched ( or \\(", result

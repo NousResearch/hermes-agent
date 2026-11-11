@@ -51,12 +51,19 @@ KANBAN_SHOW_SCHEMA = _schema(
         "It also carries the title and recent events. Use this to (re)orient yourself before "
         "starting work, especially on retries. The response includes a "
         "pre-formatted ``worker_context`` string suitable for inclusion "
-        "verbatim in your reasoning. Outside a dispatcher-spawned worker "
-        "there is no default task: a bare call returns a pointer to "
+        "verbatim in your reasoning. By default the raw fields that "
+        "``worker_context`` already renders in full (body, comments, runs, "
+        "older events) are left out; pass ``full=true`` for the raw "
+        "comments, runs and last 50 events. Outside a dispatcher-spawned "
+        "worker there is no default task: a bare call returns a pointer to "
         "``kanban_list`` instead of task state."
     ),
     {
         "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "full": _prop("boolean", (
+            "Also return the raw body, every comment, every run and the last "
+            "50 events, even where worker_context already carries them. "
+            "Defaults to false.")),
     },
     [],
 )

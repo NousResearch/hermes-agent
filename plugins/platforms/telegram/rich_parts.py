@@ -150,6 +150,28 @@ def _fit_table(block: list[str], limit: int) -> list[str]:
     return ["\n".join(header + group) for group in _greedy_lines(rows, budget)]
 
 
+_SUMMARY_END_RE = re.compile(r"</summary\s*>", re.IGNORECASE)
+
+
+def _fit_details(block: list[str], limit: int) -> Optional[list[str]]:
+    """Split a ``<details>`` element: every part closes it and the next reopens it with its
+    ``<summary>``, so no part shows a bare tag as text. Its body is split recursively (fences,
+    tables and nested ``<details>`` inside keep their own rules). ``None`` when the element has no
+    recognizable ``<summary>`` head or closing tag, or the head alone leaves no room."""
+    text = "\n".join(block)
+    head_end = _SUMMARY_END_RE.search(text)
+    tail = text.rstrip()
+    if head_end is None or not tail.lower().endswith("</details>"):
+        return None
+    head, body = text[:head_end.end()], text[head_end.end():len(tail) - len("</details>")].strip("\n")
+    if _DETAILS_OPEN_RE.search(head[1:]):
+        return None  # a nested element inside the head: no safe reopen point
+    budget = limit - len(head) - len("\n\n\n\n</details>")
+    if budget < 64 or not body.strip():
+        return None
+    return [f"{head}\n\n{part}\n\n</details>" for part in split_rich_parts(body, budget)]
+
+
 def _fit_block(kind: str, block: list[str], limit: int) -> list[str]:
     """*block* as texts of at most *limit* chars, keeping its own structure where possible."""
     text = "\n".join(block)
@@ -159,7 +181,15 @@ def _fit_block(kind: str, block: list[str], limit: int) -> list[str]:
         return _fit_fence(block, limit)
     if kind == "table":
         return _fit_table(block, limit)
+    if kind == "details":
+        fitted = _fit_details(block, limit)
+        if fitted is not None:
+            return fitted
     return ["\n".join(group) for group in _greedy_lines(block, limit)]
+
+
+def _details_balanced(text: str) -> bool:
+    return len(_DETAILS_OPEN_RE.findall(text)) == len(_DETAILS_CLOSE_RE.findall(text))
 
 
 def split_rich_parts(content: str, limit: int) -> list[str]:
@@ -224,8 +254,12 @@ async def send_rich_parts(
         result = await adapter._try_send_rich(chat_id, part, reply_to if index == 0 else None, metadata)
         if result is None and index == 0:
             return None  # nothing delivered — the legacy path may own the whole message
-        if result is None or not result.success:
-            return _partial_failure(result, sent, len(parts)) if sent else result
+        if result is None:
+            # A later part was refused for good (or rich went away): its text never reached the chat,
+            # so the rest goes out as MarkdownV2 after the parts already shown, never re-sending them.
+            return await _send_legacy_tail(adapter, chat_id, parts[index:], sent, metadata)
+        if not result.success:
+            return _partial_failure(result, sent, len(parts))
         sent.append(result)
     logger.info("Telegram: delivered an oversized rich message in %d parts (%d chars)", len(parts), len(content))
     return SendResult(
@@ -263,7 +297,19 @@ async def edit_rich_parts(
     for part in parts[1:]:
         previous_id = sent[-1].message_id
         outcome = await adapter._try_send_rich(chat_id, part, previous_id, metadata)
-        if outcome is None or not outcome.success or outcome.message_id is None:
+        if outcome is None:
+            tail = await _send_legacy_tail(adapter, chat_id, parts[len(sent):], sent, metadata)
+            if tail.success:
+                ids = [str(i) for i in tail.raw_response["message_ids"]]
+                return SendResult(success=True, message_id=ids[-1], continuation_message_ids=tuple(ids[1:]),
+                                  raw_response={"message_ids": ids})
+            # The stream fallback resends past ``delivered_prefix``: exact only while no MarkdownV2 chunk landed.
+            prefix = _BLOCK_SEPARATOR.join(parts[:len(sent)])
+            raw = tail.raw_response if isinstance(tail.raw_response, dict) else {}
+            if raw.get("delivered_chunks") == len(sent) and content.startswith(prefix):
+                raw["delivered_prefix"] = prefix
+            return tail
+        if not outcome.success or outcome.message_id is None:
             if outcome is not None and outcome.success:
                 outcome = SendResult(success=False, error="rich_part_missing_message_id", retryable=False)
             failure = _partial_failure(outcome, sent, len(parts))
@@ -292,16 +338,53 @@ def _fitting_parts(adapter: Any, content: str) -> Optional[list[str]]:
     for budget in (cap, cap * 7 // 8, cap * 3 // 4):
         parts = split_rich_parts(content, budget)
         if all(adapter._content_fits_rich_limits(part) for part in parts):
-            return parts if len(parts) > 1 else None
-    return None
+            break
+    else:
+        return None
+    if len(parts) <= 1:
+        return None
+    # A part cut inside a <details> that could not be closed and reopened would show the bare tag
+    # as text: the legacy chunker owns that message instead.
+    if _details_balanced(content) and not all(_details_balanced(part) for part in parts):
+        return None
+    return parts
+
+
+def _legacy_chunks(adapter: Any, text: str) -> list[str]:
+    """*text* as the MarkdownV2 chunks ``send()``'s legacy path sends."""
+    from gateway.platforms.base import utf16_len
+    from plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
+    chunks = adapter.truncate_message(adapter.format_message(text), adapter.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
+    if len(chunks) > 1:
+        chunks = [_separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
+                  for chunk in chunks]
+    return chunks
+
+
+async def _send_legacy_tail(
+    adapter: Any, chat_id: str, rest: list[str], sent: list[SendResult], metadata: Optional[dict[str, Any]],
+) -> SendResult:
+    """Deliver the rich parts *rest* (none of them in the chat) as MarkdownV2 chunks after the
+    parts in *sent*, through the adapter's partial-send resume: same lock, flood window, retries
+    and ``partial_overflow`` contract, so a failure there still names only the undelivered tail."""
+    logger.warning("Telegram: a rich part was refused after %d part(s) landed; sending the rest as MarkdownV2",
+                   len(sent))
+    delivered = tuple(str(r.message_id) for r in sent if r.message_id is not None)
+    pending = SendResult(success=False, raw_response={
+        "undelivered_chunks": tuple(_legacy_chunks(adapter, _BLOCK_SEPARATOR.join(rest))),
+        "delivered_message_ids": delivered})
+    result = await adapter._resume_partial_send(chat_id, pending, reply_to=None, metadata=metadata)
+    if result is None:  # nothing to resume over (no bot): report the honest partial
+        return _partial_failure(None, sent, len(sent) + len(rest))
+    return result
 
 
 def _partial_failure(result: Optional[SendResult], sent: list[SendResult], total: int) -> SendResult:
     """A failure after earlier parts landed, under the ``partial_overflow`` contract
     (``BasePlatformAdapter._is_partial_delivery``): ``_send_with_retry`` then neither re-sends the
     whole message nor falls back to plain text, either of which would duplicate the visible parts.
-    No resumable tail is attached (the legacy resume sends MarkdownV2, not rich parts)."""
-    if result is None:  # a mid-message capability loss
+    No resumable tail is attached: a transient failure may have landed the part in flight."""
+    if result is None:  # no adapter to resume the tail through
         result = SendResult(success=False, error="rich_parts_unavailable", retryable=False)
     ids = [str(r.message_id) for r in sent if r.message_id is not None]
     raw = dict(result.raw_response) if isinstance(result.raw_response, dict) else {}

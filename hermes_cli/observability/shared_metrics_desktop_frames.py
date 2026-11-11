@@ -2,7 +2,7 @@
 
 The renderer counts every long animation frame (``PerformanceObserver`` on ``long-animation-frame``,
 ``longtask`` where that is missing) while its window is visible, folds them into the closed duration
-buckets below, and adds the day's visible time; the finished day rides ``shared_metrics.desktop_daily``.
+buckets below, and adds the day's visible time; the finished day rides ``shared_metrics.desktop_long_frames``.
 One row per non-empty bucket, whose value is the day's frame count (a sum metric, never capped), and
 every row carries the day's visible-time bucket so a rate (long frames per visible minute) is
 computable. A visible day without a single long frame reports one ``none`` row (value 1) so clean

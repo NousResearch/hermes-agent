@@ -14,7 +14,6 @@ import {
   noteBackendExited,
   noteInteraction,
   noteMessageSent,
-  noteVisibleTime,
   noticeIdForToast,
   recordAction,
   recordDislike,
@@ -32,6 +31,7 @@ import {
   slowFrameBucket,
   tickDesktopMetrics,
   trackArea,
+  trackDesktopVisibleTime,
   trackFlow
 } from './desktop-metrics'
 
@@ -117,7 +117,9 @@ function exerciseEverything() {
   setDesktopBotCount(3)
   noteBackendDrop(null)
   recordLongFrames([60, 150])
-  noteVisibleTime(60_000)
+  trackDesktopVisibleTime(11 * 60_000)
+  vi.setSystemTime(Date.now() + 60_000)
+  tickDesktopMetrics()
 }
 
 describe('consent gate', () => {
@@ -364,7 +366,13 @@ describe('long frames', () => {
     bindDesktopMetrics(request)
     recordLongFrames(Array.from({ length: 300 }, () => 120))
     recordLongFrames([40, 70, 300, 6000])
-    noteVisibleTime(90 * 60_000)
+    trackDesktopVisibleTime(11 * 60_000)
+
+    for (let minute = 10; minute <= 90; minute += 10) {
+      vi.setSystemTime(DAY1 + minute * 60_000)
+      tickDesktopMetrics()
+    }
+
     await flush()
     expect(methods(calls)).not.toContain('shared_metrics.desktop_daily')
 
@@ -403,7 +411,9 @@ describe('long frames', () => {
     bindDesktopMetrics(request)
     recordAction('composer.send', 'click')
     recordLongFrames([120])
-    noteVisibleTime(60_000)
+    trackDesktopVisibleTime(11 * 60_000)
+    vi.setSystemTime(DAY1 + 60_000)
+    tickDesktopMetrics()
     vi.setSystemTime(DAY2)
     tickDesktopMetrics()
     await flush()
@@ -428,7 +438,9 @@ describe('long frames', () => {
     setDesktopMetricsGate('on')
     bindDesktopMetrics(request)
     recordAction('composer.send', 'click')
-    noteVisibleTime(60_000)
+    trackDesktopVisibleTime(11 * 60_000)
+    vi.setSystemTime(DAY1 + 60_000)
+    tickDesktopMetrics()
     vi.setSystemTime(DAY2)
     tickDesktopMetrics()
     await flush()
@@ -449,7 +461,9 @@ describe('long frames', () => {
     setDesktopMetricsGate('off')
     bindDesktopMetrics(request)
     recordLongFrames(Array.from({ length: 300 }, () => 120))
-    noteVisibleTime(60_000)
+    trackDesktopVisibleTime(11 * 60_000)
+    vi.setSystemTime(DAY1 + 60_000)
+    tickDesktopMetrics()
     vi.setSystemTime(DAY2)
     tickDesktopMetrics()
     await flush()

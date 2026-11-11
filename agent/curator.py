@@ -479,25 +479,27 @@ def _needle_in_path_component(needle: str, path: str) -> bool:
     return any(part and part.rsplit(".", 1)[0].replace("-", "_") == norm_needle for part in path.replace("\\", "/").split("/"))
 
 
-def _skill_manage_args(tc: Any, *, raw_fallback: bool) -> Optional[dict[str, Any]]:
-    """Parsed arguments of a ``skill_manage`` tool call (JSON string or dict), or None to skip. With *raw_fallback*,
-    a malformed string yields ``{"_raw": raw}`` so substring matching still catches the common case."""
+def _skill_manage_ops(tc: Any) -> list[dict[str, Any]]:
+    """The operations of a ``skill_manage`` tool call (JSON string or dict): each element of ``operations``, or the
+    legacy flat call as its single operation. Another tool, or arguments that do not parse (truncated), yield none."""
     if not isinstance(tc, dict) or tc.get("name") != "skill_manage":
-        return None
-    raw = tc.get("arguments") or ""
-    if not isinstance(raw, str):
-        return raw if isinstance(raw, dict) else None
-    try:
-        args = json.loads(raw)
-    except Exception:
-        return {"_raw": raw} if raw_fallback else None
-    return args if isinstance(args, dict) else None
+        return []
+    args = tc.get("arguments") or ""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return []
+    if not isinstance(args, dict):
+        return []
+    ops = args.get("operations")
+    return [op for op in ops if isinstance(op, dict)] if isinstance(ops, list) else [args]
 
 
 def _find_reference(args: dict[str, Any], needles: set[str]) -> Optional[str]:
-    """First argument value (file_path, file_content, content, new_string, _raw — in that order) that references one of
+    """First argument value (file_path, file_content, content, new_string — in that order) that references one of
     *needles*. ``file_path`` must match a whole path component; content fields match on word boundaries so "test" does not match "latest"."""
-    for key in ("file_path", "file_content", "content", "new_string", "_raw"):
+    for key in ("file_path", "file_content", "content", "new_string"):
         hay = args.get(key)
         if isinstance(hay, str) and any(
             (_needle_in_path_component(n, hay) if key == "file_path" else re.search(rf'\b{re.escape(n)}\b', hay)) for n in filter(None, needles)
@@ -514,7 +516,7 @@ def _classify_removed_skills(
     Returns ``{"consolidated": [{name, into, evidence}], "pruned": [{name}]}``."""
     consolidated: list[dict[str, Any]] = []
     pruned: list[dict[str, Any]] = []
-    parsed_calls = [a for a in (_skill_manage_args(tc, raw_fallback=True) for tc in tool_calls or []) if a is not None]
+    parsed_calls = [op for tc in tool_calls or [] for op in _skill_manage_ops(tc)]
     destinations = set(after_names) | set(added or [])
     for name in filter(None, removed):
         needles = {name, name.replace("-", "_"), name.replace("_", "-")}
@@ -563,8 +565,8 @@ def _extract_absorbed_into_declarations(tool_calls: list[dict[str, Any]]) -> dic
     signal (beats YAML parsing and substring heuristics). Returns ``{name: {"into": umbrella | "", "declared": True}}``;
     ``into == ""`` is an explicit prune. Deletes omitting ``absorbed_into`` are absent so the caller falls back to heuristic/YAML (older runs)."""
     out: dict[str, dict[str, Any]] = {}
-    for args in (_skill_manage_args(tc, raw_fallback=False) for tc in tool_calls or []):
-        if args is not None and args.get("action") == "delete":
+    for args in (op for tc in tool_calls or [] for op in _skill_manage_ops(tc)):
+        if args.get("action") == "delete":
             name, target = args.get("name"), args.get("absorbed_into")
             if isinstance(name, str) and name.strip() and isinstance(target, str):
                 out[name.strip()] = {"into": target.strip(), "declared": True}

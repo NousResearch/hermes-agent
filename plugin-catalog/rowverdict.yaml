@@ -1,0 +1,26 @@
+name: rowverdict
+repo: https://github.com/demir-sama/rowverdict
+sha: 672b9c633a586c64208515a1241e51113f53a768
+version: "0.1.0"
+title: RowVerdict
+maintainer: demir-sama
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+platforms: [linux]
+description: "Review deterministic CSV repair/quarantine plans, refuse stale input, and export immutable source-bound receipts locally."
+docs_url: https://github.com/demir-sama/rowverdict#readme
+readme: true
+known_issues:
+  - "Verified on Linux only; not a sandbox or a guard for other shell/import tools."
+  - "Raw rejected cells remain in private quarantine.json artifacts; no encryption at rest."
+capabilities:
+  provides_tools:
+    - rowverdict_inspect
+    - rowverdict_plan
+    - rowverdict_export
+    - rowverdict_history
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

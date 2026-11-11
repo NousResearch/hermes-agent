@@ -4,6 +4,7 @@ import type { GatewayEndpoint } from './local-gateway'
 import { configurePythonGatewayTicketClient, createLocalGatewayDials, createStaleGatewayRestarter, ensureLocalGateway, gatewayOwnerProfile, localGatewayDial, nativeGatewayHttpHeaders, redialLocalGateway, runGatewayEnsure, runGatewayOwnerRestart } from './local-gateway'
 import { closeGatewayTicketBridges, createGatewayTicketResolver } from './local-gateway-python'
 import { createPluginWsUrlHandler } from './plugin-ws-url'
+import { createDownloadManager, isRehostableDownload } from './download-manager'
 const localGatewayDials = createLocalGatewayDials()
 configurePythonGatewayTicketClient(createGatewayTicketResolver(
   async () => ensureRuntime(await resolveHermesBackend([]), () => undefined), resolveHermesCwd))
@@ -6713,8 +6714,59 @@ function installContextMenuBridge(window: BrowserWindow) {
 // opens in the process cwd (win-unpacked in packaged installs) with whatever name
 // the URL carried. Route every download to Downloads, name hermes-media:// saves
 // after the file, and guarantee a MIME-derived extension.
+/**
+ * User-initiated file downloads.
+ *
+ * Chromium's own download exposes no renderer-visible progress, no rate, no
+ * resume, and a single connection. `installDownloadHandling` re-hosts plain
+ * http(s) downloads onto this manager so the tray can show a real bar, a
+ * speed, an ETA and the live connection count — and so a dropped link resumes
+ * instead of restarting.
+ */
+const downloadManager = createDownloadManager({ defaultDir: () => app.getPath('downloads') })
+
+function broadcastDownloadProgress(progress: ReturnType<typeof downloadManager.list>[number]) {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('hermes:download:progress', progress)
+    }
+  }
+}
+
+downloadManager.on('progress', broadcastDownloadProgress)
+downloadManager.on('failed', broadcastDownloadProgress)
+
 function installDownloadHandling() {
-  session.defaultSession.on('will-download', (_event, item) => {
+  session.defaultSession.on('will-download', (event, item) => {
+    const itemUrl = item.getURL()
+
+    // Re-host plain http(s) downloads on the segmented manager so the renderer
+    // gets a real bar, rate, ETA and connection count, and a dropped link
+    // resumes instead of restarting. Cookies are copied from this session — a
+    // re-fetch does not inherit Chromium's jar. blob:/data: URLs only exist
+    // inside the renderer, so they keep Chromium's native path.
+    if (isRehostableDownload(itemUrl)) {
+      event.preventDefault()
+      void (async () => {
+        try {
+          const cookies = await session.defaultSession.cookies.get({ url: itemUrl })
+          const cookieHeader = cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ')
+
+          await downloadManager.start(itemUrl, {
+            filename: item.getFilename() || undefined,
+            headers: cookieHeader ? { cookie: cookieHeader } : undefined
+          })
+        } catch (error) {
+          console.warn(`[download] re-host failed, offering the original URL: ${String(error)}`)
+          // The Chromium item is already canceled, so the fallback is to hand
+          // the URL to the OS browser rather than silently losing the file.
+          void shell.openExternal(itemUrl).catch(() => undefined)
+        }
+      })()
+
+      return
+    }
+
     const suggested = mediaProtocolDownloadName(item.getURL()) || item.getFilename() || 'download'
     const hasExtension = Boolean(path.extname(suggested))
     const extension = hasExtension ? '' : extensionForMimeType(item.getMimeType())
@@ -6735,6 +6787,54 @@ function installDownloadHandling() {
     } catch {
       // No Downloads directory to offer — keep Chromium's default prompt.
     }
+  })
+}
+
+/**
+ * Download tray IPC. `start` returns the initial snapshot (status `probing`);
+ * every later state change arrives as a `hermes:download:progress` event, so
+ * the renderer never polls.
+ */
+function installDownloadIpc() {
+  ipcMain.handle('hermes:download:start', async (_event, payload) => {
+    const url = String(payload?.url || '')
+
+    if (!isRehostableDownload(url)) {
+      throw new Error('Only http(s) downloads can be managed')
+    }
+
+    return downloadManager.start(url, {
+      connections: Number(payload?.connections) || 4,
+      filename: payload?.filename ? String(payload.filename) : undefined,
+      headers: payload?.headers && typeof payload.headers === 'object' ? payload.headers : undefined,
+      savePath: payload?.savePath ? String(payload.savePath) : undefined
+    })
+  })
+
+  ipcMain.handle('hermes:download:pause', async (_event, id) => {
+    await downloadManager.pause(String(id))
+
+    return downloadManager.get(String(id)) ?? null
+  })
+
+  ipcMain.handle('hermes:download:resume', async (_event, id) => {
+    await downloadManager.resume(String(id))
+
+    return downloadManager.get(String(id)) ?? null
+  })
+
+  ipcMain.handle('hermes:download:cancel', async (_event, id) => {
+    await downloadManager.cancel(String(id))
+
+    return downloadManager.get(String(id)) ?? null
+  })
+
+  ipcMain.handle('hermes:download:list', () => downloadManager.list())
+
+  ipcMain.handle('hermes:download:dismiss', (_event, id) => {
+    downloadManager.dismiss(String(id))
+
+    return true
   })
 }
 
@@ -17618,6 +17718,7 @@ app.whenReady().then(() => {
 
   installMediaPermissions()
   installDownloadHandling()
+  installDownloadIpc()
   registerMediaProtocol()
   installEmbedReferer()
   installRemoteHeaderRules()

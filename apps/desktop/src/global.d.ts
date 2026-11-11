@@ -457,6 +457,17 @@ declare global {
       endPreviewGuestActivity?: (token: number) => Promise<void>
       executePreviewGuestScript?: (token: number, code: string) => Promise<unknown>
       openExternal: (url: string) => Promise<void>
+      /** Segmented, resumable file downloads (electron/download-manager.ts).
+       *  Optional: an older shell without it keeps Chromium's native download. */
+      downloads?: {
+        start: (payload: HermesDownloadStartPayload) => Promise<HermesDownloadProgress>
+        pause: (id: string) => Promise<HermesDownloadProgress | null>
+        resume: (id: string) => Promise<HermesDownloadProgress | null>
+        cancel: (id: string) => Promise<HermesDownloadProgress | null>
+        list: () => Promise<HermesDownloadProgress[]>
+        dismiss: (id: string) => Promise<boolean>
+        onProgress: (callback: (progress: HermesDownloadProgress) => void) => () => void
+      }
       onExternalOpenFailed?: (callback: (payload: ExternalOpenFailedPayload) => void) => () => void
       /** The free tier's browser challenge (electron/challenge-window.ts): load
        *  the account service's page in a hidden window, revealed only if the
@@ -1900,4 +1911,31 @@ export interface HermesSelectPathsOptions {
 export interface BackendExit {
   code: number | null
   signal: string | null
+}
+
+
+/** What the renderer asks the main process to download. */
+export interface HermesDownloadStartPayload {
+  url: string
+  filename?: string
+  savePath?: string
+  /** 1 forces a single stream; otherwise 4 by default, capped at 8. */
+  connections?: number
+  headers?: Record<string, string>
+}
+
+/** One row in the download tray. Mirrors DownloadProgress in download-manager.ts. */
+export interface HermesDownloadProgress {
+  id: string
+  url: string
+  filename: string
+  savePath: string
+  totalBytes: number
+  receivedBytes: number
+  speedBps: number
+  etaMs: number | null
+  status: 'queued' | 'probing' | 'downloading' | 'pausing' | 'paused' | 'completed' | 'failed' | 'canceled'
+  connections: number
+  ranged: boolean
+  error?: string
 }

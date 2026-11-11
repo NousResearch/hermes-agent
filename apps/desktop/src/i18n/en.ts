@@ -4306,6 +4306,22 @@ export const en: Translations = {
     addToChat: 'Add to chat'
   },
 
+  downloads: {
+    heading: count => (count === 1 ? '1 download' : `${count} downloads`),
+    activeHeading: count => (count === 1 ? 'Downloading 1 file' : `Downloading ${count} files`),
+    connections: count => (count === 1 ? '1 connection' : `${count} connections`),
+    singleStream: 'single stream',
+    completed: 'completed',
+    paused: 'paused',
+    canceled: 'canceled',
+    failed: 'failed',
+    pause: 'Pause',
+    resume: 'Resume',
+    cancel: 'Cancel',
+    dismiss: 'Dismiss',
+    showInFolder: 'Open'
+  },
+
   preview: {
     tab: 'Preview',
     pin: 'Pin to workspace',

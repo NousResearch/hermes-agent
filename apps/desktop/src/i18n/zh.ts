@@ -4149,6 +4149,22 @@ export const zhOverrides = {
     addToChat: '添加到对话'
   },
 
+  downloads: {
+    heading: count => `${count} 个下载`,
+    activeHeading: count => `正在下载 ${count} 个文件`,
+    connections: count => `${count} 个连接`,
+    singleStream: '单线程',
+    completed: '已完成',
+    paused: '已暂停',
+    canceled: '已取消',
+    failed: '失败',
+    pause: '暂停',
+    resume: '继续',
+    cancel: '取消',
+    dismiss: '移除',
+    showInFolder: '打开'
+  },
+
   preview: {
     tab: '预览',
     pin: '固定到工作区',

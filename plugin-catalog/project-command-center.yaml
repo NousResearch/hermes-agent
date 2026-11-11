@@ -2,22 +2,7 @@ name: project-command-center
 repo: https://github.com/NyllRE/project-command-center
 sha: eaa3e2d3a046eb677f4c67aae98b78f1dcec4043
 title: Project Command Center
-description: >-
-  A board for every Hermes Project: lane, live sessions, token spend, git branch and
-  GitHub issues and pull requests in one place, with a detail page per project. Click
-  an issue and a session opens inside that project's folder with the issue number, title
-  and URL already in the composer, unsent. Branch rows open a session in a worktree or
-  after a checkout, and each session carries its own lane, so a PR climbing to review is
-  visible where the work happens. Includes a GitHub reader with full issue and PR modals,
-  comments, status filters and a Zed-style commit graph. Disclosure — reads your git
-  repositories and their history, switches branches when you ask it to (refusing on a
-  dirty tree, an in-progress merge or a branch checked out elsewhere), and comments on
-  or closes issues and PRs as your authenticated gh account. Board state lives in a local
-  SQLite file under the Hermes home. Two hooks read a terminal call's `gh pr create`
-  output to link the PR and move the session to review, and inject one short line naming
-  the session's own card into each turn; both honour kill files. Network calls go to
-  api.github.com, avatars.githubusercontent.com, and a favicon of a homepage a project
-  declares.
+description: "A board for every Hermes Project: lane, live sessions, token spend, git branch and GitHub issues and pull requests in one place, with a detail page per project. Click an issue and a session opens inside that project's folder with the issue number, title and URL already in the composer, unsent. Branch rows open a session in a worktree or after a checkout, and each session carries its own lane, so a PR climbing to review is visible where the work happens. Includes a GitHub reader with full issue and PR modals, comments, status filters and a Zed-style commit graph. Disclosure — reads your git repositories and their history, switches branches and creates worktrees under `<repo>/.worktrees/` when you ask it to from the board (refusing on a dirty tree, an in-progress merge, a branch checked out elsewhere or an existing target; git's own repo hooks run as they would in your shell), and comments on or closes issues and PRs as your authenticated gh account. Board state lives in a local SQLite file under the Hermes home. Two hooks read a terminal call's `gh pr create` output to link the PR and move the session to review, and inject one short line naming the session's own card into each turn; each has its own kill file (`auto_link.off`, `card_context.off`). Network calls go to api.github.com, avatars.githubusercontent.com, and a favicon of a homepage a project declares."
 maintainer: NyllRE
 tier: community
 category: desktop

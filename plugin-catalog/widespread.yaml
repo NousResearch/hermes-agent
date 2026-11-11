@@ -1,7 +1,7 @@
 name: widespread
 repo: https://github.com/TerexitariusStomp/hermes-browser
 subdir: src/plugins/widespread
-sha: ab1d4e054acdedf529b86975191e6a5904e920ee
+sha: 3b457cb9a5239960e97074fc4b984b100ea8ac17
 description: Earn verified-work bounties on the widespread protocol —
   discover funded markets across every forge, claim one, ship a signed
   dg-ship-1 attestation, watch the adjudicator, collect the payout. The

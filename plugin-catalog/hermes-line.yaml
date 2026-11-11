@@ -3,13 +3,11 @@ repo: https://github.com/uzay-eth/hermes-line
 sha: 'a2ff2700cc4b5b0e3b05484a2a4b8d1cabd75333'
 subdir: plugin
 title: Hermes Line
-description: >-
-  A phone line for Hermes: with your approval it calls a business from your Twilio account, works the phone
-  menu, waits on hold, then bridges you in or finishes the task, and can answer callbacks.
+description: "A phone line for Hermes: with your approval it calls a business from your Twilio account, works the phone menu, waits on hold, then bridges you in or finishes the task, and can answer callbacks. Disclosure — Places real phone calls and sends call audio through your own Twilio account (api.twilio.com), and through xAI (api.x.ai) when XAI_API_KEY is set; every call and every released SMS code needs your approval in chat. With `enabled: true` it runs a call service inside Hermes on 127.0.0.1:8788 that you expose through your own HTTPS tunnel, plus a loopback-only tool server, and it starts one `hermes acp` process per call on a separate neutral call profile with a minimal environment. With `sms_source: adb` it reads the attached Android phone's SMS inbox. The setup check (`/line check`, `hermes hermes-line check`) runs `hermes --version` and makes read-only Twilio GET requests."
 maintainer: uzay-eth
 tier: community
 category: voice
-requires_hermes: '>=0.22.5'
+requires_hermes: ">=0.22.5"
 version: '0.1.0'
 readme: true
 screenshots:

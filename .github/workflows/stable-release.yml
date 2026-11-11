@@ -38,7 +38,7 @@ jobs:
     # that can read it.
     permissions:
       contents: write
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     outputs:
       claim-tag: ${{ steps.admit.outputs.claim-tag }}
       claim-object: ${{ steps.admit.outputs.claim-object }}
@@ -53,7 +53,7 @@ jobs:
       lanes: ${{ steps.admit.outputs.lanes }}
       jobs: ${{ steps.admit.outputs.jobs }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -90,6 +90,9 @@ jobs:
     if: >-
       !cancelled() && needs.admit.result == 'success' && fromJSON(needs.admit.outputs.jobs)['docker']
     uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      id-token: write
     secrets: inherit
     with:
       commit: ${{ needs.admit.outputs.commit }}
@@ -272,14 +275,14 @@ jobs:
     name: Pin actual OLD and NEW signed packages (darwin-arm64)
     needs: [admit, candidates-darwin-arm64]
     if: fromJSON(needs.admit.outputs.jobs)['transitions-darwin-arm64']
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     environment: release-signing
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
       baseline: ${{ steps.plan.outputs.baseline }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -308,14 +311,14 @@ jobs:
     name: Pin actual OLD and NEW signed packages (win32)
     needs: [admit, candidates-win32-bundle]
     if: fromJSON(needs.admit.outputs.jobs)['transitions-win32']
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     environment: release-signing
     outputs:
       windows: ${{ steps.plan.outputs.windows }}
       macos: ${{ steps.plan.outputs.macos }}
       baseline: ${{ steps.plan.outputs.baseline }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -349,7 +352,7 @@ jobs:
     if: always() && fromJSON(needs.admit.outputs.jobs)['candidate-manifest']
     needs: [admit, candidates-darwin-arm64, candidates-win32-arm64,
             candidates-win32-x64, candidates-win32-bundle, candidates-termux]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     environment: release-signing
     timeout-minutes: 90
     outputs:
@@ -366,7 +369,7 @@ jobs:
       CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
       CLOUDFLARE_R2_PUBLIC_URL: ${{ vars.CLOUDFLARE_R2_PUBLIC_URL }}
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -420,9 +423,9 @@ jobs:
     name: Bootstrap installer release identity
     needs: admit
     if: fromJSON(needs.admit.outputs.jobs)['bootstrap-version']
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ needs.admit.outputs.commit }}
       - name: Stamp and verify the Cargo and Tauri release identity
@@ -459,9 +462,9 @@ jobs:
             candidate-manifest, transitions-darwin-arm64,
             transitions-win32, windows-packaged, macos-packaged-arm64,
             bootstrap-version]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -479,6 +482,9 @@ jobs:
     needs: [admit, docker]
     if: fromJSON(needs.admit.outputs.jobs)['publish-docker']
     uses: ./.github/workflows/docker.yml
+    permissions:
+      contents: read
+      id-token: write
     secrets: inherit
     with:
       commit: ${{ needs.admit.outputs.commit }}
@@ -514,9 +520,9 @@ jobs:
     name: All artifact publication succeeded
     if: always()
     needs: [admit, acceptance, publish-docker, publish-bundles]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ github.sha }}
       - uses: ./.github/actions/setup-pm
@@ -533,13 +539,17 @@ jobs:
     needs: [admit, ci, docker, acceptance, candidate-manifest, publication, publish-docker,
             windows-packaged, macos-packaged-arm64]
     # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
-    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # Blacksmith `imagetools create` cannot commit a manifest list reliably (404 on the
     # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
     runs-on: ubuntu-latest
     environment: release-signing
+    env:
+      HERMES_DOCKER_IMAGE: ${{ vars.CONTAINER_IMAGE }}
+      ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
     permissions:
       contents: write
       actions: read
+      id-token: write
     steps:
       - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
@@ -600,11 +610,14 @@ jobs:
             "${args[@]}"
       - name: Set up Docker Buildx for ordered alias promotion
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Log in to Docker Hub for ordered alias promotion
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+      - name: Log in to Azure with GitHub OIDC
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          client-id: ${{ vars.AZURE_ACR_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "${ACR_LOGIN_SERVER%%.*}"
       - name: Reconcile ordered stable publication
         # The macOS feed merge parses YAML (hermes_yaml -> ruamel); the node toolchain has none.
         run: python -m scripts.ci.python_packages ruamel.yaml==0.18.17 -- -m scripts.releases.sequencer

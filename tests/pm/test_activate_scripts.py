@@ -7,6 +7,7 @@ test_environment_script.py; the fish port, in test_activate_fish.py.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -25,6 +26,25 @@ def test_bash_scripts_pass_syntax_check():
             check=False,
         )
         assert result.returncode == 0, f"{script.name}: {result.stderr}"
+
+
+@pytest.mark.platforms("macos")
+def test_source_activate_exports_and_restores_the_pm_env_in_zsh(tmp_path: Path):
+    root = isolated_checkout(tmp_path)
+    store, _ = fake_store(tmp_path)
+    zsh = shutil.which("zsh")
+    assert zsh is not None
+    script = (
+        f'source "{posix(root / "activate")}" && '
+        f'test -n "$__HERMES_ACTIVATED" && test "${CANARY}" = env-ok && '
+        f'deactivate && test -z "${{{CANARY}+set}}" && echo restored'
+    )
+    result = subprocess.run(
+        [zsh, "-c", script], capture_output=True, text=True, cwd=posix(tmp_path),
+        env=bash_env(store), check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "restored"
 
 
 @pytest.mark.platforms("windows")

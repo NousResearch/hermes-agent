@@ -7,7 +7,7 @@ on:
   # Thus one slow advisory job blocked every rerun of the fast required jobs. A separate
   # run reruns and cancels independently.
   #
-  # Trusted main pushes resolve the environment-scoped Docker Hub secrets in
+  # Trusted main pushes authenticate to the environment-scoped Azure registry in
   # this same workflow, never across a workflow boundary.
   #
   # The ``release: published`` trigger was REMOVED on purpose: a GitHub release
@@ -52,7 +52,7 @@ permissions:
   contents: read
 
 # Concurrency: push/release runs are NEVER cancelled so every merge gets
-# its own image.  PR runs reuse a PR-scoped group with
+# its own image. PR runs reuse a PR-scoped group with
 # cancel-in-progress: true so rapid pushes to the same PR collapse to
 # the latest commit. Release runs include the run_id: several reusable calls
 # (test/publish) of this workflow live inside ONE parent run, and a
@@ -62,7 +62,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: nousresearch/hermes-agent
+  IMAGE_NAME: ${{ vars.CONTAINER_IMAGE }}
+  HERMES_DOCKER_IMAGE: ${{ vars.CONTAINER_IMAGE }}
+  ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
   # A stable run is on the default branch, so GITHUB_SHA is not the candidate.
   CANDIDATE_COMMIT: ${{ inputs.commit || github.sha }}
 
@@ -83,7 +85,7 @@ jobs:
   # never weakened.
   mode:
     name: Resolve release phase and affected areas
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       phase: ${{ steps.resolve.outputs.phase }}
@@ -103,7 +105,7 @@ jobs:
             *)    echo "::error::Invalid release-phase input: $PHASE"; exit 1 ;;
           esac
 
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         if: steps.resolve.outputs.release != 'true'
         with:
           ref: ${{ inputs.commit }}
@@ -146,7 +148,7 @@ jobs:
     needs: [mode]
     if: >-
       !cancelled() && needs.mode.result == 'success' &&
-      ((needs.mode.outputs.release != 'true' && github.repository == 'NousResearch/hermes-agent' && needs.mode.outputs.build == 'true') || needs.mode.outputs.phase == 'test')
+      ((needs.mode.outputs.release != 'true' && github.repository == 'unitalkai/unitalk-desktop' && needs.mode.outputs.build == 'true') || needs.mode.outputs.phase == 'test')
     strategy:
       fail-fast: false
       matrix:
@@ -158,19 +160,19 @@ jobs:
         variant: [slim, desktop]
         include:
           - arch: amd64
-            runner: blacksmith-32vcpu-ubuntu-2404
+            runner: ubuntu-24.04
             platform: linux/amd64
           # arm64 builds on the native arm64 larger runner. A build of
           # linux/arm64 on an x64 host uses emulation.
           - arch: arm64
-            runner: blacksmith-32vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
             platform: linux/arm64
 
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 180
     steps:
       - name: Checkout code
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           # Stable dispatches from the default branch and names the claim commit.
           # Pin it, never a mutable branch ref.
@@ -205,7 +207,7 @@ jobs:
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
-      # Retry once on transient Docker Hub / buildkit pull failures
+      # Retry once on transient registry / buildkit pull failures
       # (connection reset, auth token timeout, rate limiting). The action
       # generates a unique builder name per invocation so the retry doesn't
       # collide with the failed first attempt. A genuine persistent failure
@@ -214,16 +216,16 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       # Build once, load into the local daemon for testing.  Cached
       # per-arch; the push step below reuses every layer from this build.
       - name: Build image (${{ matrix.variant }}/${{ matrix.arch }})
-        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850  # v2
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: Dockerfile
@@ -232,6 +234,7 @@ jobs:
           tags: ${{ env.IMAGE_NAME }}:test
           build-args: |
             HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
+            HERMES_DOCKER_IMAGE=${{ env.IMAGE_NAME }}
           # Slim owns the scope; desktop adds the gated apt layer, so it reads
           # and writes nothing — a mode=max scope could exceed the cache cap.
           cache-from: type=gha,scope=docker-${{ matrix.arch }}
@@ -329,7 +332,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # Standalone publish: rebuild and push each architecture only after the
   # unprivileged build/test matrix passes, on trusted main pushes.
-  # This job is the sole Docker Hub credential boundary for merges.
+  # This job is the sole Azure Container Registry credential boundary for merges.
   #
   # NOTE: main pushes tag :main ONLY. :latest is a user-facing stable alias
   # now; the ordered publication controller moves it only after the global
@@ -338,10 +341,13 @@ jobs:
   publish:
     if: >-
       needs.mode.outputs.release != 'true' &&
-      github.repository == 'NousResearch/hermes-agent' &&
+      github.repository == 'unitalkai/unitalk-desktop' &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [mode, build]
     environment: container-publish
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -349,17 +355,17 @@ jobs:
         variant: [slim, desktop]
         include:
           - arch: amd64
-            runner: blacksmith-32vcpu-ubuntu-2404
+            runner: ubuntu-24.04
             platform: linux/amd64
           # Native arm64 for the same reason as the build matrix above.
           - arch: arm64
-            runner: blacksmith-32vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 180
     steps:
       - name: Checkout trusted source
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit }}
           fetch-depth: 0
@@ -384,34 +390,39 @@ jobs:
       - name: Reject profile exports in the build context
         run: python3 scripts/ci/check_profile_archive_boundary.py
 
-      # Retry once on transient Docker Hub / buildkit pull failures.
+      # Retry once on transient registry / buildkit pull failures.
       # See build job for rationale; same pattern.
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+      - name: Log in to Azure with GitHub OIDC
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          client-id: ${{ vars.AZURE_ACR_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "${ACR_LOGIN_SERVER%%.*}"
 
       # Push by digest only (no tag). The merge job assembles the tagged
       # manifest list after both architecture publishers complete.
       - name: Push ${{ matrix.variant }}/${{ matrix.arch }} by digest
         id: push
-        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850  # v2
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: Dockerfile
           platforms: ${{ matrix.platform }}
           build-args: |
             HERMES_BOT_DESKTOP=${{ matrix.variant == 'desktop' && '1' || '0' }}
+            HERMES_DOCKER_IMAGE=${{ env.IMAGE_NAME }}
           labels: |
             org.opencontainers.image.revision=${{ env.CANDIDATE_COMMIT }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
@@ -443,14 +454,17 @@ jobs:
   merge:
     # `needs` is the whole 4-leg matrix: only publish both :main variants
     # after every arch and variant publisher succeeds.
-    if: ${{ !cancelled() && needs.mode.outputs.release != 'true' && github.repository == 'NousResearch/hermes-agent' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    if: ${{ !cancelled() && needs.mode.outputs.release != 'true' && github.repository == 'unitalkai/unitalk-desktop' && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
-    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # Blacksmith `imagetools create` cannot commit a manifest list reliably (404 on the
     # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
     runs-on: ubuntu-latest
     needs: [mode, publish]
     timeout-minutes: 10
     environment: container-publish
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -469,7 +483,7 @@ jobs:
           pattern: digest-${{ matrix.variant }}-*
           merge-multiple: true
 
-      # Retry once on transient Docker Hub / buildkit pull failures.
+      # Retry once on transient registry / buildkit pull failures.
       # See build job for rationale; same pattern.
       - name: Set up Docker Buildx
         id: buildx
@@ -480,11 +494,15 @@ jobs:
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+      - name: Log in to Azure with GitHub OIDC
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          client-id: ${{ vars.AZURE_ACR_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "${ACR_LOGIN_SERVER%%.*}"
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
@@ -501,7 +519,7 @@ jobs:
           done
           if [ "${#args[@]}" -ne 2 ]; then echo "::error::Expected two ${SUFFIX} digests"; exit 1; fi
           tags=(-t "${IMAGE_NAME}:main${SUFFIX}")
-          # Retry: Docker Hub API + just-pushed digest eventual consistency
+          # Retry: registry API + just-pushed digest eventual consistency
           # can transiently fail the create; the operation is idempotent.
           for i in 1 2 3; do
             if docker buildx imagetools create "${tags[@]}" "${args[@]}"; then
@@ -529,19 +547,22 @@ jobs:
 
   # Release 'publish' phase: load the EXACT tested image archives uploaded by
   # the 'test' phase of this SAME workflow run, verify their hashes, push
-  # per-arch and NEVER rebuild. No owner gate: on a fork the Docker Hub
-  # login/push fails loudly (missing credentials) instead of faking green.
+  # per-arch and NEVER rebuild. No owner gate: on a fork the Azure OIDC
+  # login/push fails loudly (missing configuration) instead of faking green.
   release-publish:
     name: Publish tested Docker image (${{ matrix.variant }}/${{ matrix.arch }})
     if: needs.mode.outputs.phase == 'publish'
     needs: [mode]
     environment: container-publish
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
         variant: [slim, desktop]
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
       ARCH: ${{ matrix.arch }}
@@ -550,7 +571,7 @@ jobs:
       SUFFIX: ${{ matrix.variant == 'desktop' && '-desktop' || '' }}
     steps:
       - name: Checkout release code (helper scripts only, no build)
-        uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
         with:
           ref: ${{ inputs.commit || github.sha }}
 
@@ -570,11 +591,11 @@ jobs:
       - name: Set up Docker Buildx
         id: buildx
         continue-on-error: true
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Set up Docker Buildx (retry)
         if: steps.buildx.outcome == 'failure'
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Load tested image
         run: |
@@ -593,11 +614,15 @@ jobs:
               raise SystemExit('Loaded Docker image differs from tested image')
           PY
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+      - name: Log in to Azure with GitHub OIDC
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          client-id: ${{ vars.AZURE_ACR_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "${ACR_LOGIN_SERVER%%.*}"
 
       - name: Push tested image with per-arch release tag
         run: |
@@ -633,13 +658,16 @@ jobs:
     if: needs.mode.outputs.phase == 'publish'
     needs: [mode, release-publish]
     # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
-    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # Blacksmith `imagetools create` cannot commit a manifest list reliably (404 on the
     # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.list.outputs.digest }}
     timeout-minutes: 15
     environment: container-publish
+    permissions:
+      contents: read
+      id-token: write
     env:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
@@ -663,11 +691,15 @@ jobs:
         if: steps.buildx.outcome == 'failure'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+      - name: Log in to Azure with GitHub OIDC
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          client-id: ${{ vars.AZURE_ACR_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "${ACR_LOGIN_SERVER%%.*}"
 
       - name: Create both immutable versioned manifest lists
         env:
@@ -735,11 +767,11 @@ jobs:
             --digest-amd64 "$(sed 's/^sha256://' /tmp/digests/docker-publish-digest-slim-amd64-${RELEASE_TAG}/amd64.digest)" \
             --digest-arm64 "$(sed 's/^sha256://' /tmp/digests/docker-publish-digest-slim-arm64-${RELEASE_TAG}/arm64.digest)" \
             > /tmp/manifest/manifest.json
-          python3 - "$RELEASE_TAG" "${{ steps.list.outputs.digest }}" <<'EOF'
+          python3 - "$RELEASE_TAG" "${{ steps.list.outputs.digest }}" "$IMAGE_NAME" <<'EOF'
           import json, sys
           manifest = json.load(open("/tmp/manifest/manifest.json"))
           manifest["list-digest"] = sys.argv[2]
-          manifest["image"] = "nousresearch/hermes-agent"
+          manifest["image"] = sys.argv[3]
           manifest["tags"] = [sys.argv[1]]
           json.dump(manifest, open("/tmp/manifest/manifest.json", "w"), indent=2)
           EOF
@@ -767,7 +799,7 @@ jobs:
     name: Docker phase requirements met
     if: always() && inputs.release-phase != ''
     needs: [mode, build, release-publish, release-publish-manifest]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Validate phase job results

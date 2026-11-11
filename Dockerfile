@@ -427,6 +427,7 @@ RUN mkdir -p /opt/hermes/bin && \
 # run as the default hermes user (UID 10000).
 
 # ---------- Image provenance + install stamp ----------
+ARG HERMES_DOCKER_IMAGE=nousresearch/hermes-agent
 # CI (.github/workflows/docker.yml) runs scripts/write_install_stamp.py
 # before `docker build`, so the bulk `COPY . .` above already placed a
 # full-provenance /opt/hermes/install-stamp.json next to the code.
@@ -453,7 +454,7 @@ RUN set -eu; \
     fi; \
     python3 -c 'import json; from pathlib import Path; path = Path("/opt/hermes/install-stamp.json"); stamp = json.loads(path.read_text()); stamp["pmRuntime"] = "/opt/hermes/pm-runtime"; path.write_text(json.dumps(stamp) + "\n")'; \
     mkdir -p /etc/hermes; \
-    python3 -c 'import json, pathlib, tomllib; project = tomllib.loads(pathlib.Path("/opt/hermes/pyproject.toml").read_text(encoding="utf-8"))["project"]; stamp = json.loads(pathlib.Path("/opt/hermes/install-stamp.json").read_text(encoding="utf-8")); commit = stamp.get("commit"); revision = commit if commit and set(commit) != {"0"} else None; marker = pathlib.Path("/etc/hermes/image-provenance.json"); marker.write_text(json.dumps({"schema": 1, "deployment_kind": "image", "manager": "docker", "image": "nousresearch/hermes-agent", "version": project["version"], "revision": revision}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"); marker.chmod(0o444)'
+    python3 -c 'import json, pathlib, sys, tomllib; project = tomllib.loads(pathlib.Path("/opt/hermes/pyproject.toml").read_text(encoding="utf-8"))["project"]; stamp = json.loads(pathlib.Path("/opt/hermes/install-stamp.json").read_text(encoding="utf-8")); commit = stamp.get("commit"); revision = commit if commit and set(commit) != {"0"} else None; marker = pathlib.Path("/etc/hermes/image-provenance.json"); marker.write_text(json.dumps({"schema": 1, "deployment_kind": "image", "manager": "docker", "image": sys.argv[1], "version": project["version"], "revision": revision}, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8"); marker.chmod(0o444)' "$HERMES_DOCKER_IMAGE"
 
 # ---------- s6-overlay service wiring ----------
 # Static services declared at build time: main-hermes, dashboard and

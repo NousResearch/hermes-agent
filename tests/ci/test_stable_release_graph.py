@@ -361,7 +361,9 @@ def test_publication_reconciler_has_every_recovery_trigger_and_shared_lock():
     }
     reconcile = publication["jobs"]["reconcile"]
     assert reconcile["environment"] == "release-signing"
-    assert publication["permissions"] == {"contents": "write", "actions": "write"}
+    assert publication["permissions"] == {
+        "contents": "write", "actions": "write", "id-token": "write",
+    }
     # Reconcile after a dispatched run of this repository that did not succeed;
     # a manual dispatch of the reconciler always runs.
     def run_of(**overrides):

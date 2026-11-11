@@ -1,6 +1,6 @@
 name: Sandbox desktop image
 
-# nousresearch/hermes-sandbox:desktop is the terminal-backend sandbox base
+# The configured SANDBOX_IMAGE:desktop is the terminal-backend sandbox base
 # (nikolaik/python-nodejs) plus a display stack; Bot Screen, computer_use and
 # the bot's browser run inside it when terminal.backend is docker/ssh/etc.
 # It contains NO Hermes code, so it does not need to track main.
@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Push to Docker Hub (rolls :desktop)
+        description: Push to Azure Container Registry (rolls :desktop)
         type: boolean
         default: false
 
@@ -45,13 +45,14 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  IMAGE_NAME: nousresearch/hermes-sandbox
+  IMAGE_NAME: ${{ vars.SANDBOX_IMAGE }}
+  ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
 
 jobs:
   # PR code: secret-free build + smoke per arch.
   build:
     if: >-
-      github.repository == 'NousResearch/hermes-agent' &&
+      github.repository == 'unitalkai/unitalk-desktop' &&
       (github.event_name != 'workflow_run' ||
        (github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.head_repository.full_name == github.repository))
@@ -60,21 +61,21 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: blacksmith-32vcpu-ubuntu-2404
+            runner: ubuntu-24.04
             platform: linux/amd64
           - arch: arm64
-            runner: blacksmith-32vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build (${{ matrix.arch }})
-        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850  # v2
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: docker/sandbox-desktop.Dockerfile
@@ -94,39 +95,46 @@ jobs:
       - name: Smoke
         run: docker/sandbox-desktop-smoke.sh ${{ env.IMAGE_NAME }}:test
 
-  # Trusted source only; the sole Docker Hub credential boundary.
+  # Trusted source only; the sole Azure Container Registry credential boundary.
   publish:
     # Every non-PR event publishes, except a dispatch without publish=true.
-    if: github.repository == 'NousResearch/hermes-agent' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish)
+    if: github.repository == 'unitalkai/unitalk-desktop' && github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish)
     needs: [build]
     environment: container-publish
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
-            runner: blacksmith-32vcpu-ubuntu-2404
+            runner: ubuntu-24.04
             platform: linux/amd64
           - arch: arm64
-            runner: blacksmith-32vcpu-ubuntu-2404-arm
+            runner: ubuntu-24.04-arm
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
-      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
 
       - name: Set up Docker Buildx
-        uses: useblacksmith/setup-docker-builder@19215110ab936351210feebdfa5b440b4493e184  # v2
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+      - name: Log in to Azure with GitHub OIDC
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          client-id: ${{ vars.AZURE_ACR_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "${ACR_LOGIN_SERVER%%.*}"
 
       - name: Push ${{ matrix.arch }} by digest
         id: push
-        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850  # v2
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: docker/sandbox-desktop.Dockerfile
@@ -154,11 +162,14 @@ jobs:
     # Implicit success(): runs only when both publish legs pushed.
     needs: [publish]
     # GitHub-hosted with docker/setup-buildx-action, as before the runner migration: on
-    # Blacksmith `imagetools create` cannot commit a manifest list to Docker Hub (404 on the
+    # Blacksmith `imagetools create` cannot commit a manifest list reliably (404 on the
     # index commit, any buildx version): v0.22.3 rc.1-rc.4 died on it in the versioned manifest.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: container-publish
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
@@ -169,11 +180,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+      - name: Log in to Azure with GitHub OIDC
+        uses: azure/login@f5d393ae46f8fde4be8b75f32e3fc50e654ad0ca # v3.0.1
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          client-id: ${{ vars.AZURE_ACR_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "${ACR_LOGIN_SERVER%%.*}"
 
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests

@@ -4,7 +4,9 @@
   </a>
 </p>
 
-<h1 align="center">Unitalk Desktop ☤</h1>
+
+<h1 align="center">Unitalk Desktop </h1>
+
 
 <p align="center">
   <b>El Colaborador IA que crece con su empresa. Impulsado por Hermes.</b>

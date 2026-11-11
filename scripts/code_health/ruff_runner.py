@@ -10,6 +10,7 @@ current directory (the ``just fix`` and pre-commit recipes).
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -56,6 +57,9 @@ def resolve_ruff(repo: Path) -> list[str]:
     """Command prefix for the pinned ruff: a matching install, else ``uvx ruff@<pin>``."""
     pin = pinned_version(repo)
     candidates = [Path(sys.prefix) / "bin" / "ruff", Path(sys.prefix) / "Scripts" / "ruff.exe"]
+    test_python = os.environ.get("__HERMES_TEST_PYTHON", "")
+    if test_python:
+        candidates.insert(0, Path(test_python).parent / ("ruff.exe" if os.name == "nt" else "ruff"))
     on_path = shutil.which("ruff")
     if on_path:
         candidates.insert(0, Path(on_path))

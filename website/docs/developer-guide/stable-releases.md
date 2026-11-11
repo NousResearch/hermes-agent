@@ -56,7 +56,7 @@ blocks newer publication. A burned attempt is skipped, and its version is cut
 again after `abandon`. Failed, cancelled, missing, and unexpectedly skipped
 requirements remain red.
 
-Docker Hub, R2, APT, GitHub, and the Store do not support one cross-service
+The container registry, R2, APT, GitHub, and the Store do not support one cross-service
 transaction. The controller is therefore idempotent: after a partial failure,
 run it again and let every mutation verify its current state before continuing.
 The final tag is the custody receipt. Never rebuild or replace accepted bytes to

@@ -4,7 +4,7 @@
   </a>
 </p>
 
-<h1 align="center">Unitalk Desktop ☤</h1>
+<h1 align="center">Unitalk Desktop </h1>
 
 <p align="center">
   <b>The AI Collaborator that grows with your business. Powered by Hermes.</b>

@@ -1,0 +1,23 @@
+name: 1guy
+title: "1guy"
+version: "1.0.20"
+repo: https://github.com/jrezmo/1guy-plugin
+sha: 2bb6728048388a419829af5ab8228f3bb977f03f
+description: "Hermes does the work. 1guy brings it back to you. One desk over your whole Hermes: every session, scheduled job and to-do is a card you touch, put away, schedule or talk to, and one companion on top tells you the few things that need you. Each card opens its own titled Hermes session and streams the reply in place; a talk bar routes a typed line to the right card or just does it. Adds a 1guy page with four lenses (today, board, time, inbox), a docked ticker and a to-do pane; on a new install he introduces himself with starting points built from what is really there. Disclosure — reads state.db, cron/jobs.json, cron/output, cache/delegation/live, skill folder names and mcp_servers names in config.yaml read-only; reads and writes tasklist.md in the Hermes home (created if missing; appends a short ^anchor to a line when it gets a thread); keeps its own state in plugin-data/1guy. Makes short background calls on your active model through ctx.llm to write card headlines and route typed lines (these carry card titles and short session excerpts and spend your tokens; ONEGUY_HEADLINES=off disables the headline calls). Talking to a card creates a normal Hermes session through the desktop app and sends that card's context into it. Pressing 'run now' on a job card runs `hermes cron run <id>`. It reads no mail or calendar itself: if your Hermes has an email or calendar skill (checked by folder and MCP server NAME only) it offers to create one read-only scheduled Hermes job, `1guy-mail-cal` (`hermes cron create`, then `hermes cron run`), and shows what that job wrote. No network calls of its own, no telemetry, no credentials read or stored."
+maintainer: jrezmo
+tier: community
+category: desktop
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/jrezmo/1guy-plugin#readme
+image: https://raw.githubusercontent.com/jrezmo/1guy-plugin/2bb6728048388a419829af5ab8228f3bb977f03f/docs/screenshots/board.png
+screenshots:
+  - https://raw.githubusercontent.com/jrezmo/1guy-plugin/2bb6728048388a419829af5ab8228f3bb977f03f/docs/screenshots/board.png
+  - https://raw.githubusercontent.com/jrezmo/1guy-plugin/2bb6728048388a419829af5ab8228f3bb977f03f/docs/screenshots/first-run.png
+  - https://raw.githubusercontent.com/jrezmo/1guy-plugin/2bb6728048388a419829af5ab8228f3bb977f03f/docs/screenshots/thread.png
+  - https://raw.githubusercontent.com/jrezmo/1guy-plugin/2bb6728048388a419829af5ab8228f3bb977f03f/docs/screenshots/time-lens.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

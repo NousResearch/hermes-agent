@@ -104,6 +104,12 @@ class HomeIOGuard:
             # probe) reads no state; only its contents are guarded.
             if metadata and absolute in roots:
                 return
+            # A source checkout installed below the Hermes home reads the adjacent
+            # immutable payload manifest while selecting its dependency environment.
+            # This is install metadata, not mutable Hermes state; permit the read but
+            # continue to reject every write and every other path in the real home.
+            if roots and not destructive and absolute == os.path.join(roots[0], "manifest.json"):
+                return
             # ``shutil.which`` stats/accesses ``<PATH entry>/<name>``, and command resolution
             # realpath()s the entry itself (is it a Hermes-managed bin dir?), which lstats each of
             # its ancestors. A developer shell puts PM's tool store (~/.hermes/tools/...) on PATH;

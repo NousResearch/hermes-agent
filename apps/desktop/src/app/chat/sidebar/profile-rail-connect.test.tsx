@@ -52,7 +52,9 @@ vi.mock('@/store/profile', () => ({
   // The rail's status summary (profile-dot-state) rides the real session
   // stores, whose import graph reaches $showAllProfiles through layout state.
   $showAllProfiles: atom(false),
+  $tileViewScope: atom('default'),
   ALL_PROFILES: '*',
+  enterAllProfilesView: vi.fn(),
   normalizeProfileKey: (name: string) => name,
   prewarmProfilePick: vi.fn(),
   profileLabel: (profile: { display_name?: string; name: string }) =>
@@ -61,6 +63,7 @@ vi.mock('@/store/profile', () => ({
   selectProfile: vi.fn(),
   setProfileColor: vi.fn(),
   setProfileOrder: vi.fn(),
+  setProfileViewRestore: vi.fn(),
   setShowAllProfiles: vi.fn(),
   sortByProfileOrder: (profiles: unknown[]) => profiles
 }))

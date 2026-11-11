@@ -13,7 +13,7 @@ import { ProfileSwitcher } from './profile-dropdown-switcher'
 // gateway and select through the same store action the rail uses.
 
 const selectProfile = vi.fn()
-const setShowAllProfiles = vi.fn()
+const enterAllProfilesView = vi.fn()
 
 vi.mock('react-router', () => ({ useNavigate: () => vi.fn() }))
 
@@ -44,12 +44,13 @@ vi.mock('@/store/profile', () => ({
   ]),
   $showAllProfiles: atom(false),
   ALL_PROFILES: '__all__',
+  enterAllProfilesView: () => enterAllProfilesView(),
   normalizeProfileKey: (name: string) => name,
   prewarmProfilePick: vi.fn(),
   profileLabel: (profile: { name: string }) => profile.name,
   refreshActiveProfile: vi.fn().mockResolvedValue(undefined),
   selectProfile: (name: string) => selectProfile(name),
-  setShowAllProfiles: (value: boolean) => setShowAllProfiles(value),
+  setShowAllProfiles: vi.fn(),
   sortByProfileOrder: (profiles: Array<{ name: string }>) => profiles
 }))
 
@@ -128,5 +129,5 @@ it('switches profiles from the statusbar dropdown while the rail is hidden', asy
   })
 
   expect(selectProfile).toHaveBeenCalledWith('clippy')
-  expect(setShowAllProfiles).not.toHaveBeenCalled()
+  expect(enterAllProfilesView).not.toHaveBeenCalled()
 })

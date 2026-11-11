@@ -772,6 +772,12 @@ export async function selectConnection(connectionId: string, options: SelectConn
       const restore = draftBeforePick(ahead)
       rehomeNewChatDraft(targetProfile, restoreOnBoot, connectionId)
 
+      if (restoreOnBoot) {
+        window.hermesDesktop?.logLine?.(
+          `[main-tab] boot restore moved to conn=${connectionId}: first tab starts a new session`
+        )
+      }
+
       const rehome: DraftRehome = {
         intent: currentNewChatIntent(),
         landed: targetIsActive,

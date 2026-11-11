@@ -49,6 +49,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, routeSessionId, sessionRoute } from '../../routes'
 
+import { decideMainTabColdStart } from './main-tab-restore'
 import { resolveRememberedSessionId } from './remembered-session'
 
 // Trailing window that folds a burst of kept-route opens into one list refresh.
@@ -142,17 +143,14 @@ export function useDesktopIntegrations({
       // Only cold-start navigation at the default route is replaceable; a deep
       // link or hidden-then-shown window keeps its explicit destination.
       if (locationPathname === NEW_CHAT_ROUTE) {
-        // display.resume_last_session (#60812): hold the latch until the config
-        // record answers, then either restore below or stay on the fresh chat.
-        // Remembered ids keep being written either way, so flipping the switch
-        // back on resumes from the very next launch.
-        if (resumeLastSession === undefined) {
-          return
-        }
-
-        if (!resumeLastSession) {
-          restoredRef.current = true
-
+        // display.resume_last_session (#60812) first, then the first tab's
+        // per-view memory, the same one every other tab reopens from. The
+        // per-profile route below only covers views without one.
+        if (
+          decideMainTabColdStart(resumeLastSession, sessions, navigate, () => {
+            restoredRef.current = true
+          })
+        ) {
           return
         }
 

@@ -1056,12 +1056,16 @@ class SessionAuthority:
         with live.event_stream.lock:
             self.check_approval_generation(session_id, generation)
             live.controls.register(session_id, route, generation, data, timeout_s=timeout_s)
+            from gateway.session_prompt_hooks import control_opened
+            control_opened(self, session_id, live.controls, data['request_id'])
 
     def register_clarify(self, session_id, generation, entry, *, timeout_s=None):
         live = self.sessions[session_id]
         with live.event_stream.lock:
             self.check_approval_generation(session_id, generation)
             live.controls.register_clarify(session_id, generation, entry, timeout_s=timeout_s)
+            from gateway.session_prompt_hooks import control_opened
+            control_opened(self, session_id, live.controls, entry.clarify_id)
 
     async def respond(self, actor, ref, generation, prompt_id, response, *, kind="approval"):
         capability = {"approval": "session:approve", "clarify": "session:respond"}.get(kind)

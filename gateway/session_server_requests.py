@@ -176,6 +176,8 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, r
     with _lock:
         _open[request_id] = pending
     events.fanout.write({"jsonrpc": "2.0", "id": request_id, "method": method, "params": pending.params})
+    from gateway import session_prompt_hooks
+    hooked = session_prompt_hooks.request_opened(events, session_id, request_id, method, pending.params, replay)
     waited = 0.0
     reason = "timeout"
     while not pending.event.wait(_POLL_S):
@@ -198,6 +200,7 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, r
         with contextlib.suppress(Exception):
             events.publish(session_id, {"id": request_id, "method": method, "reason": reason},
                            event_type="request.cancel")
+        session_prompt_hooks.request_settled(hooked, reason)
         return pending if pending.qids is not None else None
     # Settled by a viewer (a response frame or the last ``clarify.lock``): every OTHER viewer still
     # shows the card, and a classic CLI is parked inside its modal callback. Withdraw it everywhere
@@ -206,4 +209,5 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, r
     with contextlib.suppress(Exception):
         events.publish(session_id, {"id": request_id, "method": method, "reason": "resolved"},
                        event_type="request.cancel")
+    session_prompt_hooks.request_settled(hooked, "resolved")
     return pending

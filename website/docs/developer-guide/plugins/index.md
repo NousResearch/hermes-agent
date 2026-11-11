@@ -1600,6 +1600,7 @@ Every name in `hermes_cli.plugins.VALID_HOOKS` has at least one core fire site. 
 | `agent_loop_stopped` | `gateway/run_agent_cache.py` `GatewayAgentCacheMixin._interrupt_and_clear_session`; `tui_gateway/session_lifecycle.py` `_interrupt_session_turn` |
 | `pre_approval_request` / `post_approval_response` | `tools/approval_context.py` `_fire_approval_hook`, called from `tools/approval.py`, `tools/approval_prompt.py`, `tools/approval_gateway_wait.py`, `tools/approval_smart.py` and `tools/file_tools_write_guards.py` |
 | `on_human_input_request` / `on_human_input_resolved` | `tools/human_input_hooks.py` `human_input_request` |
+| `on_session_prompt` / `on_session_prompt_settled` | `gateway/session_prompt_hooks.py`, called from `gateway/session_authority.py` `SessionAuthority.register_approval` / `register_clarify`, `gateway/session_pending_controls.py` (a prompt leaving `PendingControls.pending`) and `gateway/session_server_requests.py` `_ask` |
 | `on_room_member_activity` | `tui_gateway/hosted_room_member_activity.py` `emit_room_member_activity` |
 | `pre_transcription` | `tools/transcription_command.py` `_apply_pre_transcription_hook` |
 | `kanban_task_claimed` | `hermes_cli/kanban_db.py` `claim_task` (through `_fire_task_hook`) |

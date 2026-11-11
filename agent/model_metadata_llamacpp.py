@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from itertools import pairwise
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote
+
+from agent import model_metadata_http
 
 
 def _json_object(resp) -> dict:
@@ -62,3 +64,72 @@ def router_launch_ctx(client, server_url: str, model: str) -> Optional[int]:
             if flag in ("--ctx-size", "-c") and value.isdigit() and int(value) > 0:
                 return int(value)
     return None
+
+
+def _apply_llamacpp_props(cache: dict[str, dict[str, Any]], request_candidate: str, headers: dict[str, str], verify) -> None:
+    """Overwrite ``context_length`` with llama.cpp's allocated ``n_ctx`` from /props (``/v1/props``, then
+    ``/props`` for older builds). In router mode the bare endpoint 400s, so each LOADED child is read
+    via ``/props?model=``; unloaded children are skipped — probing could autoload them."""
+    base = request_candidate.rstrip("/").replace("/v1", "")
+    def _props(params=None):
+        resp = model_metadata_http.get(base + "/v1/props", params=params, headers=headers, timeout=5, verify=verify)
+        if resp.is_error:
+            resp = model_metadata_http.get(base + "/props", params=params, headers=headers, timeout=5, verify=verify)
+        return resp
+    def _n_ctx(props: dict[str, Any]) -> Any:
+        return (props.get("default_generation_settings") or {}).get("n_ctx")
+    props_resp = _props()
+    if not props_resp.is_error:
+        props = props_resp.json()
+        n_ctx, model_alias = _n_ctx(props), props.get("model_alias", "")
+        if n_ctx and model_alias and model_alias in cache:
+            cache[model_alias]["context_length"] = n_ctx
+        return
+    native = model_metadata_http.get(base + "/models", headers=headers, timeout=5, verify=verify)
+    if native.is_error:
+        return
+    for child in (native.json() or {}).get("data", [])[:16]:
+        child_id = child.get("id") if isinstance(child, dict) else None
+        if not child_id or child_id not in cache or (child.get("status") or {}).get("value") not in ("loaded", "ready"):
+            continue
+        pr = _props({"model": child_id, "autoload": "false"})  # it may have unloaded since /models
+        child_ctx = _n_ctx(pr.json()) if not pr.is_error else None
+        if child_ctx:
+            cache[child_id]["context_length"] = child_ctx
+
+
+def _props_reported_n_ctx(payload: Any) -> Optional[int]:
+    """The runtime ``n_ctx`` from a llama.cpp ``/props`` payload: ``default_generation_settings.n_ctx`` is the
+    context the server actually allocated, authoritative over ``n_ctx_train`` and over /v1/models metadata."""
+    from agent.model_metadata import _coerce_reasonable_int
+
+    if not isinstance(payload, dict):
+        return None
+    gen_settings = payload.get("default_generation_settings")
+    if not isinstance(gen_settings, dict):
+        return None
+    return _coerce_reasonable_int(gen_settings.get("n_ctx"))
+
+
+def _llamaswap_context(client, server_url: str, model: str) -> Optional[int]:
+    """llama-swap /props per model, resident-gated. Any model-scoped route STARTS a non-resident model, and a
+    metadata probe must never load a model: consult /running first and query /props only for resident ids.
+    A non-resident model yields None; callers keep the cached or default value until a real request starts it."""
+    resp = client.get(f"{server_url}/running")
+    if resp.status_code != 200:
+        return None
+    try:
+        entries = resp.json().get("running") or []
+    except (ValueError, AttributeError):  # not JSON, or not an object
+        entries = []
+    resident = {str(entry.get("model")) for entry in entries if isinstance(entry, dict) and entry.get("model")}
+    if model not in resident:
+        return None
+    resp = client.get(f"{server_url}/props?model={quote(model, safe='')}")
+    if resp.status_code != 200:
+        return None
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None
+    return _props_reported_n_ctx(payload)

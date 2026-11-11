@@ -103,7 +103,7 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `OLLAMA_API_KEY` | Ollama Cloud API key — managed Ollama catalog without local GPU ([ollama.com/settings/keys](https://ollama.com/settings/keys)) |
 | `OLLAMA_BASE_URL` | Override Ollama Cloud base URL (default: `https://ollama.com/v1`) |
 | `MODAL_PROXY_TOKEN` | Modal proxy token for Modal Endpoints inference — combined `wk-<id>.ws-<secret>` form from `modal workspace proxy-tokens create` ([modal.com/settings](https://modal.com/settings)) |
-| `MODAL_BASE_URL` | Override Modal inference base URL (default: `https://inference.us-west.modal.direct/v1`; another shared-gateway region or a dedicated `https://<workspace>--<app>.modal.run` endpoint) |
+| `MODAL_BASE_URL` | Override Modal inference base URL (default: `https://inference.us-west.modal.direct/v1`; another shared-gateway region or a dedicated `https://<workspace>--<app>.modal.direct/v1` endpoint) |
 | `XAI_API_KEY` | xAI (Grok) API key for chat + TTS + web search ([console.x.ai](https://console.x.ai/)) |
 | `XAI_BASE_URL` | Override xAI base URL (default: `https://api.x.ai/v1`) |
 | `MISTRAL_API_KEY` | Mistral API key for Voxtral TTS and Voxtral STT ([console.mistral.ai](https://console.mistral.ai)) |

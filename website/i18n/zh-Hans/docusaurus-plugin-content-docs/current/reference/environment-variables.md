@@ -75,7 +75,7 @@ description: "Hermes Agent 使用的所有环境变量完整参考"
 | `OLLAMA_API_KEY` | Ollama Cloud API 密钥——无需本地 GPU 的托管 Ollama 目录（[ollama.com/settings/keys](https://ollama.com/settings/keys)） |
 | `OLLAMA_BASE_URL` | 覆盖 Ollama Cloud base URL（默认：`https://ollama.com/v1`） |
 | `MODAL_PROXY_TOKEN` | Modal Endpoints 推理的 Modal 代理令牌——`modal workspace proxy-tokens create` 生成的组合 `wk-<id>.ws-<secret>` 形式（[modal.com/settings](https://modal.com/settings)） |
-| `MODAL_BASE_URL` | 覆盖 Modal 推理 base URL（默认：`https://inference.us-west.modal.direct/v1`；其他共享网关区域或专用 `https://<workspace>--<app>.modal.run` 端点） |
+| `MODAL_BASE_URL` | 覆盖 Modal 推理 base URL（默认：`https://inference.us-west.modal.direct/v1`；其他共享网关区域或专用 `https://<workspace>--<app>.modal.direct/v1` 端点） |
 | `XAI_API_KEY` | xAI（Grok）API 密钥，支持聊天、TTS 和网络搜索（[console.x.ai](https://console.x.ai/)） |
 | `XAI_BASE_URL` | 覆盖 xAI base URL（默认：`https://api.x.ai/v1`） |
 | `MISTRAL_API_KEY` | Mistral API 密钥，用于 Voxtral TTS 和 Voxtral STT（[console.mistral.ai](https://console.mistral.ai)） |

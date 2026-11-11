@@ -40,7 +40,7 @@ sidebar_position: 1
 | **Hugging Face** | `~/.hermes/.env` 中的 `HF_TOKEN`（provider: `huggingface`，别名：`hf`） |
 | **Google / Gemini** | `~/.hermes/.env` 中的 `GOOGLE_API_KEY`（或 `GEMINI_API_KEY`）（provider: `gemini`） |
 | **LM Studio** | `hermes model` → "LM Studio"（provider: `lmstudio`，可选 `LM_API_KEY`） |
-| **Modal** | `~/.hermes/.env` 中的 `MODAL_PROXY_TOKEN`——`modal workspace proxy-tokens create` 生成的组合 `wk-<id>.ws-<secret>` 代理令牌（provider: `modal`；别名：`modal-labs`、`modal-direct`、`modal-endpoints`）。`MODAL_BASE_URL` 可选择其他共享网关区域或专用端点（`https://<workspace>--<app>.modal.run`） |
+| **Modal** | `~/.hermes/.env` 中的 `MODAL_PROXY_TOKEN`——`modal workspace proxy-tokens create` 生成的组合 `wk-<id>.ws-<secret>` 代理令牌（provider: `modal`；别名：`modal-labs`、`modal-direct`、`modal-endpoints`）。`MODAL_BASE_URL` 可选择其他共享网关区域或专用端点（`https://<workspace>--<app>.modal.direct/v1`） |
 | **自定义端点** | `hermes model` → 选择"Custom endpoint"（保存在 `config.yaml`） |
 
 官方 API key 路径请参见专属的 [Google Gemini 指南](../guides/google-gemini.md)。

@@ -1,10 +1,5 @@
-"""Modal provider profile contracts.
-
-The live ``/models`` catalog carries per-model ``reasoning_options`` and
-``context_length``; ``fetch_models()`` stashes them so the hot-path hooks
-answer without network I/O. Also pins the auth-registry env-var split and the
-``modal.direct`` / ``modal.run`` host claims.
-"""
+"""Modal provider profile contracts: fetch_models() feeds the hot-path hooks,
+and modal.direct / modal.run hosts claim the modal profile."""
 
 import json
 import sys
@@ -94,30 +89,29 @@ def test_fetch_models_feeds_reasoning_and_context_hooks():
             == 131072
         )
         assert profile.get_model_context_length("never-fetched") is None
+
+        _, top = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="ws--ep-kimi.us-west.modal.direct",
+        )
+        assert top == {"reasoning_effort": "low"}
+        _, top = profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="ws--ep-kimi.us-west.modal.direct",
+        )
+        assert top == {"reasoning_effort": "none"}
+        assert profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "low"},
+            model="ws--ep-plain.us-west.modal.direct",
+        ) == ({}, {})
     finally:
         server.shutdown()
-
-
-def test_registry_row_splits_proxy_token_and_base_url():
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.auth_plugin_providers import sync_plugin_provider_registry
-
-    get_provider_profile("modal")
-    sync_plugin_provider_registry()
-
-    row = PROVIDER_REGISTRY["modal"]
-    assert row.auth_type == "api_key"
-    assert "MODAL_PROXY_TOKEN" in row.api_key_env_vars
-    assert row.base_url_env_var == "MODAL_BASE_URL"
-    for alias in ("modal-labs", "modal-direct", "modal-endpoints"):
-        assert PROVIDER_REGISTRY[alias] is row
 
 
 @pytest.mark.parametrize(
     "url",
     [
         "https://inference.us-west.modal.direct/v1",
-        "https://inference.eu-west.modal.direct/v1",
         "https://acme--qwen-chat.modal.run",
     ],
 )

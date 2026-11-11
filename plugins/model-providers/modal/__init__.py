@@ -1,12 +1,10 @@
 """Modal provider profile (Modal Endpoints — inference.<region>.modal.direct).
 
-The wire is OpenAI-compatible chat completions; auth is the combined
-``wk-<id>.ws-<secret>`` proxy token sent as Bearer. The ``/models`` catalog is
-account-scoped and carries per-model ``reasoning_options`` and
-``context_length``, so ``fetch_models()`` stashes both for the hot-path hooks
-(``supported_reasoning_efforts`` / ``get_model_context_length``). Model IDs are
-endpoint-scoped and rotate with deployments, so there are no ``fallback_models``
-or static ``model_capabilities`` — the live catalog is the source of truth.
+OpenAI-compatible chat completions; auth is the ``wk-<id>.ws-<secret>`` proxy
+token sent as Bearer. Model IDs are endpoint-scoped and rotate with
+deployments, so there are no ``fallback_models`` — ``fetch_models()`` stashes
+the live catalog's per-model ``reasoning_options``/``context_length`` for the
+hot-path hooks.
 """
 
 import json
@@ -14,6 +12,7 @@ import logging
 import urllib.request
 from typing import Any
 
+from agent.reasoning_effort import clamp_effort
 from hermes_cli.version_info import hermes_user_agent
 from providers import register_provider
 from providers.base import LazyHeaders, ProviderProfile, _profile_user_agent
@@ -71,14 +70,35 @@ class ModalProfile(ProviderProfile):
                 if isinstance(item, dict) and item.get("id")
             ]
         except Exception as exc:
-            # catalog probe is best-effort: any network/parse failure -> None
             logger.debug("fetch_models(%s): %s", self.name, exc, exc_info=True)
             return None
 
+    def build_api_kwargs_extras(
+        self,
+        *,
+        reasoning_config: dict | None = None,
+        model: str | None = None,
+        **context: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        # Modal takes top-level ``reasoning_effort``; clamp onto the model's
+        # catalog-declared vocabulary when fetched (never escalate).
+        if not isinstance(reasoning_config, dict):
+            return {}, {}
+        if reasoning_config.get("enabled") is False:
+            return {}, {"reasoning_effort": "none"}
+        effort = str(reasoning_config.get("effort") or "").strip().lower()
+        if not effort:
+            return {}, {}
+        entry = _CATALOG.get(model or "")
+        if entry is not None:
+            efforts = entry.get("efforts")
+            if efforts is None:
+                return {}, {}
+            effort = clamp_effort(effort, efforts) or ""
+        return {}, ({"reasoning_effort": effort} if effort else {})
+
     def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
-        """Per-model effort vocabulary from the live catalog. ``()`` when the
-        catalog listed the model with no reasoning options (omit reasoning
-        fields); ``None`` while the catalog is cold."""
+        """Per-model effort vocabulary from the catalog; ``()`` = omit reasoning fields."""
         entry = _CATALOG.get(model or "")
         if entry is None:
             return None

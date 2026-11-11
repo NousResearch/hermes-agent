@@ -221,7 +221,8 @@ def profile_config_scope(home: str | Path, *, launch_home: str | Path | None = N
     """Bind *home*'s home + secret + terminal scope for a body that reads and writes its config.
 
     The launch home (``launch_home``, default ``get_process_hermes_home()``) gets its launch secret
-    scope, or the full :func:`launch_profile_runtime_scope` once the process multiplexes. Any other
+    scope with no home override or terminal scope (an enclosing secondary's are unbound for the
+    body), or the full :func:`launch_profile_runtime_scope` once the process multiplexes. Any other
     home gets only its own files, stamped as foreign. No external-source hydration.
     """
     from agent.secret_scope import build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope
@@ -236,7 +237,8 @@ def profile_config_scope(home: str | Path, *, launch_home: str | Path | None = N
                 stack.enter_context(launch_profile_runtime_scope(launch))
             else:
                 # Unbind an enclosing secondary's home and terminal, or the launch secrets would
-                # pair with that profile's config. Unset already means the launch home here.
+                # pair with that profile's config. Unset resolves to the process home, which is the
+                # launch home for every caller (``launch_home`` defaults to it; the RPC passes it).
                 stack.callback(reset_hermes_home_override, set_hermes_home_override(None))
                 stack.callback(reset_secret_scope, set_secret_scope(launch_secret_scope(launch)))
                 stack.callback(reset_terminal_scope, set_terminal_scope(None))

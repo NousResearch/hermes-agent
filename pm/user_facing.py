@@ -146,20 +146,24 @@ def npm_command(base_env: dict[str, str] | None = None, *,
     """The selected PM npm executable and its runnable, paired Node environment.
 
     Resolve from installed facts, including the writable copy on sealed Windows. Never
-    search CWD or PATH for Hermes's npm. The caller provisions missing packages first.
+    search CWD or PATH for Hermes's npm. Provision a missing toolchain under PM's
+    existing lazy-install and explicit-consent policy.
     """
+    from pm import ensure, is_installed
     from pm.filesystem import native
     from pm.install import _installed_location, _lockfile
     from pm.package import InstallError
     from pm.registry import get_package
     from pm.store import current_target
 
+    if not all(is_installed(name) for name in ("node", "npm")):
+        ensure("npm", explicit=explicit)
     env = node_env(base_env, for_subprocess=True, explicit=explicit)
     package, target = get_package("npm"), current_target()
     location = (writable_copy("npm", realize=False) if applies()
                 else _installed_location(package, _lockfile(), target))
     if location is None:
-        raise InstallError("npm", "npm is missing from the prepared PM environment")
+        raise InstallError("npm", "npm binary is missing after preparation")
     facts, store = location
     binary = package.binary(store.entry(facts.get("npm")["entry"]), target)
     if binary is None:

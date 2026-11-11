@@ -692,8 +692,8 @@ def install_node_sidecar(
     # a lockfile means reproducible `npm ci`; plain `npm install` otherwise
     install_cmd = ["ci"] if (plugin_dir / "package-lock.json").is_file() else ["install"]
     try:
-        runner = pm.ensure("npm", explicit=explicit)
-        npm, env = pm.npm_command(runner.env, explicit=explicit)
+        npm, env = pm.npm_command(explicit=explicit)
+        runner = pm.Runner("npm", env)
         proc = runner.run(
             [npm, *install_cmd, "--no-audit", "--no-fund"],
             cwd=str(plugin_dir),

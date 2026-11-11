@@ -221,6 +221,32 @@ def test_npm_command_rejects_missing_managed_npm(
         npm_command({"PATH": str(tmp_path)})
 
 
+@pytest.mark.parametrize("missing", ["node", "npm"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_npm_command_acquires_only_missing_toolchains_through_public_pm(
+    packaged_tools, missing, explicit, monkeypatch
+):
+    package = Nodejs() if missing == "node" else Npm()
+    binary = package.binary(
+        packaged_tools.shipped / f"{missing}-test-{current_target()}", current_target()
+    )
+    assert binary is not None
+    contents = binary.read_bytes()
+    binary.unlink()
+    calls = []
+
+    def acquire(name, **kwargs):
+        calls.append((name, kwargs))
+        binary.write_bytes(contents)
+        return Runner("npm", pm.env_for("npm"))
+
+    monkeypatch.setattr(pm, "ensure", acquire)
+    selected, _env = pm.npm_command(explicit=explicit)
+    assert Path(selected).is_relative_to(packaged_tools.writable)
+    assert pm.npm_command(explicit=explicit)[0] == selected
+    assert calls == [("npm", {"explicit": explicit})]
+
+
 @pytest.mark.parametrize(
     "failure",
     [

@@ -110,6 +110,24 @@ interface ConfigSettingsProps {
   importInputRef: React.RefObject<HTMLInputElement | null>
 }
 
+function useConfigSectionVisibility({
+  activeSectionId,
+  agentModel,
+  subpage,
+  hasOwner
+}: Pick<ConfigSettingsProps, 'activeSectionId' | 'agentModel' | 'subpage'> & { hasOwner: boolean }) {
+  const includesSubpage = (...pages: string[]) => agentModel || subpage === undefined || pages.includes(subpage)
+  const portalSafety = usePortalRedesign() && activeSectionId === 'safety'
+
+  return {
+    showModelSettings: activeSectionId === 'model' && includesSubpage('main', 'auxiliary', 'moa'),
+    showDesktopSettings: !hasOwner && activeSectionId === 'advanced' && includesSubpage('desktop'),
+    showAttachments: !hasOwner && activeSectionId === 'chat' && includesSubpage('attachments'),
+    portalSafety,
+    showSharedMetrics: !hasOwner && activeSectionId === 'safety' && subpage === 'privacy'
+  }
+}
+
 function ConfigSettingsInner({
   activeSectionId,
   subpage,
@@ -352,12 +370,8 @@ function ConfigSettingsInner({
     ([key]) => agentModel || subpage === undefined || configSubpageForField(activeSectionId, key) === subpage
   )
 
-  const includesSubpage = (...pages: string[]) => agentModel || subpage === undefined || pages.includes(subpage)
-  const showModelSettings = activeSectionId === 'model' && includesSubpage('main', 'auxiliary', 'moa')
-  const showDesktopSettings = !owner && activeSectionId === 'advanced' && includesSubpage('desktop')
-  const showAttachments = !owner && activeSectionId === 'chat' && includesSubpage('attachments')
-  const portalSafety = usePortalRedesign() && activeSectionId === 'safety'
-  const showSharedMetrics = !owner && activeSectionId === 'safety' && subpage === 'privacy'
+  const { showModelSettings, showDesktopSettings, showAttachments, portalSafety, showSharedMetrics } =
+    useConfigSectionVisibility({ activeSectionId, agentModel, subpage, hasOwner: Boolean(owner) })
 
   // Deep-link target from the command palette (?field=<key>): scroll the row
   // into view and flash it, then drop the param so it doesn't re-fire.

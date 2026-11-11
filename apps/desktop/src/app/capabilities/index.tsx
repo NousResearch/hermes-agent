@@ -127,21 +127,6 @@ export function CapabilitiesView({
   const gated = mode === 'toolsets'
   const pending = gated && !(skills && toolsets)
 
-  const loadGate = !pending ? null : skillsFailed || toolsetsFailed ? (
-    <PanelEmpty
-      action={
-        <Button onClick={() => void refreshCapabilities()} size="sm">
-          {t.skills.refresh}
-        </Button>
-      }
-      description={skillsError instanceof Error ? skillsError.message : undefined}
-      icon="error"
-      title={t.skills.skillsLoadFailed}
-    />
-  ) : (
-    <PageLoader label={t.skills.loading} />
-  )
-
   const tabContent = {
     // The gateway instance backs ONLY the live `reload.mcp` RPC, and it is the
     // ACTIVE gateway's socket — for a scope pinned to a different backend that
@@ -215,6 +200,7 @@ export function CapabilitiesView({
       pageTitle={embedded || agentRedesign ? undefined : t.sidebar.nav.capabilities}
       // Every tab renders the shared CapabilitySearch beside its own results.
       searchHidden
+      searchTrailingAction={!redesignEnabled && mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
       tabs={
         fixedMode
           ? []
@@ -228,7 +214,6 @@ export function CapabilitiesView({
       tabsAlign="start"
     >
       <div className="flex h-full flex-col">
-        {!redesignEnabled && mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
         {!agentControls && (
           <CapabilityInventoryScope
             onOpenAgentSettings={openAgentSettings}
@@ -237,7 +222,16 @@ export function CapabilitiesView({
             scope={scope}
           />
         )}
-        <div className="flex min-h-0 flex-1 flex-col">{loadGate ?? tabContent[mode]()}</div>
+        <div className="flex min-h-0 flex-1 flex-col">
+          <CapabilityLoadGate
+            error={skillsError}
+            failed={skillsFailed || toolsetsFailed}
+            onRefresh={refreshCapabilities}
+            pending={pending}
+          >
+            {tabContent[mode]()}
+          </CapabilityLoadGate>
+        </div>
       </div>
     </PageSearchShell>
   )
@@ -250,6 +244,39 @@ export function CapabilitiesView({
 // which is exactly the wrong-machine bug the prop exists to prevent. A static
 // property is probe-able without rendering.
 CapabilitiesView.supportsFixedConnection = true as const
+
+interface CapabilityLoadGateProps {
+  pending: boolean
+  failed: boolean
+  error: unknown
+  onRefresh: () => Promise<void>
+  children: React.ReactNode
+}
+
+function CapabilityLoadGate({ pending, failed, error, onRefresh, children }: CapabilityLoadGateProps) {
+  const { t } = useI18n()
+
+  if (!pending) {
+    return children
+  }
+
+  if (!failed) {
+    return <PageLoader label={t.skills.loading} />
+  }
+
+  return (
+    <PanelEmpty
+      action={
+        <Button onClick={() => void onRefresh()} size="sm">
+          {t.skills.refresh}
+        </Button>
+      }
+      description={error instanceof Error ? error.message : undefined}
+      icon="error"
+      title={t.skills.skillsLoadFailed}
+    />
+  )
+}
 
 /** Keep the inventory's hand-off pinned to the same owner as its queries. */
 function useCapabilityAgentSettings(scope: CapabilityScope, mode: CapabilityMode) {

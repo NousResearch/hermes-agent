@@ -234,17 +234,12 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
           {c.cleanup}
         </Button>
       </div>
-      <div className="agent-history-scope" role="status">
-        {recent.hasNextPage
-          ? search.trim()
-            ? c.searching
-            : c.partial
-          : recent.isPending
-            ? c.loading
-            : recent.isError
-              ? c.unknown
-              : c.complete}
-      </div>
+      <HistoryScope
+        hasNextPage={recent.hasNextPage}
+        isError={recent.isError}
+        isPending={recent.isPending}
+        search={search}
+      />
       {recent.isError && <HistoryError error={recent.error} retry={() => void recent.refetch()} />}
       {running.isError && <HistoryError error={running.error} retry={() => void running.refetch()} />}
       {Boolean(error) && (
@@ -345,6 +340,31 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
         <HistoryCleanupDialog current={current} onClose={() => setCleanup(false)} onDeleted={deleted} owner={owner} />
       )}
     </section>
+  )
+}
+
+interface HistoryScopeProps {
+  hasNextPage: boolean
+  isPending: boolean
+  isError: boolean
+  search: string
+}
+
+function HistoryScope({ hasNextPage, isPending, isError, search }: HistoryScopeProps) {
+  const c = useHistoryCopy()
+
+  return (
+    <div className="agent-history-scope" role="status">
+      {hasNextPage
+        ? search.trim()
+          ? c.searching
+          : c.partial
+        : isPending
+          ? c.loading
+          : isError
+            ? c.unknown
+            : c.complete}
+    </div>
   )
 }
 

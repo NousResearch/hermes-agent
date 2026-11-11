@@ -42,6 +42,7 @@ import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { notify, notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
+import type { HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, invalidateHermesConfig, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
@@ -306,25 +307,47 @@ interface ModelSettingsProps {
   scopeProfile?: string
 }
 
-function MainModelDefaults({
-  effortValue,
-  fastOn,
-  fastSupported,
-  onChange,
-  reasoningSupported,
-  speedValue,
-  ultrafastSupported
-}: {
-  effortValue: string
-  fastOn: boolean
-  fastSupported: boolean
+interface MainModelDefaultsProps {
+  config: HermesConfigRecord
+  mainModel: { model: string; provider: string }
   onChange: (key: string, value: boolean | string) => Promise<void>
-  reasoningSupported: boolean
-  speedValue: SpeedTier
-  ultrafastSupported: boolean
-}) {
+  providers: readonly ModelOptionProvider[]
+}
+
+function MainModelDefaults({ config, mainModel, onChange, providers }: MainModelDefaultsProps) {
   const { t } = useI18n()
   const m = t.settings.model
+
+  // Capabilities of the APPLIED main model — gates the profile-default
+  // reasoning/speed controls the same way the composer picker gates per-model
+  // edits (reasoning defaults on, fast defaults off when unreported).
+  const mainCaps = useMemo(() => {
+    const row = findCatalogProvider(providers, mainModel.provider)
+
+    return row?.capabilities?.[mainModel.model]
+  }, [providers, mainModel])
+
+  const reasoningSupported = mainCaps?.reasoning ?? true
+  const fastSupported = mainCaps?.fast ?? false
+  const ultrafastSupported = mainCaps?.ultrafast ?? false
+
+  // Hand-written `reasoning_effort: false`/`off` reaches us as boolean false
+  // ("false" once stringified) — show it as Off, not an empty select.
+  const rawEffort = String(getNested(config, 'agent.reasoning_effort') ?? '')
+    .trim()
+    .toLowerCase()
+
+  const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || DEFAULT_REASONING_EFFORT
+
+  // One profile-default speed: Standard, Fast (Priority) or Ultrafast. Ultrafast
+  // only shows as a choice on models that offer it.
+  const tier = composerServiceTier(getNested(config, 'agent.service_tier'))
+  const fastOn = tier === 'priority'
+  const speedValue: SpeedTier = fastOn ? 'fast' : tier === 'ultrafast' ? 'ultrafast' : 'normal'
+
+  if (!reasoningSupported && !fastSupported && !ultrafastSupported) {
+    return null
+  }
 
   return (
     <div className="mt-6 grid gap-1">
@@ -774,33 +797,6 @@ export function ModelSettings({
     persistentStaleAux.length > 0 &&
     dismissedStaleAux === staleAuxFingerprint(mainModel?.provider ?? '', persistentStaleAux)
 
-  // Capabilities of the APPLIED main model — gates the profile-default
-  // reasoning/speed controls the same way the composer picker gates per-model
-  // edits (reasoning defaults on, fast defaults off when unreported).
-  const mainCaps = useMemo(() => {
-    const row = mainModel ? findCatalogProvider(providers, mainModel.provider) : undefined
-
-    return mainModel ? row?.capabilities?.[mainModel.model] : undefined
-  }, [providers, mainModel])
-
-  const reasoningSupported = mainCaps?.reasoning ?? true
-  const fastSupported = mainCaps?.fast ?? false
-  const ultrafastSupported = mainCaps?.ultrafast ?? false
-
-  // Hand-written `reasoning_effort: false`/`off` reaches us as boolean false
-  // ("false" once stringified) — show it as Off, not an empty select.
-  const rawEffort = String(getNested(config ?? {}, 'agent.reasoning_effort') ?? '')
-    .trim()
-    .toLowerCase()
-
-  const effortValue = rawEffort === 'false' || rawEffort === 'disabled' ? 'none' : rawEffort || DEFAULT_REASONING_EFFORT
-
-  // One profile-default speed: Standard, Fast (Priority) or Ultrafast. Ultrafast
-  // only shows as a choice on models that offer it.
-  const tier = composerServiceTier(getNested(config ?? {}, 'agent.service_tier'))
-  const fastOn = tier === 'priority'
-  const speedValue: SpeedTier = fastOn ? 'fast' : tier === 'ultrafast' ? 'ultrafast' : 'normal'
-
   // Persist a single agent.* default as a sparse patch (PUT /api/config
   // deep-merges onto disk). Never send the whole cached record: it is a
   // default-expanded snapshot, and echoing it back rewrites every key another
@@ -1101,16 +1097,8 @@ export function ModelSettings({
     </div>
   )
 
-  const mainDefaults = config && mainModel && (reasoningSupported || fastSupported || ultrafastSupported) && (
-    <MainModelDefaults
-      effortValue={effortValue}
-      fastOn={fastOn}
-      fastSupported={fastSupported}
-      onChange={writeAgentDefault}
-      reasoningSupported={reasoningSupported}
-      speedValue={speedValue}
-      ultrafastSupported={ultrafastSupported}
-    />
+  const mainDefaults = config && mainModel && (
+    <MainModelDefaults config={config} mainModel={mainModel} onChange={writeAgentDefault} providers={providers} />
   )
 
   return (

@@ -155,18 +155,9 @@ interface VaultSettingsProps {
   subpage?: string
 }
 
-export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
-  const { t } = useI18n()
-  const v = t.settings.vault
-  const gatewayState = useStore($gatewayState)
-  const queryClient = useQueryClient()
-  // The owner this panel edits: every RPC below goes through the owner's socket with an explicit
-  // (connection, profile) — never the ambient foreground gateway, and never a bare profile name:
-  // a bare name equal to the primary profile resolves onto the PRIMARY socket, so two connections
-  // both serving `default` would have this device's panel answered by the other machine (#94811).
-  // The mount site keys the panel by this same owner, so a profile switch / connection swap
-  // remounts it: dialogs close and drafts (including a typed master password) are gone by
-  // construction rather than by cleanup code.
+function useVaultOwnerRequest() {
+  // Every RPC uses the owner's socket and explicit profile: a bare profile name can
+  // resolve onto the wrong machine when two connections both serve `default` (#94811).
   const settingsProfile = useStore($settingsScopeProfile)
   const activeConnection = useStore($activeConnectionId)
   const pinnedOwner = useSettingsOwner()
@@ -181,6 +172,18 @@ export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
       }),
     [connectionId, scopeProfile]
   )
+
+  return { owner, requestGateway }
+}
+
+export function VaultSettings({ subpage }: VaultSettingsProps = {}) {
+  const { t } = useI18n()
+  const v = t.settings.vault
+  const gatewayState = useStore($gatewayState)
+  const queryClient = useQueryClient()
+  // The mount site keys the panel by this owner, so profile/connection switches
+  // remount it and discard dialogs and secret drafts rather than relying on cleanup.
+  const { owner, requestGateway } = useVaultOwnerRequest()
 
   const VAULT_QUERY_KEY = useMemo(() => vaultQueryKey(owner), [owner])
   const VAULT_SOURCES_QUERY_KEY = useMemo(() => vaultSourcesQueryKey(owner), [owner])

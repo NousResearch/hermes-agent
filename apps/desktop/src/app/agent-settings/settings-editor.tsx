@@ -100,16 +100,9 @@ function AgentSettingsEditorContent({
     navigate({ pathname: location.pathname, search: `?${next}` }, { replace: true })
   }
 
-  const configSection =
-    section && ['model', 'chat', 'memory', 'voice', 'safety', 'workspace', 'limits'].includes(section)
-      ? section === 'limits'
-        ? 'advanced'
-        : section
-      : null
+  const configSection = resolveConfigSection(section)
 
   const runtimePage = page ?? 'runtime'
-  const providerView = params.get('pview') ?? 'keys'
-  const validProvider = providerView !== 'local' && PROVIDER_VIEWS.includes(providerView as ProviderView)
 
   return (
     <div className="agent-settings-editor">
@@ -165,21 +158,12 @@ function AgentSettingsEditorContent({
           />
         )}
         {section && ['tools', 'skills', 'connectors', 'plugins'].includes(section) && (
-          <>
-            <CapabilitiesView
-              className="agent-settings-capabilities"
-              embedded
-              fixedConnection={owner.connectionId}
-              fixedMode={section === 'tools' ? 'toolsets' : (section as 'skills' | 'connectors' | 'plugins')}
-              fixedProfile={owner.profile}
-            />
-            {section === 'tools' && (
-              <Button onClick={() => open('tools-advanced')} variant="secondary">
-                {t.settings.sections.advanced}
-              </Button>
-            )}
-            {section === 'plugins' && (params.get('plugin') || params.get('agent')) && <AgentPluginSettings />}
-          </>
+          <AgentCapabilitiesSettings
+            onOpenAdvanced={() => open('tools-advanced')}
+            owner={owner}
+            params={params}
+            section={section}
+          />
         )}
         {section === 'tools-advanced' && (
           <>
@@ -208,45 +192,108 @@ function AgentSettingsEditorContent({
           </>
         )}
         {section === 'providers' && (
-          <>
-            <div className="agent-settings-subpages">
-              {(['keys', 'accounts', 'custom-endpoints'] as const).map(view => (
-                <Button
-                  aria-pressed={providerView === view}
-                  key={view}
-                  onClick={() => openPage('pview', view)}
-                  variant="secondary"
-                >
-                  {view === 'keys'
-                    ? t.settings.nav.providerApiKeys
-                    : view === 'accounts'
-                      ? t.settings.nav.providerAccounts
-                      : t.settings.nav.providerCustomEndpoints}
-                </Button>
-              ))}
-            </div>
-            {validProvider ? (
-              <ProvidersSettings
-                onClose={onClose}
-                onConfigSaved={onConfigSaved}
-                onMainModelChanged={onMainModelChanged}
-                onViewChange={view =>
-                  view === 'local' ? navigate('/settings?tab=providers&pview=local') : openPage('pview', view)
-                }
-                view={providerView as ProviderView}
-              />
-            ) : (
-              <p role="alert">{c.invalid}</p>
-            )}
-            {providerView === 'local' && (
-              <Button onClick={() => navigate('/settings?tab=providers&pview=local')}>
-                {t.settings.nav.providerLocalModels}
-              </Button>
-            )}
-          </>
+          <AgentProviderSettings
+            onClose={onClose}
+            onConfigSaved={onConfigSaved}
+            onMainModelChanged={onMainModelChanged}
+            onViewChange={view =>
+              view === 'local' ? navigate('/settings?tab=providers&pview=local') : openPage('pview', view)
+            }
+            params={params}
+          />
         )}
       </section>
     </div>
+  )
+}
+
+function resolveConfigSection(section: AgentSettingsSection | null) {
+  return section && ['model', 'chat', 'memory', 'voice', 'safety', 'workspace', 'limits'].includes(section)
+    ? section === 'limits'
+      ? 'advanced'
+      : section
+    : null
+}
+
+interface AgentCapabilitiesSettingsProps {
+  owner: AgentSettingsOwner
+  section: AgentSettingsSection
+  params: URLSearchParams
+  onOpenAdvanced: () => void
+}
+
+function AgentCapabilitiesSettings({ owner, section, params, onOpenAdvanced }: AgentCapabilitiesSettingsProps) {
+  const { t } = useI18n()
+
+  return (
+    <>
+      <CapabilitiesView
+        className="agent-settings-capabilities"
+        embedded
+        fixedConnection={owner.connectionId}
+        fixedMode={section === 'tools' ? 'toolsets' : (section as 'skills' | 'connectors' | 'plugins')}
+        fixedProfile={owner.profile}
+      />
+      {section === 'tools' && (
+        <Button onClick={onOpenAdvanced} variant="secondary">
+          {t.settings.sections.advanced}
+        </Button>
+      )}
+      {section === 'plugins' && (params.get('plugin') || params.get('agent')) && <AgentPluginSettings />}
+    </>
+  )
+}
+
+interface AgentProviderSettingsProps extends SettingsPageProps {
+  params: URLSearchParams
+  onViewChange: (view: ProviderView) => void
+}
+
+function AgentProviderSettings({
+  params,
+  onClose,
+  onConfigSaved,
+  onMainModelChanged,
+  onViewChange
+}: AgentProviderSettingsProps) {
+  const { t } = useI18n()
+  const c = useAgentSettingsEditorCopy()
+  const providerView = params.get('pview') ?? 'keys'
+  const validProvider = providerView !== 'local' && PROVIDER_VIEWS.includes(providerView as ProviderView)
+
+  return (
+    <>
+      <div className="agent-settings-subpages">
+        {(['keys', 'accounts', 'custom-endpoints'] as const).map(view => (
+          <Button
+            aria-pressed={providerView === view}
+            key={view}
+            onClick={() => onViewChange(view)}
+            variant="secondary"
+          >
+            {view === 'keys'
+              ? t.settings.nav.providerApiKeys
+              : view === 'accounts'
+                ? t.settings.nav.providerAccounts
+                : t.settings.nav.providerCustomEndpoints}
+          </Button>
+        ))}
+      </div>
+      {validProvider ? (
+        <ProvidersSettings
+          onClose={onClose}
+          onConfigSaved={onConfigSaved}
+          onMainModelChanged={onMainModelChanged}
+          onViewChange={onViewChange}
+          view={providerView as ProviderView}
+        />
+      ) : (
+        <p role="alert">{c.invalid}</p>
+      )}
+      {providerView === 'local' && (
+        <Button onClick={() => onViewChange('local')}>{t.settings.nav.providerLocalModels}</Button>
+      )}
+    </>
   )
 }
 

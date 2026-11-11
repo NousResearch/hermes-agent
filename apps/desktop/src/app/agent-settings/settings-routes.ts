@@ -36,19 +36,7 @@ export function resolveAgentSettingsSection(params: URLSearchParams): AgentSetti
   }
 
   if (tab.startsWith('config:')) {
-    const section = tab.slice(7)
-
-    if (page && !CONFIG_SUBPAGES[section]?.some(candidate => candidate.id === page)) {
-      return null
-    }
-
-    if (section === 'advanced') {
-      return page === 'tools' ? 'tools-advanced' : page === 'desktop' ? null : 'limits'
-    }
-
-    return ['model', 'chat', 'memory', 'voice', 'safety', 'browser', 'workspace'].includes(section)
-      ? (section as AgentSettingsSection)
-      : null
+    return resolveConfigSettingsSection(tab.slice(7), page)
   }
 
   if (tab === 'vault') {
@@ -68,6 +56,20 @@ export function resolveAgentSettingsSection(params: URLSearchParams): AgentSetti
   }
 
   return null
+}
+
+function resolveConfigSettingsSection(section: string, page: string | null): AgentSettingsSection | null {
+  if (page && !CONFIG_SUBPAGES[section]?.some(candidate => candidate.id === page)) {
+    return null
+  }
+
+  if (section === 'advanced') {
+    return page === 'tools' ? 'tools-advanced' : page === 'desktop' ? null : 'limits'
+  }
+
+  return ['model', 'chat', 'memory', 'voice', 'safety', 'browser', 'workspace'].includes(section)
+    ? (section as AgentSettingsSection)
+    : null
 }
 
 export function agentSettingsSearch(search: string, section: AgentSettingsSection): string {

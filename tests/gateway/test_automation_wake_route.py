@@ -340,6 +340,12 @@ async def test_wake_does_not_borrow_across_users_on_a_shared_route(tmp_path, mon
                                                       'requester_user_id': '7'})
         with pytest.raises(RuntimeStoreError, match='not_found'):
             await authority.admit_automation(adapter, event, 'notice')
+        # Without a producer identity the predecessor's last speaker is never borrowed either.
+        legacy = MessageEvent(text='notice', source=adapter.build_source(**{**fields, 'user_id': '42'}),
+                              internal=True, metadata={'gateway_session_key': route,
+                                                       'gateway_session_id': fresh.session_id})
+        with pytest.raises(RuntimeStoreError, match='not_found'):
+            await authority.admit_automation(adapter, legacy, 'notice')
         # The same route's own user still resolves.
         own = MessageEvent(text='notice', source=adapter.build_source(**{**fields, 'user_id': '42'}),
                            internal=True, metadata={'gateway_session_key': route,
@@ -353,12 +359,6 @@ async def test_wake_does_not_borrow_across_users_on_a_shared_route(tmp_path, mon
                                                       'requester_user_id': '7'})
         with pytest.raises(RuntimeStoreError, match='not_found'):
             await authority.admit_automation(adapter, again, 'notice')
-        # A legacy event without a producer identity must not reuse user 42's automation envelope.
-        legacy = MessageEvent(text='notice', source=adapter.build_source(**{**fields, 'user_id': '42'}),
-                              internal=True, metadata={'gateway_session_key': route,
-                                                       'gateway_session_id': fresh.session_id})
-        with pytest.raises(RuntimeStoreError, match='not_found'):
-            await authority.admit_automation(adapter, legacy, 'notice')
     finally:
         authority.db.close()
 
@@ -406,5 +406,24 @@ async def test_wake_does_not_follow_a_delegate_or_branch_parent(tmp_path, monkey
         assert wake_route_envelope(authority, SessionRef(authority.profile_id, 'branch-test')) is None
         assert wake_route_envelope(authority, SessionRef(authority.profile_id, 'delegate-test')) is None
         assert wake_route_envelope(authority, SessionRef(authority.profile_id, root)) is not None
+    finally:
+        authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_consecutive_route_wakes_on_a_shared_route_keep_landing(tmp_path, monkeypatch):
+    """A /loop or Kanban wake names no requester (``admit_route_wake``): on a shared group route the
+    second tick borrows the first tick's own automation envelope, exactly as before the reset
+    fallback existed, instead of being refused ``not_found`` until someone speaks again."""
+    from gateway.session_automation import admit_route_wake
+    fields = {**_SOURCE, 'chat_type': 'group', 'thread_id': None}
+    runner, authority, adapter, source, metadata = await _native_owner(
+        tmp_path, monkeypatch, 'human-1', fields, group_sessions_per_user=False)
+    try:
+        for tick in ('tick-1', 'tick-2', 'tick-3'):
+            assert await admit_route_wake(runner, adapter, source, tick, 'loop-tick') is True, tick
+        rows = list_session_admissions(authority.db, session_id=authority.logical_owner(metadata['gateway_session_id']),
+                                       pending_only=False)
+        assert [r['payload']['text'] for r in rows[-3:]] == ['tick-1', 'tick-2', 'tick-3']
     finally:
         authority.db.close()

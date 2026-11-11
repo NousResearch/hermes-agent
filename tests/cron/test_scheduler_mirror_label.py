@@ -49,3 +49,13 @@ def test_mirror_label_keeps_multiline_job_name_inside_delimiters():
     assert merged[0]["content"].endswith(
         "[Cron delivery end: Morning Brief]\n\nwhat about tech stocks?"
     )
+
+
+def test_mirror_label_collapses_line_breaks_but_keeps_other_name_whitespace():
+    # U+3000 is part of the stored name that resolve_job_ref matches on; only line breaks go.
+    mirror = _cron_mirror_message(
+        {"id": "j1", "name": "\n朝の\u3000ブリーフ\n\n   Daily"}, "Market movers today"
+    )
+    opener, _brief, closer = mirror.splitlines()
+    assert opener.startswith("[Cron delivery: 朝の\u3000ブリーフ Daily]")
+    assert closer == "[Cron delivery end: 朝の\u3000ブリーフ Daily]"

@@ -120,6 +120,8 @@ def handoff_cli(monkeypatch):
         monkeypatch.setattr("time.sleep", lambda _s: None)
         cli = HermesCLI.__new__(HermesCLI)
         cli.session_id, cli._agent_running, cli._should_exit = "local-s", False, False
+        cli._pending_agent_seed = None
+        cli._app = SimpleNamespace(is_running=True, exited=[], exit=lambda: cli._app.exited.append(True))
         return cli, conn
     return make
 
@@ -129,8 +131,11 @@ def test_handoff_to_telegram_is_queued_on_the_gateway_and_the_cli_exits_once_it_
     this process's, and a completed transfer ends the CLI session like /quit."""
     from cli import _handed_off_session_ids
     cli, conn = handoff_cli(["pending", "running", "completed"])
-    assert cli.process_command("/handoff Telegram") is True
+    # The TUI's slash dispatch: a session-ending answer closes the running app, as /quit does.
+    assert cli._tui_run_slash_input("/handoff Telegram") is None
+    assert cli._app.exited == [True]
     assert ("handoff.request", {"session_id": "local-s", "platform": "telegram"}) in conn.calls
+    assert not [call for call in conn.calls if call[0] == "handoff.fail"]
     assert cli._should_exit is True and "local-s" in _handed_off_session_ids
     out = capsys.readouterr().out
     assert "Phone" in out and "Handoff complete" in out
@@ -140,7 +145,7 @@ def test_handoff_to_telegram_is_queued_on_the_gateway_and_the_cli_exits_once_it_
 def test_handoff_failure_keeps_the_cli_session(handoff_cli, capsys):
     cli, _conn = handoff_cli(["running", "failed"])
     assert cli.process_command("/handoff telegram") is True
-    assert cli._should_exit is False
+    assert cli._should_exit is False and cli._app.exited == []
     assert "Handoff failed: boom" in capsys.readouterr().out
 
 
@@ -204,3 +209,12 @@ def test_save_on_an_older_gateway_falls_back_only_for_a_plain_json_save(tmp_path
     assert conn.calls[-1] == ("session.save", {"session_id": "local-s"})
     assert "saved on the gateway host: /srv/gw/sessions/saved/hermes_conversation_x.json" in capsys.readouterr().out
     assert not any((tmp_path / "work").iterdir())
+
+
+def test_an_unclaimed_handoff_is_failed_on_the_gateway_so_it_can_be_retried(handoff_cli, monkeypatch, capsys):
+    cli, conn = handoff_cli(["pending"] * 3, **{"handoff.fail": {"failed": True, "state": "failed"}})
+    clock = iter([0.0, 0.0, 100.0, 100.0, 100.0])
+    monkeypatch.setattr("time.time", lambda: next(clock, 100.0))
+    assert cli.process_command("/handoff telegram") is True
+    assert ("handoff.fail", {"session_id": "local-s", "error": "timed out waiting for gateway"}) in conn.calls
+    assert "Timed out waiting for the gateway" in capsys.readouterr().out

@@ -75,3 +75,25 @@ async def test_handoff_is_refused_to_a_viewer_without_control(tmp_path, monkeypa
     assert authority.db.list_pending_handoffs() == []
     await asyncio.sleep(0)
     authority.db.close()
+
+
+@pytest.mark.asyncio
+async def test_handoff_to_a_relay_fronted_platform_is_queued(tmp_path, monkeypatch):
+    """A relay-fronted gateway has only a RELAY block; the watcher still delivers Discord through it
+    (``resolve_delivery_transport``), so the owner queues it as the classic CLI always did."""
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('GATEWAY_RELAY_PLATFORMS', 'discord')
+    monkeypatch.delenv('DISCORD_HOME_CHANNEL', raising=False)
+    (tmp_path / 'config.yaml').write_text(
+        "platforms:\n  relay:\n    enabled: true\n  discord:\n    enabled: false\n"
+        "    home_channel:\n      platform: discord\n      chat_id: '777'\n      name: Lab\n", encoding='utf-8')
+    _store, authority, owner = _owner(tmp_path, monkeypatch, handle=None)
+    ref = _local(authority, owner, tmp_path)
+    reply = await _call(owner, 'handoff.request', session_id=ref.session_id, platform='discord')
+    assert reply.get('result', {}).get('home_name') == 'Lab', reply
+    monkeypatch.setenv('GATEWAY_RELAY_PLATFORMS', 'slack')  # a platform the relay does not front
+    authority.db.fail_handoff(ref.session_id, 'reset')
+    refused = await _call(owner, 'handoff.request', session_id=ref.session_id, platform='discord')
+    assert refused['error']['message'] == 'invalid_params', refused
+    authority.db.close()

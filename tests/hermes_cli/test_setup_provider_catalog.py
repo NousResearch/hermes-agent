@@ -123,6 +123,57 @@ def test_setup_matches_picker_when_catalog_fetch_fails(monkeypatch):
     assert setup_rows == ["declared-a", "declared-b"] == models.provider_model_ids(profile.name)
 
 
+def test_setup_offers_terminal_rows_for_subscription_tiers(monkeypatch):
+    """#119481/#126898: first-time setup for a subscription-tier provider (14 curated ids) used
+    to short-circuit on ``len(curated) >= 8`` and offer every phantom row the plan can't serve —
+    the exact trap /model's terminal arm exists to remove. Setup must defer to the live probe
+    and offer the same terminal rows the picker shows later. Uses the REAL bundled
+    alibaba-token-plan profile and its REAL curated floor."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import providers
+    from hermes_cli import model_setup_flows as flows, models
+
+    profile = providers.get_provider_profile("alibaba-token-plan")
+    assert profile is not None, "bundled alibaba provider plugin must be registered"
+    curated = models._PROVIDER_MODELS["alibaba-token-plan"]
+    assert len(curated) >= 8  # the guard under test: a substantial curated list alone must not win
+    live = ["qwen3.6-flash", "qwen3.8-max"]
+
+    monkeypatch.setattr(flows, "_models_dev_merged", lambda *_: [])
+    with patch.object(profile, "fetch_models", return_value=list(live)):
+        setup_rows = flows._api_key_provider_model_list(
+            "alibaba-token-plan", SimpleNamespace(name="Alibaba (Token Plan)"),
+            "synthetic-test-key", "", profile.base_url)
+
+    assert set(setup_rows) == set(live)
+    for phantom in ("qwen3.8-max-0902", "kimi-k2.7-code", "kimi-k2.6", "kimi-k2.5", "glm-5.1", "glm-5"):
+        assert phantom not in setup_rows, phantom
+
+
+def test_setup_terminal_tier_without_key_still_offers_curated_floor(monkeypatch):
+    """The defer only reroutes the probe; with no key the probe fails and the curated floor
+    stays served (offline users keep a usable list at setup, matching the picker)."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import providers
+    from hermes_cli import model_setup_flows as flows, models
+
+    profile = providers.get_provider_profile("alibaba-token-plan")
+    assert profile is not None
+    curated = list(models._PROVIDER_MODELS["alibaba-token-plan"])
+
+    monkeypatch.setattr(flows, "_models_dev_merged", lambda *_: [])
+    with patch.object(profile, "fetch_models", return_value=None):
+        setup_rows = flows._api_key_provider_model_list(
+            "alibaba-token-plan", SimpleNamespace(name="Alibaba (Token Plan)"),
+            "", "", profile.base_url)
+
+    assert set(curated) <= set(setup_rows)
+
+
 def test_switch_validation_trusts_profile_owned_catalog(monkeypatch):
     """A plugin whose ``fetch_models`` is the catalog (#101705): the model the picker offers is
     accepted even when the generic ``/v1/models`` 200s with a different product catalog; a model in

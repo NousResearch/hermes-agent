@@ -17,6 +17,7 @@ import pytest
 import cron.scheduler_delivery as sd
 from gateway import delivery_ledger as dl
 from gateway.config import GatewayConfig, Platform
+from gateway.delivery import DeliveryRouter, DeliverySendError, DeliveryTarget
 from gateway.platforms.base import SendResult
 
 
@@ -140,6 +141,29 @@ def test_qqbot_connect_refused_is_queued(monkeypatch, loop):
     _qqbot_post(monkeypatch, lambda req: httpx.ConnectError("connection refused", request=req))
     t = _target(loop, platform=Platform("qqbot"), name="qqbot", extra={"app_id": "1"}, token="s")
     assert [r["content"] for r in _queued_rows(t, "the report")] == ["the report"]
+
+
+@pytest.mark.parametrize("result", [
+    {"success": False, "error": "Not connected", "retryable": True},
+    SendResult(success=False, error="Not connected", retryable=True),
+], ids=["dict", "SendResult"])
+def test_router_keeps_the_retryable_verdict_of_dict_and_object_results(loop, result):
+    """Adapters return a SendResult or a plain dict; the router's raise carries ``retryable`` from both."""
+    class Transport:
+        adapter = None
+        is_relay = False
+
+        async def send(self, platform, chat_id, content, metadata=None):
+            return result
+
+    router = DeliveryRouter(GatewayConfig(), {})
+    target = DeliveryTarget(platform=Platform.TELEGRAM, chat_id="-100", is_explicit=True)
+    coro = router._deliver_to_platform(target, "hi", {}, transport=Transport())
+    with pytest.raises(DeliverySendError) as excinfo:
+        asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=10)
+    assert excinfo.value.send_retryable is True
+
+
 
 def test_chunked_send_drops_nothing_sent_once_a_chunk_landed():
     """The shared chunk loop: a sender's ``retryable`` (nothing sent) holds for chunk 1 only; after a

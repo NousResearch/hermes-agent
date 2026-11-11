@@ -13,7 +13,7 @@ const plugin: HermesPlugin = {
   name: 'Accueil',
   description:
     "Tableau de bord d'accueil pour votre Collaborateur IA.",
-  defaultEnabled: true,
+  defaultEnabled: false,
   register(ctx) {
     ctx.registerMany([
       {

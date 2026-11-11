@@ -211,7 +211,7 @@ const plugin: HermesPlugin = {
   id: 'visuel-setup',
   name: 'Guide de démarrage',
   description: 'Un guide illustré en 3 étapes pour démarrer avec votre Collaborateur IA.',
-  defaultEnabled: true,
+  defaultEnabled: false,
 
   register(ctx) {
     ctx.registerMany([

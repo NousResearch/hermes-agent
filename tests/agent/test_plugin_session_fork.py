@@ -531,6 +531,15 @@ def test_an_interrupt_racing_launch_registration_still_fences_the_fork(forks, co
         interrupted.set()
 
     monkeypatch.setattr(plugin_session_fork, "_launch_refusal", _seam)
+    build = background_review.build_cache_parity_fork
+
+    def _build_after_the_interrupt(*args, **kwargs):
+        # The worker starts once _launch releases the lock, racing the interrupt waiting on it: hold
+        # the worker until the interrupt has run, so a descheduled racer cannot lose to an instant fork.
+        assert interrupted.wait(10)
+        return build(*args, **kwargs)
+
+    monkeypatch.setattr(background_review, "build_cache_parity_fork", _build_after_the_interrupt)
     racer = threading.Thread(target=_next_turn)
     racer.start()
     handle = _ctx(consented).fork_session(issue_side_question_token(parent, [], "turn-1"), "q")

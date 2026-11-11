@@ -17,7 +17,7 @@ description: >-
   No network calls, subprocesses, background services, credential access or self-update.
 maintainer: neweraXX
 tier: community
-category: memory
+category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/neweraXX/freshness-sidecar#readme
 version: "0.1.0"

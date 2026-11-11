@@ -4,7 +4,9 @@ A call that omits a required argument is refused before the handler runs, naming
 field; a call that carries a name the schema does not declare still reaches the handler
 untouched, and its result says which names were not parameters. Third-party schemas
 (MCP servers, plugins) and open or union-shaped schemas are not judged here: their
-``properties`` list is not a promise about what the handler accepts.
+``properties`` list is not a promise about what the handler accepts. The exception is a
+third-party schema that closes the object itself (``additionalProperties: false``): that IS
+the promise, so an undeclared name there is refused before the call.
 """
 
 from __future__ import annotations
@@ -62,10 +64,34 @@ def _with_choices(key: str, properties: dict) -> str:
     return f"{key} (one of: {', '.join(map(str, choices))})" if choices else key
 
 
+def _closed_schema_refusal(entry: Optional[ToolEntry], args: Any) -> Optional[str]:
+    """Refusal for names a third-party schema that closes the object (``additionalProperties:
+    false``) does not declare. zod/pydantic-backed MCP servers advertise that form yet strip
+    unknown keys at parse time, so a wrapped or misspelled call came back as a default success
+    and the model kept the shape all session (port of RooCodeInc/Roomote#2695). Built-in tools
+    keep the warn-and-run contract below; the one that closes its schema checks keys itself."""
+    if entry is None or not isinstance(args, dict) or registry.is_builtin(entry):
+        return None
+    params = entry.schema.get("parameters")
+    if (not isinstance(params, dict) or params.get("additionalProperties") is not False
+            or not isinstance(params.get("properties"), dict) or any(key in params for key in _OPEN_ROOT_KEYWORDS)):
+        return None
+    unknown = [key for key in args if key not in params["properties"]]
+    if not unknown:
+        return None
+    valid = ", ".join(params["properties"]) or "none"
+    unwrap = (" Do not wrap the arguments in an \"arguments\" field (that shape is only for tool_call);"
+              " pass each one at the top level." if "arguments" in unknown else "")
+    return tool_error(f"{', '.join(unknown)}: not a parameter of {entry.name}. The tool was NOT invoked. "
+                      f"Valid parameters: {valid}.{unwrap}")
+
+
 def check_tool_args(entry: Optional[ToolEntry], args: Any) -> tuple[Optional[str], list[str], str]:
     """``(refusal, unknown, valid)`` for one call: *refusal* is the error result to return
     instead of running the handler, *unknown* the argument names the schema does not declare,
     *valid* the declared ones."""
+    if (refusal := _closed_schema_refusal(entry, args)) is not None:
+        return refusal, [], ""
     params = _closed_parameters(entry)
     if params is None or not isinstance(args, dict):
         return None, [], ""

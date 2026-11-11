@@ -1,23 +1,17 @@
-"""Every ``systemctl show-environment`` output systemd can produce, read back.
-
-systemd writes the manager environment with ``shell_maybe_quote(SHELL_ESCAPE_POSIX)``: a value
-that needs no quoting is copied verbatim, and one that does is wrapped in ``$'...'`` with the
-bytes ``strcpy_backslash_escaped`` escapes and the control bytes ``cescape_char`` renders. The
-grammar that comes out is systemd's, not ours, so the reader is tested against a model of
-systemd's own writer rather than against hand-written samples: the model below is a direct
-translation of ``src/basic/escape.c`` (systemd v262), and it is checked against the real
-``systemctl`` whenever the host has one.
-
-A byte the writer never emits must not be accepted either, so a grammar that grew a new escape
-is noticed here rather than silently dropping a variable on someone's login.
-"""
+"""Every ``systemctl show-environment`` output systemd can produce, read back: the reader is
+tested against a model of systemd's own writer, not hand-written samples, and refuses what
+systemd never writes."""
 import itertools
+import os
 import random
 import subprocess
 
 import pytest
 
 from hermes_cli.gateway_runtime_service_identity import manager_environment_pairs
+
+# Asking the host's systemd manager writes to its real environment: opt in.
+REAL_SYSTEMD = os.environ.get("HERMES_TEST_REAL_SYSTEMD") == "1"
 
 # ── systemd's writer, translated from src/basic/escape.c (v262) ──
 
@@ -187,7 +181,15 @@ def test_the_values_a_real_session_exports_round_trip(value):
 
 def _real_systemctl_dump(value: bytes) -> bytes | None:
     """What the host's systemctl prints for one variable, or None when it cannot be asked."""
+    previous = None
     try:
+        before = subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True,
+                                timeout=10, check=False).stdout.decode("utf-8", "surrogateescape")
+        for line in before.split("\n"):
+            # A plain split, not a shell grep: the value can hold a glob character.
+            if line.startswith("HERMES_TEST_VAR="):
+                previous = line[len("HERMES_TEST_VAR="):]
+                break
         subprocess.run(["systemctl", "--user", "unset-environment", "HERMES_TEST_VAR"],
                        capture_output=True, timeout=10, check=False)
         subprocess.run(["systemctl", "--user", "set-environment", f"HERMES_TEST_VAR={value.decode('utf-8', 'surrogateescape')}"],
@@ -197,8 +199,13 @@ def _real_systemctl_dump(value: bytes) -> bytes | None:
     except (OSError, subprocess.SubprocessError):
         return None
     finally:
-        subprocess.run(["systemctl", "--user", "unset-environment", "HERMES_TEST_VAR"],
-                       capture_output=True, timeout=10, check=False)
+        # The variable belongs to the host: give it back what it held.
+        if previous is None:
+            subprocess.run(["systemctl", "--user", "unset-environment", "HERMES_TEST_VAR"],
+                           capture_output=True, timeout=10, check=False)
+        else:
+            subprocess.run(["systemctl", "--user", "set-environment", f"HERMES_TEST_VAR={previous}"],
+                           capture_output=True, timeout=10, check=False)
     for line in dumped.split("\n"):
         # A plain split, not a shell grep: the value can hold a glob character.
         if line.startswith("HERMES_TEST_VAR="):
@@ -206,6 +213,7 @@ def _real_systemctl_dump(value: bytes) -> bytes | None:
     return None
 
 
+@pytest.mark.skipif(not REAL_SYSTEMD, reason="set HERMES_TEST_REAL_SYSTEMD=1 to ask the host's systemctl")
 @pytest.mark.parametrize("value", [
     b"a", b"a b", b"a\\b", b"a'b", b"a\x07b", b"a?b", b"a*b", b"a\"b",
     b"sh -c 'col -bx | bat -l man -p'", b"caf\xc3\xa9", b"\\q", b"\\12",

@@ -106,24 +106,7 @@ def _exists(path: Path) -> bool:
 
 
 def _manager_environment(command: tuple[str, ...] | list[str], deadline: float) -> dict[str, str]:
-    """Read the systemd manager's environment block as a mapping.
-
-    ``systemctl show-environment --output=json`` prints the block as a JSON
-    object with the values already unescaped and unquoted, so there is no
-    shell-quoting grammar to interpret and no line separator to split on: each
-    byte the manager can hold round-trips exactly. That mode exists since
-    systemd v250.
-
-    Older releases accept ``--output=json`` but ignore it for this verb and
-    print the plain text form instead, so the shape of the output decides which
-    reader to use. Environment variable names cannot begin with ``{`` (D-Bus
-    rejects such names), so a leading brace identifies the JSON form without
-    a second call. The text reader stays as the fallback for those hosts.
-
-    A brace-leading output is JSON and nothing else, so a JSON failure is not
-    retried as text: the text reader would read a malformed document as
-    assignments. Only output that does not start with a brace is text.
-    """
+    """Read the manager's environment block; the shape of the output picks the reader."""
     from hermes_cli.gateway_runtime_service_identity import (
         manager_environment_pairs,
         manager_environment_pairs_json,

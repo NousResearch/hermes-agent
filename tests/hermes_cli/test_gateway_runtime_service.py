@@ -945,3 +945,36 @@ def test_manager_environment_pairs_keeps_the_raw_reread_off_a_quoting_dump(dump)
     from hermes_cli.gateway_runtime_service_identity import manager_environment_pairs
     with pytest.raises(ValueError, match="service_identity_unverified"):
         manager_environment_pairs(dump)
+
+
+@pytest.mark.platforms("linux")
+def test_verify_systemd_does_not_mutate_the_manager_environment(tmp_path):
+    """The check reads the manager environment; it must not write to it.
+
+    ``verify_systemd`` layered the unit's own ``Environment=`` on top of the
+    caller's mapping and popped from it too, so the unit's variables leaked
+    into the mapping the caller keeps for the other scope. The home the unit
+    names is refused, but only after the environment was rewritten.
+    """
+    import pwd
+
+    from hermes_cli.gateway_runtime_service_identity import (
+        SYSTEMD_IDENTITY_PROPERTIES,
+        ForeignRoot,
+        verify_systemd,
+    )
+
+    props = {name: "" for name in SYSTEMD_IDENTITY_PROPERTIES}
+    props.update({
+        "DynamicUser": "no",
+        "User": pwd.getpwuid(os.getuid()).pw_name,
+        "Environment": "HERMES_HOME=/does/not/exist",
+        "PassEnvironment": "",
+        "UnsetEnvironment": "",
+        "ExecStart": "",
+    })
+    manager_env = {"HOME": "/home/u", "LANG": "C"}
+    before = dict(manager_env)
+    with pytest.raises(ForeignRoot):
+        verify_systemd(props, manager_env, tmp_path, system=False)
+    assert manager_env == before, "verify_systemd mutated the caller's manager environment"

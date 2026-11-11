@@ -700,6 +700,12 @@ class AuthorityConnection:
         if ref.session_id not in self.subscriptions and not (reconnect and ref.session_id == requested):
             from gateway.session_open import open_local
             opening = open_local(self.authority, ref)
+        # The durable gateway-handoff notice commits BEFORE the attach: it is an ordinary
+        # transcript row (deterministic uid, one per logical session per owner epoch), so
+        # the attach's existing history carries it, duplicate resumes collapse on the id,
+        # and the existing session_meta model-history exclusion keeps it out of LLM context.
+        from gateway.session_handoff import ensure_session_handoff
+        handoff_notice = await asyncio.to_thread(ensure_session_handoff, self.authority, ref.session_id)
         try:
             snapshot = await self.authority.attach(self.actor, ref, history=not omit, replay_from=replay_from)
             self.subscriptions[ref.session_id] = snapshot.subscription_id
@@ -730,6 +736,7 @@ class AuthorityConnection:
                 **await _resume_transcript(self.authority, ref, snapshot, history, omit), **display,
                 'running': snapshot.handle.execution_state == 'running',
                 'authority_epoch': snapshot.handle.authority_epoch,
+                'handoff': handoff_notice,
                 'replay_epoch': snapshot.replay_epoch, 'last_sequence': snapshot.last_sequence,
                 'subscription_id': snapshot.subscription_id, 'revision': snapshot.handle.revision,
                 'execution_generation': snapshot.handle.execution_generation,

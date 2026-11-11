@@ -272,6 +272,28 @@ class TestJsonOutput:
         assert payload["proposals"][0]["n"] == 1
         assert isolated_allowlist["saves"] == 0
 
+    def test_json_names_the_profile_store_file_without_db(self, tmp_path, monkeypatch, isolated_allowlist, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        with open_persistence(profile_scope(home=tmp_path), eager=True):
+            pass
+        rc = suggest_command(Namespace(db=None, days=0, min_count=1, limit=20, apply_indices=None, json=True))
+        assert rc == 0
+        assert json.loads(capsys.readouterr().out)["db"] == str(tmp_path / "state.db")
+
+
+class TestMissingStore:
+    def test_without_db_names_the_profile_store_file(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        rc = suggest_command(Namespace(db=None, days=0, min_count=1, limit=20, apply_indices=None, json=False))
+        assert rc == 1
+        assert capsys.readouterr().out.strip() == f"Session database not found: {tmp_path / 'state.db'}"
+
+    def test_with_db_names_the_given_path(self, tmp_path, capsys):
+        missing = tmp_path / "elsewhere" / "state.db"
+        rc = suggest_command(_args(missing))
+        assert rc == 1
+        assert capsys.readouterr().out.strip() == f"Session database not found: {missing}"
+
 
 # ---------------------------------------------------------------------------
 # Parser wiring

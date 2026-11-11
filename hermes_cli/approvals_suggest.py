@@ -96,6 +96,16 @@ def _store_target(db_path: Optional[Path] = None) -> Optional[Path]:
     return scope.profile_dir if store_exists(scope) else None
 
 
+def _shown_store(db_path: Optional[Path] = None) -> Path:
+    """The store file the output names: the ``db_path`` given, else the file that holds the current profile's store."""
+    if db_path:
+        return Path(db_path)
+    from hermes_constants import get_hermes_home
+    from persistence_assembly import profile_scope, store_location
+    scope = profile_scope(home=get_hermes_home())
+    return store_location(scope) or scope.profile_dir
+
+
 def _json_or_none(raw):
     try:
         return json.loads(raw)
@@ -298,10 +308,10 @@ def _render_text(proposals: list[Proposal], days: int) -> None:
 def suggest_command(args) -> int:
     """Entry point for ``hermes approvals suggest``."""
     db_path = _store_target(getattr(args, "db", None))
+    shown = _shown_store(getattr(args, "db", None))
     days = getattr(args, "days", 90)
     if db_path is None:
-        from hermes_constants import get_hermes_home
-        print(f"Session database not found: {getattr(args, 'db', None) or get_hermes_home()}")
+        print(f"Session database not found: {shown}")
         return 1
 
     import tools.approval as approval_module
@@ -332,7 +342,7 @@ def suggest_command(args) -> int:
 
     if as_json:
         payload = {
-            "db": str(db_path),
+            "db": str(shown),
             "days": days,
             "proposals": [
                 {

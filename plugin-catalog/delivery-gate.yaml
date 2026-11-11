@@ -1,6 +1,6 @@
 name: delivery-gate
 repo: https://github.com/ToniAdreal/delivery-gate
-sha: acd90f779211f905d3a981e029506dce39e0c724
+sha: 9665a67ba77bd41290faec61b0899bf3e8a353b7
 description: >-
   Pre-delivery verification for Hermes Agent: runs the deterministic checks
   a task spec declares (test commands, lint, repro scripts) and releases the
@@ -12,7 +12,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/ToniAdreal/delivery-gate#readme
-version: "0.1.0"
+version: "0.1.1"
 platforms: []
 capabilities:
   provides_tools: [delivery_gate_verify, delivery_gate_evidence]

@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_platform.host.runtime import is_wsl
-from tools.computer_use.backend import ActionResult, ComputerUseBackend
+from tools.computer_use.backend import ActionResult, ComputerUseBackend, is_window_gone
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
 from tools.computer_use.cua_backend_driver import (
@@ -365,6 +365,16 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._snapshot_tokens = {}  # prior snapshot's tokens: disarm before any capture so an exception can't pair them
         self._last_target = {"pid": self._active_pid, "window_id": self._active_window_id}
 
+    def _sole_window_of(self, pid: int, exclude_window_id: Optional[int]) -> Optional[int]:
+        """Suggest a same-process window for a fresh capture, never for replaying input."""
+        try:
+            candidates = [w["window_id"] for w in self.list_windows()
+                          if w["pid"] == pid and w["window_id"] != exclude_window_id]
+        except Exception as exc:
+            logger.debug("window recovery discovery failed: %s", exc, exc_info=True)
+            return None
+        return candidates[0] if len(candidates) == 1 else None
+
     def launch_app(self, *, bundle_id: Optional[str] = None, name: Optional[str] = None,
                    urls: Optional[list[str]] = None, additional_arguments: Optional[list[str]] = None,
                    creates_new_application_instance: bool = False) -> dict[str, Any]:
@@ -426,5 +436,16 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             or (str(structured.get("message", "")) if isinstance(structured, dict) else "")
         # Merge data + structuredContent into meta, structured winning on overlap (canonical verdict surface).
         meta = {k: v for part in (data, structured) if isinstance(part, dict) for k, v in part.items()}
-        return _action_result_from(name, not out["isError"], message, meta, structured,
-                                   requested_delivery=args.get("delivery_mode"))
+        result = _action_result_from(name, not out["isError"], message, meta, structured,
+                                     requested_delivery=args.get("delivery_mode"))
+        # Only the sticky target is forgotten: an action aimed at another window leaves it alone.
+        sticky = (args["window_id"] == self._active_window_id if "window_id" in args
+                  else args.get("pid") == self._active_pid)
+        if self._active_pid is not None and sticky and is_window_gone(result.code, result.message):
+            pid, old = self._active_pid, self._active_window_id
+            candidate = self._sole_window_of(pid, old)
+            self._clear_active_target()
+            result.meta["pid"] = pid
+            result.meta["window_changed"] = {"previous_window_id": old,
+                                             "candidate_window_id": candidate}
+        return result

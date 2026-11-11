@@ -1,15 +1,15 @@
 name: pagecast-director
 title: "PageCast Director"
 repo: https://github.com/flabanabba8/pagecast-director
-sha: 4559abe43b12cc88a0b946fab4f9514c025887c0
+sha: ca29ff73b2d33912f090836de3ff238fa46bcbb0
 version: "0.3.2"
 description: "Editable cast narration with locked voices, source passage IDs, resumable synthesis and selective regeneration. Disclosure: Stores books and generated audio privately. Voices are local (Flite, or a Higgs server already running on your computer) unless you choose hosted Inworld, ElevenLabs or Google Gemini, which send passage text and voice choices to that provider with your own key or Google login and use your credits. Runs local Flite, FFmpeg and optional mpv. The optional Android tools check GitHub for the PageCast app and can download it; installing it on a phone with adb asks for your approval (one pre_tool_call hook). No background processes beyond a render or preview you start."
 maintainer: flabanabba8
 tier: community
 category: voice
 requires_hermes: ">=0.22.0"
-docs_url: https://github.com/flabanabba8/pagecast-director/blob/4559abe43b12cc88a0b946fab4f9514c025887c0/README.md
-image: https://raw.githubusercontent.com/flabanabba8/pagecast-director/4559abe43b12cc88a0b946fab4f9514c025887c0/assets/thumbnail.jpg
+docs_url: https://github.com/flabanabba8/pagecast-director/blob/ca29ff73b2d33912f090836de3ff238fa46bcbb0/README.md
+image: https://raw.githubusercontent.com/flabanabba8/pagecast-director/ca29ff73b2d33912f090836de3ff238fa46bcbb0/assets/thumbnail.jpg
 platforms: [linux]
 capabilities:
   provides_tools:

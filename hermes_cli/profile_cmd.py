@@ -158,31 +158,14 @@ def _profile_use(args):
         _die(f"Error: {e}")
 
 
-def _source_profile_dir(source_label: str) -> Path:
-    from hermes_cli.profiles import get_profile_dir
-    source_dir = get_profile_dir(source_label)
-    if not source_dir.is_dir():
-        raise FileNotFoundError(source_dir)
-    return source_dir
-
-
-def _print_channel_clone_notice(name: str, source_label: str, clone_channels: bool, clone_flag: str) -> None:
-    from hermes_cli.profile_channels import (
-        channel_platforms_configured, format_stripped_notice, shared_channel_credentials,
-        shared_credential_warning,
-    )
-    from hermes_cli.profiles import get_profile_dir
-    try:
-        source_dir = _source_profile_dir(source_label)
-    except FileNotFoundError:
-        return
+def _print_channel_clone_notice(name: str, receipt: dict, clone_channels: bool, clone_flag: str) -> None:
+    from hermes_cli.profile_channels import format_stripped_notice, shared_credential_warning
     if not clone_channels:
-        for line in format_stripped_notice(name, channel_platforms_configured(source_dir), clone_flag):
+        for line in format_stripped_notice(name, receipt["channels_left_behind"], clone_flag):
             print(line)
         return
-    shared = shared_channel_credentials(get_profile_dir(name), source_dir)
-    if shared:
-        print(shared_credential_warning(name, shared, source_label))
+    if receipt["shared_channels"]:
+        print(shared_credential_warning(name, receipt["shared_channels"], receipt["source_label"]))
 
 
 def _print_mirrored(mirrored: dict, launch: str, *, isolate_hint: bool) -> None:
@@ -198,9 +181,32 @@ def _print_mirrored(mirrored: dict, launch: str, *, isolate_hint: bool) -> None:
         print(f"Model inherited from '{launch}'.")
 
 
+def _local_alias(name: str) -> dict:
+    from hermes_cli.profile_provision import ProvisionResult, write_alias
+    result = ProvisionResult(path=Path())
+    try:
+        write_alias(name, result)
+    except OSError as exc:
+        return {"alias_collision": f"the wrapper could not be written ({exc})"}
+    return {"alias_path": str(result.alias_path) if result.alias_path else None,
+            "alias_collision": result.alias_collision}
+
+
+def _refuse_create_args(args, clone_from: Optional[str], cloned: bool) -> None:
+    """Flag combinations refused before any create, local or through a gateway."""
+    if clone_from is not None and not clone_from.strip():
+        # Locally that is the empty-name error; on the wire it would read as "clone the caller".
+        _die("Error: profile name cannot be empty")
+    if cloned and getattr(args, "no_credentials", False):
+        # A clone copies the source's .env/config (and --clone-all its auth.json) by request.
+        _die("Error: --no-credentials cannot be combined with --clone / --clone-from / --clone-all "
+             "(a clone copies the source's keys); create without cloning instead.", err=True)
+
+
 def _profile_create(args):
     from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
-    from hermes_cli.profiles import _get_wrapper_dir, _is_wrapper_dir_in_path, get_active_profile_name
+    from hermes_cli.profile_provision_gateway import GatewayCreateError, create_through_gateway, receipt
+    from hermes_cli.profiles import _get_wrapper_dir, _is_wrapper_dir_in_path
     name = args.profile_name
     clone = getattr(args, "clone", False)
     clone_all = getattr(args, "clone_all", False)
@@ -210,12 +216,7 @@ def _profile_create(args):
     sync_imports = getattr(args, "sync_imports", False)
     clone_config = clone or clone_from is not None
     cloned = clone_config or clone_all
-    if cloned and getattr(args, "no_credentials", False):
-        # A clone copies the source's .env/config (and --clone-all its auth.json) by request.
-        _die("Error: --no-credentials cannot be combined with --clone / --clone-from / --clone-all "
-             "(a clone copies the source's keys); create without cloning instead.", err=True)
-    launch_label = get_active_profile_name()
-    source_label = clone_from or launch_label
+    _refuse_create_args(args, clone_from, cloned)
     request = ProfileCreateRequest(
         name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
         no_skills=getattr(args, "no_skills", False), description=getattr(args, "description", None),
@@ -224,31 +225,33 @@ def _profile_create(args):
         mirror_credentials=not getattr(args, "no_credentials", False),
         share_auth=not getattr(args, "isolated_auth", False))
     try:
-        result = provision_profile(request)
-    except (ValueError, FileExistsError, FileNotFoundError) as e:
+        # A gateway serving this terminal makes the profile (one HERMES_TUI_GATEWAY_URL names always
+        # does); with none it is made here. Either way the receipt below is read where it was made.
+        made = create_through_gateway(request)
+        if made is None:
+            made = receipt(request, provision_profile(request))
+        elif not no_alias and not os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip():
+            made = {**made, **_local_alias(name)}  # this terminal's PATH and `hermes`, not the gateway's
+    except (ValueError, FileExistsError, FileNotFoundError, GatewayCreateError) as e:
         _die(f"Error: {e}")
-    profile_dir = result.path
-    print(f"\nProfile '{name}' created at {profile_dir}")
+    print(f"\nProfile '{name}' created at {made['path']}")
+    source_label = made["source_label"]
     if cloned:
         if clone_all:
             print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
         else:
             print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
-            from hermes_cli.profiles import cloned_plugin_names
-            plugin_names = cloned_plugin_names(profile_dir)
-            if plugin_names:
-                print(f"Cloned installed plugins too: {', '.join(plugin_names)}.")
-            from hermes_cli.profile_memory_config import cloned_memory_provider
-            memory_provider = cloned_memory_provider(profile_dir)
-            if memory_provider:
-                print(f"Cloned memory provider config ({memory_provider}) too.")
+            if made["cloned_plugins"]:
+                print(f"Cloned installed plugins too: {', '.join(made['cloned_plugins'])}.")
+            if made["memory_provider"]:
+                print(f"Cloned memory provider config ({made['memory_provider']}) too.")
         if sync_imports:
             print(f"Import sources carried over — `hermes -p {name} import-agent --sync` "
                   "keeps pulling the same Claude Code / Codex trees.")
-        _print_channel_clone_notice(name, source_label, clone_channels, "--clone-all" if clone_all else "--clone")
+        _print_channel_clone_notice(name, made, clone_channels, "--clone-all" if clone_all else "--clone")
     else:
         # Fresh profiles only: clones already carry the source's (user-curated) skills.
-        seeded = result.skills_seeded
+        seeded = made["skills_seeded"]
         if seeded and seeded.get("skipped_opt_out"):
             print("No bundled skills seeded (--no-skills). Delete .no-bundled-skills in the profile to opt back in.")
         elif seeded:
@@ -256,38 +259,32 @@ def _profile_create(args):
         else:
             print(f"⚠ Skills could not be seeded. Run `{name} update` to retry.")
     if not no_alias:
-        if result.alias_collision:
-            print(f"\n⚠ Cannot create alias '{name}' — {result.alias_collision}")
+        if made["alias_collision"]:
+            print(f"\n⚠ Cannot create alias '{name}' — {made['alias_collision']}")
             print(f"  Choose a custom alias:  hermes profile alias {name} --name <custom>")
             print(f"  Or access via flag:     hermes -p {name} chat")
-        elif result.alias_path:
-            print(f"Wrapper created: {result.alias_path}")
+        elif made["alias_path"]:
+            print(f"Wrapper created: {made['alias_path']}")
             if not _is_wrapper_dir_in_path():
                 print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
                 print("  Add to your shell config (~/.bashrc or ~/.zshrc):")
                 print('    export PATH="$HOME/.local/bin:$PATH"')
-    _print_mirrored(result.mirrored, launch_label,
+    _print_mirrored(made["mirrored"], made["launch_label"],
                     isolate_hint=not getattr(args, "isolated_auth", False) and not getattr(args, "no_credentials", False))
-    for warning in result.warnings:
+    for warning in made["warnings"]:
         print(f"⚠ {warning}")
-    try:
-        profile_dir_display = "~/" + profile_dir.relative_to(Path.home()).as_posix()
-    except ValueError:
-        profile_dir_display = str(profile_dir)
+    profile_dir_display = made["display_path"]
     print("\nNext steps:")
     print(f"  {name} setup              Configure API keys and model")
     print(f"  {name} chat               Start chatting")
-    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
-    from hermes_cli.profiles import normalize_profile_name
-    served = recorded_served_profiles() if live_default_gateway_pid() is not None else None
-    if served is not None and normalize_profile_name(name) in {normalize_profile_name(p) for p in served}:
+    if made["served_now"]:
         print("  (served now by the running multiplexed gateway — add its bot token and it connects)")
-    elif served is not None:
+    elif made["served_now"] is False:
         # The multiplexer did not pick the profile up (older gateway or the signal failed): a restart serves it.
         print("  hermes gateway restart    Serve this profile from the running multiplexed gateway")
     else:
         print(f"  {name} gateway start      Start the messaging gateway")
-    if cloned or result.mirrored.get("env"):
+    if cloned or made["mirrored"].get("env"):
         print(f"\n  Edit {profile_dir_display}/.env for different API keys")
         print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
     else:

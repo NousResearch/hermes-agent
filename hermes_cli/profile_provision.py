@@ -19,11 +19,19 @@ import contextlib
 import logging
 import os
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+# One core create at a time in this process. ``create_profile`` stages in
+# ``profiles/.<name>.staging-<pid>``, so two in-process creates of one name (two terminals creating
+# through one gateway) shared and removed each other's staging dir: the loser failed with a raw
+# OSError instead of "already exists". Other processes have their own pid. Seeding and the alias
+# run after the lock is released.
+_CREATE_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -81,12 +89,13 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     """
     from hermes_cli import profiles
 
-    path = profiles.create_profile(
-        name=request.name, clone_from=request.clone_from, clone_all=request.clone_all,
-        clone_config=request.clone_config, no_skills=request.no_skills,
-        description=request.description, clone_channels=request.clone_channels,
-        sync_imports=request.sync_imports, soul=request.soul, seed_model=request.mirror_credentials,
-    )
+    with _CREATE_LOCK:
+        path = profiles.create_profile(
+            name=request.name, clone_from=request.clone_from, clone_all=request.clone_all,
+            clone_config=request.clone_config, no_skills=request.no_skills,
+            description=request.description, clone_channels=request.clone_channels,
+            sync_imports=request.sync_imports, soul=request.soul, seed_model=request.mirror_credentials,
+        )
     result = ProvisionResult(path=path)
 
     def step(label: str, fn: Callable[[], Any], default: Any = None) -> Any:
@@ -100,7 +109,7 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     if request.fresh:
         result.skills_seeded = step("bundled skills", lambda: profiles.seed_profile_skills(path, quiet=request.quiet))
     if request.alias:
-        step("alias wrapper", lambda: _write_alias(request.name, result))
+        step("alias wrapper", lambda: write_alias(request.name, result))
     if request.mirror_credentials:
         from hermes_cli.auth import _global_auth_file_path
         kept_root = step("launch credentials", lambda: mirror_launch_credentials(
@@ -128,7 +137,7 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     return result
 
 
-def _write_alias(name: str, result: ProvisionResult) -> None:
+def write_alias(name: str, result: ProvisionResult) -> None:
     from hermes_cli.profiles import check_alias_collision, create_wrapper_script
     collision = check_alias_collision(name)
     if collision:

@@ -506,6 +506,13 @@ _CONTENT_NORMALIZERS: dict[Any, Callable[[dict[str, Any]], _Normalized]] = {
 _BINARY_CONTENT_TYPES = {"attachment", "voice", "group"}  # may decode/cache media bytes → run off the event loop
 
 
+def _carries_voice(content: dict[str, Any]) -> bool:
+    """A voice note, alone or inside a ``group`` envelope: only speech can hold a spoken wake word."""
+    if content.get("type") == "group":
+        return any(c.get("type") == "voice" for c in _group_item_contents(content))
+    return content.get("type") == "voice"
+
+
 def _mention_gate_text(content: dict[str, Any]) -> str:
     """The user-typed text of a payload WITHOUT decoding or caching any attachment bytes,
     so the group require_mention gate can run before ``_normalize_content`` persists media."""
@@ -832,7 +839,7 @@ class PhotonAdapter(BasePlatformAdapter):
         if content.get("type") == "reply" and isinstance(content.get("content"), dict):
             content = content["content"]
         return space.get("id") or "", bool(
-            space.get("type") == "group" and self.require_mention and content.get("type") == "voice"
+            space.get("type") == "group" and self.require_mention and _carries_voice(content)
             and voice_mention_gate_enabled(self.config.extra))
 
     async def _fffc_timeout_handler(self, chat_key: str, message_id: str) -> None:
@@ -943,8 +950,9 @@ class PhotonAdapter(BasePlatformAdapter):
         # Mention gate BEFORE normalising: _normalize_content persists inline attachment
         # bytes to the media cache, and a dropped group message must not leave files behind.
         gated = chat_type == "group" and self.require_mention
-        spoken = gated and ctype == "voice" and voice_mention_gate_enabled(self.config.extra)  # #102330
-        if gated and not spoken and not self._message_matches_mention_patterns(_mention_gate_text(content)):
+        typed = gated and self._message_matches_mention_patterns(_mention_gate_text(content))
+        spoken = gated and not typed and _carries_voice(content) and voice_mention_gate_enabled(self.config.extra)
+        if gated and not (typed or spoken):  # spoken: #102330
             logger.debug("[photon] ignoring group message (require_mention=true, no mention pattern matched)")
             return
         if ctype in _BINARY_CONTENT_TYPES:
@@ -952,8 +960,14 @@ class PhotonAdapter(BasePlatformAdapter):
             text, mtype, media_urls, media_types = await asyncio.to_thread(_normalize_content, content)
         else:
             text, mtype, media_urls, media_types = _normalize_content(content)
-        if spoken and not await spoken_mention_clips(media_urls, self._mention_patterns, adapter=self,
+        # A group envelope may carry photos beside the speech: only its audio enters STT, and a
+        # rejected envelope's other cached files are deleted with it.
+        audio = [u for u, m in zip(media_urls, media_types) if ctype == "voice" or m.lower().startswith("audio/")]
+        if spoken and not await spoken_mention_clips(audio, self._mention_patterns, adapter=self,
                                                      source=_event("").source):
+            for path in set(media_urls) - set(audio):
+                with contextlib.suppress(OSError):
+                    os.remove(path)
             logger.debug("[photon] ignoring group voice note (require_mention=true, no wake word spoken)")
             return
         if gated:

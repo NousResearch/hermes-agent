@@ -1,0 +1,28 @@
+name: sovereign-finance
+title: Sovereign Finance
+repo: https://github.com/gabonaut/hermes-sovereign-finance
+sha: 985f7c4545f95207d37b35f292dfacf8d3630c90
+description: "A self-custodial Altana smart wallet for your agent on BNB Chain and Ethereum, with a Desktop pane. Your passkey is the admin, and the agent's session key is limited onchain to the contracts, functions and daily caps you approve. Disclosure: talks to the Altana relay, public RPCs, DexScreener and skills.altana.network; runs a bundled Node CLI; serves one localhost page for passkey prompts; stores session keys (mode 0600) in plugin-data; a pre_tool_call hook guards its files and gates sovereign_execute behind approval; no telemetry."
+maintainer: gabonaut
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/gabonaut/hermes-sovereign-finance#readme
+platforms: [macos, linux]
+known_issues:
+  - "The session scope limits contracts, functions and daily amounts. Recipients are set by the plugin before signing, so keep the session key file private."
+  - "YOLO mode, approvals.mode off and approvals.cron_mode approve skip the approval prompt. The onchain limits still apply."
+  - "Verified on BNB Chain, BNB testnet and Sepolia. Ethereum mainnet activation is not verified: start on BNB Chain."
+  - "Works best with a capable model. A small model may not find the plugin's tools unless the request names one."
+capabilities:
+  provides_tools:
+    - sovereign_status
+    - sovereign_positions
+    - sovereign_quote
+    - sovereign_execute
+    - sovereign_skill
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -16,6 +16,7 @@ from typing import Iterable, Optional
 import httpx
 
 from agent.ssl_verify import platform_ssl_context
+from plugins.platforms.telegram.telegram_pool import MAX_FALLBACK_IPS, PoolGeneration, fd_bounded_limits
 
 logger = logging.getLogger(__name__)
 
@@ -106,42 +107,49 @@ def getupdates_keepalive_connections() -> int:
 
 def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optional[str], verify=None) -> tuple:
     """The (general, getUpdates) ``request_cls`` (PTB ``HTTPXRequest``) pair the gateway adapter and
-    the standalone sender both use: the fallback-IP transport when ``fallback_ips`` and no proxy,
-    else the explicit proxy, else direct DNS; every client verifies with ``verify`` (default: the
-    cached ``platform_ssl_context()``).
+    the standalone sender both use. Each client is served by its own ``TelegramFallbackTransport``:
+    the fallback-IP walk when ``fallback_ips`` and no proxy, else every request through
+    ``proxy_url`` (or direct DNS); every client verifies with ``verify`` (default: the cached
+    ``platform_ssl_context()``).
+
+    The proxy decision made here is final: the transport gets ``proxy=proxy_url`` (``None`` =
+    direct) so it never re-resolves HTTPS_PROXY against api.telegram.org, which sent a NO_PROXY'd
+    custom ``base_url`` server through the proxy (#47188).
 
     CLOSE_WAIT fd leak (#31599, #18451): PTB builds its httpx client with only
-    ``max_connections`` and httpx's default 5s keepalive, so behind an HTTP proxy a peer FIN can
-    sit in CLOSE_WAIT and leak fds; ``platform_httpx_limits()`` keepalive tuning is injected while
-    keeping PTB's pool size. Both fallback transports bound their path walk's total connect time
-    (``_WALK_CONNECT_BUDGET_S``) so failover finishes inside the send deadline. getUpdates keeps
-    ``getupdates_keepalive_connections()`` sockets (see there for the per-OS reason). httpx ignores client ``limits`` when a custom
-    ``transport`` is supplied (#58790), so the fallback branch hands them to the transport."""
+    ``max_connections`` and httpx's default 5s keepalive; ``platform_httpx_limits()`` keepalive
+    tuning is injected while keeping PTB's pool size, capped so every Telegram pool fits the process
+    descriptor budget (#82678). getUpdates keeps ``getupdates_keepalive_connections()`` sockets (see
+    there for the per-OS reason). httpx ignores client ``limits`` when a custom ``transport`` is
+    supplied (#58790), so they go to the transport too."""
     from gateway.platforms._http_client_limits import platform_httpx_limits
     verify = platform_ssl_context() if verify is None else verify
     kwargs = ptb_request_kwargs()
+    ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))[:MAX_FALLBACK_IPS] if not proxy_url else []
     base = platform_httpx_limits()
     pool = updates = None
     if base is not None:
-        pool = httpx.Limits(max_connections=kwargs["connection_pool_size"],
-                            max_keepalive_connections=base.max_keepalive_connections, keepalive_expiry=base.keepalive_expiry)
-        updates = httpx.Limits(max_connections=kwargs["connection_pool_size"],
+        pool = fd_bounded_limits(httpx.Limits(
+            max_connections=kwargs["connection_pool_size"], max_keepalive_connections=base.max_keepalive_connections,
+            keepalive_expiry=base.keepalive_expiry), paths=len(ips) + 1)
+        updates = httpx.Limits(max_connections=pool.max_connections,
                                max_keepalive_connections=getupdates_keepalive_connections(),
                                keepalive_expiry=base.keepalive_expiry)
+    transport_kwargs = {"socket_options": tcp_keepalive_socket_options(), "verify": verify,
+                        "connect_budget": _WALK_CONNECT_BUDGET_S, "proxy": proxy_url}
+    extra = {"proxy": proxy_url} if proxy_url else {}
 
-    def pair(general_httpx: dict, updates_httpx: dict, **extra) -> tuple:
-        return (request_cls(**kwargs, **extra, httpx_kwargs={"verify": verify, **general_httpx}),
-                request_cls(**kwargs, **extra, httpx_kwargs={"verify": verify, **updates_httpx}))
+    def request(limits) -> object:
+        limited = {"limits": limits} if limits is not None else {}
+        transport = TelegramFallbackTransport(ips, **transport_kwargs, **limited)
+        # A proxied or direct client keeps PTB's own ``proxy=`` shape; the transport serves it as
+        # the ``all://`` mount, which replaces the proxy mount httpx builds from that argument.
+        # ``trust_env=False``: the proxy was already resolved above (env, NO_PROXY,
+        # ``gateway.trust_env``), so httpx must not add its own env-proxy mounts in front.
+        route = {"transport": transport} if ips else {"mounts": {"all://": transport}, "trust_env": False}
+        return request_cls(**kwargs, **extra, httpx_kwargs={"verify": verify, **route, **limited})
 
-    def limited(limits) -> dict:
-        return {"limits": limits} if limits is not None else {}
-
-    if fallback_ips and not proxy_url:
-        transport_kwargs = {"socket_options": tcp_keepalive_socket_options(), "verify": verify,
-                            "connect_budget": _WALK_CONNECT_BUDGET_S}
-        return pair({"transport": TelegramFallbackTransport(fallback_ips, **transport_kwargs, **limited(pool))},
-                    {"transport": TelegramFallbackTransport(fallback_ips, **transport_kwargs, **limited(updates))})
-    return pair(limited(pool), limited(updates), **({"proxy": proxy_url} if proxy_url else {}))
+    return request(pool), request(updates)
 
 
 def proxy_target_hosts(base_url: Optional[str], fallback_ips: Iterable[str] = ()) -> list[str]:
@@ -169,7 +177,12 @@ def _resolve_proxy_url(target_hosts=None) -> str | None:
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     """Reach the Bot API via known IPv4 literals first, dual-stack hostname last. Host + SNI stay on
-    api.telegram.org (like ``curl --resolve``) so a blackholed IPv6 AAAA can't pin initialize()."""
+    api.telegram.org (like ``curl --resolve``) so a blackholed IPv6 AAAA can't pin initialize().
+
+    Every path is a :class:`PoolGeneration`: a failed path, and ``aclose()`` (PTB's
+    ``HTTPXRequest.shutdown()`` drain, which reuses this object on the next ``initialize()``),
+    swap in a fresh generation and retire the old one, which closes once the requests still on it
+    finish, so neither in-flight requests nor their sockets are dropped (CLOSE_WAIT leak, #142971)."""
 
     # Bound every pool: httpx's 100-connection default × (wedged endpoint + seed IPs) can outgrow the fd limit.
     # See #63311.
@@ -180,57 +193,56 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         # client's full per-request connect timeout.
         self._connect_budget = connect_budget
         self._fallback_ips = list(dict.fromkeys(_normalize_fallback_ips(fallback_ips)))
-        proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
-        if proxy_url and "proxy" not in transport_kwargs:
-            transport_kwargs["proxy"] = proxy_url
+        if "proxy" not in transport_kwargs:
+            proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
+            if proxy_url:
+                transport_kwargs["proxy"] = proxy_url
         transport_kwargs.setdefault("limits", self._POOL_LIMITS)
         transport_kwargs.setdefault("socket_options", tcp_keepalive_socket_options())
         self._transport_kwargs = transport_kwargs
-        self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
+        # ``aclose()`` empties it; the next request then starts a fresh generation.
+        self._primary: Optional[PoolGeneration] = PoolGeneration(**transport_kwargs)
         self._primary_lock = asyncio.Lock()
-        self._primary_closed = False
-        # Built on demand and discarded on failure — see _reset_fallback.
-        self._fallbacks: dict[str, httpx.AsyncHTTPTransport] = {}
+        # Built on demand and retired on failure — see _reset_fallback.
+        self._fallbacks: dict[str, PoolGeneration] = {}
         self._fallback_lock = asyncio.Lock()
         # ``_UNSET`` / ``None`` / ``str`` = no sticky yet / sticky hostname / sticky IPv4.
         self._sticky_ip: object = _UNSET
         self._sticky_lock = asyncio.Lock()
         self._last_failure: tuple[str, str] | None = None
 
-    async def _get_fallback(self, ip: str) -> httpx.AsyncHTTPTransport:
+    async def _get_primary(self) -> PoolGeneration:
+        async with self._primary_lock:
+            if self._primary is None:
+                self._primary = PoolGeneration(**self._transport_kwargs)
+            return self._primary
+
+    async def _get_fallback(self, ip: str) -> PoolGeneration:
         async with self._fallback_lock:
             transport = self._fallbacks.get(ip)
             if transport is None:
-                transport = httpx.AsyncHTTPTransport(**self._transport_kwargs)
+                transport = PoolGeneration(**self._transport_kwargs)
                 self._fallbacks[ip] = transport
             return transport
 
-    async def _reset_primary(self, transport: httpx.AsyncHTTPTransport) -> None:
+    async def _reset_primary(self, transport: PoolGeneration) -> None:
         # Retryable primary failures leave half-closed sockets in the pool; replace the generation first.
         async with self._primary_lock:
-            if self._primary_closed or transport is not self._primary:
+            if transport is not self._primary:
                 return
-            self._primary = httpx.AsyncHTTPTransport(**self._transport_kwargs)
-        try:
-            await transport.aclose()
-        except Exception as exc:
-            logger.debug("[Telegram] Error closing primary transport: %s", exc)
+            self._primary = None
+        await transport.retire()
 
-    async def _reset_fallback(self, ip: str) -> None:
-        """Discard a failed fallback pool: a peer-closed connect leaves a CLOSE_WAIT socket in it, and the
-        poisoned pool would leak one fd per retry.
-
-        Retaining the poisoned pool leaks one descriptor per retry until the process hits its file limit and
-        can no longer accept connections or resolve DNS (#63311).
-        """
+    async def _reset_fallback(self, ip: str, transport: Optional[PoolGeneration] = None) -> None:
+        """Retire a failed fallback pool: a peer-closed connect leaves a CLOSE_WAIT socket in it, and the
+        poisoned pool would leak one fd per retry (#63311). Only the generation that failed is
+        retired, never a fresh one a concurrent request already swapped in."""
         async with self._fallback_lock:
-            transport = self._fallbacks.pop(ip, None)
-        if transport is None:
-            return
-        try:
-            await transport.aclose()
-        except Exception as exc:  # closing a broken pool must never mask the real error
-            logger.debug("[Telegram] Error closing fallback transport %s: %s", ip, exc)
+            current = self._fallbacks.get(ip)
+            if current is None or (transport is not None and current is not transport):
+                return
+            del self._fallbacks[ip]
+        await current.retire()
 
     def _attempt_order(self) -> list[Optional[str]]:
         """Sticky path first, then IPv4 literals, dual-stack hostname last (a blackholed IPv6 path never
@@ -253,7 +265,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.url.host != _TELEGRAM_API_HOST or not self._fallback_ips:
-            return await self._primary.handle_async_request(request)
+            return await (await self._get_primary()).handle_async_request(request)
         last_error: Exception | None = None
         order = self._attempt_order()
         walk_started = time.monotonic()
@@ -266,7 +278,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 candidate = _request_with_connect_budget(request, share)
             if ip is not None:
                 candidate = _rewrite_request_for_ip(candidate, ip)
-            transport = self._primary if ip is None else await self._get_fallback(ip)
+            transport = await self._get_primary() if ip is None else await self._get_fallback(ip)
             try:
                 response = await transport.handle_async_request(candidate)
                 if self._last_failure is not None:
@@ -305,22 +317,24 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                     logger.warning("[Telegram] Dual-stack api.telegram.org path failed (%s)", failure)
                     continue
                 logger.warning("[Telegram] IPv4 Telegram API IP %s failed: %s", ip, failure)
-                await self._reset_fallback(ip)
+                await self._reset_fallback(ip, transport)
                 continue
         if last_error is None:
             raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
         raise last_error
 
     async def aclose(self) -> None:
+        """Retire every pool generation; the next request builds fresh ones, because PTB's
+        ``HTTPXRequest.initialize()`` wraps its next client around this same transport after a
+        ``shutdown()`` drain."""
         async with self._primary_lock:
-            self._primary_closed = True
-            primary = self._primary
-        await primary.aclose()
+            retired = [self._primary] if self._primary is not None else []
+            self._primary = None
         async with self._fallback_lock:
-            transports = list(self._fallbacks.values())
+            retired.extend(self._fallbacks.values())
             self._fallbacks.clear()
-        for transport in transports:
-            await transport.aclose()
+        for transport in retired:
+            await transport.retire()
 
 
 def _normalize_fallback_ips(values: Iterable[str]) -> list[str]:

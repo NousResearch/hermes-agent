@@ -1,0 +1,32 @@
+# Catalog entry for bsc-mint-guard
+# File location in the hermes-agent PR: plugin-catalog/bsc-mint-guard.yaml
+# Fill in repo and sha AFTER the plugin repo is created and pushed.
+# sha must be the full 40-char commit SHA, not a branch or tag.
+name: bsc-mint-guard
+repo: https://github.com/Fuma2514/hermes-mint-guard
+sha: 31f0ab7a9f522235e7daa4cdb6f96f919fb1ed5e
+subdir: ""
+description: Safety-check a BSC ERC-721 free mint before you mint. Read-only on-chain reads, no keys, no signing, no spending.
+maintainer: Fuma Ops II
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+docs_url: ""
+version: "1.0.0"
+image: ""
+screenshots: []
+readme: true
+platforms: []
+title: ""
+onboarding: false
+known_issues:
+  - "Price probe covers common view functions only (mintPrice, price, cost, mintCost, publicPrice, salePrice, getPrice). Contracts with a custom price function return price_unknown and verdict NEEDS_MANUAL_CHECK."
+capabilities:
+  provides_tools:
+    - mint_check
+    - mint_quote
+    - wallet_mint_status
+  provides_hooks:
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

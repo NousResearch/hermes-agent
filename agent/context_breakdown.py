@@ -235,7 +235,9 @@ def compute_context_details(agent: Any) -> dict[str, Any]:
     from hermes_cli.prompt_size import _compute_skills_breakdown, _compute_toolsets_breakdown
     from agent.system_prompt import build_system_prompt_parts
 
-    skills_block = _skills_block(build_system_prompt_parts(agent).get("stable", "") or "")
+    parts = build_system_prompt_parts(agent)
+    skills_block = (_skills_block(parts.get("volatile", "") or "")
+                    or _skills_block(parts.get("stable", "") or ""))
     tools = list(getattr(agent, "tools", None) or [])
     return {
         "skills": [

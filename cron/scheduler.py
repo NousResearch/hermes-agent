@@ -53,6 +53,7 @@ from agent.interrupt_compat import request_hard_interrupt
 from agent.delegation_context import (
     enter_non_dispatcher_owned_context, exit_non_dispatcher_owned_context)
 from agent.memory_provider import ctx_bound
+from agent.pareto_router import min_coding_score
 from agent.session_activity import AwakeIdleMeter
 from agent.turn_failure_copy import is_max_iteration_handoff
 
@@ -2497,7 +2498,7 @@ def _construct_cron_agent(AIAgent, job: dict, _cfg: dict, setup: _CronAgentSetup
         providers_ignored=pr.get("ignore"),
         providers_order=pr.get("order"),
         provider_sort=pr.get("sort"),
-        openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
+        openrouter_min_coding_score=min_coding_score(_cfg),
         enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
         disabled_toolsets=_resolve_cron_disabled_toolsets(_cfg),
         quiet_mode=True,

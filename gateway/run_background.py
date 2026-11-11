@@ -6,6 +6,7 @@ import os
 from typing import Optional
 
 from agent.i18n import t
+from agent.pareto_router import min_coding_score
 from gateway.media_repair import repair_explicit_computer_use_media_paths
 from gateway.platforms.base import BasePlatformAdapter
 from gateway.session import SessionSource
@@ -100,6 +101,7 @@ class GatewayBackgroundMixin:
                     provider_sort=pr.get("sort"),
                     provider_require_parameters=pr.get("require_parameters", False),
                     provider_data_collection=pr.get("data_collection"),
+                    openrouter_min_coding_score=min_coding_score(user_config),
                     session_id=task_id,
                     platform=platform_key,
                     **{k: getattr(source, k) for k in (

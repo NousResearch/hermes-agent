@@ -15,6 +15,7 @@ import logging
 import threading
 import uuid
 
+from agent.pareto_router import min_coding_score
 from gateway.session_busy_controls import authorize
 from hermes_state_runtime import RuntimeStoreError
 
@@ -108,7 +109,7 @@ def _side_agent(authority, policy, live, task_id, **overrides):
         request_overrides=dict(runtime.get('request_overrides') or {}),
         providers_allowed=pr.get('only'), providers_ignored=pr.get('ignore'), providers_order=pr.get('order'),
         provider_sort=pr.get('sort'), provider_require_parameters=pr.get('require_parameters', False),
-        provider_data_collection=pr.get('data_collection'),
+        provider_data_collection=pr.get('data_collection'), openrouter_min_coding_score=min_coding_score(config),
         # Its own session in the owning profile's store, like the sidecar's ``bg_*`` rows.
         session_id=task_id, platform=policy.platform, session_db=authority.db,
         fallback_model=refresh_fallback() if callable(refresh_fallback) else None,

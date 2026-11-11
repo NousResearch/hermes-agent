@@ -598,6 +598,10 @@ def pause_at_commit_point() -> str | None:
         return None
     if "posix_pause_verdict" not in token:
         token["posix_pause_verdict"] = _pause(token)
+    if sys.platform == "darwin" and token.get("unmapped"):
+        # The replay's launchd launcher, loaded now: imported after the move it is the new tree's.
+        import hermes_cli.gateway_launchd
+        import hermes_cli.gateway_launchd_runtime
     for entry in token.get("unmapped") or []:
         if entry.get("argv") and entry["home"] not in _REPLAY_ENVS:
             try:

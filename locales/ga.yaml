@@ -332,6 +332,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — seisiún tosaithe gan teideal."
     title_empty_untitled: "\n⚠️ Tá an teideal folamh tar éis glanta — seisiún tosaithe gan teideal."
     tip: "\n✦ Leid: {tip}"
+    paused_left: "\n⚠️ Tá {count} teachtaireacht a sheol tú agus an comhrá roimhe ar sos fós sábháilte ar an gcomhrá roimhe, gan freagra. Chun iad a rith: /resume {session_id}, ansin /discard."
   restart:
     in_progress: "⏳ Tá atosú gateway ar siúl cheana féin..."
     restarting: "♻ Ag atosú gateway. Mura gcuirfear in iúl duit laistigh de 60 soicind, atosaigh ón gconsól le `hermes gateway restart`."

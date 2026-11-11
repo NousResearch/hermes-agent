@@ -20,6 +20,7 @@ method("ping", params=PingParams, result=PingResult,
 
 class GatewayCapabilitiesResult(Result):
     per_session_exclusive_submit: bool
+    allow_session_takeover: bool = False
 
 
 method("gateway.capabilities", params=PingParams, result=GatewayCapabilitiesResult,

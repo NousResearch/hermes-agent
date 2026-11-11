@@ -1,0 +1,24 @@
+name: hermes-ussd
+repo: https://github.com/Dixon-O/hermes-ussd-plugin
+sha: 80ccfd0b1dfcf01d07aae72eb63a13242ca93af6
+title: USSD & SMS (Africa's Talking)
+description: "Use Hermes from any phone, including feature phones with no internet: dial a USSD code for an instant menu, ask a question, get the agent's answer by SMS, and read long answers back page by page on USSD. Africa's Talking (Kenya, Uganda, Tanzania, Rwanda, Nigeria, Malawi and more). Closed by default (allowlist), phone users get the `safe` toolset, store-first at-most-once SMS outbox, daily SMS cap. Disclosure — opens an HTTP listener on 127.0.0.1:8790 (loopback; the user exposes it through their own tunnel or reverse proxy); makes outbound HTTPS calls only to api.africastalking.com / api.sandbox.africastalking.com (SMS API); stores phone numbers and reply text in a 0600 SQLite file in Hermes plugin storage (7-day default retention, `hermes ussd purge`); runs an outbox worker and an hourly purge task inside the gateway process; Africa's Talking callbacks are unsigned so the secret URL path is the only authentication (rotate with `hermes ussd rotate-secret`); sending SMS costs money on the user's Africa's Talking account (daily cap on by default); no telemetry, no shell commands, no self-update, no binaries."
+maintainer: Dixon-O
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/Dixon-O/hermes-ussd-plugin#readme
+version: "0.1.0"
+platforms: []
+known_issues:
+  - Needs an Africa's Talking account. The free sandbox works for development; a live USSD code needs approval from Africa's Talking and the mobile operators.
+  - Africa's Talking callbacks are unsigned; authenticity rests on the secret URL path.
+  - One listener per Africa's Talking account and port (shared-ingress multiplexed profiles are not supported).
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - AT_USERNAME
+    - AT_API_KEY
+    - AT_WEBHOOK_SECRET

@@ -1,0 +1,28 @@
+name: uniichat-recall
+title: "Uniichat Recall"
+repo: https://github.com/DevvGwardo/uniichat-recall
+sha: f8e61321474bb0af56989650d7d52a13816ea84c
+version: "0.1.0"
+description: >-
+  Hermes memory provider over an append-only UniiChat log and a derived binary
+  summary tree: ranks every past turn, returns the exact records with session IDs
+  and character offsets, and abstains instead of guessing when nothing in the log
+  answers. Disclosure: when HERMES_CUSTOM_API_SURPLUSINTELLIGENCE_AI_API_KEY is
+  set, chat excerpts are sent to api.surplusintelligence.ai (glm-4.7-flash) to
+  compress summary-tree nodes and to route or answer recall queries; it runs
+  fully offline when the key is absent or summarize: false. On semantic misses it
+  may spawn the optional agy (Antigravity/Gemini) CLI for a second opinion, and a
+  background thread rebuilds the summary tree after turns are appended. Logs are
+  written under ~/.hermes/uniichat (configurable via root). Linux/macOS only: the
+  store uses fcntl for cross-process append locks, so the plugin does not load on
+  Windows.
+maintainer: DevvGwardo
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

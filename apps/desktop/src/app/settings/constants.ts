@@ -46,6 +46,13 @@ export const CONTROL_TEXT = 'text-xs'
 
 export const PROVIDER_GROUPS: ProviderPrefix[] = [
   {
+    prefix: 'UNITALK_',
+    name: 'Unitalk AI Gateway',
+    description: 'Enterprise AI Gateway (LiteLLM) · 10 000 trial credits (€5) included',
+    docsUrl: 'https://unitalk.ai',
+    priority: 0
+  },
+  {
     prefix: 'NOUS_',
     name: 'Nous Portal',
     description: 'Hosted Unitalk & Nous-trained models',

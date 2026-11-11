@@ -32,6 +32,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.22.3"
 docs_url: https://github.com/Tripo-Developer/tripo-hermes-plugin#readme
+image: https://raw.githubusercontent.com/Tripo-Developer/tripo-hermes-plugin/3163c3c5598792dff3a1bfc3a05cfe905bda4c94/assets/catalog-banner.jpg
 platforms: [windows, macos, linux]
 capabilities:
   provides_tools: []

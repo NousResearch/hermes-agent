@@ -68,7 +68,7 @@ def parse_trusted_workspaces(value: Any) -> list[str]:
     if (roots := _path_list(value)) is None:
         eventlog.event_log.warning(
             "lsp.trusted_workspaces must be a list of directories, e.g. ['~/code/my-app'] (got %s); only the "
-            "workspaces you launched Hermes or opened a session in are trusted until the key is fixed",
+            "workspaces you launched Unitalk or opened a session in are trusted until the key is fixed",
             type(value).__name__)
     return roots or []
 

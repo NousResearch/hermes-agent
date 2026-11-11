@@ -506,7 +506,7 @@ class InsightsEngine:
         lines = [
             "",
             "  ╔══════════════════════════════════════════════════════════╗",
-            "  ║                    📊 Hermes Insights                    ║",
+            "  ║                    📊 Unitalk Insights                    ║",
             f"  ║{' ' * left_pad} {period_label} {' ' * (padding - left_pad)}║",
             "  ╚══════════════════════════════════════════════════════════╝",
             "",
@@ -577,7 +577,7 @@ class InsightsEngine:
             return f"No sessions found in the last {report.get('days', 30)} days."
         o = report["overview"]
         lines = [
-            f"📊 **Hermes Insights** — Last {report['days']} days\n",
+            f"📊 **Unitalk Insights** — Last {report['days']} days\n",
             f"**Sessions:** {o['total_sessions']} | **Messages:** {o['total_messages']:,} | **Tool calls:** {o['total_tool_calls']:,}",
             f"**Tokens:** {o['total_tokens']:,} (in: {o['total_input_tokens']:,} / out: {o['total_output_tokens']:,})",
         ]

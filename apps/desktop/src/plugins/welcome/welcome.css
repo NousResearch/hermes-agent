@@ -1,0 +1,370 @@
+/* Welcome dashboard — warm paper tones, magenta accent, landing-page quality.
+   CSS custom properties so the palette stays easy to rebrand. */
+
+:root {
+  --welcome-bg: #F3EFE6;
+  --welcome-card: #FFFFFF;
+  --welcome-accent: #D10E63;
+  --welcome-accent-hover: #B00D54;
+  --welcome-accent-ring: rgba(209, 14, 99, 0.25);
+  --welcome-text: #1C1A17;
+  --welcome-muted: #7A7468;
+  --welcome-border: #D8D0C2;
+  --welcome-chip-bg: #F3EFE6;
+  --welcome-chip-hover: #E8E2D6;
+  --welcome-radius: 12px;
+  --welcome-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* ---- Page shell ---- */
+
+.welcome-page {
+  font-family: var(--welcome-font);
+  background: var(--welcome-bg);
+  color: var(--welcome-text);
+  min-height: 100%;
+  padding: 32px 40px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+
+/* ---- Greeting card (top, full width) ---- */
+
+.welcome-greeting {
+  background: var(--welcome-card);
+  border-radius: var(--welcome-radius);
+  padding: 36px 40px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+.welcome-greeting h1 {
+  margin: 0 0 8px;
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--welcome-text);
+}
+
+.welcome-greeting-subtitle {
+  margin: 0 0 24px;
+  font-size: 1.05rem;
+  color: var(--welcome-muted);
+  line-height: 1.5;
+}
+
+/* Top input */
+
+.welcome-input {
+  width: 100%;
+  padding: 14px 18px;
+  font-size: 1rem;
+  font-family: var(--welcome-font);
+  border: 1.5px solid var(--welcome-border);
+  border-radius: var(--welcome-radius);
+  background: var(--welcome-bg);
+  color: var(--welcome-text);
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  box-sizing: border-box;
+  resize: none;
+}
+
+.welcome-input::placeholder {
+  color: var(--welcome-muted);
+  opacity: 0.7;
+}
+
+.welcome-input:focus {
+  border-color: var(--welcome-accent);
+  box-shadow: 0 0 0 3px var(--welcome-accent-ring);
+}
+
+/* Suggestion chips */
+
+.welcome-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.welcome-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 16px;
+  font-size: 0.875rem;
+  font-family: var(--welcome-font);
+  font-weight: 500;
+  border: 1px solid var(--welcome-border);
+  border-radius: 999px;
+  background: var(--welcome-chip-bg);
+  color: var(--welcome-text);
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+  white-space: nowrap;
+}
+
+.welcome-chip:hover {
+  background: var(--welcome-chip-hover);
+  border-color: var(--welcome-accent);
+  transform: translateY(-1px);
+}
+
+.welcome-chip:active {
+  transform: translateY(0);
+}
+
+/* ---- Two-column section ---- */
+
+.welcome-columns {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 20px;
+  align-items: start;
+}
+
+/* ---- Recent conversations card ---- */
+
+.welcome-sessions-card {
+  background: var(--welcome-card);
+  border-radius: var(--welcome-radius);
+  padding: 28px 32px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+.welcome-sessions-card h2 {
+  margin: 0 0 18px;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--welcome-text);
+}
+
+.welcome-session-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  margin: 0 -14px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.welcome-session-item:hover {
+  background: var(--welcome-bg);
+}
+
+.welcome-session-title {
+  font-size: 0.925rem;
+  font-weight: 500;
+  color: var(--welcome-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.welcome-session-preview {
+  font-size: 0.8rem;
+  color: var(--welcome-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.welcome-session-time {
+  font-size: 0.75rem;
+  color: var(--welcome-muted);
+  opacity: 0.8;
+}
+
+.welcome-empty {
+  color: var(--welcome-muted);
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+/* ---- Info & credits card ---- */
+
+.welcome-info-card {
+  background: var(--welcome-card);
+  border-radius: var(--welcome-radius);
+  padding: 24px 28px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.04);
+}
+
+.welcome-info-card h2 {
+  margin: 0 0 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--welcome-muted);
+}
+
+.welcome-info-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 0.85rem;
+  color: var(--welcome-text);
+}
+
+.welcome-info-label {
+  color: var(--welcome-muted);
+}
+
+.welcome-info-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--welcome-accent);
+  flex-shrink: 0;
+}
+
+/* ---- Credits bar ---- */
+
+.welcome-credits-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--welcome-border);
+}
+
+.welcome-credits-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.welcome-credits-value {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--welcome-accent);
+}
+
+.welcome-credits-bar {
+  height: 6px;
+  background: var(--welcome-chip-bg);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.welcome-credits-fill {
+  height: 100%;
+  background: var(--welcome-accent);
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+.welcome-credits-detail {
+  margin: 6px 0 0;
+  font-size: 0.75rem;
+  color: var(--welcome-muted);
+}
+
+/* ---- Trial banner ---- */
+
+.welcome-trial-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #FDF5F8;
+  border: 1px solid #F5D9E5;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  color: #8B1A4A;
+}
+
+.welcome-trial-icon {
+  font-size: 1rem;
+}
+
+/* ---- Info actions ---- */
+
+.welcome-info-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--welcome-border);
+}
+
+.welcome-upgrade-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  padding: 10px 16px;
+  background: var(--welcome-accent);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: var(--welcome-font);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.welcome-upgrade-btn:hover {
+  background: var(--welcome-accent-hover);
+}
+
+.welcome-credits-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 10px 16px;
+  background: transparent;
+  color: var(--welcome-accent);
+  border: 1.5px solid var(--welcome-accent);
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: var(--welcome-font);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.welcome-credits-btn:hover {
+  background: #FDF5F8;
+}
+
+/* ---- Responsive ---- */
+
+@media (max-width: 800px) {
+  .welcome-page {
+    padding: 20px 16px;
+    gap: 16px;
+  }
+
+  .welcome-greeting {
+    padding: 24px 20px;
+  }
+
+  .welcome-greeting h1 {
+    font-size: 1.35rem;
+  }
+
+  .welcome-columns {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .welcome-sessions-card {
+    padding: 20px 18px;
+  }
+
+  .welcome-info-card {
+    padding: 20px 18px;
+  }
+}

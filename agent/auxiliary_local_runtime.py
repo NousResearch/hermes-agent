@@ -1,7 +1,7 @@
 """Managed llama.cpp endpoint for auxiliary and fallback client resolution.
 
 A bare ``llamacpp`` / ``llama.cpp`` / ``llama-cpp`` alias (no base_url, no configured provider of
-that name) means "the local server Hermes manages for this profile" — exactly what the main ladder
+that name) means "the local server Unitalk manages for this profile" — exactly what the main ladder
 resolves in ``hermes_cli.runtime_provider_custom._resolve_llamacpp_runtime``. With no server
 running the answer is "unavailable", never the generic custom/API-key discovery: that handed the
 local model slug to whatever cloud provider held a key (#119227) or to the primary's own endpoint.

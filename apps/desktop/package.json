@@ -1,13 +1,13 @@
 {
-  "name": "hermes",
-  "productName": "Hermes",
+  "name": "unitalk-desktop",
+  "productName": "Unitalk",
   "private": true,
   "version": "0.0.0",
-  "description": "Native desktop shell for Hermes Agent.",
-  "author": "Nous Research",
+  "description": "Native desktop application for Unitalk AI Collaborators.",
+  "author": "Unitalk",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NousResearch/hermes-agent.git"
+    "url": "git+https://github.com/unitalkai/unitalk-desktop.git"
   },
   "type": "module",
   "main": "dist/electron-main.mjs",

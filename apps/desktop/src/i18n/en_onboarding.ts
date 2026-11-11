@@ -1,10 +1,10 @@
 import type { Translations } from './types'
 
 export const enOnboarding: Translations['onboarding'] = {
-  headerTitle: "Let's get you setup with Hermes Agent",
-  headerDesc: 'Connect a model provider to start chatting. Most options take one click.',
-  preparingInstall: 'Hermes is finishing install. This usually takes under a minute on first run.',
-  starting: 'Starting Hermes…',
+  headerTitle: "Let's activate your AI Collaborator",
+  headerDesc: 'Connect your Unitalk workspace in 1 click to activate your credits and equip your AI Collaborator.',
+  preparingInstall: 'Unitalk is preparing your AI Collaborator. This usually takes under a minute on first run.',
+  starting: 'Starting Unitalk…',
   setupSlowTitle: 'Setup is taking longer than usual.',
   setupSlowBody: 'Unitalk is still starting in the background.',
   continueWithoutSetup: 'Continue without setup',
@@ -15,7 +15,7 @@ export const enOnboarding: Translations['onboarding'] = {
   chooseLater: "I'll choose a provider later",
   recommended: 'Recommended',
   connected: 'Connected',
-  featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
+  featuredPitch: 'Unitalk AI Gateway · 10,000 free trial credits included (€5) — the recommended way to equip your AI Collaborator',
   fireworksPitch: 'Direct model API — Fireworks-hosted frontier models',
   localModelsTitle: 'Run models locally',
   localModelsPitch: 'No account needed — download a model and run it on this machine',

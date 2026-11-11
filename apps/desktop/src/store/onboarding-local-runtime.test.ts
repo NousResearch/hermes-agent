@@ -9,7 +9,7 @@ import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext
 markOnboardingDecided()
 
 const SERVER_OFF =
-  'The local model server is turned off. Start it from the Hermes desktop app or `hermes model` → Local models, or switch to another model with /model.'
+  'The local model server is turned off. Start it from the Unitalk desktop app or `hermes model` → Local models, or switch to another model with /model.'
 
 function coldState(): DesktopOnboardingState {
   return {
@@ -90,7 +90,7 @@ describe('refreshOnboarding with the local model server down', () => {
     expect($desktopOnboarding.get().configured).toBe(true)
     const shown = notify.mock.calls.at(-1)?.[0]
     expect(shown?.action?.label).toBe('Choose another model')
-    expect(shown?.message).toContain('Hermes desktop app')
+    expect(shown?.message).toContain('Unitalk desktop app')
     expect(shown?.message).not.toContain('Local models')
   })
 

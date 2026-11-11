@@ -46,7 +46,7 @@ GEMINI_DEFAULT_MAX_OUTPUT_TOKENS = 65535
 
 _FREE_TIER_GUIDANCE = (
     "\n\nYour Google API key is on the free tier (a few hundred requests/day for Gemini Flash models). "
-    "Hermes typically makes 3-10 API calls per user turn, so the free tier is exhausted in a handful of "
+    "Unitalk typically makes 3-10 API calls per user turn, so the free tier is exhausted in a handful of "
     "messages and cannot sustain an agent session. Enable billing on your Google Cloud project and "
     "regenerate the key in a billing-enabled project: https://aistudio.google.com/apikey"
 )

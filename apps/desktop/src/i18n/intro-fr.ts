@@ -103,10 +103,10 @@ export const introFr: Translations['intro'] = {
     ],
     none: [
       'Confiez une mission à votre Collaborateur IA, posez une question ou partagez un document. Je m’adapte aux méthodes de votre entreprise.',
-      'Décrivez votre objectif commercial, administratif ou stratégique. Je mobilise les compétences métier adaptées.',
-      'Explorez vos expertises, créez des visuels, préparez vos réunions ou rédigez vos contenus. Que souhaitez-vous accomplir aujourd’hui ?',
-      'Posez une question, analysez un fichier ou déléguez une mission complète en gardant toujours le contrôle.',
-      'Votre Collaborateur IA est prêt. Indiquez une mission, un projet ou un sujet pour commencer.'
+      'Décrivez la tâche avec vos propres mots. Je choisis les bons outils, j’explique mon plan et je vérifie avant les étapes risquées.',
+      'Déposez un chemin de fichier, une trace d’erreur ou une idée approximative. J’enquête, je suggère les prochaines étapes et je garde tout réversible.',
+      'Explorez le dépôt, modifiez des fichiers, lancez des tests, ouvrez des PR. Dites-moi l’objectif et je m’occupe des détails techniques.',
+      'Tapez une tâche, une question ou un extrait. Je me souviens de la session, je cite mes sources et je demande confirmation quand je ne suis pas sûr.'
     ]
   },
   custom: label => [

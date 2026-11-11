@@ -40,11 +40,11 @@ describe('requestTheme', () => {
 
     let accepted = false
     act(() => {
-      accepted = requestTheme('mono')
+      accepted = requestTheme('slate')
     })
 
     expect(accepted).toBe(true)
-    expect(ctx.themeName).toBe('mono')
+    expect(ctx.themeName).toBe('slate')
   })
 
   // The imperative door must land in the same place the React one does, or a
@@ -69,7 +69,7 @@ describe('requestTheme', () => {
   it('refuses a name that does not resolve, leaving the appearance untouched', () => {
     renderProbe()
 
-    act(() => void requestTheme('mono'))
+    act(() => void requestTheme('slate'))
     const painted = cssVar('--theme-foreground')
 
     let accepted = true
@@ -78,7 +78,7 @@ describe('requestTheme', () => {
     })
 
     expect(accepted).toBe(false)
-    expect(ctx.themeName).toBe('mono')
+    expect(ctx.themeName).toBe('slate')
     expect(cssVar('--theme-foreground')).toBe(painted)
   })
 

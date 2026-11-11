@@ -41,8 +41,8 @@ export const jaConnectors = {
     snapshot: 'この会話は取り込み済みです。既存のコピーを開いて続けられます。',
     copyNotice: '会話のテキストをコピーします。元のファイルは変更されません。ツール出力と推論は含まれません。',
     importing: '取り込み中…',
-    open: 'Hermesで開く',
-    continue: 'Hermesで続ける',
+    open: 'Unitalkで開く',
+    continue: 'Unitalkで続ける',
     importError: '会話を取り込めませんでした。'
   }
 } satisfies Pick<TranslationOverrides, 'connectors' | 'sessionImport'>

@@ -45,7 +45,6 @@ def stamp_failure(result: dict[str, Any], reason: str, retryable: bool) -> dict[
     result["failure_retryable"] = bool(retryable)
     return result
 
-
 # ---- failed-turn transcript boundary ----------------------------------------------------------
 # The Hermes-authored assistant row that closes a durable turn which ended without one. A
 # transcript boundary, NOT the model's answer: no provider/model error or refusal detail is

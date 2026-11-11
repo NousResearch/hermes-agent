@@ -10,7 +10,7 @@ import { DesktopOnboardingOverlay } from '.'
 // The boot due check has run and no first-run onboarding is open.
 markOnboardingDecided()
 
-const HEADER = "Let's get you setup with Hermes Agent"
+const HEADER = "Let's activate your AI Collaborator"
 
 // Never answers: the readiness effect stays in flight, so each case is observed
 // on exactly the state it set up instead of racing a round to completion.
@@ -21,7 +21,7 @@ function skippedState(overrides: Partial<DesktopOnboardingState> = {}): DesktopO
     configured: false,
     flow: { status: 'idle' },
     mode: 'oauth',
-    providers: [makeOAuthProvider('nous', 'Nous Portal')],
+    providers: [makeOAuthProvider('unitalk', 'Unitalk')],
     reason: null,
     requested: false,
     firstRunSkipped: true,

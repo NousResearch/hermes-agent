@@ -5,7 +5,7 @@ Reasoning-summary models (OpenAI gpt-5.x and Responses-API relays onto the chat 
 The chat wire lacks the Responses API's ``summary_index`` delimiter (verified live on Nous
 Portal ``openai/gpt-5.6-sol``), so plain concatenation glues ``**One****Two**`` into one
 half-bold paragraph. The boundary is re-derived from a delta opening a bold heading, matching
-the blank-line join Hermes' own Responses adapter does.
+the blank-line join Unitalk' own Responses adapter does.
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ def separate_glued_reasoning_blocks(previous: str, delta: Any) -> str:
 
     A break is inserted when *delta* opens a *closed* bold heading and *previous* is mid-line
     (heading butting heading, or prose butting heading). Token-streamed reasoning is left
-    alone: its deltas carry their own whitespace, and a fragment that merely opens emphasis
-    (``**`` alone) is not a part boundary — summary parts carry the whole heading in one delta.
+alone: its deltas carry their own whitespace, and a fragment that merely opens emphasis
+(``**`` alone) is not a part boundary — summary parts carry the whole heading in one delta.
     """
     # Relays also emit content-part lists/dicts; fragments carry their own whitespace.
     delta = flatten_message_text(delta, sep="")

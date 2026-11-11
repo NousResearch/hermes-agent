@@ -18,7 +18,7 @@ from agent.onboarding_flow import Facts, next_beat
 from tools.set_theme_tool import ACCENT_SWATCHES
 
 CHAT_TITLE = "Getting started"
-GREETING = "Hi, I'm Hermes. Let's set things up for you. Then we'll get something cool done."
+GREETING = "Hi, I'm Unitalk. Let's set things up for you. Then we'll get something cool done."
 
 # The scripted opening in each desktop UI language (apps/desktop/src/i18n/languages.ts), played before
 # the model speaks; the model writes the rest of the run in the user's language itself. Each greeting
@@ -26,14 +26,14 @@ GREETING = "Hi, I'm Hermes. Let's set things up for you. Then we'll get somethin
 # two lines joined: keep the two equal.
 _GREETINGS = {
     "en": GREETING,
-    "ar": "مرحبًا، أنا Hermes. لنجهّز كل شيء لك، ثم ننجز معًا شيئًا رائعًا.",
-    "de": "Hallo, ich bin Hermes. Richten wir alles für Sie ein. Danach machen wir etwas Cooles.",
-    "es": "Hola, soy Hermes. Vamos a dejarlo todo listo para ti. Luego haremos algo genial.",
-    "fr": "Bonjour, je suis Hermes. Configurons tout pour vous. Ensuite, nous ferons quelque chose de génial.",
-    "ja": "こんにちは、Hermes です。まずはあなたに合わせて設定しましょう。そのあと、何かすごいものを作りましょう。",
-    "ru": "Привет, я Hermes. Давайте всё настроим под вас. А потом сделаем что-нибудь классное.",
-    "zh": "你好，我是 Hermes。我们先帮你把一切设置好，然后一起做点很酷的事。",
-    "zh-hant": "你好，我是 Hermes。我們先幫你把一切設定好，然後一起做點很酷的事。",
+    "ar": "مرحبًا، أنا Unitalk. لنجهّز كل شيء لك، ثم ننجز معًا شيئًا رائعًا.",
+    "de": "Hallo, ich bin Unitalk. Richten wir alles für Sie ein. Danach machen wir etwas Cooles.",
+    "es": "Hola, soy Unitalk. Vamos a dejarlo todo listo para ti. Luego haremos algo genial.",
+    "fr": "Bonjour, je suis Unitalk. Configurons tout pour vous. Ensuite, nous ferons quelque chose de génial.",
+    "ja": "こんにちは、Unitalk です。まずはあなたに合わせて設定しましょう。そのあと、何かすごいものを作りましょう。",
+    "ru": "Привет, я Unitalk. Давайте всё настроим под вас. А потом сделаем что-нибудь классное.",
+    "zh": "你好，我是 Unitalk。我们先帮你把一切设置好，然后一起做点很酷的事。",
+    "zh-hant": "你好，我是 Unitalk。我們先幫你把一切設定好，然後一起做點很酷的事。",
 }
 
 _NAME_QUESTIONS = {

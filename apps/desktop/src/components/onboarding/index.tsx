@@ -584,17 +584,15 @@ function Header() {
   )
 }
 
-export const FEATURED_ID = 'nous'
+export const FEATURED_ID = 'unitalk'
 
-// Stand-in for the Nous row when the OAuth provider list could not be read
-// (it failed or came back empty, which drops the picker onto the key form).
-// Starting sign-in only needs the id; the backend's start reply decides the flow.
-const NOUS_FALLBACK: OAuthProvider = {
-  cli_command: 'hermes auth add nous',
-  docs_url: 'https://portal.nousresearch.com',
+// Stand-in for the Unitalk row when the OAuth provider list could not be read.
+const UNITALK_FALLBACK: OAuthProvider = {
+  cli_command: 'unitalk auth add unitalk',
+  docs_url: 'https://unitalk.ai/home/inscription?source=free-start',
   flow: 'device_code',
   id: FEATURED_ID,
-  name: 'Nous Portal',
+  name: 'Unitalk',
   status: { logged_in: false }
 }
 
@@ -694,13 +692,9 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
         {$localModelsEnabled.get() ? <LocalModelsProviderRow onClick={openLocalModels} /> : null}
         {showRest ? (
           <>
-            {/* Fireworks leads the expanded list, matching CANONICAL_PROVIDERS
-                (Nous → Fireworks), but stays hidden until the user opens it. */}
-            <FireworksProviderRow onClick={() => openKeyForm('FIREWORKS_API_KEY')} />
             {rest.map(p => (
               <ProviderRow key={p.id} onSelect={select} provider={p} />
             ))}
-            <OpenRouterProviderRow onClick={() => openKeyForm('OPENROUTER_API_KEY')} />
           </>
         ) : null}
       </div>
@@ -751,7 +745,7 @@ function KeyFormStep({
   onSelect: (provider: OAuthProvider) => void
   providers: OAuthProvider[]
 }) {
-  const nous = localEndpoint ? null : (providers.find(p => p.id === FEATURED_ID) ?? NOUS_FALLBACK)
+  const nous = localEndpoint ? null : (providers.find(p => p.id === FEATURED_ID) ?? UNITALK_FALLBACK)
 
   return (
     <div className="grid gap-3">

@@ -4,7 +4,8 @@
 ``_run`` task on the gateway loop drains, synthesises via a ``StreamingTTSProvider`` and writes
 PCM so playback starts mid-generation. Outcome: success -> ``completed``; failure before audible
 output -> ``suppress_whole_file=False`` (gateway falls back to whole-file TTS); failure after
-partial audio -> ``partial`` + suppress (never replay the response from the beginning).
+partial audio -> ``partial`` + suppress (never replay the response from the beginning); every
+clause silenced by a ``transform_spoken_text`` plugin -> suppress (the reply was handled).
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ class StreamingTTSConsumer:
         from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         self._adapter, self._chat_id, self._loop, self._metadata = adapter, chat_id, loop, metadata
         self._session_id, self._spoken_count = session_id, 0  # transform_spoken_text identity + index
+        self._silenced_count = 0  # clauses a transform_spoken_text plugin answered with ""
         # Resolved once; None => inactive, gateway falls back to whole-file TTS.
         self._streamer = resolve_streaming_provider(tts_config)
         self._chunker = SentenceChunker.from_config(tts_config)
@@ -173,6 +175,10 @@ class StreamingTTSConsumer:
                     await self._safe_abort("finish_streaming_tts failed")
                 else:
                     self._settle(failed=False)
+            elif not self._aborted and not self._dropped and 0 < self._silenced_count == self._spoken_count:
+                # A plugin silenced every clause: that silence IS this reply's speech, not a failed
+                # stream, so the whole-file fallback must not speak it (and ask the plugin) again.
+                self._suppress_whole_file = True
         except Exception as exc:
             logger.warning("streaming TTS consumer error: %s", exc)
             await self._safe_abort(str(exc))
@@ -194,6 +200,7 @@ class StreamingTTSConsumer:
         if not (cleaned := self._strip_markdown(clause).strip()):
             return
         if not (cleaned := await self._spoken_text(cleaned)):
+            self._silenced_count += 1
             return
         iterator = iter(self._streamer.stream(cleaned))
         while True:

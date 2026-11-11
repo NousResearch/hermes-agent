@@ -14,7 +14,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -70,33 +70,52 @@ async def synthesize_auto_tts(adapter, text_content: str, source, output_path_fo
     return paths, requested_path
 
 
-async def display_text_after_speech(adapter, event, session_key: str, text_content: str,
-                                    auto_tts_spoke: bool) -> str:
+class SpokenReplyText:
+    """Chat text of a reply the gateway also speaks. ``display`` is the text after
+    ``transform_spoken_display_text``: the Telegram caption, and the text send once the audio is
+    out. ``after_delivery()`` is the original reply instead while an auto-TTS file has not
+    reached the chat, so a plugin that hides the text never costs the user both audio and text."""
+
+    def __init__(self, original: str, display: str, audio_files: int, record_delivery: Callable) -> None:
+        self.display = display
+        self._original, self._undelivered, self._record_delivery = original, audio_files, record_delivery
+
+    def record_delivery(self, result: Any) -> None:
+        """``record_delivery`` for the ``_play_tts_file`` calls: also counts the files that went out."""
+        self._record_delivery(result)
+        self._undelivered -= bool(getattr(result, "success", False))
+
+    def after_delivery(self) -> str:
+        return self._original if self._undelivered > 0 else self.display
+
+
+async def reply_text_after_speech(adapter, event, session_key: str, text_content: str, tts_paths: list[str],
+                                  record_delivery: Callable) -> SpokenReplyText:
     """The chat text (and Telegram caption) for a reply Hermes also spoke — auto-TTS audio, or
-    the runner's voice reply — after ``transform_spoken_display_text``; unchanged otherwise."""
+    the runner's delivered voice reply — after ``transform_spoken_display_text``; unchanged
+    otherwise."""
     from tools.tts_spoken_text_hook import apply_spoken_display_text_hook
-    if auto_tts_spoke:
-        surface = "auto_tts"
-    elif getattr(event, "_voice_reply_sent", False):
-        surface = "voice_reply"
-    else:
-        return text_content
-    async with _profile_scope(adapter, event.source):
-        return await asyncio.to_thread(
-            apply_spoken_display_text_hook, text_content, surface=surface, **_hook_identity(adapter, session_key))
+    display = text_content
+    surface = "auto_tts" if tts_paths else "voice_reply" if getattr(event, "_voice_reply_sent", False) else ""
+    if surface:
+        async with _profile_scope(adapter, event.source):
+            display = await asyncio.to_thread(
+                apply_spoken_display_text_hook, text_content, surface=surface, **_hook_identity(adapter, session_key))
+    return SpokenReplyText(text_content, display, len(tts_paths), record_delivery)
 
 
 async def play_spoken_reply(adapter, event, session_key: str, text_content: str, tts_paths: list[str],
                             metadata: dict, record_delivery: Callable) -> tuple[str, bool]:
     """Play the auto-TTS files (each removed afterwards) -> ``(chat text to send, caption_delivered)``.
-    ``caption_delivered`` is True when the text rode along as the first file's Telegram caption."""
-    text_content = await display_text_after_speech(adapter, event, session_key, text_content, bool(tts_paths))
+    ``caption_delivered`` is True when the text rode along as the first file's Telegram caption. The
+    chat text is the original reply unless every file reached the chat."""
+    reply = await reply_text_after_speech(adapter, event, session_key, text_content, tts_paths, record_delivery)
     caption_delivered = False
     for index, path in enumerate(tts_paths):
         try:
             caption_delivered |= await adapter._play_tts_file(
-                event, text_content, path, index == 0, metadata, record_delivery)
+                event, reply.display, path, index == 0, metadata, reply.record_delivery)
         finally:
             with contextlib.suppress(OSError):
                 os.remove(path)
-    return text_content, caption_delivered
+    return reply.after_delivery(), caption_delivered

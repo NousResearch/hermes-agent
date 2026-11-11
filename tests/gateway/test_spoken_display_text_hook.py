@@ -2,7 +2,8 @@
 
 The speech keeps its delivery cues while the chat bubble / Telegram caption gets the display
 text. Fires only when the gateway actually spoke the reply (auto-TTS audio, or the runner's voice
-reply); a plain text turn is never touched. The plugin dispatch is faked at
+reply); a plain text turn is never touched. When the audio did not reach the chat the original
+text is sent, whatever the plugin answered. The plugin dispatch is faked at
 ``hermes_cli.plugins``; the TTS tool is a fake that writes a real file.
 """
 
@@ -45,15 +46,17 @@ def _strip_cue(kwargs):
     return kwargs["text"].replace("[sighs] ", "")
 
 
-def _fake_tts_tool(monkeypatch):
+def _fake_tts_tool(monkeypatch, files=1):
     spoken = []
 
     def _tts(*, text, output_path, **_kwargs):
         spoken.append(text)
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, "wb") as fh:
-            fh.write(b"\x00" * 32)
-        return json.dumps({"success": True, "file_path": output_path})
+        paths = [output_path, *(f"{output_path}.part{n}" for n in range(1, files))]
+        for path in paths:
+            with open(path, "wb") as fh:
+                fh.write(b"\x00" * 32)
+        return json.dumps({"success": True, "file_path": output_path, "file_paths": paths})
 
     monkeypatch.setattr("tools.tts_tool.text_to_speech_tool", _tts)
     return spoken
@@ -87,8 +90,11 @@ class _Adapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
-async def _run_turn(platform, message_type, handler):
+async def _run_turn(platform, message_type, handler, *, audio_delivered=None):
+    """Run one turn; *audio_delivered* is the success of each ``play_tts`` call (default: all)."""
     adapter = _Adapter(platform)
+    if audio_delivered is not None:
+        adapter.play_tts.side_effect = [SendResult(success=ok) for ok in audio_delivered]
 
     async def _hold_typing(*_args, **_kwargs):
         await asyncio.Event().wait()
@@ -145,6 +151,32 @@ async def test_empty_display_text_sends_the_voice_note_alone(monkeypatch):
     assert adapter.sent == []
 
 
+@pytest.mark.parametrize("platform", [Platform.DISCORD, Platform.TELEGRAM])
+@pytest.mark.parametrize("display", [lambda kw: "", _strip_cue], ids=["hidden", "cue-stripped"])
+@pytest.mark.asyncio
+async def test_undelivered_audio_sends_the_original_text(monkeypatch, platform, display):
+    """A plugin that hides or rewrites the text must never cost the user both audio and text."""
+    _fake_tts_tool(monkeypatch)
+    _fake_hooks(monkeypatch, display)
+
+    adapter = await _run_turn(platform, MessageType.VOICE, _reply(CUED), audio_delivered=[False])
+
+    adapter.play_tts.assert_awaited_once()
+    assert adapter.sent == [CUED]
+
+
+@pytest.mark.asyncio
+async def test_partly_delivered_audio_sends_the_original_text(monkeypatch):
+    _fake_tts_tool(monkeypatch, files=2)
+    _fake_hooks(monkeypatch, lambda kw: "")
+
+    adapter = await _run_turn(
+        Platform.DISCORD, MessageType.VOICE, _reply(CUED), audio_delivered=[True, False])
+
+    assert adapter.play_tts.await_count == 2
+    assert adapter.sent == [CUED]
+
+
 @pytest.mark.asyncio
 async def test_runner_voice_reply_turn_sends_the_display_text(monkeypatch):
     calls = _fake_hooks(monkeypatch, _strip_cue)
@@ -184,7 +216,8 @@ async def test_runner_marks_the_event_only_after_delivering_audio(monkeypatch, t
     monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
     runner = object.__new__(GatewayRunner)
     runner.adapters = {Platform.TELEGRAM: SimpleNamespace(
-        send_voice=AsyncMock(), is_in_voice_channel=lambda *_a, **_k: False)}
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="v-1")),
+        is_in_voice_channel=lambda *_a, **_k: False)}
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm")
     spoken = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source, message_id="m1")
     silent = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source, message_id="m2")
@@ -194,3 +227,35 @@ async def test_runner_marks_the_event_only_after_delivering_audio(monkeypatch, t
 
     assert getattr(spoken, "_voice_reply_sent", False) is True
     assert getattr(silent, "_voice_reply_sent", False) is False
+
+
+_NOT_IN_VOICE_CHANNEL = {"is_in_voice_channel": lambda *_a, **_k: False}
+_UNDELIVERED_VOICE_REPLIES = {
+    "adapter-cannot-send-voice": lambda: (SimpleNamespace(**_NOT_IN_VOICE_CHANNEL), None),
+    "send-voice-failed": lambda: (SimpleNamespace(
+        send_voice=AsyncMock(return_value=SendResult(success=False, error="upload failed")),
+        **_NOT_IN_VOICE_CHANNEL), None),
+    "voice-channel-playback-failed": lambda: (SimpleNamespace(
+        play_in_voice_channel=AsyncMock(return_value=False),
+        is_in_voice_channel=lambda *_a, **_k: True), SimpleNamespace(guild_id=7, guild=None)),
+}
+
+
+@pytest.mark.parametrize("undelivered", _UNDELIVERED_VOICE_REPLIES.values(), ids=_UNDELIVERED_VOICE_REPLIES)
+@pytest.mark.asyncio
+async def test_runner_does_not_mark_an_undelivered_voice_reply(monkeypatch, tmp_path, undelivered):
+    """No mark, no display hook: the adapter then sends the reply text unchanged."""
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    spoken = _fake_tts_tool(monkeypatch)
+    monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: False)
+    adapter, raw_message = undelivered()
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm")
+    event = MessageEvent(text="hi", message_type=MessageType.TEXT, source=source, message_id="m1",
+                         raw_message=raw_message)
+
+    await runner._send_voice_reply(event, CUED)
+
+    assert spoken == [CUED]
+    assert getattr(event, "_voice_reply_sent", False) is False

@@ -186,22 +186,31 @@ class TestSleepClock:
         assert awake_seconds() >= first
 
     def test_monitor_moves_stall_clock_past_sleep(self):
+        from agent import chat_completion_stream_monitor as monitor
         from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 
-        mon = StreamingWaitMonitor()
-        mon.agent = MagicMock()
-        mon.last_chunk_time = {"t": 100.0}
-        mon._mon = SimpleNamespace(last_heartbeat=100.0)
-        mon._skip_sleep(900.0)
-        assert mon.last_chunk_time["t"] == 1000.0
-        assert mon._mon.last_heartbeat == 1000.0
-        mon._skip_sleep(0.0)
-        assert mon.last_chunk_time["t"] == 1000.0
-        # A chunk that landed during the reading is not pushed into the future.
-        now = time.time()
-        mon.last_chunk_time["t"] = now - 1.0
-        mon._skip_sleep(900.0)
-        assert mon.last_chunk_time["t"] <= time.time()
+        # Pin the monotonic clock: the stall baselines and the clamp it applies are both
+        # monotonic, so the exact values are only reproducible against a known reading.
+        # (Unpinned, `min(1000, monotonic)` depends on host uptime — a fresh runner that
+        # booted under 1000s ago would clamp the 1000.0 away.)
+        mono = [100_000.0]
+        with patch.object(monitor.time, "monotonic", lambda: mono[0]):
+            mon = StreamingWaitMonitor()
+            mon.agent = MagicMock()
+            mon.last_chunk_time = {"t": 100.0}
+            mon._mon = SimpleNamespace(last_heartbeat=100.0)
+            mon._skip_sleep(900.0)
+            assert mon.last_chunk_time["t"] == 1000.0
+            assert mon._mon.last_heartbeat == 1000.0
+            mon._skip_sleep(0.0)
+            assert mon.last_chunk_time["t"] == 1000.0
+            # A chunk that landed during the reading is not pushed into the future. Both
+            # ends of this clamp are monotonic; a wall-clock `now` here would compare two
+            # epochs and never engage the clamp at all.
+            mon.last_chunk_time["t"] = mono[0] - 1.0
+            mon._skip_sleep(900.0)
+            assert mon.last_chunk_time["t"] == mono[0]
+            assert mon.last_chunk_time["t"] <= monitor.time.monotonic()
 
 
 class TestPromptProgressNotice:

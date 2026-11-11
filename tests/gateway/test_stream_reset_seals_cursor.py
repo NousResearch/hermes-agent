@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from tests.waiting import async_wait_until
 
 CURSOR = " ▉"
 
@@ -22,10 +23,7 @@ async def _stream_then_reset(text: str, cursor: str = CURSOR):
         edit_interval=0.01, buffer_threshold=1, cursor=cursor), run_still_current=lambda: current["ok"])
     task = asyncio.create_task(consumer.run())
     consumer.on_delta(text)
-    for _ in range(200):
-        if adapter.send.await_count:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(lambda: adapter.send.await_count, what="first preview sent")
     assert adapter.send.await_count == 1
     current["ok"] = False  # /stop or /new bumped the run generation
     consumer.on_delta(" stale tail")

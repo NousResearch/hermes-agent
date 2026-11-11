@@ -4,7 +4,7 @@ Delegate Tool -- Subagent Architecture
 
 Spawns child AIAgent instances with a fresh conversation, their own task_id
 (terminal session, file-ops cache), the parent's toolsets minus child-blocked
-tools, and a focused system prompt built from goal + context. Single-task and
+tools, and a focused system prompt (goal and context are the first user turn). Single-task and
 batch (parallel) modes; top-level model calls run in the background while
 orchestrator children wait for their own workers. The parent only ever sees
 the delegation call and the summary result, never the child's intermediate
@@ -255,7 +255,7 @@ def _build_child_agent(
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
     child_prompt = _build_child_system_prompt(
-        goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
+        workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -338,8 +338,10 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     # Plugins see one conversation per delegation tree.
-    from agent.prompt_cache_scope import conversation_id
+    from agent.prompt_cache_scope import conversation_id, sibling_cache_scope
     child._inherited_conversation_id = conversation_id(parent_agent)
+    child._delegate_context = context  # rides the first user turn, not the system prompt
+    child._inherited_cache_scope = sibling_cache_scope(parent_agent, child)
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent

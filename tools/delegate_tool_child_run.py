@@ -934,7 +934,9 @@ class _ChildRun:
         worker_thread_holder: dict[str, Optional[threading.Thread]] = {"t": None}
         # Resolved after seed_workspace so a multimodal goal's text part carries the worktree note too.
         _images = list(getattr(child, "_delegate_images", None) or [])
-        user_message: Any = _build_child_goal_message(self.goal, _images, child) if _images else self.goal
+        from tools.delegate_tool_progress import child_task_message
+        task_text = child_task_message(self.goal, getattr(child, "_delegate_context", None))
+        user_message: Any = _build_child_goal_message(task_text, _images, child) if _images else task_text
 
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()

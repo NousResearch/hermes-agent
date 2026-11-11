@@ -16,11 +16,12 @@ method = _registry.method
 
 
 def _relay_root() -> Path:
-    """Install root shared by every profile (relay state is install-wide). Same formula as the
-    writers (``tools/bot_relay``, ``tools/bot_mode_dm``): both ends of the mailbox must agree for
-    every HERMES_HOME, including non-``profiles/`` subdirs of ``~/.hermes``."""
-    from tools.bot_mode_probe import _default_home, _hermes_root
-    return _hermes_root(Path(_default_home()))
+    """Install root shared by every profile.
+
+    Formula: ``tools.bot_relay.install_relay_root``.
+    """
+    from tools.bot_relay import install_relay_root
+    return install_relay_root()
 
 
 # Desktop deadline mirror; no retry runs here. The owner gateway retries a transiently failed

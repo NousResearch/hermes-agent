@@ -1,0 +1,29 @@
+name: spoonmaster
+title: Spoonmaster
+repo: https://github.com/gueysito/spoonmaster
+sha: dfdc7d7ca36ea4519d8e34e05e6c6740a5662e57
+description: Compare restaurants using local recommendations, venue facts, and optional private tastes.
+maintainer: gueysito
+tier: community
+category: tools
+requires_hermes: ">=0.21.5"
+version: "0.1.0"
+known_issues:
+  - Research time depends on the host model and sources. A long conversation ended before presenting one result.
+capabilities:
+  provides_tools:
+    - spoon_dine
+    - spoon_research
+    - spoon_present
+    - spoon_onboard
+    - spoon_ledger
+    - spoon_profile
+    - spoon_feedback
+    - spoon_companions
+  provides_hooks:
+    - on_session_reset
+    - on_session_finalize
+    - pre_llm_call
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

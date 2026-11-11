@@ -6,6 +6,55 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
+
+# Suffixes that mark a variable as a credential rather than ordinary configuration.
+_CREDENTIAL_SUFFIXES = ("_API_KEY", "_KEY", "_SECRET", "_TOKEN")
+
+
+def _inherited_credential_names() -> list[str] | None:
+    """Names — never values — of credential env vars this CLI holds and verify children inherit.
+
+    ``run_verify`` spawns phases with no ``env=``, so a child gets the CLI's whole
+    ``os.environ``: the .env keys the launcher loaded plus whatever an external secret
+    source supplied. That matters when a test behaves differently under ``hermes verify``
+    than in a bare shell, so the JSON says which credentials were in play.
+
+    ``None`` means the disclosure could not be assembled; the caller then leaves the verify
+    result exactly as it would have been without this feature.
+    """
+    try:
+        from hermes_cli.env_loader import launch_dotenv_keys, secret_source_names
+
+        candidates: set[str] = set(launch_dotenv_keys())
+        try:
+            candidates.update(secret_source_names())
+        except Exception:
+            pass
+        names = [
+            name for name in candidates
+            if name and name.upper().endswith(_CREDENTIAL_SUFFIXES) and _present_in_child_env(name)
+        ]
+        return sorted(names)
+    except Exception:
+        return None
+
+
+def _present_in_child_env(name: str) -> bool:
+    """Whether *name* is actually in ``os.environ`` now — a name that was loaded and later
+    removed is not inherited by a child, so it must not be disclosed as if it were."""
+    try:
+        return name in os.environ or name.upper() in os.environ
+    except Exception:
+        return False
+
+
+def _child_env_block() -> dict[str, Any] | None:
+    """The ``childEnv`` JSON block: injected credential count and sorted names, value-free."""
+    names = _inherited_credential_names()
+    if names is None:
+        return None
+    return {"credentialCount": len(names), "credentialNames": names, "valuesIncluded": False}
 
 
 def run_verify_command(args) -> int:
@@ -51,13 +100,17 @@ def run_verify_command(args) -> int:
 
     _record_evidence(root, recipe, result, partial=bool(phases or args.skip_start))
 
+    child_env = _child_env_block()
+
     if args.json:
         payload = result.to_dict()
         payload["source"] = source
+        if child_env is not None:
+            payload["childEnv"] = child_env
         print(json.dumps(payload))
         return 0 if result.ok else 1
 
-    _print_human_report(recipe, source, result)
+    _print_human_report(recipe, source, result, child_env)
     return 0 if result.ok else 1
 
 
@@ -109,7 +162,7 @@ def _readiness_status(r) -> str:
     return f"ready (HTTP {r.status_code})" if r.ready else f"not ready ({r.error or 'timeout'})"
 
 
-def _print_human_report(recipe, source, result) -> None:
+def _print_human_report(recipe, source, result, child_env: dict | None = None) -> None:
     print(f"Recipe: {recipe.name} ({recipe.kind}) — source: {source}")
     print()
     if result.phases:
@@ -130,6 +183,9 @@ def _print_human_report(recipe, source, result) -> None:
     failed = [p for p in result.phases if not p.ok]
     print()
     print(f"Result: {'OK' if result.ok else 'FAILED'}")
+    if child_env is not None:
+        print(f"Credentials inherited by verify children: {child_env['credentialCount']} "
+              "(names available with --json)")
     for p in failed:
         print(f"\n--- output tail: {p.phase} ({p.command}) ---")
         print(p.output_tail.rstrip())

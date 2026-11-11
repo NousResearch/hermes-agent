@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -40,6 +41,8 @@ class PhaseResult:
     duration: float
     output_tail: str
     timed_out: bool = False
+    cwd: str = ""
+    output_log: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -50,6 +53,7 @@ class PhaseResult:
             "phase": self.phase, "command": self.command, "exitCode": self.exit_code,
             "duration": round(self.duration, 3), "ok": self.ok, "timedOut": self.timed_out,
             "outputTail": self.output_tail,
+            "cwd": self.cwd, "outputLog": self.output_log,
         }
 
 
@@ -91,6 +95,30 @@ def _tail(text: str, limit: int = _TAIL_CHARS) -> str:
     return text[-limit:] if len(text) > limit else text
 
 
+def _write_output_log(phase: str, output: str) -> str | None:
+    """Write one phase's FULL output under ``<hermes home>/logs/verify``.
+
+    The inline ``outputTail`` is a 2000-char excerpt, which is not enough to see a test
+    runner's banner or a credential-dependent failure. This keeps the whole thing on disk
+    so a later question can be answered from the verify JSON alone.
+
+    Fail-silent: an unwritable home must never change the verify result, so any problem
+    leaves ``output_log`` as ``None``. The file is exactly the phase output, never padded.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        directory = get_hermes_home() / "logs" / "verify"
+        directory.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+        safe_phase = "".join(c if c.isalnum() or c in "-_" else "_" for c in phase) or "phase"
+        path = directory / f"{stamp}-{safe_phase}.log"
+        path.write_text(output, encoding="utf-8", errors="replace")
+        return str(path)
+    except Exception:
+        return None
+
+
 def _run_phase_command(
     phase: str, command: str, root: Path, timeout: float,
     on_output: Callable[[str], None] | None = None,
@@ -106,7 +134,10 @@ def _run_phase_command(
     duration = time.monotonic() - started
     if on_output and output:
         on_output(output)
-    return PhaseResult(phase, command, exit_code, duration, _tail(output), timed_out)
+    return PhaseResult(
+        phase, command, exit_code, duration, _tail(output), timed_out,
+        cwd=str(root), output_log=_write_output_log(phase, output),
+    )
 
 
 def _poll_readiness(url: str, timeout: float, interval: float = 1.0) -> tuple[bool, int | None, str | None]:
@@ -247,6 +278,7 @@ def run_verify(
                     "state they carry. If you intend to rebuild this live deployment, run "
                     "`docker compose build`/`up` yourself."
                 ),
+                cwd=str(root),
             ))
             return result
 

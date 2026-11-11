@@ -4,8 +4,10 @@ import http.server
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -327,3 +329,47 @@ class TestTerminateProcessGroupGuard:
         finally:
             if proc.poll() is None:
                 proc.kill()
+
+
+class TestPhaseDiagnostics:
+    """The verify JSON must answer, by itself, where a phase ran and what it printed."""
+
+    def test_phase_dict_records_cwd(self, tmp_path):
+        result = run_verify(tmp_path, Recipe(name="x", test=["echo ok"]), skip_start=True)
+
+        payload = result.to_dict()
+        assert Path(payload["phases"][0]["cwd"]) == tmp_path
+
+    def test_full_output_is_written_to_a_log_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        (tmp_path / "emit.py").write_text("print('z' * 5000)\n", encoding="utf-8")
+        recipe = Recipe(name="x", test=[f'"{sys.executable}" emit.py'])
+
+        result = run_verify(tmp_path, recipe, skip_start=True)
+
+        phase = result.phases[0]
+        assert phase.ok, phase.output_tail
+        log_path = Path(phase.output_log)
+        assert log_path.is_file()
+        assert log_path.parent == tmp_path / "home" / "logs" / "verify"
+        body = log_path.read_text(encoding="utf-8")
+        # Exactly the phase output: not truncated like the last-2000-char tail, not padded either.
+        assert body.count("z") == 5000
+        assert len(body) <= 5002
+        assert body != phase.output_tail
+        assert result.to_dict()["phases"][0]["outputLog"] == str(log_path)
+
+    def test_log_write_failure_leaves_the_result_unchanged(self, tmp_path, monkeypatch):
+        import hermes_constants
+
+        def no_home():
+            raise OSError("home unavailable")
+
+        monkeypatch.setattr(hermes_constants, "get_hermes_home", no_home)
+
+        result = run_verify(tmp_path, Recipe(name="x", test=["echo ok"]), skip_start=True)
+
+        assert result.ok
+        assert result.phases[0].output_log is None
+        assert result.to_dict()["phases"][0]["outputLog"] is None
+

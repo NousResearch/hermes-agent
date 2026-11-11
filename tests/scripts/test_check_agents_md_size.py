@@ -41,3 +41,15 @@ def test_budget_is_per_chain_from_the_root_down(tmp_path):
     assert "lib/" not in nested.stdout and "untracked" not in nested.stdout
     root = _check(_repo(tmp_path / "root", {"AGENTS.md": ROOT_CAP + 1}))
     assert root.returncode == 1 and f"AGENTS.md: {ROOT_CAP + 1} chars > {ROOT_CAP} cap" in root.stdout
+
+
+def test_a_chain_at_the_cap_loads_whole_on_a_128k_model(tmp_path):
+    """The cap exists so the loader never truncates: a three-file chain at CHAIN_MAX_CHARS, with the
+    ``## <label>`` header the loader puts on each file, still fits its 128k budget."""
+    from agent.prompt_builder import _load_agents_md
+
+    area = "hermes_agent/gateway/platforms"
+    repo = _repo(tmp_path, {"AGENTS.md": ROOT_CAP, "hermes_agent/gateway/AGENTS.md": CHAIN_CAP - ROOT_CAP - 8_000,
+                            f"{area}/AGENTS.md": 8_000})
+    assert _check(repo).returncode == 0
+    assert "[...truncated" not in _load_agents_md(repo / area, context_length=128_000)

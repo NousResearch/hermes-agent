@@ -227,3 +227,20 @@ def test_public_api_docs_page_is_generated_from_the_data_file():
     spec.loader.exec_module(gen)
 
     assert gen.check() == 0, "website/docs/developer-guide/plugins/public-api.md is stale"
+
+
+def test_a_published_module_moved_under_hermes_agent_is_public_in_every_spelling(tmp_path, monkeypatch):
+    """Once ``hermes_constants`` moves, ``from hermes_agent import hermes_constants`` names the same
+    published module as ``import hermes_constants`` and must not warn."""
+    from hermes_agent.compat.paths import PathMoves
+    from hermes_cli import plugin_validate_private_imports as private_imports
+
+    monkeypatch.setattr(private_imports, "original_module",
+                        PathMoves({"hermes_constants": "hermes_agent.hermes_constants"}).original_module)
+    plugin = _plugin(tmp_path / "moved", {"uses_moved.py": (
+        "from hermes_agent import hermes_constants\n"
+        "from hermes_agent.hermes_constants import get_hermes_home\n"
+        "import hermes_agent.hermes_constants\n"
+    )})
+
+    assert _private_warnings(validate_plugin_dir(plugin)) == []

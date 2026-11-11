@@ -3,15 +3,20 @@
 Contract from issue #152238: no plugin leaves the text unchanged; the first ``str`` result wins,
 empty string included ("speak nothing"); other results are ignored; a failing plugin falls back
 to the unchanged text. Plugins load through real discovery from a temp ``HERMES_HOME``.
+Overlapping calls with no session id (desktop read-aloud) each reach the plugin.
 """
 
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
+
+import pytest
 
 import hermes_cli.plugins as plugins_mod
 import hermes_yaml as yaml
+from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from tools.tts_spoken_text_hook import apply_spoken_text_hook
 
 
@@ -95,3 +100,39 @@ def test_text_the_normalizer_emptied_never_reaches_a_plugin():
         "    ctx.register_hook('transform_spoken_text', lambda **kw: 'revived')\n")
 
     assert _speak("") == ""
+
+
+@pytest.mark.parametrize("session_id, second_spoken", [
+    ("", "[cue] second"),   # no session id (desktop read-aloud): every call is its own call
+    ("sess-1", "second"),   # one session's speech is one sequence: the overlapping call is skipped
+])
+def test_overlapping_calls_are_told_apart_when_there_is_no_session_id(monkeypatch, session_id, second_spoken):
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr(plugins_mod, "_plugin_manager", manager)
+    monkeypatch.setattr(plugins_mod, "_plugin_managers_by_home", {})
+    entered, release, spoken = threading.Event(), threading.Event(), {}
+
+    def cue(text, **_kw):
+        if text == "first":
+            entered.set()
+            release.wait(10)
+        return f"[cue] {text}"
+
+    PluginContext(PluginManifest(name="cue-probe", source="user"), manager).register_hook(
+        "transform_spoken_text", cue)
+
+    def _read_aloud(text):
+        spoken[text] = apply_spoken_text_hook(
+            text, surface="read_aloud", platform="desktop", session_id=session_id)
+
+    first = threading.Thread(target=_read_aloud, args=("first",))
+    first.start()
+    assert entered.wait(10)
+    try:
+        _read_aloud("second")
+    finally:
+        release.set()
+        first.join(10)
+
+    assert spoken == {"first": "[cue] first", "second": second_spoken}

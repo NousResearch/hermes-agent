@@ -237,8 +237,15 @@ class _StreamingAdapter:
         return None
 
 
-async def _stream_reply(monkeypatch, deltas):
-    streamer = _Streamer()
+class _SilentStreamer(_Streamer):
+    """A provider that answers every clause with no audio."""
+
+    def stream(self, text):
+        self.clauses.append(text)
+        yield from ()
+
+
+async def _stream_consumer(monkeypatch, deltas, streamer):
     monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: streamer)
     consumer = StreamingTTSConsumer(
         _StreamingAdapter(), "chat-1", {}, asyncio.get_running_loop(), session_id="sess-stream")
@@ -247,6 +254,12 @@ async def _stream_reply(monkeypatch, deltas):
         consumer.on_delta(delta)
     consumer.finish()
     await consumer.wait_complete(timeout=5)
+    return consumer
+
+
+async def _stream_reply(monkeypatch, deltas):
+    streamer = _Streamer()
+    await _stream_consumer(monkeypatch, deltas, streamer)
     return streamer.clauses
 
 
@@ -270,3 +283,32 @@ async def test_streaming_consumer_skips_a_clause_replaced_with_empty(monkeypatch
         monkeypatch, ["The first sentence is here. ", "The second sentence is here. "])
 
     assert clauses == ["The second sentence is here."]
+
+
+_TWO_SENTENCES = ["The first sentence is here. ", "The second sentence is here. "]
+
+
+@pytest.mark.asyncio
+async def test_a_reply_the_plugin_silenced_entirely_is_not_spoken_again_as_a_whole(monkeypatch):
+    """Silence the plugin chose is the reply's speech: no whole-reply fallback, no second call."""
+    calls = _fake_spoken_hook(monkeypatch, lambda kw: "")
+    streamer = _Streamer()
+
+    consumer = await _stream_consumer(monkeypatch, _TWO_SENTENCES, streamer)
+
+    assert streamer.clauses == []
+    assert [c["index"] for c in calls] == [0, 1]
+    assert consumer.suppress_whole_file is True
+    assert consumer.completed is False
+
+
+@pytest.mark.parametrize("reply", [lambda kw: None, lambda kw: "" if kw["index"] == 0 else None],
+                         ids=["nothing-silenced", "one-sentence-silenced"])
+@pytest.mark.asyncio
+async def test_a_stream_that_produced_no_audio_still_falls_back_to_the_whole_reply(monkeypatch, reply):
+    """Only silence the plugin asked for counts as handled; a provider that gave no audio does not."""
+    _fake_spoken_hook(monkeypatch, reply)
+
+    consumer = await _stream_consumer(monkeypatch, _TWO_SENTENCES, _SilentStreamer())
+
+    assert consumer.suppress_whole_file is False

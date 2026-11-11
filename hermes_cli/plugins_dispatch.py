@@ -16,6 +16,7 @@ import re
 import threading
 import time
 import types
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
@@ -59,6 +60,10 @@ _HOOK_CALL_IDENTITY_FIELDS: dict[str, tuple[str, ...]] = {
     "pre_command": ("session_key",), "post_compaction": ("session_id",), "on_session_open": ("session_id",),
     "transform_spoken_text": ("session_id",), "transform_spoken_display_text": ("session_id",),
 }
+# Hooks whose calls carry no identity on some paths (desktop read-aloud has no session id). Each
+# such call is its own call: sharing one gate key would skip the second of two overlapping
+# requests as "still running" and speak its text unchanged.
+_HOOK_PER_CALL_IDENTITY_HOOKS: set[str] = {"transform_spoken_text", "transform_spoken_display_text"}
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).
 _HOOK_TIMEOUT_FAIL_CLOSED_HOOKS: set[str] = {"pre_tool_call"}
@@ -196,13 +201,14 @@ def _hook_call_identity(kwargs: dict[str, Any], hook_name: str = "") -> Optional
     gate key: they are different work, and treating the second as a duplicate drops the
     hook as if a callback had timed out (upstream #98382). The identity is already in the
     payload; nothing new is plumbed. Deliberately not ``api_request_id`` — one API request
-    carries many tool calls, which would re-collapse the keys.
+    carries many tool calls, which would re-collapse the keys. Hooks in
+    ``_HOOK_PER_CALL_IDENTITY_HOOKS`` get a fresh identity instead of ``None``.
     """
     for field in _HOOK_CALL_IDENTITY_FIELDS.get(hook_name, ("tool_call_id", "turn_id")):
         value = kwargs.get(field)
         if isinstance(value, str) and value:
             return value
-    return None
+    return uuid.uuid4().hex if hook_name in _HOOK_PER_CALL_IDENTITY_HOOKS else None
 
 
 def _hook_uses_callback_timeout(hook_name: str, timeout: float) -> bool:

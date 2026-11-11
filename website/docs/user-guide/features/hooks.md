@@ -1856,6 +1856,8 @@ Things to know:
 - On whole-reply paths, and per sentence for providers without a streaming API, the result goes through `text_to_speech_tool`, which normalizes it again: bracketed `[tags]` survive, but markdown and SSML-style `<...>` markup do not.
 - The model's own `text_to_speech` tool calls do not fire this hook; adjust those with `pre_tool_call`.
 - The desktop app's client-direct synthesis (the app calling the provider with the profile's own key) never reaches Hermes, so the hook cannot fire there.
+- Calls for one session run one at a time: while a callback is still running for a session, that session's next call is skipped and speaks the unchanged text. Calls without a session id (`read_aloud`) are each their own call, so overlapping read-aloud requests all reach the plugin.
+- On the gateway's streaming audio, a reply whose every sentence was answered with `""` counts as spoken. Hermes does not fall back to speaking the whole reply, so the plugin gets no second call on `auto_tts` / `voice_reply` for it.
 
 To keep speech-only markup out of the chat bubble and the voice-note caption, pair it with `transform_spoken_display_text`.
 
@@ -1863,11 +1865,11 @@ To keep speech-only markup out of the chat bubble and the voice-note caption, pa
 
 ### `transform_spoken_display_text`
 
-The display-only twin of `transform_spoken_text`. Fires on the gateway when it sends the chat text (and, on Telegram, the voice-note caption) for a reply it also spoke: `surface="auto_tts"` after auto-TTS audio, `surface="voice_reply"` after the voice reply to a text message. It changes only the displayed text; what was spoken is untouched. It fires only when audio was actually delivered.
+The display-only twin of `transform_spoken_text`. Fires on the gateway when it sends the chat text (and, on Telegram, the voice-note caption) for a reply it also spoke: `surface="auto_tts"` after auto-TTS audio, `surface="voice_reply"` after the voice reply to a text message. It changes only the displayed text; what was spoken is untouched. It never fires for a reply that was not spoken, and its result is used only when the audio reached the chat: if the voice note or playback fails, the original text is sent instead.
 
 Same callback signature and parameters as [`transform_spoken_text`](#transform_spoken_text) (`index` is always `0`). The `text` is the reply as it is about to be sent to chat.
 
-**Return value:** The first `str` result replaces the displayed text, including `""`, which sends no text (the voice note goes out alone). `None` and any other value leave it unchanged; a raising or timed-out callback falls back to the unchanged text.
+**Return value:** The first `str` result replaces the displayed text, including `""`, which sends no text (the voice note goes out alone). `None` and any other value leave it unchanged; a raising or timed-out callback falls back to the unchanged text. A reply is never left with neither audio nor text: when the audio was not delivered, the original text goes out whatever the callback returned.
 
 ```python
 import re

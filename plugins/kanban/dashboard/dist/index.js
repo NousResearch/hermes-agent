@@ -3863,7 +3863,7 @@
                 }
               },
               placeholder: tx(t, "addComment", "Add a comment… (Enter to send, Shift+Enter for a new line)"),
-              className: "text-sm flex-1 resize-none",
+              className: "hermes-kanban-comment-input text-sm flex-1",
             }),
             h(Button, {
               onClick: handleComment,

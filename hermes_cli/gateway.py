@@ -4780,10 +4780,10 @@ def _is_service_running() -> bool:
     if supports_systemd_services():
         return _systemd_unit_is_active(False) or _systemd_unit_is_active(True)
     if is_macos() and get_launchd_plist_path().exists():
-        try:
-            return _launchd_service_registered(get_launchd_label(), timeout=10)
-        except subprocess.TimeoutExpired:
-            return False
+        # Registered is not running: KeepAlive/SuccessfulExit=false parks a cleanly exited gateway and
+        # `launchctl list` exits 0 for that job, so ask the supervised-PID probe the status snapshot uses
+        # (#153309). `_launchd_service_registered` stays for the updater-compat surface.
+        return _probe_launchd_service_running()
     # Windows "installed" doesn't mean "running"; like manual runs, a live gateway process decides.
     return len(find_gateway_pids()) > 0
 

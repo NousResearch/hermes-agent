@@ -185,6 +185,38 @@ def test_overlapping_reads_are_whole_across_the_cell_boundary(tmp_path):
     assert_whole(direct_read(60, 20), 60, 79)
 
 
+def test_in_cell_read_then_write_keeps_the_whole_file_write_baseline(tmp_path):
+    """A cell that reads a whole file may overwrite it, exactly as a direct read allows: only the
+    dedup stub and seen-lines state are conversational; the write baseline is not."""
+    from tools.code_execution_rpc import _default_dispatch
+    from tools.file_tools_read_tracking import _read_tracker
+
+    _read_tracker.clear()
+    kernel_path = tmp_path / "kernel.txt"
+    rpc_path = tmp_path / "rpc.txt"
+    for path in (kernel_path, rpc_path):
+        path.write_text("old\n", encoding="utf-8")
+
+    code = (
+        "import json\n"
+        "from hermes_tools import read_file, write_file\n"
+        f"read_file({str(kernel_path)!r})\n"
+        f"print(json.dumps(write_file({str(kernel_path)!r}, 'new\\n')))\n"
+    )
+    executed = json.loads(execute_code(code, task_id="cell-read-write",
+                                       enabled_tools=["read_file", "write_file"]))
+    assert executed["status"] == "success", executed
+    written = json.loads(executed["output"].strip())
+    assert "error" not in written, written
+    assert kernel_path.read_text(encoding="utf-8") == "new\n"
+
+    dispatch = _default_dispatch("rpc-read-write")
+    assert "content" in json.loads(dispatch("read_file", {"path": str(rpc_path)}))
+    written = json.loads(dispatch("write_file", {"path": str(rpc_path), "content": "new\n"}))
+    assert "error" not in written, written
+    assert rpc_path.read_text(encoding="utf-8") == "new\n"
+
+
 def test_search_contract_describes_each_emitted_result_shape():
     from tools.file_operations_common import SearchMatch, SearchResult
 

@@ -566,61 +566,59 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
                             total_lines=None, version_before=None, snapshot=None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
-    Programmatic (in-cell execute_code) reads skip ALL of this: conversational
-    counters, dedup state, and the write_file baseline -- their content never
-    entered the transcript, so recording it here would tell the model's own
-    later reads they "already have" content only a cell saw.
-
-    For a real (non-programmatic) read: per-task tracker under the lock (stub
-    counter, history, consecutive count, mtime for dedup + staleness, lines
-    actually returned, page coverage, and the write_file baseline once the
-    task has seen every line UNREDACTED -- in one page or by paging
-    contiguously through a file too big for one; a redacted page returned a
-    non-round-trippable ``«redacted:…»`` sentinel, so it must not bless an
-    overwrite that would persist the sentinel into a credential file). Then
-    OUTSIDE our lock (no nested locking, and unconditionally, programmatic or
-    not): the cross-agent registry, and the background-review read-mark (a
-    FULL read of a skill file counts like skill_view so a follow-up
-    skill_manage(patch) is accepted).
+    Per-task tracker under the lock (stub counter, history, consecutive count,
+    mtime for dedup + staleness, lines actually returned, page coverage, and the
+    write_file baseline once the task has seen every line UNREDACTED — in one
+    page or by paging contiguously through a file too big for one; a redacted
+    page returned a non-round-trippable ``«redacted:…»`` sentinel, so it must
+    not bless an overwrite that would persist the sentinel into a credential
+    file). A *programmatic* (in-cell execute_code) read skips only the
+    conversational state — stub counters, consecutive count, the dedup entry
+    and seen lines — since its content never entered the transcript; its
+    staleness stamp, coverage and write baseline count like any read. Then
+    OUTSIDE our lock (no nested locking): the cross-agent registry, and the
+    background-review read-mark (a FULL read of a skill file counts like
+    skill_view so a follow-up skill_manage(patch) is accepted).
     """
     count = 0
+    version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
+    stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
     complete = False
-    if not programmatic:
-        version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
-        stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
-        with _read_tracker_lock:
+    with _read_tracker_lock:
+        task_data["read_history"].add((path, offset, limit))
+        if not programmatic:
             task_data["dedup_hits"].pop(dedup_key, None)
             task_data["dedup_hits"].pop((resolved_str, "seen_lines"), None)
             task_data["dedup_generation_reads"].add(dedup_key)
-            task_data["read_history"].add((path, offset, limit))
             count = _bump_consecutive(task_data, ("read", path, offset, limit))
-            try:
-                task_data.setdefault("read_timestamps", {})[resolved_str] = os.path.getmtime(resolved_str)
-                if returned_span:
-                    _record_seen_span(task_data, resolved_str, _file_metadata(resolved_str), returned_span)
-            except OSError:
-                pass
-            baselines = task_data["full_write_baselines"]
-            if stable and version is not None and count < 4:
+        try:
+            task_data.setdefault("read_timestamps", {})[resolved_str] = os.path.getmtime(resolved_str)
+            if returned_span and not programmatic:
+                _record_seen_span(task_data, resolved_str, _file_metadata(resolved_str), returned_span)
+        except OSError:
+            pass
+        baselines = task_data["full_write_baselines"]
+        if stable and version is not None and count < 4:
+            if not programmatic:
                 task_data["dedup"][dedup_key] = version_before
-                # A narrower view does not undo knowledge of these same bytes. Do
-                # not revive a baseline after a partial read of a different version.
-                complete = baselines.get(resolved_str) == version
-                if not complete:
-                    complete = not partial
-                    if partial and end_line is not None:
-                        complete, redacted = _note_read_coverage(
-                            task_data, resolved_str, version, offset, end_line, total_lines, redacted)
-                    complete = complete and not redacted
-                if complete:
-                    baselines[resolved_str] = version
-                    task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
+            # A narrower view does not undo knowledge of these same bytes. Do
+            # not revive a baseline after a partial read of a different version.
+            complete = baselines.get(resolved_str) == version
             if not complete:
-                baselines.pop(resolved_str, None)
-            if not stable or count >= 4:
-                task_data["dedup"].pop(dedup_key, None)
-                task_data["dedup_generation_reads"].discard(dedup_key)
-            _cap_read_tracker_data(task_data)
+                complete = not partial
+                if partial and end_line is not None:
+                    complete, redacted = _note_read_coverage(
+                        task_data, resolved_str, version, offset, end_line, total_lines, redacted)
+                complete = complete and not redacted
+            if complete:
+                baselines[resolved_str] = version
+                task_data.setdefault("blind_patches", {}).pop(resolved_str, None)
+        if not complete:
+            baselines.pop(resolved_str, None)
+        if not stable or count >= 4:
+            task_data["dedup"].pop(dedup_key, None)
+            task_data["dedup_generation_reads"].discard(dedup_key)
+        _cap_read_tracker_data(task_data)
 
     # OUTSIDE our lock (no nested locking): the cross-agent registry and the
     # background-review read mark. A full skill read counts like skill_view so

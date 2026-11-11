@@ -2886,6 +2886,9 @@ export const frOverrides = {
       debugShare: 'Partage de débogage',
       debugShareDesc:
         'Téléverser un rapport expurgé + journaux, obtenir des liens partageables (auto-suppression après 6h)',
+      debugShareConfirm: 'Téléverser le rapport de débogage vers un paste public ?',
+      debugShareConfirmDesc:
+        'Téléverse les infos système + les journaux complets vers un service de paste public. Les secrets sont masqués, mais vos messages récents, la sortie des outils, les chemins et noms de fichiers restent dans les journaux et sont lisibles par toute personne disposant du lien. Les pastes sont supprimés automatiquement après 6 heures ; si paste.rs est injoignable, le service de secours dpaste.com les garde publics 1 jour et ils ne peuvent pas être supprimés plus tôt.',
       debugShareRunning: 'Téléversement du rapport de débogage...',
       debugShareLinks: 'Liens de partage',
       debugShareFailed: 'Échec du partage de débogage',

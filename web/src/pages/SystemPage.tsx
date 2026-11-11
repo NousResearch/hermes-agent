@@ -217,15 +217,17 @@ const MEMORY_STATUS_TONE: Record<
 
 /** "Generate share link" + the consent dialog: the backend refuses an unconfirmed upload, so
  *  nothing leaves the machine until the user confirms what the public paste contains. */
+interface DebugShareButtonProps {
+  sharing: boolean;
+  redact: boolean;
+  onConfirm: () => void;
+}
+
 function DebugShareButton({
   sharing,
   redact,
   onConfirm,
-}: {
-  sharing: boolean;
-  redact: boolean;
-  onConfirm: () => void;
-}) {
+}: DebugShareButtonProps) {
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -250,7 +252,7 @@ function DebugShareButton({
           redact
             ? " Secrets are redacted, but your"
             : " Redaction is OFF: secrets and your"
-        } recent messages, tool output, file paths and names stay in the logs and are readable by anyone with the link. Pastes auto-delete after 6 hours.`}
+        } recent messages, tool output, file paths and names stay in the logs and are readable by anyone with the link. Pastes auto-delete after 6 hours; if paste.rs is unreachable, the dpaste.com fallback keeps them public for 1 day and they cannot be deleted early.`}
         destructive
         confirmLabel="Upload"
         cancelLabel="Cancel"

@@ -1,0 +1,52 @@
+name: hermis
+title: H.E.R.M.I.S
+repo: https://github.com/gabogabucho/H.E.R.M.I.S
+sha: 52da38508922de04c8fefba7981d75b8e131d51f
+description: >-
+  Disclosure: runs a background WebSocket server on 127.0.0.1 (ephemeral port +
+  session token) in a daemon thread; launches a bundled transparent
+  always-on-top Electron overlay as a detached process via npm (first run runs
+  `npm ci`, downloading pinned npm packages including the Electron binary;
+  nothing binary is committed; disable with HERMIS_OVERLAY_AUTOSTART=0); the
+  overlay loads https images and sandboxed artifact scripts from
+  cdnjs/jsdelivr/unpkg only; the overlay connects to the local Hermes gateway
+  (control pipe for a short-lived session ticket under your identity, then the
+  loopback /api/ws) and only listens to voice.status and wake.detected; moves, resizes and focuses real windows via Win32
+  (user32) and launches apps without a shell (Store apps via a read-only
+  powershell Get-StartApps lookup + explorer.exe shell:AppsFolder); copies html/svg blocks from
+  replies to the overlay via post_llm_call while Autopilot is on; the setup
+  checklist reads config.yaml read-only and copies commands to the clipboard on
+  click (never runs them); optional camera gestures (/hermis gestures on) stay
+  off by default, run only during Autopilot Mode, process frames locally by
+  MediaPipe (never rendered, stored or sent; with no surfaces on screen they
+  minimize/switch real windows, never close apps), show a green dot while the camera
+  is on, and download the gesture model once from storage.googleapis.com (pinned
+  version, SHA-256 verified) into the plugin data dir; writes
+  state.json, overlay.json and overlay.log to the plugin data dir; Windows only.
+  Autopilot Mode turns your Windows desktop into an agent OS: Hermes answers by
+  voice, draws floating data surfaces over your real desktop (the agent sends
+  data, not HTML) and arranges your real windows.
+maintainer: gabogabucho
+tier: community
+category: desktop
+requires_hermes: ">=0.22"
+version: "0.1.0"
+platforms:
+- windows
+docs_url: https://github.com/gabogabucho/H.E.R.M.I.S#readme
+readme: true
+capabilities:
+  provides_tools:
+  - autopilot
+  - render_surface
+  - close_surface
+  - list_surfaces
+  - layout_windows
+  - launch_app
+  provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - post_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -334,3 +334,40 @@ def test_third_patch_failure_hint_requires_a_full_reread_before_write_file(tmp_p
     assert "failure #3" in hint
     assert "re-read the file in full, then use write_file to replace it" in hint
     assert "use write_file to replace the entire file" not in hint
+
+
+def test_a_handle_ctime_the_path_disagrees_with_does_not_void_the_version(tmp_path, monkeypatch):
+    """The version tuple comes from the path on both sides of the read (#141504).
+
+    On Windows ``os.fstat`` reports the ``st_ctime_ns`` cached when the handle was
+    opened while ``os.stat`` re-reads it, and the two differ by a microsecond for a
+    file nobody touched. A version built from the handle and compared against the
+    path therefore never matches: ``_file_version`` returns ``None``, no baseline is
+    ever recorded, and every ``write_file`` overwrite of a file that was just read in
+    full is refused as a stale partial view. The skew is simulated here so the
+    contract is pinned on every host, not only on the one that shows it.
+    """
+    from tools import file_tools_read_tracking as tracking
+
+    path = tmp_path / "skewed.txt"
+    path.write_text("original\n")
+    real_fstat = os.fstat
+
+    class _CachedHandleStat:
+        """What a Windows handle reports: every field right, ``st_ctime_ns`` stale."""
+
+        def __init__(self, st):
+            self.st_mode = st.st_mode
+            self.st_dev = st.st_dev
+            self.st_ino = st.st_ino
+            self.st_size = st.st_size
+            self.st_mtime_ns = st.st_mtime_ns
+            self.st_ctime_ns = st.st_ctime_ns - 1_000_000
+
+    monkeypatch.setattr(tracking.os, "fstat", lambda fd: _CachedHandleStat(real_fstat(fd)))
+
+    version = tracking._file_version(str(path))
+
+    assert version is not None
+    assert version[:-1] == tracking._file_metadata(str(path))
+    assert tracking._file_version(str(path)) == version

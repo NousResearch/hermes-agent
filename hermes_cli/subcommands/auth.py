@@ -32,6 +32,10 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         help="openai-codex only: sign in with the browser authorization-code (PKCE) flow on "
              "http://localhost:1455/auth/callback instead of the default device-code flow; falls back "
              "to device code when that port is busy (config: auth.codex_login_flow)")
+    auth_add.add_argument(
+        "--device", action="store_true",
+        help="<plugin>:<id> only: sign in with a code on any device (RFC 8628) instead of the browser "
+             "callback, when the plugin's oauth: entry declares device_authorization_url")
     auth_add.add_argument("--timeout", type=float, help="OAuth/network timeout in seconds")
     auth_add.add_argument(
         "--insecure", action="store_true", help="Disable TLS verification for OAuth login")

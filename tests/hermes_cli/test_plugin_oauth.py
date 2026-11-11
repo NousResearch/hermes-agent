@@ -569,3 +569,159 @@ def test_sign_in_is_refused_where_nobody_can_answer_the_browser(idp, monkeypatch
     with pytest.raises(SystemExit, match="your own terminal"):
         _auth("add")
     assert idp.token_requests == [] and idp.opened == []
+
+
+# ── Device sign-in (RFC 8628, #152050) ─────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def approve_on_wait(idp, monkeypatch):
+    """The person approves while Hermes waits: the first ``authorization_pending`` sleep approves instead."""
+    from hermes_cli import auth_device_flow
+
+    def sleep(_seconds, cancelled):
+        if cancelled is not None and cancelled():
+            raise auth_device_flow.DeviceFlowCancelled()
+        idp.approve_device(idp.device_verdict)
+
+    idp.device_verdict = "approved"
+    monkeypatch.setattr(auth_device_flow, "_cancellable_sleep", sleep)
+    return idp
+
+
+def _device_entry(idp, **overrides):
+    return _entry(idp, device_authorization_url=f"{idp.base}/device", **overrides)
+
+
+def _no_grant() -> bool:
+    return not (_home() / "auth.json").exists() or _grant() is None
+
+
+def _device_add(provider: str = KEY):
+    args = SimpleNamespace(provider=provider, no_browser=False, timeout=None, device=True)
+    return plugin_oauth.handle_auth_action("add", args, provider)
+
+
+def test_device_sign_in_stores_the_same_grant_without_a_browser(approve_on_wait, api, capsys):
+    idp = approve_on_wait
+    plugin = _plugin(oauth=[_device_entry(idp)])
+
+    assert _device_add() is True
+
+    assert idp.opened == []  # no browser, no loopback callback
+    asked = idp.device_requests[-1]
+    assert (asked["client_id"], asked["client_secret"]) == (CLIENT_ID, SECRET) and asked["scope"] == " ".join(SCOPES)
+    exchange = idp.token_requests[-1]
+    assert exchange["grant_type"] == "urn:ietf:params:oauth:grant-type:device_code"
+    grant = _grant()
+    assert grant["refresh_token"] in idp.refresh_tokens and grant["fingerprint"] == plugin_oauth._client(
+        _device_entry(idp)).fingerprint
+    out = capsys.readouterr().out
+    assert "WDJB-MJHT" in out and f"{idp.base}/activate" in out and SECRET not in out
+
+    allowed, _ = api
+    plugin.call("google", f"{allowed.url}/v1/events")  # the device grant serves the plugin like any other
+    assert allowed.seen[-1]["headers"]["Authorization"] == f"Bearer {grant['access_token']}"
+
+
+def test_grants_made_before_the_device_field_stay_valid():
+    entry = {"id": "google", "authorize_url": "https://accounts.example.com/o/auth", "scopes": ["a"],
+             "token_url": "https://oauth.example.com/token", "client_id_env": "VOICE_CLIENT_ID",
+             "hosts": ["api.example.com"]}
+    client = plugin_oauth._client(entry)
+    legacy = {"id": "google", "authorize_url": entry["authorize_url"], "token_url": entry["token_url"],
+              "scopes": ["a"], "client_id_env": "VOICE_CLIENT_ID", "hosts": ["api.example.com"],
+              "client_secret_env": "", "authorize_params": []}
+    import hashlib
+    assert client.fingerprint == hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()
+    with_device = plugin_oauth._client({**entry, "device_authorization_url": "https://oauth.example.com/device"})
+    assert with_device.fingerprint != client.fingerprint  # declaring it later asks for a new sign-in
+
+
+@pytest.mark.parametrize("url, problem", [
+    ("http://oauth.example.com/device", "must use https"),
+    ("https://elsewhere.example.com/device", "must be on the token_url host"),
+    ("https://user:pw@oauth.example.com/device", "without user info"),
+])
+def test_the_device_endpoint_must_be_https_on_the_token_host(url, problem):
+    manifest = {"oauth": [{"id": "google", "authorize_url": "https://accounts.example.com/o/auth",
+                           "token_url": "https://oauth.example.com/token", "scopes": ["a"],
+                           "client_id_env": "VOICE_CLIENT_ID", "hosts": ["api.example.com"],
+                           "device_authorization_url": url}]}
+    clients, problems = plugin_oauth.parse_oauth_clients(manifest)
+    assert clients == [] and any(problem in p for p in problems)
+
+
+@pytest.mark.parametrize("page", ["https://evil.example/activate", "http://127.0.0.1/activate"])
+def test_a_verification_page_outside_the_declared_hosts_stops_the_sign_in(approve_on_wait, page):
+    idp = approve_on_wait
+    idp.verification_uri = page
+    _plugin(oauth=[_device_entry(idp)])
+
+    with pytest.raises(SystemExit, match="outside the plugin's declared hosts"):
+        _device_add()
+    assert idp.token_requests == [] and _no_grant()
+
+
+@pytest.mark.parametrize("host, ok", [
+    ("accounts.example.com", True),     # the authorize host
+    ("api.example.com", True),          # a declared host
+    ("www.example.com", True),          # the sign-in provider's own domain
+    ("example.com.evil.test", False),
+    ("examp1e.com", False),
+    ("10.0.0.1", False),
+])
+def test_the_verification_page_must_belong_to_the_sign_in_provider(host, ok):
+    client = plugin_oauth._client({"id": "google", "authorize_url": "https://accounts.example.com/o/auth",
+                                   "token_url": "https://oauth.example.com/token", "scopes": ["a"],
+                                   "client_id_env": "VOICE_CLIENT_ID", "hosts": ["api.example.com"]})
+    assert plugin_oauth._verification_host_ok(client, host) is ok
+
+
+def test_a_refused_device_sign_in_saves_nothing(approve_on_wait):
+    idp = approve_on_wait
+    idp.device_verdict = "denied"
+    _plugin(oauth=[_device_entry(idp)])
+
+    with pytest.raises(SystemExit, match="refused"):
+        _device_add()
+    assert _no_grant()
+
+
+def test_device_needs_an_entry_that_declares_it(idp):
+    _plugin(oauth=[_entry(idp)])
+    with pytest.raises(SystemExit, match="does not declare a device sign-in"):
+        _device_add()
+    assert idp.device_requests == []
+
+
+def test_device_sign_in_yields_the_code_then_one_outcome_and_a_cancel_saves_nothing(approve_on_wait):
+    idp = approve_on_wait
+    _plugin(oauth=[_device_entry(idp)])
+    client, key = plugin_oauth.device_client("voice")
+    assert key == KEY
+
+    stop = False
+    gen = plugin_oauth.device_sign_in(client, key, cancelled=lambda: stop)
+    code = next(gen)
+    assert isinstance(code, plugin_oauth.DeviceCode) and code.user_code == "WDJB-MJHT"
+    assert code.device_code not in repr(code)  # never in a log line
+    stop = True
+    assert list(gen) == ["cancelled"]
+    assert _no_grant()
+
+    stop = False
+    assert list(plugin_oauth.device_sign_in(client, key))[-1] == "signed_in" and _grant()
+
+
+def test_login_target_names_one_device_capable_entry(idp):
+    second = _device_entry(idp, id="drive")
+    _plugin(oauth=[_device_entry(idp), second])
+    with pytest.raises(LookupError, match="/login voice:google, /login voice:drive"):
+        plugin_oauth.device_client("voice")
+    assert plugin_oauth.device_client("voice:drive")[1] == "voice:drive"
+    with pytest.raises(LookupError, match="No installed plugin"):
+        plugin_oauth.device_client("missing")
+    _plugin("plain", oauth=[_entry(idp)])
+    with pytest.raises(LookupError, match="no sign-in that works with a code"):
+        plugin_oauth.device_client("plain")

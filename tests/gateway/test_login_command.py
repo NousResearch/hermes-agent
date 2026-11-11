@@ -586,3 +586,106 @@ async def test_a_cancelled_attempt_never_claims_the_save(monkeypatch):
     attempt.cancelled = True
     with seen[0]["persist_guard"]() as may_persist:
         assert may_persist is False
+
+
+# ── /login <plugin>: the device-code sign-in of a plugin's oauth: client (#152050) ─────────────────
+
+
+def _plugin_event(target="voice", **source_kwargs):
+    return SimpleNamespace(source=_source(**source_kwargs), get_command_args=lambda: target)
+
+
+def _plugin_client(monkeypatch, states, *, resolve=None):
+    from hermes_cli import plugin_oauth
+
+    client = SimpleNamespace(id="google")
+    seen = {}
+
+    def device_client(target):
+        seen["target"] = target
+        if resolve is not None:
+            raise resolve
+        return client, "voice:google"
+
+    def device_sign_in(got_client, key, *, cancelled=None, may_save=None):
+        seen.update(client=got_client, key=key, cancelled=cancelled, may_save=may_save)
+        yield from states
+
+    monkeypatch.setattr(plugin_oauth, "device_client", device_client)
+    monkeypatch.setattr(plugin_oauth, "device_sign_in", device_sign_in)
+    nous = MagicMock()
+    monkeypatch.setattr(anon_auth, "run_sign_in", nous)
+    return seen, nous
+
+
+@pytest.mark.asyncio
+async def test_login_with_a_plugin_posts_its_link_and_code_then_the_result_to_the_dm(monkeypatch):
+    from hermes_cli import plugin_oauth
+
+    runner = _runner(monkeypatch)
+    code = plugin_oauth.DeviceCode(link="https://idp.example/activate?user_code=WDJB-MJHT", user_code="WDJB-MJHT",
+                                   expires_in=600, interval=5, device_code="secret-device-code")
+    seen, nous = _plugin_client(monkeypatch, [code, "signed_in"])
+    event = _plugin_event("voice")
+
+    started = await runner._handle_login_command(event)
+    await _finish_tasks(runner)
+
+    assert "voice" in started and "google" in started
+    assert seen["target"] == "voice" and seen["key"] == "voice:google" and callable(seen["may_save"])
+    notices = [c.args[1] for c in runner._deliver_platform_notice.await_args_list]
+    assert notices[:2] == [code.link, "WDJB-MJHT"]
+    assert notices[2].startswith(anon_auth.UPGRADE_DO_NOT_SHARE)
+    assert "Signed in to google for plugin 'voice'" in notices[3]
+    assert all("secret-device-code" not in n for n in notices)  # the device code itself is never posted
+    nous.assert_not_called()  # the Nous sign-in is not touched
+    assert runner._login_attempts == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state, expected", [
+    ("oauth_device_code_expired", anon_auth.UPGRADE_TIMED_OUT),
+    ("oauth_authorization_denied", "refused"),
+    ("oauth_device_verification_rejected", "outside the hosts"),
+    ("something_unnamed", anon_auth.UPGRADE_NOT_COMPLETED),
+])
+async def test_a_plugin_sign_in_ends_with_a_value_free_outcome(monkeypatch, state, expected):
+    runner = _runner(monkeypatch)
+    _plugin_client(monkeypatch, [state])
+
+    await runner._handle_login_command(_plugin_event())
+    await _finish_tasks(runner)
+
+    assert expected in runner._deliver_platform_notice.await_args_list[-1].args[1]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_plugin_is_answered_inline_and_starts_nothing(monkeypatch):
+    runner = _runner(monkeypatch)
+    _plugin_client(monkeypatch, [], resolve=LookupError("No installed plugin named 'nope'."))
+
+    assert await runner._handle_login_command(_plugin_event("nope")) == "No installed plugin named 'nope'."
+    assert runner._login_attempts == {}
+    runner._deliver_platform_notice.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_type", ["group", "channel"])
+async def test_a_plugin_sign_in_is_refused_outside_the_paired_dm_before_any_lookup(monkeypatch, chat_type):
+    runner = _runner(monkeypatch)
+    seen, _ = _plugin_client(monkeypatch, ["signed_in"])
+
+    assert await runner._handle_login_command(_plugin_event(chat_type=chat_type)) == anon_auth.LOGIN_DM_ONLY
+    assert "target" not in seen
+
+
+@pytest.mark.asyncio
+async def test_a_plugin_sign_in_waits_for_another_users_sign_in(monkeypatch):
+    runner = _runner(monkeypatch)
+    seen, _ = _plugin_client(monkeypatch, ["signed_in"])
+    _lock, attempts = runner._login_registry()
+    from gateway.slash_commands_login import _SignInAttempt
+    attempts["login"] = _SignInAttempt(attempt_id="x", key=("telegram", "other", "u2"), source=None)
+
+    assert await runner._handle_login_command(_plugin_event()) == anon_auth.LOGIN_BUSY_ELSEWHERE
+    assert "target" not in seen

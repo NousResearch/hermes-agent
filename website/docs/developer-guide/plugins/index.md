@@ -547,6 +547,17 @@ gemini-voice:google` show, refresh and remove the grant. It lives in the active
 profile's `auth.json`; Hermes refreshes it on use once less than two minutes
 remain and never starts a sign-in under the gateway or cron.
 
+For a Hermes on a headless box, an entry can also declare
+`device_authorization_url` (RFC 8628), on the `token_url` host. The user then
+signs in with a code on any device: `hermes auth add gemini-voice:google
+--device` in a terminal, or `/login gemini-voice` in the paired DM (with
+`:<id>` when the plugin declares several such entries). In the DM the gateway,
+never the agent, posts the verification link and the code, polls, and stores
+the same grant; only an operator can start it, as with the Nous `/login`. The
+verification page the IdP returns must be `https`, on a host of the entry or
+in the registered domain of its authorize or token host (`www.google.com` for
+`accounts.google.com`), or the sign-in stops. Adding the field to an existing entry asks for a new sign-in.
+
 The plugin calls the API through the same helper, with the entry's `id` as the
 provider:
 
@@ -626,7 +637,7 @@ this Hermes understands still loads with a warning.
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 | `provides_locales` | list | Language pack declaration: ids (`- pl`) or `{id, endonym, rtl}` mappings whose `locales/<id>[.tui\|.desktop].yaml` the loader registers automatically — see [Ship a language pack](#ship-a-language-pack). |
 | `requires_auth` | list of str | Providers whose sign-in the plugin uses through Hermes (today: `openai-codex`). Required by `credentialed_provider_request`; shown at install and in `hermes plugins show`. See [Use the user's Codex sign-in](#use-the-users-codex-sign-in-core-made-requests). |
-| `oauth` | list of mappings | OAuth clients the plugin uses through Hermes: `id`, `authorize_url`, `token_url`, `scopes`, `client_id_env`, optional `client_secret_env`, `hosts`, optional `authorize_params`. Signed in with `hermes auth add <plugin>:<id>`, used through `credentialed_provider_request`. See [Use your own OAuth client](#use-your-own-oauth-client-google-and-other-apis). |
+| `oauth` | list of mappings | OAuth clients the plugin uses through Hermes: `id`, `authorize_url`, `token_url`, `scopes`, `client_id_env`, optional `client_secret_env`, `hosts`, optional `authorize_params`, optional `device_authorization_url`. Signed in with `hermes auth add <plugin>:<id>` (or `/login <plugin>` with a device endpoint), used through `credentialed_provider_request`. See [Use your own OAuth client](#use-your-own-oauth-client-google-and-other-apis). |
 
 ```yaml
 # plugin.yaml — manifest v2 example

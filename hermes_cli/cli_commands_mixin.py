@@ -1469,6 +1469,11 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         # patch_stdout's StdoutProxy, which mangles Rich's escapes — there ``None`` keeps the
         # panel on the ``_cprint`` path. Only the slash worker (``_app`` is None) swaps the console.
         console = None if getattr(self, "_app", None) else getattr(self, "console", None)
+        target = str(cmd_original or "").strip().split(maxsplit=1)[1:]
+        if target:
+            # ``/login <plugin>`` is the paired-DM sign-in; a terminal has the full command.
+            return _cp(f"  In a terminal, sign a plugin in with `hermes auth add {target[0]}:<id>` "
+                       "(add --device to use a code instead of the browser).")
         _cp(f"  {anon_auth.LOGIN_STARTING}")
         gen = anon_auth.run_sign_in(timeout_seconds=8.0)
         try:

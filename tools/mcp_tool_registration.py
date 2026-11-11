@@ -168,6 +168,10 @@ def _remove_server_scope(key, scope: str) -> None:
     from tools.registry import registry
 
     server_name = _key_name(key)
+    from tools.mcp_skills_manager import get_manager
+    manager = get_manager()
+    manager.mark_disconnected(server_name, scope, "connection adoption removed")
+    manager._instance(server_name, scope).transport = None
     for tool_name in registry.get_tool_names_for_toolset(f"mcp-{server_name}"):
         registry.deregister(tool_name, scope=scope)
     with _core._lock:
@@ -610,6 +614,8 @@ def _register_connected_into_current_scope(servers: dict) -> int:
         with _core._lock:
             _core._server_tool_scopes.setdefault(key, set()).add(scope)
         _record_scope_trust(name, config, scope)
+        from tools.mcp_skills_lifecycle import adopt_transport_catalog
+        adopt_transport_catalog(server, config, scope)
         if registry.get_tool_names_for_toolset(f"mcp-{name}"):
             continue
         candidates = _tool_candidates(name, server._tools, _make_tool_filter(name, config), server.tool_timeout)

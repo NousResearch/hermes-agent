@@ -29,6 +29,7 @@ import re
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
+from itertools import groupby
 from pathlib import Path, PurePosixPath
 
 import libcst as cst
@@ -288,32 +289,36 @@ class _Rewriter(cst.CSTTransformer):
     # Imports and the names they bind.
 
     def leave_Import(self, original: cst.Import, updated: cst.Import):
-        """``import a`` -> ``from hermes_agent import a``; ``import a.b`` -> ``import hermes_agent.a.b``."""
+        """``import a`` -> ``from hermes_agent import a``; ``import a.b`` -> ``import hermes_agent.a.b``.
+
+        A multi-name statement is split in the order of its names, so each module still loads in the same order.
+        """
         if original in self.blocked_imports:
             self._flag(original, IMPORT, _code(original), self.blocked_imports[original])
             return updated
         keep_form = id(original) in self.found.keep_module_form
-        kept, froms = [], []
+        parts: list[cst.ImportAlias | cst.ImportFrom] = []
         for alias in updated.names:
             old = get_full_name_for_node(alias.name)
             new = self.plan.new(old)
             if new is None or self._held(original, old):
-                kept.append(alias)
+                parts.append(alias)
                 continue
             self._count("import")
             bound = alias.asname.name.value if alias.asname else None if "." in old else old
             parent, _, leaf = new.rpartition(".")
             if bound is None:
-                kept.append(alias.with_changes(name=cst.parse_expression(new)))
+                parts.append(alias.with_changes(name=cst.parse_expression(new)))
             elif leaf == bound and parent and not keep_form:
-                froms.append(cst.ImportFrom(module=cst.parse_expression(parent), names=[cst.ImportAlias(cst.Name(leaf))]))
+                parts.append(cst.ImportFrom(module=cst.parse_expression(parent), names=[cst.ImportAlias(cst.Name(leaf))]))
             else:
-                kept.append(alias.with_changes(name=cst.parse_expression(new), asname=cst.AsName(name=cst.Name(bound))))
+                parts.append(alias.with_changes(name=cst.parse_expression(new), asname=cst.AsName(name=cst.Name(bound))))
                 if leaf == bound and parent:
                     self.noqa.add(id(original))
-        if not froms:
-            return updated.with_changes(names=_commas(kept))
-        statements = ([updated.with_changes(names=_commas(kept))] if kept else []) + froms
+        statements = []
+        for is_from, group in groupby(parts, key=lambda part: isinstance(part, cst.ImportFrom)):
+            items = list(group)
+            statements += items if is_from else [updated.with_changes(names=_commas(items))]
         if len(statements) == 1:
             return statements[0]
         self.split.add(id(original))

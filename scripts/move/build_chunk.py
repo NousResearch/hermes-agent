@@ -132,6 +132,24 @@ def commit_trailer(root: Path, ref: str) -> str | None:
     return match.group(1) if match else None
 
 
+def clear_destination(root: Path, target: Path) -> None:
+    """Delete ``target`` when it holds only ``__pycache__`` folders; git mv would nest the moved folder inside it.
+
+    Anything else there is an ignored file git cannot restore, so the move stops and names it instead.
+    """
+    if target.is_dir():
+        for cache in list(target.rglob("__pycache__")):
+            shutil.rmtree(cache, ignore_errors=True)
+        left = sorted(str(p.relative_to(root)) for p in target.rglob("*") if not p.is_dir())
+        if not left:
+            shutil.rmtree(target)
+            return
+    else:
+        left = [str(target.relative_to(root))]
+    raise Failure(f"{target.relative_to(root)} already holds files git does not track; move or delete them first: "
+                  + ", ".join(left[:5]))
+
+
 def move_roots(root: Path, name: str, roots: list[str]) -> str:
     for rel in roots:
         if Path(rel).anchor or ".." in Path(rel).parts:  # a Windows "\outside" has a root but no drive
@@ -142,11 +160,7 @@ def move_roots(root: Path, name: str, roots: list[str]) -> str:
         if git(root, "ls-files", "--", f"hermes_agent/{rel}").strip():
             raise Failure(f"hermes_agent/{rel} is already tracked")
         if target.exists():
-            # Only ignored files (bytecode caches) can be left here; git mv would nest the folder inside it.
-            if target.is_dir():
-                shutil.rmtree(target)
-            else:
-                target.unlink()
+            clear_destination(root, target)
     for rel in roots:
         (root / "hermes_agent" / rel).parent.mkdir(parents=True, exist_ok=True)
         git(root, "mv", rel, f"hermes_agent/{rel}")

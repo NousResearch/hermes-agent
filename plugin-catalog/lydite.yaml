@@ -1,7 +1,7 @@
 name: lydite
 title: Lydite
 repo: https://github.com/aoricloud/lydite
-sha: 5454680daa8e477e1c6710606b718c20ab971b47
+sha: 0599e7f7fefb044d32dd603a160629a83fed98bb
 subdir: hermes
 description: >-
   Hand a GitHub issue and the command that proves it done to Lydite from the chat. Sandboxed Claude Code workers do
@@ -16,12 +16,12 @@ maintainer: aoricloud
 tier: community
 category: automation
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/aoricloud/lydite/tree/5454680daa8e477e1c6710606b718c20ab971b47/hermes
-version: "0.3.2"
-image: https://raw.githubusercontent.com/aoricloud/lydite/5454680daa8e477e1c6710606b718c20ab971b47/hermes/docs/banner.png
+docs_url: https://github.com/aoricloud/lydite/tree/0599e7f7fefb044d32dd603a160629a83fed98bb/hermes
+version: "0.3.3"
+image: https://raw.githubusercontent.com/aoricloud/lydite/0599e7f7fefb044d32dd603a160629a83fed98bb/hermes/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/aoricloud/lydite/5454680daa8e477e1c6710606b718c20ab971b47/hermes/docs/screenshot-approval.png
-  - https://raw.githubusercontent.com/aoricloud/lydite/5454680daa8e477e1c6710606b718c20ab971b47/hermes/docs/screenshot-receipt.png
+  - https://raw.githubusercontent.com/aoricloud/lydite/0599e7f7fefb044d32dd603a160629a83fed98bb/hermes/docs/screenshot-approval.png
+  - https://raw.githubusercontent.com/aoricloud/lydite/0599e7f7fefb044d32dd603a160629a83fed98bb/hermes/docs/screenshot-receipt.png
 platforms: [linux]
 known_issues:
   - "Linux only: Lydite's sandbox wall holds there."

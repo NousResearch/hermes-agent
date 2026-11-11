@@ -1,19 +1,19 @@
 name: siteform
 title: SiteForm
 repo: https://github.com/duclucky/siteform
-sha: "6758262c198949e136c73d40f6005c891f87b395"
+sha: "be9b797345e695630318c66b5245657738767b9b"
 description: Review planning PDFs, compare evidence-linked 3D options in Hermes chat, and edit the same revision in Studio.
 maintainer: duclucky
 tier: community
 category: desktop
 requires_hermes: ">=0.22.7"
-version: "0.14.1"
+version: "0.15.0"
 docs_url: https://github.com/duclucky/siteform#readme
-image: https://raw.githubusercontent.com/duclucky/siteform/6758262c198949e136c73d40f6005c891f87b395/docs/banner.png
+image: https://raw.githubusercontent.com/duclucky/siteform/be9b797345e695630318c66b5245657738767b9b/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/duclucky/siteform/6758262c198949e136c73d40f6005c891f87b395/docs/chat-3d.jpg
-  - https://raw.githubusercontent.com/duclucky/siteform/6758262c198949e136c73d40f6005c891f87b395/docs/limits.jpg
-  - https://raw.githubusercontent.com/duclucky/siteform/6758262c198949e136c73d40f6005c891f87b395/docs/studio.jpg
+  - https://raw.githubusercontent.com/duclucky/siteform/be9b797345e695630318c66b5245657738767b9b/docs/chat-3d.jpg
+  - https://raw.githubusercontent.com/duclucky/siteform/be9b797345e695630318c66b5245657738767b9b/docs/limits.jpg
+  - https://raw.githubusercontent.com/duclucky/siteform/be9b797345e695630318c66b5245657738767b9b/docs/studio.jpg
 readme: true
 platforms: [windows]
 known_issues:

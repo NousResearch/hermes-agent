@@ -1,0 +1,19 @@
+name: timelinesai-whatsapp
+title: TimelinesAI WhatsApp
+repo: https://github.com/InitechSoftware/whatsapp-mcp-by-timelinesai
+sha: 288f85e9c162c6ac9b9fc0054d41a995f4776020
+subdir: plugins/timelinesai-hermes
+version: "1.0.0"
+description: "WhatsApp inbox through TimelinesAI's official MCP server (Streamable HTTP at https://mcp.services.timelines.ai/mcp, browser OAuth sign-in, no keys in config): search and summarise chats, find unanswered conversations, read history, and send messages, notes and labels from the user's connected WhatsApp number. Bundles one workflow skill, whatsapp-inbox, that makes the agent confirm the recipient and exact text before any send. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: hosted-only connector with no local code; every tool call goes to mcp.services.timelines.ai, operated by TimelinesAI, and acts on the WhatsApp account the user signs in with, including sending messages when asked. OAuth tokens are stored by Hermes, none are in the package, and the package ships no telemetry. The package marks the server untrusted, so Hermes asks before write-capable tool calls. The tool set is served by the remote server at runtime and is not covered by the pinned sha. A TimelinesAI account is required."
+maintainer: TimelinesAI
+tier: community
+category: tools
+docs_url: https://github.com/InitechSoftware/whatsapp-mcp-by-timelinesai/tree/main/plugins/timelinesai-hermes
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -207,7 +207,7 @@ from plugins.platforms.telegram.telegram_network import (
 from plugins.platforms.telegram.telegram_outbound import is_visually_empty, resolve_notifications_mode
 from plugins.platforms.telegram.telegram_send_path_recovery import TelegramSendPathRecoveryMixin, mark_send_path_recovered
 from plugins.platforms.telegram.telegram_send_errors import LOST, is_entity_parse_error, maybe_delivered_result as _maybe_delivered_result, send_error_kind
-from plugins.platforms.telegram.telegram_typing_gate import typing_may_fire
+from plugins.platforms.telegram.telegram_typing_gate import claim_ai_action, typing_may_fire
 from plugins.platforms.telegram.telegram_group_observe import apply_group_observe_attribution, observed_media_note, shared_sender_suffix
 from plugins.platforms.telegram.telegram_picker_labels import model_button_labels
 from plugins.platforms.telegram.telegram_topic_routing import TelegramTopicRoutingMixin
@@ -5231,8 +5231,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         except Exception as e:
             # DM topic lanes: Telegram may reject message_thread_id — retry without it so the indicator at
             # least appears in the main DM view.
-            if _is_dm_topic and message_thread_id is not None:
-                try:
+            if _is_dm_topic and message_thread_id is not None and not claim_ai_action(self, chat_id):
+                try:  # the retry is a second request: it spends its own slot of the shared draft budget
                     await _action()
                     return
                 except Exception as fallback_exc:

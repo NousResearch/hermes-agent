@@ -13,7 +13,7 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Optional
 
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import SendResult, fit_prefix
 from plugins.platforms.telegram.telegram_draft_budget import claim_ai_action
 from plugins.platforms.telegram.telegram_media_flood import _MAX_WINDOW_WAITS, flood_wait_seconds
 
@@ -90,16 +90,6 @@ async def delete_message(adapter: Any, chat_id: str, message_id: str) -> bool:
     return await delete_outside_flood_window(adapter, chat_id, _delete)
 
 
-def _utf16_prefix(text: str, limit: int) -> str:
-    """Longest prefix of ``text`` within ``limit`` UTF-16 units, never splitting a surrogate pair."""
-    units = 0
-    for index, char in enumerate(text):
-        units += 2 if ord(char) > 0xFFFF else 1
-        if units > limit:
-            return text[:index]
-    return text
-
-
 def _over_budget(adapter: Any, chat_id: Any) -> Optional[SendResult]:
     """A skipped-frame result when the chat's shared draft/typing budget is spent, else ``None``
     (the request's slot is claimed). ``retry_after`` tells the stream when the next frame may go."""
@@ -120,7 +110,8 @@ async def send_draft(adapter: Any, chat_id: str, draft_id: int, content: str, me
     if (skipped := skipped_draft(adapter, chat_id)) is not None:
         return skipped
     # Rich draft fast-path; any failure degrades to the plain draft below. Drafts have no message_id.
-    if adapter._should_attempt_rich_draft(content):
+    plain_drafts = getattr(adapter, "DRAFT_STREAM_PREFIX_STABLE", False) is True
+    if not plain_drafts and adapter._should_attempt_rich_draft(content):  # plain_drafts wins: raw text only
         if (over := _over_budget(adapter, chat_id)) is not None:
             return over
         if await adapter._try_send_rich_draft(chat_id, draft_id, content, metadata):
@@ -134,8 +125,8 @@ async def send_draft(adapter: Any, chat_id: str, draft_id: int, content: str, me
     # (MarkdownV2 re-renders earlier text as a fence or emphasis closes); the final keeps its format.
     if utf16_len(content) <= adapter.MAX_MESSAGE_LENGTH:
         text = content
-    elif getattr(adapter, "DRAFT_STREAM_PREFIX_STABLE", False) is True:
-        text = _utf16_prefix(content, adapter.MAX_MESSAGE_LENGTH)  # a chunk marker would break the prefix
+    elif plain_drafts:
+        text = fit_prefix(content, adapter.MAX_MESSAGE_LENGTH, utf16_len, suffix="")  # no chunk marker
     else:
         text = adapter.truncate_message(content, adapter.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
     # Same MarkdownV2 conversion as ``send`` (MarkdownV2 then plain) so the draft doesn't snap at the end. Exception: a Rich
@@ -144,7 +135,7 @@ async def send_draft(adapter: Any, chat_id: str, draft_id: int, content: str, me
         getattr(adapter, "_rich_messages_enabled", False) and not getattr(adapter, "_rich_drafts_enabled", False)
         and adapter._needs_rich_rendering(text))
     draft_thread_kwargs = adapter._thread_kwargs_for_draft(chat_id, metadata)
-    plain_preview = plain_rich_preview or getattr(adapter, "DRAFT_STREAM_PREFIX_STABLE", False) is True
+    plain_preview = plain_rich_preview or plain_drafts
     for use_markdown in ((False,) if plain_preview else (True, False)):
         kwargs: dict[str, Any] = {
             "chat_id": normalize_telegram_chat_id(chat_id), "draft_id": int(draft_id),

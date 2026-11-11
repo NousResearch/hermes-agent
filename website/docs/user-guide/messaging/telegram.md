@@ -1173,7 +1173,7 @@ gateway:
 
 **What if a draft frame fails?** A Telegram `RetryAfter` (flood control) pauses preview updates until the wait is over and then resumes with the latest text; the response stays on native drafts. Any other failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt. The complete answer is always delivered by the normal final send.
 
-**Preview text growing in place (`plain_drafts`).** By default the draft preview is rendered with the same MarkdownV2 formatting as the final reply, which means text already on screen can re-render as a code block or bold span closes. Set `plain_drafts: true` to stream the preview as raw text instead: every frame then only adds characters to the previous one, so Telegram animates just the new text. The final reply keeps its normal formatting either way.
+**Preview text growing in place (`plain_drafts`).** By default the draft preview is rendered with the same MarkdownV2 formatting as the final reply, which means text already on screen can re-render as a code block or bold span closes. Set `telegram.extra.plain_drafts: true` (`gateway.platforms.telegram.extra.plain_drafts` in the nested form) to stream the preview as raw text instead: every frame then only adds characters to the previous one, so Telegram animates just the new text. The final reply keeps its normal formatting either way, and `plain_drafts` takes precedence over `rich_drafts` for the preview.
 
 ```yaml
 gateway:

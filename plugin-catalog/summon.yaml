@@ -1,12 +1,12 @@
 name: summon
 repo: https://github.com/gtmcknight/hermes-summon
-sha: a37357fd28b2a834db30bed93e56b87c4307ebf1
+sha: 70dd86080578ab5a6f28163e65b730b6e4b59f82
 title: Summon
 description: >-
   Your own @grok on X that learns: tag your bot under any post and your Hermes answers in the
   thread; say "learn this" under a how-to thread or video and it saves it as a skill that waits for
   your approval. A gateway platform for X that only reads posts from its owner, by user ID.
-  Judges: "Borrow @taybotfyi" in setup with invite code judge-hermes needs no bot account.
+  Judges: hermes gateway setup, choose X, "Borrow @taybotfyi" with invite code judge-hermes; no bot account needed.
   Disclosure: polls the X API every 20 s while the gateway runs (the owner's posts that tag the
   bot, thread reads, replies); on the free trial those X calls go through the author's relay at
   summon.taylor.fyi (Cloudflare Worker, source in relay/), which holds the bot's X OAuth tokens and
@@ -22,12 +22,12 @@ category: platform
 requires_hermes: ">=0.23"
 docs_url: https://summon.taylor.fyi
 version: "0.1.0"
-image: https://raw.githubusercontent.com/gtmcknight/hermes-summon/a37357fd28b2a834db30bed93e56b87c4307ebf1/docs/banner.png
+image: https://raw.githubusercontent.com/gtmcknight/hermes-summon/70dd86080578ab5a6f28163e65b730b6e4b59f82/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/a37357fd28b2a834db30bed93e56b87c4307ebf1/docs/01-check.jpg
-  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/a37357fd28b2a834db30bed93e56b87c4307ebf1/docs/02-find.jpg
-  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/a37357fd28b2a834db30bed93e56b87c4307ebf1/docs/03-learn.jpg
-  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/a37357fd28b2a834db30bed93e56b87c4307ebf1/docs/04-approve.jpg
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/70dd86080578ab5a6f28163e65b730b6e4b59f82/docs/01-check.jpg
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/70dd86080578ab5a6f28163e65b730b6e4b59f82/docs/02-find.jpg
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/70dd86080578ab5a6f28163e65b730b6e4b59f82/docs/03-learn.jpg
+  - https://raw.githubusercontent.com/gtmcknight/hermes-summon/70dd86080578ab5a6f28163e65b730b6e4b59f82/docs/04-approve.jpg
 platforms: []
 capabilities:
   provides_tools: []

@@ -395,6 +395,7 @@ const openFlows = new Map<DesktopFlowId, boolean>()
 let pendingDrop: { detail: BackendDisconnectDetail; timer: ReturnType<typeof setTimeout> } | null = null
 let lastBackendExitAt = 0
 const recentClicks = new Map<string, number[]>()
+let visibleWindow: { maxSpanMs: number; since: number | null } | null = null
 
 /** FNV-1a: the local key never carries a profile name. */
 function scopeKey(value: string): string {
@@ -428,7 +429,7 @@ function dayHasDailyUse(day: DayAggregate): boolean {
 }
 
 function dayHasUse(day: DayAggregate): boolean {
-  return day.visibleMs > 0 || dayHasDailyUse(day)
+  return day.visibleMs > 0 || Object.values(day.frames).some(n => (n ?? 0) > 0) || dayHasDailyUse(day)
 }
 
 function finite(value: unknown): number {
@@ -521,8 +522,11 @@ function withState<T>(fn: (current: MetricsState) => T): T | undefined {
   }
 
   const current = readState()
+  const now = Date.now()
 
-  rollDay(current)
+  creditVisibleTime(current, now)
+
+  rollDay(current, now)
   const result = fn(current)
 
   writeJson(stateKey(), current)
@@ -794,12 +798,54 @@ export function recordLongFrames(durations: readonly number[]): void {
   })
 }
 
-/** Visible window time, the long-frame rate's denominator. */
-export function noteVisibleTime(ms: number): void {
-  if (ms > 0) {
-    withState(current => {
-      current.today.visibleMs += ms
-    })
+/** The store owns the span so any event that rolls or flushes a day credits its visible tail first. */
+function creditVisibleTime(current: MetricsState, now: number): void {
+  if (!visibleWindow) {
+    return
+  }
+
+  let since = visibleWindow.since
+
+  visibleWindow.since = document.visibilityState === 'visible' ? now : null
+
+  if (since === null || now <= since || now - since > visibleWindow.maxSpanMs) {
+    return
+  }
+
+  while (since < now) {
+    const day = utcDay(since)
+    const until = Math.min(now, Date.parse(day) + 24 * 60 * 60_000)
+
+    if (current.today.day < day) {
+      rollDay(current, since)
+    }
+
+    let entry = current.today.day === day ? current.today : current.pending.find(pending => pending.day === day)
+
+    if (!entry) {
+      entry = emptyDay(day)
+      current.pending = [...current.pending, entry].slice(-PENDING_DAYS_MAX)
+    }
+
+    entry.visibleMs += until - since
+    since = until
+  }
+}
+
+function restartVisibleTime(): void {
+  if (visibleWindow) {
+    visibleWindow.since = $desktopMetricsGate.get() === 'on' && document.visibilityState === 'visible' ? Date.now() : null
+  }
+}
+
+/** Main-window lifetime; spans longer than the tick period plus slack are uncredited suspend gaps. */
+export function trackDesktopVisibleTime(maxSpanMs: number): () => void {
+  visibleWindow = { maxSpanMs, since: null }
+  restartVisibleTime()
+
+  return () => {
+    withState(() => undefined)
+    visibleWindow = null
   }
 }
 
@@ -902,15 +948,21 @@ async function flushPendingDays(): Promise<void> {
           return
         }
 
-        // The daily half is in: a retry of the histogram must not resend it.
-        withState(current => {
+        // A consent withdrawal purges the entry, including an off→on flip during the await.
+        const kept = withState(current => {
           const entry = current.pending.find(pending => pending.day === reported)
 
           if (entry) {
             entry.actions = {}
             entry.modes = {}
           }
+
+          return entry !== undefined
         })
+
+        if (!kept) {
+          return
+        }
       }
 
       if (day.visibleMs > 0 && (!(await sendLongFrames(requester, day)) || !settled())) {
@@ -1031,6 +1083,10 @@ function forgetInMemory(): void {
   openFlows.clear()
   recentClicks.clear()
   cancelPendingBackendDrop()
+
+  if (visibleWindow) {
+    visibleWindow.since = null
+  }
 }
 
 /** Apply the focused profile's collection switch. Off purges everything local. `decided` false
@@ -1045,6 +1101,7 @@ export function setDesktopMetricsGate(next: DesktopMetricsGate, decided = true):
   }
 
   $desktopMetricsGate.set(next)
+  restartVisibleTime()
 
   if (next === 'off') {
     forgetInMemory()
@@ -1096,6 +1153,7 @@ export function resetDesktopMetricsForTests(): void {
   flushingDays = false
   botCount = 0
   lastInteractionAt = 0
+  visibleWindow = null
   areaOpenedAt.clear()
   openFlows.clear()
   recentClicks.clear()

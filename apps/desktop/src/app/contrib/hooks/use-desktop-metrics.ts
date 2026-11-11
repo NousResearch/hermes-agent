@@ -25,6 +25,7 @@ import {
   slowFrameBucket,
   tickDesktopMetrics,
   trackArea,
+  trackDesktopVisibleTime,
   trackFlow
 } from '@/store/desktop-metrics'
 import { $findInPage } from '@/store/find-in-page'
@@ -42,7 +43,6 @@ import {
 } from '@/store/shared-metrics'
 
 import { observeOnboardingMetrics } from './desktop-onboarding-metrics'
-import { visibleClock } from './visible-clock'
 
 const DAY_TICK_MS = 10 * 60_000
 const INTERACTION_THROTTLE_MS = 1000
@@ -217,16 +217,8 @@ export function useDesktopMetrics({
       }
     })()
 
-    // Ticks run every DAY_TICK_MS while awake; a longer span is a suspend.
-    const visible = visibleClock(DAY_TICK_MS + 60_000)
-
-    const onVisibility = () => {
-      visible.credit()
-
-      if (document.visibilityState === 'visible') {
-        tickDesktopMetrics()
-      }
-    }
+    const stopVisibleTime = trackDesktopVisibleTime(DAY_TICK_MS + 60_000)
+    const onVisibility = () => tickDesktopMetrics()
 
     const stops = [
       $commandPaletteOpen.listen(overlay('command_palette')),
@@ -256,10 +248,7 @@ export function useDesktopMetrics({
     window.addEventListener('wheel', onInteraction, { capture: true, passive: true })
     document.addEventListener('visibilitychange', onVisibility)
 
-    const tick = window.setInterval(() => {
-      visible.credit()
-      tickDesktopMetrics()
-    }, DAY_TICK_MS)
+    const tick = window.setInterval(tickDesktopMetrics, DAY_TICK_MS)
 
     return () => {
       stops.forEach(stop => stop())
@@ -269,7 +258,7 @@ export function useDesktopMetrics({
       window.removeEventListener('wheel', onInteraction, { capture: true })
       document.removeEventListener('visibilitychange', onVisibility)
       window.clearInterval(tick)
-      visible.credit()
+      stopVisibleTime()
     }
   }, [enabled])
 }

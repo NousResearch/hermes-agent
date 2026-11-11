@@ -1,0 +1,24 @@
+name: air-agent-kya
+title: AIR Agent KYA
+repo: https://github.com/MocaNetwork/air-agent-hermes
+sha: "4dbe09b4e77c37ab033d58007eb00f4dd68fb797"
+description: "Know-Your-Agent with AIR (Moca Network): you delegate your AIR identity to Hermes once in the AIR Console (`hermes air login`, device code, P-256 agent key, credentials.verify scope, no wallet signing); the kya_visit tool then enters KYA stores that publish /.well-known/air-kya, gets a one-time SD-JWT presentation from AIR that discloses only the claims the store requests (e.g. membership tier), and returns the catalog that credential unlocks; agents that aren't delegated get the store's public catalog. Disclosure — network calls to the AIR Console (sandbox.agents.air3.com, during login only), the AIR API (air.api.sandbox.air3.com) and AIR credential API (credential-testnet.api.sandbox.air3.com), and to each KYA site the agent visits (https only, plain http allowed for localhost); stores a P-256 agent private key and the AIR delegation bundle in its own plugin-data directory with mode 0600, removed by `hermes air logout`; on first run after the rename it reads the old air-kya plugin-data directory once to carry a delegation over; a live kya_visit asks for approval through Hermes's approval gate before any claim is disclosed and sends the presentation only to the origin that issued the nonce; the model never sees the presentation, key or tokens; endpoints are plugin settings, no secrets or env vars read; no shell, subprocess, background thread or telemetry."
+maintainer: mocaNetwork
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/mocaNetwork/air-agent-hermes#readme
+version: "0.1.0"
+readme: true
+platforms: []
+known_issues:
+  - Defaults point at the AIR sandbox; production needs the endpoint settings.
+  - "`hermes air login` runs in a terminal only and waits for approval until the device code expires."
+capabilities:
+  provides_tools:
+    - air_whoami
+    - kya_visit
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

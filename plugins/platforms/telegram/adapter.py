@@ -1182,8 +1182,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
     # RAW agent markdown so tables, task lists, <details>, math render natively; legacy MarkdownV2 send()
     # is the fallback. Streaming edits stay on the MarkdownV2 edit path.
     def _content_fits_rich_limits(self, content: str) -> bool:
-        """Pre-check the 32,768-char cap only; other rich limits surface as BadRequest (permanent)."""
-        return len(content) <= self.RICH_MESSAGE_MAX_CHARS
+        """Pre-check the 32,768-char cap on the markdown actually sent (normalization adds hard breaks,
+        spacer rows and escapes); other rich limits surface as BadRequest (permanent)."""
+        return len(self._rich_message_payload(content)["markdown"]) <= self.RICH_MESSAGE_MAX_CHARS
 
     def _bot_supports_rich(self) -> bool:
         """True when ``do_api_request`` is an *async* callable (real Bot or AsyncMock); plain MagicMock

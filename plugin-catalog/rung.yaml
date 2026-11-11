@@ -1,6 +1,6 @@
 name: rung
 repo: https://github.com/CalQuity/rung
-sha: 91704e060e425042a43715c8b402e63423832d85
+sha: 970be4f506c496586a7fec8b818491ceab602e4b
 subdir: hermes-plugin
 description: >-
   Verification evidence for agent-written code. Before Hermes ends a turn in which it edited code, a
@@ -8,11 +8,13 @@ description: >-
   (tests, linters, type checkers, security scanners, property and formal checks recorded in rung.toml)
   have a fresh passing verdict for the exact code on disk, and sends Hermes back with the check ids when
   they do not (at most two continuations per turn). Tools rung_check, rung_plan and rung_kit return the
-  Rung CLI's JSON verdicts, and /rung shows them in chat; a bundled skill sets Rung up in a repository.
+  Rung CLI's JSON verdicts; rung_map drafts the app's feature map, whose features only the person approves
+  (/rung approve, not-built, drop are slash commands, never tools); a bundled skill sets Rung up.
   Every verdict comes from a tool, never from a model. Disclosure: rung_check runs the commands listed
   in the project's rung.toml (its own test, lint and build commands and any installed scanners) as
   subprocesses in the session's working folder; the hook only reads Rung's ledger. The plugin makes no
-  network calls itself; checks may (osv-scanner queries OSV, the deps check queries PyPI or npm). Rung
+  network calls itself; rung_map drafting calls the model CLI chosen in rung.toml (claude, codex or an
+  OpenAI-compatible endpoint), which reads the project's source; checks may (osv-scanner queries OSV, the deps check queries PyPI or npm). Rung
   writes verdicts under .rung/ in the project. No credentials, no telemetry. Requires rung-cli 0.4.
 maintainer: CalQuity
 tier: community
@@ -23,7 +25,7 @@ version: "0.4.0"
 title: Rung
 platforms: [linux, macos]
 capabilities:
-  provides_tools: [rung_check, rung_plan, rung_kit]
+  provides_tools: [rung_check, rung_plan, rung_kit, rung_map]
   provides_hooks: [pre_verify]
   provides_middleware: []
   requires_env: []

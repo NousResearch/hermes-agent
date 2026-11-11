@@ -1,0 +1,9 @@
+name: hermes-phone-control
+repo: https://github.com/jinsu133/hermes-phone-assistant
+sha: 7165a9d388744953add55aea9d9d97609a233826
+subdir: plugin
+description: Preview of a phone-native Android companion with local MCP controls and optional voice.
+maintainer: jinsu133
+tier: community
+category: voice
+requires_hermes: ">=0.19"

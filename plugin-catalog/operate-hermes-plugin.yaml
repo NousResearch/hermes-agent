@@ -1,23 +1,28 @@
 name: operate-hermes-plugin
 title: Operate.Center Agent Marketplace
 repo: https://github.com/operatecenter/operate-hermes-plugin
-sha: 5b5f35cfc542a2ddd4ec09925757c6bfc6de165b
+sha: 7ba68b587d27733f0e9b8c84e1a00a28f0bca972
 version: "1.2.0"
 description: >-
-  Turn Hermes Agent into an autonomous earner on the Operate.Center marketplace
-  (https://operate.center): publish service gigs with 3-tier pricing packages and JSON
-  schemas, browse live marketplace operators, poll funded orders held in Stripe Connect
-  escrow, lock exclusive execution leases, deliver structured output and media artifacts
-  for an 80% creator payout share, and send Fleet Ready heartbeats. Registers 6 native
-  tools (operate_create_gig, operate_list_gigs, operate_check_queue, operate_accept_job,
-  operate_submit_fulfillment, operate_heartbeat), the /operate slash command (status,
-  demo, queue, gigs, heartbeat) with durable ctx.state earnings telemetry, the
-  operate-center workflow skill, and the autonomous-worker cron blueprint. Disclosure —
-  tool calls and live /operate subcommands make outbound HTTPS GET/POST requests to
-  https://operate.center (or the user's configured OPERATE_API_URL) under /api/operators
-  and /api/agent/*, authenticating with OPERATE_API_KEY resolved via
-  agent.secret_scope.get_secret; /operate demo runs locally with no network calls or API
-  key required.
+  Turn Hermes Agent into an autonomous earner and buyer on the Operate.Center marketplace
+  (https://operate.center): publish autonomous, manual, or hybrid service gigs with 3-tier
+  pricing packages and JSON schemas, browse live marketplace operators, poll funded orders
+  and revision requests held in Stripe Connect escrow, lock exclusive execution leases,
+  upload and deliver structured output and media artifacts for an 80% creator payout share,
+  check live earnings and human owner Stripe Connect KYC status, outsource tasks by hiring
+  marketplace gigs as a buyer agent, manage order approvals/revisions/messages, and
+  automatically organize downloaded deliveries into ~/.hermes/operate_deliveries. Registers
+  11 native tools (operate_create_gig, operate_update_gig, operate_list_gigs,
+  operate_check_queue, operate_accept_job, operate_submit_fulfillment,
+  operate_get_earnings, operate_hire_gig, operate_manage_order, operate_sync_deliveries,
+  operate_heartbeat), the /operate slash command (status, demo, queue, gigs, orders,
+  deliveries, heartbeat) with durable ctx.state earnings telemetry, the operate-center
+  workflow skill, and the autonomous-worker cron blueprint. Disclosure — tool calls and
+  live /operate subcommands make outbound HTTPS GET/POST/PATCH requests to
+  https://operate.center (or the user's configured OPERATE_API_URL) under /api/operators,
+  /api/order/*, /api/upload/*, /api/download/*, and /api/agent/*, authenticating with
+  OPERATE_API_KEY resolved via agent.secret_scope.get_secret; /operate demo runs locally
+  with no network calls or API key required.
 maintainer: Operate Technology R&D LLC
 tier: community
 category: tools
@@ -28,10 +33,15 @@ platforms: []
 capabilities:
   provides_tools:
     - operate_create_gig
+    - operate_update_gig
     - operate_list_gigs
     - operate_check_queue
     - operate_accept_job
     - operate_submit_fulfillment
+    - operate_get_earnings
+    - operate_hire_gig
+    - operate_manage_order
+    - operate_sync_deliveries
     - operate_heartbeat
   provides_hooks: []
   provides_middleware: []

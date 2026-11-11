@@ -210,7 +210,7 @@ _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
-    "request-review", "request-changes", "reopen-review",
+    "request-review", "request-changes", "reopen-review", "reopen",
     "gc",
 })
 
@@ -1088,6 +1088,28 @@ def _cmd_reopen_review(args: argparse.Namespace) -> int:
                            lambda tid: f"cannot reopen {tid} (not in review?)")
 
 
+def _cmd_reopen(args: argparse.Namespace) -> int:
+    ids, rc = _require_ids(args)
+    if rc:
+        return rc
+    reason = (getattr(args, "reason", None) or "").strip()
+    if not reason:
+        return _err("reopen needs --reason: say what is unfinished so the next worker knows")
+    reason = str(kb.redact_review_value(reason)).strip()
+    author = _profile_author()
+    with kbc.connect_closing() as conn:
+        def op(tid):
+            ok, detail = kb.reopen_done_task(conn, tid, actor=author, reason=reason)
+            if ok:
+                kb.add_comment(conn, tid, author, f"REOPENED (was done): {reason}")
+            else:
+                print(detail, file=sys.stderr)
+            return ok
+
+        return _bulk_apply(ids, op, lambda tid: f"Reopened {tid}: {reason}",
+                           lambda tid: f"cannot reopen {tid}")
+
+
 def _cmd_promote(args: argparse.Namespace) -> int:
     reason = _joined_words(args.reason)
     author = _profile_author()
@@ -1329,7 +1351,7 @@ _HANDLERS = {
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
-    "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
+    "reopen-review": _cmd_reopen_review, "reopen": _cmd_reopen, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,

@@ -11,6 +11,7 @@ import functools
 import json
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
@@ -777,6 +778,15 @@ def _handle_complete(args: dict, **kw) -> str:
                 f"in-flight (no state change). Retry kanban_complete with the same "
                 f"summary/metadata and either drop these ids from created_cards, or pass "
                 f"created_cards=[] to skip the card-claim check entirely.")
+        except kb.IncompleteCompletionError as incomplete_err:
+            # Worker admitted unfinished acceptance items; done is terminal for
+            # workers, so refuse and keep the card in-flight.
+            return tool_error(
+                f"kanban_complete blocked: {incomplete_err}. Your task is still in-flight (no "
+                f"state change). Finish those items and complete again, or if you cannot finish "
+                f"them in this run: post a kanban_comment handoff, then call kanban_schedule "
+                f"or kanban_request_review. Do not drop the "
+                f"items from metadata to get past this check.")
         except kb.EmptyCompletionError as empty_err:
             # Same shape as the card gate: nothing was mutated, the audit event
             # already landed; the worker retries with evidence instead of stalling.
@@ -1091,6 +1101,26 @@ def _persisted_session_id(session_id: Optional[str]) -> Optional[str]:
         state.close()
 
 
+# Opt-in repository scope policy: reject a card spanning multiple configured owners' repositories.
+_CARD_REPO_RE = re.compile(
+    r"(?:github\.com/|(?<![\w./-]))([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9._-]+?)(?=[#\s/),.;:'\"`]|$)"
+)
+def _card_repo_owners() -> frozenset[str]:
+    from hermes_cli.config import load_config
+    config = load_config()
+    owners = (config.get("kanban") or {}).get("single_repo_owners", [])
+    return frozenset(str(owner).lower() for owner in owners) if isinstance(owners, list) else frozenset()
+
+
+def _card_repos(*texts: Optional[str]) -> list[str]:
+    repos: set[str] = set()
+    for text in texts:
+        for owner, name in _CARD_REPO_RE.findall(text or ""):
+            if owner.lower() in _card_repo_owners():
+                repos.add(f"{owner.lower()}/{name.lower().removesuffix('.git')}")
+    return sorted(repos)
+
+
 @_kanban_handler("kanban_create")
 def _handle_create(args: dict, **kw) -> str:
     """Create a (child) task; orchestrator workers use this to fan out."""
@@ -1113,6 +1143,11 @@ def _handle_create(args: dict, **kw) -> str:
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
+    repos = _card_repos(title, args.get("body"))
+    _check(len(repos) <= 1, (
+        f"card names {len(repos)} repositories ({', '.join(repos)}). One card is one PR in one "
+        "repo. Nothing was created. Create one card per repo; give each card that must wait "
+        "for another `parents=[<that card id>]` so it starts by itself when the parent is done."))
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id

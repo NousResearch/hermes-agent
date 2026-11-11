@@ -2604,6 +2604,22 @@ class EmptyCompletionError(ValueError):
         )
 
 
+class IncompleteCompletionError(ValueError):
+    """``complete_task`` refused: a worker's own handoff metadata lists work
+    still outstanding (``remaining``/``unresolved``/...). Completing would close
+    the card while the acceptance criteria are admittedly unmet, and ``done``
+    is terminal for workers. A ``ValueError`` so tool error handlers treat it
+    as recoverable; the card is not mutated."""
+
+    def __init__(self, task_id: str, items: list[str]):
+        self.task_id = task_id
+        self.items = list(items)
+        preview = "; ".join(self.items[:5])
+        super().__init__(
+            f"completion blocked: {task_id} handoff lists outstanding work: {preview}"
+        )
+
+
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
@@ -2667,6 +2683,9 @@ def complete_task(
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
     _gate_empty_completion(conn, task_id, result=result, summary=summary)
+    _gate_incomplete_completion(
+        conn, task_id, metadata=metadata, expected_run_id=expected_run_id, force=force,
+    )
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
@@ -2806,6 +2825,56 @@ def _gate_empty_completion(
             },
         )
     raise EmptyCompletionError(task_id)
+
+
+# Handoff keys a worker uses to say "not finished". Non-empty values on a
+# worker completion mean the card is not done.
+_INCOMPLETE_METADATA_KEYS = ("remaining", "remaining_work", "unresolved", "outstanding")
+_EMPTY_MARKERS = {"none", "n/a", "na", "nothing", "-", "[]"}
+
+
+def _outstanding_items(metadata: Optional[dict]) -> list[str]:
+    if not isinstance(metadata, dict):
+        return []
+    items: list[str] = []
+    for key in _INCOMPLETE_METADATA_KEYS:
+        value = metadata.get(key)
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, (list, tuple)):
+            continue
+        for item in value:
+            text = str(item).strip() if item is not None else ""
+            if text and text.lower() not in _EMPTY_MARKERS:
+                items.append(text)
+    return items
+
+
+def _gate_incomplete_completion(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    metadata: Optional[dict],
+    expected_run_id: Optional[int],
+    force: bool,
+) -> None:
+    """Refuse a WORKER completion whose handoff admits outstanding work.
+
+    Only worker completions (``expected_run_id`` set) are gated; operator
+    ``force`` and manual CLI completions stay exempt. The worker should finish
+    the work, ``kanban_request_review``, or ``kanban_block`` instead.
+    """
+    if force or expected_run_id is None:
+        return
+    items = _outstanding_items(metadata)
+    if not items:
+        return
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "completion_blocked_remaining_work",
+            {"remaining": [_first_line(i, 200) for i in items[:20]]},
+        )
+    raise IncompleteCompletionError(task_id, items)
 
 
 def _stage_completion_artifacts(
@@ -3632,6 +3701,50 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "review_reopened", payload if payload != {"status": "ready"} else None,
         )
         return True
+
+
+def reopen_done_task(
+    conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
+) -> tuple[bool, Optional[str]]:
+    """Operator reopen ``done`` -> ``ready`` (``todo`` while a parent is open).
+
+    For a card closed before its acceptance criteria were met. The terminal run
+    history stays; the card gets a fresh claim, a reset failure breaker
+    (deliberate operator action) and a ``reopened_done`` audit event. Every
+    done/active descendant is re-gated through
+    :func:`invalidate_descendants_for_parent_reopen`, same as a dashboard
+    reopen. Returns ``(ok, reason)``.
+    """
+    cur_status = _task_status(conn, task_id)
+    if cur_status is None:
+        return False, f"task {task_id} not found"
+    if cur_status != "done":
+        return False, f"task {task_id} is {cur_status!r}; reopen only applies to 'done'"
+    terminations: list[tuple[Optional[int], Optional[str], Optional[int]]] = []
+    with write_txn(conn):
+        new_status = _landing_status_after_parents(conn, task_id)
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, completed_at = NULL, claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+            "current_run_id = NULL, consecutive_failures = 0 "
+            "WHERE id = ? AND status = 'done'",
+            (new_status, task_id),
+        )
+        if cur.rowcount != 1:
+            return False, f"task {task_id} status changed during reopen"
+        _append_event(conn, task_id, "reopened_done", {
+            "actor": actor, "reason": reason, "status": new_status,
+        })
+        # Legacy event so live-feed consumers render the move.
+        _append_event(conn, task_id, "status", {
+            "status": new_status, "reason": "reopened_done", "previous_status": "done",
+        })
+        result = invalidate_descendants_for_parent_reopen(conn, task_id, author=actor)
+        terminations.extend(result["terminations"])
+    for pid, claim_lock, started_at in terminations:
+        _terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
+    recompute_ready(conn)
+    return True, None
 
 
 def invalidate_descendants_for_parent_reopen(

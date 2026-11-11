@@ -44,6 +44,20 @@ ITERATION_BUDGET_WARNING_TEMPLATE = (
     "solely because of this warning."
 )
 
+# Kanban workers only: a second, final notice near the hard cap. Budgets below
+# this floor are too small for two notices to mean anything.
+KANBAN_FINAL_NOTICE_MARGIN = 5
+KANBAN_FINAL_NOTICE_MIN_BUDGET = 20
+KANBAN_FINAL_NOTICE_TEMPLATE = (
+    "[SYSTEM NOTICE — iteration budget final] {remaining} iterations left of {maximum}. "
+    "Stop editing and do not start new checks, builds or browser work. Make sure a "
+    "kanban_comment handoff is current (PR/commit URLs, what is verified, what remains), "
+    "then end the run: kanban_complete only if every requirement is verified, "
+    "kanban_request_review if it is ready for review, otherwise kanban_schedule with "
+    "a durable checkpoint when more runtime is needed, or kanban_block for a genuine "
+    "external blocker."
+)
+
 
 def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
     """Append the opt-in one-shot warning to the newest tool result."""
@@ -68,19 +82,38 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
         or budget is None
         or budget.max_total <= 1
         or budget.max_total >= sys.maxsize
-        or getattr(agent, "_iteration_budget_warning_injected", False)
-        or budget.used < min(ratio * budget.max_total, budget.max_total - 1)
     ):
         return False
-    notice = ITERATION_BUDGET_WARNING_TEMPLATE.format(
-        used=budget.used, maximum=budget.max_total
+    first_injected = getattr(agent, "_iteration_budget_warning_injected", False)
+    first_due = (
+        not first_injected
+        and budget.used >= min(ratio * budget.max_total, budget.max_total - 1)
     )
-    if kanban_worker:
+    final_due = (
+        kanban_worker
+        and first_injected
+        and not getattr(agent, "_iteration_budget_final_warning_injected", False)
+        and budget.max_total >= KANBAN_FINAL_NOTICE_MIN_BUDGET
+        and budget.used >= budget.max_total - KANBAN_FINAL_NOTICE_MARGIN
+    )
+    if not (first_due or final_due):
+        return False
+    if final_due:
+        notice = KANBAN_FINAL_NOTICE_TEMPLATE.format(
+            remaining=budget.max_total - budget.used, maximum=budget.max_total
+        )
+    else:
+        notice = ITERATION_BUDGET_WARNING_TEMPLATE.format(
+            used=budget.used, maximum=budget.max_total
+        )
+    if kanban_worker and not final_due:
         notice += (
-            " While tools are still available, call kanban_complete only if all task "
+            " Your NEXT tool call must be kanban_comment with a handoff: PR/commit "
+            "URLs, what is verified done, and what remains. Then continue on the "
+            "highest-value remaining item; do not repeat commits, pushes or checks "
+            "that already succeeded. Call kanban_complete only if all task "
             "requirements are verified, or kanban_request_review if it is ready for "
-            "review; otherwise persist a kanban_comment handoff and "
-            "continue. A diff or commit alone is not completion evidence."
+            "review. A diff or commit alone is not completion evidence."
         )
     # Only the current tool-result tail is mutable; an older turn may already be cached.
     from agent.context_compressor import _DB_PERSISTED_MARKER
@@ -95,7 +128,10 @@ def _maybe_inject_iteration_budget_warning(agent: Any, messages: Any) -> bool:
         message["content"] = [*(content or []), {"type": "text", "text": notice}]
     else:
         return False
-    agent._iteration_budget_warning_injected = True
+    if final_due:
+        agent._iteration_budget_final_warning_injected = True
+    else:
+        agent._iteration_budget_warning_injected = True
     return True
 
 

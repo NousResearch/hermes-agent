@@ -1472,3 +1472,38 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 ## Out of scope
 
 Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file and the dispatcher spawns workers on the same machine. Running a shared board across two hosts is not supported — there's no coordination primitive for "worker X on host A, worker Y on host B," and the crash-detection path assumes PIDs are host-local. If you need multi-host, run an independent board per host and use `delegate_task` / a message queue to bridge them.
+
+
+### Completion evidence and reopening
+
+A dispatched worker cannot complete a card when its handoff metadata lists nonempty
+`remaining`, `remaining_work`, `unresolved`, or `outstanding` items. Empty lists and explicit
+empty markers such as `none` or `n/a` are accepted. Manual completion and an operator's force
+override remain available. Keep unfinished work in a checkpoint and schedule continuation,
+or request review when implementation is ready.
+
+Use `hermes kanban reopen TASK_ID --reason "what remains"` to reopen a prematurely completed
+card. The audit event and run history are preserved; descendants are re-gated on their parent.
+Delegated children cannot use this operator action.
+
+For installations that require one repository per card, `kanban.single_repo_owners` is an
+opt-in list of GitHub owners. Cards naming multiple repositories belonging to those owners
+are rejected before creation. With no configured owners, repository references are unrestricted.
+
+Workers receive a one-shot checkpoint notice near their iteration limit and a separate final
+notice with five iterations remaining when the total budget is at least 20. These notices do
+not themselves complete or block a card.
+
+
+### Desktop and TUI notification batching
+
+`kanban.chat_notifications.passive_status` defaults to `true`: ready, todo, running, scheduled,
+and review status transitions appear on the status line without creating a chat turn. Up to
+20 passive transitions are folded into the next actionable notification. Completion, blocking,
+and timeout events still wake the session. Set `passive_status: false` to retain waking status
+transitions.
+
+`kanban.chat_notifications.batch_window_seconds` controls the quiet window before an actionable
+batch runs (default two polling intervals). `batch_max_wait_seconds` bounds the wait from the
+first queued event (default 12 polling intervals). Both accept nonnegative seconds, including
+zero to dispatch without waiting. Settings resolve under the session's owning profile.

@@ -347,6 +347,10 @@ _SPECS = [
         _TASK_IDS,
         _reason("Optional reason/note — recorded as a comment before reopening. Quote multi-word reasons."),
     ], help="Send one or more review tasks back for changes (review -> ready/todo)"),
+    _cmd("reopen", [
+        _TASK_IDS,
+        _reason("Required: what is unfinished. Recorded as a comment and on the audit event."),
+    ], help="Reopen done tasks closed before their work was finished (done -> ready/todo)"),
     _cmd("promote", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Audit-trail reason (recorded on the task_events row)"),

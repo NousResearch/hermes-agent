@@ -115,7 +115,10 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Free-form dict of structured facts about this "
                 "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                 "\"findings\": [...]}. Surfaced to downstream "
-                "workers alongside ``summary``."
+                "workers alongside ``summary``. A non-empty "
+                "``remaining``/``unresolved`` list means the task is "
+                "NOT done and completion is refused; block or request "
+                "review instead."
         )),
         "result": _prop("string", (
                 "Short result log line (legacy field, maps to "

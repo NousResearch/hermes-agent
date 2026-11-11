@@ -1257,7 +1257,7 @@ def _unpack_vc_runtime(name: str, archive: Path, staged: Path, target: str) -> N
             dll = staged / match[1].lower()
             dll.write_bytes(zf.read(info))
             if machine_matches_binary(dll, target) is False:
-                dll.unlink()
+                retry_held(dll.unlink)
     if not (staged / "msvcp140.dll").is_file():
         raise InstallError(name, f"{archive.name} carries no {target} msvcp140.dll")
 

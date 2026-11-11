@@ -436,7 +436,10 @@ class GatewayTurnPersistenceMixin:
                 or agent_result.get("already_sent") or agent_result.get("response_previewed")
                 or self._pending_event_audio_paths(event)):
             return
-        new_messages = (agent_result.get("messages") or [])[agent_result.get("history_offset", 0) or 0:]
+        from gateway.media_repair import _current_turn_messages
+        new_messages = _current_turn_messages(
+            agent_result.get("messages") or [], agent_result.get("history_offset", 0) or 0,
+        )
         if (any(m.get("role") in ("tool", "function") or m.get("tool_calls") for m in new_messages)
                 or self._hmwa_fresh_session_has_pending_input(session_entry)):
             return

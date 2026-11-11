@@ -35,3 +35,38 @@ async def test_exhausted_request_is_not_rerun_behind_rehomed_follow_ups(native_f
     # B was re-homed onto the fresh session; A going back in the head slot would run behind it.
     assert queued_after_reset == [None], "the exhausted request was queued behind a re-homed follow-up"
     assert executed == ["A"], executed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["tool", "function"], ids=["tool-result", "legacy-function"])
+async def test_compacted_tool_evidence_blocks_exhaustion_replay(native_fifo, monkeypatch, role):
+    """A stale pre-compression history_offset must not hide a completed tool from the replay guard.
+
+    Compression can leave fewer messages than the original history_offset. A calendar tool may
+    already have booked the appointment, so replaying this request would book it twice.
+    """
+    native = native_fifo
+    runner, authority, adapter = native.runner, native.authority, native.adapter
+    event, admission = await _admit(native, "book the appointment")
+    queued_after_reset = []
+
+    async def turn(event, source, session_key, run_generation):
+        entry = runner.session_store.lookup_by_session_key(session_key)
+        # The compressor replaced the old history. Its stale offset now exceeds the transcript.
+        result = {
+            "failed": True, "compression_exhausted": True, "history_offset": 10,
+            "messages": [
+                {"role": "user", "content": event.text},
+                {"role": role, "name": "calendar_create", "content": "appointment booked"},
+            ],
+        }
+        execution_result.get()["result"] = result
+        await runner._hmwa_compression_exhaustion_reset(
+            result, "copy", entry, session_key, source, event=event,
+        )
+        queued_after_reset.append(adapter._pending_messages.get(session_key))
+        return "copy"
+
+    monkeypatch.setattr(runner, "_handle_message_with_agent", turn)
+    await authority._drain(admission.ref)
+    assert queued_after_reset == [None], "a finished calendar action must not be replayed"

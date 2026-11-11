@@ -35,8 +35,7 @@ import {
   useI18n,
   useValue
 } from '@hermes/plugin-sdk'
-import type { ClipboardEvent, DragEvent, ReactNode } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ClipboardEvent, type DragEvent, memo, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
@@ -136,6 +135,164 @@ const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
 // no scrollbar (#91878). Feature-detected: an older shell without the export
 // keeps the raw Streamdown path.
 const MessageTextContent = typeof sdk === 'undefined' ? undefined : sdk.MessageTextContent
+
+/** Module-level empty seated roster for the memo'd row's fallback meta lookup: behavior-identical to
+ *  `members.find(...)` missing (no match) while keeping the prop-free path identity-stable. */
+const NO_SEATED: RosterRow[] = []
+
+/** One room-log line, isolated from the workspace's composer state: every prop is identity-stable
+ *  while the log itself didn't change (entries are never rewritten in place — `updateGroupChat` copies
+ *  the array, not its rows), so a composer keystroke bails at this boundary instead of re-parsing
+ *  every message through Streamdown. */
+interface GroupLogEntryViewProps {
+  allMeta: Record<string, BotMeta>
+  b: ReturnType<typeof useBots>
+  entry: GroupMessage
+  index: number
+  liveRoster: RosterRow[]
+  member?: GroupMember | null
+  mentionComponents: unknown
+  mentionText: unknown
+  onReplyTo: (entry: GroupMessage, member: GroupMember | null) => void
+  replyTagFor: (entry: GroupMessage, member: GroupMember | null) => string
+  revealedKey: string | null
+  setRevealedSpeaker: (key: string | null) => void
+  speaker?: GroupMember | null
+}
+
+const GroupLogEntryView = memo(function GroupLogEntryView({ allMeta, b, entry, index, liveRoster, member, mentionComponents, mentionText, onReplyTo, replyTagFor, revealedKey, setRevealedSpeaker, speaker }: GroupLogEntryViewProps) {
+  const isUser = entry.from.kind === 'user'
+  // Meta resolved from the parent's already-computed speaker row: same owner-aware lookup the old
+  // inline path did (#96432), without re-scanning the roster per keystroke. A seated speaker IS a
+  // members entry, so `botRosterMeta(speaker, allMeta)` is exactly the old `allMeta[speaker.name]`.
+  const meta = speaker ? botRosterMeta(speaker as GroupMember, allMeta) : groupTranscriptSpeakerMeta(entry, NO_SEATED, allMeta, liveRoster)
+  const display = isUser || !speaker ? b.group.you : displayName(speaker, meta)
+
+  const entryKey = `${entry.at}:${index}`
+  const revealed = !isUser && revealedKey === entryKey
+
+  // Clicked: append the gateway name so same-named agents on
+  // two connections are tellable apart on demand.
+  const label = isUser
+    ? b.group.you
+    : revealed
+      ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
+      : display
+
+  // Speaker avatar: same appearance pipeline as the roster (speakerFace); source-qualified speakers
+  // carry their own meta. The user's own lines carry no avatar.
+  const actions = entry.text.trim() || !isUser ? (
+    <>
+      {isUser ? null : (
+        <Tip label={b.group.replyTo(`@${replyTagFor(entry, member ?? null)}`)}>
+          <Button
+            aria-label={b.group.replyTo(display)}
+            className="text-(--ui-text-tertiary) hover:text-foreground"
+            onClick={() => onReplyTo(entry, member ?? null)}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon name="reply" />
+          </Button>
+        </Tip>
+      )}
+      {entry.text.trim() ? <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={entry.text} /> : null}
+    </>
+  ) : undefined
+
+  const author = isUser ? (
+    label
+  ) : (
+    <Tip label={revealed ? b.group.hideHandle : b.group.showHandle}>
+      <Button
+        className="text-left text-[0.8125rem] font-semibold text-foreground"
+        onClick={() => setRevealedSpeaker(revealed ? null : entryKey)}
+        size="inline"
+        variant="text"
+      >
+        {label}
+      </Button>
+    </Tip>
+  )
+
+  return (
+    <RoomMessage
+      actions={actions}
+      author={author}
+      avatar={isUser ? undefined : <SpeakerFace meta={meta} name={entry.from.name} />}
+      isUser={isUser}
+      timestampMs={entry.at}
+    >
+        <div
+        className="min-w-0 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" // The app shell sets user-select: none globally; message bodies opt
+        // back in so drag-select and ⌘C work in group chat logs.
+        data-selectable-text="true"
+        data-slot="group-chat-message-content"
+      >
+        {MessageTextContent ? (
+          <MessageTextContent decorateText={mentionText as never} media={!member?.remoteSource} text={entry.text} />
+        ) : Streamdown ? (
+          <Streamdown components={mentionComponents as never}>{entry.text}</Streamdown>
+        ) : (
+          entry.text
+        )}
+      </div>
+      {/* User attachments: what every responding bot was */
+      /* shown — image previews, or a named chip for */
+      /* PDFs/files. */}
+      <GroupEntryAttachments entry={entry} entryKey={entryKey} />
+    </RoomMessage>
+  )
+})
+
+/** A bot's transcript face from its Bot Mode appearance — the same pipeline as speakerFace, memo'd so
+ *  unchanged speakers don't re-derive their shape/color/image per keystroke. */
+const SpeakerFace = memo(function SpeakerFace({ meta, name }: { meta: BotMeta | null | undefined; name: string }) {
+  const appearance = botAppearance(name, meta)
+  const image = appearance.image ?? null
+
+  return (
+    <BotFace
+      color={avatarColor(appearance.color, name)}
+      image={image && !isBackfilledFacePng(image) ? image : null}
+      name={name}
+      shape={appearance.shape}
+      size={ROOM_AVATAR_SIZE}
+    />
+  )
+})
+
+/** User attachments on a log line: image previews, or a named chip for PDFs/files. */
+const GroupEntryAttachments = memo(function GroupEntryAttachments({ entry, entryKey }: { entry: GroupMessage; entryKey: string }) {
+  if (!Array.isArray(entry.images) || !entry.images.length) {
+    return null
+  }
+
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+      {entry.images.map((img, imgIndex) =>
+        img.kind === 'pdf' || img.kind === 'file' ? (
+          <div
+            className="flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)"
+            key={`${entryKey}:img:${imgIndex}`}
+            title={img.name || 'attached file'}
+          >
+            <Codicon className="text-[0.8rem]" name={img.kind === 'pdf' ? 'file-pdf' : 'file'} />
+            <span className="max-w-48 truncate">{img.name || 'attached file'}</span>
+          </div>
+        ) : (
+          <img
+            alt={img.name || 'attached image'}
+            className="max-h-40 max-w-60 rounded-md border border-(--ui-stroke-secondary) object-contain"
+            key={`${entryKey}:img:${imgIndex}`}
+            src={img.data}
+            title={img.name || 'attached image'}
+          />
+        )
+      )}
+    </div>
+  )
+})
 
 /** Soft-disband a group chat: remove only this group from every local member's
  *  membership list (the metadata syncs cross-machine via ui_meta), drop the
@@ -850,41 +1007,43 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     composerKeyRef.current = composerKey
   }
 
-  const updateComposerDraft = (mutate: (draft: GroupComposerDraft) => GroupComposerDraft) => {
+  const updateComposerDraft = useCallback((mutate: (draft: GroupComposerDraft) => GroupComposerDraft) => {
     const next = updateGroupComposerDraft(composerKeyRef.current, mutate)
     setComposerDraft(next)
 
     return next
-  }
+  }, [])
 
   const draft = composerDraft.main || ''
   const replyDrafts = composerDraft.replies || {}
   const replyThread = composerDraft.activeReplyThread || null
   const pendingImages = composerDraft.pendingAttachments || {}
 
-  const setDraft = (value: GroupDraftSetter<string>) =>
+  // Draft setters keep identity (only `updateComposerDraft`'s own inputs matter), so the memo'd log
+  // rows bail on a keystroke instead of re-rendering with fresh lambdas.
+  const setDraft = useCallback((value: GroupDraftSetter<string>) =>
     updateComposerDraft(current => ({
       ...current,
       main: typeof value === 'function' ? value(current.main || '') : value
-    }))
+    })), [updateComposerDraft])
 
-  const setReplyDrafts = (value: GroupDraftSetter<Record<string, string>>) =>
+  const setReplyDrafts = useCallback((value: GroupDraftSetter<Record<string, string>>) =>
     updateComposerDraft(current => ({
       ...current,
       replies: typeof value === 'function' ? value(current.replies || {}) : value
-    }))
+    })), [updateComposerDraft])
 
-  const setReplyThread = (value: GroupDraftSetter<null | string>) =>
+  const setReplyThread = useCallback((value: GroupDraftSetter<null | string>) =>
     updateComposerDraft(current => ({
       ...current,
       activeReplyThread: typeof value === 'function' ? value(current.activeReplyThread || null) : value
-    }))
+    })), [updateComposerDraft])
 
-  const setPendingImages = (value: GroupDraftSetter<Record<string, Attachment[]>>) =>
+  const setPendingImages = useCallback((value: GroupDraftSetter<Record<string, Attachment[]>>) =>
     updateComposerDraft(current => ({
       ...current,
       pendingAttachments: typeof value === 'function' ? value(current.pendingAttachments || {}) : value
-    }))
+    })), [updateComposerDraft])
 
   // Browser Comment Mode can live in its own Electron pop-out on another
   // monitor. The ordinary composer bus is window-local and this room uses its
@@ -1428,10 +1587,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
   // thread's, else the main composer — so parseGroupChatMentions routes the
   // next turn to that member only. Insert-only: the user still sends. The tag
   // is owner-qualified when a same-named twin shares the friendly form.
-  const replyMentionTag = (entry: GroupMessage, member: GroupMember | null) =>
-    groupReplyMentionTag(member || { name: entry.from.name }, members)
+  const replyMentionTag = useCallback((entry: GroupMessage, member: GroupMember | null) =>
+    groupReplyMentionTag(member || { name: entry.from.name }, members), [members])
 
-  const replyToMember = (entry: GroupMessage, member: GroupMember | null) => {
+  const replyToMember = useCallback((entry: GroupMessage, member: GroupMember | null) => {
     const tag = replyMentionTag(entry, member)
 
     if (!tag) {
@@ -1446,138 +1605,21 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     focusComposerEnd(inThread ? threadReplyInput : mainComposerInput)
 
     if (inThread) {setReplyDrafts(prev => ({ ...prev, [thread]: seed(prev[thread] || '') }))} else {setDraft(seed)}
-  }
+  }, [mainComposerInput, replyMentionTag, replyThread, setDraft, setReplyDrafts, threadReplyInput])
 
-  // Same appearance pipeline as the roster: custom image/pet, else the deterministic shape+color face.
-  const speakerFace = (name: string, meta: BotMeta | null | undefined) => {
-    const appearance = botAppearance(name, meta)
-    const image = appearance.image ?? null
-
-    return (
-      <BotFace
-        color={avatarColor(appearance.color, name)}
-        image={image && !isBackfilledFacePng(image) ? image : null}
-        name={name}
-        shape={appearance.shape}
-        size={ROOM_AVATAR_SIZE}
-      />
-    )
-  }
-
-  // One log entry, rendered exactly as before conversation folding existed.
+  // One log entry, rendered exactly as before conversation folding existed — through the memo'd
+  // GroupLogEntryView so a composer keystroke never re-parses the whole transcript. The parent keeps
+  // each row's identity triple (entry, index) plus its derived speaker/member stable per log revision;
+  // `key` stays on the element the parent creates.
   const renderEntry = (entry: GroupMessage, index: number) => {
-    const isUser = entry.from.kind === 'user'
-    const meta = groupTranscriptSpeakerMeta(entry, members, allMeta, liveRoster)
+    const speakerRow = groupTranscriptSpeaker(entry, members, liveRoster)
+    const member = members.find(bot => bot === speakerRow) ?? null
+    // A seated speaker IS its members entry; a former/foreign speaker is the synthesized row.
+    const speaker = speakerRow ? member ?? speakerRow as GroupMember : null
 
-    // Match this speaker back to its member descriptor so display
-    // names and disambiguating handles come from the roster (the
-    // primary "default" profile renders as Hermes, remote dupes
-    // carry their @name-device handle); a former member as its own machine names it.
-    const speaker = groupTranscriptSpeaker(entry, members, liveRoster)
-    const member = members.find(bot => bot === speaker) ?? null
-
-    const display = isUser || !speaker ? b.group.you : displayName(speaker, meta)
-
-    const entryKey = `${entry.at}:${index}`
-    const revealed = !isUser && revealedSpeaker === entryKey
-
-    // Clicked: append the gateway name so same-named agents on
-    // two connections are tellable apart on demand.
-    const label = isUser
-      ? b.group.you
-      : revealed
-        ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
-        : display
-
-    // Speaker avatar: same appearance pipeline as the roster (speakerFace).
-    // Source-qualified speakers use owner-aware botRosterMeta (#96432).
-    // The user's own lines carry no avatar.
-    const actions = entry.text.trim() || !isUser ? (
-      <>
-        {isUser ? null : (
-          <Tip label={b.group.replyTo(`@${replyMentionTag(entry, member)}`)}>
-            <Button
-              aria-label={b.group.replyTo(display)}
-              className="text-(--ui-text-tertiary) hover:text-foreground"
-              onClick={() => replyToMember(entry, member)}
-              size="icon"
-              variant="ghost"
-            >
-              <Codicon name="reply" />
-            </Button>
-          </Tip>
-        )}
-        {entry.text.trim() ? <CopyButton appearance="icon" buttonSize="icon" stopPropagation text={entry.text} /> : null}
-      </>
-    ) : undefined
-
-    const author = isUser ? (
-      label
-    ) : (
-      <Tip label={revealed ? b.group.hideHandle : b.group.showHandle}>
-        <Button
-          className="text-left text-[0.8125rem] font-semibold text-foreground"
-          onClick={() => setRevealedSpeaker(revealed ? null : entryKey)}
-          size="inline"
-          variant="text"
-        >
-          {label}
-        </Button>
-      </Tip>
-    )
-
-    return (
-      <RoomMessage
-        actions={actions}
-        author={author}
-        avatar={isUser ? undefined : speakerFace(entry.from.name, meta)}
-        isUser={isUser}
-        key={entryKey}
-        timestampMs={entry.at}
-      >
-          <div
-          className="min-w-0 [&_pre]:whitespace-pre-wrap [&_pre]:wrap-anywhere" // The app shell sets user-select: none globally; message bodies opt
-          // back in so drag-select and ⌘C work in group chat logs.
-          data-selectable-text="true"
-          data-slot="group-chat-message-content"
-        >
-          {MessageTextContent ? (
-            <MessageTextContent decorateText={mentionText} media={!member?.remoteSource} text={entry.text} />
-          ) : Streamdown ? (
-            <Streamdown components={mentionComponents}>{entry.text}</Streamdown>
-          ) : (
-            entry.text
-          )}
-        </div>
-          {/* User attachments: what every responding bot was */
-        /* shown — image previews, or a named chip for */
-        /* PDFs/files. */}
-        {Array.isArray(entry.images) && entry.images.length ? (
-          <div className="mt-1 flex flex-wrap items-center gap-1.5">
-            {entry.images.map((img, imgIndex) =>
-              img.kind === 'pdf' || img.kind === 'file' ? (
-                <div
-                  className="flex items-center gap-1 rounded-md border border-(--ui-stroke-secondary) px-1.5 py-1 text-[0.65rem] text-(--ui-text-tertiary)"
-                  key={`${entryKey}:img:${imgIndex}`}
-                  title={img.name || 'attached file'}
-                >
-                  <Codicon className="text-[0.8rem]" name={img.kind === 'pdf' ? 'file-pdf' : 'file'} />
-                  <span className="max-w-48 truncate">{img.name || 'attached file'}</span>
-                </div>
-              ) : (
-                <img
-                  alt={img.name || 'attached image'}
-                  className="max-h-40 max-w-60 rounded-md border border-(--ui-stroke-secondary) object-contain"
-                  key={`${entryKey}:img:${imgIndex}`}
-                  src={img.data}
-                  title={img.name || 'attached image'}
-                />
-              )
-            )}
-          </div>
-        ) : null}
-      </RoomMessage>
-    )
+    return <GroupLogEntryView allMeta={allMeta} b={b} entry={entry} index={index} key={`${entry.at}:${index}`} liveRoster={liveRoster}
+      member={member} mentionComponents={mentionComponents} mentionText={mentionText} onReplyTo={replyToMember}
+      replyTagFor={replyMentionTag} revealedKey={revealedSpeaker} setRevealedSpeaker={setRevealedSpeaker} speaker={speaker} />
   }
 
   // The public room is one arrival-ordered conversation. Thread ids scope
@@ -1701,7 +1743,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           ))}
           <LegacyWorkingRow
             activity={activityEvents}
-            avatar={(turn: GroupMember) => speakerFace(turn.name, botRosterMeta(turn, allMeta))}
+            avatar={(turn: GroupMember) => <SpeakerFace meta={botRosterMeta(turn, allMeta)} name={turn.name} />}
             clarifying={roomClarifies.length > 0}
             key={'working'}
             labels={{ roomWorking: b.group.roomWorking, waitingForAnswer: b.group.waitingForAnswer }}
@@ -1797,7 +1839,11 @@ function GroupChatMainView({ group, origin }: GroupChatMainViewProps) {
   // Subscribe: membership changes ride bot meta AND the room record.
   useValue($groupChats)
   const roster = useValue($lastRoster)
-  const members = groupChatMemberBots(group, roster, allMeta)
+  // Identity-stable between store changes: the room record re-renders this wrapper on every
+  // activity poll, and a fresh `members` array would defeat the memo'd rows' bail downstream.
+  // Recomputes exactly when `$lastRoster` / `$botMeta` / `$groupChats` (subscribed above) move,
+  // so seating stays as reactive as the previous call-time derivation.
+  const members = useMemo(() => groupChatMemberBots(group, roster, allMeta), [group, roster, allMeta])
 
   // Older SDKs have no paneVisibility: fall back to an always-visible atom so
   // the hook order stays stable and behavior matches the previous build.

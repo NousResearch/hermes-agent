@@ -194,3 +194,56 @@ async def test_finishing_edit_carries_the_topic_routing_metadata():
     from gateway.run_turn_final_reconcile import edit_preview_to_final
     await edit_preview_to_final(adapter, "chat-1", "1", "answer", {"thread_id": "77"})
     assert seen == [{"thread_id": "77"}]
+
+
+@pytest.mark.asyncio
+async def test_an_edit_that_would_truncate_leaves_the_normal_send():
+    """Google Chat, Slack and DingTalk cut an oversized edit short and still report success: a
+    reply longer than one message is never "finished in place" there, the normal send owns it."""
+    gate = asyncio.Event()
+
+    class _TruncatingEdit(_FloodedChat):
+        MAX_MESSAGE_LENGTH = 4000
+
+        async def edit_message(self, chat_id, message_id, content, *, finalize=False, **_kw):
+            self.calls.append(("edit", content))
+            if finalize and not gate.is_set():
+                gate.set()
+                await asyncio.Event().wait()  # stuck final edit: the turn's flush cancels the consumer
+            if finalize and len([c for c in self.calls if c[0] == "edit"]) == 2:
+                return self._refuse()  # the cancel handler's best-effort edit fails too
+            self.messages[message_id] = content[:3999] + "…" if len(content) > 4000 else content
+            return SendResult(success=True, message_id=message_id)
+
+    adapter = _TruncatingEdit(flood_secs=0.0)
+    final = "START " + "word " * 1500 + " END-OF-ANSWER"
+    consumer = GatewayStreamConsumer(adapter, "chat-1", StreamConsumerConfig(
+        edit_interval=0.01, buffer_threshold=5, cursor=" ▉"))
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta(final[:30])
+    await async_wait_until(lambda: adapter.messages, timeout=5, what="first preview sent")
+    consumer.finish(final)
+    await asyncio.wait_for(gate.wait(), timeout=5)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    response = {"final_response": final}
+    turn_ctx = SimpleNamespace(stream_consumer_holder=[consumer], source=SimpleNamespace(chat_id="chat-1"),
+                               session_key="agent:main:googlechat:dm:chat-1")
+    await asyncio.wait_for(_Harness()._run_agent_mark_streamed_delivery(response, turn_ctx), timeout=5)
+
+    assert "already_sent" not in response
+    assert len([c for c in adapter.calls if c[0] == "edit"]) == 2  # no cut-short finishing edit was tried
+
+
+@pytest.mark.asyncio
+async def test_a_replaced_turn_and_a_receiptless_edit_are_distinguishable():
+    """The queued lane drops the reply only for a replaced turn; an edit with no receipt is not that."""
+    from gateway.run_turn_final_reconcile import TURN_REPLACED, edit_preview_to_final
+
+    class _NoReceipt:
+        async def edit_message(self, chat_id, message_id, content, *, finalize=False):
+            return None
+
+    assert await edit_preview_to_final(_NoReceipt(), "c", "1", "a", still_current=lambda: False) is TURN_REPLACED
+    assert await edit_preview_to_final(_NoReceipt(), "c", "1", "a") is not TURN_REPLACED

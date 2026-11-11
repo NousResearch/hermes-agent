@@ -280,13 +280,15 @@ def _session_browse_picker(sessions: list, session_db=None, initial_search: str 
 
 
 def pick_interactive_session(session_db, exclude_sources=None, initial_search: str = "", limit: int = 500) -> Optional[str]:
-    """Fetch recent sessions and run interactive picker (curses or numbered fallback)."""
+    """Fetch recent sessions and run interactive picker (curses or numbered fallback).
+
+    Returns the selected session ID, None when the user cancelled, or "" when there is nothing to pick from."""
     if not session_db:
-        return None
+        return ""
     from hermes_cli.sessions_cmd import _surface_reader
     sessions = _surface_reader(session_db).list_sessions_rich(
         exclude_sources=exclude_sources, limit=limit
     )
     if not sessions:
-        return None
+        return ""
     return _session_browse_picker(sessions, session_db=session_db, initial_search=initial_search)

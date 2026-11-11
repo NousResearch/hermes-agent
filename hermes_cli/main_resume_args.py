@@ -56,6 +56,15 @@ def recreate_resumed_tui_worktree(args) -> None:
         print(f"↪ recreated the session's worktree: {tree}")
 
 
+def _exit_without_selection(selected_id) -> None:
+    """The picker returned no session: None is a user cancel (exit 0), "" means there was nothing to pick (exit 1)."""
+    if selected_id is None:
+        print("Cancelled.")
+        sys.exit(0)
+    print("No previous sessions found to resume.")
+    sys.exit(1)
+
+
 def resolve_interactive_resume(args, *, use_tui: bool) -> None:
     """Bare --resume / -r without argument: interactive picker (like claude --resume)."""
     _resume_raw = getattr(args, "resume", None)
@@ -72,11 +81,9 @@ def resolve_interactive_resume(args, *, use_tui: bool) -> None:
     from hermes_cli.sessions_cmd_browse import pick_interactive_session
     with _session_db() as db:
         selected_id = pick_interactive_session(db, exclude_sources=["tool"])
-        if selected_id:
-            args.resume = selected_id
-        else:
-            print("Cancelled." if db else "No previous sessions found to resume.")
-            sys.exit(0 if selected_id is None and db else 1)
+        if not selected_id:
+            _exit_without_selection(selected_id)
+        args.resume = selected_id
 
 
 def resolve_session_name_or_search(args, resume_val: str, *, use_tui: bool, resolve_fn) -> None:
@@ -89,11 +96,9 @@ def resolve_session_name_or_search(args, resume_val: str, *, use_tui: bool, reso
         from hermes_cli.sessions_cmd_browse import pick_interactive_session
         with _session_db() as db:
             selected_id = pick_interactive_session(db, exclude_sources=["tool"], initial_search=resume_val)
-            if selected_id:
-                args.resume = selected_id
-            else:
-                print("Cancelled.")
-                sys.exit(0)
+            if not selected_id:
+                _exit_without_selection(selected_id)
+            args.resume = selected_id
     else:
         args.resume = resume_val
 

@@ -829,8 +829,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             import sys
             if sys.stdin.isatty() and sys.stdout.isatty():
                 from hermes_cli.sessions_cmd_browse import pick_interactive_session
-                if not (target := pick_interactive_session(self._session_db, exclude_sources=["tool"])):
-                    return _cp("  Cancelled.") if target is None else None
+                target = pick_interactive_session(self._session_db, exclude_sources=["tool"])
+                if target is None:
+                    return _cp("  Cancelled.")
             if not target:
                 _cp(f"  {_t('resume.usage')}")
                 if self._show_recent_sessions(reason="resume"):

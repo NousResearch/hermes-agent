@@ -1417,23 +1417,14 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 if _m:
                     _retry_after = float(_m.group(1))
             return self._rich_transient_result(exc, "sendRichMessage", retry_after=_retry_after)
-        if isinstance(msg, dict):
-            message_id = msg.get("message_id")
-            if message_id is None:
-                message_id = (msg.get("result") or {}).get("message_id")
-        else:
-            message_id = getattr(msg, "message_id", None)
-        if message_id is not None:
-            await self._record_rich_sent(chat_id, message_id, content)
-        else:
-            # The API accepted the call but the result carried no id. Report success here only because a
-            # blind retry could duplicate a message Telegram already holds; the confirmation step in
-            # ``gateway.platforms.delivery_confirm.confirm_delivery_result`` downgrades an id-less final to the
-            # ledger's unconfirmed state, so this is a warning rather than a silent success.
-            logger.warning(
-                "[%s] sendRichMessage accepted for chat %s but returned no message_id (%d chars)",
-                self.name, chat_id, len(content))
-        return SendResult(success=True, message_id=str(message_id) if message_id is not None else None)
+        message_id = msg.get("message_id") if isinstance(msg, dict) else getattr(msg, "message_id", None)
+        if message_id is None and isinstance(msg, dict):
+            message_id = (msg.get("result") or {}).get("message_id")
+        if message_id is None:  # accepted with no id: delivery unknown, never proof of it (#147616)
+            from plugins.platforms.telegram.telegram_send_errors import idless_send_result
+            return idless_send_result(self.name, chat_id, "sendRichMessage")
+        await self._record_rich_sent(chat_id, message_id, content)
+        return SendResult(success=True, message_id=str(message_id))
 
     def _rich_payload_base(self, chat_id: str, content: str) -> dict[str, Any]:
         payload: dict[str, Any] = {"chat_id": normalize_telegram_chat_id(chat_id), "rich_message": self._rich_message_payload(content)}

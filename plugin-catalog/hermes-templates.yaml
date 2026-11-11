@@ -1,0 +1,51 @@
+name: hermes-templates
+title: Agent Templates
+repo: https://github.com/Ilyassbm/hermes-templates
+sha: 8cb136ee889a098d6bb13b64c5ff985fd9a44ff5
+subdir: ""
+description: >-
+  Share a whole Hermes agent as one .htemplate bundle and install it from a single
+  HTTPS link: identity (SOUL.md), config with accounts and endpoints stripped, skills,
+  routines, MCP server definitions, memories only when the author opts in, and plugin
+  ids. A recipe, not a clone — credentials, sessions, conversation history, logs,
+  caches and workspace never travel. Publish puts the bundle in a GitHub repository and
+  returns one permanent link (re-publishing updates the same URL); Install previews a
+  link, a path or a dropped file and writes nothing before you confirm, ships routines
+  paused, enables a plugin only if it is already installed, and reinstalling the same
+  link offers "Update v1.0.0 → v1.1.0" while keeping memories, sessions and .env.
+  Disclosure: reads the selected profile under HERMES_HOME (config.yaml, SOUL.md,
+  skills/, cron/jobs.json, mcp.json, memories/ when opted in) and writes a new profile
+  directory plus its own bundles under plugin-data/; the page may read a bundle only
+  from HERMES_HOME or the home directory, the CLI has no such limit. Network: one HTTPS
+  GET to a URL the user pastes (HTTPS and public hosts only there, http, LAN and local
+  accepted in the CLI; every redirect re-checked, 20 MB cap) and, only when the user
+  presses Publish, the GitHub REST API to upload the bundle and download it back to
+  prove the link before it is shown. Republishing writes the file at the same public
+  URL. Credentials: the optional GITHUB_TOKEN is read with agent.secret_scope under the
+  named profile, never stored in a bundle, never logged and never returned; bundles that
+  carry a credential path are refused before any network call. No shell, no telemetry,
+  no self-updater. Imports agent.redact.redact_sensitive_text, which the public plugin
+  API page lists; the validator table in the current stable build is older than that
+  entry and still prints an advisory.
+maintainer: Ilyassbm
+tier: community
+category: desktop
+requires_hermes: ">=0.23"
+docs_url: https://github.com/Ilyassbm/hermes-templates#readme
+version: "1.2.4"
+readme: true
+platforms: []
+screenshots:
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/8cb136ee889a098d6bb13b64c5ff985fd9a44ff5/docs/share-tab.png
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/8cb136ee889a098d6bb13b64c5ff985fd9a44ff5/docs/publish-plan.png
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/8cb136ee889a098d6bb13b64c5ff985fd9a44ff5/docs/publish-link.png
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/8cb136ee889a098d6bb13b64c5ff985fd9a44ff5/docs/install-tab.png
+known_issues:
+  - The Desktop half of a unified package starts disabled per browser; enable it once in Capabilities ▸ Plugins.
+  - raw.githubusercontent.com caches plain links for up to 5 minutes per client kind, so a just-published update can briefly still serve the previous file; the result also shows the commit-pinned URL, which is immediate.
+  - A profile named by ?profile= is only used for credential resolution; the page lists the profiles of the Hermes home it runs in.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

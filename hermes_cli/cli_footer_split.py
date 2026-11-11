@@ -1,6 +1,6 @@
 """Root container of the classic CLI footer: clips a late row instead of giving up.
 
-prompt_toolkit renders a non-full-screen layout into exactly the height it measured a moment
+prompt_toolkit renders a non-full-screen layout into at least the height it measured a moment
 earlier (``Renderer.render`` → ``HSplit.preferred_height``), then ``HSplit._divide_heights``
 measures every child again while painting. Each footer row here has a callable height that the
 agent thread flips mid-turn (``_agent_running`` → spacer, ``_spinner_text`` → spinner,
@@ -10,17 +10,21 @@ exceed the budget by one and stock ``HSplit`` replaces the WHOLE footer with its
 pane. Hermes's throttled ``_invalidate`` can then drop the healing repaint for the length of a
 tool call, so the placeholder sits there looking like a geometry error.
 
-The CLI builds it bottom-aligned (``footer_root``). prompt_toolkit never shrinks a non-full-screen
-app while it runs: ``Renderer.render`` paints into ``max(rows below the cursor, the last frame's
-height, the preferred height)``, so after a panel closes (completion menu, clarify, approval) the
-root is handed more rows than its children ask for. ``HSplit``'s default ``JUSTIFY`` left them
-blank under the status bar and the composer jumped up by the panel's height; bottom-aligned, they
-pad the space above the composer and the composer stays on the terminal's last rows.
+The CLI builds it bottom-aligned (``footer_root``). prompt_toolkit does not shrink a non-full-screen
+app from one paint to the next: ``Renderer.render`` paints into ``max(rows below the cursor, the last
+frame's height, the preferred height)``, and only a print, which resets the renderer, drops the last
+frame. So after a panel closes the root is handed more rows than its children ask for. ``HSplit``'s
+default ``JUSTIFY`` laid the children out from the top and left those rows blank at the bottom: a
+closed clarify or approval panel pulled the composer up by its height, and a closed completion menu
+(below the composer) left it as high as the open menu had pushed it. Bottom-aligned, the spare rows
+pad the space above the composer, which stays on, or returns to, the terminal's last rows.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from prompt_toolkit.application import get_app
-from prompt_toolkit.layout import HSplit, VerticalAlign
+from prompt_toolkit.layout import AnyContainer, HSplit, VerticalAlign
 
 
 class FooterSplit(HSplit):
@@ -46,6 +50,6 @@ class FooterSplit(HSplit):
         return clipped[::-1]
 
 
-def footer_root(children) -> FooterSplit:
+def footer_root(children: Sequence[AnyContainer]) -> FooterSplit:
     """The CLI layout's root: a ``FooterSplit`` whose spare rows go above the composer."""
     return FooterSplit(children, align=VerticalAlign.BOTTOM)

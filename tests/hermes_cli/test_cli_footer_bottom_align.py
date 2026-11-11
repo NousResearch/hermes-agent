@@ -1,11 +1,11 @@
 """The classic CLI keeps its composer and status bar on the terminal's last rows.
 
-prompt_toolkit never shrinks a non-full-screen app while it runs: ``Renderer.render`` paints into
-``max(rows below the cursor, the last frame's height, the preferred height)``. So when a panel in
-the live area closes (the slash-command menu, a clarify or approval panel), the root container
-is handed more rows than its children ask for. Top-aligned, the spare rows were left blank under
-the status bar and the composer jumped up by the closed panel's height; bottom-aligned, they pad
-the space above the composer and the composer stays put.
+prompt_toolkit does not shrink a non-full-screen app from one paint to the next: ``Renderer.render``
+paints into ``max(rows below the cursor, the last frame's height, the preferred height)``. So when a
+panel in the live area closes (the slash-command menu, a clarify or approval panel), the root
+container is handed more rows than its children ask for. ``HSplit``'s default ``JUSTIFY`` left them
+blank at the bottom, under the composer or (modern layout) the status bar; bottom-aligned, they pad
+the space above the composer, which stays on the terminal's last rows.
 """
 from contextlib import contextmanager
 
@@ -25,7 +25,8 @@ WIDTHS = pytest.mark.parametrize("columns", [40, 80, 200])
 
 @contextmanager
 def _footer(monkeypatch, modern):
-    """The CLI's real root container, built as ``display.cli_layout`` asks, inside a running app."""
+    """The CLI's real root container, built as ``display.cli_layout`` asks, with an app set as the
+    current one (never run: a row clipped by the overflow path asks it for a repaint)."""
     monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
     from cli import HermesCLI
 

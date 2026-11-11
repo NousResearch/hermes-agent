@@ -143,16 +143,20 @@ class CLIInfoMixin:
             for line in lines:
                 self._console_print(line)
 
-    def show_banner(self, from_last_row: bool = False):
+    def show_banner(self, from_last_row: bool = False) -> None:
         """Display the welcome banner in Claude Code style. ``from_last_row`` (interactive startup)
         starts it on the terminal's last row so banner and prompt end pinned to the bottom (#4412):
-        the clear homes the cursor, undoing the scroll startup did before it."""
-        from cli import _build_compact_banner, get_tool_definitions, logger
+        the clear homes the cursor, undoing the scroll startup did before it. Rich sends no clear to
+        a dumb terminal or to what is no terminal, so there the banner prints where the cursor is."""
+        from cli import (_CHROME_FLOOR_AT_LAST_ROW, _build_compact_banner, _scroll_to_last_row, _set_chrome_floor,
+                         get_tool_definitions, logger)
         from hermes_cli.banner import build_welcome_banner
-        from hermes_cli.cli_render import _scroll_to_last_row
         self.console.clear()
-        if from_last_row:
-            _scroll_to_last_row(self.console.file)
+        sent_home = from_last_row and self.console.is_terminal and not self.console.is_dumb_terminal
+        if sent_home and _scroll_to_last_row(self.console.file):
+            # With CPR off, prompt_toolkit learns the footer's rows down to the bottom only from the
+            # chrome floor; armed, each print keeps the footer there.
+            _set_chrome_floor(_CHROME_FLOOR_AT_LAST_ROW)
         store, gateway_inventory, ctx_len, banner_kw = banner_plan(self, self.console)
         on_gateway = store is not None  # its tools come from the gateway: never enumerated here
 

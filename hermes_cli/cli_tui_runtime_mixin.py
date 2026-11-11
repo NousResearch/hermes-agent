@@ -278,7 +278,7 @@ class CLITuiRuntimeMixin:
         with suppress(Exception):  # VS Code image probe: same pre-pt window, cached, ~10 ms
             _show_vscode_images_hint = vscode_images_hint(self._inline_images_mode)
         # Scroll what the shell left on screen into scrollback before show_banner clears it.
-        from hermes_cli.cli_render import _scroll_to_last_row, _set_chrome_floor
+        from cli import _scroll_to_last_row
         _scroll_to_last_row()
 
         from hermes_cli.gateway_client import GatewayClientError
@@ -289,9 +289,6 @@ class CLITuiRuntimeMixin:
             print(f"Error: {exc}", file=sys.stderr)
             raise SystemExit(2) from None
         self.show_banner(from_last_row=True)
-        # Banner and prompt start on the last row. With CPR off, prompt_toolkit only learns the rows
-        # down to the bottom from the chrome floor; armed, each print keeps the footer there.
-        _set_chrome_floor(1)
         self._show_security_advisories()
 
         # First-run: an unconfigured install routes into provider onboarding instead of

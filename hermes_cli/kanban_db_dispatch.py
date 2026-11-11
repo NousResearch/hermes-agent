@@ -63,6 +63,10 @@ _RESPAWN_BLOCKER_RE = re.compile(
     r"authoris(?:e|es|ed|ing|ation)|authz|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
+    # The ownership separator is `*`, not `?`: a worker echoing the refusal
+    # with extra whitespace ("ownership  refusal") must still be caught, or the
+    # card slips past the blocker and re-spawns against a ledger-owned scope.
+    r"ownership[_\s-]*refus(?:ed|al)|"
     r"invalid[\s_]api[\s_]key)\b",
     re.IGNORECASE,
 )
@@ -75,6 +79,14 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 # wall, burning a worker slot every tick for hours. Overridable via
 # ``HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS``.
 DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
+
+# Cooldown after an ownership-refused admission (#47 Phase 2 P1-D). The refusal
+# releases the card with ``last_failure_error='ownership_refused'``, which the
+# quota/auth blocker pattern above would otherwise park forever: the ledger
+# still owns the scope, so every re-spawn only burns a worker slot until the
+# cooldown elapses. Defaults to the same 5 minutes as the rate-limit wall.
+# Overridable via ``HERMES_KANBAN_OWNERSHIP_REFUSAL_COOLDOWN_SECONDS``.
+DEFAULT_OWNERSHIP_REFUSAL_COOLDOWN_SECONDS = DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
 
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
@@ -1564,7 +1576,12 @@ def check_respawn_guard(
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
     checked BEFORE ``blocker_auth`` because the requeue stamps a quota-flavored
     ``last_failure_error`` that would otherwise park the task forever — that
-    path never increments ``consecutive_failures``), ``"blocker_auth"``
+    path never increments ``consecutive_failures``), ``"ownership_refusal_cooldown"``
+    (latest run ``refused`` — the #47 Phase 2 ownership gate released the card
+    with ``last_failure_error='ownership_refused'``; checked BEFORE
+    ``blocker_auth`` for the same reason: the ledger still owns the scope, so
+    the refusal text would otherwise park the task forever while the breaker
+    count is what actually stops the retries), ``"blocker_auth"``
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
@@ -1611,6 +1628,25 @@ def check_respawn_guard(
         # Cooldown elapsed — return early so blocker_auth doesn't catch the
         # stamped rate-limit text; this path intentionally retries forever
         # (spaced by the cooldown) until quota returns or a real run supersedes it.
+        return None
+
+    # 1b. Ownership-refusal cooldown (#47 Phase 2 P1-D). A refused admission
+    #     releases the card with ``last_failure_error='ownership_refused'``; the
+    #     blocker_auth pattern below would park it forever because the ledger
+    #     still owns the scope. Space the retries instead — the incremented
+    #     ``consecutive_failures`` is what eventually stops the dispatcher (see
+    #     ``_release_refused_claim``).
+    own_cooldown = _kb._resolve_ownership_refusal_cooldown_seconds()
+    if latest_run is not None and latest_run["outcome"] == "refused":
+        if own_cooldown <= 0:
+            # Cooldown disabled — respawn on the next tick, skipping blocker_auth
+            # so the stamped refusal text doesn't re-trap the task.
+            return None
+        ended_at = _kb._to_epoch(latest_run["ended_at"])
+        if ended_at is not None and (now - ended_at) < own_cooldown:
+            return "ownership_refusal_cooldown"
+        # Cooldown elapsed — return early so blocker_auth doesn't catch the
+        # stamped refusal text; the breaker count decides from here.
         return None
 
     # 2. Quota / auth blocker: retrying immediately will not help.  A plain

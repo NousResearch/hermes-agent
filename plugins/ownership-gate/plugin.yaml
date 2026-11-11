@@ -1,0 +1,8 @@
+name: ownership-gate
+version: 1.0.0
+description: "#47 Phase 2 C1/C2 — cross-session ownership gate for DIRECT dispatch. pre_tool_call claims the union of goal/context/tasks[].goal/context scopes (all-or-nothing, fail-closed); post_tool_call releases them when the call failed. OFF unless HERMES_OWNERSHIP_DIRECT_ENFORCE=1."
+author: AERT
+kind: backend
+provides_hooks:
+  - pre_tool_call
+  - post_tool_call

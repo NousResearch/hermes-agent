@@ -5,6 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
+# R1 (#47 Phase 2): import the recovery module at COLLECTION time, before any
+# test patches ``hermes_state_local.local_receipt``. Its module-level
+# ``from hermes_state_local import local_receipt`` binds whatever is present at
+# import time; importing it during a test would bind the patched lambda
+# permanently (monkeypatch cannot restore an import-time binding).
+import gateway.session_local_recovery as _slr
+
 
 def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkeypatch):
     from gateway.session_contract import AdmissionReceipt, Principal, SessionRef
@@ -52,8 +59,14 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
     async def resume(ref, params):
         pass
 
-    authority = SimpleNamespace(profile_id=str(tmp_path), submit=submit,
-                                db=SimpleNamespace(get_session=lambda sid: None, db_path=str(tmp_path / 'state.db')))
+    # The session layer is mocked: ``get_session`` must resolve a REAL session
+    # (the gate's ``verify_session`` checks exactly that), and ``local_receipt``
+    # must not return a saved claim or the retry branch would replace the fresh
+    # admission under test.
+    monkeypatch.setattr('hermes_state_local.local_receipt', lambda db, sid: None)
+    monkeypatch.setattr(_slr, 'local_receipt', lambda db, sid: None)
+    db = SimpleNamespace(get_session=lambda sid: True, db_path=str(tmp_path / 'state.db'))
+    authority = SimpleNamespace(profile_id=str(tmp_path), submit=submit, db=db)
     actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
     params = dict(board='owned', task_id=task.id, run_id=task.current_run_id, claim_lock=task.claim_lock)

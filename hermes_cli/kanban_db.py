@@ -325,6 +325,17 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return _env_int("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS)
 
 
+def _resolve_ownership_refusal_cooldown_seconds() -> int:
+    """``HERMES_KANBAN_OWNERSHIP_REFUSAL_COOLDOWN_SECONDS`` (0 = next tick, for tests) else default.
+
+    #47 Phase 2 P1-D: spaces the retries of a card the cross-session ownership
+    gate keeps refusing, so the dispatcher burns a worker slot every cooldown
+    window instead of every tick (or parks the card forever via blocker_auth).
+    """
+    return _env_int("HERMES_KANBAN_OWNERSHIP_REFUSAL_COOLDOWN_SECONDS",
+                    DEFAULT_OWNERSHIP_REFUSAL_COOLDOWN_SECONDS)
+
+
 # --- Paths ---
 
 DEFAULT_BOARD = "default"
@@ -1977,15 +1988,18 @@ def _synthesize_ended_run(
 
 def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
-    block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
+    block must wait for an operator: an explicit ``kanban_block`` (#28712), a
     breaker trip ``_record_task_failure`` stamped ``sticky`` — the clean-exit
-    protocol-violation budget or a systemic same-error wave. Those trip on a
-    policy independent of ``consecutive_failures``, so ``recompute_ready``'s
-    counter check cannot see them — without this the trip is promoted back to
-    ``ready`` in the same tick and the card respawns forever. A plain
-    (unified-budget) ``gave_up`` carries no marker and is judged by the counter,
-    so raising ``failure_limit`` or ``assign_task`` to a fresh profile still
-    releases it; a task with no such event at all (direct DB edit) auto-recovers.
+    protocol-violation budget or a systemic same-error wave — or the
+    cross-session ownership gate's ``ownership_refused`` (#47 Phase 2). Those
+    trip on a policy independent of ``consecutive_failures``, so
+    ``recompute_ready``'s counter check cannot see them — without this the trip
+    is promoted back to ``ready`` in the same tick and the card respawns forever.
+    A plain (unified-budget) ``gave_up`` carries no marker and is judged by the
+    counter, so raising ``failure_limit`` or ``assign_task`` to a fresh profile
+    still releases it; a task with no such event at all (direct DB edit)
+    auto-recovers. An explicit ``unblocked`` clears every sticky marker, so an
+    operator can always release the card.
     """
     row = conn.execute(
         "SELECT kind FROM task_events "
@@ -1994,13 +2008,26 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
     ).fetchone()
     if row and row["kind"] == "blocked":
         return True
+    last_unblocked = conn.execute(
+        "SELECT COALESCE(MAX(id), 0) FROM task_events "
+        "WHERE task_id = ? AND kind = 'unblocked'", (task_id,),
+    ).fetchone()[0]
     trip = conn.execute(
         "SELECT payload FROM task_events "
-        "WHERE task_id = ? AND kind = 'gave_up' AND id > COALESCE("
-        "  (SELECT MAX(id) FROM task_events WHERE task_id = ? AND kind = 'unblocked'), 0) "
-        "ORDER BY id DESC LIMIT 1", (task_id, task_id),
+        "WHERE task_id = ? AND kind = 'gave_up' AND id > ? "
+        "ORDER BY id DESC LIMIT 1", (task_id, last_unblocked),
     ).fetchone()
-    return bool(trip) and bool(_json_dict(trip["payload"]).get("sticky"))
+    if trip and _json_dict(trip["payload"]).get("sticky"):
+        return True
+    # C3 (#47 Phase 2): the ownership gate refuses a card because another live
+    # session owns the scope; retrying is futile until that owner releases it.
+    # Mirror the ``force_trip`` sticky mechanism: the newest ``ownership_refused``
+    # after the newest ``unblocked`` holds the card for an operator.
+    return conn.execute(
+        "SELECT 1 FROM task_events "
+        "WHERE task_id = ? AND kind = 'ownership_refused' AND id > ? "
+        "ORDER BY id DESC LIMIT 1", (task_id, last_unblocked),
+    ).fetchone() is not None
 
 
 def _latest_event(
@@ -4218,6 +4245,7 @@ from hermes_cli.kanban_db_workspace import (
 )
 from hermes_cli.kanban_db_dispatch import (
     DEFAULT_FAILURE_LIMIT,
+    DEFAULT_OWNERSHIP_REFUSAL_COOLDOWN_SECONDS,
     DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS,
     DispatchResult,
     _clear_failure_counter,

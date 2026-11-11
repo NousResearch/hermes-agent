@@ -44,7 +44,12 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
 
     async def resume(ref, params):
         calls.append('resume')
-    db = SimpleNamespace(get_session=lambda sid: None, db_path=str(tmp_path / 'state.db'))
+    # The session layer is mocked: ``get_session`` must resolve a REAL session
+    # (the gate's ``verify_session`` checks exactly that), and ``local_receipt``
+    # must not return a saved claim or the retry branch would replace the fresh
+    # admission under test.
+    monkeypatch.setattr('hermes_state_local.local_receipt', lambda db, sid: None)
+    db = SimpleNamespace(get_session=lambda sid: True, db_path=str(tmp_path / 'state.db'))
     authority = SimpleNamespace(profile_id=str(tmp_path), db=db, submit=submit)
     actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
     connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)

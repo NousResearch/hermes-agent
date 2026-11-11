@@ -5,10 +5,40 @@ from contextlib import closing
 from dataclasses import asdict, replace
 import threading
 import json
+import os
 from pathlib import Path
 import sqlite3
 
 from hermes_state_runtime import RuntimeStoreError
+
+
+def _ownership_enforce() -> bool:
+    """Cross-session ownership gate for fresh Kanban admissions (#47 Phase 2).
+
+    ``HERMES_KANBAN_OWNERSHIP_ENFORCE`` defaults to ``'1'`` (enforced). Any
+    value outside ``{'1', 'true', 'yes'}`` (case-insensitive, surrounding
+    whitespace ignored) disables the gate, so an operator can bypass the
+    ledger without a code change.
+    """
+    return os.environ.get('HERMES_KANBAN_OWNERSHIP_ENFORCE', '1').strip().lower() in {'1', 'true', 'yes'}
+
+
+_OWNERSHIP_TABLES = ('task_ownership', 'task_ownership_events')
+
+
+def _ownership_schema_present(conn) -> bool:
+    """True when both ownership ledger tables already exist (DDL is skipped).
+
+    C5 (#47 Phase 2): the ledger DDL is issued OUTSIDE ``kb.write_txn`` (see
+    ``admit_claim``). This read-only probe keeps steady-state admissions free of
+    any schema write — ``init_schema`` runs only when a table is actually
+    missing.
+    """
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?)",
+        _OWNERSHIP_TABLES,
+    ).fetchall()
+    return {r[0] for r in rows} >= set(_OWNERSHIP_TABLES)
 
 
 def build_kanban_policy(connection, params, config):
@@ -70,6 +100,62 @@ def build_kanban_policy(connection, params, config):
                    request_json=json.dumps(request, sort_keys=True), kanban_json=json.dumps(context)), private
 
 
+def _release_refused_claim(conn, task, row, *, refused, scope, scope_reason):
+    """Release the card claim in the SAME admission transaction as the refusal.
+
+    P1-A defensive helper — a refused admission must never leave the card
+    claimed:
+
+    * ``row is None`` (the card row vanished between the status check and the
+      read) still releases by ``task.id``.
+    * a corrupt ``consecutive_failures`` (``int()`` raises) fails CLOSED to
+      ``blocked`` — the card is never re-queued on an unreadable breaker count.
+
+    P1-D: the refusal INCREMENTS ``consecutive_failures`` (SQL-side, so a
+    concurrent writer cannot lose the step) and the breaker reads the NEW
+    count: a card already at >=1 failure parks ``blocked`` instead of
+    ``ready``. The counter is what eventually stops the dispatcher from
+    re-spawning a card the ownership gate keeps refusing (the cooldown only
+    spaces the retries; see ``check_respawn_guard``'s
+    ``ownership_refusal_cooldown``).
+    """
+    from hermes_cli import kanban_db as kb
+    status = 'ready'
+    if row is not None:
+        try:
+            failures = int(row['consecutive_failures'] or 0)
+        except (TypeError, ValueError):
+            failures = 2  # fail closed: an unreadable breaker count parks the card
+        # The UPDATE below increments the breaker; the status reads the NEW count
+        # (old + 1, the only writer in this transaction).
+        status = 'blocked' if failures + 1 >= 2 else 'ready'
+    conn.execute(
+        "UPDATE tasks SET status=?, claim_lock=NULL, claim_expires=NULL, "
+        "worker_pid=NULL, worker_started_at=NULL, "
+        "consecutive_failures=COALESCE(CAST(consecutive_failures AS INTEGER),0)+1, "
+        "last_failure_error=? WHERE id=?",
+        (status, 'ownership_refused', task.id))
+    # C1 (#47 Phase 2): the UPDATE above is the refusal's durable half. Closing
+    # the run and appending the event are bookkeeping — if either raises, the
+    # exception must NOT propagate out of this helper. The caller's fail-closed
+    # handler would re-run the helper with the pre-increment row, re-read the
+    # old counter and defeat the breaker (status='ready' at failures=2). Swallow
+    # here so the transaction always commits the release.
+    import logging
+    log = logging.getLogger(__name__)
+    try:
+        kb._end_run(conn, task.id, outcome='refused', error='ownership_refused',
+                    metadata={'reason': refused, 'scope': scope})
+    except Exception as exc:
+        log.debug('kanban refusal: _end_run failed: %s', exc)
+    try:
+        kb._append_event(conn, task.id, 'ownership_refused',
+                         {'reason': refused, 'scope': scope, 'scope_reason': scope_reason},
+                         run_id=task.current_run_id)
+    except Exception as exc:
+        log.debug('kanban refusal: _append_event failed: %s', exc)
+
+
 async def run_task(connection, params):
     if not connection.native_owner or 'session:create' not in connection.actor.capabilities:
         raise RuntimeStoreError('permission_denied')
@@ -111,23 +197,126 @@ async def run_task(connection, params):
     def admit_claim():
         # The Kanban DB is the cross-profile dispatch bus (busy_timeout up to 120 s): the claim
         # check and its marker share one write transaction, off the owner loop.
-        with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
-            # Either this exact attempt was already admitted to this session (retry after a
-            # crash between session creation and admission), or the claim is still current
-            # now; a reclaimed/closed task never reaches resume/submit.
-            marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
-                                  (params['task_id'], params['run_id'])).fetchone()
-            if marker:
-                if json.loads(marker[0])['session_id'] != ref.session_id:
-                    raise RuntimeStoreError('stale_kanban_claim')
-            else:
-                task = kb.get_task(conn, params['task_id'])
-                if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
-                    raise RuntimeStoreError('stale_kanban_claim')
-                kb._append_event(conn, task.id, 'owner_admitted',
-                    {'db': owner_db, 'session_id': ref.session_id,
-                     'request_id': request_id, 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
-                    run_id=task.current_run_id)
+        from cross_session_ownership import (
+            OwnershipError, canonical_key_from_kanban, claim_ownership, init_schema,
+        )
+        refused = None
+        scope = None
+        scope_reason = None
+        task = None
+        row = None
+        with connect_closing(Path(context['db'])) as conn:
+            # C5 (#47 Phase 2): the ownership ledger DDL is NOT issued inside
+            # ``kb.write_txn``. CREATE TABLE/INDEX inside a BEGIN IMMEDIATE write
+            # transaction is wrong twice over: a DDL failure mid-transaction
+            # leaves the admission txn in an undefined state, and
+            # ``CREATE ... IF NOT EXISTS`` silently masks an incompatible
+            # pre-existing ledger table (a broken schema must fail closed, not
+            # no-op). Prepare the ledger in its own committed step first; the
+            # claim still JOINS the admission write below, so ledger and card
+            # cannot diverge.
+            if _ownership_enforce() and not _ownership_schema_present(conn):
+                try:
+                    init_schema(conn)
+                except sqlite3.Error:
+                    # Fail closed: the claim below is skipped, and the card claim
+                    # is released in the same write transaction as the refusal.
+                    refused = 'ownership_txn_error'
+            with kb.write_txn(conn):
+                # Either this exact attempt was already admitted to this session (retry after a
+                # crash between session creation and admission), or the claim is still current
+                # now; a reclaimed/closed task never reaches resume/submit.
+                marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
+                                      (params['task_id'], params['run_id'])).fetchone()
+                if marker:
+                    if json.loads(marker[0])['session_id'] != ref.session_id:
+                        raise RuntimeStoreError('stale_kanban_claim')
+                else:
+                    task = kb.get_task(conn, params['task_id'])
+                    if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
+                        raise RuntimeStoreError('stale_kanban_claim')
+                    if _ownership_enforce():
+                        # #47 Phase 2: the cross-session ownership ledger gates fresh admission.
+                        # The ledger claim and the card admission commit together (join_txn=True):
+                        # a second, independent lock would let the ledger and the card diverge.
+                        # _record_task_failure cannot run here (it opens its own write_txn), so the
+                        # refused release is RAW SQL inside this same transaction.
+                        #
+                        # P1-A: the WHOLE ownership decision AND the refused release run inside
+                        # one try/except Exception within kb.write_txn. An escaping exception
+                        # (canonical_key_from_kanban raising OwnershipError on a whitespace-bearing
+                        # source_repo, a corrupt consecutive_failures counter, an assert) rolls the
+                        # admission back, the release never lands, and the card stays 'running'
+                        # with a stale claim_lock forever. Fail closed: the refusal is booked and
+                        # released in this SAME transaction.
+                        released = False
+                        try:
+                            row = conn.execute('SELECT * FROM tasks WHERE id=?', (task.id,)).fetchone()
+                            diag: list[str] = []
+                            scope = (canonical_key_from_kanban(
+                                {c: row[c] for c in row.keys()}, diagnostics=diag)
+                                if row is not None else None)
+                            scope_reason = next((d for d in diag if d.startswith('fail_closed:')), None)
+                            if not scope:
+                                refused = 'ownership_unavailable'
+                            elif refused is None:
+                                try:
+                                    # P1-C: the ledger must verify the claimed session is a REAL
+                                    # session in the owner DB, not merely a well-formed id. Format
+                                    # validation alone is not identity assurance
+                                    # (cross_session_ownership.claim_ownership.verify_session).
+                                    res = claim_ownership(
+                                        conn, scope, ref.session_id, join_txn=True, ttl_seconds=900,
+                                        verify_session=lambda sid: authority.db.get_session(sid) is not None)
+                                except (OwnershipError, sqlite3.Error):
+                                    # P0 (#47 Phase 2): a broken/unreadable ledger schema
+                                    # (e.g. an incompatible pre-existing task_ownership table)
+                                    # raises a plain sqlite3 error, NOT OwnershipError.
+                                    # Without this branch the exception escaped the gate,
+                                    # the release below never ran, and the card stayed
+                                    # 'running' with a stale claim_lock forever. Fail closed:
+                                    # the refusal must release the card claim in this same
+                                    # transaction, exactly like the OwnershipError path.
+                                    res = None
+                                    refused = 'ownership_txn_error'
+                                if res is not None and not res['ok']:
+                                    refused = 'owned_by_other_session'
+                            if refused:
+                                # Release the card claim with RAW SQL in the SAME transaction.
+                                # Breaker: a card already at >=2 consecutive failures parks
+                                # 'blocked' instead of 'ready' (the count is read, not
+                                # incremented — the resolution's rule). The helper is defensive:
+                                # a missing row still releases by task.id and an unreadable
+                                # counter fails closed to 'blocked'.
+                                _release_refused_claim(conn, task, row, refused=refused,
+                                                       scope=scope, scope_reason=scope_reason)
+                                released = True
+                        except Exception:
+                            # Fail closed: any unexpected decision error refuses the admission.
+                            refused = 'ownership_txn_error'
+                            if not released:
+                                try:
+                                    # C1 (#47 Phase 2): re-read the row. A prior helper call may
+                                    # have already incremented consecutive_failures before it
+                                    # raised; the stale row would re-read the pre-increment count
+                                    # and defeat the breaker (status='ready' at failures=2).
+                                    row = conn.execute('SELECT * FROM tasks WHERE id=?',
+                                                       (task.id,)).fetchone()
+                                    _release_refused_claim(conn, task, row, refused=refused,
+                                                           scope=scope, scope_reason=scope_reason)
+                                except Exception:
+                                    # Last resort: the release itself failed. Nothing more this
+                                    # transaction can do; the reconciler sweeps the stale claim.
+                                    pass
+                    if not refused:
+                        kb._append_event(conn, task.id, 'owner_admitted',
+                            {'db': owner_db, 'session_id': ref.session_id,
+                             'request_id': request_id, 'pid': os.getpid(), 'birth': worker_birth(psutil.Process()),
+                             'scope': scope, 'scope_reason': scope_reason},
+                             run_id=task.current_run_id)
+        if refused:
+            # Raised OUTSIDE the with: the release committed, then the admission is refused.
+            raise RuntimeStoreError('ownership_refused')
     from gateway.session_runtime_workers import tracked_write
     await tracked_write(authority, admit_claim)
     await connection.resume(ref, {})
@@ -265,6 +454,226 @@ def _worker_workspace(frame):
         clear_session_vars(tokens)
 
 
+# --- C3 (#47 Phase 2): the worker beats BOTH leases itself -------------------------
+
+# The dispatcher claims the card and the cross-session ledger with a 900 s TTL.
+# A worker blocked in ONE long turn (a render, a single huge tool call) emits no
+# tool-layer activity, so nothing extends either lease: at 900 s the ledger goes
+# STALE, a second session takes the card over, and two workers execute the same
+# work item (P0). The worker therefore beats both leases itself, immediately at
+# turn start and then on a fixed interval from a daemon thread that lives for
+# the turn.
+HEARTBEAT_TTL_SECONDS = 900
+HEARTBEAT_INTERVAL_SECONDS = 300
+
+
+def _heartbeat_interval_seconds() -> float:
+    """``HERMES_KANBAN_HEARTBEAT_INTERVAL_SECONDS`` > TTL/3, bounded below by 1 s."""
+    raw = (os.environ.get('HERMES_KANBAN_HEARTBEAT_INTERVAL_SECONDS') or '').strip()
+    if raw:
+        try:
+            return max(1.0, float(raw))
+        except ValueError:
+            pass
+    return float(HEARTBEAT_INTERVAL_SECONDS)
+
+
+def _admission_lease(conn, context):
+    """``(scope, session_id)`` the admission gate claimed for this run.
+
+    The ``owner_admitted`` event payload is the authority: it records the exact
+    ledger scope and owner session the gate claimed. Re-deriving the scope from
+    the card row here would target a DIFFERENT ledger row if the card's
+    title/body/idempotency key changed while the worker ran, and re-using the
+    worker's ambient session id would silently heartbeat as the wrong owner.
+    Returns ``(None, None)`` when no marker exists (the caller falls back).
+    """
+    row = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' "
+        "ORDER BY id DESC LIMIT 1",
+        (context.get('task_id'), context.get('run_id')),
+    ).fetchone()
+    if row is None or not row[0]:
+        return None, None
+    try:
+        payload = json.loads(row[0])
+    except (ValueError, TypeError):
+        return None, None
+    return (payload.get('scope') or None), (payload.get('session_id') or None)
+
+
+def _ledger_scope_from_row(conn, context):
+    """Fail-closed fallback: derive the scope from the card row (admission's rule)."""
+    try:
+        from cross_session_ownership import canonical_key_from_kanban
+    except Exception:
+        return None
+    row = conn.execute('SELECT * FROM tasks WHERE id=?', (context.get('task_id'),)).fetchone()
+    if row is None:
+        return None
+    try:
+        return canonical_key_from_kanban({c: row[c] for c in row.keys()})
+    except Exception:
+        return None
+
+
+def _release_ownership_claim(conn, context, *, reason):
+    """Release the cross-session ledger claim this attempt holds; never raises.
+
+    C4 (#47 Phase 2): the worker's completion is the end of its authority over
+    the logical work item. Without this the ledger row stays ACTIVE until its
+    TTL lapses, so a second session is locked out of the same work item for up
+    to fifteen minutes after the first worker already finished, and a Direct
+    dispatch for the same issue is refused in that window.
+
+    The scope is the admission marker's own scope (the exact row the gate
+    claimed) with the card row as the fail-closed fallback. The owner-session
+    candidates are the worker's ambient ``HERMES_SESSION_ID`` and the session
+    recorded on the ``owner_admitted`` marker: ``record_worker_loss`` runs in
+    the OWNER process, whose ambient session id is not necessarily the card's
+    session.
+
+    ``release_ownership`` opens its own ``BEGIN IMMEDIATE`` (no ``join_txn``),
+    so the caller must invoke this AFTER its ``kb.write_txn`` has committed, on
+    the same connection. A missing/foreign claim returns
+    ``{ok: False, reason: ...}`` instead of raising, which is the idempotent
+    path: an already released or superseded claim is a no-op, not an error.
+    Returns the per-candidate release results (for diagnostics/tests).
+    """
+    import logging
+    results = []
+    log = logging.getLogger(__name__)
+    try:
+        from cross_session_ownership import release_ownership
+    except Exception as exc:  # pragma: no cover - import failure is fatal elsewhere too
+        log.debug('kanban ownership release skipped: %s', exc)
+        return results
+    try:
+        scope, admitted = _admission_lease(conn, context)
+        if scope is None:
+            scope = _ledger_scope_from_row(conn, context)
+        if not scope:
+            return results
+        candidates = []
+        try:
+            # ContextVar-aware: the worker's session may be bound in-process,
+            # not present in ``os.environ``.
+            from gateway.session_context import get_session_env
+            candidates.append(get_session_env('HERMES_SESSION_ID'))
+        except Exception:
+            candidates.append(os.environ.get('HERMES_SESSION_ID', ''))
+        if admitted:
+            candidates.append(admitted)
+        seen = set()
+        for session_id in candidates:
+            session_id = str(session_id or '').strip()
+            if not session_id or session_id in seen:
+                continue
+            seen.add(session_id)
+            try:
+                results.append(release_ownership(conn, scope, session_id, reason=reason))
+            except Exception as exc:
+                # Never raise: a broken/unreadable ledger must not fail the
+                # worker's own exit booking.
+                log.debug('kanban ownership release failed: %s', exc)
+                results.append({'ok': False, 'reason': f'error:{exc}'[:200], 'scope': scope})
+    except Exception as exc:
+        log.debug('kanban ownership release skipped: %s', exc)
+    return results
+
+
+def _heartbeat_claims_once(context, owner_session=None, *, ttl_seconds=HEARTBEAT_TTL_SECONDS):
+    """Extend BOTH leases that keep this worker's run authoritative; never raises.
+
+    Returns a dict: ``{'kanban': bool, 'ledger': bool, 'scope': str|None,
+    'owner': str|None, 'error': str|None, ...}``. A board/DB failure is a
+    skipped beat, not a dead worker: an unextended lease is detected by the
+    reconciler, whereas a worker killed by its own heartbeat is guaranteed to
+    lose the run. The owner session resolves from the admission marker first
+    (the exact identity the ledger claimed), then the caller's value, then
+    ``HERMES_SESSION_ID``.
+    """
+    import logging
+    import time
+    result = {'kanban': False, 'ledger': False, 'scope': None, 'owner': None, 'error': None}
+    db = (context.get('db') or os.environ.get('HERMES_KANBAN_DB') or '').strip()
+    task_id = (context.get('task_id') or os.environ.get('HERMES_KANBAN_TASK') or '').strip()
+    claim_lock = context.get('claim_lock') or os.environ.get('HERMES_KANBAN_CLAIM_LOCK')
+    if not db or not task_id:
+        result['error'] = 'missing_carrier'
+        return result
+    try:
+        from hermes_cli.kanban_db_connect import connect_closing
+        from hermes_cli import kanban_db as kb
+    except Exception as exc:  # pragma: no cover - import failure is fatal elsewhere too
+        result['error'] = f'import:{exc}'[:200]
+        return result
+    try:
+        with connect_closing(Path(db)) as conn:
+            scope, admitted = _admission_lease(conn, context)
+            if scope is None:
+                scope = _ledger_scope_from_row(conn, context)
+            owner = admitted or owner_session or (os.environ.get('HERMES_SESSION_ID') or '').strip()
+            result['scope'] = scope
+            result['owner'] = owner or None
+            # 1) The Kanban claim: CAS on claim_lock, mirrors onto task_runs.
+            # Fail-closed like the ledger: never resurrect a LAPSED lease. This
+            # worker holds the exact claim_lock, but a lease that already expired
+            # was abandonable by the reconciler; extending it here would launder a
+            # stale claim into a live one and defeat the retry proof.
+            try:
+                now = int(time.time())
+                live = conn.execute(
+                    "SELECT claim_expires FROM tasks WHERE id=? AND status='running' AND claim_lock=?",
+                    (task_id, claim_lock)).fetchone()
+                if live is None or live[0] is None or int(live[0]) < now:
+                    result['kanban_reason'] = 'claim_not_live'
+                else:
+                    result['kanban'] = bool(kb.heartbeat_claim(
+                        conn, task_id, ttl_seconds=ttl_seconds, claimer=claim_lock))
+            except Exception as exc:
+                result['kanban_error'] = str(exc)[:200]
+            # 2) The cross-session ownership ledger: CAS on owner_session + lease.
+            if not _ownership_enforce():
+                result['ledger_reason'] = 'ownership_not_enforced'
+            elif not scope:
+                result['ledger_reason'] = 'no_scope'
+            elif not owner:
+                result['ledger_reason'] = 'no_owner_session'
+            else:
+                try:
+                    from cross_session_ownership import heartbeat_ownership
+                    hb = heartbeat_ownership(conn, scope, owner, ttl_seconds=ttl_seconds)
+                    result['ledger'] = bool(hb.get('ok'))
+                    result['ledger_reason'] = hb.get('reason')
+                except Exception as exc:
+                    result['ledger_error'] = str(exc)[:200]
+    except Exception as exc:
+        result['error'] = str(exc)[:200]
+        logging.getLogger(__name__).debug('kanban worker heartbeat skipped: %s', exc)
+    return result
+
+
+def _start_claim_heartbeat(context, owner_session=None, *, interval_seconds=None,
+                           ttl_seconds=HEARTBEAT_TTL_SECONDS):
+    """Start the per-turn daemon heartbeat thread; returns its stop Event.
+
+    The first beat runs immediately (a turn may outlive the TTL before the first
+    tick), then every ``interval_seconds``. The thread never raises out of its
+    target: :func:`_heartbeat_claims_once` absorbs every failure.
+    """
+    stop = threading.Event()
+    interval = float(interval_seconds if interval_seconds is not None else _heartbeat_interval_seconds())
+
+    def beat():
+        _heartbeat_claims_once(context, owner_session, ttl_seconds=ttl_seconds)
+        while not stop.wait(interval):
+            _heartbeat_claims_once(context, owner_session, ttl_seconds=ttl_seconds)
+
+    threading.Thread(target=beat, name='kanban-claim-heartbeat', daemon=True).start()
+    return stop
+
+
 def _run_worker_turns(agent, frame, history):
     context = json.loads(frame['policy'].get('kanban_json') or 'null')
     if context is None:
@@ -276,7 +685,13 @@ def _run_worker_turns(agent, frame, history):
                                           **({'turn_author': author} if author is not None else {}))
     from hermes_cli.turn_exit import credential_failure_flags, turn_exit_code
     code, last_output = 1, ''
+    stop_heartbeat = None
     try:
+        # C3 (#47 Phase 2): beat both leases for the WHOLE turn, not only on tool
+        # activity. A worker blocked in one long call emits no activity, so the
+        # tool-layer auto-heartbeat never fires and the ledger lease would lapse.
+        owner_session = getattr(agent, 'session_id', None) or os.environ.get('HERMES_SESSION_ID')
+        stop_heartbeat = _start_claim_heartbeat(context, owner_session)
         result = _run_task_turns(agent, frame, history, context)
         code = turn_exit_code(result, kanban_worker=True)
         last_output = str(result.get('final_response') or '')[-500:] if isinstance(result, dict) else ''
@@ -285,6 +700,8 @@ def _run_worker_turns(agent, frame, history):
         code = turn_exit_code(None, kanban_worker=True, **credential_failure_flags(exc))
         raise
     finally:
+        if stop_heartbeat is not None:
+            stop_heartbeat.set()
         _record_worker_result(context, code, last_output)
 
 
@@ -303,13 +720,20 @@ def _record_worker_result(context, code, last_output):
     import os
     from hermes_cli.kanban_db_connect import connect_closing
     from hermes_cli import kanban_db as kb
-    with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
-        if _bound_worker_matches(conn, context):
-            # Closing a run clears its claim/PID and replaces metadata; keep the
-            # result in the immutable attempt event stream instead.
-            kb._append_event(conn, context['task_id'], 'worker_result',
-                {'pid': os.getpid(), 'claim_lock': context['claim_lock'], 'exit_code': code,
-                 'last_output': last_output}, run_id=context['run_id'])
+    with connect_closing(Path(context['db'])) as conn:
+        booked = False
+        with kb.write_txn(conn):
+            if _bound_worker_matches(conn, context):
+                # Closing a run clears its claim/PID and replaces metadata; keep the
+                # result in the immutable attempt event stream instead.
+                kb._append_event(conn, context['task_id'], 'worker_result',
+                    {'pid': os.getpid(), 'claim_lock': context['claim_lock'], 'exit_code': code,
+                     'last_output': last_output}, run_id=context['run_id'])
+                booked = True
+        if booked:
+            # C4 (#47 Phase 2): the attempt is over, so its ledger authority ends.
+            # AFTER the commit — release_ownership opens its own BEGIN IMMEDIATE.
+            _release_ownership_claim(conn, context, reason=f'worker_result:{code}')
 
 
 def record_worker_loss(policy, reason, *, pid=None, bound=False):
@@ -325,15 +749,23 @@ def record_worker_loss(policy, reason, *, pid=None, bound=False):
         from hermes_cli.kanban_db_connect import connect_closing
         from hermes_cli import kanban_db as kb
         run_id = int(context['run_id'])
-        with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
-            row = conn.execute('SELECT status, current_run_id FROM tasks WHERE id=?',
-                               (context['task_id'],)).fetchone()
-            if row is None or row[0] != 'running' or row[1] != run_id:
-                return
-            kb._append_event(conn, context['task_id'], 'worker_lost',
-                             {'reason': str(reason)[:200], 'claim_lock': context['claim_lock'],
-                              'run_id': run_id, 'pid': pid, 'bound': bool(bound)},
-                             run_id=run_id)
+        with connect_closing(Path(context['db'])) as conn:
+            lost = False
+            with kb.write_txn(conn):
+                row = conn.execute('SELECT status, current_run_id FROM tasks WHERE id=?',
+                                   (context['task_id'],)).fetchone()
+                if row is None or row[0] != 'running' or row[1] != run_id:
+                    return
+                kb._append_event(conn, context['task_id'], 'worker_lost',
+                                 {'reason': str(reason)[:200], 'claim_lock': context['claim_lock'],
+                                  'run_id': run_id, 'pid': pid, 'bound': bool(bound)},
+                                 run_id=run_id)
+                lost = True
+            if lost:
+                # C4 (#47 Phase 2): a lost worker no longer holds the work item.
+                # AFTER the commit — release_ownership opens its own BEGIN IMMEDIATE.
+                _release_ownership_claim(conn, context,
+                                         reason=f'worker_lost:{str(reason)[:120]}')
     except Exception:
         import logging
         logging.getLogger(__name__).exception('kanban worker_lost record failed')
@@ -387,10 +819,19 @@ def _run_task_turns(agent, frame, history, context):
     if missing and not loaded:
         raise ValueError('kanban_skills_unavailable')
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
+    # C3 (#47 Phase 2): the background thread covers the long turn; these beats
+    # cover every model ENTRY boundary (first turn, each retry, each goal turn).
+    owner_session = getattr(agent, 'session_id', None) or os.environ.get('HERMES_SESSION_ID')
+
+    def beat():
+        _heartbeat_claims_once(context, owner_session)
+
+    beat()
     result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
 
     def recover(nudge):
         nonlocal result
+        beat()
         prior = result.get('messages') if isinstance(result, dict) else None
         result = agent.run_conversation(nudge, conversation_history=prior or
                                         agent._session_db.get_messages_as_conversation(agent.session_id),
@@ -416,6 +857,7 @@ def _run_task_turns(agent, frame, history, context):
             kb.block_task(conn, context['task_id'], reason=reason, expected_run_id=context['run_id'])
     def turn(prompt):
         nonlocal result
+        beat()
         result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id),
                                         turn_author=KANBAN_TURN_AUTHOR)
         return result.get('final_response', '')

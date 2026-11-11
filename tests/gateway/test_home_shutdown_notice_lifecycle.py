@@ -97,3 +97,16 @@ async def test_planned_replace_takeover_sends_no_home_notice(runner, monkeypatch
     assert runner._shutdown_event.is_set()
     assert _home_sends(adapter) == 0
     assert not planned_restart_marker_path().exists()
+
+@pytest.mark.asyncio
+async def test_respawn_loop_caps_home_notices_with_running_home_task(runner):
+    """An active task in the home chat must not bypass the three-notice loop cap."""
+    runner, adapter = runner
+    for _ in range(10):
+        agent = MagicMock()
+        agent.interrupt.side_effect = lambda *a, **k: runner._running_agents.clear()
+        runner._running_agents = {f"agent:main:telegram:dm:{HOME_CHAT}": agent}
+        await _stop_cycle(runner, adapter)
+
+    assert _home_sends(adapter) == 3  # restart_loop_guard.DEFAULT_MAX_RESTARTS
+    assert not planned_restart_marker_path().exists()

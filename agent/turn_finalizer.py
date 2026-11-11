@@ -582,6 +582,32 @@ def settle_held_final(agent, result: Any) -> None:
     result.update(final_response=final, response_transformed=transformed, pre_transform_response=None)
 
 
+def fire_session_end(agent, result: dict[str, Any]) -> None:
+    """Fire the ``on_session_end`` plugin hook once for a finished ``run_conversation`` call, built
+    from its result, so every exit (normal end, provider error, refusal, truncation ceiling, tool
+    validation, interrupt, ...) reports the same way. Early exits stamp only ``failure_reason``; it
+    stands in for the exit reason and travels too, so relay task metrics classify the failure.
+    Memory provider ``on_session_end()``/``shutdown_all()`` are not called here: this runs once per
+    message, and the CLI/gateway own session-end cleanup."""
+    from agent.conversation_loop import logger
+
+    if getattr(agent, "_persist_disabled", False):
+        return
+    _invoke_hook_safely(
+        "on_session_end", logger,
+        session_id=agent.session_id,
+        task_id=agent._current_task_id,
+        turn_id=agent._current_turn_id,
+        completed=bool(result.get("completed")),
+        failed=bool(result.get("failed")),
+        interrupted=bool(result.get("interrupted")),
+        turn_exit_reason=result.get("turn_exit_reason") or result.get("failure_reason"),
+        failure_reason=result.get("failure_reason"),
+        model=agent.model,
+        platform=getattr(agent, "platform", None) or "",
+    )
+
+
 def public_pre_transform(agent, pre_transform: Optional[Any]) -> Optional[Any]:
     """``pre_transform_response`` for a turn result: a held turn's original never leaves the agent
     (receipts, replay-gap recovery, post-stream suffix painting all see only the rewrite)."""
@@ -879,22 +905,6 @@ def finalize_turn(
     from agent.prepared_compaction import maybe_prepare
     if not vetoed:
         maybe_prepare(agent, messages, origin="turn-end")
-
-    # Memory provider on_session_end()/shutdown_all() are NOT called here:
-    # run_conversation() runs once per message; CLI/gateway own session-end cleanup.
-    if not getattr(agent, "_persist_disabled", False):
-        _invoke_hook_safely(
-            "on_session_end", logger,
-            session_id=agent.session_id,
-            task_id=effective_task_id,
-            turn_id=turn_id,
-            completed=completed,
-            failed=failed,
-            interrupted=interrupted,
-            turn_exit_reason=_turn_exit_reason,
-            model=agent.model,
-            platform=_platform,
-        )
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False

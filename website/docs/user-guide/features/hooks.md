@@ -1005,12 +1005,17 @@ def my_callback(session_id: str, completed: bool, interrupted: bool,
 |-----------|------|-------------|
 | `session_id` | `str` | Unique identifier for the session |
 | `completed` | `bool` | `True` if the agent produced a final response, `False` otherwise |
+| `failed` | `bool` | `True` if the turn ended on a failure (provider error, refusal, output-limit ceiling, ...) |
 | `interrupted` | `bool` | `True` if the turn was interrupted (user sent new message, `/stop`, or quit) |
+| `turn_exit_reason` | `str \| None` | Why the turn ended; on a failure exit that sets no exit reason, the failure reason |
+| `failure_reason` | `str \| None` | The failure class (`auth`, `server_error`, `truncated`, `context_overflow`, ...); `None` when the turn did not fail |
 | `model` | `str` | The model identifier |
 | `platform` | `str` | Where the session is running |
 
+`task_id` and `turn_id` identify the turn.
+
 **Fires:** In two places:
-1. **`agent/turn_finalizer.py`** — at the end of every `run_conversation()` call (`agent/conversation_loop.py`), after all cleanup. Always fires, even if the turn errored.
+1. **`agent/conversation_loop.py`** — once at the end of every `run_conversation()` call, built from the turn's result, whichever way the turn ended (normal answer, provider error, authentication failure, retry exhaustion, refusal, output-limit ceiling, invalid tool calls, interrupt, context overflow). Always fires, even if the turn errored. A turn the session's turn lease never admitted did not run and fires nothing.
 2. **`cli.py`** — in the CLI's atexit handler, but **only** if the agent was mid-turn (`_agent_running=True`) when the exit occurred. This catches Ctrl+C and `/exit` during processing. In this case, `completed=False` and `interrupted=True`.
 
 **Return value:** Ignored. Despite its name this hook fires after **every turn**, so it can't show the user anything. To show something when a session ends, return a message from [`on_session_finalize`](#on_session_finalize).

@@ -182,10 +182,10 @@ def test_clean_turn_has_no_cleanup_errors_key():
     ("persist_disabled", "expected_calls"),
     [
         (True, ["transform_llm_output"]),
-        (False, ["transform_llm_output", "post_llm_call", "on_session_end"]),
+        (False, ["transform_llm_output", "post_llm_call"]),
     ],
 )
-def test_persist_disabled_turn_skips_session_end_hook(
+def test_persist_disabled_turn_skips_post_llm_call_hook(
     persist_disabled, expected_calls
 ):
     agent = _StubAgent(raise_in=())
@@ -204,6 +204,6 @@ def test_persist_disabled_turn_skips_session_end_hook(
             turn_exit_reason="text_response(stop)",
         )
 
-    assert ("on_session_end" in calls) == ("on_session_end" in expected_calls)
+    assert ("post_llm_call" in calls) == ("post_llm_call" in expected_calls)
 
 

@@ -1820,7 +1820,7 @@ def run_conversation(
     title_user_message: Optional[str] = None,
     prelude: Optional[Prelude] = None,
 ) -> dict[str, Any]:
-    """Run one turn (see ``_run_conversation_turn``) and export the current-turn boundary.
+    """Run one turn (see ``_run_conversation_turn``), export the current-turn boundary, fire ``on_session_end``.
 
     Every envelope that leaves the loop — success, partial/error, interrupt, retry-exhausted,
     tool-limit, preflight timeout, codex runtime — passes through here, so the
@@ -1828,7 +1828,7 @@ def run_conversation(
     addresses, after every history rewrite including post-turn micro-compaction.
     """
     from agent.turn_context import export_current_turn_boundary
-    from agent.turn_finalizer import settle_held_final
+    from agent.turn_finalizer import fire_session_end, settle_held_final
     from agent.voice_turn_route import end_voice_turn_route
     from tools.vision_tools_history_budget import native_turn_images
 
@@ -1862,6 +1862,7 @@ def run_conversation(
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
     _close_durable_failed_turn(agent, result)
+    fire_session_end(agent, result)
     return result
 
 

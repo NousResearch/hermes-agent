@@ -1,12 +1,12 @@
 """Signed-in provider requests that core makes FOR plugins; the token never reaches plugin code.
 
-A plugin that needs the user's subscription sign-in (today: Codex / ChatGPT) must not read, refresh
-or rewrite Hermes's auth store or ``~/.codex/auth.json``. Codex refresh tokens are single-use, so a
-second refresher races Hermes's locked refresh and can sign the user out. Instead the plugin declares
-``requires_auth: [openai-codex]`` in its ``plugin.yaml`` and calls :func:`credentialed_provider_request`.
-Hermes resolves the credential through its own locked-refresh path, attaches ``Authorization``
-itself, sends only to that provider's origins, never follows a redirect, and hands back
-status, headers and body.
+A plugin that needs the user's subscription sign-in (Codex / ChatGPT, or xAI Grok OAuth) must not
+read, refresh or rewrite Hermes's auth store or the vendor CLI's token file (``~/.codex/auth.json``).
+Those refresh tokens are single-use, so a second refresher races Hermes's locked refresh and can sign
+the user out. Instead the plugin declares ``requires_auth: [openai-codex]`` (or ``[xai-oauth]``) in
+its ``plugin.yaml`` and calls :func:`credentialed_provider_request`. Hermes resolves the credential
+through its own profile-aware, locked-refresh path, attaches ``Authorization`` itself, sends only to
+that provider's origins, never follows a redirect, and hands back status, headers and body.
 
 The caller is identified by file location: the nearest stack frame inside an installed plugin
 directory. Like capabilities this is consent and visibility, not a sandbox. In-process plugin code
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json as _json
 import sys
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -65,10 +66,47 @@ def _codex_auth(url: str) -> tuple[dict[str, str], str]:
     return headers, str(creds.get("base_url") or "")
 
 
+# One message for both failure points: no stored grant, or a grant with no access token.
+def _xai_not_signed_in() -> ProviderNotSignedIn:
+    from agent.turn_failure_copy import oauth_relogin_command
+
+    return ProviderNotSignedIn(
+        "No usable xAI Grok sign-in in this Hermes profile. Run "
+        f"`{oauth_relogin_command('xai-oauth')}` or sign in to xAI Grok OAuth under Providers in "
+        "the Hermes desktop app.")
+
+
+def _xai_auth(url: str) -> tuple[dict[str, str], str]:
+    """``(auth headers, credential base URL)`` from Hermes's own locked xAI resolver.
+
+    Read-mostly, matching inference: the resolver refreshes only a token that is already inside its
+    proactive-skew window, under the auth-store lock and re-reading before rotating, so a usage read
+    never forces a rotation and never starts a sign-in. ``AuthError`` is rebuilt without its message
+    because a refresh failure can echo the token endpoint's response body.
+    """
+    from hermes_cli.auth_constants import AuthError
+    from hermes_cli.auth_xai import resolve_xai_oauth_runtime_credentials
+
+    del url  # No host-specific account headers, unlike Codex's chatgpt.com backend.
+    try:
+        creds = resolve_xai_oauth_runtime_credentials(force_refresh=False, refresh_if_expiring=True)
+    except AuthError:
+        raise _xai_not_signed_in() from None
+    token = str(creds.get("api_key") or "").strip()
+    if not token:
+        raise _xai_not_signed_in()
+    return {"Authorization": f"Bearer {token}"}, str(creds.get("base_url") or "")
+
+
 # provider -> (origins its token may be sent to, auth resolver). chatgpt.com is the Codex backend
 # core itself calls; api.openai.com hosts the Realtime client-secret endpoint Codex clients use.
+# For xAI, cli-chat-proxy.grok.com and grok.com are the Grok CLI's credits/settings hosts, and
+# api.x.ai is the OAuth bearer's own inference host (also the default credential base URL, so the
+# custom-endpoint guard below can still run).
 _PROVIDERS: dict[str, tuple[frozenset, Callable[[str], tuple[dict[str, str], str]]]] = {
     "openai-codex": (frozenset({("https", "chatgpt.com", 443), ("https", "api.openai.com", 443)}), _codex_auth),
+    "xai-oauth": (frozenset({("https", "cli-chat-proxy.grok.com", 443), ("https", "grok.com", 443),
+                             ("https", "api.x.ai", 443)}), _xai_auth),
 }
 
 
@@ -108,6 +146,12 @@ def _detached(exc: BaseException) -> BaseException:
     return exc.with_traceback(None)
 
 
+def _has_userinfo(url: str) -> bool:
+    """True when *url* embeds ``user:password@``; ``url_origin`` normalizes that away."""
+    parts = urllib.parse.urlsplit(url)
+    return parts.username is not None or parts.password is not None
+
+
 def declared_auth_providers(manifest: Mapping[str, Any]) -> list[str]:
     """``requires_auth`` from a manifest dict: the providers whose sign-in the plugin uses."""
     raw = (manifest or {}).get("requires_auth")
@@ -132,7 +176,7 @@ def _declared_providers(plugin_dir: Path) -> list[str]:
 
 
 def credentialed_provider_request(
-    provider: str, method: str, url: str, *, json: Any = None,
+    provider: str, method: str, url: str, *, json: Any = None, content: Optional[bytes] = None,
     headers: Optional[Mapping[str, str]] = None, timeout: float = 30.0,
 ) -> ProviderResponse:
     """Send ``method url`` with the user's *provider* sign-in attached by Hermes.
@@ -140,12 +184,18 @@ def credentialed_provider_request(
     *provider* is a Hermes sign-in (listed under ``requires_auth``) or an ``id`` the calling plugin
     declares under ``oauth:`` (:mod:`hermes_cli.plugin_oauth`); the plugin's own entry wins.
     Refuses (``PermissionError``) a caller outside an installed plugin, a plugin whose ``plugin.yaml``
-    does not list *provider* under ``requires_auth``, and any origin outside the provider's
-    allowlist; raises :class:`ProviderNotSignedIn` when this profile has no sign-in. Redirects are
-    returned as-is, never followed. The result carries no credential.
+    does not list *provider* under ``requires_auth``, any origin outside the provider's allowlist, and
+    a URL with embedded ``user:password@``; raises :class:`ProviderNotSignedIn` when this profile has
+    no sign-in. Redirects are returned as-is, never followed. The result carries no credential.
+
+    ``json=`` sends a JSON body; ``content=`` sends raw bytes (a gRPC-web frame, for example) with the
+    caller's own ``Content-Type``. Caller headers never override ``Authorization``, ``Host`` or
+    ``Content-Length``.
     """
     from hermes_cli.plugin_oauth import _plugin_oauth_spec
 
+    if json is not None and content is not None:
+        raise ValueError("credentialed_provider_request takes json= or content=, not both")
     plugin_dir = _calling_plugin_dir()
     if plugin_dir is None:
         raise PermissionError("credentialed_provider_request must be called from an installed plugin's code")
@@ -160,15 +210,24 @@ def credentialed_provider_request(
             raise PermissionError(
                 f"Plugin '{plugin_dir.name}' must declare `requires_auth: [{provider}]` in plugin.yaml")
     origins, resolve = spec
-    if url_origin(url) not in origins:
-        raise PermissionError(f"Refusing to send the {provider} sign-in to {url_origin(url)[1] or url!r}")
+    if _has_userinfo(url):
+        raise PermissionError(f"Refusing a {provider} request URL with embedded credentials")
+    try:
+        origin = url_origin(url)
+    except ValueError:  # malformed port: fail closed with the same refusal the caller handles
+        raise PermissionError(f"Refusing a malformed {provider} request URL") from None
+    if origin not in origins:
+        raise PermissionError(f"Refusing to send the {provider} sign-in to {origin[1] or url!r}")
     import httpx
 
     # Every error the plugin receives past this point is rebuilt without traceback, chain or request: those
     # reach the frames and httpx objects that hold the token, refresh token or client secret.
     refusal: Optional[BaseException] = None
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
-        request = client.build_request(method, url, json=json, headers=dict(headers or {}))  # no credential yet
+        # Host and Content-Length must derive from the URL and body, never from caller input.
+        extra = {name: value for name, value in dict(headers or {}).items()
+                 if name.lower() not in {"host", "content-length"}}
+        request = client.build_request(method, url, json=json, content=content, headers=extra)  # no credential yet
         try:
             auth_headers, credential_base = resolve(url)
         except httpx.HTTPError as exc:  # a resolver's own refresh POST failed: its request holds the refresh token

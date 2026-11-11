@@ -24,3 +24,24 @@ def test_a_resumed_delegate_child_keeps_the_route(tmp_path):
     assert not store._is_session_ended_in_db(child, entry.session_key), "self-heal would evict the resumed chat"
     assert store.get_or_create_session(source).session_id == child
     db.close()
+
+
+def test_adoption_keeps_the_childs_delegate_lineage(tmp_path):
+    """``_delegate_from`` is lineage, not a routing flag: the still-running worker's compression publish
+    re-sends it and a compression-ended parent would otherwise read the child as its continuation."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    store = SessionStore(tmp_path / "sessions", GatewayConfig())
+    store._db = db
+    source = SessionSource(platform=Platform.TELEGRAM, user_id="1", chat_id="1", chat_type="dm")
+    entry = store.get_or_create_session(source)
+    child = entry.session_id + "-worker"
+    db.create_session(child, "subagent", parent_session_id=entry.session_id,
+                      model_config={"_delegate_from": entry.session_id})
+    db.end_session(entry.session_id, "compression")
+
+    assert store.switch_session(entry.session_key, child) is not None
+
+    assert db.get_session_model_config_value(child, "_delegate_from") == entry.session_id
+    assert not db._is_compression_child_row(db.get_session(child))
+    assert store.get_or_create_session(source).session_id == child
+    db.close()

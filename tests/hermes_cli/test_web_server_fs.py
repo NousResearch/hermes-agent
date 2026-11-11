@@ -624,17 +624,33 @@ def test_fs_write_text_never_decodes_percent_path(client, tmp_path):
 
 @pytest.mark.parametrize("name", [".env", "config.yaml", "auth.json"])
 def test_fs_write_text_refuses_sensitive_files(client, tmp_path, name):
-    """#85387: read-text refuses credential files, so the spot editor's save must too;
-    a symlink to one is refused as well."""
+    """#85387: read-text refuses credential files, so the spot editor's save must too."""
     secret = tmp_path / name
     secret.write_text("SECRET=1")
-    link = tmp_path / "notes.md"
-    link.symlink_to(secret)
 
-    for target in (secret, link):
-        response = client.post("/api/fs/write-text", json={"path": str(target), "content": "EVIL=1"})
+    for target in (str(secret), secret.as_uri()):
+        response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
         assert response.status_code == 403, target
     assert secret.read_text() == "SECRET=1"
+
+
+@pytest.mark.require_symlinks
+def test_fs_write_text_refuses_sensitive_files_through_symlinks(client, tmp_path):
+    """A link to a credential file is refused, and so is a credential name linking to a backing file."""
+    secret = tmp_path / "auth.json"
+    secret.write_text("SECRET=1")
+    alias = tmp_path / "notes.md"
+    alias.symlink_to(secret)
+    store = tmp_path / "settings-store"
+    store.write_text("model: safe\n")
+    config = tmp_path / "config.yaml"
+    config.symlink_to(store)
+
+    for target in (str(alias), str(config), config.as_uri()):
+        response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
+        assert response.status_code == 403, target
+    assert secret.read_text() == "SECRET=1"
+    assert store.read_text() == "model: safe\n"
 
 
 def test_fs_read_data_url_reads_a_browser_paste_from_the_host_for_an_ssh_profile(client, monkeypatch):

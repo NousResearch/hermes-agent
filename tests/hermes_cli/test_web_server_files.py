@@ -956,6 +956,20 @@ def test_blocking_route_work_never_runs_on_the_event_loop(forced_files_client, m
     assert seen and not any(seen), seen
 
 
+
+def _refused_writes(client, target):
+    """Status codes of upload and upload-stream overwriting *target*."""
+    upload = client.post("/api/files/upload", json={
+        "path": str(target), "data_url": "data:text/plain;base64,RVZJTD0x", "overwrite": True,
+    })
+    stream = client.post(
+        "/api/files/upload-stream",
+        files={"file": ("x", b"EVIL=1", "text/plain")},
+        data={"path": str(target), "overwrite": "true"},
+    )
+    return upload.status_code, stream.status_code
+
+
 def test_managed_writes_refuse_sensitive_paths(forced_files_client):
     """#85387: upload, upload-stream, mkdir and delete refuse the same credential
     files the read side hides, so an operator who points the managed root at
@@ -966,29 +980,41 @@ def test_managed_writes_refuse_sensitive_paths(forced_files_client):
     env_file.write_text("SECRET=1")
     config = root / "config.yaml"
     config.write_text("model: safe\n")
-    link = root / "notes.txt"
-    link.symlink_to(config)
 
-    for target in (env_file, config, link, root / "mcp-tokens" / "github.json"):
-        upload = client.post("/api/files/upload", json={
-            "path": str(target), "data_url": "data:text/plain;base64,RVZJTD0x", "overwrite": True,
-        })
-        assert upload.status_code == 403, target
-        stream = client.post(
-            "/api/files/upload-stream",
-            files={"file": ("x", b"EVIL=1", "text/plain")},
-            data={"path": str(target), "overwrite": "true"},
-        )
-        assert stream.status_code == 403, target
+    for target in (env_file, config, root / "mcp-tokens" / "github.json"):
+        assert _refused_writes(client, target) == (403, 403), target
     assert client.post("/api/files/mkdir", json={"path": str(root / "pairing")}).status_code == 403
-    for target in (env_file, link):
-        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
-        assert deleted.status_code == 403, target
+    deleted = client.request("DELETE", "/api/files", json={"path": str(env_file), "recursive": False})
+    assert deleted.status_code == 403
 
     assert env_file.read_text() == "SECRET=1"
     assert config.read_text() == "model: safe\n"
-    assert not (root / "mcp-tokens").exists() and not (root / "pairing").exists()
-    assert sorted(p.name for p in root.iterdir()) == [".env", "config.yaml", "notes.txt"]
+    assert sorted(p.name for p in root.iterdir()) == [".env", "config.yaml"]
 
     plain = _seed_file(client, root, "plain.txt")
     assert client.request("DELETE", "/api/files", json={"path": str(plain)}).status_code == 200
+
+
+@pytest.mark.require_symlinks
+def test_managed_writes_refuse_sensitive_paths_through_symlinks(forced_files_client):
+    """A link in either direction is refused: an ordinary name pointing at a credential file,
+    and a credential name that is itself a link to an ordinary-looking backing file."""
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    secret = root / "auth.json"
+    secret.write_text("SECRET=1")
+    alias = root / "notes.txt"
+    alias.symlink_to(secret)
+    store = root / "settings-store"
+    store.write_text("model: safe\n")
+    config = root / "config.yaml"
+    config.symlink_to(store)
+
+    for target in (alias, config, "config.yaml"):
+        assert _refused_writes(client, target) == (403, 403), target
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, target
+
+    assert secret.read_text() == "SECRET=1"
+    assert store.read_text() == "model: safe\n"
+    assert alias.is_symlink() and config.is_symlink()

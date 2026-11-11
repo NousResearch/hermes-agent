@@ -1425,6 +1425,42 @@ def test_create_task_with_open_parent_emits_dependency_wait(kanban_home):
         assert wait[-1].payload["parent"] == parent
 
 
+def test_block_dependency_reclassifies_already_blocked_card_with_open_parent(kanban_home):
+    """Classifying a parked card must apply dependency routing, not sticky-block it."""
+    with kbc.connect() as conn:
+        parent = kb.create_task(conn, title="unfinished parent")
+        child = kb.create_task(conn, title="child")
+        assert kb.block_task(conn, child, reason="legacy block") is True
+        assert kb.link_tasks(conn, parent, child) is False
+
+        assert kb.block_task(conn, child, kind="dependency", reason="wait for parent") is True
+
+        task = kb.get_task(conn, child)
+        assert task.status == "todo"
+        assert task.block_kind == "dependency"
+        event = [e for e in kb.list_events(conn, child) if e.kind == "dependency_wait"][-1]
+        assert event.payload["classified_in_place"] is True
+        assert event.payload["kind"] == "dependency"
+
+
+def test_block_dependency_reclassifies_already_blocked_card_without_parent(kanban_home):
+    """A dependency with no open parent is re-kinded to a sticky input block."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="context-free child")
+        assert kb.block_task(conn, task_id, reason="legacy block") is True
+
+        assert kb.block_task(conn, task_id, kind="dependency", reason="missing context") is True
+
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
+        event = kb.list_events(conn, task_id)[-1]
+        assert event.kind == "blocked"
+        assert event.payload["classified_in_place"] is True
+        assert event.payload["requested_kind"] == "dependency"
+        assert event.payload["rekind_reason"] == "no_open_parent"
+
+
 def test_link_tasks_archived_parent_is_terminal_no_gate(kanban_home):
     """archived is terminal for recompute_ready, so linking under an archived
     parent must not demote a ready child (it would only flap back to ready)."""

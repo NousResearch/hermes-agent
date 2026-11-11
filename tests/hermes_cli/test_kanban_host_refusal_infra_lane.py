@@ -297,8 +297,17 @@ class _FakeClient:
         return False
 
 
-def _submit_client(monkeypatch, client, tmp_path) -> int:
-    """Drive the submitter through its real entry point and return the code it exits with."""
+def _submit_client(monkeypatch, client, tmp_path, *, owner_wait: float = 0.0) -> int:
+    """Drive the submitter through its real entry point and return the code it exits with.
+
+    ``owner_wait`` is the redial loop's give-up deadline (``OWNER_WAIT_S``, 180 s on main). The
+    deadline is not what these tests assert — WHICH code the give-up exits with is — and paying it
+    for real made this one file take 562 s while its neighbours took 1.7 s, because each iteration
+    also sleeps a real ``jittered_backoff``. The half the deadline does carry, that the submitter
+    kept dialing before it gave up, is pinned on purpose by
+    :func:`test_owner_silence_redials_before_exiting_its_code` rather than left implicit in every
+    test's wall clock.
+    """
     for key in ("HERMES_KANBAN_BOARD", "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID",
                 "HERMES_KANBAN_CLAIM_LOCK", "HERMES_KANBAN_DB", "HERMES_TUI_GATEWAY_URL"):
         monkeypatch.delenv(key, raising=False)
@@ -311,6 +320,7 @@ def _submit_client(monkeypatch, client, tmp_path) -> int:
     import hermes_cli.gateway_client as gc
     monkeypatch.setattr(gc, "connect_gateway", lambda: client)
     monkeypatch.setattr(kwc, "admission_answer_budget", lambda: 5.0, raising=False)
+    monkeypatch.setattr(kwc, "OWNER_WAIT_S", owner_wait, raising=False)
     return kwc._submit()
 
 
@@ -326,8 +336,7 @@ def test_no_ready_owner_exits_host_refusal_code(kanban_home, tmp_path, monkeypat
     submitted, so the card keeps its whole retry budget."""
     client = _FakeClient(fail_at="kanban.run",
                          error=GatewayUnavailableError("Gateway owner is draining", "draining"))
-    monkeypatch.setattr(kwc, "OWNER_WAIT_S", -1.0, raising=False)
-    assert _submit_client(monkeypatch, client, tmp_path) == HOST_REFUSAL
+    assert _submit_client(monkeypatch, client, tmp_path, owner_wait=-1.0) == HOST_REFUSAL
 
 
 def test_disconnect_after_admission_exits_turn_unknown_code(kanban_home, tmp_path, monkeypatch):
@@ -358,6 +367,20 @@ def test_admission_answer_timeout_is_reconciled_not_resent(kanban_home, tmp_path
     would let the retry run a claim the owner is already working on."""
     client = _FakeClient(fail_at="kanban.run", error=TimeoutError("admission answer budget"))
     assert _submit_client(monkeypatch, client, tmp_path) == TURN_UNKNOWN
+
+
+def test_owner_silence_redials_before_exiting_its_code(kanban_home, tmp_path, monkeypatch):
+    """The half of ``OWNER_WAIT_S`` the other tests just spent: the submitter keeps DIALING while
+    the owner is silent, and only exits once the wait is out. A lost socket must not end the
+    attempt, so a single failure is never the give-up — proven by counting the dials, with the
+    backoff and the deadline both made cheap so the contract costs milliseconds, not 180 s."""
+    client = _FakeClient(fail_at="kanban.run",
+                         error=GatewayClientError("Gateway connection failed; no local fallback"))
+    import agent.retry_utils as ru
+    monkeypatch.setattr(ru, "jittered_backoff", lambda *a, **k: 0.0)
+    code = _submit_client(monkeypatch, client, tmp_path, owner_wait=0.05)
+    assert code == HOST_REFUSAL
+    assert client.calls.count("kanban.run") > 1
 
 
 def test_submitter_bug_stays_a_counted_exit(kanban_home, tmp_path, monkeypatch):

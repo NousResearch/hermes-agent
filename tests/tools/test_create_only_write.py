@@ -85,3 +85,7 @@ def test_write_file_description_scopes_overwrite_to_the_default():
     overwrite = desc.index("OVERWRITES the entire file by default")
     assert desc.index("create_only=true instead refuses any existing path") > overwrite
     assert desc.count("create_only") == 1
+
+
+def test_write_file_schema_has_no_typographic_apostrophes():
+    assert "\u2019" not in json.dumps(ft.WRITE_FILE_SCHEMA, ensure_ascii=False)

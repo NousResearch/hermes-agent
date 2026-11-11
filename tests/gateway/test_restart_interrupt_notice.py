@@ -21,6 +21,8 @@ from gateway.session_settlement_recovery import (
 )
 from tui_gateway.contracts.registry import EVENTS
 
+pytestmark = pytest.mark.usefixtures("authority_cwd_in_tmp")  # symbolic profile ids are relative homes
+
 
 def test_restart_drain_timeout_default_stays_zero():
     from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT

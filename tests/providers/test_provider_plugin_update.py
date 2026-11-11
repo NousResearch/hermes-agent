@@ -1,14 +1,13 @@
-"""An updated ``$HERMES_HOME`` provider plugin reloads whole in the running process.
+"""An updated ``$HERMES_HOME`` provider plugin is swapped in whole by the forced plugin sweep.
 
-Regression for #153300: a provider plugin was imported once per process and never again, so an update
-reached a running gateway only through files the plugin imported lazily (inside ``create_client``),
-which then ran against siblings still loaded from the old tree ("cannot import name ..."). The update
-surfaces meanwhile said nothing of the plugin needed a restart.
+Regression for #153300: a provider plugin was imported once per process and never again, so an update reached
+a running gateway only through files the plugin imported lazily (inside ``create_client``), which then ran
+against siblings still loaded from the old tree ("cannot import name ..."). The update surfaces meanwhile said
+nothing of the plugin needed a restart.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import sys
@@ -20,7 +19,7 @@ import pytest
 _INIT = textwrap.dedent("""
     from providers import register_provider
     from providers.base import ProviderProfile
-    from .setup import old_fn  # imported at load, like the DirectSDK plugin's directsdk_setup
+    from .setup import fn  # imported at load, like the DirectSDK plugin's directsdk_setup
 
     class Profile(ProviderProfile):
         def create_client(self, **kw):
@@ -29,24 +28,29 @@ _INIT = textwrap.dedent("""
 
     register_provider(Profile(name="demo-provider", aliases=("demo-alias",),
                               base_url="process://demo-provider", auth_type="external_process"))
-    {extra}
 """)
 
 
-def _write(plugin: Path, version: int) -> None:
-    """v1 has ``old_fn`` and a second profile; v2 adds ``new_fn`` (which v2's client needs) and drops it."""
+def _write(plugin: Path, version: int, *, extra: bool = False, broken: bool = False) -> None:
+    """One release of the demo plugin; ``extra`` also registers a second profile, ``broken`` raises at import
+    after loading its ``setup`` submodule."""
     plugin.mkdir(parents=True, exist_ok=True)
     (plugin / "plugin.yaml").write_text(f"name: demo-provider\nkind: model-provider\nversion: {version}.0\n")
-    (plugin / "setup.py").write_text("def old_fn():\n    return 'v1'\n" + ("def new_fn():\n    return 'v2'\n"
-                                                                          if version == 2 else ""))
-    fn = "new_fn" if version == 2 else "old_fn"
+    (plugin / "setup.py").write_text(f"def fn():\n    return 'v{version}'\n")
     (plugin / "client.py").write_text(
-        f"from .setup import {fn} as fn\nclass Client:\n    def __init__(self, **kw):\n        self.version = fn()\n")
-    extra = ('register_provider(ProviderProfile(name="demo-extra", base_url="process://demo-extra", '
-             'auth_type="external_process"))') if version == 1 else ""
-    (plugin / "__init__.py").write_text(_INIT.format(extra=extra))
-    (plugin / ".hermes-catalog.json").write_text(json.dumps({"catalog_name": "demo", "sha": f"{version}" * 40}))
-    # Same-size source rewritten within one second would reuse its bytecode; the updater drops it too.
+        "from .setup import fn\nclass Client:\n    def __init__(self, **kw):\n        self.version = fn()\n")
+    tail = ""
+    if extra:
+        tail += ('register_provider(ProviderProfile(name="demo-extra", base_url="process://demo-extra", '
+                 'auth_type="external_process"))\n')
+    if broken:
+        tail += "raise RuntimeError('broken release')\n"
+    (plugin / "__init__.py").write_text(_INIT + tail)
+    # Every release gets newer files than the last, as an update writes them.
+    stamp = (version + 1) * 10**12
+    for path in plugin.rglob("*"):
+        if path.is_file():
+            os.utime(path, ns=(stamp, stamp))
     shutil.rmtree(plugin / "__pycache__", ignore_errors=True)
 
 
@@ -63,14 +67,14 @@ def _reset_providers():
 
 
 @pytest.fixture
-def home(tmp_path, monkeypatch):
+def plugin(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _reset_providers()
-    yield tmp_path
+    yield tmp_path / "plugins" / "demo-provider"
     _reset_providers()
 
 
-def _forced_sweep(home: Path):
+def _forced_sweep():
     """What the gateway's ``reload-plugins`` verb runs after an install / enable / update."""
     from hermes_cli.plugins import PluginManager
 
@@ -79,44 +83,45 @@ def _forced_sweep(home: Path):
     return manager
 
 
-def test_an_updated_provider_plugin_reloads_whole_after_the_forced_sweep(home):
+def test_an_update_serves_new_sessions_whole_while_old_clients_stay_on_their_version(plugin):
     from providers import get_provider_profile
 
-    plugin = home / "plugins" / "demo-provider"
-    _write(plugin, 1)
+    _write(plugin, 1, extra=True)
     before = get_provider_profile("demo-provider")
     assert before.create_client().version == "v1" and get_provider_profile("demo-extra") is not None
 
     _write(plugin, 2)
-    _forced_sweep(home)
+    _forced_sweep()
 
     assert get_provider_profile("demo-provider").create_client().version == "v2"
     assert get_provider_profile("demo-alias") is get_provider_profile("demo-provider")
-    # An agent still holding the old profile object gets the new package too, never a mix of both.
-    assert before.create_client().version == "v2"
-    assert get_provider_profile("demo-extra") is None  # a profile the new version dropped is gone
+    assert get_provider_profile("demo-extra") is None  # a profile the new release dropped is gone
+    # An agent still holding the old profile keeps building v1 clients end to end, never a mix.
+    assert before.create_client().version == "v1"
 
 
-def test_the_update_hint_says_the_provider_reloaded_or_why_it_failed(home):
+def test_a_broken_update_keeps_the_previous_version_and_says_so(plugin):
     from hermes_cli.plugins_activation import activation_hint, find_activation, plugin_activation_summary
     from providers import get_provider_profile
+    from tui_gateway.contracts.tools_mcp_plugins import PluginActivation
 
-    plugin = home / "plugins" / "demo-provider"
     _write(plugin, 1)
     get_provider_profile("demo-provider")
 
-    def hint_after_update() -> str:
-        manager = _forced_sweep(home)
+    def update_to(version: int, **kw) -> dict:
+        _write(plugin, version, **kw)
+        manager = _forced_sweep()
         key = next(k for k in manager._plugins if k.endswith("demo-provider"))
         summary = find_activation([plugin_activation_summary(manager, key)], "demo-provider")
-        return activation_hint({"gateway_reloaded": True, "activation": summary})
+        PluginActivation.model_validate(summary)  # the shape Desktop / TUI clients receive
+        return {"gateway_reloaded": True, "activation": summary}
 
-    _write(plugin, 2)
-    assert "model provider (new requests use this version)" in hint_after_update()
+    assert "model provider (new sessions use this version)" in activation_hint(update_to(2))
 
-    (plugin / ".hermes-catalog.json").unlink()  # a git install: the files' mtimes are the identity
-    (plugin / "setup.py").write_text("raise RuntimeError('broken release')\n")
-    later = max(p.stat().st_mtime_ns for p in plugin.rglob("*.py")) + 10**9
-    for p in plugin.rglob("*.py"):
-        os.utime(p, ns=(later, later))
-    assert "failed to load in the running gateway: RuntimeError: broken release" in hint_after_update()
+    hint = activation_hint(update_to(3, broken=True))
+    assert "failed to load (RuntimeError: broken release)" in hint and "previous version keeps serving" in hint
+    assert get_provider_profile("demo-provider").create_client().version == "v2"
+
+    # The fixed release after it loads clean: nothing the broken one half-imported is reused.
+    assert "new sessions use this version" in activation_hint(update_to(4))
+    assert get_provider_profile("demo-provider").create_client().version == "v4"

@@ -93,10 +93,11 @@ class _HomeLayer:
     # module names of plugins whose profiles this layer already holds as plugin-host proxies: the
     # hosted path's ``sys.modules`` check, so a rescan never re-imports, re-warns or swaps proxies
     hosted: set[str] = field(default_factory=set)
-    # module name -> the plugin tree it was imported from, and the profile names it registered here:
-    # what ``providers.plugin_reload`` compares and drops when the plugin is updated (#153300)
-    trees: dict[str, tuple] = field(default_factory=dict)
-    owners: dict[str, set[str]] = field(default_factory=dict)
+    # plugin module base name -> (tree fingerprint, versioned module name it was imported under), and
+    # profile name -> the base name of the plugin whose registration is live: what
+    # ``providers.plugin_reload`` compares and swaps when a plugin is updated (#153300)
+    trees: dict[str, tuple[str, str]] = field(default_factory=dict)
+    owner: dict[str, str] = field(default_factory=dict)
 
 
 _HOME_LAYERS: dict[str, _HomeLayer] = {}
@@ -111,8 +112,6 @@ _COLLECT: ContextVar[list | None] = ContextVar("_provider_collect", default=None
 # Profile names an in-process import may register (None = all). Set while a hosted plugin's
 # profiles that cannot cross the host boundary are imported here: its hosted siblings stay hosted.
 _REGISTRATION_ONLY: ContextVar[frozenset[str] | None] = ContextVar("_provider_registration_only", default=None)
-# Module name of the ``$HERMES_HOME`` plugin being imported, so its registrations can be dropped on update.
-_IMPORTING: ContextVar[str | None] = ContextVar("_provider_importing", default=None)
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
 _BUNDLED_PLUGINS_DIR = (
@@ -167,8 +166,6 @@ def register_provider(profile: ProviderProfile) -> None:
         layer.registry[profile.name] = profile
         for alias in profile.aliases:
             layer.aliases[alias] = profile.name
-        if owner := _IMPORTING.get():
-            layer.owners.setdefault(owner, set()).add(profile.name)
     else:
         _REGISTRY[profile.name] = profile
         _SOURCES[profile.name] = _current_source or "runtime"
@@ -659,25 +656,21 @@ def _import_plugin_dir(plugin_dir: Path, source: str, *, home_key: str = "") -> 
 
 
 def _import_user_plugin_dir(plugin_dir: Path, source: str, module_name: str) -> None:
-    """Import a ``$HERMES_HOME`` plugin into the layer being scanned, first dropping a copy imported from
-    an older tree of the same plugin (an update), so the new version loads whole (#153300)."""
-    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-    from providers.plugin_reload import tree_identity, unload_changed
+    """Import a ``$HERMES_HOME`` plugin: into the layer being scanned through ``providers.plugin_reload``,
+    which also swaps in an updated tree whole (#153300); outside a scan (``plugin_dev``) directly."""
+    if _REGISTRATION_TARGET.get() is not None:
+        from providers.plugin_reload import import_into_layer
+        import_into_layer(plugin_dir, source, module_name)
+    else:
+        _import_user_module(plugin_dir, source, module_name)
 
-    layer = _REGISTRATION_TARGET.get()
-    if layer is not None and unload_changed(layer, plugin_dir, module_name):
-        logger.info("Provider plugin %s changed on disk; reloading it", plugin_dir.name)
-    token = _IMPORTING.set(module_name)
-    try:
-        if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
-            _import_hosted_plugin_dir(plugin_dir, source, module_name)
-        else:
-            _exec_plugin_module(plugin_dir, source, module_name)
-    finally:
-        _IMPORTING.reset(token)
-    if layer is not None and module_name not in layer.trees and (
-            module_name in sys.modules or module_name in layer.hosted):
-        layer.trees[module_name] = tree_identity(plugin_dir)
+
+def _import_user_module(plugin_dir: Path, source: str, module_name: str) -> None:
+    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    if isolation_mode() == ISOLATION_HOST:  # the plugin's code runs in the plugin host
+        _import_hosted_plugin_dir(plugin_dir, source, module_name)
+    else:
+        _exec_plugin_module(plugin_dir, source, module_name)
 
 
 def _import_hosted_plugin_dir(plugin_dir: Path, source: str, module_name: str) -> None:

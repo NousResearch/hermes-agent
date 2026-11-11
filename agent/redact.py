@@ -130,17 +130,16 @@ def note_config_policy(home_key: str, raw) -> None:
 
 def resolve_profile_policy(home) -> None:
     """Record ``home``'s redaction policy now (log-routing setup), so its records never wait for it."""
-    from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override
-    token = set_hermes_home_override(home)
+    from agent.runtime_scope import bind_profile_scope
+    from hermes_constants import hermes_home_key
     try:
-        key = hermes_home_key()
-        from hermes_cli.config import load_config_readonly, load_env
-        note_env_policy(key, load_env().get("HERMES_REDACT_SECRETS"))
-        note_config_policy(key, (load_config_readonly().get("security") or {}).get("redact_secrets"))
+        with bind_profile_scope(home, hydrate_secrets=False):
+            key = hermes_home_key()
+            from hermes_cli.config import load_config_readonly, load_env
+            note_env_policy(key, load_env().get("HERMES_REDACT_SECRETS"))
+            note_config_policy(key, (load_config_readonly().get("security") or {}).get("redact_secrets"))
     except (Exception, SystemExit) as exc:  # health: allow BLE001 -- unreadable now: stays unknown, which redacts
         logging.getLogger(__name__).debug("redaction policy for %s not read: %s", home, exc)
-    finally:
-        reset_hermes_home_override(token)
 
 
 def _redact_enabled() -> bool:
@@ -1706,9 +1705,10 @@ def _is_under_hermes_home(path: str) -> bool:
     so the resolve cost stays off the per-token command scan.
     """
     from agent.file_safety import _hermes_dirs
-
+    from tools.environments.sandbox_scope import sandbox_lexical_path
+    # A hosted path names a file in the sandbox: judged as written (never empty), not resolved on this host.
     try:
-        target = os.path.normcase(os.path.realpath(os.path.expanduser(path)))
+        target = os.path.normcase(sandbox_lexical_path(path) or os.path.realpath(os.path.expanduser(path)))
     except (OSError, ValueError):
         return False
     for home in _hermes_dirs():

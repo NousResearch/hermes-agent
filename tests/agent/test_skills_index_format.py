@@ -55,3 +55,44 @@ def test_clip_cuts_at_any_whitespace_never_inside_a_word(sep):
     shown = clip_skill_description(desc)
     assert len(shown) <= SKILL_PROMPT_DESC_LIMIT and shown.endswith("...")
     assert set(shown[:-3].split(sep)) == {"alpha", "bravo"}  # whole words only, no "bra..."
+
+
+def test_index_mode_names_renders_bare_names_and_delta_parses(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    skills = tmp_path / "skills"
+    _skill(skills, "creative/ascii-art", "ASCII art banners.")
+    _skill(skills, "creative/pixel-art", "Pixel art sprites.")
+    _skill(skills, "big-documents", LONG)
+
+    prompt = build_skills_system_prompt(index_mode="names")
+    block = re.search(r"<available_skills>\n(.*?)\n</available_skills>", prompt, re.DOTALL).group(1)
+    lines = block.splitlines()
+
+    assert "  - big-documents" in lines                       # flat skill: bare name
+    assert "  creative [names only]: ascii-art, pixel-art" in lines   # grouped: delta-parsable marker
+    assert "ASCII art" not in block and "hermes-agent release" not in block   # no descriptions leak
+    assert set(index_entries(prompt)) == {"ascii-art", "pixel-art", "big-documents"}
+
+
+def test_index_mode_names_keeps_flagged_descriptions(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    skills = tmp_path / "skills"
+    _skill(skills, "tail/obscure-thing", "Not obvious from the name at all.")
+    d = skills / "critical-task"
+    d.mkdir()
+    (d / "SKILL.md").write_text(
+        "---\nname: critical-task\nalways_describe: true\ndescription: Must never be missed.\n---\n\nBody.\n",
+        encoding="utf-8")
+
+    prompt = build_skills_system_prompt(index_mode="names")
+    block = re.search(r"<available_skills>\n(.*?)\n</available_skills>", prompt, re.DOTALL).group(1)
+    assert "  - critical-task: Must never be missed." in block.splitlines()
+    assert "  - obscure-thing" in block.splitlines() and "Not obvious" not in block
+
+
+def test_index_mode_names_is_a_distinct_cache_entry(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _skill(tmp_path / "skills", "one", "First.")
+    full = build_skills_system_prompt(index_mode="full")
+    names = build_skills_system_prompt(index_mode="names")
+    assert "First." in full and "First." not in names   # cache key separates the two modes

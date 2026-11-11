@@ -1,7 +1,7 @@
 # Independent implementation; does not replace the existing provider-usage entry.
 name: jg-provider-usage
 repo: https://github.com/jerrygooch/hermes-provider-usage
-sha: "036a6741c7b14e0db5a4f194d2e104f5df85efd0"
+sha: "eaefe1521bb32f4fdff9c5f8c212a37516b1eb8b"
 version: "0.10.0"
 maintainer: jerrygooch
 tier: community
@@ -22,13 +22,13 @@ description: >-
   automatic redemption, telemetry or self-update. Screenshots and demo use real
   plugin components with clearly labeled synthetic data, not live accounts.
 docs_url: https://github.com/jerrygooch/hermes-provider-usage#readme
-image: https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/infographic.png
+image: https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/eaefe1521bb32f4fdff9c5f8c212a37516b1eb8b/assets/hackathon/infographic.png
 screenshots:
-  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/screenshots/02-popover-current.png
-  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/screenshots/04-overview-multi-provider.png
-  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/screenshots/06-popular-connections.png
-  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/screenshots/08-catalog-trust.png
-  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/036a6741c7b14e0db5a4f194d2e104f5df85efd0/assets/hackathon/screenshots/12-reset-confirm.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/eaefe1521bb32f4fdff9c5f8c212a37516b1eb8b/assets/hackathon/screenshots/02-popover-current.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/eaefe1521bb32f4fdff9c5f8c212a37516b1eb8b/assets/hackathon/screenshots/04-overview-multi-provider.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/eaefe1521bb32f4fdff9c5f8c212a37516b1eb8b/assets/hackathon/screenshots/06-popular-connections.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/eaefe1521bb32f4fdff9c5f8c212a37516b1eb8b/assets/hackathon/screenshots/08-catalog-trust.png
+  - https://raw.githubusercontent.com/jerrygooch/hermes-provider-usage/eaefe1521bb32f4fdff9c5f8c212a37516b1eb8b/assets/hackathon/screenshots/12-reset-confirm.png
 capabilities:
   provides_tools: []
   provides_hooks: []

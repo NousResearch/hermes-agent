@@ -1,0 +1,32 @@
+name: rom-studio
+repo: "https://github.com/erosika/rom-studio"
+sha: "98eac5b4eee155f7d8d11cbf17301452a501984e"
+version: "0.1.0"
+title: ROM Studio
+description: "Make your own small game by talking with your agent, one scene at a time, from a decomp (the community-made source of an original handheld game) that you supply. A pane in the desktop app shows each change as a sentence with a picture from the running game, plus a play link, scenes, gallery, maps, music, dialogue, source search and the agent's questions. Ships a command-line kit the agent runs, a browser player with an always-on flash guard and the make-your-game skill; starts one local page on 127.0.0.1 once a game folder is set. No agent tools, hooks, middleware or env vars. Linux only."
+maintainer: erosika
+tier: community
+category: desktop
+requires_hermes: ">=0.21.6"
+docs_url: "https://github.com/erosika/rom-studio/blob/98eac5b4eee155f7d8d11cbf17301452a501984e/README.md"
+image: "https://raw.githubusercontent.com/erosika/rom-studio/98eac5b4eee155f7d8d11cbf17301452a501984e/docs/images/banner.png"
+screenshots:
+  - "https://raw.githubusercontent.com/erosika/rom-studio/98eac5b4eee155f7d8d11cbf17301452a501984e/docs/images/pane-now.png"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/98eac5b4eee155f7d8d11cbf17301452a501984e/docs/images/pane-gallery.png"
+  - "https://raw.githubusercontent.com/erosika/rom-studio/98eac5b4eee155f7d8d11cbf17301452a501984e/docs/images/pane-scenes-phone.png"
+readme: true
+platforms: [linux]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - "Not yet seen running inside the desktop app: the plugin passes hermes plugins validate and doctor and its halves were run outside a host, but the pane in the app, the feed event arriving and the skill loaded through the plugin are untested."
+  - "Linux only. macOS and Windows are not supported (the build scripts use Linux tools and the script compiler download is a Linux program); Windows through WSL has not been tried."
+  - "Needs bun, git and a toolchain for the game that you install yourself: make, python3 with Pillow, C and C++ compilers, flock, libpng with pkg-config, arm-none-eabi-gcc 14.2, cmake and a libmgba 0.10.5 you build once; ffmpeg for sound. kit status lists what is missing and how to get it."
+  - "You bring the decomp and, to make a patch, your own copy of the original game file. ROM Studio includes and fetches neither. The first build takes about 7 minutes and a game folder about 1 GB."
+  - "The optional base (calm changes inside the game, quick start, the test hook, the in-game agent entry) is patches for one version of one engine and is not shipped. Without it the flag, creature-gift and exact-text steps are unavailable, each new build plays through the original opening once, and the in-game agent link is absent. The player's flash guard is always on regardless."
+  - "The phone link of the player (kit play --phone) has not been tried on a real phone. The kit's MCP server has been tried over stdio by hand, not inside Hermes."
+  - "Setup's caches (headless emulator, script compiler, browser emulator) live inside the plugin folder; if an update removes them, run kit setup again."
+  - "A setting change needs a restart of Hermes. The kit does not read the plugin's settings: for a game folder other than the default, also set ROM_STUDIO_GAME where your agent's commands run."

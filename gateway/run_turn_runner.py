@@ -1294,7 +1294,12 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             else:
                 scope.enter_context(api_policy_scope())
                 bind_turn_workspace(policy, self._ctx.session_id)
-                result = self._run_sync_scoped()
+                from gateway.session_terminal_cwd import persist_turn_cwd, restore_turn_cwd
+                restore_turn_cwd(self._runner, self._ctx.session_key, policy)
+                try:
+                    result = self._run_sync_scoped()
+                finally:
+                    persist_turn_cwd(self._runner, self._ctx.session_key, policy)
             from gateway.session_results import execution_result
             captured = execution_result.get()
             if captured is not None:

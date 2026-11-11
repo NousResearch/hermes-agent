@@ -1,15 +1,20 @@
+import './messaging.css'
+
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
+import { SearchField } from '@/components/ui/search-field'
 import { Switch } from '@/components/ui/switch'
 import { ResponsiveTabs } from '@/components/ui/tab-dropdown'
 import { Tip } from '@/components/ui/tooltip'
@@ -42,6 +47,7 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { DetailColumn, ListColumn, MasterDetail } from '../master-detail'
 import { PageSearchShell } from '../page-search-shell'
+import { usePortalRedesign } from '../redesign/use-portal-redesign'
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
 import { credentialPreview } from '../settings/helpers'
 import { ListRow } from '../settings/primitives'
@@ -149,6 +155,135 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   }
 }
 
+function RestartNotice({ restarting, onRestart }: { restarting: boolean; onRestart: () => void }) {
+  const { t } = useI18n()
+  const m = t.messaging
+  return (
+    <Alert variant="warning">
+      <AlertTriangle />
+      <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+        <span>{m.restartNeeded}</span>
+        <Button disabled={restarting} onClick={onRestart} size="sm" variant="secondary">
+          <RefreshCw className={restarting ? 'animate-spin' : undefined} />
+          {restarting ? m.restarting : m.restartNow}
+        </Button>
+      </AlertDescription>
+    </Alert>
+  )
+}
+
+interface AgentMessagingProps extends React.ComponentProps<'section'> {
+  loading: boolean
+  platforms: MessagingPlatformInfo[]
+  pendingByPlatform: Record<string, PairingUser[]>
+  query: string
+  onQueryChange: (query: string) => void
+  presentTones: StatusTone[]
+  statusFilter: 'all' | StatusTone
+  onStatusFilterChange: (filter: 'all' | StatusTone) => void
+  selected: MessagingPlatformInfo | null
+  onSelectPlatform: (id: string) => void
+  restartNotice: React.ReactNode
+  platformContent: React.ReactNode
+  platformActions: React.ReactNode
+  revokeDialog: React.ReactNode
+}
+
+function AgentMessaging({
+  loading,
+  platforms,
+  pendingByPlatform,
+  query,
+  onQueryChange,
+  presentTones,
+  statusFilter,
+  onStatusFilterChange,
+  selected,
+  onSelectPlatform,
+  restartNotice,
+  platformContent,
+  platformActions,
+  revokeDialog,
+  ...props
+}: AgentMessagingProps) {
+  const { t } = useI18n()
+  const m = t.messaging
+  const [routeSearch] = useSearchParams()
+  const [dialogOpen, setDialogOpen] = useState(routeSearch.has('platform'))
+
+  return (
+    <section {...props} className={cn(props.className, 'agent-messaging')}>
+      {loading ? (
+        <PageLoader label={m.loading} />
+      ) : (
+        <>
+          <SearchField
+            aria-label={m.search}
+            onChange={onQueryChange}
+            placeholder={m.search}
+            value={query}
+            variant="box"
+          />
+          {!dialogOpen && restartNotice}
+          {presentTones.length > 1 && (
+            <ResponsiveTabs
+              align="start"
+              onChange={id => onStatusFilterChange(id as 'all' | StatusTone)}
+              tabs={(['all', ...presentTones] as const).map(id => ({ id, label: m.statusFilter[id] }))}
+              value={statusFilter}
+            />
+          )}
+          <div className="agent-messaging-channels">
+            {platforms.map(platform => (
+              <div className="agent-messaging-row" key={platform.id}>
+                <PlatformAvatar platformId={platform.id} platformName={platform.name} />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{platform.name}</p>
+                  <p className="text-[13px] text-(--ui-text-tertiary)">{stateLabel(platform.state, m)}</p>
+                  {(pendingByPlatform[platform.id]?.length ?? 0) > 0 && (
+                    <p className="text-xs text-(--ui-yellow)">
+                      {m.pendingRequests(pendingByPlatform[platform.id].length)}
+                    </p>
+                  )}
+                </div>
+                <StatusDot
+                  className={platformStatusTone(platform) === 'good' ? 'bg-(--ui-green)' : undefined}
+                  tone={platformStatusTone(platform)}
+                />
+                <Button
+                  onClick={() => {
+                    onSelectPlatform(platform.id)
+                    setDialogOpen(true)
+                  }}
+                  size="sm"
+                  variant="outline"
+                >
+                  {t.skills.edit}
+                </Button>
+              </div>
+            ))}
+            {platforms.length === 0 && query.trim() && (
+              <p className="p-4 text-sm text-(--ui-text-tertiary)" role="status">
+                {t.skills.emptyNothingMatches(query)}
+              </p>
+            )}
+          </div>
+        </>
+      )}
+      <Dialog onOpenChange={setDialogOpen} open={dialogOpen && Boolean(selected)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader className="sr-only">
+            <DialogTitle>{selected?.name}</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-6">{platformContent}</div>
+          {platformActions}
+        </DialogContent>
+      </Dialog>
+      {revokeDialog}
+    </section>
+  )
+}
+
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
   const m = t.messaging
@@ -156,6 +291,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // the active profile; the API helpers treat null as "target primary").
   const requestedProfile = useStore($settingsRequestProfile)
   const pinnedOwner = useSettingsOwner()
+  const agentLayout = usePortalRedesign() && Boolean(pinnedOwner)
   const scopeProfile = pinnedOwner ?? requestedProfile
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   // A saved credential/toggle only takes effect on the next gateway start, so a
@@ -555,6 +691,81 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }
 
+  const platformActions = selected && (
+    <PlatformActionBar
+      hasEdits={hasChanges(platformChanges(selected, edits[selected.id] || {}))}
+      onSave={() => void handleSave(selected)}
+      onToggle={enabled => void handleToggle(selected, enabled)}
+      platform={selected}
+      saving={saving}
+    />
+  )
+  const restartNotice = restartNeeded && (
+    <RestartNotice onRestart={() => void restartGatewayNow()} restarting={gatewayRestarting} />
+  )
+  const platformContent = (
+    <>
+      {restartNotice}
+      {selected && (
+        <PlatformDetail
+          approved={approvedByPlatform[selected.id] ?? []}
+          approving={approving}
+          edits={edits[selected.id] || {}}
+          onApprove={user => void handleApprove(user)}
+          onClear={key => void handleClear(selected, key)}
+          onEdit={(key, value) =>
+            setEdits(current => ({
+              ...current,
+              [selected.id]: { ...(current[selected.id] || {}), [key]: value }
+            }))
+          }
+          onRevoke={setPendingRevoke}
+          onTelegramApplied={result => void handleTelegramApplied(result)}
+          pending={pendingByPlatform[selected.id] ?? []}
+          platform={selected}
+          saving={saving}
+          scopeProfile={scopeProfile}
+        />
+      )}
+    </>
+  )
+
+  const revokeDialog = (
+    <ConfirmDialog
+      busyLabel={m.revoking}
+      cancelLabel={t.common.cancel}
+      confirmLabel={m.revoke}
+      description={pendingRevoke ? m.revokeDesc(pairingLabel(pendingRevoke)) : null}
+      destructive
+      onClose={() => setPendingRevoke(null)}
+      onConfirm={() => (pendingRevoke ? handleRevoke(pendingRevoke) : undefined)}
+      open={Boolean(pendingRevoke)}
+      title={m.revokeTitle}
+    />
+  )
+
+  if (agentLayout) {
+    return (
+      <AgentMessaging
+        {...props}
+        loading={!platforms}
+        onQueryChange={setQuery}
+        onSelectPlatform={setSelectedId}
+        onStatusFilterChange={handleStatusFilter}
+        pendingByPlatform={pendingByPlatform}
+        platformActions={platformActions}
+        platformContent={platformContent}
+        platforms={visiblePlatforms}
+        presentTones={presentTones}
+        query={query}
+        restartNotice={restartNotice}
+        revokeDialog={revokeDialog}
+        selected={selected}
+        statusFilter={activeStatusFilter}
+      />
+    )
+  }
+
   return (
     <PageSearchShell
       pageTitle={pinnedOwner ? undefined : t.sidebar.nav.messaging}
@@ -599,77 +810,13 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                 </ul>
               </ListColumn>
 
-              <DetailColumn
-                actionBar={
-                  selected && (
-                    <PlatformActionBar
-                      hasEdits={hasChanges(platformChanges(selected, edits[selected.id] || {}))}
-                      onSave={() => void handleSave(selected)}
-                      onToggle={enabled => void handleToggle(selected, enabled)}
-                      platform={selected}
-                      saving={saving}
-                    />
-                  )
-                }
-              >
-                {restartNeeded && (
-                  <Alert variant="warning">
-                    <AlertTriangle />
-                    <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
-                      <span>{m.restartNeeded}</span>
-                      <Button
-                        disabled={gatewayRestarting}
-                        onClick={() => void restartGatewayNow()}
-                        size="sm"
-                        variant="secondary"
-                      >
-                        <RefreshCw className={gatewayRestarting ? 'animate-spin' : undefined} />
-                        {gatewayRestarting ? m.restarting : m.restartNow}
-                      </Button>
-                    </AlertDescription>
-                  </Alert>
-                )}
-                {selected && (
-                  <PlatformDetail
-                    approved={approvedByPlatform[selected.id] ?? []}
-                    approving={approving}
-                    edits={edits[selected.id] || {}}
-                    onApprove={user => void handleApprove(user)}
-                    onClear={key => void handleClear(selected, key)}
-                    onEdit={(key, value) =>
-                      setEdits(current => ({
-                        ...current,
-                        [selected.id]: {
-                          ...(current[selected.id] || {}),
-                          [key]: value
-                        }
-                      }))
-                    }
-                    onRevoke={setPendingRevoke}
-                    onTelegramApplied={result => void handleTelegramApplied(result)}
-                    pending={pendingByPlatform[selected.id] ?? []}
-                    platform={selected}
-                    saving={saving}
-                    scopeProfile={scopeProfile}
-                  />
-                )}
-              </DetailColumn>
+              <DetailColumn actionBar={platformActions}>{platformContent}</DetailColumn>
             </MasterDetail>
           </div>
         </div>
       )}
 
-      <ConfirmDialog
-        busyLabel={m.revoking}
-        cancelLabel={t.common.cancel}
-        confirmLabel={m.revoke}
-        description={pendingRevoke ? m.revokeDesc(pairingLabel(pendingRevoke)) : null}
-        destructive
-        onClose={() => setPendingRevoke(null)}
-        onConfirm={() => (pendingRevoke ? handleRevoke(pendingRevoke) : undefined)}
-        open={Boolean(pendingRevoke)}
-        title={m.revokeTitle}
-      />
+      {revokeDialog}
     </PageSearchShell>
   )
 }

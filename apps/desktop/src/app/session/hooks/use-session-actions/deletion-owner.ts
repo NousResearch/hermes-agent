@@ -2,13 +2,14 @@ import type { MutableRefObject } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
 import { purgeInFlightTurnJournals } from '@/lib/inflight-turn-journal'
+import { stampRowsWithOwningConnection } from '@/lib/session-owner-stamp'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { resetSessionBackground } from '@/store/composer-status'
 import { clearSessionGoal } from '@/store/goals'
 import { $pinnedSessionIds } from '@/store/layout'
 import { prunePreviewTabsForSession } from '@/store/preview'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $projectTree, refreshProjectTree } from '@/store/projects'
+import { $projectTree, getProjectTreeConnectionId, refreshProjectTree } from '@/store/projects'
 import {
   $connection,
   $cronSessions,
@@ -74,6 +75,33 @@ function rowOwner(row: SessionInfo): SessionOwnerScope {
   return sessionOwnerRouteFromRow(row) ?? (row.profile?.trim() || undefined)
 }
 
+function projectRows(): SessionInfo[] {
+  return $projectTree
+    .get()
+    .flatMap(project => [
+      ...(project.previewSessions ?? []),
+      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
+    ])
+}
+
+/** Classic project rows retain profile-door shape; deletion needs their captured source. */
+export function sessionDeletionRow(
+  storedId: string,
+  explicit: SessionInfo | undefined,
+  listed: SessionInfo | undefined
+): SessionInfo | undefined {
+  const match = (row: SessionInfo) => sessionMatchesStoredId(row, storedId)
+  const removed = explicit ?? listed ?? $archivedSessions.get().find(match)
+
+  if (removed) {
+    return removed
+  }
+
+  const project = projectRows().find(match)
+
+  return project ? stampRowsWithOwningConnection([project], getProjectTreeConnectionId(), true)[0] : undefined
+}
+
 function ownerRows(): SessionInfo[] {
   return [
     ...ownerLookupSessionRows(),
@@ -81,12 +109,7 @@ function ownerRows(): SessionInfo[] {
     // Deletion must still see hidden canonical chats behind those rows.
     ...$unlistedSessionOwnerRows.get(),
     ...$archivedSessions.get(),
-    ...$projectTree
-      .get()
-      .flatMap(project => [
-        ...(project.previewSessions ?? []),
-        ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
-      ])
+    ...stampRowsWithOwningConnection(projectRows(), getProjectTreeConnectionId(), true)
   ]
 }
 

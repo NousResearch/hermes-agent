@@ -17,6 +17,7 @@ import { type CatalogEntry, parseCatalog } from './catalog-data'
 
 interface SkillCatalogProps {
   skills: SkillInfo[]
+  agentLayout?: boolean
   profile: ProfileScope
   query?: string
   onQueryChange?: (value: string) => void
@@ -35,6 +36,7 @@ export function SkillCatalog(props: SkillCatalogProps) {
 
 function ScopedSkillCatalog({
   skills,
+  agentLayout,
   profile,
   query,
   onQueryChange,
@@ -294,6 +296,7 @@ function ScopedSkillCatalog({
   return (
     <CatalogBrowser
       actions={actions}
+      agentLayout={agentLayout}
       installedEntries={catalog.entries}
       installedPending={installedPending || identityPending}
       isInstalled={isInstalled}

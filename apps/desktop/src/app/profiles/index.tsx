@@ -48,7 +48,9 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
   const { search } = useLocation()
 
   return simplified && new URLSearchParams(search).get('manage') !== 'true' ? (
-    <Suspense fallback={<PageLoader />}><AgentDirectory onClose={onClose} /></Suspense>
+    <Suspense fallback={<PageLoader />}>
+      <AgentDirectory onClose={onClose} />
+    </Suspense>
   ) : (
     <ProfileManager onClose={onClose} />
   )
@@ -119,7 +121,11 @@ function ProfileManager({ onClose }: ProfilesViewProps) {
 
   return (
     <Panel closeLabel={p.close} onClose={onClose}>
-      <PanelHeader hideInClassic={!profiles?.length} subtitle={profiles ? p.count(profiles.length) : undefined} title={p.title} />
+      <PanelHeader
+        hideInClassic={!profiles?.length}
+        subtitle={profiles ? p.count(profiles.length) : undefined}
+        title={p.title}
+      />
       {!profiles ? (
         <PageLoader label={p.loading} />
       ) : profiles.length === 0 ? (
@@ -247,7 +253,9 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
       <header className="space-y-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{profileLabel(profile)}</h3>
+            <h3 className="min-w-0 break-words text-[0.95rem] font-semibold tracking-tight text-foreground">
+              {profileLabel(profile)}
+            </h3>
             {profile.is_default && <PanelPill tone="good">{p.defaultBadge}</PanelPill>}
             {profile.has_env && <PanelPill tone="muted">.env</PanelPill>}
           </div>

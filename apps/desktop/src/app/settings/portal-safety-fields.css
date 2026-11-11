@@ -1,0 +1,82 @@
+.portal-safety-mode,
+.portal-safety-card,
+.portal-safety-advanced {
+  border: 1px solid color-mix(in srgb, var(--ui-base) 10%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+}
+
+.portal-safety-mode:has(input:checked) {
+  border-color: transparent;
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-blue);
+  background: color-mix(in srgb, var(--portal-brand-blue) 10%, transparent);
+}
+
+.portal-safety-card > div + div,
+.portal-safety-advanced > div {
+  border-top: 1px solid color-mix(in srgb, var(--ui-base) 8%, transparent);
+}
+
+.portal-safety-card [data-slot='settings-row'] > div {
+  min-height: 64px;
+  column-gap: 24px;
+}
+
+.agent-settings-body [data-slot='portal-safety-settings'] {
+  gap: 32px;
+}
+
+.agent-settings-body .portal-safety-options,
+.agent-settings-body .portal-safety-card,
+.agent-settings-body .portal-safety-advanced {
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+}
+
+.agent-settings-body .portal-safety-options {
+  display: block;
+}
+
+.agent-settings-body .portal-safety-mode,
+.agent-settings-body .portal-safety-mode:has(input:checked) {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 16px;
+  column-gap: 20px;
+  row-gap: 2px;
+  min-height: 64px;
+  align-items: center;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.agent-settings-body .portal-safety-mode + .portal-safety-mode {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+
+.agent-settings-body .portal-safety-mode input {
+  position: static;
+  grid-column: 3;
+  grid-row: 1 / 3;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  accent-color: var(--portal-brand-blue);
+}
+
+.agent-settings-body .portal-safety-icon {
+  grid-column: 1;
+  grid-row: 1 / 3;
+  padding: 8px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--portal-brand-blue) 25%, transparent);
+}
+
+.agent-settings-body .portal-safety-mode > span:not(.portal-safety-icon) {
+  grid-column: 2;
+}

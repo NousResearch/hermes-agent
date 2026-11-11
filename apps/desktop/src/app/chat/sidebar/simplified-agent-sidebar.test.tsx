@@ -22,7 +22,14 @@ import {
 } from '@/store/agent-sidebar-preferences'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $fleetRoster } from '@/store/fleet-roster'
-import { $pinnedSessionIds, $sidebarPinsOpen, $sidebarRecentsOpen } from '@/store/layout'
+import {
+  $pinnedSessionIds,
+  $sidebarOpen,
+  $sidebarPinsOpen,
+  $sidebarRecentsOpen,
+  requestSessionSearchFocus,
+  setSidebarOpen
+} from '@/store/layout'
 import type * as ProfileModule from '@/store/profile'
 import {
   $activeGatewayProfile,
@@ -155,6 +162,17 @@ describe('Portal sidebar', () => {
     $pendingBotOpen.set(null)
     $fleetRoster.set(null)
   })
+  it('focuses session search after reopening and remounting the redesigned sidebar', async () => {
+    for (const initiallyOpen of [true, false, true]) {
+      act(() => setSidebarOpen(initiallyOpen))
+      const sidebar = mount()
+      act(() => requestSessionSearchFocus())
+      await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('textbox')))
+      expect($sidebarOpen.get()).toBe(true)
+      sidebar.unmount()
+    }
+  })
+
   it('highlights the focused chat owner without switching the ambient agent', () => {
     $activeGatewayProfile.set('default')
     $selectedStoredSessionId.set('pinned')

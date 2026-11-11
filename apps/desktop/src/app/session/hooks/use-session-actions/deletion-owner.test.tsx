@@ -8,7 +8,7 @@ import { clearQueuedPrompts, enqueueQueuedPrompt, getQueuedPrompts } from '@/sto
 import { $backgroundStatusBySession } from '@/store/composer-status'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
-import { refreshProjectTree } from '@/store/projects'
+import { $projectTree, getProjectTreeConnectionId, refreshProjectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $messages,
@@ -46,6 +46,7 @@ vi.mock('@/store/gateway', async importOriginal => ({
 }))
 vi.mock('@/store/projects', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
+  getProjectTreeConnectionId: vi.fn().mockReturnValue(null),
   refreshProjectTree: vi.fn().mockResolvedValue(undefined)
 }))
 
@@ -152,6 +153,7 @@ function mountDeletion(owner: SessionOwnerRoute) {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(deleteSession).mockResolvedValue({ ok: true })
+  vi.mocked(getProjectTreeConnectionId).mockReturnValue(null)
   $removedSessionIds.set(new Set())
   $sessionMutationsInFlight.set(new Set())
 })
@@ -163,6 +165,7 @@ afterEach(() => {
   setSessions([])
   setUnlistedSessionOwnerRows([])
   $archivedSessions.set([])
+  $projectTree.set([])
   setActiveSessionId(null)
   setSelectedStoredSessionId(null)
   setMessages([])
@@ -188,7 +191,9 @@ it.each([
     setUnlistedSessionOwnerRows([hidden])
     const view = mountDeletion(owner)
 
-    if (!tiled) {$sessionTiles.set([])}
+    if (!tiled) {
+      $sessionTiles.set([])
+    }
     saveTranscriptTail(id, messages, {
       connectionId: owner.connectionId,
       profile: owner.targetProfile ?? owner.profile
@@ -244,12 +249,23 @@ it('removes only the matching owner from listed and archived same-id rows', asyn
   expect(getQueuedPrompts(id)).toHaveLength(1)
 })
 
-it('still interrupts, closes and clears the selected session for the same owner', async () => {
+it.each([true, false])('cleans up a primary-local project session (listed=%s)', async listed => {
   const removed = row(ownerB)
-  setSessions([removed])
+  setSessions(listed ? [removed] : [])
+  vi.mocked(getProjectTreeConnectionId).mockReturnValue('local')
+  $projectTree.set([
+    {
+      id: 'local-project',
+      label: 'Local project',
+      path: null,
+      sessionCount: 1,
+      repos: [],
+      previewSessions: [{ ...removed, connection_id: undefined }]
+    }
+  ])
   const view = mountDeletion(ownerB)
 
-  await act(() => view.result.current.removeSession(id, removed))
+  await act(() => view.result.current.removeSession(id, listed ? removed : undefined))
 
   expect(requestGatewayForAgent).toHaveBeenCalledWith(ownerB.connectionId, ownerB.profile, 'session.interrupt', {
     session_id: runtimeId
@@ -267,6 +283,33 @@ it('still interrupts, closes and clears the selected session for the same owner'
   expect(getQueuedPrompts(id)).toEqual([])
   expect(getQueuedPrompts(runtimeId)).toEqual([])
   expect($backgroundStatusBySession.get()).toEqual({})
+  expect($pinnedSessionIds.get()).toEqual([])
+  expect($removedSessionIds.get().has(id)).toBe(true)
+})
+
+it('preserves shared slots when a bare project row came from another machine', async () => {
+  const removed = row(ownerB)
+  setSessions([removed])
+  vi.mocked(getProjectTreeConnectionId).mockReturnValue('remote-b')
+  $projectTree.set([
+    {
+      id: 'remote-project',
+      label: 'Remote project',
+      path: null,
+      sessionCount: 1,
+      repos: [],
+      previewSessions: [{ ...removed, connection_id: undefined }]
+    }
+  ])
+  const view = mountDeletion(ownerB)
+  const queued = getQueuedPrompts(id)
+
+  await act(() => view.result.current.removeSession(id, removed))
+
+  expect($sessions.get()).toEqual([])
+  expect(getQueuedPrompts(id)).toEqual(queued)
+  expect($pinnedSessionIds.get()).toEqual([id])
+  expect($removedSessionIds.get().has(id)).toBe(false)
 })
 
 it.each([true, false])(
@@ -301,8 +344,11 @@ it.each([true, false])(
     const state = $sessionStates.get()[runtimeId]
     view.navigate.mockClear()
     await act(async () => {
-      if (success) {pending.resolve({ ok: true })}
-      else {pending.reject(new Error('delete rejected'))}
+      if (success) {
+        pending.resolve({ ok: true })
+      } else {
+        pending.reject(new Error('delete rejected'))
+      }
 
       await deleting
     })

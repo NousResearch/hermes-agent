@@ -1,0 +1,55 @@
+.agent-config-fields {
+  display: grid;
+  gap: 32px;
+}
+
+.agent-config-fields:not(:first-child) {
+  margin-top: 32px;
+}
+
+.agent-config-fields > section > h3 {
+  margin-bottom: 12px;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 17px;
+}
+
+.agent-config-card > div {
+  padding-inline: 16px;
+}
+
+.agent-config-card [data-slot='segmented-control'] {
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 0.5px var(--ui-stroke-secondary);
+}
+
+.agent-config-card [data-slot='segmented-control'] button {
+  min-height: 28px;
+  border-radius: 1px;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.agent-config-card [data-slot='segmented-control'] button[aria-pressed='true'] {
+  background: var(--portal-selection-background);
+  box-shadow: inset 0 0 0 0.5px var(--portal-brand-blue);
+}
+
+.agent-config-advanced > summary {
+  display: flex;
+  min-height: 68px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  list-style: none;
+}
+
+.agent-config-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-config-advanced > summary:focus-visible {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: 3px;
+}

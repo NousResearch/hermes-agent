@@ -32,13 +32,13 @@ export const portalTheme: DesktopTheme = {
     userBubbleBorder: '#d8d8d8'
   },
   darkColors: {
-    background: '#0d0d0f',
+    background: '#07071a',
     foreground: '#f2f2f2',
-    card: '#151518',
+    card: '#131325',
     cardForeground: '#f2f2f2',
     muted: '#1c1c20',
     mutedForeground: '#a1a1ab',
-    popover: '#1b1b1f',
+    popover: '#0d0d1e',
     popoverForeground: '#f2f2f2',
     primary: '#8585ff',
     primaryForeground: '#0e0e10',
@@ -51,10 +51,10 @@ export const portalTheme: DesktopTheme = {
     ring: '#8585ff',
     destructive: '#f0949e',
     destructiveForeground: '#0e0e10',
-    sidebarBackground: '#0f0f12',
-    sidebarBorder: '#29292f',
-    userBubble: '#19191d',
-    userBubbleBorder: '#29292f'
+    sidebarBackground: '#0a0a1a',
+    sidebarBorder: '#171727',
+    userBubble: '#131325',
+    userBubbleBorder: '#131325'
   },
   typography: {
     fontSans: '"Mona Sans", system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", emoji',
@@ -67,6 +67,8 @@ export const portalTheme: DesktopTheme = {
       --portal-brand-blue: #0000f2;
       --portal-brand-hover: #2020ff;
       --portal-on-brand: #f2f2f2;
+      --ui-bg-chrome: var(--theme-background-seed);
+      --ui-bg-elevated: var(--theme-elevated-seed);
     }
 
     :is(

@@ -1,6 +1,6 @@
 import './portal-sidebar.css'
 
-import { type ComponentProps } from 'react'
+import { type ComponentProps, useEffect, useRef } from 'react'
 
 import wing from '@/assets/catalog-wing.svg'
 import { Button } from '@/components/ui/button'
@@ -9,7 +9,7 @@ import { SearchField } from '@/components/ui/search-field'
 import { Sidebar, SidebarContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
 import { recordIaAction } from '@/store/ia-metrics'
-import { toggleSidebarOpen } from '@/store/layout'
+import { SESSION_SEARCH_FOCUS_EVENT, toggleSidebarOpen } from '@/store/layout'
 import { $newChatProfile } from '@/store/profile'
 
 import type { ChatSidebar } from '../index'
@@ -45,6 +45,14 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
     pinned,
     hasMore
   } = useAgentSidebar(props)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const onFocus = () => searchInputRef.current?.focus({ preventScroll: true })
+    window.addEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
+
+    return () => window.removeEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
+  }, [])
 
   return (
     <Sidebar className="portal-sidebar" collapsible="none" data-tour="sessions-sidebar">
@@ -79,6 +87,7 @@ export function PortalSidebar(props: ComponentProps<typeof ChatSidebar>) {
         <SearchField
           aria-label={t.sidebar.searchAria}
           containerClassName="portal-sidebar-search"
+          inputRef={searchInputRef}
           loading={search.pending}
           onChange={setQuery}
           onFocus={() => recordIaAction('ia.search.opened')}

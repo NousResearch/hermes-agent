@@ -920,7 +920,9 @@ function CronJobDetail({
       <header className="space-y-3">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{jobTitle(job)}</h3>
+            <h3 className="min-w-0 break-words text-[0.95rem] font-semibold tracking-tight text-foreground">
+              {jobTitle(job)}
+            </h3>
             {scriptOnly && <PanelPill tone="muted">{c.scriptBadge}</PanelPill>}
             <PanelPill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</PanelPill>
           </div>
@@ -1191,11 +1193,14 @@ function CronJobRuns({
   )
 }
 
-// Label a cron delivery target: 'local' → localized "This desktop", known
-// platforms → their delivery label, anything else → the backend name. Configured
-// platforms without a cron home channel get a "set a home channel first" hint.
-function deliverTargetLabel(target: CronDeliveryTarget, c: Translations['cron']): string {
-  const base = target.id === 'local' ? c.deliveryLabels.local : (c.deliveryLabels[target.id] ?? target.name)
+// Canonical agent-chat target IDs stay unchanged; only their display name is localized.
+function deliverTargetLabel(target: CronDeliveryTarget, c: Translations['cron'], agentLabel: string): string {
+  let base = c.deliveryLabels[target.id] ?? target.name
+
+  if (target.id === 'bot-chat' || target.id.startsWith('bot-chat:')) {
+    const profile = target.id.slice('bot-chat:'.length)
+    base = profile ? `${agentLabel} (${profile})` : agentLabel
+  }
 
   return target.id !== 'local' && !target.home_target_set ? `${base} — ${c.deliverNeedsHomeChannel}` : base
 }
@@ -1217,6 +1222,7 @@ export function DeliverCheckboxes({
   targets: CronDeliveryTarget[]
   value: string
 }) {
+  const { t } = useI18n()
   const selected = parseCronDeliveryTargets(value)
   const knownIds = new Set(targets.map(target => target.id))
 
@@ -1245,7 +1251,7 @@ export function DeliverCheckboxes({
               id={checkboxId}
               onCheckedChange={next => onChange(toggleCronDeliveryTarget(value, target.id, next === true))}
             />
-            <span>{deliverTargetLabel(target, c)}</span>
+            <span>{deliverTargetLabel(target, c, t.sidebar.filter.profile)}</span>
           </label>
         )
       })}

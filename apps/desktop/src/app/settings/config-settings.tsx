@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ChangeEvent, ReactNode } from 'react'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 
 import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
@@ -35,10 +35,13 @@ import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRec
 import { $settingsRequestProfile } from '@/store/settings-scope'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
+import { useAgentSettingsEditorCopy } from '../agent-settings/settings-copy'
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
+import { AgentConfigFields } from './agent-config-fields'
+import { type ConfigSettingsDraft, ConfigSettingsDraftContext } from './config-draft'
 import { ConfigField } from './config-field'
 import { configSubpageForField } from './config-subpages'
 import { DELEGATION_ROUTE_COMPANION_KEY, DelegationRouteRow } from './delegation-route-row'
@@ -68,10 +71,13 @@ import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { SharedMetricsSettings } from './shared-metrics-settings'
 import { useSettingDeepLink } from './use-setting-deep-link'
 
+const VOICE_MODE_LABELS = { chained: 'Chained', 'gpt-live': 'GPT-Live' }
+
 export function ConfigSettings({
   activeSectionId,
   subpage,
   agentModel,
+  agentLayout,
   onConfigSaved,
   onMainModelChanged,
   importInputRef
@@ -89,6 +95,7 @@ export function ConfigSettings({
   return (
     <ConfigSettingsInner
       activeSectionId={activeSectionId}
+      agentLayout={agentLayout}
       agentModel={agentModel}
       importInputRef={importInputRef}
       key={JSON.stringify([connectionId, scopeProfile ?? '__active__'])}
@@ -104,6 +111,7 @@ interface ConfigSettingsProps {
   activeSectionId: string
   /** Undefined preserves the full section for existing embedded consumers. */
   agentModel?: boolean
+  agentLayout?: boolean
   subpage?: string
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
@@ -128,10 +136,62 @@ function useConfigSectionVisibility({
   }
 }
 
+interface ConfigLoadingProps {
+  configLoaded: boolean
+  schemaLoaded: boolean
+  configFailed: boolean
+  schemaFailed: boolean
+  model: boolean
+  subpage?: string
+  onRetry: () => void
+}
+
+function ConfigLoading({
+  configLoaded,
+  schemaLoaded,
+  configFailed,
+  schemaFailed,
+  model,
+  subpage,
+  onRetry
+}: ConfigLoadingProps) {
+  const { t } = useI18n()
+
+  if ((configFailed && !configLoaded) || (schemaFailed && !schemaLoaded)) {
+    return (
+      <div className="flex h-full min-h-0 flex-1">
+        <PanelEmpty
+          action={
+            <Button onClick={onRetry} size="sm">
+              {t.common.retry}
+            </Button>
+          }
+          icon="error"
+          title={t.settings.config.failedLoad}
+        />
+      </div>
+    )
+  }
+
+  if (model) {
+    return (
+      <SettingsContent>
+        <SettingsProfileScope className="mb-5" />
+        <div className="mb-6">
+          <ModelSettingsSkeleton subpage={subpage} />
+        </div>
+      </SettingsContent>
+    )
+  }
+
+  return <SettingsSkeleton sections={[{ rows: 6 }]} />
+}
+
 function ConfigSettingsInner({
   activeSectionId,
   subpage,
   agentModel,
+  agentLayout,
   onConfigSaved,
   onMainModelChanged,
   importInputRef,
@@ -139,6 +199,8 @@ function ConfigSettingsInner({
 }: ConfigSettingsProps & { scopeProfile: string | undefined }) {
   const { t } = useI18n()
   const owner = useSettingsOwner()
+  const compactAgent = usePortalRedesign() && agentLayout
+  const agentCopy = useAgentSettingsEditorCopy()
   const requestScope = owner ?? scopeProfile
   const c = t.settings.config
   const keepAwakeMode = useStore($keepAwakeMode)
@@ -151,10 +213,10 @@ function ConfigSettingsInner({
 
   const disableF12 = useStore($disableF12)
   const alwaysExternalLinks = useStore($alwaysExternalLinks)
-  // The editable draft is local (debounced autosave watches it), but it's seeded
-  // from — and saved back through — the shared config cache, so edits are visible
-  // in the MCP/model surfaces and reopening the page doesn't reload-flash.
-  const [config, setConfig] = useState<HermesConfigRecord | null>(null)
+  const retainedDraft = useContext(ConfigSettingsDraftContext)
+  const localDraft = useRef<ConfigSettingsDraft | null>(null)
+  const draft = retainedDraft ?? localDraft
+  const [config, setConfig] = useState<HermesConfigRecord | null>(() => draft.current?.config ?? null)
 
   const {
     data: loadedConfig,
@@ -162,10 +224,6 @@ function ConfigSettingsInner({
     refetch: refetchConfig,
     writeScope
   } = useHermesConfigRecord(requestScope)
-
-  // Writes land on the same cache key the query above reads (base key when
-  // following the active profile, suffixed when a scope override is set).
-  const writeConfigCache = useMemo(() => hermesConfigCacheWriter(requestScope), [requestScope])
 
   const {
     data: schemaResponse,
@@ -186,9 +244,10 @@ function ConfigSettingsInner({
   const schema = schemaResponse?.fields ?? null
   const [elevenLabsVoiceOptions, setElevenLabsVoiceOptions] = useState<string[] | null>(null)
   const [elevenLabsVoiceLabels, setElevenLabsVoiceLabels] = useState<Record<string, string>>({})
-  const saveVersionRef = useRef(0)
   const savedDiscoverySignatureRef = useRef<string | undefined>(undefined)
-  const [saveVersion, setSaveVersion] = useState(0)
+  const [saveVersion, setSaveVersion] = useState(() =>
+    draft.current && draft.current.version > draft.current.savedVersion ? draft.current.version : 0
+  )
   const mounted = useRef(true)
   useLayoutEffect(() => {
     mounted.current = true
@@ -198,28 +257,23 @@ function ConfigSettingsInner({
     }
   }, [])
 
-  // Seed the local draft once, the first time the shared record lands.
-  // Background refetches thereafter must not clobber in-progress edits.
-  const configSeeded = useRef(false)
-  // Snapshot of the record as it was when the draft was seeded. Autosave
-  // diffs the draft against this (not against disk) so a field the user
-  // never touched — possibly changed out-of-band by `hermes config set`
-  // while this page sat open — is never resent with its stale value.
-  const configBaselineRef = useRef<HermesConfigRecord | null>(null)
-  // Serializes autosave requests so an older save that's still in flight can't
-  // resolve after a newer one and re-advance the baseline / cache with stale
-  // data — each save's diff+request only starts once the previous one lands.
-  const saveQueueRef = useRef<Promise<void>>(Promise.resolve())
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  // Keep the seed, baseline and write owner together across presentation changes.
+  // Refetches must not replace unsaved fields or redirect their eventual write.
+  // eslint-disable-next-line no-restricted-syntax -- scoped editor draft, not an atom mirror
   useEffect(() => {
-    if (loadedConfig && !configSeeded.current) {
-      configSeeded.current = true
-      configBaselineRef.current = loadedConfig
+    if (loadedConfig && !draft.current) {
+      draft.current = {
+        config: loadedConfig,
+        baseline: loadedConfig,
+        writeScope: owner ?? writeScope ?? scopeProfile,
+        version: 0,
+        savedVersion: 0,
+        queue: Promise.resolve()
+      }
       savedDiscoverySignatureRef.current = repoDiscoveryPolicySignature(repoDiscoveryPolicyFromConfig(loadedConfig))
       setConfig(loadedConfig)
     }
-  }, [loadedConfig])
+  }, [loadedConfig, draft, owner, writeScope, scopeProfile])
 
   // A profile switch invalidates (but doesn't clear) the shared config query, so
   // the local draft would otherwise keep profile A's data and autosave it into
@@ -230,13 +284,10 @@ function ConfigSettingsInner({
       return
     }
 
-    configSeeded.current = false
-    configBaselineRef.current = null
+    draft.current = null
     savedDiscoverySignatureRef.current = undefined
     setConfig(null)
-    saveVersionRef.current = 0
     setSaveVersion(0)
-    saveQueueRef.current = Promise.resolve()
   })
 
   useEffect(() => {
@@ -264,7 +315,9 @@ function ConfigSettingsInner({
 
   // eslint-disable-next-line no-restricted-syntax -- autosave bookkeeping refs, not an atom mirror
   useEffect(() => {
-    if (!config || saveVersion === 0) {
+    const pending = draft.current
+
+    if (!config || !pending || saveVersion === 0) {
       return
     }
 
@@ -276,14 +329,14 @@ function ConfigSettingsInner({
       // still awaiting its response can't land after this one and undo its
       // baseline advance — each save's diff is computed once its predecessor
       // has fully resolved.
-      saveQueueRef.current = saveQueueRef.current.then(async () => {
-        if (!mounted.current) {
+      pending.queue = pending.queue.then(async () => {
+        if (!mounted.current || pending.savedVersion >= v) {
           return
         }
 
         try {
-          const patch = diffConfig(configBaselineRef.current ?? {}, snapshot)
-          const result = await saveHermesConfig(patch, owner ?? writeScope ?? scopeProfile)
+          const patch = diffConfig(pending.baseline, snapshot)
+          const result = await saveHermesConfig(patch, pending.writeScope)
 
           if (!result.ok) {
             throw new Error(c.autosaveFailed)
@@ -293,12 +346,13 @@ function ConfigSettingsInner({
           // diffs against what's actually on disk instead of the page-load
           // (or last-baseline) copy — otherwise reverting a field to its
           // pre-save value diffs to nothing and the revert never reaches disk.
-          configBaselineRef.current = snapshot
+          pending.baseline = snapshot
+          pending.savedVersion = v
 
           // Mirror the saved record into the shared cache so MCP/model surfaces
           // reflect the edit without their own refetch.
-          writeConfigCache(snapshot)
-          const savedScope = writeScope ?? scopeProfile
+          hermesConfigCacheWriter(pending.writeScope)(snapshot)
+          const savedScope = pending.writeScope
 
           recordSettingsSaved(patch, schema ?? {}, typeof savedScope === 'string' ? savedScope : savedScope?.profile)
 
@@ -307,7 +361,7 @@ function ConfigSettingsInner({
             refreshMemoryStatus()
           }
 
-          if (mounted.current && saveVersionRef.current === v) {
+          if (mounted.current && pending.version === v) {
             // The repo-discovery scan reads the ACTIVE profile's workspace
             // policy; skip it when this page is editing another profile.
             if (scopeProfile == null) {
@@ -322,7 +376,7 @@ function ConfigSettingsInner({
             onConfigSaved?.()
           }
         } catch (err) {
-          if (mounted.current && saveVersionRef.current === v) {
+          if (mounted.current && pending.version === v) {
             notifyError(err, c.autosaveFailed)
           }
         }
@@ -331,12 +385,17 @@ function ConfigSettingsInner({
 
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
-  }, [config, onConfigSaved, saveVersion, writeScope, scopeProfile, owner])
+  }, [config, draft, onConfigSaved, saveVersion, scopeProfile])
 
   const applyConfig = (next: HermesConfigRecord) => {
-    saveVersionRef.current += 1
+    if (!draft.current) {
+      return
+    }
+
+    draft.current.config = next
+    draft.current.version += 1
     setConfig(next)
-    setSaveVersion(saveVersionRef.current)
+    setSaveVersion(draft.current.version)
   }
 
   const updateConfig = (next: HermesConfigRecord) => {
@@ -367,7 +426,11 @@ function ConfigSettingsInner({
   }, [schema, config])
 
   const fields = (sectionFields.get(activeSectionId) ?? []).filter(
-    ([key]) => agentModel || subpage === undefined || configSubpageForField(activeSectionId, key) === subpage
+    ([key]) =>
+      (compactAgent && activeSectionId !== 'advanced') ||
+      agentModel ||
+      subpage === undefined ||
+      configSubpageForField(activeSectionId, key) === subpage
   )
 
   const { showModelSettings, showDesktopSettings, showAttachments, portalSafety, showSharedMetrics } =
@@ -378,7 +441,10 @@ function ConfigSettingsInner({
   const [searchParams, setSearchParams] = useSearchParams()
   const targetField = searchParams.get('field')
 
-  useSettingDeepLink(`config:${activeSectionId}`, page => subpage === undefined || page === subpage)
+  useSettingDeepLink(
+    `config:${activeSectionId}`,
+    page => (compactAgent && activeSectionId !== 'advanced') || subpage === undefined || page === subpage
+  )
 
   useEffect(() => {
     if (!targetField || !config || !schema) {
@@ -391,6 +457,13 @@ function ConfigSettingsInner({
 
     if (!element) {
       return
+    }
+
+    let disclosure = element.parentElement?.closest('details')
+
+    while (disclosure) {
+      disclosure.open = true
+      disclosure = disclosure.parentElement?.closest('details')
     }
 
     element.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -484,43 +557,20 @@ function ConfigSettingsInner({
   )
 
   if (!config || !schema) {
-    // A failed config/schema fetch must surface a retry, not spin forever.
-    if ((configLoadFailed && !config) || (schemaFailed && !schema)) {
-      return (
-        <div className="flex h-full min-h-0 flex-1">
-          <PanelEmpty
-            action={
-              <Button
-                onClick={() => {
-                  void refetchConfig()
-                  void refetchSchema()
-                }}
-                size="sm"
-              >
-                {t.common.retry}
-              </Button>
-            }
-            icon="error"
-            title={c.failedLoad}
-          />
-        </div>
-      )
-    }
-
-    // Every section keeps its shape via a skeleton; model gets its bespoke one
-    // (its catalog fetch is the slow part), the rest the shared field rhythm.
-    if (showModelSettings) {
-      return (
-        <SettingsContent>
-          <SettingsProfileScope className="mb-5" />
-          <div className="mb-6">
-            <ModelSettingsSkeleton subpage={subpage} />
-          </div>
-        </SettingsContent>
-      )
-    }
-
-    return <SettingsSkeleton sections={[{ rows: 6 }]} />
+    return (
+      <ConfigLoading
+        configFailed={configLoadFailed}
+        configLoaded={Boolean(config)}
+        model={showModelSettings}
+        onRetry={() => {
+          void refetchConfig()
+          void refetchSchema()
+        }}
+        schemaFailed={schemaFailed}
+        schemaLoaded={Boolean(schema)}
+        subpage={subpage}
+      />
+    )
   }
 
   const visibleFields = (
@@ -543,6 +593,51 @@ function ConfigSettingsInner({
     (subpage === undefined
       ? activeSectionId !== 'chat'
       : !showModelSettings && !showDesktopSettings && !showAttachments && !showSharedMetrics)
+
+  const renderField = ([key, field]: [string, ConfigFieldSchema]) => (
+    <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
+      {key === 'delegation.model' ? (
+        <SubagentModelGate scope={writeScope ?? scopeProfile}>
+          <DelegationRouteRow config={config} onConfigChange={updateConfig} scope={writeScope ?? scopeProfile} />
+        </SubagentModelGate>
+      ) : (
+        <ConfigField
+          descriptionExtra={
+            key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
+              <MemoryConnect profile={scopeProfile} provider={String(getNested(config, key))} />
+            ) : undefined
+          }
+          descriptionOverride={
+            compactAgent && key === 'voice.voice_chat_mode' ? agentCopy.voiceModeDescription : undefined
+          }
+          enumOptions={
+            key === 'tts.elevenlabs.voice_id'
+              ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
+              : enumOptionsFor(key, getNested(config, key), config)
+          }
+          onChange={value => updateConfig(setConfigField(config, key, value))}
+          optionLabels={
+            key === 'tts.elevenlabs.voice_id'
+              ? elevenLabsVoiceLabels
+              : compactAgent && key === 'voice.voice_chat_mode'
+                ? VOICE_MODE_LABELS
+                : undefined
+          }
+          schema={field}
+          schemaKey={key}
+          segmented={compactAgent && key === 'voice.voice_chat_mode'}
+          value={configFieldValue(config, key)}
+        />
+      )}
+      {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
+        <ProviderConfigPanel
+          key={String(getNested(config, key))}
+          profile={scopeProfile}
+          provider={String(getNested(config, key))}
+        />
+      ) : null}
+    </div>
+  )
 
   return renderPage(
     <>
@@ -608,52 +703,15 @@ function ConfigSettingsInner({
         subpage={agentModel ? undefined : subpage}
         writeScope={writeScope}
       />
-      {activeSectionId === 'voice' ? (
+      {activeSectionId === 'voice' && !compactAgent ? (
         <ListRow description={c.voiceShortcutHintDesc} title={c.voiceShortcutHintTitle} />
       ) : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
-      ) : visibleFields.length === 0 ? null : (
-        <div className="grid gap-1">
-          {visibleFields.map(([key, field]) => (
-            <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
-              {key === 'delegation.model' ? (
-                <SubagentModelGate scope={writeScope ?? scopeProfile}>
-                  <DelegationRouteRow
-                    config={config}
-                    onConfigChange={updateConfig}
-                    scope={writeScope ?? scopeProfile}
-                  />
-                </SubagentModelGate>
-              ) : (
-                <ConfigField
-                  descriptionExtra={
-                    key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
-                      <MemoryConnect profile={scopeProfile} provider={String(getNested(config, key))} />
-                    ) : undefined
-                  }
-                  enumOptions={
-                    key === 'tts.elevenlabs.voice_id'
-                      ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
-                      : enumOptionsFor(key, getNested(config, key), config)
-                  }
-                  onChange={value => updateConfig(setConfigField(config, key, value))}
-                  optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
-                  schema={field}
-                  schemaKey={key}
-                  value={configFieldValue(config, key)}
-                />
-              )}
-              {key === 'memory.provider' && isExternalMemoryProvider(getNested(config, key)) ? (
-                <ProviderConfigPanel
-                  key={String(getNested(config, key))}
-                  profile={scopeProfile}
-                  provider={String(getNested(config, key))}
-                />
-              ) : null}
-            </div>
-          ))}
-        </div>
+      ) : visibleFields.length === 0 ? null : compactAgent ? (
+        <AgentConfigFields fields={visibleFields} renderField={renderField} sectionId={activeSectionId} />
+      ) : (
+        <div className="grid gap-1">{visibleFields.map(renderField)}</div>
       )}
     </>
   )

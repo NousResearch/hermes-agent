@@ -4,16 +4,20 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import type * as HermesApi from '@/hermes'
 import { enFirstRun } from '@/i18n/en_first_run'
+import { $composerDraft, $freshDraftKey, mainComposerScope, setComposerDraft } from '@/store/composer'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import { $desktopOnboarding, closeManualOnboarding, startManualOnboarding } from '@/store/onboarding'
 import { $setupGuidePhase } from '@/store/onboarding-phase'
 import { markOnboardingDecided } from '@/store/onboarding-presence'
 import type * as OnboardingScopeApi from '@/store/onboarding-scope'
+import { $newChatProfile, $newChatRoute } from '@/store/profile'
 import {
   $guideRecovery,
   $guideScope,
   $guideSuspended,
-  decideOnboarding
+  decideOnboarding,
+  startOnboarding,
+  suspendOnboarding
 } from '@/store/setup-guide'
 import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 import { makeOAuthProvider } from '@/test/oauth-provider'
@@ -36,14 +40,22 @@ vi.mock('@/store/onboarding-scope', async importOriginal => ({
 beforeEach(() => {
   transport.ready = false
   transport.request.mockReset()
-  transport.request.mockImplementation(async (method: string) => {
+  transport.request.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
     switch (method) {
-      case 'onboarding.state': return { run: true, eligible: false, started: true, step: 'model' }
-      case 'shared_metrics.status': return { decided: true, enabled: false }
-      case 'setup.status': return { provider_configured: false }
-      case 'setup.runtime_check': return { ok: transport.ready, model: 'local-model' }
-      case 'free_tier.status': return { enabled: false }
-      default: throw new Error(`Unexpected setup side effect: ${method}`)
+      case 'onboarding.state':
+        return { run: true, eligible: false, started: true, step: 'model' }
+      case 'onboarding.set_run':
+        return { run: params?.run === true, started: true, step: params?.step ?? 'model' }
+      case 'shared_metrics.status':
+        return { decided: true, enabled: false }
+      case 'setup.status':
+        return { provider_configured: false }
+      case 'setup.runtime_check':
+        return { ok: transport.ready, model: 'local-model' }
+      case 'free_tier.status':
+        return { enabled: false }
+      default:
+        throw new Error(`Unexpected setup side effect: ${method}`)
     }
   })
   closeManualOnboarding()
@@ -76,6 +88,10 @@ afterEach(() => {
   $guideRecovery.set(null)
   $guideSuspended.set(false)
   $agentSidebarChoice.set(null)
+  setComposerDraft('')
+  mainComposerScope.$attachments.set([])
+  $newChatProfile.set(null)
+  $newChatRoute.set(null)
   $localModelsEnabled.set(false)
   setApiRequestConnection(null)
   setApiRequestProfile(null)
@@ -85,11 +101,15 @@ afterEach(() => {
 
 it('releases the real provider picker for local settings and resumes only on request', async () => {
   await decideOnboarding(transport.request as never, true)
-  const settingsAction = vi.fn(() => { transport.ready = true })
-  render(<>
-    <button onClick={settingsAction}>Configure local model</button>
-    <DesktopOnboardingOverlay enabled profile="default" requestGateway={transport.request as never} />
-  </>)
+  const settingsAction = vi.fn(() => {
+    transport.ready = true
+  })
+  render(
+    <>
+      <button onClick={settingsAction}>Configure local model</button>
+      <DesktopOnboardingOverlay enabled profile="default" requestGateway={transport.request as never} />
+    </>
+  )
 
   fireEvent.click(await screen.findByRole('button', { name: enFirstRun.guide.providers }))
   fireEvent.click(await screen.findByRole('button', { name: /Run models locally/ }))
@@ -105,7 +125,9 @@ it('releases the real provider picker for local settings and resumes only on req
   fireEvent.click(screen.getByRole('button', { name: enFirstRun.guide.resume }))
   expect(await screen.findByRole('dialog')).toBeTruthy()
   expect(screen.getByText(enFirstRun.guide.model)).toBeTruthy()
-  await waitFor(() => expect(screen.getByRole('button', { name: enFirstRun.guide.finish }).hasAttribute('disabled')).toBe(false))
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: enFirstRun.guide.finish }).hasAttribute('disabled')).toBe(false)
+  )
   expect($guideScope.get()).toMatchObject({ connectionId: null, profile: 'default' })
 })
 
@@ -123,8 +145,11 @@ it('shows old-runtime upgrade instructions and retries setup without creating a 
   expect(await screen.findByRole('dialog')).toBeTruthy()
   expect(screen.getByText(enFirstRun.guide.appearance)).toBeTruthy()
   expect(screen.queryByText(enFirstRun.guide.upgradeRequired)).toBeNull()
-  expect(transport.request.mock.calls.filter(([method]) => method === 'onboarding.state')
-    .every(([, params]) => params.sessionless === true)).toBe(true)
+  expect(
+    transport.request.mock.calls
+      .filter(([method]) => method === 'onboarding.state')
+      .every(([, params]) => params.sessionless === true)
+  ).toBe(true)
 })
 
 it('keeps the classic manual local-model handoff free of the redesigned guide', async () => {
@@ -149,3 +174,44 @@ it('does not show late recovery after switching back to classic', async () => {
   })
   expect(screen.queryByText(enFirstRun.guide.upgradeRequired)).toBeNull()
 })
+
+it.each([false, true])(
+  'finishes a settings rerun without replacing the foreground draft (suspended: %j)',
+  async suspended => {
+    transport.ready = true
+    await startOnboarding(transport.request as never)
+    render(<DesktopOnboardingOverlay enabled profile="default" requestGateway={transport.request as never} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue' }))
+
+    if (suspended) {
+      act(() => suspendOnboarding())
+      setApiRequestProfile('research')
+      fireEvent.click(await screen.findByRole('button', { name: enFirstRun.guide.resume }))
+    }
+
+    const profile = suspended ? 'research' : 'default'
+    const owner = { connectionId: 'local', profile }
+    const attachment = { id: 'draft-notes', kind: 'file' as const, label: 'notes.txt' }
+    act(() => {
+      $newChatProfile.set(profile)
+      $newChatRoute.set(owner)
+      setComposerDraft('Keep this unsent request')
+      mainComposerScope.$attachments.set([attachment])
+    })
+    window.location.hash = '#/settings?tab=onboarding'
+    const draftKey = $freshDraftKey.get()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: enFirstRun.guide.finish }).hasAttribute('disabled')).toBe(false)
+    )
+    fireEvent.click(screen.getByRole('button', { name: enFirstRun.guide.finish }))
+    await waitFor(() => expect($setupGuidePhase.get()).toBe('done'))
+
+    expect($freshDraftKey.get()).toBe(draftKey)
+    expect($composerDraft.get()).toBe('Keep this unsent request')
+    expect(mainComposerScope.$attachments.get()).toEqual([attachment])
+    expect($newChatProfile.get()).toBe(profile)
+    expect($newChatRoute.get()).toEqual(owner)
+    expect(window.location.hash).toBe('#/settings?tab=onboarding')
+    expect(transport.request.mock.calls.some(([method]) => /session\.create|prompt\./.test(method))).toBe(false)
+  }
+)

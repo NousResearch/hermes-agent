@@ -96,7 +96,7 @@ export function AgentOverviewActions({ owner, profile }: AgentOverviewActionsPro
     <>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button aria-label={shared.actions} size="icon-lg" variant="secondary">
+          <Button aria-label={shared.actions} size="icon" variant="secondary">
             <Codicon name="ellipsis" />
           </Button>
         </DropdownMenuTrigger>

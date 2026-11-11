@@ -9,7 +9,7 @@ import { makeSessionInfo } from '@/test/session-info'
 
 import { AgentHistory } from './history'
 import type * as HistoryData from './history-data'
-import { deleteHistorySelection, previewHistoryCleanup } from './history-data'
+import { deleteHistorySelection, mutateHistorySession, previewHistoryCleanup } from './history-data'
 import { HistoryCleanupDialog } from './history-dialogs'
 
 const { requests } = vi.hoisted(() => ({ requests: [] as { offset: number; filters: HistoryData.HistoryFilters }[] }))
@@ -19,6 +19,7 @@ vi.mock('./history-data', async importOriginal => ({
   getHistoryRunning: async () => new Set<string>(),
   previewHistoryCleanup: vi.fn(),
   deleteHistorySelection: vi.fn(),
+  mutateHistorySession: vi.fn(),
   getHistoryPage: async (_owner: unknown, filters: HistoryData.HistoryFilters, offset = 0) => {
     requests.push({ filters, offset })
 
@@ -82,6 +83,7 @@ afterEach(() => {
   requests.length = 0
   vi.mocked(previewHistoryCleanup).mockReset()
   vi.mocked(deleteHistorySelection).mockReset()
+  vi.mocked(mutateHistorySession).mockReset()
 })
 
 function renderHistory() {
@@ -152,6 +154,40 @@ it('applies source unions and archive boundaries to backfilled pins without expo
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
 })
 
+it('removes applied filter chips independently without resetting the other filters', async () => {
+  renderHistory()
+  await screen.findByText('History entry 24')
+  fireEvent.click(screen.getByRole('button', { name: 'Filters' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Schedule' }))
+  fireEvent.click(screen.getByRole('radio', { name: 'Include' }))
+  fireEvent.click(screen.getByRole('radio', { name: 'None' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Done' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Source: Schedule' }))
+  expect(screen.queryByRole('button', { name: 'Source: Schedule' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Archived: Include' })).toBeTruthy()
+  expect(screen.getByRole('button', { name: 'Group by: None' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Archived: Include' }))
+  expect(screen.queryByRole('button', { name: 'Archived: Include' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Group by: None' }))
+  expect(screen.queryByRole('button', { name: 'Group by: None' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Filters' })).toBeTruthy()
+})
+
+it('shows partial selection and selects or clears the visible history together', async () => {
+  renderHistory()
+  await screen.findByText('History entry 24')
+  const all = screen.getByRole('checkbox', { name: 'Select visible sessions' })
+  const row = screen.getByRole('checkbox', { name: 'Selected: History entry 0' })
+  fireEvent.click(row)
+  expect(all.getAttribute('aria-checked')).toBe('mixed')
+  fireEvent.click(all)
+  expect(all.getAttribute('aria-checked')).toBe('true')
+  expect(row.getAttribute('aria-checked')).toBe('true')
+  fireEvent.click(all)
+  expect(all.getAttribute('aria-checked')).toBe('false')
+  expect(row.getAttribute('aria-checked')).toBe('false')
+})
+
 it('requires a fresh cleanup preview after criteria changes and reports running skips after confirmation', async () => {
   const candidate = makeSessionInfo({ id: 'old', title: 'Old conversation' })
   const live = makeSessionInfo({ id: 'running', title: 'Running conversation' })
@@ -193,4 +229,27 @@ it('requires a fresh cleanup preview after criteria changes and reports running 
     expect.objectContaining({ criteria: expect.objectContaining({ messages: 'empty' }) })
   )
   expect(onClose).toHaveBeenCalledOnce()
+})
+
+it.each([
+  ['Pin', { pinned: true }],
+  ['Archive', { archived: true, pinned: false }]
+] as const)('applies bulk %s only to the selected owner-qualified sessions', async (action, patch) => {
+  vi.mocked(mutateHistorySession).mockResolvedValue({ ok: true })
+  renderHistory()
+  await screen.findByText('History entry 24')
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Selected: History entry 0' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Selected: History entry 1' }))
+  fireEvent.click(screen.getByRole('button', { name: action }))
+  await waitFor(() => expect(mutateHistorySession).toHaveBeenCalledTimes(2))
+  expect(
+    vi.mocked(mutateHistorySession).mock.calls.map(([owner, id, method, payload]) => ({ owner, id, method, payload }))
+  ).toEqual(
+    ['history-0', 'history-1'].map(id => ({
+      owner: { connectionId: 'alpha', profile: 'research' },
+      id,
+      method: 'PATCH',
+      payload: patch
+    }))
+  )
 })

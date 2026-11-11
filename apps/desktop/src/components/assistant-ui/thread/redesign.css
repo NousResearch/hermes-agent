@@ -1,0 +1,63 @@
+/* Brand rev 491:40652–40672: 600px prose, 30px turns, 20px output blocks.
+   Keep the existing text-scale and tool disclosure behavior in both layouts. */
+[data-portal-redesign='true'] [data-slot='aui_thread-content'] {
+  --message-text-indent: 0px;
+  --turn-block-gap: 1.25rem;
+  --dt-user-bubble: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  padding-inline: 1.25rem;
+  padding-top: 3.125rem;
+}
+
+[data-portal-redesign='true'] [data-slot='aui_user-bubble-actions'] {
+  width: fit-content;
+  max-width: min(100%, 23.75rem);
+  align-self: flex-end;
+}
+
+[data-portal-redesign='true'] [data-slot='aui_turn-pair'] {
+  gap: 1.875rem;
+}
+
+[data-portal-redesign='true'] [data-slot='aui_message-group'] {
+  padding-bottom: 1.875rem;
+}
+
+[data-portal-redesign='true'] [data-slot='aui_user-message-root'] {
+  --human-msg-line-height: 1.6;
+  padding-block: 0;
+}
+
+[data-portal-redesign='true'] [data-slot='aui_assistant-message-content'] {
+  line-height: 1.6;
+}
+
+[data-portal-redesign='true'] [data-slot='aui_edit-composer-root'] .composer-human-message-container {
+  max-width: min(100%, 23.75rem);
+  align-self: flex-end;
+}
+
+[data-portal-redesign='true'] .composer-human-message {
+  border-radius: 0.375rem;
+  border-color: transparent;
+  padding-inline-start: 0.625rem;
+}
+
+/* Single-call runs have no aggregate header. Give their collapsed row the same
+   frame; expanded payloads retain their existing controls and review surfaces. */
+[data-portal-redesign='true'] [data-slot='aui_thread-content'] [data-tool-summary],
+[data-portal-redesign='true'] [data-tool-count='1'] [data-tool-row]:not([data-tool-open]) {
+  --conversation-tool-font-size: calc(0.75rem * var(--chat-text-scale, 1));
+  --conversation-line-height: calc(1.05rem * var(--chat-text-scale, 1));
+  --disclosure-caret-rest: 0.6;
+  padding: 0.5rem 0.625rem;
+  border: 1px dashed color-mix(in srgb, var(--ui-base) 10%, transparent);
+  border-radius: 0.375rem;
+  background: color-mix(in srgb, var(--ui-base) 5%, transparent);
+  opacity: 1;
+}
+
+[data-portal-redesign='true'] [data-tool-summary] > div > button,
+[data-portal-redesign='true'] [data-tool-count='1'] [data-tool-row]:not([data-tool-open]) > div > button {
+  flex: 1;
+  max-width: none;
+}

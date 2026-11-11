@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { lazy, Suspense, useState } from 'react'
+import { lazy, Suspense, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import { resolveOwnerNow } from '@/api/client'
@@ -8,7 +8,10 @@ import { $activeConnectionId } from '@/store/connections'
 import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import { SettingsView as ClassicSettingsView } from '../settings'
+import { type ConfigSettingsDraft, ConfigSettingsDraftContext } from '../settings/config-draft'
 import type { SettingsPageProps } from '../settings/types'
+
+import { AgentInstructionsDraftContext, EMPTY_AGENT_INSTRUCTIONS_DRAFT } from './settings-general'
 
 const AgentSettingsView = lazy(async () => ({ default: (await import('./index')).AgentSettingsView }))
 
@@ -47,10 +50,16 @@ function AgentSettingsRoute({ connectionId, profile, ...props }: AgentSettingsRo
     connectionId: resolveOwnerNow({ connectionId, profile }).connectionId ?? $activeConnectionId.get() ?? undefined,
     profile
   }))
+  const configDraft = useRef<ConfigSettingsDraft | null>(null)
+  const instructionsDraft = useState(EMPTY_AGENT_INSTRUCTIONS_DRAFT)
 
   return (
-    <Suspense fallback={<PageLoader />}>
-      <AgentSettingsView {...props} owner={owner} />
-    </Suspense>
+    <ConfigSettingsDraftContext.Provider value={configDraft}>
+      <AgentInstructionsDraftContext.Provider value={instructionsDraft}>
+        <Suspense fallback={<PageLoader />}>
+          <AgentSettingsView {...props} owner={owner} />
+        </Suspense>
+      </AgentInstructionsDraftContext.Provider>
+    </ConfigSettingsDraftContext.Provider>
   )
 }

@@ -1,3 +1,5 @@
+import './global-overviews.css'
+
 import { useStore } from '@nanostores/react'
 import { type ComponentType, useCallback, useEffect, useMemo, useRef } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router'
@@ -65,7 +67,7 @@ import {
 } from './plugin-settings'
 import { SettingsBreadcrumbContext } from './primitives'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
-import { redesignSettingsNavigation } from './redesign-navigation'
+import { settingsNavigationPresentation } from './redesign-navigation'
 import { SessionsSettings } from './sessions-settings'
 import { SettingsSubpageHeader } from './subpage-navigation'
 import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
@@ -179,7 +181,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
   }, [navigate, search])
 
-  const [activeView] = useRouteEnumParam('tab', SETTINGS_VIEWS, 'config:model' as SettingsViewId)
+  const [activeView] = useRouteEnumParam(
+    'tab',
+    SETTINGS_VIEWS,
+    (simplified ? 'providers' : 'config:model') as SettingsViewId
+  )
 
   useEffect(() => recordFeatureUse(settingsArea(activeView)), [activeView])
   const params = new URLSearchParams(search)
@@ -533,15 +539,11 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     ]
   )
 
-  const activeGroup = navGroups.find(group => group.active)
-  const activeChild = activeGroup?.children?.find(child => child.active)
-  const appearanceLanding = simplified && activeView === 'config:appearance' && subpage === 'general'
-
-  const displayedGroups = simplified
-    ? redesignSettingsNavigation(navGroups).map(group =>
-        group.id === 'config:appearance' && appearanceLanding ? { ...group, children: undefined } : group
-      )
-    : navGroups
+  const {
+    groups: displayedGroups,
+    headerGroup,
+    headerChild
+  } = settingsNavigationPresentation(navGroups, simplified, activeView, subpage)
 
   const navFooter = (
     <>
@@ -626,9 +628,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
 
         <OverlayMain className="px-0 pb-0">
           <SettingsBreadcrumbContext.Provider value>
-            {activeGroup && (
-              <SettingsSubpageHeader child={appearanceLanding ? undefined : activeChild} group={activeGroup} />
-            )}
+            {headerGroup && <SettingsSubpageHeader child={headerChild} group={headerGroup} />}
             {needsSubpageRedirect ? (
               <Navigate replace to={{ hash, pathname, search: `?${subpageSearch}` }} />
             ) : (

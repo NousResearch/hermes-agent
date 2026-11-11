@@ -61,6 +61,7 @@ export function AgentHistory(props: AgentHistoryProps) {
 
 function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
   const c = useHistoryCopy()
+  const { t } = useI18n()
   const navigate = useNavigate()
   const client = useQueryClient()
   const mounted = useRef(true)
@@ -140,7 +141,7 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
     })
   }
 
-  async function mutate(row: SessionInfo, patch: Partial<SessionInfo>) {
+  async function mutate(selection: SessionInfo | SessionInfo[], patch: Partial<SessionInfo>) {
     if (busy || !current()) {
       return
     }
@@ -153,6 +154,9 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
       return
     }
 
+    const targets = Array.isArray(selection) ? selection : [selection]
+    const ids = new Set(targets.map(row => row.id))
+    const saved = new Set<string>()
     const before = client.getQueriesData<InfiniteData<PaginatedSessions>>({ queryKey: historyKey })
     client.setQueriesData<InfiniteData<PaginatedSessions>>(
       { queryKey: historyKey },
@@ -161,20 +165,33 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
           ...data,
           pages: data.pages.map(page => ({
             ...page,
-            sessions: page.sessions.map(item => (item.id === row.id ? { ...item, ...patch } : item))
+            sessions: page.sessions.map(item => (ids.has(item.id) ? { ...item, ...patch } : item))
           }))
         }
     )
 
     try {
-      const result = await mutateHistorySession(owner, row.id, 'PATCH', patch, current, c.upgrade)
+      for (const row of targets) {
+        const result = await mutateHistorySession(owner, row.id, 'PATCH', patch, current, c.upgrade)
 
-      if (!result.ok) {
-        throw new Error(c.errorHint)
+        if (!result.ok) {
+          throw new Error(c.errorHint)
+        }
+
+        saved.add(row.id)
       }
     } catch (err) {
       for (const [key, data] of before) {
-        client.setQueryData(key, data)
+        client.setQueryData(
+          key,
+          data && {
+            ...data,
+            pages: data.pages.map(page => ({
+              ...page,
+              sessions: page.sessions.map(item => (saved.has(item.id) ? { ...item, ...patch } : item))
+            }))
+          }
+        )
       }
 
       throw err
@@ -219,7 +236,7 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
       </header>
       <div className="agent-history-toolbar">
         <SearchField
-          containerClassName="flex-1"
+          containerClassName="agent-history-search"
           loading={Boolean(search && recent.isFetching)}
           onChange={value => {
             setSearch(value)
@@ -227,6 +244,7 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
           }}
           placeholder={c.search}
           value={search}
+          variant="box"
         />
         <HistoryFilterPopover filters={filters} onChange={changeFilters} />
         <Button disabled={busy} onClick={() => setCleanup(true)} variant="secondary">
@@ -234,12 +252,7 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
           {c.cleanup}
         </Button>
       </div>
-      <HistoryScope
-        hasNextPage={recent.hasNextPage}
-        isError={recent.isError}
-        isPending={recent.isPending}
-        search={search}
-      />
+      <HistoryFilterChips filters={filters} onChange={changeFilters} />
       {recent.isError && <HistoryError error={recent.error} retry={() => void recent.refetch()} />}
       {running.isError && <HistoryError error={running.error} retry={() => void running.refetch()} />}
       {Boolean(error) && (
@@ -257,14 +270,33 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
           <span>
             {c.selected}: {selectedRows.length}
           </span>
+          <Button
+            disabled={busy}
+            onClick={() => void mutate(selectedRows, { pinned: true }).catch(setError)}
+            variant="secondary"
+          >
+            <Codicon name="pin" />
+            {c.pin}
+          </Button>
+          <Button
+            disabled={busy}
+            onClick={() => void mutate(selectedRows, { archived: true, pinned: false }).catch(setError)}
+            variant="secondary"
+          >
+            <Codicon name="archive" />
+            {c.archive}
+          </Button>
           <Button disabled={busy} onClick={() => setDeleting(selectedRows)} variant="destructive">
             {c.delete}
+          </Button>
+          <Button disabled={busy} onClick={() => setSelected(new Set())} variant="ghost">
+            {t.common.clear}
           </Button>
         </div>
       )}
       <div className="agent-history-body">
         <div className="agent-history-list">
-          {!rows.length && !recent.isPending && (
+          {!rows.length && !recent.isPending && !recent.isError && (
             <p className="agent-history-help">{recent.hasNextPage ? c.partial : c.empty}</p>
           )}
           <HistoryRows
@@ -294,6 +326,12 @@ function AgentHistoryContent({ owner, onClose }: AgentHistoryProps) {
             rows={rows}
             running={running.data ?? new Set()}
             selected={selected}
+          />
+          <HistoryScope
+            hasNextPage={recent.hasNextPage}
+            isError={recent.isError}
+            isPending={recent.isPending}
+            search={search}
           />
           {recent.hasNextPage && (
             <div className="agent-history-footer">
@@ -368,6 +406,47 @@ function HistoryScope({ hasNextPage, isPending, isError, search }: HistoryScopeP
   )
 }
 
+function HistoryFilterChips({
+  filters,
+  onChange
+}: {
+  filters: HistoryFilters
+  onChange: (filters: HistoryFilters) => void
+}) {
+  const c = useHistoryCopy()
+
+  if (!filters.source.length && filters.archived === 'exclude' && filters.group === 'project') {
+    return null
+  }
+
+  return (
+    <div className="agent-history-filter-chips">
+      {filters.source.map(source => (
+        <Button
+          key={source}
+          onClick={() => onChange({ ...filters, source: filters.source.filter(value => value !== source) })}
+          variant="secondary"
+        >
+          {c.source}: {{ chat: c.chat, schedule: c.schedule, telegram: 'Telegram', discord: 'Discord' }[source]}
+          <Codicon name="close" />
+        </Button>
+      ))}
+      {filters.archived !== 'exclude' && (
+        <Button onClick={() => onChange({ ...filters, archived: 'exclude' })} variant="secondary">
+          {c.archived}: {filters.archived === 'include' ? c.include : c.only}
+          <Codicon name="close" />
+        </Button>
+      )}
+      {filters.group !== 'project' && (
+        <Button onClick={() => onChange({ ...filters, group: 'project' })} variant="secondary">
+          {c.group}: {filters.group === 'source' ? c.source : c.none}
+          <Codicon name="close" />
+        </Button>
+      )}
+    </div>
+  )
+}
+
 function HistoryFilterPopover({
   filters,
   onChange
@@ -384,10 +463,10 @@ function HistoryFilterPopover({
   return (
     <Popover onOpenChange={setOpen} open={open}>
       <PopoverTrigger asChild>
-        <Button variant="secondary">
+        <Button className="agent-history-filter-trigger" data-active={active > 0 || undefined} variant="secondary">
           <Codicon name="filter" />
           {c.filters}
-          {active > 0 && ` · ${active}`}
+          {active > 0 && <span className="agent-history-filter-count text-primary-foreground">{active}</span>}
         </Button>
       </PopoverTrigger>
       <PopoverContent align="end" className="agent-history-filter-popover">
@@ -440,7 +519,9 @@ function HistoryFilterPopover({
           <Button onClick={() => onChange(DEFAULT_HISTORY_FILTERS)} variant="ghost">
             {c.reset}
           </Button>
-          <Button onClick={() => setOpen(false)}>{c.done}</Button>
+          <Button onClick={() => setOpen(false)} variant="secondary">
+            {c.done}
+          </Button>
         </footer>
       </PopoverContent>
     </Popover>
@@ -494,7 +575,13 @@ function HistoryRows(props: HistoryRowsProps) {
             <th>
               <Checkbox
                 aria-label={c.selectAll}
-                checked={props.rows.length > 0 && props.rows.every(row => props.selected.has(row.id))}
+                checked={
+                  props.rows.length > 0 && props.rows.every(row => props.selected.has(row.id))
+                    ? true
+                    : props.rows.some(row => props.selected.has(row.id))
+                      ? 'indeterminate'
+                      : false
+                }
                 disabled={!props.rows.length || props.busy}
                 onCheckedChange={value => props.onToggleAll(value === true)}
               />

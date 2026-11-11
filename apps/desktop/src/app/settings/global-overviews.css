@@ -1,0 +1,98 @@
+.global-settings-overview {
+  display: grid;
+  gap: 36px;
+}
+
+.global-settings-card {
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 8px;
+  background: var(--ui-bg-card);
+}
+
+.global-settings-card > div {
+  margin-bottom: 0;
+}
+
+.global-settings-card [data-slot='settings-row'] {
+  padding-inline: 16px;
+}
+
+.global-settings-card [data-slot='settings-row'] > div {
+  min-height: 64px;
+  gap: 12px 24px;
+}
+
+.global-settings-card [data-slot='settings-row'] + [data-slot='settings-row'] {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+
+.global-settings-disclosure {
+  border: 1px solid var(--ui-stroke-secondary);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+}
+
+.global-settings-disclosure > summary {
+  display: flex;
+  min-height: 68px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  list-style: none;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.global-settings-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.global-settings-disclosure > :not(summary) {
+  margin-inline: 16px;
+}
+
+.global-settings-disclosure > :last-child:not(summary) {
+  margin-bottom: 16px;
+}
+
+.global-shortcut-primary > div {
+  min-height: 64px;
+  padding-inline: 16px;
+}
+
+.global-about-overview .global-settings-card > div {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.global-about-overview .global-settings-card > div + div {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+
+@container (min-width: 32rem) {
+  .global-settings-card [data-slot='settings-row'] > div {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .global-settings-card [data-slot='settings-row'] > div > div:last-child:not(:first-child) {
+    justify-self: end;
+  }
+}
+
+.global-about-version > div {
+  align-items: flex-start;
+  padding: 12px 16px;
+  text-align: left;
+}
+
+.global-about-version > div > :first-child {
+  display: none;
+}
+
+.global-about-version h2 {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}

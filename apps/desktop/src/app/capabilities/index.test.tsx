@@ -344,10 +344,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     )
 
     await screen.findByRole('switch', { name: 'web-research' })
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Installed web-research' }).disabled).toBe(true)
-    expect(screen.queryByRole('button', { name: 'Add web-research' })).toBeNull()
-    const available = screen.getByRole('button', { name: 'gif-search' }).closest('article')!
-    fireEvent.click(within(available).getByRole('button', { name: 'Add gif-search' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add gif-search' }))
     await waitFor(() =>
       expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/gifs/gif-search', {
         connectionId: 'homelab',
@@ -407,9 +404,7 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
 
     await renderSkills('researcher', 'homelab')
 
-    const advanced = (await screen.findByText('Advanced')).closest('details')!
-    fireEvent.click(within(advanced).getByText('Advanced'))
-    fireEvent.click(await within(advanced).findByText('Vision / Image Analysis'))
+    fireEvent.click(await screen.findByText('Vision / Image Analysis'))
 
     const link = await screen.findByRole('button', { name: /Choose vision model in Settings/ })
     await waitFor(() =>

@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { $settingsScopeOverride } from '@/store/settings-scope'
+import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 import type { MessagingPlatformInfo } from '@/types/hermes'
+
+import { SettingsOwnerContext } from '../settings/profile-scope'
 
 import { MessagingView } from './index'
 
@@ -104,6 +107,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  $agentSidebarChoice.set(null)
   vi.clearAllMocks()
 })
 
@@ -581,4 +585,24 @@ describe('MessagingView Telegram quick setup', () => {
       $settingsScopeOverride.set(null)
     }
   })
+})
+
+it('opens owner-pinned channel controls from the redesigned list and restores the classic editor', async () => {
+  const owner = { connectionId: 'remote-a', profile: 'work' }
+  $agentSidebarChoice.set(true)
+  getMessagingPlatforms.mockResolvedValue({ platforms: [platform({ enabled: true, state: 'connected' })] })
+  render(
+    <MemoryRouter>
+      <SettingsOwnerContext.Provider value={owner}>
+        <MessagingView />
+      </SettingsOwnerContext.Provider>
+    </MemoryRouter>
+  )
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+  expect(screen.getByRole('dialog', { name: 'Microsoft Teams' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('switch', { name: 'Disable Microsoft Teams' }))
+  await waitFor(() => expect(updateMessagingPlatform).toHaveBeenCalledWith('teams', { enabled: false }, owner))
+  act(() => $agentSidebarChoice.set(false))
+  expect(screen.queryByRole('dialog', { name: 'Microsoft Teams' })).toBeNull()
+  expect(screen.getByRole('switch', { name: /Microsoft Teams/ })).toBeTruthy()
 })

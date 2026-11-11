@@ -16,7 +16,6 @@ import { PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { toggleReview } from '@/store/review'
 import { $focusedSessionIsTile, $focusedStoredSessionId } from '@/store/session-focus'
 import { $focusedWorkspaceCwd } from '@/store/session-states'
-import { $simplifiedAgentMode } from '@/store/simplified-agent-mode'
 
 import { hideDeveloperToolPanel, prepareDeveloperToolPanel } from '../redesign/developer-tool-panel'
 import { usePortalRedesign } from '../redesign/use-portal-redesign'
@@ -26,13 +25,12 @@ import { useTitlebarHeight } from '../shell/use-touch-titlebar'
 
 /** Only presentation lives here; the existing pane owners handle reveal and focus. */
 export function DeveloperRail() {
-  const portal = usePortalRedesign()
+  const redesigned = usePortalRedesign()
   const advanced = useStore($showsAdvancedChrome)
-  const enabled = useStore($simplifiedAgentMode) && (!portal || advanced)
   const focusedChat = useStore($focusedSessionIsTile)
   const { pathname } = useLocation()
 
-  return enabled && (focusedChat || appViewForPath(pathname) === 'chat') ? <DeveloperTools /> : null
+  return redesigned && advanced && (focusedChat || appViewForPath(pathname) === 'chat') ? <DeveloperTools /> : null
 }
 
 function DeveloperTools() {

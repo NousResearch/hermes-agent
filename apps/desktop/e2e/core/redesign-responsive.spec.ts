@@ -2,12 +2,13 @@ import { appendFileSync } from 'node:fs'
 
 import { chromium, expect, type Page, test } from '@playwright/test'
 
-import { composer, createCoreSandbox, freePort, webappLaunchLink, writeProviderHome } from './harness'
+import { composer, createCoreSandbox, freePort, send, webappLaunchLink, writeProviderHome } from './harness'
 import { startScriptedProvider } from './provider'
 
 test('redesigned web app stays usable on touch screens and restores the classic interface', async () => {
   test.setTimeout(180_000)
   const provider = await startScriptedProvider()
+  provider.script('U1-preview', [{ text: ['The history preview is ready.'] }])
   const sandbox = createCoreSandbox('redesign-responsive')
   writeProviderHome(sandbox.hermesHome, provider.url)
   appendFileSync(sandbox.hermesHome + '/config.yaml', `\nwebapp:\n  enabled: true\n  port: ${await freePort()}\n`)
@@ -42,6 +43,7 @@ test('redesigned web app stays usable on touch screens and restores the classic 
       const nav = page.getByRole('navigation', { name: 'Hermes', exact: true })
       await nav.getByRole('button', { name: 'Capabilities', exact: true }).tap()
       await expect(page).toHaveURL(/capabilities/)
+      await expect(page.getByRole('heading', { name: 'Capabilities', exact: true }).first()).toBeVisible()
       await nav.getByRole('button', { name: 'Chats', exact: true }).tap()
       await expect(composer(page)).toBeVisible()
       const sidebar = page.locator('.portal-sidebar')
@@ -85,6 +87,7 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     }
 
     await page.setViewportSize({ width: 1280, height: 860 })
+    await exerciseHistoryPreview(page)
     await exerciseManagementEntries(page, true)
 
     if (!(await page.locator('.portal-sidebar').isVisible())) {
@@ -207,6 +210,46 @@ test('redesigned web app stays usable on touch screens and restores the classic 
     await provider.close()
   }
 })
+
+async function exerciseHistoryPreview(page: Page) {
+  await page.getByRole('button', { name: 'No thanks', exact: true }).tap()
+  await send(page, 'U1-preview Keep this conversation for the history preview.')
+  await expect(page.getByText('The history preview is ready.', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Agent settings', exact: true }).tap()
+  await page.getByRole('button', { name: 'History', exact: true }).tap()
+
+  for (const viewport of [
+    { width: 1280, height: 860 },
+    { width: 320, height: 740 }
+  ]) {
+    await page.setViewportSize(viewport)
+    await page
+      .getByRole('button', { name: /^Session actions/ })
+      .first()
+      .tap()
+    await page.getByRole('menuitem', { name: 'Preview', exact: true }).tap()
+    const preview = page.getByRole('dialog')
+    await expect(preview.getByText('The history preview is ready.', { exact: true })).toBeVisible()
+    await expect
+      .poll(async () => {
+        const bounds = await preview.boundingBox()
+
+        return (
+          bounds !== null &&
+          bounds.x >= 0 &&
+          bounds.y >= 0 &&
+          bounds.x + bounds.width <= viewport.width &&
+          bounds.y + bounds.height <= viewport.height
+        )
+      })
+      .toBe(true)
+    await expect(preview.getByRole('button', { name: 'Open chat', exact: true })).toBeInViewport({ ratio: 1 })
+    await preview.getByRole('button', { name: 'Close', exact: true }).tap()
+    await expect(preview).not.toBeVisible()
+  }
+
+  await page.setViewportSize({ width: 1280, height: 860 })
+}
 
 // Exercise the same Agent/Schedule concepts from navigation through both editors.
 async function exerciseManagementEntries(page: Page, redesigned: boolean) {

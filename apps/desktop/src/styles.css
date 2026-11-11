@@ -19,14 +19,6 @@
   --radius-scalar: 0.6;
 }
 
-/* Route pages render beside the shell, so their shared geometry lives above both. */
-:root:has([data-portal-redesign='true']) {
-  --global-nav-width: 3.75rem;
-  --page-nav-width: clamp(13rem, 25vw, 20rem);
-  --page-nav-row-height: 2.5rem;
-  --page-title-size: 1.875rem;
-}
-
 /* Titlebar clusters: 24×24 hit targets, 13.9px glyphs. codicon.css is
    unlayered (`font: 16px/1`); Tailwind utilities in @layer lose that fight. */
 .titlebar-icon-button .codicon[class*='codicon-'] {

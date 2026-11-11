@@ -4,7 +4,7 @@
   width: 100%;
   max-width: 1140px;
   margin-inline: auto;
-  padding: 24px clamp(24px, 6vw, 88px) 32px;
+  padding: 18px clamp(24px, 6vw, 88px) 32px;
   font-family: var(--portal-font-body);
 }
 
@@ -37,10 +37,20 @@
 
 .agent-management-nav > button {
   min-height: 2.5rem;
+  justify-content: flex-start;
 }
 
 .agent-management-nav .page-nav-title {
   margin-bottom: 0;
+}
+
+.agent-management-nav-count {
+  margin: 0 10px 6px;
+  color: var(--ui-text-tertiary);
+  font-size: 10px;
+  line-height: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .agent-management-nav-row {
@@ -70,6 +80,7 @@
 .agent-management-header {
   display: flex;
   flex-shrink: 0;
+  min-height: 68px;
   align-items: center;
   gap: 16px;
   margin-bottom: 24px;
@@ -79,7 +90,13 @@
   width: 56px;
   height: 56px;
   flex-shrink: 0;
-  border-radius: 12px;
+  border-radius: 4px;
+}
+
+.agent-management-avatar > img {
+  width: 32px;
+  height: 32px;
+  margin: auto;
 }
 
 .agent-management-identity {
@@ -91,7 +108,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: var(--portal-font-body);
+  font-family: var(--portal-font-display);
   font-size: 40px;
   font-weight: 300;
   line-height: 44px;
@@ -172,15 +189,16 @@
   flex-shrink: 0;
   gap: 24px;
   margin-bottom: 24px;
-  border-bottom: 1px solid var(--ui-stroke-tertiary);
 }
 
 .agent-management-tabs button {
-  min-height: 40px;
-  padding-bottom: 12px;
+  min-height: 33px;
+  padding-bottom: 10px;
   border-bottom: 2px solid transparent;
   color: var(--ui-text-tertiary);
   font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .agent-management-tabs button[aria-current],
@@ -204,11 +222,15 @@
   overflow: auto;
 }
 
+.agent-management-scroll {
+  container: agent-overview / inline-size;
+}
+
 .agent-overview-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 436fr) minmax(0, 300fr);
   align-items: start;
-  gap: 32px;
+  gap: 24px;
 }
 
 .agent-overview-column {
@@ -221,36 +243,60 @@
 .agent-overview-section {
   display: grid;
   min-width: 0;
-  gap: 16px;
+  gap: 12px;
 }
 
 .agent-overview-section h2 {
   color: var(--ui-text-primary);
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 500;
+  line-height: 1.1;
+}
+
+.agent-overview-section-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-align: start;
+}
+
+.agent-overview-section-link .codicon {
+  color: var(--ui-text-tertiary);
+}
+
+.agent-overview-section-link:focus-visible {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+.agent-overview-row:has(.agent-overview-row-subtitle) {
+  min-height: 64px;
 }
 
 .agent-overview-card {
   overflow: hidden;
   border: 1px solid var(--ui-stroke-tertiary);
-  border-radius: 6px;
+  border-radius: 4px;
   background: var(--ui-bg-card);
 }
 
 .agent-overview-row {
   display: flex;
   width: 100%;
-  min-height: 50px;
+  min-height: 44px;
   align-items: center;
   gap: 12px;
   padding: 10px 16px;
   text-align: start;
   font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
 }
 
 .agent-overview-row + .agent-overview-row,
 .agent-overview-footer {
-  border-top: 1px solid var(--ui-stroke-tertiary);
+  border-top: 1px solid color-mix(in srgb, var(--ui-base) 3%, transparent);
 }
 
 .agent-overview-row:hover {
@@ -302,23 +348,14 @@
 }
 
 .agent-management-editor {
-  --page-nav-width: 12.5rem;
+  container: agent-editor / inline-size;
+  overflow: hidden;
 }
 
-.agent-management-editor .page-nav-title {
-  display: none;
-}
-
-/* Reuse the real editors without their full-window navigation chrome. */
-.agent-management-editor > [data-overlay-surface] {
-  position: relative;
-  inset: auto;
-  z-index: auto;
-  height: 100%;
-}
-
-.agent-management-editor > [data-overlay-surface] > [data-slot='page-toolbar'] {
-  display: none;
+@container agent-overview (max-width: 640px) {
+  .agent-overview-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 800px) {
@@ -351,6 +388,7 @@
 
 .agent-management-default {
   align-self: center;
+  flex-shrink: 0;
   padding: 1px 4px;
   border-radius: 2px;
   background: color-mix(in srgb, var(--theme-primary) 20%, transparent);

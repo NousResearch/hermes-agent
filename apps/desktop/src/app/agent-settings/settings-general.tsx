@@ -1,9 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import { useLayoutEffect, useRef, useState } from 'react'
+import { createContext, type Dispatch, type SetStateAction, useContext, useLayoutEffect, useRef, useState } from 'react'
 
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { CopyButton } from '@/components/ui/copy-button'
+import { ErrorState } from '@/components/ui/error-state'
 import { getProfiles, getProfileSoul, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { refreshFleetRoster } from '@/store/fleet-roster'
@@ -15,7 +18,26 @@ import { ListRow } from '../settings/primitives'
 import { settingsScopeLabel } from '../settings/profile-scope'
 
 import { agentSettingsKey, type AgentSettingsOwner } from './data'
+import { useOverviewActionsCopy } from './overview-actions-copy'
 import { useAgentSettingsEditorCopy } from './settings-copy'
+
+interface AgentInstructionsDraft {
+  text: string | null
+  revision: number
+  saving: boolean
+  error: string
+}
+
+export const EMPTY_AGENT_INSTRUCTIONS_DRAFT: AgentInstructionsDraft = {
+  text: null,
+  revision: 0,
+  saving: false,
+  error: ''
+}
+
+export const AgentInstructionsDraftContext = createContext<
+  [AgentInstructionsDraft, Dispatch<SetStateAction<AgentInstructionsDraft>>] | null
+>(null)
 
 export function AgentGeneralSettings({
   owner,
@@ -26,6 +48,7 @@ export function AgentGeneralSettings({
 }) {
   const { t } = useI18n()
   const c = useAgentSettingsEditorCopy()
+  const actions = useOverviewActionsCopy()
   const [dialog, setDialog] = useState<'rename' | 'duplicate' | 'delete' | null>(null)
   const [deleted, setDeleted] = useState(false)
   const mounted = useRef(true)
@@ -44,7 +67,13 @@ export function AgentGeneralSettings({
   }
 
   if (profiles.isError) {
-    return <Button onClick={() => void profiles.refetch()}>{t.common.retry}</Button>
+    return (
+      <ErrorState description={profiles.error.message} title={t.profiles.failedLoad}>
+        <Button onClick={() => void profiles.refetch()} variant="secondary">
+          {t.common.retry}
+        </Button>
+      </ErrorState>
+    )
   }
 
   if (deleted || !profile) {
@@ -63,7 +92,12 @@ export function AgentGeneralSettings({
           description={settingsScopeLabel(profile)}
           title={t.profiles.nameLabel}
         />
-        <p className="agent-settings-path">{profile.path}</p>
+        {profile.path && (
+          <div className="agent-settings-path">
+            <span>{profile.path}</span>
+            <CopyButton buttonVariant="secondary" label={actions.copyPath} text={profile.path} />
+          </div>
+        )}
       </div>
       <div className="agent-settings-actions">
         <Button onClick={() => setDialog('duplicate')} variant="secondary">
@@ -124,10 +158,12 @@ export function AgentGeneralSettings({
 }
 
 export function AgentInstructionsSettings({ owner }: { owner: AgentSettingsOwner }) {
-  const { t } = useI18n()
-  const [draft, setDraft] = useState<string | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const { locale, t } = useI18n()
+  const c = useAgentSettingsEditorCopy()
+  const redesign = usePortalRedesign()
+  const retainedDraft = useContext(AgentInstructionsDraftContext)
+  const localDraft = useState(EMPTY_AGENT_INSTRUCTIONS_DRAFT)
+  const [draft, setDraft] = retainedDraft ?? localDraft
 
   const soul = useQuery({
     queryKey: [...agentSettingsKey(owner), 'soul'],
@@ -135,21 +171,21 @@ export function AgentInstructionsSettings({ owner }: { owner: AgentSettingsOwner
   })
 
   async function save() {
-    if (saving || draft === null) {
+    if (draft.saving || draft.text === null) {
       return
     }
 
-    setSaving(true)
-    setError('')
+    const submittedRevision = draft.revision
+    setDraft(current => ({ ...current, saving: true, error: '' }))
 
     try {
-      await updateProfileSoul(owner.profile, draft, owner)
+      await updateProfileSoul(owner.profile, draft.text, owner)
       await soul.refetch()
-      setDraft(null)
+      setDraft(current => (current.revision === submittedRevision ? { ...current, text: null } : current))
     } catch (err) {
-      setError(err instanceof Error ? err.message : t.profiles.failedSaveSoul)
+      setDraft(current => ({ ...current, error: err instanceof Error ? err.message : t.profiles.failedSaveSoul }))
     } finally {
-      setSaving(false)
+      setDraft(current => ({ ...current, saving: false }))
     }
   }
 
@@ -158,26 +194,54 @@ export function AgentInstructionsSettings({ owner }: { owner: AgentSettingsOwner
   }
 
   if (soul.isError) {
-    return <Button onClick={() => void soul.refetch()}>{t.common.retry}</Button>
+    return (
+      <ErrorState description={soul.error.message} title={t.profiles.failedLoadSoul}>
+        <Button onClick={() => void soul.refetch()} variant="secondary">
+          {t.common.retry}
+        </Button>
+      </ErrorState>
+    )
   }
 
   return (
     <>
       {soul.data.exists === false && <p>{t.profiles.soulMissing}</p>}
-      <div className="agent-settings-instructions">
-        <CodeEditor
-          disabled={saving}
-          filePath="SOUL.md"
-          framed
-          initialValue={soul.data.content}
-          onChange={setDraft}
-          onSave={() => void save()}
-        />
-      </div>
-      {error && <p role="alert">{error}</p>}
-      <Button disabled={saving || draft === null} loading={saving} onClick={() => void save()}>
-        {t.profiles.saveSoul}
-      </Button>
+      <section className="agent-settings-instructions-section">
+        {redesign && (
+          <header>
+            <h3>SOUL.md</h3>
+            <p>{c.soulDescription}</p>
+          </header>
+        )}
+        <div className="agent-settings-instructions">
+          <CodeEditor
+            className="rounded-none border-0"
+            disabled={draft.saving}
+            filePath="SOUL.md"
+            framed
+            initialValue={draft.text ?? soul.data.content}
+            onChange={text => setDraft(current => ({ ...current, text, revision: current.revision + 1 }))}
+            onSave={() => void save()}
+          />
+          <div className="agent-settings-instructions-footer">
+            {redesign && (
+              <span className="agent-settings-instructions-meta">
+                SOUL.md · {c.characters}: {(draft.text ?? soul.data.content).length.toLocaleString(locale)}
+              </span>
+            )}
+            <Button
+              aria-label={t.profiles.saveSoul}
+              className="h-9"
+              disabled={draft.saving || draft.text === null}
+              loading={draft.saving}
+              onClick={() => void save()}
+            >
+              {redesign ? t.common.save : t.profiles.saveSoul}
+            </Button>
+          </div>
+        </div>
+      </section>
+      {draft.error && <p role="alert">{draft.error}</p>}
     </>
   )
 }

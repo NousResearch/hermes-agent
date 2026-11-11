@@ -63,6 +63,7 @@ afterEach(() => {
 describe('SessionsSettings unarchive', () => {
   it('restores a messaging-source session into $messagingSessions, not $sessions', async () => {
     render(<SessionsSettings />)
+    fireEvent.click(await screen.findByText(en.settings.sessions.archivedTitle))
     const button = await screen.findByRole('button', { name: en.settings.sessions.unarchive })
 
     await act(async () => fireEvent.click(button))

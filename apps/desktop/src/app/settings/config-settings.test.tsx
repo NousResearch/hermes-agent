@@ -11,6 +11,7 @@ import { notifyError } from '@/store/notifications'
 import { $settingsRequestProfile } from '@/store/settings-scope'
 import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 
+import { type ConfigSettingsDraft, ConfigSettingsDraftContext } from './config-draft'
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 import { SettingsOwnerContext } from './profile-scope'
 
@@ -278,4 +279,100 @@ it('does not publish a completed save after its owner editor unmounts', async ()
   } finally {
     vi.useRealTimers()
   }
+})
+
+it.each([false, true])(
+  'retains an agent draft and serializes saves across presentation remounts (in flight: %s)',
+  async inFlight => {
+    const owner = { connectionId: 'agent-gateway', profile: 'research' }
+    const draft = createRef<ConfigSettingsDraft | null>()
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const pending = Promise.withResolvers<{ ok: boolean }>()
+    getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false }, untouched: 'server' })
+
+    if (inFlight) {
+      saveHermesConfig.mockReturnValueOnce(pending.promise)
+    }
+
+    const editor = (presentation: string) => (
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <SettingsOwnerContext.Provider value={owner}>
+            <ConfigSettingsDraftContext.Provider value={draft}>
+              <ConfigSettings
+                activeSectionId="safety"
+                importInputRef={createRef<HTMLInputElement>()}
+                key={presentation}
+                subpage="checkpoints"
+              />
+            </ConfigSettingsDraftContext.Provider>
+          </SettingsOwnerContext.Provider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      const view = render(editor('redesigned'))
+      fireEvent.click(await screen.findByRole('switch'))
+
+      if (inFlight) {
+        await vi.advanceTimersByTimeAsync(700)
+        expect(saveHermesConfig).toHaveBeenCalledTimes(1)
+      }
+
+      scopeProfileMock.set('other-agent')
+      view.rerender(editor('classic'))
+      const toggle = await screen.findByRole('switch')
+      expect(toggle.getAttribute('aria-checked')).toBe('true')
+
+      if (inFlight) {
+        fireEvent.click(toggle)
+        await vi.advanceTimersByTimeAsync(700)
+        expect(saveHermesConfig).toHaveBeenCalledTimes(1)
+        pending.resolve({ ok: true })
+        await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(2))
+        expect(saveHermesConfig.mock.calls[1]).toEqual([{ checkpoints: { enabled: false } }, owner])
+      } else {
+        await vi.advanceTimersByTimeAsync(700)
+        await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledTimes(1))
+      }
+
+      expect(saveHermesConfig.mock.calls[0]).toEqual([{ checkpoints: { enabled: true } }, owner])
+    } finally {
+      vi.useRealTimers()
+    }
+  }
+)
+
+it('keeps compact Limits destinations distinct when moving between runtime, terminal and output', async () => {
+  $agentSidebarChoice.set(true)
+  getHermesConfigRecord.mockResolvedValue({
+    agent: { max_turns: 42 },
+    terminal: { timeout: 17 },
+    tool_output: { max_bytes: 1234 }
+  })
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const input = createRef<HTMLInputElement>()
+  const editor = (subpage: string) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <SettingsOwnerContext.Provider value={{ connectionId: 'local', profile: 'research' }}>
+          <ConfigSettings activeSectionId="advanced" agentLayout importInputRef={input} subpage={subpage} />
+        </SettingsOwnerContext.Provider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  )
+  const view = render(editor('runtime'))
+  expect(await screen.findByDisplayValue('42')).toBeTruthy()
+  expect(screen.queryByDisplayValue('17')).toBeNull()
+  expect(screen.queryByDisplayValue('1234')).toBeNull()
+  view.rerender(editor('terminal'))
+  expect(await screen.findByDisplayValue('17')).toBeTruthy()
+  expect(screen.queryByDisplayValue('42')).toBeNull()
+  expect(screen.queryByDisplayValue('1234')).toBeNull()
+  view.rerender(editor('output'))
+  expect(await screen.findByDisplayValue('1234')).toBeTruthy()
+  expect(screen.queryByDisplayValue('42')).toBeNull()
+  expect(screen.queryByDisplayValue('17')).toBeNull()
 })

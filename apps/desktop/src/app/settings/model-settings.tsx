@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, ReactNode, SetStateAction } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -1678,8 +1679,11 @@ function ModelAdvanced({
   title: string
 }) {
   return enabled ? (
-    <details className="agent-settings-advanced" open={open || undefined}>
-      <summary>{title}</summary>
+    <details className="agent-config-advanced agent-settings-advanced group" open={open || undefined}>
+      <summary>
+        <span>{title}</span>
+        <DisclosureCaret className="group-open:rotate-90" open={false} />
+      </summary>
       <div className="grid gap-6">{children}</div>
     </details>
   ) : (

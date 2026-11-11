@@ -148,7 +148,7 @@ import { branchThroughRowId } from './branch-boundary'
 import { branchCreateKey } from './branch-create-key'
 import type { SessionCreateOverrides } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
-import { captureDeletionDraft, sessionDeletionOwner } from './deletion-owner'
+import { captureDeletionDraft, sessionDeletionOwner, sessionDeletionRow } from './deletion-owner'
 import { captureDisplayHydration } from './display-hydration'
 import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
@@ -3000,10 +3000,7 @@ export function useSessionActions({
       // instead of leaving a ghost that resumes into a dead id.
       const candidate = findListedSession(storedSessionId)
 
-      const removed =
-        ownerRow ??
-        candidate?.session ??
-        $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const removed = sessionDeletionRow(storedSessionId, ownerRow, candidate?.session)
 
       // Messaging/cron rows frequently arrive without an inline profile; fall
       // back to the stored-session ownership lookup so their DELETE routes to

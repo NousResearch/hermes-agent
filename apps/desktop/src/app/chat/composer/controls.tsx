@@ -258,7 +258,9 @@ export function ComposerModelRow({ disabled, model, redesigned }: ComposerModelR
   }
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center justify-end" data-slot="composer-model-row">
+    <div className="flex min-w-0 flex-wrap items-center gap-1" data-slot="composer-model-row">
+      <Codicon aria-hidden className="shrink-0 text-(--ui-text-tertiary)" name="comment" size="1.125rem" />
+      <span className="min-w-0 flex-1" />
       <ModelPill disabled={disabled} model={model} />
       <ReasoningPill disabled={disabled} model={model} />
     </div>

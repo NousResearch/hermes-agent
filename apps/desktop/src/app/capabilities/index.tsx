@@ -134,6 +134,7 @@ export function CapabilitiesView({
     connectors: () => (
       <ConnectorsTab
         agentControls={agentControls}
+        agentLayout={agentRedesign}
         gateway={scope.crossBackend ? null : gateway}
         key={`connectors-${scope.key}`}
         profile={scope.profile}
@@ -149,6 +150,7 @@ export function CapabilitiesView({
       ) : (
         <PluginsTab
           agentControls={agentControls}
+          agentLayout={agentRedesign}
           key={`plugins-${scope.key}`}
           onQueryChange={setQuery}
           profile={scope.profile}
@@ -160,6 +162,7 @@ export function CapabilitiesView({
     skills: () => (
       <SkillsTab
         agentControls={agentControls}
+        agentLayout={agentRedesign}
         installedError={skillsError}
         installedPending={!skills || skillsFailed}
         key={`skills-${scope.key}`}

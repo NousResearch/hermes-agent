@@ -7,21 +7,12 @@
   --page-nav-row-height: 2.5rem;
   --page-title-size: 1.875rem;
   --composer-width: 40rem;
+  --dialog-body-padding: 1.5rem;
+  --dialog-body-gap: 1.25rem;
 }
 
 [data-portal-redesign='true'] [data-slot='developer-rail'] {
   width: 3.75rem;
-}
-
-[data-portal-redesign='true'] [data-slot='aui_thread-content'] {
-  padding-inline: 1.25rem;
-  padding-top: 1.25rem;
-}
-
-[data-portal-redesign='true'] [data-slot='aui_user-bubble-actions'] {
-  width: fit-content;
-  max-width: 85%;
-  align-self: flex-end;
 }
 
 :root:has([data-portal-redesign='true']) [data-page-surface] [data-slot='overlay-main'] {
@@ -44,7 +35,7 @@
   background: var(--portal-neutral-selection-background);
   border-color: transparent;
   box-shadow: inset 0 0 0 0.5px var(--portal-neutral-selection-stroke);
-  border-radius: 3px;
+  border-radius: 8px;
 }
 
 .page-nav-title {
@@ -61,7 +52,9 @@
   margin-top: 0;
 }
 
-:root:has([data-portal-redesign='true']) [data-page-surface] [data-slot='button'][data-variant='default'] {
+:root:has([data-portal-redesign='true'])
+  :is([data-page-surface], [data-slot='dialog-content'])
+  [data-slot='button'][data-variant='default'] {
   background: var(--portal-brand-blue);
   color: var(--portal-on-brand);
 }

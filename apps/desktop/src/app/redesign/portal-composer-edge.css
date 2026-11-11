@@ -1,4 +1,4 @@
-/* Figma 491:35004 specifies the colors and 2px edge, but no motion timeline. */
+/* Figma 906:19872: a static 2px spectrum edge, with an 84.135% red stop. */
 .portal-composer-edge {
   position: absolute;
   z-index: 5;
@@ -6,22 +6,13 @@
   height: 2px;
   overflow: hidden;
   pointer-events: none;
-}
-
-.portal-composer-edge::before {
-  content: '';
-  display: block;
-  height: 100%;
-  width: 200%;
+  opacity: 0.8;
   background: linear-gradient(
     to right,
     var(--portal-brand-blue),
-    var(--portal-spectrum-red) 42%,
-    var(--portal-spectrum-yellow) 50%,
-    var(--portal-spectrum-red) 92%,
-    var(--portal-brand-blue)
+    var(--portal-spectrum-red) 84.135%,
+    var(--portal-spectrum-yellow)
   );
-  animation: portal-composer-spectrum 14s ease-in-out infinite alternate;
 }
 
 [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
@@ -43,6 +34,8 @@
 }
 
 [data-redesigned-composer] [data-slot='composer-rich-input'] {
+  --conversation-text-base-size: 0.875rem;
+  line-height: 1.6;
   padding-inline: 0;
 }
 
@@ -112,17 +105,5 @@
     --composer-surface-pad-y: 0.75rem;
     --composer-input-min-height: 2rem;
     --composer-row-gap: 0.5rem;
-  }
-}
-
-@keyframes portal-composer-spectrum {
-  to {
-    transform: translateX(-50%);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .portal-composer-edge::before {
-    animation: none;
   }
 }

@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { RemoteSetupFields } from '@/components/remote-setup/fields'
 import { useRemoteSetup } from '@/components/remote-setup/use-remote-setup'
 import { Button } from '@/components/ui/button'
@@ -238,6 +239,7 @@ function useRegistryChanges(
  */
 export function ConnectionsRegistrySection() {
   const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
+  const redesign = usePortalRedesign()
   const { t } = useI18n()
   const s = t.settings.connections
   const activeConnectionId = useStore($activeConnectionId)
@@ -628,89 +630,95 @@ export function ConnectionsRegistrySection() {
         />
       )}
 
-      {loading ? (
-        <Loader className="mx-auto my-2 size-6 text-(--ui-text-tertiary)" label={t.common.loading} type="rose-curve" />
-      ) : !registry || registry.connections.length === 0 ? (
-        <EmptyState title={s.empty} />
-      ) : displayedConnections.length === 0 ? (
-        <EmptyState title={s.noSearchResults} />
-      ) : (
-        displayedConnections.map(conn => {
-          const Icon = KIND_ICONS[conn.kind]
-          const isCurrent = activeConnectionId === conn.id
-          const isPrimary = registry.primary === conn.id
-          const busy = busyId === conn.id
-          // Display-only: this connection is a second address for a backend
-          // already registered under another entry (same install_id).
-          const sameBackendPeer = sameBackendPeerLabel(conn, sortedConnections)
+      <div className={redesign ? 'global-settings-card' : 'contents'}>
+        {loading ? (
+          <Loader
+            className="mx-auto my-2 size-6 text-(--ui-text-tertiary)"
+            label={t.common.loading}
+            type="rose-curve"
+          />
+        ) : !registry || registry.connections.length === 0 ? (
+          <EmptyState title={s.empty} />
+        ) : displayedConnections.length === 0 ? (
+          <EmptyState title={s.noSearchResults} />
+        ) : (
+          displayedConnections.map(conn => {
+            const Icon = KIND_ICONS[conn.kind]
+            const isCurrent = activeConnectionId === conn.id
+            const isPrimary = registry.primary === conn.id
+            const busy = busyId === conn.id
+            // Display-only: this connection is a second address for a backend
+            // already registered under another entry (same install_id).
+            const sameBackendPeer = sameBackendPeerLabel(conn, sortedConnections)
 
-          const baseDescription =
-            conn.kind === 'ssh'
-              ? `${kindMeta[conn.kind].label} · ${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}`
-              : conn.url
-                ? `${kindMeta[conn.kind].label} · ${conn.url}`
-                : kindMeta[conn.kind].desc
+            const baseDescription =
+              conn.kind === 'ssh'
+                ? `${kindMeta[conn.kind].label} · ${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}`
+                : conn.url
+                  ? `${kindMeta[conn.kind].label} · ${conn.url}`
+                  : kindMeta[conn.kind].desc
 
-          return (
-            <ListRow
-              action={
-                <div className="flex items-center gap-2">
-                  <Button
-                    disabled={testingId === conn.id}
-                    onClick={() => {
-                      triggerHaptic('selection')
-                      void test(conn)
-                    }}
-                    size="sm"
-                    variant="outline"
-                  >
-                    {testingId === conn.id ? <Loader2 className="animate-spin" /> : s.testConnection}
-                  </Button>
-                  {!isPrimary && (
-                    <Button disabled={busy} onClick={() => void makePrimary(conn.id)} size="sm" variant="outline">
-                      {s.makePrimary}
+            return (
+              <ListRow
+                action={
+                  <div className="flex items-center gap-2">
+                    <Button
+                      disabled={testingId === conn.id}
+                      onClick={() => {
+                        triggerHaptic('selection')
+                        void test(conn)
+                      }}
+                      size="sm"
+                      variant="outline"
+                    >
+                      {testingId === conn.id ? <Loader2 className="animate-spin" /> : s.testConnection}
                     </Button>
-                  )}
-                  {conn.kind !== 'local' && (
-                    <>
-                      <Button
-                        aria-label={s.editConnection}
-                        onClick={() => openEditor(editorFromConnection(conn), conn)}
-                        size="icon-sm"
-                        variant="ghost"
-                      >
-                        <Pencil className="size-3.5" />
+                    {!isPrimary && (
+                      <Button disabled={busy} onClick={() => void makePrimary(conn.id)} size="sm" variant="outline">
+                        {s.makePrimary}
                       </Button>
-                      <Button
-                        aria-label={s.removeConnection}
-                        disabled={busy}
-                        onClick={() => setRemoveTarget(conn)}
-                        size="icon-sm"
-                        variant="ghost"
-                      >
-                        {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
-                      </Button>
-                    </>
-                  )}
-                </div>
-              }
-              description={
-                sameBackendPeer ? `${baseDescription} · ${s.sameBackendHint(sameBackendPeer)}` : baseDescription
-              }
-              key={conn.id}
-              title={
-                <span className="flex items-center gap-2">
-                  <Icon className="size-4 shrink-0 text-muted-foreground" />
-                  <span className="truncate">{conn.label}</span>
-                  {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
-                  {isPrimary && <Pill>{s.primaryPill}</Pill>}
-                  {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}
-                </span>
-              }
-            />
-          )
-        })
-      )}
+                    )}
+                    {conn.kind !== 'local' && (
+                      <>
+                        <Button
+                          aria-label={s.editConnection}
+                          onClick={() => openEditor(editorFromConnection(conn), conn)}
+                          size="icon-sm"
+                          variant="ghost"
+                        >
+                          <Pencil className="size-3.5" />
+                        </Button>
+                        <Button
+                          aria-label={s.removeConnection}
+                          disabled={busy}
+                          onClick={() => setRemoveTarget(conn)}
+                          size="icon-sm"
+                          variant="ghost"
+                        >
+                          {busy ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                }
+                description={
+                  sameBackendPeer ? `${baseDescription} · ${s.sameBackendHint(sameBackendPeer)}` : baseDescription
+                }
+                key={conn.id}
+                title={
+                  <span className="flex min-w-0 flex-wrap items-center gap-2">
+                    <Icon className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="max-w-full truncate">{conn.label}</span>
+                    {isCurrent && <Pill tone="primary">{s.currentPill}</Pill>}
+                    {isPrimary && <Pill>{s.primaryPill}</Pill>}
+                    {conn.kind === 'local' && <Pill>{s.managedPill}</Pill>}
+                  </span>
+                }
+              />
+            )
+          })
+        )}
+      </div>
 
       {editor ? (
         <div className="mt-4 space-y-3 rounded-lg border border-border/60 p-4">
@@ -927,21 +935,13 @@ export function ConnectionsRegistrySection() {
         </div>
       )}
 
-      {/* Not gated on connections.length > 1: a registry that drifted down to
-          local-only is exactly the state where a user needs to see and change
-          the launch behavior, and hiding the control there left hand-editing
-          connections.json as the only recourse (#90174). */}
-      {!loading && registry && (
-        <div className="mt-6 border-t border-border/60 pt-4">
-          <ToggleRow
-            checked={registry.launchMode === 'last-used'}
-            description={s.launchModeDesc}
-            disabled={launchModeBusy || !bridge?.setLaunchMode}
-            label={s.launchModeTitle}
-            onChange={enabled => void setLaunchMode(enabled ? 'last-used' : 'primary')}
-          />
-        </div>
-      )}
+      <ConnectionLaunchPolicy
+        available={Boolean(bridge?.setLaunchMode)}
+        busy={launchModeBusy}
+        loading={loading}
+        onChange={setLaunchMode}
+        registry={registry}
+      />
 
       <ConfirmDialog
         confirmLabel={s.removeConnection}
@@ -962,6 +962,40 @@ export function ConnectionsRegistrySection() {
         onConfirm={() => save(true)}
         open={plainTextConfirm}
         title={t.settings.gateway.plainTextConfirmTitle}
+      />
+    </div>
+  )
+}
+
+function ConnectionLaunchPolicy({
+  available,
+  busy,
+  loading,
+  onChange,
+  registry
+}: {
+  available: boolean
+  busy: boolean
+  loading: boolean
+  onChange: (mode: 'last-used' | 'primary') => Promise<void>
+  registry: DesktopConnectionsRegistry | null
+}) {
+  const { t } = useI18n()
+  const redesign = usePortalRedesign()
+  const s = t.settings.connections
+  // A registry reduced to local-only still needs its launch policy editable (#90174).
+  if (loading || !registry) {
+    return null
+  }
+
+  return (
+    <div className={redesign ? 'global-settings-card mt-9' : 'mt-6 border-t border-border/60 pt-4'}>
+      <ToggleRow
+        checked={registry.launchMode === 'last-used'}
+        description={s.launchModeDesc}
+        disabled={busy || !available}
+        label={s.launchModeTitle}
+        onChange={enabled => void onChange(enabled ? 'last-used' : 'primary')}
       />
     </div>
   )

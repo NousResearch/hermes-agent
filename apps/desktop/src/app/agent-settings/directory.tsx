@@ -8,7 +8,7 @@ import { RowButton } from '@/components/ui/row-button'
 import { SearchField } from '@/components/ui/search-field'
 import { useI18n } from '@/i18n'
 import { resolveProfileColor } from '@/lib/profile-color'
-import { $profileColors } from '@/store/profile'
+import { $profileColors, $profiles } from '@/store/profile'
 
 import { useFleetRoster } from '../chat/sidebar/use-fleet-roster'
 import { useSimplifiedAgents } from '../chat/sidebar/use-simplified-agents'
@@ -27,8 +27,10 @@ export function AgentNavigation({ profile, connectionId }: AgentNavigationProps)
   const { t } = useI18n()
   const navigate = useNavigate()
   const colors = useStore($profileColors)
+  const profiles = useStore($profiles)
   useFleetRoster(true)
-  const { agents } = useSimplifiedAgents([])
+  const { agents, owner } = useSimplifiedAgents([])
+  const defaultProfile = profiles.find(item => item.is_default)?.name
 
   if (agents.length < 2) {
     return null
@@ -39,11 +41,13 @@ export function AgentNavigation({ profile, connectionId }: AgentNavigationProps)
       <h2 className="page-nav-title">{t.simplifiedAgents.agents}</h2>
       <NewAgentButton owner={{ connectionId, profile }} />
       <div className="min-h-0 flex-1 overflow-y-auto">
+        <p className="agent-management-nav-count">{t.agents.agentsCount(agents.length)}</p>
         {agents.map(agent => (
           <RowButton
             aria-current={
               agent.profile === profile && (agent.connectionId ?? 'local') === connectionId ? 'page' : undefined
             }
+            aria-label={`${agent.label} · ${agent.gateway}`}
             className="agent-management-nav-row"
             key={agent.id}
             onClick={() => {
@@ -58,6 +62,9 @@ export function AgentNavigation({ profile, connectionId }: AgentNavigationProps)
           >
             <FigmaAgentIcon color={resolveProfileColor(agent.profile, colors)} variant="subtle" />
             <span className="min-w-0 flex-1 truncate">{agent.label}</span>
+            {agent.profile === defaultProfile && (agent.connectionId ?? 'local') === (owner ?? 'local') && (
+              <span className="agent-management-default">{t.profiles.defaultBadge}</span>
+            )}
           </RowButton>
         ))}
       </div>

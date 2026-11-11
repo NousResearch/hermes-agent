@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { type ReactElement, useEffect } from 'react'
 
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { UpdateStatusCard, VersionHero } from '@/components/update-status'
 import { VersionDetails } from '@/components/version-details'
 import { useI18n } from '@/i18n'
@@ -39,6 +40,7 @@ interface AppUpdatesSettingsProps {
 
 function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): ReactElement {
   const { t } = useI18n()
+  const redesign = usePortalRedesign()
   const version = useStore($desktopVersion)
   const connection = useStore($connection)
   const remote = connection?.mode === 'remote'
@@ -57,21 +59,28 @@ function AppUpdatesSettings({ includeUninstall }: AppUpdatesSettingsProps): Reac
 
   return (
     <SettingsContent>
-      <VersionHero version={version} />
-      <div className="mx-auto mt-4 w-full max-w-2xl">
-        {!cloudOwned.client && (
-          <>
-            <SectionHeading icon={RefreshCw} title={t.settings.about.updates} />
-            <div className="grid gap-3" id={settingElementId(SETTING_IDS.about.updates)}>
-              <UpdateStatusCard target="client" version={version} />
-              <UpdateChannelRow />
-              {/* Client and remote backend updates are independent. Only the client has release notes. */}
-              {showBackend && <UpdateStatusCard showReleaseNotes={false} target="backend" version={version} />}
-            </div>
-          </>
-        )}
-        {version && <VersionDetails version={version} />}
-        {includeUninstall && <UninstallSection />}
+      <div className={redesign ? 'global-settings-overview global-about-overview' : 'contents'}>
+        <div className={redesign ? 'global-about-version global-settings-card' : 'contents'}>
+          <VersionHero version={version} />
+        </div>
+        <div className={redesign ? undefined : 'mx-auto mt-4 w-full max-w-2xl'}>
+          {!cloudOwned.client && (
+            <>
+              <SectionHeading icon={RefreshCw} title={t.settings.about.updates} />
+              <div
+                className={redesign ? 'global-settings-card' : 'grid gap-3'}
+                id={settingElementId(SETTING_IDS.about.updates)}
+              >
+                <UpdateStatusCard target="client" version={version} />
+                <UpdateChannelRow />
+                {/* Client and remote backend updates are independent. Only the client has release notes. */}
+                {showBackend && <UpdateStatusCard showReleaseNotes={false} target="backend" version={version} />}
+              </div>
+            </>
+          )}
+          {version && <VersionDetails version={version} />}
+          {includeUninstall && <UninstallSection />}
+        </div>
       </div>
     </SettingsContent>
   )

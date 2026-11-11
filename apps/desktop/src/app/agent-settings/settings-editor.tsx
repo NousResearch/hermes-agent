@@ -1,9 +1,10 @@
 import './settings-editor.css'
 
-import { useMemo, useRef } from 'react'
+import { type ReactNode, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 
 import { CapabilitiesView } from '../capabilities'
@@ -35,6 +36,11 @@ interface AgentSettingsEditorProps extends SettingsPageProps {
   owner: AgentSettingsOwner
   onProfileRenamed: (name: string) => Promise<void>
 }
+
+type AgentSettingsLabels = Record<
+  AgentSettingsSection | 'agent' | 'behavior' | 'capabilities' | 'access' | 'runtime',
+  string
+>
 
 /** Mounted only by the redesign's owner gate. All embedded controls share that immutable owner. */
 export function AgentSettingsEditor(props: AgentSettingsEditorProps) {
@@ -69,9 +75,10 @@ function AgentSettingsEditorContent({
   const page = params.get('page') ?? undefined
   const tab = params.get('tab')
   const importInputRef = useRef<HTMLInputElement | null>(null)
+  const bodyRef = useRef<HTMLElement | null>(null)
 
-  const labels: Record<AgentSettingsSection | 'agent' | 'behavior' | 'capabilities' | 'access' | 'runtime', string> = {
-    agent: t.simplifiedAgents.agents,
+  const labels: AgentSettingsLabels = {
+    agent: t.sidebar.filter.profile,
     behavior: a.behavior,
     capabilities: a.capabilities,
     access: c.access,
@@ -93,14 +100,20 @@ function AgentSettingsEditorContent({
     providers: c.providers,
     workspace: t.settings.sections.workspace,
     limits: c.limits,
-    'tools-advanced': `${a.tools} · ${t.settings.sections.advanced}`
+    'tools-advanced': a.tools
   }
 
-  function open(next: AgentSettingsSection) {
+  function open(next: AgentSettingsSection, preserveScroll = false) {
+    if (bodyRef.current && !preserveScroll) {
+      bodyRef.current.scrollTop = 0
+    }
     navigate({ pathname: location.pathname, search: agentSettingsSearch(location.search, next) }, { replace: true })
   }
 
   function openPage(key: string, value: string) {
+    if (bodyRef.current) {
+      bodyRef.current.scrollTop = 0
+    }
     const next = new URLSearchParams(location.search)
     next.set(key, value)
     navigate({ pathname: location.pathname, search: `?${next}` }, { replace: true })
@@ -112,29 +125,9 @@ function AgentSettingsEditorContent({
 
   return (
     <div className="agent-settings-editor">
-      <nav aria-label={t.commandCenter.settings} className="agent-settings-navigation">
-        {AGENT_SETTINGS_GROUPS.map(([group, sections]) => (
-          <div className="agent-settings-nav-group" key={group}>
-            <h2>{labels[group]}</h2>
-            {sections.map(id => (
-              <button
-                aria-current={section === id || (id === 'tools' && section === 'tools-advanced') ? 'page' : undefined}
-                key={id}
-                onClick={() => open(id)}
-                type="button"
-              >
-                {labels[id]}
-              </button>
-            ))}
-          </div>
-        ))}
-      </nav>
-      <section className="agent-settings-body">
-        <header>
-          <h2>{section ? labels[section] : t.commandCenter.settings}</h2>
-          {section === 'model' && <p>{c.modelDescription}</p>}
-        </header>
-        {!section && <p role="alert">{c.invalid}</p>}
+      <AgentSettingsNavigation ariaLabel={t.commandCenter.settings} labels={labels} onOpen={open} section={section} />
+      <section aria-label={t.commandCenter.settings} className="agent-settings-body" ref={bodyRef}>
+        <AgentSettingsHeading labels={labels} section={section} />
         {section === 'general' && <AgentGeneralSettings onProfileRenamed={onProfileRenamed} owner={owner} />}
         {section === 'instructions' && <AgentInstructionsSettings owner={owner} />}
         {section === 'limits' && (
@@ -156,6 +149,7 @@ function AgentSettingsEditorContent({
         {configSection && (
           <ConfigSettings
             activeSectionId={configSection}
+            agentLayout
             agentModel={section === 'model'}
             importInputRef={importInputRef}
             onConfigSaved={onConfigSaved}
@@ -163,24 +157,25 @@ function AgentSettingsEditorContent({
             subpage={section === 'limits' ? runtimePage : section === 'model' ? page : undefined}
           />
         )}
-        {section && ['tools', 'skills', 'connectors', 'plugins'].includes(section) && (
+        {section && ['tools', 'tools-advanced', 'skills', 'connectors', 'plugins'].includes(section) && (
           <AgentCapabilitiesSettings
-            onOpenAdvanced={() => open('tools-advanced')}
+            onOpenAdvanced={() => open(section === 'tools-advanced' ? 'tools' : 'tools-advanced', true)}
             owner={owner}
             params={params}
             section={section}
-          />
-        )}
-        {section === 'tools-advanced' && (
-          <>
-            <KeysSettings view="tools" />
-            <ConfigSettings
-              activeSectionId="advanced"
-              importInputRef={importInputRef}
-              onConfigSaved={onConfigSaved}
-              subpage="tools"
-            />
-          </>
+          >
+            {section === 'tools-advanced' && (
+              <>
+                <KeysSettings view="tools" />
+                <ConfigSettings
+                  activeSectionId="advanced"
+                  importInputRef={importInputRef}
+                  onConfigSaved={onConfigSaved}
+                  subpage="tools"
+                />
+              </>
+            )}
+          </AgentCapabilitiesSettings>
         )}
         {section === 'messaging' && <MessagingView className="agent-settings-messaging" />}
         {section === 'schedules' && <AgentSchedulesSettings owner={owner} />}
@@ -213,6 +208,26 @@ function AgentSettingsEditorContent({
   )
 }
 
+interface AgentSettingsHeadingProps {
+  labels: AgentSettingsLabels
+  section: AgentSettingsSection | null
+}
+
+function AgentSettingsHeading({ labels, section }: AgentSettingsHeadingProps) {
+  const { t } = useI18n()
+  const c = useAgentSettingsEditorCopy()
+
+  return (
+    <>
+      <header>
+        <h2>{section ? labels[section] : t.commandCenter.settings}</h2>
+        {section && <p>{c.descriptions[section === 'tools-advanced' ? 'tools' : section]}</p>}
+      </header>
+      {!section && <p role="alert">{c.invalid}</p>}
+    </>
+  )
+}
+
 function resolveConfigSection(section: AgentSettingsSection | null) {
   return section && ['model', 'chat', 'memory', 'voice', 'safety', 'workspace', 'limits'].includes(section)
     ? section === 'limits'
@@ -226,10 +241,18 @@ interface AgentCapabilitiesSettingsProps {
   section: AgentSettingsSection
   params: URLSearchParams
   onOpenAdvanced: () => void
+  children: ReactNode
 }
 
-function AgentCapabilitiesSettings({ owner, section, params, onOpenAdvanced }: AgentCapabilitiesSettingsProps) {
+function AgentCapabilitiesSettings({
+  owner,
+  section,
+  params,
+  onOpenAdvanced,
+  children
+}: AgentCapabilitiesSettingsProps) {
   const { t } = useI18n()
+  const tools = section === 'tools' || section === 'tools-advanced'
 
   return (
     <>
@@ -237,13 +260,22 @@ function AgentCapabilitiesSettings({ owner, section, params, onOpenAdvanced }: A
         className="agent-settings-capabilities"
         embedded
         fixedConnection={owner.connectionId}
-        fixedMode={section === 'tools' ? 'toolsets' : (section as 'skills' | 'connectors' | 'plugins')}
+        fixedMode={tools ? 'toolsets' : (section as 'skills' | 'connectors' | 'plugins')}
         fixedProfile={owner.profile}
       />
-      {section === 'tools' && (
-        <Button onClick={onOpenAdvanced} variant="secondary">
-          {t.settings.sections.advanced}
-        </Button>
+      {tools && (
+        <div className="agent-settings-advanced">
+          <button
+            aria-expanded={section === 'tools-advanced'}
+            className="agent-settings-advanced-toggle"
+            onClick={onOpenAdvanced}
+            type="button"
+          >
+            <span>{t.settings.sections.advanced}</span>
+            <Codicon name={section === 'tools-advanced' ? 'chevron-up' : 'chevron-down'} />
+          </button>
+          {section === 'tools-advanced' && <div>{children}</div>}
+        </div>
       )}
       {section === 'plugins' && (params.get('plugin') || params.get('agent')) && <AgentPluginSettings />}
     </>
@@ -314,5 +346,34 @@ function AgentPluginSettings() {
       pending={plugins.pending}
       target={plugins.target}
     />
+  )
+}
+
+interface AgentSettingsNavigationProps {
+  ariaLabel: string
+  labels: AgentSettingsLabels
+  section: AgentSettingsSection | null
+  onOpen: (section: AgentSettingsSection) => void
+}
+
+function AgentSettingsNavigation({ ariaLabel, labels, section, onOpen }: AgentSettingsNavigationProps) {
+  return (
+    <nav aria-label={ariaLabel} className="agent-settings-navigation">
+      {AGENT_SETTINGS_GROUPS.map(([group, sections]) => (
+        <div className="agent-settings-nav-group" key={group}>
+          <h2>{labels[group]}</h2>
+          {sections.map(id => (
+            <button
+              aria-current={section === id || (id === 'tools' && section === 'tools-advanced') ? 'page' : undefined}
+              key={id}
+              onClick={() => onOpen(id)}
+              type="button"
+            >
+              {labels[id]}
+            </button>
+          ))}
+        </div>
+      ))}
+    </nav>
   )
 }

@@ -89,3 +89,29 @@ export function agentSettingsSearch(search: string, section: AgentSettingsSectio
 
   return `?${params}`
 }
+
+/** Translate only redesign section aliases; keep the captured owner and deep-link parameters. */
+export function classicAgentSettingsSearch(search: string): string {
+  const params = new URLSearchParams(search)
+  const tab = params.get('tab')
+
+  if (!tab?.startsWith('agent:')) {
+    return search
+  }
+
+  const section = resolveAgentSettingsSection(params)
+
+  if (section && ['tools', 'skills', 'connectors', 'plugins'].includes(section)) {
+    params.set('panel', 'capabilities')
+    params.set('tab', section === 'tools' ? 'toolsets' : section)
+  } else if (section === 'limits' || section === 'tools-advanced') {
+    params.set('tab', 'config:advanced')
+    params.set('page', section === 'tools-advanced' ? 'tools' : (params.get('page') ?? 'runtime'))
+  } else if (section === 'providers') {
+    params.set('tab', 'providers')
+  } else if (section && ['model', 'chat', 'memory', 'voice', 'safety', 'browser', 'workspace'].includes(section)) {
+    params.set('tab', `config:${section}`)
+  }
+
+  return `?${params}`
+}

@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
+import { ErrorState } from '@/components/ui/error-state'
 import type { CronJob } from '@/hermes'
 import { useI18n } from '@/i18n'
 
@@ -22,7 +23,11 @@ export function AgentSchedulesSettings({ owner }: { owner: AgentSettingsOwner })
       {jobs.isPending ? (
         <PageLoader />
       ) : jobs.isError ? (
-        <Button onClick={() => void jobs.refetch()}>{t.common.retry}</Button>
+        <ErrorState description={jobs.error.message} title={t.cron.failedLoad}>
+          <Button onClick={() => void jobs.refetch()} variant="secondary">
+            {t.common.retry}
+          </Button>
+        </ErrorState>
       ) : jobs.data.length ? (
         <div className="agent-settings-card">
           {jobs.data.map(job => (

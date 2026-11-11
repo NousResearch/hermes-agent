@@ -45,10 +45,12 @@ export interface ConnectorsTabProps {
   gateway: HermesGateway | null
   profile: ProfileScope
   agentControls?: boolean
+  agentLayout?: boolean
 }
 
-export function ConnectorsTab({ gateway, profile, agentControls = true }: ConnectorsTabProps) {
+export function ConnectorsTab({ gateway, profile, agentControls = true, agentLayout = false }: ConnectorsTabProps) {
   const { t } = useI18n()
+  const navigate = useNavigate()
   const copy = t.connectorsPage
 
   const hosted = useHostedConnectors(profile)
@@ -187,7 +189,21 @@ export function ConnectorsTab({ gateway, profile, agentControls = true }: Connec
   const busyKey = installing ?? (busySlug === null ? null : hostedCardKey(busySlug))
 
   return (
-    <div className="capabilities-page flex h-full min-h-0 flex-col gap-3 pt-5 pb-2">
+    <div
+      className={
+        agentLayout
+          ? 'agent-capability-connectors flex h-full min-h-0 flex-col gap-3'
+          : 'capabilities-page flex h-full min-h-0 flex-col gap-3 pt-5 pb-2'
+      }
+    >
+      {agentLayout && (
+        <div className="agent-capability-banner">
+          <p>{t.skills.inventoryScopeHint}</p>
+          <Button onClick={() => navigate('/capabilities?tab=connectors')} size="sm" variant="outline">
+            {t.connectorsPage.title}
+          </Button>
+        </div>
+      )}
       <ConnectorsDirectory
         addYourOwn={
           <Button disabled={mcp.profilePending} onClick={() => setAddOpen(true)} size="xs" variant="outline">

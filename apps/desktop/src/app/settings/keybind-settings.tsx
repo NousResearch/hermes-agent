@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useContext, useMemo, useState } from 'react'
 
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
@@ -65,6 +66,8 @@ export function KeybindSettings({ subpage }: KeybindSettingsProps = {}) {
 
 function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean }) {
   const { t } = useI18n()
+  const redesign = usePortalRedesign()
+  const ShortcutContainer = redesign ? 'details' : 'div'
   const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
   const bindings = useStore($bindings)
   const k = t.keybinds
@@ -73,7 +76,9 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
   // snapshot feeds the list: under React Compiler an independently called
   // allKeybindActions() stays memoized across that registration.
   const contributions = useContributions(KEYBINDS_AREA)
-  const actionList = allKeybindActions(contributions)
+  const allActions = allKeybindActions(contributions)
+  const primaryActions = redesign ? allActions.filter(action => action.id === 'nav.commandPalette') : []
+  const actionList = allActions.filter(action => !primaryActions.includes(action))
   const [query, setQuery] = useState('')
 
   const openCombo = bindings[KEYBIND_PANEL_ACTION]?.[0]
@@ -129,82 +134,99 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
 
   return (
     <SettingsContent>
-      <div className="flex items-center justify-between gap-3 pb-3">
-        <div className="min-w-0">
-          {!hasBreadcrumb && <h2 className="text-sm font-semibold text-foreground">{k.title}</h2>}
-          <p className="mt-0.5 text-[0.72rem] text-muted-foreground">
-            {k.subtitle(openCombo ? formatCombo(openCombo) : '')}
-          </p>
+      <div className={redesign ? 'global-settings-overview' : 'contents'}>
+        <div className="flex items-center justify-between gap-3 pb-3">
+          <div className="min-w-0">
+            {!hasBreadcrumb && <h2 className="text-sm font-semibold text-foreground">{k.title}</h2>}
+            <p className="mt-0.5 text-[0.72rem] text-muted-foreground">
+              {k.subtitle(openCombo ? formatCombo(openCombo) : '')}
+            </p>
+          </div>
+          <button
+            className="flex shrink-0 items-center gap-1 rounded-md text-[0.72rem] text-muted-foreground hover:text-foreground"
+            onClick={resetAllBindings}
+            type="button"
+          >
+            <Codicon name="discard" size="0.8125rem" />
+            {k.resetAll}
+          </button>
         </div>
-        <button
-          className="flex shrink-0 items-center gap-1 rounded-md text-[0.72rem] text-muted-foreground hover:text-foreground"
-          onClick={resetAllBindings}
-          type="button"
-        >
-          <Codicon name="discard" size="0.8125rem" />
-          {k.resetAll}
-        </button>
-      </div>
 
-      {includeScreenshot &&
-        (!isSearching || t.settings.screenshot.enabledTitle.toLowerCase().includes(query.toLowerCase())) && (
-          <ScreenshotSettings />
-        )}
-
-      <div className="pb-3">
-        <SearchField
-          aria-label={k.search}
-          containerClassName="w-full"
-          onChange={setQuery}
-          placeholder={k.search}
-          value={query}
-        />
-      </div>
-
-      {isSearching ? (
-        <div className="px-2 py-1.5">
-          {filteredActions?.length === 0 && filteredReadonly?.length === 0 ? (
-            <p className="px-2.5 py-4 text-center text-[0.82rem] text-muted-foreground">—</p>
-          ) : (
-            <>
-              {filteredActions?.map(action => (
-                <KeybindRow action={action} key={action.id} />
-              ))}
-              {filteredReadonly?.map(shortcut => (
-                <ReadonlyRow key={shortcut.id} shortcut={shortcut} />
-              ))}
-            </>
+        {includeScreenshot &&
+          (!isSearching || t.settings.screenshot.enabledTitle.toLowerCase().includes(query.toLowerCase())) && (
+            <ScreenshotSettings />
           )}
-        </div>
-      ) : (
-        <div className="px-2 py-1.5">
-          {KEYBIND_CATEGORIES.map(category => {
-            const actions = actionList.filter(
-              action => action.category === category && action.id !== KEYBIND_PANEL_ACTION
-            )
 
-            const readonly = KEYBIND_READONLY.filter(shortcut => shortcut.category === category)
+        {primaryActions.length > 0 && (
+          <div className="global-settings-card global-shortcut-primary">
+            {primaryActions.map(action => (
+              <KeybindRow action={action} key={action.id} />
+            ))}
+          </div>
+        )}
+        <ShortcutContainer className={redesign ? 'global-settings-disclosure group' : undefined}>
+          {redesign && (
+            <summary>
+              <span>{k.title}</span>
+              <DisclosureCaret className="group-open:rotate-90" open={false} />
+            </summary>
+          )}
+          <div className="pb-3">
+            <SearchField
+              aria-label={k.search}
+              containerClassName="w-full"
+              onChange={setQuery}
+              placeholder={k.search}
+              value={query}
+            />
+          </div>
 
-            if (actions.length === 0 && readonly.length === 0) {
-              return null
-            }
+          {isSearching ? (
+            <div className="px-2 py-1.5">
+              {filteredActions?.length === 0 && filteredReadonly?.length === 0 ? (
+                <p className="px-2.5 py-4 text-center text-[0.82rem] text-muted-foreground">—</p>
+              ) : (
+                <>
+                  {filteredActions?.map(action => (
+                    <KeybindRow action={action} key={action.id} />
+                  ))}
+                  {filteredReadonly?.map(shortcut => (
+                    <ReadonlyRow key={shortcut.id} shortcut={shortcut} />
+                  ))}
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="px-2 py-1.5">
+              {KEYBIND_CATEGORIES.map(category => {
+                const actions = actionList.filter(
+                  action => action.category === category && action.id !== KEYBIND_PANEL_ACTION
+                )
 
-            const sectionOpen = !collapsed.has(category)
+                const readonly = KEYBIND_READONLY.filter(shortcut => shortcut.category === category)
 
-            return (
-              <section key={category}>
-                <CategoryHeader
-                  label={k.categories[category] ?? category}
-                  onToggle={() => toggleCategory(category)}
-                  open={sectionOpen}
-                />
-                {sectionOpen && actions.map(action => <KeybindRow action={action} key={action.id} />)}
-                {sectionOpen && readonly.map(shortcut => <ReadonlyRow key={shortcut.id} shortcut={shortcut} />)}
-              </section>
-            )
-          })}
-        </div>
-      )}
+                if (actions.length === 0 && readonly.length === 0) {
+                  return null
+                }
+
+                const sectionOpen = !collapsed.has(category)
+
+                return (
+                  <section key={category}>
+                    <CategoryHeader
+                      label={k.categories[category] ?? category}
+                      onToggle={() => toggleCategory(category)}
+                      open={sectionOpen}
+                    />
+                    {sectionOpen && actions.map(action => <KeybindRow action={action} key={action.id} />)}
+                    {sectionOpen && readonly.map(shortcut => <ReadonlyRow key={shortcut.id} shortcut={shortcut} />)}
+                  </section>
+                )
+              })}
+            </div>
+          )}
+        </ShortcutContainer>
+      </div>
     </SettingsContent>
   )
 }

@@ -1,5 +1,5 @@
-/* Source illustration: Figma Brand rev, 491:35006. Decoration only; the editor
-   stays in its stable host through draft creation and the first response. */
+/* Figma 906:19874: 1084px square at (-174, -288) in the 840px chat stage.
+   Decoration only; the editor keeps its stable host through the first response. */
 [data-chat-landing='true'] {
   container: chat-landing / size;
 }
@@ -10,11 +10,11 @@
 
 .chat-landing-art {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 80%;
-  object-fit: cover;
-  object-position: center 65%;
+  top: -34.25cqw;
+  left: -20.74%;
+  width: 129.05%;
+  max-width: none;
+  height: auto;
   filter: grayscale(1);
   opacity: 0.16;
   mask-image: linear-gradient(black, transparent 90%);

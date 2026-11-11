@@ -1,0 +1,21 @@
+.agent-messaging {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 16px;
+}
+
+.agent-messaging-channels {
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+}
+
+.agent-messaging-row {
+  display: flex;
+  min-height: 64px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+}

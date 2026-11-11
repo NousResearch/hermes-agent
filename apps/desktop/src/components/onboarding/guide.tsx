@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { NEW_CHAT_ROUTE } from '@/app/routes'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
@@ -15,8 +14,6 @@ import {
   startManualOnboarding
 } from '@/store/onboarding'
 import { captureOnboardingScope, requestOnboardingGateway } from '@/store/onboarding-scope'
-import { newSessionInAgent, newSessionInProfile } from '@/store/profile'
-import { requestRoute } from '@/store/recovery-requests'
 import {
   $guideRecovery,
   $guideScope,
@@ -222,17 +219,9 @@ export function SetupGuide({ ctx }: { ctx: OnboardingContext }) {
         completeDesktopOnboarding()
       }
 
-      if (!(await finishOnboarding('done'))) {
-        return
-      }
-
-      if (scope.connectionId) {
-        newSessionInAgent({ connectionId: scope.connectionId, profile: scope.profile || 'default' })
-      } else {
-        newSessionInProfile(scope.profile || 'default')
-      }
-
-      requestRoute(NEW_CHAT_ROUTE)
+      // Setup configures its captured owner; it never replaces the foreground
+      // draft or navigation, including after a settings handoff or an agent swap.
+      await finishOnboarding('done')
     })
 
   return (
@@ -260,7 +249,7 @@ export function SetupGuide({ ctx }: { ctx: OnboardingContext }) {
                     aria-pressed={mode === selectedMode}
                     key={mode}
                     onClick={() => applyAppearance({ mode })}
-                    variant="outline"
+                    variant={mode === selectedMode ? 'default' : 'outline'}
                   >
                     {t.settings.modeOptions[mode].label}
                   </Button>
@@ -321,7 +310,7 @@ export function SetupGuide({ ctx }: { ctx: OnboardingContext }) {
           <Button disabled={busy} onClick={() => void act(() => finishOnboarding('skipped'))} variant="ghost">
             {copy.skip}
           </Button>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {step === 'model' && (
               <Button disabled={busy} onClick={() => void act(() => saveGuideStep('preferences'))} variant="outline">
                 {copy.back}

@@ -1,19 +1,24 @@
 .agent-settings-editor {
   display: grid;
   grid-template-columns: 184px minmax(0, 584px);
-  align-items: start;
+  grid-template-rows: minmax(0, 1fr);
   gap: 32px;
   width: 100%;
   max-width: 800px;
   margin-inline: 0;
-  padding-bottom: 32px;
+  height: 100%;
+  min-height: 0;
   container-type: inline-size;
 }
 
 .agent-settings-navigation {
   display: grid;
+  align-content: start;
   gap: 24px;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 32px;
 }
 .agent-settings-nav-group {
   display: grid;
@@ -47,13 +52,17 @@
   color: var(--ui-text-primary);
 }
 .agent-settings-nav-group button:focus-visible,
-.agent-settings-advanced > summary:focus-visible {
+.agent-settings-advanced-toggle:focus-visible {
   outline: 2px solid var(--theme-primary);
   outline-offset: 2px;
 }
 .agent-settings-body {
   display: grid;
+  align-content: start;
   min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 32px;
   gap: 32px;
 }
 .agent-settings-body > header h2 {
@@ -86,7 +95,7 @@
   padding-inline: 16px;
 }
 .agent-settings-main-model > .grid,
-.agent-settings-body [data-slot='settings-content'] > div > .grid,
+.agent-settings-body [data-slot='settings-content'] > div > .grid:not([data-slot='portal-safety-settings']),
 .agent-settings-body #setting-field-fallback_providers {
   padding: 12px 16px;
   border: 1px solid var(--ui-stroke-tertiary);
@@ -99,18 +108,40 @@
   font-weight: 500;
 }
 .agent-settings-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
   overflow-wrap: anywhere;
   padding: 0 16px 16px;
   color: var(--ui-text-tertiary);
   font-size: 13px;
 }
-.agent-settings-advanced > summary {
+.agent-settings-path > span {
+  min-width: 0;
+  flex: 1;
+}
+.agent-settings-advanced-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 68px;
   padding: 20px 16px;
   cursor: pointer;
   font-size: 14px;
 }
 .agent-settings-advanced > div {
-  padding: 0 16px 16px;
+  display: grid;
+  gap: 24px;
+  padding: 16px;
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+.agent-settings-advanced [data-slot='settings-content'] > div > .grid {
+  padding: 0;
+  border: 0;
+  background: none;
 }
 .agent-settings-actions,
 .agent-settings-subpages {
@@ -118,15 +149,67 @@
   flex-wrap: wrap;
   gap: 8px;
 }
-.agent-settings-instructions {
-  height: 360px;
+.agent-settings-instructions-section {
+  display: grid;
+  gap: 12px;
+}
+.agent-settings-instructions-section > header h3 {
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 17px;
+}
+.agent-settings-instructions-section > header p {
+  margin-top: 2px;
+  color: var(--ui-text-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+}
+:root:has([data-portal-redesign='true']) .agent-settings-instructions :is(.cm-scroller, .cm-content, .cm-line) {
+  font-family: var(--portal-font-body);
+  font-size: 13px;
+  line-height: 21px;
+}
+:root:has([data-portal-redesign='true']) .agent-settings-instructions .cm-scroller {
+  padding: 8px;
+}
+:root:has([data-portal-redesign='true']) .agent-settings-instructions .cm-line {
+  padding: 0;
+}
+.agent-settings-instructions-meta {
   min-width: 0;
+  margin-inline-end: auto;
+  overflow: hidden;
+  color: var(--ui-text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-settings-instructions {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 322px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 4px;
+  background: var(--ui-bg-card);
+}
+.agent-settings-instructions-footer {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 9px 12px;
+  border-top: 1px solid var(--ui-stroke-tertiary);
 }
 .agent-settings-body > .agent-settings-capabilities,
 .agent-settings-body > .agent-settings-messaging {
-  height: 640px;
-  max-height: 75vh;
-  min-height: 360px;
+  height: auto;
+  max-height: none;
+  min-height: 0;
 }
 
 @container (min-width: 28rem) {
@@ -134,25 +217,22 @@
     grid-template-columns: minmax(0, 1fr) minmax(0, auto);
     align-items: center;
   }
-  .agent-settings-body [data-slot='settings-row']:not([data-wide]) > div > div:last-child {
+  .agent-settings-body [data-slot='settings-row']:not([data-wide]) > div > div:last-child:not(:first-child) {
     max-width: 16rem;
     justify-self: end;
   }
 }
 
-@media (max-width: 1050px) {
-  .agent-settings-editor {
-    grid-template-columns: 160px minmax(0, 1fr);
-    gap: 20px;
-  }
-}
-@media (max-width: 700px) {
+@container agent-editor (max-width: 620px) {
   .agent-settings-editor {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 24px;
   }
   .agent-settings-navigation {
     grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    max-height: min(32vh, 260px);
+    padding-bottom: 0;
     gap: 16px;
   }
 }

@@ -140,13 +140,19 @@ available inside the model picker. Reuse the existing editors and save paths.
 Auxiliary-model deep links reveal enclosing Advanced disclosures before
 focusing the target or consuming the link. Activating a settings owner preserves
 the requested page rather than redirecting to a new chat.
+Navigation and editor bodies scroll independently; changing section/subpage resets
+only the editor scroll. Instructions use a 322px card including the Save footer.
+Classic dispatch preserves the same semantic destination and owner. Retained
+instruction revisions and config draft/baseline/save queues live above the
+presentation branch, not in duplicate hidden editors; a pending save cannot erase
+a newer draft after switching presentation.
 The overview header uses a 40px light Mona Sans title and the outline avatar.
 **Open chat** sits beside the action menu: duplicate, set default, hide/show in
 the chat list, copy the actual profile path, and a hint directing deletion to
 Settings → General. Menu rows have 44px targets. Disconnection warnings reflect
 the backend's actual failed/retrying/stopped states for configured, enabled channels.
-Overview cards use 1.25:1 columns with a 32px gap, 16px section-title spacing,
-50px rows, and 6px corners; narrow layouts collapse to one column.
+Overview cards use 436:300 columns with a 24px gap, 16px section-title spacing,
+44px rows, 64px activity rows, and 4px corners; narrow layouts collapse to one column.
 Global desktop settings remain available outside the agent editor. New agent
 opens creation directly on the captured machine rather than another management page.
 
@@ -179,9 +185,19 @@ are skipped; failed writes are never counted as deleted. Selection and confirmat
 belong to one gateway/profile and are discarded when that owner changes.
 History dialogs use a dimmed, unblurred backdrop, 24px content padding, display
 headings, and semantic destructive colors for confirmed deletion.
+Bulk pin/archive operations retain failed selections and report partial success.
+Search, independent filter chips, and pagination reuse the same owner-scoped queries.
+The read-only History preview is a right-edge drawer below the real titlebar,
+not a centered dialog. It explicitly resets both shared-dialog translation axes;
+at narrow widths it fills the available viewport without hiding its actions.
 Session lists capture their serving connection before awaiting the response;
 cached rows never inherit a newly selected foreground gateway. Selection follows
 the focused conversation's owner. Explicit owners survive tab and window opens.
+Primary-local project rows retain their legacy profile-door shape; deletion
+normalizes both lookup claims and project-only targets using the tree's captured
+source. Never infer that source from the newly foregrounded machine.
+Conversation settings links resolve profile-only chats through the primary source,
+not the ambient connection; unresolved owners cannot open another agent's settings.
 The current per-window runtime caches cannot host identical stored IDs from two
 owners simultaneously: conflicting opens fail visibly without reassigning the
 existing chat; use separate windows for those conversations.
@@ -198,17 +214,25 @@ configuration, plugin cache, conversations, and open tiles.
 Keep section resolution, visibility, and model-default derivation separate from
 editor composition. Refactoring these boundaries must preserve owner checks and
 must not mount inactive capability editors or pending inventory content.
+The agent header uses the Figma robot and display type. The directory count and
+default badge come from the owning machine's actual metadata, never sample data
+or a same-named agent on another machine. Each settings page supplies its own
+localized description. Instructions keeps the SOUL.md heading, proportional
+editor text, character count, and Save footer without changing draft ownership.
+Voice groups Conversation, Listening, and Speaking; the mode selector exposes
+only backend-supported values, while detailed provider/pricing help stays under
+Advanced. Schema/config availability still determines which provider fields exist.
 
 Page toolbars occupy the native titlebar band with an opaque surface so open
 chat/tool tabs cannot bleed through; controls remain outside the drag region.
 
 Redesigned surfaces use neutral foreground-derived fills and strokes, not
 accent-tinted greys. Global settings cards use 5% fill and 5% borders with 8px
-corners; agent settings cards use 2% fill, 5% borders, and 4px corners. Agent
-and settings-navigation selection uses neutral 5% fill and a 0.5px neutral
-5% inset stroke with 3px corners. Brand-blue selection remains on the global
-rail. Agent-management navigation tiles stay translucent; the new conversation
-cards and overview header use the outline avatar with a subtle owner-color tile.
+corners; agent settings cards use 2% fill, 5% borders, and 4px corners.
+Settings-navigation selection uses neutral 5% fill and a 0.5px neutral
+5% inset stroke with 8px corners. Brand-blue selection remains on the global
+rail. Agent-management navigation tiles stay translucent; agent rows and the
+overview header use the Figma robot with the real owner's color.
 The global rail tracks the owning agent even inside its settings editor.
 Shared rail/sidebar geometry lives at the document root while the redesign is
 enabled. Sibling route overlays reserve the rail with logical inline offsets
@@ -219,19 +243,38 @@ and the capability catalog; unchecked tracks are neutral 10% fills.
 Session rows retain their full-width hover fill. The trailing status dot yields
 its exact position to the action ellipsis on hover, keyboard focus, or an open
 menu; the timestamp does not disappear or move. Touch exposes the action directly.
-The Hermes Portal theme uses neutral dark greys; custom theme choices and
-classic semantic styling remain available.
+The Hermes Portal theme uses the current Figma navy canvas (`#07071a`) and
+floating surface (`#0d0d1e`) without generic neutral blending. Foreground-derived
+card fills remain subtle; custom theme choices and classic styling stay available.
 
 The **Redesigned interface** preference gates the setup guide, catalog/agent
 controls, composer layout, machine menu, and hidden-agent presentation as well as
 the shell. Turning it off restores classic onboarding and all classic agent rows
 without migrating conversations or destroying the redesign's saved visibility.
+Chat chrome leaves the keyboard tab order when covered by a route overlay, without
+remounting the draft-owning host. The session-search shortcut reopens and focuses
+the redesigned sidebar. Global settings keep seven primary destinations; extra
+configuration remains under Advanced, with active deep links revealed.
+An unqualified Settings entry opens Accounts in the redesign rather than a
+legacy Model page tucked under Advanced; explicit destinations and the classic
+default remain unchanged.
+
+Transcript styling is isolated in `components/assistant-ui/thread/redesign.css`:
+600px prose, 30px turn spacing, 20px output gaps, 1.6 leading, and user bubbles
+capped at 380px. Collapsed tool runs, including single-tool runs, use the dashed
+summary frame. The composer's static 2px spectrum edge replaces animation;
+its native base text is 14px before the user's scale, retaining the browser
+minimum. Floating dialogs inherit redesigned padding, display typography, and
+brand-blue primary actions through root-scoped rules; their classic defaults
+remain unchanged. Route overlays and body-portalled dialogs are siblings of the
+chat shell, so their redesign styles must not require the shell as an ancestor.
 
 Redesigned setup is a sessionless preferences/model guide. It resumes from
 root `onboarding.run` / `onboarding.step`, retains a working provider, and offers
-the free model only when the backend reports eligibility. Finishing opens an
-ordinary draft; no setup transcript is created. Explicit sessionless migration
-retires legacy setup metadata/cards without deleting conversation history and
+the free model only when the backend reports eligibility. Finishing settles setup
+without replacing the existing draft, attachments, owner, or route; no setup
+transcript is created. Explicit sessionless migration retires legacy setup
+metadata/cards without deleting conversation history and
 broadcasts the end once so connected classic clients leave setup immediately.
 Resuming an existing guide is read-only; the first-start latch preserves newer
 peer progress and cannot reopen completed setup. A completed/skipped guide with a
@@ -241,9 +284,10 @@ upgrade/retry offer rather than silently dropping setup or creating a setup chat
 Local-model configuration releases the modal and leaves a **Resume setup** action.
 
 Global Capabilities is the inventory/catalog entry; agent settings owns
-enablement. Agent Tools groups On/Off switches and puts credentials/endpoints
-under Advanced. Installations and tool enablement retain their actual agent and
-machine scopes. Hosted connector accounts belong to the Nous identity: agents
+enablement. Agent Tools groups On/Off switches with per-tool configuration
+disclosures; the page-level Advanced disclosure retains Keys and Config.
+Installations and tool enablement retain their actual agent and machine scopes.
+Hosted connector accounts belong to the Nous identity: agents
 sharing that identity share those accounts, and removing one affects them all.
 Read-only command search must not replace an agent editor's writable inventory.
 

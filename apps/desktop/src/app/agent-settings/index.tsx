@@ -16,7 +16,7 @@ import { type CronJob, getProfileSoul, type MessagingPlatformsResponse } from '@
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { platformStatusTone } from '@/lib/platform-status'
-import { resolveProfileColor } from '@/lib/profile-color'
+import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { asText } from '@/lib/text'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -27,7 +27,6 @@ import { $gatewayState } from '@/store/session'
 import { setSettingsScope } from '@/store/settings-scope'
 import type { HermesConfigRecord, ProfileInfo } from '@/types/hermes'
 
-import { CapabilitiesView } from '../capabilities'
 import { useSkillsQuery } from '../capabilities/skills/skills-data'
 import { useToolsetsQuery } from '../capabilities/toolsets/toolsets-data'
 import { gatewayLabel } from '../chat/sidebar/gateway-group-model'
@@ -35,12 +34,12 @@ import { useHermesConfigRecord } from '../hooks/use-config-record'
 import { openSession } from '../open-session'
 import { Panel, PanelHeader } from '../overlays/panel'
 import { SETTINGS_ROUTE } from '../routes'
-import { SettingsView as ClassicSettingsView } from '../settings'
 import { getNested, toolNames } from '../settings/helpers'
 import { settingsScopeLabel } from '../settings/profile-scope'
 import type { SettingsPageProps } from '../settings/types'
 
 import { AgentChannelWarnings } from './channel-warning'
+import { ClassicAgentSettings } from './classic-settings'
 import { useAgentSettingsCopy } from './copy'
 import {
   agentSettingsKey,
@@ -134,38 +133,37 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
     return <PageLoader />
   }
 
-  if (props.classic) {
-    return new URLSearchParams(search).get('panel') === 'capabilities' ? (
-      <Panel onClose={props.onClose}>
-        <CapabilitiesView fixedConnection={props.owner.connectionId} fixedProfile={props.owner.profile} />
-      </Panel>
-    ) : (
-      <ClassicSettingsView {...props} />
-    )
+  async function onProfileRenamed(name: string) {
+    // Only the route that initiated the rename may follow the new owner.
+    if (activeRoute.current !== route || !(await activate(name)) || activeRoute.current !== route) {
+      return
+    }
+
+    const params = new URLSearchParams(search)
+    params.set('agentProfile', name)
+    navigate({ pathname: location.pathname, search: `?${params}` }, { replace: true })
   }
 
-  return (
-    <AgentSettingsContent
-      {...props}
-      onProfileRenamed={async name => {
-        // Retiring the old gateway unmounts its editor, not this owner guard.
-        // Only the route that initiated the rename may follow the new owner.
-        if (activeRoute.current !== route || !(await activate(name)) || activeRoute.current !== route) {
-          return
-        }
-
-        const params = new URLSearchParams(search)
-        params.set('agentProfile', name)
-        navigate({ pathname: location.pathname, search: `?${params}` }, { replace: true })
-      }}
-    />
+  return props.classic ? (
+    <ClassicAgentSettings {...props} onProfileRenamed={onProfileRenamed} />
+  ) : (
+    <AgentSettingsContent {...props} onProfileRenamed={onProfileRenamed} />
   )
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({ title, children, onOpen }: { title: string; children: ReactNode; onOpen?: () => void }) {
   return (
     <section className="agent-overview-section">
-      <h2>{title}</h2>
+      <h2>
+        {onOpen ? (
+          <button className="agent-overview-section-link" onClick={onOpen} type="button">
+            {title}
+            <Codicon name="chevron-right" />
+          </button>
+        ) : (
+          title
+        )}
+      </h2>
       <div className="agent-overview-card">{children}</div>
     </section>
   )
@@ -186,7 +184,11 @@ function SettingRow({
     <RowButton className="agent-overview-row" onClick={onClick}>
       <span className="min-w-0 flex-1">
         <span className="block truncate">{title}</span>
-        {subtitle && <span className="mt-1 block truncate text-xs text-(--ui-text-tertiary)">{subtitle}</span>}
+        {subtitle && (
+          <span className="agent-overview-row-subtitle mt-1 block truncate text-xs text-(--ui-text-tertiary)">
+            {subtitle}
+          </span>
+        )}
       </span>
       <span className="max-w-[50%] truncate text-(--ui-text-tertiary)">{detail}</span>
       <Codicon name="chevron-right" />
@@ -211,9 +213,8 @@ function AgentManagementHeader({ gateway, onOpenChat, owner, profile }: AgentMan
   return (
     <header className="agent-management-header">
       <FigmaAgentIcon
-        className="agent-management-avatar"
-        color={resolveProfileColor(owner.profile, colors)}
-        variant="outline"
+        className="agent-management-avatar [&>img]:brightness-0 dark:[&>img]:brightness-100"
+        color={profileColorSoft(resolveProfileColor(owner.profile, colors) ?? 'var(--portal-brand-blue)', 12)}
       />
       <div className="agent-management-identity">
         <h1>{label}</h1>
@@ -232,7 +233,7 @@ function AgentManagementHeader({ gateway, onOpenChat, owner, profile }: AgentMan
         </div>
       </div>
       <div className="agent-management-actions">
-        <Button className="min-h-10" onClick={onOpenChat} size="lg">
+        <Button onClick={onOpenChat} size="lg">
           {c.openChat}
         </Button>
         <AgentOverviewActions owner={owner} profile={profile} />
@@ -424,7 +425,12 @@ function AgentSettingsContent({
           <AgentChannelWarnings messaging={messaging.data} />
           <div className="agent-overview-grid">
             <div className="agent-overview-column">
-              <AgentInstructions content={soul.data?.content} path={profile?.path} />
+              <AgentInstructions
+                content={soul.data?.content}
+                onOpen={() => openPanel('settings', 'agent:instructions')}
+                path={profile?.path}
+                status={pending(soul.isError, soul.isPending, t.profiles.notSet)}
+              />
               <AgentBehavior config={config} onSettings={settings} value={value} />
               <Section title={c.capabilities}>
                 <SettingRow
@@ -491,19 +497,21 @@ function AgentSettingsContent({
 interface AgentInstructionsProps {
   content?: string
   path?: string
+  status: ReactNode
+  onOpen: () => void
 }
 
-function AgentInstructions({ content, path }: AgentInstructionsProps) {
+function AgentInstructions({ content, path, status, onOpen }: AgentInstructionsProps) {
   const c = useAgentSettingsCopy()
 
-  return content ? (
-    <Section title={c.instructions}>
+  return (
+    <Section onOpen={onOpen} title={c.instructions}>
       <div className="agent-instructions-preview">
-        <p>{content}</p>
+        <p>{content || status}</p>
         <span>SOUL.md{path ? ` · ${path}` : ''}</span>
       </div>
     </Section>
-  ) : null
+  )
 }
 
 interface AgentRoutinesProps {

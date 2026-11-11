@@ -7,6 +7,7 @@ import { $apiRequestScope } from '@/api/client'
 import { $workspaceIsPage } from '@/app/routes'
 import { StatusbarControls } from '@/app/shell/statusbar-controls'
 import { en } from '@/i18n/en'
+import { $primaryGatewayRoute } from '@/store/gateway-primary-route'
 import { $activeGatewayProfile, $profiles } from '@/store/profile'
 import {
   $cronSessions,
@@ -46,6 +47,7 @@ afterEach(() => {
   $selectedStoredSessionId.set(null)
   $statusbarHiddenIds.set([])
   $apiRequestScope.set({ connectionId: null, profile: null })
+  $primaryGatewayRoute.set({ connectionId: null, mode: null })
 })
 
 function Location() {
@@ -77,6 +79,22 @@ it('fails closed for unknown session owners, and resolves cron owners after load
   act(() => $cronSessions.set([makeSessionInfo({ id: 'scheduled-chat', connection_id: 'jobs', profile: 'reports' })]))
   fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
   expect(screen.getByRole('status').textContent).toBe('?agentProfile=reports&connection=jobs')
+})
+
+it('keeps a profile-only primary conversation on its source when another machine is active', () => {
+  $apiRequestScope.set({ connectionId: 'foreign', profile: 'research' })
+  $sessions.set([makeSessionInfo({ id: 'primary-chat', profile: 'research' })])
+  $selectedStoredSessionId.set('primary-chat')
+  render(
+    <MemoryRouter>
+      <PortalConversationHeader paneId="workspace" title="Primary conversation" />
+      <Location />
+    </MemoryRouter>
+  )
+  expect(screen.getByRole('button', { name: 'Agent settings' }).hasAttribute('disabled')).toBe(true)
+  act(() => $primaryGatewayRoute.set({ connectionId: 'local', mode: 'local' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Agent settings' }))
+  expect(screen.getByRole('status').textContent).toBe('?agentProfile=research&connection=local')
 })
 
 it('only replaces conversation chrome in Portal, leaving settings and tools alone', () => {

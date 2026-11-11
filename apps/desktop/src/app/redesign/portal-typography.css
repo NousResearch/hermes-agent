@@ -21,7 +21,19 @@
   --portal-font-body: 'Mona Sans', var(--dt-font-sans);
 }
 
-:root:has([data-portal-redesign='true']) :is([data-portal-redesign], [data-page-surface]) {
+:root:has([data-portal-redesign='true'])
+  :is(
+    [data-portal-redesign],
+    [data-page-surface],
+    [data-slot='dialog-content'],
+    [data-slot='dropdown-menu-content'],
+    [data-slot='dropdown-menu-sub-content'],
+    [data-slot='context-menu-content'],
+    [data-slot='context-menu-sub-content'],
+    [data-slot='select-content'],
+    [data-slot='popover-content'],
+    [data-slot='tooltip-content']
+  ) {
   font-family: var(--portal-font-body);
 }
 
@@ -31,6 +43,13 @@
   line-height: 1.1;
   font-weight: 300;
   letter-spacing: -0.01em;
+}
+
+:root:has([data-portal-redesign='true']) [data-slot='dialog-title'] {
+  font-family: var(--portal-font-display);
+  font-size: 1.875rem;
+  font-weight: 300;
+  line-height: 1.1;
 }
 
 .portal-sidebar .portal-sidebar-wordmark {

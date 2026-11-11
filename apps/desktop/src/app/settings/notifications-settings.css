@@ -1,0 +1,78 @@
+.notifications-settings-card {
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 8px;
+  background: var(--ui-bg-card);
+}
+
+.notifications-settings-card + .notifications-settings-card {
+  margin-top: 36px;
+}
+
+.notifications-settings-card > [data-slot='settings-row'] {
+  padding-inline: 16px;
+}
+
+.notifications-settings-card > [data-slot='settings-row'] + [data-slot='settings-row'] {
+  border-top: 1px solid var(--ui-stroke-tertiary);
+}
+
+.notifications-settings-card > [data-slot='settings-row'] > div {
+  min-height: 64px;
+  column-gap: 24px;
+}
+
+.notifications-settings-card [data-slot='settings-row'] > div > div:first-child > div:first-child {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+}
+
+.notifications-settings-card [data-slot='settings-row'] > div > div:first-child > div:nth-child(2) {
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+@container (min-width: 32rem) {
+  .notifications-settings-card > [data-slot='settings-row'] > div {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+  }
+
+  .notifications-settings-card > [data-slot='settings-row'] > div > div:last-child {
+    justify-self: end;
+  }
+}
+
+.notifications-settings-heading {
+  margin: 36px 0 12px;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.notifications-settings-advanced {
+  margin-top: 36px;
+  border: 1px solid var(--ui-stroke-secondary);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 3%, transparent);
+}
+
+.notifications-settings-advanced > summary {
+  display: flex;
+  min-height: 68px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  list-style: none;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notifications-settings-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.notifications-settings-advanced > div {
+  margin: 0 16px 16px;
+}

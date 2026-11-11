@@ -600,12 +600,12 @@
   pointer-events: none;
 }
 
-.portal-hidden-row[data-attention]:is(:hover, :focus-within) .portal-hidden-show {
+.portal-hidden-row[data-attention]:is(:hover, :has(:focus-visible)) .portal-hidden-show {
   opacity: 1;
   pointer-events: auto;
 }
 
-.portal-hidden-row[data-attention]:is(:hover, :focus-within) > .portal-hidden-dot {
+.portal-hidden-row[data-attention]:is(:hover, :has(:focus-visible)) > .portal-hidden-dot {
   opacity: 0;
 }
 

@@ -32,6 +32,7 @@ interface SkillsTabProps {
   installedError?: unknown
   onRefresh: () => void
   agentControls?: boolean
+  agentLayout?: boolean
 }
 
 /** One management controller for the unified catalog, remounted on scope changes
@@ -48,7 +49,8 @@ function ScopedSkillsTab({
   skills,
   installedPending = false,
   installedError,
-  agentControls = true
+  agentControls = true,
+  agentLayout = false
 }: SkillsTabProps) {
   const { t } = useI18n()
   const mounted = useRef(true)
@@ -257,6 +259,7 @@ function ScopedSkillsTab({
             )}
           </>
         }
+        agentLayout={agentLayout}
         installedPending={installedPending || Boolean(installedError)}
         notice={notice}
         onQueryChange={onQueryChange}

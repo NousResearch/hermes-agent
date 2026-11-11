@@ -1,8 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useState } from 'react'
 
+import { usePortalRedesign } from '@/app/redesign/use-portal-redesign'
 import { restoreListedSession } from '@/app/session/hooks/use-session-actions/utils'
 import { Button } from '@/components/ui/button'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { Tip } from '@/components/ui/tooltip'
 import {
@@ -52,6 +54,7 @@ interface SessionsSettingsProps {
 
 export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
   useSettingDeepLink('sessions', page => subpage === undefined || page === subpage)
+  const redesign = usePortalRedesign()
 
   if (subpage === 'default-directory') {
     return (
@@ -61,12 +64,14 @@ export function SessionsSettings({ subpage }: SessionsSettingsProps = {}) {
     )
   }
 
-  return <ArchivedSessionsSettings includeDefaultDirectory={subpage === undefined} />
+  return <ArchivedSessionsSettings includeDefaultDirectory={redesign || subpage === undefined} />
 }
 
 function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultDirectory: boolean }) {
   const { t } = useI18n()
   const s = t.settings.sessions
+  const redesign = usePortalRedesign()
+  const ArchiveContainer = redesign ? 'details' : 'div'
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -157,66 +162,86 @@ function ArchivedSessionsSettings({ includeDefaultDirectory }: { includeDefaultD
 
   return (
     <SettingsContent>
-      {includeDefaultDirectory && <DefaultProjectDirSetting />}
+      <div className={redesign ? 'global-settings-overview' : 'contents'}>
+        {includeDefaultDirectory && !redesign && <DefaultProjectDirSetting />}
 
-      <AutoArchiveSetting />
-
-      <SectionHeading
-        icon={Archive}
-        meta={sessions.length ? String(sessions.length) : undefined}
-        title={s.archivedTitle}
-      />
-      <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        {s.archivedIntro}
-      </p>
-
-      {sessions.length === 0 ? (
-        <EmptyState description={s.emptyArchivedDesc} title={s.emptyArchivedTitle} />
-      ) : (
-        <div className="grid gap-1">
-          {sessions.map(session => {
-            const label = pathLeaf(session.cwd)
-            const busy = busyId === session.id
-
-            return (
-              <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
-                <ListRow
-                  action={
-                    <div className="flex items-center gap-1.5">
-                      <Button
-                        disabled={busy}
-                        onClick={() => void unarchive(session)}
-                        size="sm"
-                        type="button"
-                        variant="textStrong"
-                      >
-                        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
-                        <span>{s.unarchive}</span>
-                      </Button>
-                      <Tip label={s.deletePermanently}>
-                        <Button
-                          aria-label={s.deletePermanently}
-                          className="text-muted-foreground hover:text-destructive"
-                          disabled={busy}
-                          onClick={() => void remove(session)}
-                          size="icon"
-                          type="button"
-                          variant="ghost"
-                        >
-                          <Trash2 className="size-3.5" />
-                        </Button>
-                      </Tip>
-                    </div>
-                  }
-                  description={session.preview || undefined}
-                  hint={label ? `${label} · ${s.messages(session.message_count)}` : s.messages(session.message_count)}
-                  title={sessionTitle(session)}
-                />
-              </div>
-            )
-          })}
+        <div className={redesign ? 'global-settings-card' : undefined}>
+          <AutoArchiveSetting />
         </div>
-      )}
+
+        <ArchiveContainer className={redesign ? 'global-settings-disclosure group' : undefined}>
+          {redesign ? (
+            <summary>
+              <span>{s.archivedTitle}</span>
+              <DisclosureCaret className="group-open:rotate-90" open={false} />
+            </summary>
+          ) : (
+            <SectionHeading
+              icon={Archive}
+              meta={sessions.length ? String(sessions.length) : undefined}
+              title={s.archivedTitle}
+            />
+          )}
+          <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {s.archivedIntro}
+          </p>
+
+          {sessions.length === 0 ? (
+            <EmptyState description={s.emptyArchivedDesc} title={s.emptyArchivedTitle} />
+          ) : (
+            <div className="grid gap-1">
+              {sessions.map(session => {
+                const label = pathLeaf(session.cwd)
+                const busy = busyId === session.id
+
+                return (
+                  <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
+                    <ListRow
+                      action={
+                        <div className="flex items-center gap-1.5">
+                          <Button
+                            disabled={busy}
+                            onClick={() => void unarchive(session)}
+                            size="sm"
+                            type="button"
+                            variant="textStrong"
+                          >
+                            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
+                            <span>{s.unarchive}</span>
+                          </Button>
+                          <Tip label={s.deletePermanently}>
+                            <Button
+                              aria-label={s.deletePermanently}
+                              className="text-muted-foreground hover:text-destructive"
+                              disabled={busy}
+                              onClick={() => void remove(session)}
+                              size="icon"
+                              type="button"
+                              variant="ghost"
+                            >
+                              <Trash2 className="size-3.5" />
+                            </Button>
+                          </Tip>
+                        </div>
+                      }
+                      description={session.preview || undefined}
+                      hint={
+                        label ? `${label} · ${s.messages(session.message_count)}` : s.messages(session.message_count)
+                      }
+                      title={sessionTitle(session)}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </ArchiveContainer>
+        {includeDefaultDirectory && redesign && (
+          <div className="global-settings-card">
+            <DefaultProjectDirSetting compact />
+          </div>
+        )}
+      </div>
     </SettingsContent>
   )
 }
@@ -337,7 +362,7 @@ function AutoArchiveSetting() {
 // Lets the user pin the default cwd for new sessions. Without this, packaged
 // builds on Windows used to spawn sessions in the install dir (`win-unpacked`
 // / Program Files), which buried any files Hermes wrote there.
-function DefaultProjectDirSetting() {
+function DefaultProjectDirSetting({ compact = false }: { compact?: boolean } = {}) {
   const { t } = useI18n()
   const s = t.settings.sessions
   const profile = useStore($connection)?.profile ?? ''
@@ -435,10 +460,14 @@ function DefaultProjectDirSetting() {
 
   return (
     <div className="mb-6">
-      <SectionHeading icon={FolderOpen} page title={s.defaultDirTitle} />
-      <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        {s.defaultDirDesc}
-      </p>
+      {!compact && (
+        <>
+          <SectionHeading icon={FolderOpen} page title={s.defaultDirTitle} />
+          <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+            {s.defaultDirDesc}
+          </p>
+        </>
+      )}
       <ListRow
         action={
           <div className="flex items-center gap-3">
@@ -454,7 +483,7 @@ function DefaultProjectDirSetting() {
           </div>
         }
         description={dir || s.defaultsTo(fallback || '~')}
-        title={dir ? dir : s.notSet}
+        title={compact ? s.defaultDirTitle : dir || s.notSet}
       />
     </div>
   )

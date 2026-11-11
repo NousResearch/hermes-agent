@@ -47,6 +47,7 @@ function renderAlerts() {
       <NotificationsSettings subpage="alerts" />
     </MemoryRouter>
   )
+  fireEvent.click(screen.getByText('Advanced'))
 }
 
 it.each([

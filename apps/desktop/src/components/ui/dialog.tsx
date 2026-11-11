@@ -143,7 +143,11 @@ function DialogContent({
   function handleFocusCapture(event: React.FocusEvent<HTMLDivElement>) {
     // React autoFocus runs before Radix's open autofocus event.
     const previous = event.relatedTarget
-    if (previous instanceof HTMLElement && !event.currentTarget.contains(previous) && previous.closest('[data-page-surface]')) {
+    if (
+      previous instanceof HTMLElement &&
+      !event.currentTarget.contains(previous) &&
+      previous.closest('[data-page-surface]')
+    ) {
       pageOpener.current = previous
     }
     onFocusCapture?.(event)
@@ -218,7 +222,7 @@ function DialogContent({
             <div className="relative z-10 overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
               <div
                 className={cn(
-                  'grid max-h-[calc(85vh-5rem)] min-h-0 grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto p-4',
+                  'grid max-h-[calc(85vh-5rem)] min-h-0 grid-cols-[minmax(0,1fr)] gap-[var(--dialog-body-gap,0.75rem)] overflow-y-auto p-[var(--dialog-body-padding,1rem)]',
                   bodyClassName
                 )}
               >
@@ -278,7 +282,7 @@ function DialogContent({
               scrollbar that clips the content instead of truncating it. */}
           <div
             className={cn(
-              'grid min-h-0 grid-cols-[minmax(0,1fr)] gap-3 overflow-y-auto rounded-[inherit] p-4',
+              'grid min-h-0 grid-cols-[minmax(0,1fr)] gap-[var(--dialog-body-gap,0.75rem)] overflow-y-auto rounded-[inherit] p-[var(--dialog-body-padding,1rem)]',
               bodyClassName
             )}
           >

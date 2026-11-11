@@ -642,7 +642,8 @@ export const PluginsTab = memo(function PluginsTab({
   scopeLabel,
   query,
   onQueryChange,
-  agentControls = true
+  agentControls = true,
+  agentLayout = false
 }: {
   profile: ProfileScope
   query?: string
@@ -652,6 +653,7 @@ export const PluginsTab = memo(function PluginsTab({
   /** Display name of the selected profile for the Agent half label. */
   scopeLabel?: string
   agentControls?: boolean
+  agentLayout?: boolean
 }) {
   const { t } = useI18n()
   const owner = useSettingsOwner()
@@ -869,6 +871,7 @@ export const PluginsTab = memo(function PluginsTab({
 
   return (
     <CatalogBrowser
+      agentLayout={agentLayout}
       headerActions={<PluginActions profile={profile} />}
       installedEntries={installedEntries}
       installedPending={status !== 'ready' || !ownsList}

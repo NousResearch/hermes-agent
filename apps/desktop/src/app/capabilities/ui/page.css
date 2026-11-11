@@ -40,3 +40,111 @@
     padding-inline: 12px;
   }
 }
+
+/* Agent editors keep their full catalog actions in compact, owner-scoped lists. */
+.agent-capability-list {
+  display: grid;
+  align-content: start;
+  gap: 32px;
+  min-width: 0;
+}
+
+.agent-capability-list.capabilities-scroll {
+  overflow: visible;
+  scrollbar-gutter: auto;
+}
+
+.agent-capability-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 0.5px solid var(--portal-brand-blue);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--portal-brand-blue) 10%, transparent);
+}
+
+.agent-capability-banner p {
+  flex: 1 1 16rem;
+  color: var(--ui-text-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.agent-capability-list > section > h3,
+.agent-capability-connectors .catalog-section-heading h2 {
+  margin-bottom: 16px;
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.1;
+}
+
+.agent-capability-rows,
+.agent-capability-connectors .capabilities-sections > section > .grid {
+  border: 1px solid var(--ui-stroke-tertiary);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--ui-base) 2%, transparent);
+}
+
+.agent-capability-rows > div {
+  padding: 12px 16px;
+}
+
+.agent-capability-row {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  gap: 16px;
+}
+
+.agent-capability-entry {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 4px;
+  text-align: start;
+}
+
+.agent-capability-entry > span:first-child {
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.agent-capability-entry > span + span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--ui-text-tertiary);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.agent-capability-entry:focus-visible {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: 3px;
+}
+
+.agent-capability-connectors .capabilities-sections > section > .grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+
+.agent-capability-connectors [data-slot='connector-row-card'] {
+  min-height: 72px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 12px 16px;
+}
+
+.agent-capability-connectors [data-slot='connector-row-card']:hover {
+  background: var(--chrome-action-hover);
+}
+
+.agent-capability-connectors .catalog-section-heading {
+  padding-inline: 0;
+}

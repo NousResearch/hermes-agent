@@ -328,6 +328,18 @@ class _CommandSegments:
         return writes
 
     @functools.cached_property
+    def tail_follows_after(self) -> list:
+        """A data-only server mention must not excuse a later foreground log follower."""
+        follows = [False] * len(self.texts)
+        for index in range(len(self.texts) - 2, -1, -1):
+            next_seg = self.parsed[index + 1]
+            follows[index] = follows[index + 1] or bool(
+                next_seg is not None and next_seg[0] == "tail"
+                and _has_flag(next_seg[1], "fF", ("--follow",))
+            )
+        return follows
+
+    @functools.cached_property
     def harmless_after(self) -> list:
         """Per segment: every later segment is empty, a data command, or returns promptly."""
         harmless = [True] * len(self.texts)
@@ -348,7 +360,7 @@ class _CommandSegments:
             # It returns at once, which helps only if nothing after it holds the call open
             # (`up -d && docker compose logs -f`, `… && npm test`).
             return self.harmless_after[index]
-        if not self.is_data[index] or self.piped_to_runner[index]:
+        if not self.is_data[index] or self.piped_to_runner[index] or self.tail_follows_after[index]:
             return False
         # Text written to a file can be run by what follows (`echo npm run dev > x.sh; sh x.sh`).
         return not self.writes_a_file[index] or self.harmless_after[index]

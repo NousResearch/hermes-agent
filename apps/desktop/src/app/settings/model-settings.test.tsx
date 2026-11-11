@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
+import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConfigApi from '@/api/config'
@@ -134,6 +134,54 @@ describe('ModelSettings profile scope', () => {
     expect(getAuxiliaryModels).toHaveBeenCalledWith('research')
     expect(getMoaModels).toHaveBeenCalledWith('research')
   })
+})
+
+describe('ModelSettings auxiliary deep links', () => {
+  it.each([true, false])(
+    'reveals and focuses Vision before consuming its link (agent layout: %s)',
+    async agentLayout => {
+      const auxiliary = Promise.withResolvers<{
+        main: { provider: string; model: string }
+        tasks: { task: string; provider: string; model: string; base_url: string }[]
+      }>()
+
+      getAuxiliaryModels.mockReturnValueOnce(auxiliary.promise)
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+      function Location() {
+        return <output data-testid="route">{useLocation().search}</output>
+      }
+
+      render(
+        <MemoryRouter initialEntries={['/settings?tab=config:model&aux=vision&panel=settings']}>
+          <QueryClientProvider client={client}>
+            <ModelSettings advancedOpen={false} agentLayout={agentLayout} />
+            <Location />
+          </QueryClientProvider>
+        </MemoryRouter>
+      )
+
+      expect(screen.getByTestId('route').textContent).toContain('aux=vision')
+      expect(window.document.getElementById('aux-task-vision')).toBeNull()
+
+      await act(async () => {
+        auxiliary.resolve({
+          main: { provider: 'nous', model: 'hermes-4' },
+          tasks: [{ task: 'vision', provider: 'auto', model: '', base_url: '' }]
+        })
+      })
+
+      await waitFor(() => expect(screen.getByTestId('route').textContent).not.toContain('aux='))
+      const vision = window.document.getElementById('aux-task-vision')
+
+      expect(vision).not.toBeNull()
+      expect(window.document.activeElement).toBe(vision)
+      expect(vision?.closest('details')?.open).toBe(agentLayout ? true : undefined)
+      expect(screen.getByTestId('route').textContent).toContain('panel=settings')
+      expect(setModelAssignment).not.toHaveBeenCalled()
+      client.clear()
+    }
+  )
 })
 
 describe('ModelSettings', () => {

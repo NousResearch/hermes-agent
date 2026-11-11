@@ -43,8 +43,8 @@ export function RenameProfileDialog({
   onClose: () => void
   onRenamed?: (name: string) => Promise<void> | void
   open: boolean
-  /** Explicit (connection, profile) owner for a remote-gateway profile: the
-   *  rename executes there and no local backend is retired. */
+  /** Explicit (connection, profile) owner. Only a local rename retires local
+   *  gateways and migrates local ownership state. */
   scope?: ProfileScope
 }) {
   const { t } = useI18n()
@@ -86,13 +86,14 @@ export function RenameProfileDialog({
 
     setStatus('saving')
     setError(null)
+    const local = scope == null || (typeof scope === 'object' && scope.connectionId === 'local')
 
     try {
       // A retained renderer socket for the old name would treat the rename's
       // backend teardown as a transient drop and redial, resurrecting the
       // old-name backend whose ensure_hermes_home() recreates the directory
       // the rename just moved (same class as the delete path, #88638).
-      if (!isDefault && scope == null) {
+      if (!isDefault && local) {
         retireLocalProfileGateways(currentName)
       }
 
@@ -101,7 +102,7 @@ export function RenameProfileDialog({
       // The sessions moved with the directory; the tabs, cached tails and
       // remembered ids keyed by the old name must follow, or every open
       // dials a backend that no longer exists (#111868).
-      if (!isDefault && scope == null) {
+      if (!isDefault && local) {
         migrateTilesForProfile(currentName, trimmed)
       } else if (!isDefault && scope && typeof scope === 'object') {
         migrateAgentSidebarPreferences({ connectionId: scope.connectionId ?? null, profile: currentName }, trimmed)

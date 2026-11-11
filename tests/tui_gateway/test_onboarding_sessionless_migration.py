@@ -9,6 +9,7 @@ import pytest
 
 from agent import onboarding_record
 from agent.onboarding_flow import End, Facts, new_record
+from agent.onboarding_session import onboarding_chat_toolsets
 from hermes_cli.onboarding_run import set_run
 from tests.waiting import wait_until
 from tui_gateway import server, server_requests
@@ -37,7 +38,11 @@ def _call(method: str, params: dict | None = None) -> dict:
     return response["result"]
 
 
-def test_state_retires_legacy_records_without_rewriting_compressed_history(db):
+def test_state_retires_legacy_records_without_rewriting_compressed_history(db, monkeypatch):
+    events = []
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda kind, payload: events.append((kind, payload)))
+    config = Path(server._hermes_home) / "config.yaml"
+    config_before = config.read_bytes()
     db.append_message("onb", "user", "Keep my conversation")
     db.patch_session_model_config("onb", {"codex_thread_id": "segment-only"})
     db.publish_compression_child(
@@ -47,6 +52,7 @@ def test_state_retires_legacy_records_without_rewriting_compressed_history(db):
     assert onboarding_record.load(db, "child") == onboarding_record.load(db, "onb")
     assert db.get_session_model_config_value("child", "codex_thread_id") is None
     history = {sid: db.get_messages(sid) for sid in ("onb", "child")}
+    toolsets = onboarding_chat_toolsets(["web"], db, "child")
 
     classic = server.handle_request({"jsonrpc": "2.0", "id": 4, "method": "onboarding.state", "params": {}})
     assert "result" in classic, classic
@@ -57,11 +63,35 @@ def test_state_retires_legacy_records_without_rewriting_compressed_history(db):
     assert onboarding_record.active_session_id(db) is None
     assert {sid: db.get_messages(sid) for sid in history} == history
     assert all(db.get_session(sid) is not None for sid in history)
+    ended = [("onboarding.ended", {"run_id": "legacy", "stored_session_id": "child", "outcome": "replaced"})]
+    assert events == ended
+    assert onboarding_chat_toolsets(["web"], db, "child") == toolsets
+    assert db.get_session_model_config_value("onb", "codex_thread_id") == "segment-only"
+    assert config.read_bytes() == config_before
 
     # Repeated reads and a late legacy agent completion cannot finish the new guide.
     onboarding_record.advance(db, "child", End())
     assert _call("onboarding.state")["run"] is True
     assert {sid: db.get_messages(sid) for sid in history} == history
+    assert events == ended
+    assert config.read_bytes() == config_before
+
+
+def test_retirement_marks_already_ended_records_without_reannouncing_or_closing_guide(db, monkeypatch):
+    onboarding_record.advance(db, "onb", End("skipped"))
+    set_run(True, sessionless=True, step="model", restart=True)
+    config = Path(server._hermes_home) / "config.yaml"
+    config_before = config.read_bytes()
+    events = []
+    monkeypatch.setattr(server, "_broadcast_global_event", lambda kind, payload: events.append((kind, payload)))
+
+    for _ in range(2):
+        assert _call("onboarding.state")["run"] is True
+        record = onboarding_record.load(db, "onb")
+        assert record["sessionless"] is True
+        assert record["ended_by"] == "skipped"
+    assert events == []
+    assert config.read_bytes() == config_before
 
 
 def test_state_withdraws_a_waiting_legacy_card(db, monkeypatch):

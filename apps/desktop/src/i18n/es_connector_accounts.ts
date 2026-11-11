@@ -14,7 +14,8 @@ export const esConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   renameGone: 'Esa cuenta ya no existe. Se quitó o una reconexión la sustituyó.',
   remove: 'Quitar',
   removeTitle: (app: string, name: string) => `¿Quitar la cuenta ${name} de ${app}?`,
-  removeBody: 'Hermes deja de actuar con esta cuenta. Tus otras cuentas siguen conectadas.',
+  removeBody:
+    'Esto elimina la cuenta conectada para todos los agentes que usan la misma cuenta de Nous, no solo para este agente. Tus otras cuentas siguen conectadas.',
   retiredCount: (count: number) => `${count} retirada${count === 1 ? '' : 's'}`,
   status: {
     expired: 'Acceso caducado',

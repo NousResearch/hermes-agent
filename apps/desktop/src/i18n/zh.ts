@@ -2028,9 +2028,10 @@ export const zhOverrides = {
   skillDeepLink: zhSkillDeepLink,
   skills: {
     inventoryScopeHint:
-      '下方的安装项和账户属于所选智能体及机器，并非所有智能体。启用状态和覆盖设置在智能体设置中管理。',
+      '安装项适用于所选智能体及机器。各智能体的工具启用状态和覆盖设置在智能体设置中管理。使用同一 Nous 账户的智能体会共享托管连接器账户。',
     agentScopeHint: '更改仅适用于此智能体。现有对话会保留当前工具。',
-    toolSecretsHint: '此智能体的 API 密钥、端点和提供商。凭据不会与其他智能体共享。',
+    toolSecretsHint:
+      '此智能体使用的 API 密钥、端点和提供商。提供商登录凭据可能在智能体之间共享；使用同一 Nous 账户的智能体会共享托管连接器账户。',
     openAgentSettings: '智能体设置',
     openToolLibrary: '浏览工具库',
     remotePluginHint: '在此智能体所属的机器上打开它以管理插件。插件安装使用已连接的机器。',

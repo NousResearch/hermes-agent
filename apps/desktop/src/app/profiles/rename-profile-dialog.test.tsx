@@ -32,30 +32,31 @@ vi.mock('@/store/session-states', () => ({
   migrateTilesForProfile: vi.fn()
 }))
 
-it('retires the old-name local gateways before issuing the rename', async () => {
-  const order: string[] = []
+it.each([undefined, { connectionId: 'local', profile: 'selena' }])(
+  'retires old local gateways before renaming and migrates ownership (scope: %j)',
+  async scope => {
+    const order: string[] = []
 
-  vi.mocked(retireLocalProfileGateways).mockImplementationOnce(() => {
-    order.push('retire')
-  })
-  vi.mocked(renameProfile).mockImplementationOnce(async () => {
-    order.push('rename')
+    vi.mocked(retireLocalProfileGateways).mockImplementationOnce(() => {
+      order.push('retire')
+    })
+    vi.mocked(renameProfile).mockImplementationOnce(async () => {
+      order.push('rename')
 
-    return { name: 'renamed', ok: true, path: '/x' }
-  })
+      return { name: 'renamed', ok: true, path: '/x' }
+    })
 
-  render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open />)
+    render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open scope={scope} />)
 
-  fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'renamed' } })
-  fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
+    fireEvent.change(screen.getByLabelText(/new name/i), { target: { value: 'renamed' } })
+    fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
 
-  await waitFor(() => expect(renameProfile).toHaveBeenCalledWith('selena', 'renamed'))
-  expect(retireLocalProfileGateways).toHaveBeenCalledWith('selena')
-  expect(order).toEqual(['retire', 'rename'])
-  // The sessions moved with the directory: tabs / cached tails / remembered ids keyed by the
-  // old name follow, else every restored tab 404s against a backend that no longer exists (#111868).
-  expect(migrateTilesForProfile).toHaveBeenCalledWith('selena', 'renamed')
-})
+    await waitFor(() => expect(renameProfile).toHaveBeenCalledWith('selena', 'renamed', ...(scope ? [scope] : [])))
+    expect(retireLocalProfileGateways).toHaveBeenCalledWith('selena')
+    expect(order).toEqual(['retire', 'rename'])
+    expect(migrateTilesForProfile).toHaveBeenCalledWith('selena', 'renamed')
+  }
+)
 
 it('does not retire gateways when validation rejects the submit', async () => {
   render(<RenameProfileDialog currentName="selena" onClose={vi.fn()} open />)

@@ -171,7 +171,8 @@ export const esOverrides = {
     dialog: {
       disconnect: 'Desconectar',
       disconnectTitle: (name: string) => `¿Desconectar ${name}?`,
-      disconnectBody: 'Hermes deja de actuar con esta cuenta. Puedes volver a conectarla cuando quieras.',
+      disconnectBody:
+        'Esto desconecta la cuenta para todos los agentes que usan la misma cuenta de Nous, no solo para este agente. Puedes volver a conectarla cuando quieras.',
       menuRefreshTools: 'Actualizar herramientas',
       moreActions: 'Más acciones',
       removeServerTitle: (name: string) => `¿Quitar ${name}?`,
@@ -2420,11 +2421,11 @@ export const esOverrides = {
   },
   skills: {
     inventoryScopeHint:
-      'Las instalaciones y cuentas de abajo pertenecen al agente y a la máquina seleccionados, no a todos los agentes. La activación y las personalizaciones se gestionan en los ajustes del agente.',
+      'Las instalaciones corresponden al agente y a la máquina seleccionados. La activación de herramientas y las personalizaciones específicas de cada agente se gestionan en sus ajustes. Las cuentas de conectores alojados se comparten entre los agentes que usan la misma cuenta de Nous.',
     agentScopeHint:
       'Los cambios solo se aplican a este agente. Las conversaciones existentes conservan sus herramientas actuales.',
     toolSecretsHint:
-      'Claves API, endpoints y proveedores de este agente. Las credenciales no se comparten con otros agentes.',
+      'Claves API, endpoints y proveedores que usa este agente. Los inicios de sesión de proveedores pueden compartirse entre agentes; las cuentas de conectores alojados se comparten entre los agentes que usan la misma cuenta de Nous.',
     openAgentSettings: 'Ajustes del agente',
     openToolLibrary: 'Explorar la biblioteca de herramientas',
     remotePluginHint:

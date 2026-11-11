@@ -15,14 +15,15 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { RootTooltipProvider } from '@/components/ui/tooltip'
 import { registry } from '@/contrib/registry'
+import type { SessionInfo } from '@/hermes'
 import { $interfaceMode } from '@/store/interface-mode'
 import { $rightRailActiveTabId } from '@/store/layout'
-import { $previewTabs, toggleBrowserTab } from '@/store/preview'
-import { toggleReview } from '@/store/review'
+import { $previewTabs } from '@/store/preview'
+import { $reviewScopeCwd, $reviewScopeTarget, closeReview } from '@/store/review'
+import { $currentCwd, $selectedStoredSessionId, setSessions } from '@/store/session'
 import { $agentSidebarChoice } from '@/store/simplified-agent-mode'
 
 import { usePortalRedesign } from '../redesign/use-portal-redesign'
-import { toggleTerminalPane } from '../right-sidebar/terminal/reveal-focus'
 
 import { DeveloperRail } from './developer-rail'
 
@@ -31,10 +32,6 @@ vi.mock('../redesign/use-portal-redesign', () => ({ usePortalRedesign: vi.fn(() 
 vi.mock('@/store/preview', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   toggleBrowserTab: vi.fn()
-}))
-vi.mock('@/store/review', async importOriginal => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  toggleReview: vi.fn()
 }))
 vi.mock('../right-sidebar/terminal/reveal-focus', () => ({ toggleTerminalPane: vi.fn() }))
 
@@ -57,6 +54,10 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  closeReview()
+  setSessions([])
+  $selectedStoredSessionId.set(null)
+  $currentCwd.set('')
   $previewTabs.set([])
   $rightRailActiveTabId.set(null)
   disposers.splice(0).forEach(dispose => dispose())
@@ -90,14 +91,34 @@ it('reflects actual pane visibility and reveals a minimized pane on the first cl
   expect(files.getAttribute('aria-pressed')).toBe('false')
 })
 
-it('uses the existing terminal, review and preview actions without passing click events as scope', () => {
+it('reviews the focused tile worktree after focus enters chrome, then returns to primary scope', () => {
+  setSessions([
+    { id: 'primary', cwd: '/repo-primary' },
+    { id: 'secondary', cwd: '/repo-secondary' }
+  ] as SessionInfo[])
+  $selectedStoredSessionId.set('primary')
+  $currentCwd.set('/repo-primary')
+  $layoutTree.set(
+    split('row', [
+      group(['workspace'], { id: 'main' }),
+      group(['session-tile:secondary'], { id: 'tile' }),
+      group(['files'], { id: 'tools' })
+    ])
+  )
+  noteActiveTreeGroup('tile')
   mount()
-  fireEvent.click(screen.getByRole('button', { name: 'Terminal' }))
+  act(() => noteActiveTreeGroup('tools'))
   fireEvent.click(screen.getByRole('button', { name: 'Review' }))
-  fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
-  expect(toggleTerminalPane).toHaveBeenCalledWith()
-  expect(toggleReview).toHaveBeenCalledWith()
-  expect(toggleBrowserTab).toHaveBeenCalledWith()
+  expect($reviewScopeCwd.get()).toBe('/repo-secondary')
+  expect($reviewScopeTarget.get()).toBe('tile:secondary')
+
+  act(() => {
+    closeReview()
+    noteActiveTreeGroup('main')
+  })
+  fireEvent.click(screen.getByRole('button', { name: 'Review' }))
+  expect($reviewScopeCwd.get()).toBeNull()
+  expect($reviewScopeTarget.get()).toBe('main')
 })
 
 it('reads the visible overlay rather than docked state on narrow windows', () => {

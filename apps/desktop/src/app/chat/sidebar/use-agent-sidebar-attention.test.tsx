@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import type { CronJob } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $clarifyRequests } from '@/store/clarify'
 import { beginCronJobsRequest, commitCronJobsRequest, setCronJobs } from '@/store/cron'
@@ -146,6 +147,93 @@ it('includes schedule runs, scoped schedule failures and offscreen background wo
     $cronSessions.set([])
     $liveWorkRoster.set({})
   })
+  expect(result.current.size).toBe(0)
+})
+
+it('attributes aggregate schedules to each profile without crossing explicit machine scopes', () => {
+  const roster = [
+    ...agents,
+    { ...agents[1], id: 'other', targetProfile: 'other' },
+    { ...agents[0], id: 'local', connectionId: null }
+  ]
+
+  const running: CronJob = {
+    id: 'research-run',
+    enabled: true,
+    profile: 'research',
+    latest_execution: { id: 'attempt', status: 'running', claimed_at: '2026-11-10T09:00:00Z' }
+  }
+
+  const failed: CronJob = {
+    id: 'other-run',
+    enabled: true,
+    profile: 'other',
+    latest_execution: { id: 'failed-attempt', status: 'failed' }
+  }
+
+  const { result } = renderHook(() => useAgentSidebarAttention(roster, []))
+
+  act(() => commitCronJobsRequest(beginCronJobsRequest('gateway-b\u0000all'), [running, failed]))
+  expect([...result.current.keys()].sort()).toEqual(['gateway-b', 'other'])
+  expect(result.current.get('gateway-b')).toEqual({ kind: 'running', since: Date.parse('2026-11-10T09:00:00Z') })
+  expect(result.current.get('other')).toEqual({ kind: 'failed' })
+
+  // A concrete request remains authoritative even if a row's profile is absent or different.
+  act(() => commitCronJobsRequest(beginCronJobsRequest('gateway-b\u0000research'), [failed]))
+  expect([...result.current.entries()]).toEqual([['gateway-b', { kind: 'failed' }]])
+
+  // An explicit local snapshot must not borrow the currently viewed remote connection.
+  act(() => commitCronJobsRequest(beginCronJobsRequest('\u0000all'), [running]))
+  expect([...result.current.keys()]).toEqual(['local'])
+  act(() => commitCronJobsRequest(beginCronJobsRequest('gateway-b\u0000all'), [{ ...failed, profile: undefined }]))
+  expect(result.current.size).toBe(0)
+  act(() => setCronJobs([failed]))
+  expect(result.current.size).toBe(0)
+})
+
+it('alerts on execution or delivery failure, but lets the current run supersede stale failures', () => {
+  const { result } = renderHook(() => useAgentSidebarAttention(agents, []))
+  const job: CronJob = { id: 'schedule', enabled: true, profile: 'research' }
+  const completed = { id: 'attempt', status: 'completed' }
+
+  const failures: Partial<CronJob>[] = [
+    { latest_execution: { id: 'attempt', status: 'failed' } },
+    { latest_execution: { ...completed, delivery_outcome: 'failed' } },
+    { latest_execution: completed, last_status: 'delivery_failed' },
+    { latest_execution: completed, last_delivery_error: 'Delivery refused' },
+    { last_status: 'error' },
+    { last_error: 'Execution failed' },
+    { last_delivery_error: 'Delivery refused' }
+  ]
+
+  for (const failure of failures) {
+    act(() => commitCronJobsRequest(beginCronJobsRequest('gateway-b\u0000all'), [{ ...job, ...failure }]))
+    expect([...result.current.entries()]).toEqual([['gateway-b', { kind: 'failed' }]])
+  }
+
+  const stale = {
+    last_status: 'delivery_failed',
+    last_error: 'Previous failure',
+    last_delivery_error: 'Previous delivery'
+  }
+
+  const running = { id: 'current', status: 'running', claimed_at: '2026-11-10T10:00:00Z' }
+
+  for (const execution of [
+    { latest_execution: running },
+    { latest_execution: { id: 'refused', status: 'failed' }, live_execution: running }
+  ]) {
+    act(() => commitCronJobsRequest(beginCronJobsRequest('gateway-b\u0000all'), [{ ...job, ...stale, ...execution }]))
+    expect([...result.current.entries()]).toEqual([
+      ['gateway-b', { kind: 'running', since: Date.parse(running.claimed_at) }]
+    ])
+  }
+
+  act(() =>
+    commitCronJobsRequest(beginCronJobsRequest('gateway-b\u0000all'), [
+      { ...job, ...stale, latest_execution: { ...completed, delivery_outcome: 'delivered' } }
+    ])
+  )
   expect(result.current.size).toBe(0)
 })
 

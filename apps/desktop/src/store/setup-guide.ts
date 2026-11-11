@@ -36,16 +36,19 @@ $simplifiedAgentMode.listen(() => {
   generation += 1
 })
 
-computed([$onboardingPhase, $simplifiedAgentMode, $guideRecovery], (phase, redesign, recovery) =>
-  redesign && (phase === 'shown' || recovery !== null)
+computed(
+  [$onboardingPhase, $simplifiedAgentMode, $guideRecovery],
+  (phase, redesign, recovery) => redesign && (phase === 'shown' || recovery !== null)
 ).subscribe(active => setOnboardingSurfaceActive('setup-guide', active))
 
 function show(state: OnboardingRunStateResult, request: OnboardingRequest, scope: OnboardingScope): void {
   $guideRecovery.set(null)
   const previousScope = $guideScope.get()
+
   if (previousScope?.connectionId !== scope.connectionId || previousScope?.profile !== scope.profile) {
     $guideSuspended.set(false)
   }
+
   $guideRequest.set(request)
   $guideScope.set(scope)
   $guideStep.set(state.step ?? 'preferences')
@@ -85,10 +88,7 @@ function offerRecovery(error: unknown, scope: OnboardingScope, retry: () => Prom
   })
 }
 
-export async function startOnboarding(
-  request: OnboardingRequest,
-  scope = captureOnboardingScope()
-): Promise<boolean> {
+export async function startOnboarding(request: OnboardingRequest, scope = captureOnboardingScope()): Promise<boolean> {
   const current = ++generation
   const pinned = pinRequest(request, scope)
 
@@ -108,6 +108,7 @@ export async function startOnboarding(
     if (current !== generation || !$simplifiedAgentMode.get() || !state.run) {
       return false
     }
+
     $guideSuspended.set(false)
     show(state, pinned, scope)
     markOnboardingDecided()
@@ -139,6 +140,7 @@ export async function saveGuideStep(step: GuideStep): Promise<void> {
   if (!request) {
     return
   }
+
   const current = ++generation
   const state = await request<OnboardingRunStateResult>('onboarding.set_run', { run: true, step })
 
@@ -169,12 +171,14 @@ export async function finishOnboarding(outcome: 'done' | 'skipped'): Promise<boo
   if (!request) {
     return false
   }
+
   const current = ++generation
   await request('onboarding.set_run', { run: false, mark_profile_offered: true })
 
   if (current !== generation || !$simplifiedAgentMode.get()) {
     return false
   }
+
   settleGuide(outcome)
 
   return true
@@ -186,6 +190,7 @@ export async function reconcileOnboarding(): Promise<void> {
   if (!request || !$simplifiedAgentMode.get() || $onboardingPhase.get() !== 'shown') {
     return
   }
+
   const current = generation
   const state = await request<OnboardingRunStateResult>('onboarding.state')
 
@@ -206,15 +211,13 @@ export function decideOnboarding(request: OnboardingRequest, revisit = false): P
   if (revisit) {
     decision = null
   }
+
   decision ??= readAndStart(request)
 
   return decision
 }
 
-async function readAndStart(
-  request: OnboardingRequest,
-  scope = captureOnboardingScope()
-): Promise<void> {
+async function readAndStart(request: OnboardingRequest, scope = captureOnboardingScope()): Promise<void> {
   const current = ++generation
   const pinned = pinRequest(request, scope)
   let released = false
@@ -246,22 +249,25 @@ async function readAndStart(
     if (released || current !== generation || !$simplifiedAgentMode.get()) {
       return
     }
+
     $guideRecovery.set(null)
 
     if (!state.run) {
-      if ($onboardingPhase.get() === 'shown') {
+      // Only a persisted sessionless guide owns the welcome; run=false alone may predate it.
+      if (state.started || $onboardingPhase.get() === 'shown') {
         settleGuide('done')
       }
+
       return
     }
+
     if (!state.eligible && !state.started) {
       return
     }
+
     // Resuming is read-only: a peer may have advanced since this snapshot.
     // Only a fresh guide needs the initial durable latch.
-    const saved = state.started
-      ? state
-      : await pinned<OnboardingRunStateResult>('onboarding.set_run', { run: true })
+    const saved = state.started ? state : await pinned<OnboardingRunStateResult>('onboarding.set_run', { run: true })
 
     if (!released && current === generation && $simplifiedAgentMode.get() && saved.run) {
       show(saved, pinned, scope)

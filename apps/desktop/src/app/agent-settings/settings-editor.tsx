@@ -31,8 +31,13 @@ import {
 } from './settings-routes'
 import { AgentSchedulesSettings } from './settings-schedules'
 
+interface AgentSettingsEditorProps extends SettingsPageProps {
+  owner: AgentSettingsOwner
+  onProfileRenamed: (name: string) => Promise<void>
+}
+
 /** Mounted only by the redesign's owner gate. All embedded controls share that immutable owner. */
-export function AgentSettingsEditor(props: SettingsPageProps & { owner: AgentSettingsOwner }) {
+export function AgentSettingsEditor(props: AgentSettingsEditorProps) {
   const owner = useMemo(
     () => ({ connectionId: props.owner.connectionId ?? 'local', profile: props.owner.profile }),
     [props.owner.connectionId, props.owner.profile]
@@ -51,8 +56,9 @@ function AgentSettingsEditorContent({
   owner,
   onClose,
   onConfigSaved,
-  onMainModelChanged
-}: SettingsPageProps & { owner: AgentSettingsOwner }) {
+  onMainModelChanged,
+  onProfileRenamed
+}: AgentSettingsEditorProps) {
   const { t } = useI18n()
   const c = useAgentSettingsEditorCopy()
   const a = useAgentSettingsCopy()
@@ -129,7 +135,7 @@ function AgentSettingsEditorContent({
           {section === 'model' && <p>{c.modelDescription}</p>}
         </header>
         {!section && <p role="alert">{c.invalid}</p>}
-        {section === 'general' && <AgentGeneralSettings owner={owner} />}
+        {section === 'general' && <AgentGeneralSettings onProfileRenamed={onProfileRenamed} owner={owner} />}
         {section === 'instructions' && <AgentInstructionsSettings owner={owner} />}
         {section === 'limits' && (
           <div className="agent-settings-subpages">

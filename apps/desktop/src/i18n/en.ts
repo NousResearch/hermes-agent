@@ -183,7 +183,8 @@ export const en: Translations = {
     dialog: {
       disconnect: 'Disconnect',
       disconnectTitle: (name: string) => `Disconnect ${name}?`,
-      disconnectBody: 'The agent stops acting as this account. You can connect again at any time.',
+      disconnectBody:
+        'This disconnects the account for all agents using the same Nous account, not just this agent. You can connect again at any time.',
       menuRefreshTools: 'Refresh tools',
       moreActions: 'More actions',
       removeServerTitle: (name: string) => `Remove ${name}?`,
@@ -2064,9 +2065,10 @@ export const en: Translations = {
   skillDeepLink: enSkillDeepLink,
   skills: {
     inventoryScopeHint:
-      'Installations and accounts below belong to the selected agent and machine, not all agents. Enablement and overrides live in Agent settings.',
+      'Installations are scoped to the selected agent and machine. Agent-specific tool enablement and overrides live in Agent settings. Hosted connector accounts are shared by agents using the same Nous account.',
     agentScopeHint: 'Changes apply only to this agent. Existing conversations keep their current tools.',
-    toolSecretsHint: 'API keys, endpoints and providers for this agent. Credentials are not shared with other agents.',
+    toolSecretsHint:
+      'API keys, endpoints and providers used by this agent. Provider sign-ins can be shared across agents; hosted connector accounts are shared by agents using the same Nous account.',
     openAgentSettings: 'Agent settings',
     openToolLibrary: 'Browse the tool library',
     remotePluginHint:

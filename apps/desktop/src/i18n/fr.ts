@@ -171,7 +171,8 @@ export const frOverrides = {
     dialog: {
       disconnect: 'Déconnecter',
       disconnectTitle: (name: string) => `Déconnecter ${name} ?`,
-      disconnectBody: 'L’agent cesse d’agir avec ce compte. Vous pouvez vous reconnecter à tout moment.',
+      disconnectBody:
+        'Ce compte sera déconnecté pour tous les agents utilisant le même compte Nous, pas seulement pour cet agent. Vous pourrez le reconnecter à tout moment.',
       menuRefreshTools: 'Actualiser les outils',
       moreActions: "Plus d'actions",
       removeServerTitle: (name: string) => `Supprimer ${name} ?`,
@@ -2436,11 +2437,11 @@ export const frOverrides = {
   },
   skills: {
     inventoryScopeHint:
-      'Les installations et les comptes ci-dessous appartiennent à l’agent et à l’ordinateur sélectionnés, pas à tous les agents. L’activation et les réglages spécifiques se trouvent dans les paramètres de l’agent.',
+      'Les installations concernent l’agent et l’ordinateur sélectionnés. L’activation des outils et les réglages propres à chaque agent se gèrent dans ses paramètres. Les comptes de connecteurs hébergés sont partagés par les agents utilisant le même compte Nous.',
     agentScopeHint:
       'Les modifications s’appliquent uniquement à cet agent. Les conversations existantes conservent leurs outils actuels.',
     toolSecretsHint:
-      'Clés API, points de terminaison et fournisseurs pour cet agent. Les identifiants ne sont pas partagés avec les autres agents.',
+      'Clés API, points de terminaison et fournisseurs utilisés par cet agent. Les connexions aux fournisseurs peuvent être partagées entre agents ; les comptes de connecteurs hébergés sont partagés par les agents utilisant le même compte Nous.',
     openAgentSettings: 'Paramètres de l’agent',
     openToolLibrary: 'Parcourir la bibliothèque d’outils',
     remotePluginHint:

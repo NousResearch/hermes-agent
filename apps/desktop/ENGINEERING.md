@@ -25,6 +25,17 @@ rename via `migrateTilesForProfile(old, new)` (`store/session-states.ts`), the
 rename sibling of `dropTilesForProfile`. Add any new profile-keyed localStorage
 family to BOTH, or a rename leaves it pointing at a backend that no longer
 exists ("Couldn't open this session" on every restore).
+Explicitly scoped local renames follow that same migration path; supplying a
+scope object does not make a local agent remote.
+The settings rename continuation follows the visible owner route, not a
+history-entry key: state-only replacements must not strand the old name.
+Leaving that destination or unmounting still cancels the continuation.
+
+Deletion is scoped by machine and profile as well as stored ID. A copied ID
+on another owner must not clear the active conversation's runtime, queues,
+tiles, or cached history, including when navigation changes during the request.
+Failed deletions restore rows to their canonical sidebar slice without
+overwriting newer rows or restoring messaging/schedule chats into recents.
 
 When an id is verifiably gone anyway (`goneSessionVerdict` → `'draft'`), the
 window drops to a fresh draft without toasting or looping — and the unsent

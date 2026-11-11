@@ -15,7 +15,8 @@ export const deConnectorAccounts: NonNullable<TranslationOverrides['connectorsPa
   renameGone: 'Dieses Konto gibt es nicht mehr. Es wurde entfernt oder durch eine neue Verbindung ersetzt.',
   remove: 'Entfernen',
   removeTitle: (app: string, name: string) => `Das ${app}-Konto ${name} entfernen?`,
-  removeBody: 'Hermes handelt nicht mehr über dieses Konto. Ihre anderen Konten bleiben verbunden.',
+  removeBody:
+    'Das verbundene Konto wird für alle Agenten entfernt, die dasselbe Nous-Konto verwenden, nicht nur für diesen Agenten. Ihre anderen Konten bleiben verbunden.',
   retiredCount: (count: number) => `${count} ersetzt`,
   status: {
     expired: 'Zugriff abgelaufen',

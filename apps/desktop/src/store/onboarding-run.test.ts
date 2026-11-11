@@ -102,6 +102,18 @@ describe('onboarding run', () => {
     expect($onboardingSurfaceClear.get()).toBe(true)
   })
 
+  it('releases a classic client when the sessionless guide retires its run', async () => {
+    const { request } = backend({ eligible: true, run: true })
+    await startOnboarding(request, resume, { ensureProfile })
+    expect(isOnboardingChat('rt-1')).toBe(true)
+
+    noteOnboardingEnded({ outcome: 'replaced', run_id: 'run-1', stored_session_id: 'st-1' })
+
+    expect($onboardingPhase.get()).toBe('skipped')
+    expect($onboardingSurfaceClear.get()).toBe(true)
+    expect(isOnboardingChat('rt-1')).toBe(false)
+  })
+
   it('frees the first-run surfaces in another chat mid-run and arms the end-of-onboarding wait', async () => {
     const { request } = backend({ eligible: true, run: true })
 

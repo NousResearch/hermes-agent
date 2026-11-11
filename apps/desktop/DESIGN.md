@@ -59,6 +59,8 @@ one-off at the call site.
   switches where the underlying tool is meant to persist.
   Activating a tool tab also restores its open state; hiding a stacked terminal
   must not leave a visible tab pointing at an inert shell.
+  Review follows the focused chat's worktree and sends agent-ship actions back
+  to that same conversation, including when focus moves into tool chrome.
 - **One action, one home.** A command may have keyboard, palette, and visible
   affordances, but they invoke the same action and state. Do not fork behavior
   per entry point.
@@ -126,11 +128,14 @@ History, and Settings tabs. Settings has its own grouped, agent-only navigation:
 184px navigation, 32px gap, and a 584px body at full width. Model selection,
 fallbacks, and collapsed Advanced controls share one page; provider setup stays
 available inside the model picker. Reuse the existing editors and save paths.
+Auxiliary-model deep links reveal enclosing Advanced disclosures before
+focusing the target or consuming the link. Activating a settings owner preserves
+the requested page rather than redirecting to a new chat.
 The overview header uses a 40px light Mona Sans title and the outline avatar.
 **Open chat** sits beside the action menu: duplicate, set default, hide/show in
 the chat list, copy the actual profile path, and a hint directing deletion to
 Settings → General. Menu rows have 44px targets. Disconnection warnings reflect
-configured, enabled channels with a real disconnected/error/failed status.
+the backend's actual failed/retrying/stopped states for configured, enabled channels.
 Overview cards use 1.25:1 columns with a 32px gap, 16px section-title spacing,
 50px rows, and 6px corners; narrow layouts collapse to one column.
 Global desktop settings remain available outside the agent editor. New agent
@@ -217,16 +222,21 @@ Redesigned setup is a sessionless preferences/model guide. It resumes from
 root `onboarding.run` / `onboarding.step`, retains a working provider, and offers
 the free model only when the backend reports eligibility. Finishing opens an
 ordinary draft; no setup transcript is created. Explicit sessionless migration
-retires legacy setup metadata/cards without deleting conversation history.
+retires legacy setup metadata/cards without deleting conversation history and
+broadcasts the end once so connected classic clients leave setup immediately.
 Resuming an existing guide is read-only; the first-start latch preserves newer
-peer progress and cannot reopen completed setup. Older runtimes show an explicit
+peer progress and cannot reopen completed setup. A completed/skipped guide with a
+persisted step stays settled after a fresh renderer launch; this does not
+acknowledge unrelated account-level model notices. Older runtimes show an explicit
 upgrade/retry offer rather than silently dropping setup or creating a setup chat.
 Local-model configuration releases the modal and leaves a **Resume setup** action.
 
 Global Capabilities is the inventory/catalog entry; agent settings owns
 enablement. Agent Tools groups On/Off switches and puts credentials/endpoints
-under Advanced. Installation and account APIs retain their actual
-profile/gateway ownership rather than implying machine-wide sharing.
+under Advanced. Installations and tool enablement retain their actual agent and
+machine scopes. Hosted connector accounts belong to the Nous identity: agents
+sharing that identity share those accounts, and removing one affects them all.
+Read-only command search must not replace an agent editor's writable inventory.
 
 Usage collection belongs to a consenting connection/profile, not merely the
 foreground UI. Changing scope revokes the old metrics binding immediately;

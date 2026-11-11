@@ -234,7 +234,7 @@ function collectUnreadAttention(
   }
 }
 
-function collectScheduleAttention(jobs: CronJob[], connectionId: string | null, claim: ClaimAttention): void {
+function collectScheduleAttention(jobs: CronJob[], claim: ClaimAttention): void {
   // Untagged snapshots cannot establish ownership. Fleet roster has no job status.
   const scope = getCronJobsSnapshotScope()
 
@@ -244,21 +244,36 @@ function collectScheduleAttention(jobs: CronJob[], connectionId: string | null, 
 
   const [snapshotConnection, snapshotProfile] = scope.split('\u0000')
 
-  const owner = agentSidebarKey({
-    connectionId: snapshotConnection || connectionId,
-    profile: snapshotProfile || 'default'
-  })
-
   for (const job of jobs) {
-    const execution = job.latest_execution
-    const failed = execution ? ['failed', 'delivery_failed'].includes(execution.status) : Boolean(job.last_error)
+    const profile = snapshotProfile === 'all' ? job.profile : snapshotProfile
 
-    if (failed) {
-      const since = job.last_run_at ? Date.parse(job.last_run_at) : NaN
-      claim(owner, { kind: 'failed', ...(Number.isFinite(since) ? { since } : {}) })
-    } else if (jobRunInFlight(job)) {
+    if (!profile) {
+      continue
+    }
+
+    const owner = agentSidebarKey({ connectionId: snapshotConnection || null, profile })
+    const execution = job.latest_execution
+
+    // A new run supersedes the previous result, as it does for chat turns.
+    if (jobRunInFlight(job)) {
       const since = Date.parse((job.live_execution ?? execution)?.claimed_at ?? '')
       claim(owner, { kind: 'running', ...(Number.isFinite(since) ? { since } : {}) })
+
+      continue
+    }
+
+    const executionFailed = execution
+      ? execution.status === 'failed'
+      : job.last_status === 'error' || Boolean(job.last_error)
+
+    const deliveryFailed =
+      execution?.delivery_outcome == null
+        ? job.last_status === 'delivery_failed' || Boolean(job.last_delivery_error)
+        : execution.delivery_outcome === 'failed'
+
+    if (executionFailed || deliveryFailed) {
+      const since = job.last_run_at ? Date.parse(job.last_run_at) : NaN
+      claim(owner, { kind: 'failed', ...(Number.isFinite(since) ? { since } : {}) })
     }
   }
 }
@@ -324,7 +339,7 @@ export function useAgentSidebarAttention(
   }
 
   collectUnreadAttention(agents, rows, markers, claim)
-  collectScheduleAttention(jobs, connectionId, claim)
+  collectScheduleAttention(jobs, claim)
 
   return result
 }

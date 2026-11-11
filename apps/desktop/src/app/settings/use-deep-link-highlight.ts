@@ -60,6 +60,15 @@ export function useDeepLinkHighlight({
       const element = document.getElementById(elementId(target))
 
       if (element) {
+        // Native disclosures keep their children mounted while closed. Reveal
+        // every enclosing section before focusing or consuming the deep link.
+        let disclosure = element.parentElement?.closest('details')
+
+        while (disclosure) {
+          disclosure.open = true
+          disclosure = disclosure.parentElement?.closest('details')
+        }
+
         element.scrollIntoView({ behavior: 'smooth', block })
 
         if (!element.hasAttribute('tabindex')) {

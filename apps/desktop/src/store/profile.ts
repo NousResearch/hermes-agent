@@ -452,8 +452,10 @@ export function resolveActiveSourceOwnerRoute(profile: string): AgentProfileRout
 // currently-open session (store/projects). The chat controller subscribes and
 // resets to the intro draft, so we never strand the user in an orphaned view.
 export const $freshSessionRequest = atom(0)
+export const $freshSessionRequestOptions = atom<{ preserveRoute?: boolean }>({})
 
-export function requestFreshSession(): void {
+export function requestFreshSession(options: { preserveRoute?: boolean } = {}): void {
+  $freshSessionRequestOptions.set(options)
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
 }
 

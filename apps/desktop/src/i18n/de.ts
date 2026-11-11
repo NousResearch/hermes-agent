@@ -171,7 +171,8 @@ export const deOverrides = {
     dialog: {
       disconnect: 'Trennen',
       disconnectTitle: (name: string) => `${name} trennen?`,
-      disconnectBody: 'Hermes handelt nicht mehr über dieses Konto. Sie können sich jederzeit wieder verbinden.',
+      disconnectBody:
+        'Das Konto wird für alle Agenten getrennt, die dasselbe Nous-Konto verwenden, nicht nur für diesen Agenten. Sie können es jederzeit wieder verbinden.',
       menuRefreshTools: 'Tools aktualisieren',
       moreActions: 'Weitere Aktionen',
       removeServerTitle: (name: string) => `${name} entfernen?`,
@@ -2431,11 +2432,11 @@ export const deOverrides = {
   },
   skills: {
     inventoryScopeHint:
-      'Die folgenden Installationen und Konten gehören zum ausgewählten Agenten und Rechner, nicht zu allen Agenten. Aktivierung und individuelle Anpassungen finden Sie in den Agenten-Einstellungen.',
+      'Installationen gelten für den ausgewählten Agenten und Rechner. Agentenspezifische Tool-Aktivierung und Anpassungen finden Sie in den Agenten-Einstellungen. Gehostete Connector-Konten werden von Agenten geteilt, die dasselbe Nous-Konto verwenden.',
     agentScopeHint:
       'Änderungen gelten nur für diesen Agenten. Bestehende Unterhaltungen behalten ihre aktuellen Tools.',
     toolSecretsHint:
-      'API-Schlüssel, Endpunkte und Anbieter für diesen Agenten. Zugangsdaten werden nicht mit anderen Agenten geteilt.',
+      'API-Schlüssel, Endpunkte und Anbieter, die dieser Agent nutzt. Anbieter-Anmeldungen können zwischen Agenten geteilt werden; gehostete Connector-Konten werden von Agenten geteilt, die dasselbe Nous-Konto verwenden.',
     openAgentSettings: 'Agenten-Einstellungen',
     openToolLibrary: 'Tool-Bibliothek durchsuchen',
     remotePluginHint:

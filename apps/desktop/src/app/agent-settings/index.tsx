@@ -2,7 +2,7 @@ import './agent-settings.css'
 
 import { useStore } from '@nanostores/react'
 import { useQuery, type UseQueryResult } from '@tanstack/react-query'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
@@ -15,6 +15,7 @@ import { RowButton } from '@/components/ui/row-button'
 import { type CronJob, getProfileSoul, type MessagingPlatformsResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
+import { platformStatusTone } from '@/lib/platform-status'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { asText } from '@/lib/text'
 import { openRosterBot } from '@/plugins/hermes-bots/roster-actions'
@@ -66,7 +67,18 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
   const apiScope = useStore($apiRequestScope)
   const active = useStore($activeConnectionId)
   const profile = useStore($activeGatewayProfile)
-  const { search } = useLocation()
+  const location = useLocation()
+  const { search } = location
+  const navigate = useNavigate()
+  const route = location.pathname + search
+  const activeRoute = useRef<string | null>(route)
+  useLayoutEffect(() => {
+    activeRoute.current = route
+
+    return () => {
+      activeRoute.current = null
+    }
+  }, [route])
   const registry = useStore($connectionsRegistry)
   const [error, setError] = useState('')
   const [opening, setOpening] = useState(false)
@@ -83,20 +95,24 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
     setScopeReady(matches)
   }, [matches, props.owner.profile])
 
-  async function activate() {
+  async function activate(targetProfile = props.owner.profile) {
     setOpening(true)
     setError('')
 
     try {
       if (props.owner.connectionId && registry?.connections.some(item => item.id === props.owner.connectionId)) {
-        await selectConnection(props.owner.connectionId, { profile: props.owner.profile })
+        await selectConnection(props.owner.connectionId, { profile: targetProfile, preserveRoute: true })
       } else if ((props.owner.connectionId ?? null) === (apiScope.connectionId ?? active)) {
-        await ensureGatewayProfile(props.owner.profile)
+        await ensureGatewayProfile(targetProfile)
       } else {
         throw new Error(c.unavailable)
       }
+
+      return true
     } catch (err) {
       setError(err instanceof Error ? err.message : t.errors.genericFailure)
+
+      return false
     } finally {
       setOpening(false)
     }
@@ -128,7 +144,22 @@ export function AgentSettingsView(props: AgentSettingsViewProps) {
     )
   }
 
-  return <AgentSettingsContent {...props} />
+  return (
+    <AgentSettingsContent
+      {...props}
+      onProfileRenamed={async name => {
+        // Retiring the old gateway unmounts its editor, not this owner guard.
+        // Only the route that initiated the rename may follow the new owner.
+        if (activeRoute.current !== route || !(await activate(name)) || activeRoute.current !== route) {
+          return
+        }
+
+        const params = new URLSearchParams(search)
+        params.set('agentProfile', name)
+        navigate({ pathname: location.pathname, search: `?${params}` }, { replace: true })
+      }}
+    />
+  )
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -210,7 +241,10 @@ function AgentManagementHeader({ gateway, onOpenChat, owner, profile }: AgentMan
   )
 }
 
-function AgentSettingsContent({ owner, ...props }: AgentSettingsViewProps) {
+function AgentSettingsContent({
+  owner,
+  ...props
+}: AgentSettingsViewProps & { onProfileRenamed: (name: string) => Promise<void> }) {
   const { t, locale } = useI18n()
   const c = useAgentSettingsCopy()
   const navigate = useNavigate()
@@ -529,9 +563,7 @@ function AgentChannels({ messaging, onOpen, children }: AgentChannelsProps) {
             detail={
               platform.state === 'connected' ? (
                 c.connected
-              ) : platform.configured &&
-                platform.enabled &&
-                ['disconnected', 'error', 'failed'].includes(platform.state ?? '') ? (
+              ) : platform.configured && platform.enabled && ['bad', 'warn'].includes(platformStatusTone(platform)) ? (
                 <span className="agent-channel-disconnected">● {c.disconnected}</span>
               ) : platform.configured ? (
                 c.configured

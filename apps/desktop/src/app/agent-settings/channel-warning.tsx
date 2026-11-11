@@ -1,5 +1,6 @@
 import type { MessagingPlatformsResponse } from '@/hermes'
 import { AlertTriangle } from '@/lib/icons'
+import { platformStatusTone } from '@/lib/platform-status'
 
 import { useOverviewActionsCopy } from './overview-actions-copy'
 
@@ -8,8 +9,7 @@ export function AgentChannelWarnings({ messaging }: { messaging?: MessagingPlatf
 
   const disconnected =
     messaging?.platforms.filter(
-      platform =>
-        platform.configured && platform.enabled && ['disconnected', 'error', 'failed'].includes(platform.state ?? '')
+      platform => platform.configured && platform.enabled && ['bad', 'warn'].includes(platformStatusTone(platform))
     ) ?? []
 
   return disconnected.map(platform => (

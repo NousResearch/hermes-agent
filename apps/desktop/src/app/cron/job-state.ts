@@ -1,5 +1,5 @@
 import { translateNow } from '@/i18n'
-import type { CronJob } from '@/types/hermes'
+import type { CronJob } from '@/types/cron'
 
 // Status-pip color per cron job state. Single source for the sidebar section and
 // the Cron page so the two never drift. (Animation/size live at the call site.)

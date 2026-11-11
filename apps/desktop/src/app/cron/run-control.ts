@@ -1,4 +1,4 @@
-import type { CronJob } from '@/types/hermes'
+import type { CronJob } from '@/types/cron'
 
 // Ledger statuses of an attempt that has not finished (cron/executions.py). The job list only
 // reports the newest attempt, and the scheduler rewrites a dead owner's row on its next tick,

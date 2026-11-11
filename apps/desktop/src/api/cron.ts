@@ -5,9 +5,9 @@ import type {
   CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,
-  CronJobUpdates,
-  SessionInfo
-} from '@/types/hermes'
+  CronJobUpdates
+} from '@/types/cron'
+import type { SessionInfo } from '@/types/hermes'
 
 import {
   ambientOwnerConnectionId,

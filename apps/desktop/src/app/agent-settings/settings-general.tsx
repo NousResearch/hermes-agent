@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
 import { useLayoutEffect, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router'
 
 import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
@@ -18,11 +17,15 @@ import { settingsScopeLabel } from '../settings/profile-scope'
 import { agentSettingsKey, type AgentSettingsOwner } from './data'
 import { useAgentSettingsEditorCopy } from './settings-copy'
 
-export function AgentGeneralSettings({ owner }: { owner: AgentSettingsOwner }) {
+export function AgentGeneralSettings({
+  owner,
+  onProfileRenamed
+}: {
+  owner: AgentSettingsOwner
+  onProfileRenamed: (name: string) => Promise<void>
+}) {
   const { t } = useI18n()
   const c = useAgentSettingsEditorCopy()
-  const navigate = useNavigate()
-  const location = useLocation()
   const [dialog, setDialog] = useState<'rename' | 'duplicate' | 'delete' | null>(null)
   const [deleted, setDeleted] = useState(false)
   const mounted = useRef(true)
@@ -79,19 +82,15 @@ export function AgentGeneralSettings({ owner }: { owner: AgentSettingsOwner }) {
         onRenamed={async name => {
           await refreshFleetRoster({ force: true })
 
-          if (!mounted.current) {
-            return
-          }
-
           if (profile.is_default) {
-            void profiles.refetch()
+            if (mounted.current) {
+              void profiles.refetch()
+            }
 
             return
           }
 
-          const params = new URLSearchParams(location.search)
-          params.set('agentProfile', name)
-          navigate({ pathname: location.pathname, search: `?${params}` }, { replace: true })
+          await onProfileRenamed(name)
         }}
         open={dialog === 'rename'}
         scope={owner}

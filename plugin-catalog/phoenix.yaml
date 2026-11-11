@@ -1,12 +1,8 @@
-﻿name: phoenix
+name: phoenix
 title: "Phoenix - The Black Box Flight Recorder for Hermes Agents"
 repo: https://github.com/Ratz00007/phoenix
 sha: 2db4a5d7c775e161f87e0c431daaeefc42a93512
-description: >-
-  Transactional SQLite WAL flight recorder, pre/post SHA-256 state fingerprinting,
-  live idempotency guard, and deterministic fault-injection wind tunnel with
-  Zeller ddmin for Hermes agents. Guarantees exactly-once tool execution across crashes
-  with zero duplicate writes and zero LLM calls in recovery.
+description: "Transactional SQLite WAL flight recorder, pre/post SHA-256 state fingerprinting, live idempotency guard, and deterministic fault-injection wind tunnel with Zeller ddmin for Hermes agents. Guarantees exactly-once tool execution across crashes with zero duplicate writes and zero LLM calls in recovery. Disclosure — journals every tool call's arguments and result (common secret patterns redacted) to a local SQLite ledger under the plugin data dir, kept 7 days / 10,000 rows; the owner-typed /recover re-runs interrupted tool calls from earlier sessions through the tool registry, bypassing other plugins' pre_tool_call hooks, and the opt-in idempotency guard can return a stored result instead of re-running a repeated call in the same session."
 maintainer: Ratz00007
 tier: community
 category: tools

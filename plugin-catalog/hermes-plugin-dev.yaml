@@ -4,12 +4,33 @@ repo: https://github.com/mojomast/hermes-plugin-dev
 sha: "796a35e4d893b985f1b61d8e11b5ae7e4118bf6f"
 subdir: ""
 description: >-
-  Build Hermes plugins with Hermes: bundles the hermes-plugin-development skill plus two
-  offline tools to scaffold a plugin from a validated template and lint manifests, catalog
-  entries, security preflight and schema token cost. No network, subprocesses or credentials;
-  writes only into the target folder you name; hpd_check measures schema tokens statically
-  and never imports the target plugin; import-based measure is the user-run CLI
-  `hermes hpd check <dir> --execute`. The security preflight is a heuristic, not a proof.
+  Hermes Plugin Dev: build Hermes plugins with Hermes. A plugin-development
+  skill plus two offline tools that scaffold a new plugin and lint it against
+  the catalog rules before you submit. The
+  hermes-plugin-dev:hermes-plugin-development skill covers manifest v2 and
+  strict YAML, the ctx API, all 46 hooks, capabilities and isolation, dashboard
+  and Desktop panes, testing, release and catalog submission, and lessons from
+  catalog reviews, with a template plugin and catalog-entry and PR-body
+  templates. hpd_scaffold(target_dir, name) copies the hello-hermes template,
+  which passes hermes plugins validate and doctor --ci as-is, renames it, and
+  adds a catalog entry and PR body stub; it refuses non-empty folders and never
+  overwrites. hpd_check(path, catalog_entry?) is a read-only lint: strict YAML,
+  manifest rules, provides_tools against the registered tools, a security
+  preflight, static schema token cost, and catalog entry rules (sha, image
+  hosts, category, subdir, at most 6 screenshots). Both tool schemas together
+  cost 190 o200k tokens. It is for anyone writing a first Hermes plugin or
+  getting one ready for a catalog PR. To start, run hermes plugins install
+  hermes-plugin-dev and hermes plugins enable hermes-plugin-dev, then ask:
+  "Scaffold a Hermes plugin called weather-now in ~/code/weather-now, then check
+  it." Finish with hermes plugins doctor <dir> --ci and hermes plugins validate
+  <dir> --install-deps. The same skill installs into other coding agents with
+  npx skills add mojomast/hermes-plugin-dev. Disclosure — no network,
+  subprocesses or credentials; writes only into the target folder you name.
+  hpd_check measures schema tokens statically and never imports the target
+  plugin. Import-based measurement is the user-run CLI hermes hpd check <dir>
+  --execute, which imports that plugin's register() with a fake host and is not
+  a sandbox, so use it only on code you trust. The security preflight is a
+  heuristic, not a proof.
 maintainer: mojomast
 tier: community
 category: tools

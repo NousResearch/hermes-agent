@@ -7,6 +7,7 @@ from __future__ import annotations
 import itertools
 from pathlib import Path
 
+from ._env import env_float
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
@@ -198,7 +199,7 @@ _SESSION_SIGNATURE_FIELDS = (
     "archived", "pinned", "hidden", "last_read_at", "handoff_state",
 )
 # path -> (database/WAL mtime, session-table digest, whether that is a fallback rather than a
-# read answer). The mtime guard keeps the normal 0.5 s watch pass stat-only; SQLite is read only
+# read answer). The mtime guard keeps a normal watch pass stat-only; SQLite is read only
 # after another process actually commits (and for ``utils.RACY_MTIME_WINDOW_NS`` after it, see
 # _settled_mtime).
 _sessions_db_sig_cache: dict[str, tuple[object, tuple | None, bool]] = {}
@@ -459,30 +460,52 @@ def _skills_sig():
     return published_scopes_signature()
 
 
-# event → (check interval, signature fn, payload fn). Signatures are stat-cheap; the interval
-# keeps pricier probes (pet resolves the sheet off disk) off the 0.5s tick. cron/jobs.json
-# moves on edits AND scheduler ticks; gateway_state.json is where the messaging gateway
-# persists platform connect/disconnect/health (the Messaging page's status signal).
+# Check interval per event, in seconds, each overridable (``HERMES_WATCH_SESSIONS_S``,
+# ``HERMES_WATCH_SKILLS_S``, ...) so a gateway on a 1-vCPU box can slow the watcher down without
+# a rebuild. A default is the first interval that can deliver: a probe faster than its event's
+# broadcast floor (``_CHANGE_BROADCAST_FLOOR_S``) only computes signatures it must throw away.
+#   sessions  2 s — sits on the floor; hashing the sessions table is the priciest read here.
+#   skills   15 s — a recursive stat walk over every skill root (~3k files on a full install),
+#                   and installing a skill is a human action, never a hot path.
+#   cron      5 s — cron/jobs.json moves on edits AND scheduler ticks.
+#   platforms 5 s — gateway_state.json: the messaging gateway's connect/disconnect/health.
+#   pet/projects/pairing 10 s — config + sheet, projects.db, profile ledgers.
+#   bot_relay 3 s — a queued DM envelope reaches the Desktop's push-triggered drain on this.
+#   groups  0.5 s — an open room view is live chat, and its floor is 1 s: this stays the tick.
+def _watch_interval(env: str, default: float) -> float:
+    """``default`` unless ``env`` holds a positive number: a 0 or negative interval would spin."""
+    value = env_float(env, default)
+    return value if value > 0 else default
+
+
 _CHANGE_WATCHES: dict[str, tuple[float, Any, Any] | tuple[float, Any, Any, Any]] = {
-    "pet.changed": (2.0, _pet_sig, _pet_changed_payload),
-    "cron.changed": (1.0, lambda: _home_mtime_ns("cron", "jobs.json"), dict),
-    "sessions.changed": (0.5, _sessions_sig, dict),
+    "pet.changed": (_watch_interval("HERMES_WATCH_PET_S", 10.0), _pet_sig, _pet_changed_payload),
+    "cron.changed": (_watch_interval("HERMES_WATCH_CRON_S", 5.0),
+                     lambda: _home_mtime_ns("cron", "jobs.json"), dict),
+    "sessions.changed": (_watch_interval("HERMES_WATCH_SESSIONS_S", 2.0), _sessions_sig, dict),
     # Projects created/switched by CLI or agent tooling write projects.db without any
     # state.db movement, so sessions.changed never fires and the desktop Projects
     # sidebar goes stale until a manual refresh (#56757).
-    "platforms.changed": (2.0, lambda: _home_mtime_ns("gateway_state.json"), dict),
-    "projects.changed": (2.0, _projects_sig, dict),
-    "pairing.changed": (2.0, _pairing_sig, dict),
-    "skills.changed": (2.0, _skills_sig, dict),
-    # 1s so a queued DM envelope reaches the Desktop's push-triggered drain fast.
-    "bot_relay.outbox.pending": (1.0, _bot_relay_outbox_sig, dict),
+    "platforms.changed": (_watch_interval("HERMES_WATCH_PLATFORMS_S", 5.0),
+                          lambda: _home_mtime_ns("gateway_state.json"), dict),
+    "projects.changed": (_watch_interval("HERMES_WATCH_PROJECTS_S", 10.0), _projects_sig, dict),
+    "pairing.changed": (_watch_interval("HERMES_WATCH_PAIRING_S", 10.0), _pairing_sig, dict),
+    "skills.changed": (_watch_interval("HERMES_WATCH_SKILLS_S", 15.0), _skills_sig, dict),
+    "bot_relay.outbox.pending": (_watch_interval("HERMES_WATCH_BOT_RELAY_S", 3.0),
+                                 _bot_relay_outbox_sig, dict),
     # An open room view re-reads its log delta + status on this; its slow poll is only the backstop.
     # Its payload names what moved: an optional 4th slot, ``fn(previous broadcast signature, current one)``.
-    "groups.changed": (0.5, _groups_sig, dict, _groups_changed_payload)}
+    "groups.changed": (_watch_interval("HERMES_WATCH_GROUPS_S", 0.5), _groups_sig, dict, _groups_changed_payload)}
+
+# The loop only has to tick as fast as its fastest probe: every watch gates itself on its own
+# interval, so a slower tick costs nothing but wakeups and delays no broadcast past its interval.
+_WATCH_TICK_S = max(0.1, min(interval for interval, *_ in _CHANGE_WATCHES.values()))
 
 # state.db moves on every append of a streaming turn and gateway_state.json on
 # in-flight bookkeeping; the floor coalesces bursts to one broadcast per window,
 # trailing edge included (a floored change keeps its old signature, re-fires later).
+# A probe interval under its floor is wasted work — it can only find a change the floor
+# still holds back — so the defaults in ``_CHANGE_WATCHES`` sit on or above these.
 _CHANGE_BROADCAST_FLOOR_S = {"sessions.changed": 2.0, "platforms.changed": 5.0, "groups.changed": 1.0}
 
 _change_sigs: dict[str, Any] = {}
@@ -530,7 +553,7 @@ def _ensure_skin_watcher() -> None:
 
     def _loop() -> None:
         while True:
-            time.sleep(0.5)
+            time.sleep(_WATCH_TICK_S)
             _broadcast_skin_if_changed()
             _broadcast_watched_changes()
             # A failed wake must never end this thread: every push (skin, sessions, groups...) runs on it.

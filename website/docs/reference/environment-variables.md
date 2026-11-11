@@ -902,6 +902,26 @@ Hermes sets these itself to carry state across a boundary where no `config.yaml`
 | `HERMES_TUI_THEME` | Force the TUI color theme: `light`, `dark`, or a raw 6-character background hex (e.g. `ffffff` or `1a1a2e`). When unset, Hermes auto-detects using `COLORFGBG` and terminal background queries; this variable overrides detection on terminals (Ghostty, Warp, iTerm2, etc.) that don't set `COLORFGBG`. |
 | `HERMES_INFERENCE_MODEL` | Force the model for `hermes -z` / `hermes chat` without mutating `config.yaml`. Pairs with the `--provider` flag. Useful for scripted callers (sweeper, CI, batch runners) that need to override the default model per run. |
 
+### Change watcher cadence
+
+The TUI/Desktop gateway watches on-disk signatures (the session table, skill roots, cron, projects,
+pairing ledgers, the bot-relay outbox, hosted-room stores) and pushes `*.changed` events to attached
+clients instead of letting them poll. Every watch has its own interval in seconds; a value at or
+below `0` keeps the default. Raise them on a small box (1 vCPU), where the full default cadence
+competes with the agent's event loop.
+
+| Variable | Description |
+|----------|-------------|
+| `HERMES_WATCH_SESSIONS_S` | Session-table probe interval (default: `2`). It sits on the `sessions.changed` broadcast floor, so a faster check can never deliver sooner. |
+| `HERMES_WATCH_SKILLS_S` | Skill-root scan interval (default: `15`). The probe stats every file under each session's skill roots (~3k on a full install). |
+| `HERMES_WATCH_CRON_S` | `cron/jobs.json` probe interval (default: `5`). |
+| `HERMES_WATCH_PLATFORMS_S` | `gateway_state.json` probe interval — the Messaging page's connect/disconnect/health (default: `5`). |
+| `HERMES_WATCH_PROJECTS_S` | `projects.db` probe interval (default: `10`). |
+| `HERMES_WATCH_PET_S` | Pet config + spritesheet probe interval (default: `10`). |
+| `HERMES_WATCH_PAIRING_S` | Pairing-ledger probe interval (default: `10`). |
+| `HERMES_WATCH_BOT_RELAY_S` | Bot-relay outbox probe interval, which triggers the Desktop's envelope drain (default: `3`). |
+| `HERMES_WATCH_GROUPS_S` | Hosted-room store probe interval (default: `0.5`). Also the watcher loop's tick, which is never slower than the fastest watch. |
+
 ## Session Settings
 
 | Variable | Description |

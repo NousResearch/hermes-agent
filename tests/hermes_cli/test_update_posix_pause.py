@@ -217,3 +217,51 @@ def test_a_launchd_job_is_paused_through_launchd_and_restarted_through_it(tmp_pa
         assert pid() and pid() != first, "the restart did not bring the job back under launchd"
     finally:
         subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], capture_output=True, check=False)
+
+
+def _osascript_parent_probe(tmp_path):
+    """A stand-in gateway command that reports its parent's command line and waits for release."""
+    report, release = tmp_path / "report.json", tmp_path / "release"
+    code = ("import json, os, pathlib, subprocess, time; "
+            "parent = subprocess.run(['ps', '-o', 'command=', '-p', str(os.getppid())], capture_output=True, "
+            "text=True).stdout.strip(); "
+            f"pathlib.Path({str(report)!r}).write_text(json.dumps({{'parent': parent, 'sid': os.getsid(0), "
+            "'pid': os.getpid()})); "
+            f"[time.sleep(0.1) for _ in range(300) if not pathlib.Path({str(release)!r}).exists()]")
+    return [sys.executable, "-c", code], report, release
+
+
+@pytest.mark.platforms("macos")
+def test_a_replayed_gateway_is_a_launchd_job_that_keeps_local_network_access(tmp_path):
+    """The update's replay starts the gateway the way ``gateway ensure`` does: a one-off launchd job
+    under /usr/bin/osascript. A plain detached child is responsible for itself once the updater
+    exits, and Local Network Privacy then refuses every LAN connect (#153226)."""
+    from hermes_cli.update_cmd_posix_pause import _launch_replay
+    from tests.waiting import wait_until
+    argv, report, release = _osascript_parent_probe(tmp_path)
+    job = _launch_replay(argv, dict(os.environ), tmp_path / "gateway-update-resume.log", time.monotonic() + 30)
+    try:
+        wait_until(report.exists, timeout=30, what="the replayed command never ran")
+        seen = json.loads(report.read_text(encoding="utf-8"))
+        assert seen["parent"].startswith("/usr/bin/osascript"), seen
+        assert job.poll() is None
+    finally:
+        release.write_text("", encoding="utf-8")
+    assert wait_until(lambda: job.poll() is not None, timeout=30) is not None
+
+
+@pytest.mark.platforms("linux")
+def test_a_replayed_gateway_without_launchd_is_a_detached_child_that_outlives_the_updater(tmp_path):
+    """Control: with no launchd the replay stays a plain child in a session of its own."""
+    from hermes_cli.update_cmd_posix_pause import _launch_replay
+    from tests.waiting import wait_until
+    argv, report, release = _osascript_parent_probe(tmp_path)
+    proc = _launch_replay(argv, dict(os.environ), tmp_path / "gateway-update-resume.log", time.monotonic() + 30)
+    try:
+        wait_until(report.exists, timeout=30, what="the replayed command never ran")
+        seen = json.loads(report.read_text(encoding="utf-8"))
+        assert isinstance(proc, subprocess.Popen) and seen["pid"] == proc.pid
+        assert seen["sid"] == proc.pid, "the replay must lead its own session"
+    finally:
+        release.write_text("", encoding="utf-8")
+        proc.wait(timeout=30)

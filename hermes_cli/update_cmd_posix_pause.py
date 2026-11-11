@@ -537,6 +537,25 @@ def _replay_env(home: str) -> dict:
     return served_profile_child_env(target_home=home, inherit_credentials=True)
 
 
+def _launch_replay(argv: list[str], env: dict, log_path: Path, deadline: float):
+    """Start the replay the way ``gateway ensure`` starts an unmanaged gateway: on macOS a one-off
+    launchd job (``gateway_launchd_runtime``), whose osascript keeps the gateway's Local Network
+    access once the updater exits (#153226); a plain detached child where launchd cannot take it."""
+    if sys.platform == "darwin":
+        from hermes_cli import gateway_launchd_runtime
+        try:
+            cwd = os.getcwd()  # what the plain child below inherits
+        except OSError:
+            cwd = str(log_path.parent)
+        if job := gateway_launchd_runtime.start_gateway_job(argv, env=env, cwd=cwd, log_path=log_path,
+                                                            deadline=deadline):
+            return job
+    with open(log_path, "ab") as log:
+        return subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL, stdout=log,
+                                # detached-spawn: ok — resumes the paused gateway after an update; it must outlive the updater
+                                stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
+
+
 def _relaunch_bare(entry: dict) -> int:
     """Replay a bare gateway from its recorded argv under its recorded home; the new PID once it
     is serving. A gateway already serving that home (an earlier attempt's) is adopted instead."""
@@ -547,16 +566,13 @@ def _relaunch_bare(entry: dict) -> int:
     env = _replay_env(entry["home"])
     for leaked in ("INVOCATION_ID", "JOURNAL_STREAM", "HERMES_UPDATE_PAUSED", "_HERMES_GATEWAY"):
         env.pop(leaked, None)
-    with open(logs / "gateway-update-resume.log", "ab") as log:
-        proc = subprocess.Popen(list(entry["argv"]), env=env, stdin=subprocess.DEVNULL, stdout=log,
-                                # detached-spawn: ok — resumes the paused gateway after an update; it must outlive the updater
-                                stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
     deadline = time.monotonic() + _READY_TIMEOUT_S
+    proc = _launch_replay(list(entry["argv"]), env, logs / "gateway-update-resume.log", deadline)
     while time.monotonic() < deadline:
         if (pid := _gateway_on_home(entry["home"], {int(entry["pid"])})) is not None:
             return pid  # the replay, or a gateway someone started meanwhile (the replay then exits 0)
-        if proc.poll() is not None:
-            raise RuntimeError(f"replayed gateway for {entry['home']} exited {proc.returncode} "
+        if (status := proc.poll()) is not None:
+            raise RuntimeError(f"replayed gateway for {entry['home']} exited {status} "
                                f"(see {logs / 'gateway-update-resume.log'})")
         time.sleep(0.5)
     raise RuntimeError(f"replayed gateway for {entry['home']} did not come up within {int(_READY_TIMEOUT_S)}s")

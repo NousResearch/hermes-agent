@@ -1473,7 +1473,7 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
         shell_cmd = (
             f"deadline=$(( $(date +%s) + {int(restart_after_s)} )); "
             f"while kill -0 {current_pid} 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
+            f"{cmd} gateway restart{' --detach' if sys.platform == 'darwin' else ''}"  # macOS: launchd job keeps LAN (#153226)
         )
         setsid_bin = shutil.which("setsid")
         argv = [setsid_bin, "bash", "-lc", shell_cmd] if setsid_bin else ["bash", "-lc", shell_cmd]

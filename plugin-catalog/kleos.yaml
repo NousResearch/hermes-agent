@@ -1,6 +1,3 @@
-# The one file to add to NousResearch/hermes-agent as plugin-catalog/kleos.yaml (one PR, one file).
-# Fill e0a09c28162da39c00c28e02b05b7092d688ecf5 with the full 40-character SHA of the kleos-mcp commit being submitted (branches, tags and short SHAs
-# are rejected); bump `version` in the same PR as any later SHA bump. `tier` stays community (maintainers set the others).
 name: kleos
 title: Kleos
 repo: https://github.com/NewOdysseyConsulting/kleos-mcp

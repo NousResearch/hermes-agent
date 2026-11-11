@@ -171,3 +171,45 @@ def test_hosted_absolute_path_with_no_known_sandbox_cwd_still_works(provider, ho
     assert written.get("resolved_path") == "/workspace/abs.txt" and "error" not in read, (written, read)
     assert "'/workspace/abs.txt'" in _sent(provider)
     assert not any(host_path in _sent(provider) for host_path in host_paths)
+
+
+@pytest.mark.parametrize("default_cwd", ["~", None], ids=["tilde_default_with_home", "no_default"])
+@pytest.mark.parametrize("terminal_cwd", ["~", "~/proj", "/srv/app"])
+def test_hosted_file_tools_anchor_where_the_hosted_terminal_starts(provider, monkeypatch, host_paths, terminal_cwd,
+                                                                   default_cwd):
+    """A relative write resolves in the directory the hosted terminal's commands start in (a ``~`` there is the
+    sandbox's declared home, ``/workspace`` for the recording sandbox), never in a TERMINAL_CWD the terminal
+    config discarded, and no host path is sent or returned."""
+    host_home, host_cwd = host_paths
+    monkeypatch.setenv("TERMINAL_CWD", terminal_cwd)
+    if default_cwd is not None:
+        monkeypatch.setattr(c.RecordingSandboxProvider, "default_cwd", property(lambda self: default_cwd),
+                            raising=False)
+    created, ran = _record_cwds(monkeypatch)
+    with c._bind(A):
+        written = c.call_tool("write_file", {"path": "rel.txt", "content": "x\n"}, task_id="t")
+        terminal = c.call_tool("terminal", {"command": "pwd"}, task_id="t")
+    started = [cwd for command, cwd in ran if command == "pwd"]
+    assert len(started) == 1 and created, (created, ran)
+    # Both backends declare a home here, so the sandbox directory is known and both name it.
+    terminal_dir = ("/workspace" if default_cwd == "~" else None) if started[0] == "~" else started[0]
+    assert terminal_dir is not None, started
+    assert written.get("resolved_path") == posixpath.join(terminal_dir, "rel.txt"), (started, written)
+    sent, returned = _sent(provider), json.dumps([written, terminal])
+    for host_path in (host_home, host_cwd):
+        assert host_path not in sent and host_path not in returned, (host_path, sent, returned)
+
+
+def test_hosted_relative_path_outside_the_terminal_cwd_still_warns(provider, monkeypatch, host_paths):
+    """With an absolute hosted TERMINAL_CWD and no recorded session cwd, a relative write that climbs out of it
+    carries the outside-workspace warning naming that directory; one inside it carries none."""
+    monkeypatch.setenv("TERMINAL_CWD", "/srv/app")
+    with c._bind(A):
+        escaped = c.call_tool("write_file", {"path": "../escape.txt", "content": "x\n"}, task_id="t")
+        inside = c.call_tool("write_file", {"path": "in.txt", "content": "x\n"}, task_id="t")
+    assert escaped.get("resolved_path") == "/srv/escape.txt", escaped
+    assert escaped.get("_warning", "").startswith(
+        "Relative path '../escape.txt' resolved to '/srv/escape.txt', which is OUTSIDE the active workspace "
+        "('/srv/app')."), escaped
+    assert inside.get("resolved_path") == "/srv/app/in.txt" and "_warning" not in inside, inside
+    assert not any(host_path in json.dumps([escaped, inside]) for host_path in host_paths)

@@ -1,0 +1,35 @@
+name: delivery-shelf
+title: Delivery Shelf
+repo: https://github.com/mechkw/hermes-delivery-shelf
+sha: 8510a9a81bae33da1bc232e828a02834bdfe11a4
+description: Save delivered files together, preserve versions, and find finished work again in Hermes.
+maintainer: mechkw
+tier: community
+category: desktop
+requires_hermes: ">=0.22.5"
+version: "0.1.0"
+docs_url: https://github.com/mechkw/hermes-delivery-shelf/blob/8510a9a81bae33da1bc232e828a02834bdfe11a4/docs/USAGE.md
+image: https://raw.githubusercontent.com/mechkw/hermes-delivery-shelf/8510a9a81bae33da1bc232e828a02834bdfe11a4/docs/assets/hero.webp
+screenshots:
+  - https://raw.githubusercontent.com/mechkw/hermes-delivery-shelf/8510a9a81bae33da1bc232e828a02834bdfe11a4/docs/assets/dark-together.png
+  - https://raw.githubusercontent.com/mechkw/hermes-delivery-shelf/8510a9a81bae33da1bc232e828a02834bdfe11a4/docs/assets/dark-library.png
+readme: true
+platforms: []
+known_issues:
+  - "Contest candidate, not full product qualification. Installed Always-for-this-delivery and final delayed purge acceptance remain unrun."
+  - "Automatic Add can fail closed on isolated hosts without caller-cancellation support; use manual Add and explicit Save."
+  - "On the pinned v0.22.5 test host, Telegram plugin reload can require rebuilding the native client."
+  - "Install scan is caution; private session accessor and SDK-markup selector coupling remain disclosed for maintainer review."
+capabilities:
+  provides_tools:
+    - delivery_shelf_register
+    - delivery_shelf_search
+    - delivery_shelf_update
+    - delivery_shelf_offer_update
+    - delivery_shelf_respond_update
+  provides_hooks:
+    - on_session_reset
+    - on_session_delete
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

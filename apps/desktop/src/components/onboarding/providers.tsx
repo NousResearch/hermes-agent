@@ -8,6 +8,7 @@ import type { OAuthProvider } from '@/types/hermes'
 // only the featured order. Both Anthropic entries sit at the bottom: the API-key
 // path first, then the subscription OAuth path (only works with extra usage credits).
 const PROVIDER_ORDER: Record<string, number> = {
+  unitalk: -1,
   nous: 0,
   'openai-codex': 1,
   'minimax-oauth': 2,

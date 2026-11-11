@@ -606,6 +606,13 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:deep-link', listener)
   },
   signalDeepLinkReady: () => ipcRenderer.invoke('hermes:deep-link-ready'),
+  /** Clerk SSO callback from Electron main: `unitalk://callback?token=X` → token string. */
+  onUnitalkOauthCallback: callback => {
+    const listener = (_event, token) => callback(token)
+    ipcRenderer.on('unitalk-oauth-callback', listener)
+
+    return () => ipcRenderer.removeListener('unitalk-oauth-callback', listener)
+  },
   probePluginRepo: payload => ipcRenderer.invoke('hermes:plugin:probe', payload),
   installDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:installDesktop', payload),
   removeDesktopPlugin: payload => ipcRenderer.invoke('hermes:plugin:removeDesktop', payload),

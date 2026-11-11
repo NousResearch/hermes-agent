@@ -92,6 +92,17 @@ def _kanban_stop_nudge(agent, messages) -> Optional[str]:
         return None
 
 
+def _dangling_promise_verdict(agent, final_response):
+    """A final reply claiming work nothing will run (agent.promise_guard): nudge or rewrite."""
+    try:
+        from agent.promise_guard import evaluate_final_reply
+
+        return evaluate_final_reply(agent, final_response)
+    except Exception:
+        logger.debug("dangling-promise check failed", exc_info=True)
+        return None
+
+
 _MAX_LSP_TURN_END_NOTES = 3
 
 
@@ -216,6 +227,27 @@ def apply_stop_gates(
             "(kanban_complete/kanban_request_review/kanban_block) — nudging to finish"
         )
         return verdict
+
+    # Dangling promise (local 2026-11-07): the reply says "doing now" but no card, delegation or
+    # background job will run it, and a finished turn does nothing until the next message.
+    _promise = _dangling_promise_verdict(agent, final_response)
+    if _promise is not None and _promise.action == "nudge":
+        agent._dangling_promise_nudges = getattr(agent, "_dangling_promise_nudges", 0) + 1
+        # Provisional like a verify-on-stop candidate: the follow-up answer supersedes it.
+        final_msg["finish_reason"] = "verification_required"
+        _append_interim_answer(
+            agent, final_msg, messages, conversation_history, "dangling-promise interim flush failed"
+        )
+        verdict = _continue(_promise.nudge, "_dangling_promise_synthetic")
+        logger.info("dangling-promise nudge issued (attempt %d): %s", agent._dangling_promise_nudges,
+                    "; ".join(c.clause[:80] for c in _promise.claims))
+        return verdict
+    if _promise is not None and _promise.action == "rewrite":
+        logger.info("dangling-promise reply rewritten to an honest stop: %s",
+                    "; ".join(c.clause[:80] for c in _promise.claims))
+        final_response = _promise.rewritten
+        # A promoted-reasoning reply keeps ``content`` empty and carries the text in ``api_content``.
+        final_msg["api_content" if final_msg.get("api_content") and not final_msg.get("content") else "content"] = final_response
     return StopGateVerdict(
         continue_turn=False, final_response=final_response,
         pending_verification_response=pending_verification_response,

@@ -1267,6 +1267,8 @@ class AIAgent(
 
     def _toolguard_controlled_halt_response(self, decision: ToolGuardrailDecision) -> str:
         # Shown to the user as the reply, so no decision codes; the code stays in result["guardrail"].
+        if decision.code == "no_landing_streak_halt" and decision.message:
+            return decision.message
         return (
             f"I stopped retrying because I kept running {decision.tool_name or 'the same tool'} "
             f"{decision.count} times without making progress. The last result above shows what "
@@ -1304,8 +1306,20 @@ class AIAgent(
             if streak_halt is not None and streak_halt.code in ("identical_call_streak_halt", "identical_cycle_halt"):
                 function_result = append_toolguard_guidance(function_result, streak_halt)
                 self._set_tool_guardrail_halt(streak_halt)
+        # No-landing streak (agent.landing_guard): varied exploration the identity guards never see.
+        landing_notice = None
+        try:
+            landing_notice = self._tool_guardrails.observe_landing(tool_name, function_args, failed=failed)
+        except Exception as exc:
+            logger.debug("no-landing streak observation failed: %s", exc)
+        landing_halt = self._tool_guardrails.halt_decision
+        if (landing_halt is not None and landing_halt.code == "no_landing_streak_halt"
+                and self._tool_guardrail_halt_decision is None):
+            self._set_tool_guardrail_halt(landing_halt)
         if stall_notice:
             function_result = (function_result or "") + "\n\n" + stall_notice
+        if landing_notice:
+            function_result = (function_result or "") + "\n\n" + landing_notice
         return function_result
 
     def _stall_guards_enabled(self) -> bool:

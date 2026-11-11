@@ -179,6 +179,7 @@ def prepare_iteration(
     _pre_api_steer = agent._drain_pending_steer()
     if _pre_api_steer:
         _inject_steer_after_newest_tool_result(agent, messages, _pre_api_steer)
+        _pin_steer_directive(agent, _pre_api_steer)
 
     # One-shot run-budget wrap-up notice at 80% of agent.run_budget_seconds, appended to the
     # newest tool result; off with no budget.
@@ -279,6 +280,14 @@ def _previous_tool_round(messages: Any) -> list:
                 if isinstance(tc, dict)
             ]
     return []
+
+
+def _pin_steer_directive(agent, steer_text) -> None:
+    """An act-now steer ("do the PR now") tightens the no-landing guard from this point (agent.landing_guard)."""
+    guard = getattr(agent, "_tool_guardrails", None)
+    if guard is not None and hasattr(guard, "pin_steer_directive"):
+        with suppress(Exception):
+            guard.pin_steer_directive(steer_text)
 
 
 def _inject_steer_after_newest_tool_result(agent: Any, messages: Any, steer_text: str) -> None:

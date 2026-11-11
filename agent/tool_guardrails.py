@@ -14,6 +14,8 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Mapping
 
 from utils import safe_json_loads
+from agent.landing_guard import HALT_RESPONSE as _LANDING_HALT_RESPONSE, LandingStreak, LandingStreakConfig
+from agent.promise_guard import DanglingPromiseConfig
 from agent.tool_result_classification import (
     shape_failure_error, file_mutation_result_landed, has_failure_marker, is_guardrail_refusal, is_rate_limited)
 
@@ -91,6 +93,17 @@ def is_stall_guard_repeatable(tool_name: str) -> bool:
     return tool_name in STALL_GUARD_REPEATABLE_TOOLS or tool_name.endswith(_STALL_GUARD_REPEATABLE_SUFFIXES)
 
 
+def _is_worker_run(platform: str | None) -> bool:
+    """A dispatched Kanban worker or an in-process delegated subagent (not an attended chat)."""
+    if isinstance(platform, str) and platform.strip().lower() == "subagent":
+        return True
+    try:
+        from agent.delegation_context import owned_kanban_task
+        return bool(owned_kanban_task())
+    except Exception:
+        return False
+
+
 def _is_non_interactive_platform(platform: str | None) -> bool:
     """True for gateway/cron sessions where tool loops are unattended."""
     if not isinstance(platform, str) or not platform.strip():
@@ -131,6 +144,13 @@ class ToolCallGuardrailConfig:
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
     loop_caps: LoopCapConfig = field(default_factory=LoopCapConfig)
+    # No-landing streak guard (agent.landing_guard, local 2026-11-06); halts only when attended.
+    landing_streak: LandingStreakConfig = field(default_factory=LandingStreakConfig)
+    attended: bool = True
+    # Dispatched Kanban worker or delegated subagent: the landing streak runs in worker mode.
+    worker: bool = False
+    # End-of-turn dangling-promise guard (agent.promise_guard, local 2026-11-07).
+    dangling_promise: DanglingPromiseConfig = field(default_factory=DanglingPromiseConfig)
 
     @classmethod
     def from_mapping(
@@ -150,7 +170,11 @@ class ToolCallGuardrailConfig:
             return _int_at_least(nested, getattr(d, name), 1)
 
         thresholds = {name: threshold(name, *src) for name, src in _THRESHOLD_SOURCES.items()}
-        return cls(loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")), **flags, **thresholds)
+        return cls(loop_caps=LoopCapConfig.from_mapping(data.get("loop_caps")),
+                   landing_streak=LandingStreakConfig.from_mapping(data.get("landing_streak")),
+                   dangling_promise=DanglingPromiseConfig.from_mapping(data.get("dangling_promise")),
+                   attended=not _is_non_interactive_platform(platform),
+                   worker=_is_worker_run(platform), **flags, **thresholds)
 
 
 @dataclass(frozen=True)
@@ -342,6 +366,27 @@ class ToolCallGuardrailController:
         self._persisted_result_paths: dict[str, str] = {}
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+        # Calls since the last landing action (edit/commit/PR/message/task update); see agent.landing_guard.
+        self._landing = LandingStreak(
+            self.config.landing_streak, can_halt=self.config.hard_stop_enabled and self.config.attended,
+            worker=self.config.worker)
+
+    def pin_steer_directive(self, text: Any) -> str | None:
+        """A mid-turn steer that is an act-now directive pins it and restarts the no-landing count."""
+        return self._landing.pin_steer(text)
+
+    def set_turn_directive(self, phrase: str | None) -> None:
+        """Pin the user's act-now directive for this turn (tightens the no-landing thresholds)."""
+        self._landing.set_directive(phrase)
+
+    def observe_landing(self, tool_name: str, args: Mapping[str, Any] | None, *, failed: bool) -> str | None:
+        """Advance the no-landing streak; return a notice to append, recording a halt when due."""
+        obs = self._landing.observe(tool_name, _coerce_args(args), failed=failed)
+        if obs.halt and self._halt_decision is None:
+            self._decide("halt", "no_landing_streak_halt", tool_name, obs.count,
+                         ToolCallSignature.from_call(tool_name, _coerce_args(args)),
+                         message=_LANDING_HALT_RESPONSE.format(count=obs.count))
+        return obs.notice
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:

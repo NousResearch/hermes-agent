@@ -674,6 +674,7 @@ _PER_TURN_RESET_STATE: tuple[tuple[str, Any], ...] = (
     ("_iteration_budget_warning_injected", False),
     ("_run_budget_wrapup_injected", False), ("_verification_stop_nudges", 0),
     ("_pre_verify_nudges", 0), ("_lsp_turn_end_notes", 0),
+    ("_dangling_promise_nudges", 0),
 )
 
 
@@ -968,6 +969,25 @@ def _collect_pre_llm_call_context(
     return ""
 
 
+def _act_now_directive_note(agent: Any, messages: list[Any], current_turn_user_idx: int) -> str:
+    """Pin an explicit act-now directive ("do a PR right now") for this turn: tightens the
+    no-landing streak thresholds and returns a one-shot turn note (agent.landing_guard)."""
+    try:
+        from agent.landing_guard import detect_directive, directive_turn_note
+        msg = messages[current_turn_user_idx] if 0 <= current_turn_user_idx < len(messages) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list):
+            content = "\n".join(p.get("text", "") for p in content if isinstance(p, dict))
+        phrase = detect_directive(content)
+        guard = getattr(agent, "_tool_guardrails", None)
+        if guard is not None and hasattr(guard, "set_turn_directive"):
+            guard.set_turn_directive(phrase)
+        return directive_turn_note(phrase)
+    except Exception as exc:
+        logger.debug("act-now directive detection failed: %s", exc)
+        return ""
+
+
 def _merge_gateway_notes(
     agent: Any, messages: list[Any], current_turn_user_idx: int, plugin_user_context: str
 ) -> str:
@@ -979,7 +999,8 @@ def _merge_gateway_notes(
     _turn_notes = "\n\n".join(
         part for part in (consume_gateway_turn_context_notes(agent), pop_plugin_notices(agent),
                           consume_surface_switch_note(agent),
-                          consume_skills_index_note(agent)) if part
+                          consume_skills_index_note(agent),
+                          _act_now_directive_note(agent, messages, current_turn_user_idx)) if part
     )
     if not _turn_notes:
         return plugin_user_context

@@ -738,11 +738,14 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         _grace = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
         _grace_state = self._peek_session_state(_quick_key)
         _started_at = _grace_state.turn.started_ts if _grace_state else 0
+        # Telegram text batching preserves the send time while admission may wait another 1.5s.
+        _sent = event.timestamp if getattr(event, "raw_message", None) else None
+        _arrived = _sent.timestamp() if hasattr(_sent, "timestamp") else time.time()
         if not (source.platform == Platform.TELEGRAM and event.message_type == MessageType.TEXT
-                and _grace > 0 and _started_at and (time.time() - _started_at) <= _grace):
+                and _grace > 0 and _started_at and -1 <= (_arrived - _started_at) <= _grace):
             return False
         logger.debug("Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
-                     time.time() - _started_at, _quick_key)
+                     _arrived - _started_at, _quick_key)
         return True
 
     def _hm_busy_telegram_grace_queue(

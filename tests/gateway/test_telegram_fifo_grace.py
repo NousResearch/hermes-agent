@@ -73,3 +73,28 @@ async def test_telegram_followup_after_grace_can_still_preempt(monkeypatch):
 
     runner._resolve_busy_steer_or_redirect.assert_awaited_once()
     runner._busy_interrupt_and_ack.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_telegram_long_followup_uses_send_time_before_default_batch_flush(monkeypatch):
+    """A +2s Telegram text must not interrupt when its default 1.5s batch flushes at +3.5s."""
+    from datetime import UTC, datetime
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+
+    monkeypatch.delenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", raising=False)
+    monkeypatch.delenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", raising=False)
+    runner, event, source, key = _busy_telegram_turn()
+    event.text = "One more detail " * 80  # >1,024 chars: default long-text delay, not the fast tier
+    event.timestamp = datetime.fromtimestamp(102.0, UTC)
+    event.raw_message = SimpleNamespace(date=event.timestamp)  # Telegram's provider send time
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
+    delay = adapter._text_batch_delay_for(event)
+    assert delay == pytest.approx(1.5)
+
+    with patch("gateway.run_inbound.time.time", return_value=102.0 + delay):
+        assert await runner._hm_busy_preempt(event, source, key) is False
+
+    runner._resolve_busy_steer_or_redirect.assert_not_awaited()
+    runner._busy_interrupt_and_ack.assert_not_awaited()

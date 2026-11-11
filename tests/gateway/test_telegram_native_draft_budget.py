@@ -108,3 +108,52 @@ async def test_plain_drafts_frames_only_grow(plain):
         assert all(f.get("parse_mode") for f in frames)
     # The persistent final keeps its normal MarkdownV2 rendering either way.
     assert adapter._bot.send_message.await_args.kwargs.get("parse_mode")
+
+
+@pytest.mark.asyncio
+async def test_plain_drafts_wins_over_rich_drafts():
+    adapter = _adapter(plain_drafts=True, rich_messages=True, rich_drafts=True)
+    adapter._bot.do_api_request = AsyncMock(return_value=True)
+    content = "| a | b |\n|---|---|\n| 1 | 2 |"
+    assert (await adapter.send_draft("123", 7, content)).success
+    adapter._bot.do_api_request.assert_not_awaited()  # no sendRichMessageDraft
+    assert adapter._bot.send_message_draft.await_args.kwargs == {"chat_id": 123, "draft_id": 7, "text": content}
+
+
+@pytest.mark.asyncio
+async def test_dm_topic_typing_retry_spends_its_own_budget_slot():
+    """The topic-less typing retry is a second request: it claims a slot, and is skipped when none is left."""
+    adapter = _adapter()
+    adapter._dm_topic_fallback = lambda metadata: True
+    adapter._message_thread_id_for_typing = lambda thread_id: 5
+    adapter._bot.send_chat_action.side_effect = [RuntimeError("Bad Request: message thread not found"), True]
+    for i in range(18):
+        await adapter.send_draft("123", 7, f"frame {i}")
+    await adapter.send_typing("123", metadata={"thread_id": "5"})
+    assert adapter._bot.send_chat_action.await_count == 2  # 18 drafts + 2 typing = the 20-call window
+    assert (await adapter.send_draft("123", 7, "over")).raw_response == {"skipped": True}
+
+    adapter2 = _adapter()
+    adapter2._dm_topic_fallback = lambda metadata: True
+    adapter2._message_thread_id_for_typing = lambda thread_id: 5
+    adapter2._bot.send_chat_action.side_effect = RuntimeError("Bad Request: message thread not found")
+    for i in range(19):
+        await adapter2.send_draft("123", 7, f"frame {i}")
+    await adapter2.send_typing("123", metadata={"thread_id": "5"})
+    assert adapter2._bot.send_chat_action.await_count == 1  # no slot left for the retry
+
+
+def test_plain_drafts_reaches_the_adapter_from_config_yaml(tmp_path, monkeypatch):
+    """Both documented nestings load through the gateway's config loader into the adapter."""
+    import json
+
+    from gateway.config import Platform, load_gateway_config
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    for doc in ({"telegram": {"extra": {"plain_drafts": True}}},
+                {"platforms": {"telegram": {"extra": {"plain_drafts": True}}}}):
+        (tmp_path / "config.yaml").write_text(json.dumps(doc))
+        platform_config = load_gateway_config().platforms[Platform.TELEGRAM]
+        assert TelegramAdapter(platform_config).DRAFT_STREAM_PREFIX_STABLE is True, doc
+    (tmp_path / "config.yaml").write_text(json.dumps({"telegram": {"extra": {"plain_drafts": False}}}))
+    assert TelegramAdapter(load_gateway_config().platforms[Platform.TELEGRAM]).DRAFT_STREAM_PREFIX_STABLE is False

@@ -45,6 +45,23 @@ _TOKEN_CONTENTION_RECONNECT_DELAYS = (120.0, 300.0, 600.0)
 _TOKEN_CONTENTION_EPISODE_SECS = 1800.0
 
 
+# A reconnect wait that overran its planned length by more than this was a suspended host, not an outage the
+# gateway watched: Windows' ``time.monotonic()`` keeps counting through Modern Standby (#126825).
+_RECONNECT_SUSPEND_GAP_SECS = 60.0
+
+
+def discount_suspended_wait(entries, slept: float, planned: float) -> None:
+    """Move each reconnect entry's ``queued_at`` forward by a wait's suspend overrun, so NEEDS_ATTENTION and its
+    backdated ``retrying_since`` count only time the host was awake. Only idle waits are measured: time spent in
+    connect attempts is the gateway failing and stays counted."""
+    overrun = slept - planned
+    if overrun <= _RECONNECT_SUSPEND_GAP_SECS:
+        return
+    for info in entries:
+        if info.get("queued_at") is not None:
+            info["queued_at"] += overrun
+
+
 def is_token_contention(error_code: Optional[str]) -> bool:
     """True for a fatal whose cause is another poller holding the token (matched by code, never text)."""
     return (error_code or "").strip().lower().endswith("_polling_conflict")
@@ -377,7 +394,9 @@ class GatewaySecondaryReconnectMixin:
                 logger.info(
                     "Secondary %s reconnect retry in %ds (profile: %s)", platform.value, backoff, profile_name
                 )
+                slept_from = time.monotonic()
                 await asyncio.sleep(backoff)
+                discount_suspended_wait((queue_info,), time.monotonic() - slept_from, backoff)
         finally:
             # Release our slot unless a newer task already owns it.
             pending = self._profile_failed_platforms

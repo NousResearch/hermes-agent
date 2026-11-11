@@ -30,6 +30,7 @@ from gateway.platforms.helpers import carry_inbound_dedup, hand_over_held_inboun
 from gateway.run_adapters_recovery import (
     GatewaySecondaryReconnectMixin,
     _adapter_unavailable_message,
+    discount_suspended_wait,
 )
 from gateway.run_shutdown import _log_suppressed
 from gateway.session import SessionSource
@@ -742,17 +743,21 @@ class GatewayAdapterLifecycleMixin(GatewaySecondaryReconnectMixin):
                 if not self._running:
                     return
                 await self._reconnect_failed_platform(platform, now)
+            idle_from = time.monotonic()
             if not await _idle(10):  # re-check every 10 seconds
                 return
+            discount_suspended_wait(self._failed_platforms.values(), time.monotonic() - idle_from, 10)
 
     def _flag_reconnect_needs_attention(
         self, platform, info: dict, now: float, *, status_key: Optional[str] = None
     ) -> bool:
         """Flag NEEDS_ATTENTION (once) past the threshold — a signal, NOT a circuit breaker. The threshold
         is the bound profile's ``agent.reconnect_attention_after``: secondaries call this inside their
-        ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key. True = flagged now."""
+        ``_profile_runtime_scope`` with their ``<profile>:<platform>`` status key. True = flagged now.
+        Only after a failed attempt: time queued with no retry yet proves nothing failed (#126825)."""
         from gateway.run import _reconnect_needs_attention
-        if info.get("attention_flagged") or not _reconnect_needs_attention(info, now):
+        if (info.get("attention_flagged") or info.get("attempts", 0) < 1
+                or not _reconnect_needs_attention(info, now)):
             return False
         info["attention_flagged"] = True
         queued_for = now - info.get("queued_at", now)

@@ -22,6 +22,7 @@ def _shown(formatted: str) -> str:
         ("Flow: A \\rightarrow B \\rightarrow C", "Flow: A → B → C"),
         ("If $x \\leq y$ and $y \\neq 0$ then \\alpha \\Rightarrow \\beta", "If x ≤ y and y ≠ 0 then α ⇒ β"),
         ("Cost: $5 \\times 3$ items, total \\approx $15", "Cost: 5 × 3 items, total ≈ $15"),
+        ("compact $x\\leq y$ math", "compact x≤ y math"),
         # Controls: code, paths, an escaped backslash, unknown macros and currency stay as written.
         ("Run `a \\rightarrow b` then\n```tex\n\\to\n```", "Run `a \\rightarrow b` then\n```tex\n\\to\n```"),
         ("C:\\in\\data, \\\\rightarrow, \\textbf{x}", "C:\\in\\data, \\\\rightarrow, \\textbf{x}"),
@@ -43,7 +44,9 @@ async def test_rich_send_maps_bare_macros_and_keeps_math_for_the_client():
     bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=7))
     bot.send_chat_action = AsyncMock()
     adapter._bot = bot
-    content = "Pipeline: A \\rightarrow B\n\n| a | b |\n|---|---|\n| $x \\leq y$ | `\\to` |\n\n$$\\alpha + \\beta$$"
+    long_formula = "$" + " + ".join(f"x_{i} \\leq y_{i}" for i in range(20)) + "$"  # > 120 chars
+    content = ("Pipeline: A \\rightarrow B\n\n| a | b |\n|---|---|\n| $x \\leq y$ | `\\to` |\n\n$$\\alpha + \\beta$$\n\n"
+               + long_formula)
 
     assert (await adapter.send("4242", content)).success
     method, = bot.do_api_request.call_args.args
@@ -51,3 +54,4 @@ async def test_rich_send_maps_bare_macros_and_keeps_math_for_the_client():
     assert method == "sendRichMessage"
     assert "A → B" in markdown and "\\rightarrow" not in markdown
     assert "$x \\leq y$" in markdown and "`\\to`" in markdown and "$$\\alpha + \\beta$$" in markdown
+    assert long_formula in markdown

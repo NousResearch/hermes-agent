@@ -78,6 +78,21 @@ async def test_overflow_edit_split_never_breaks_an_inline_entity(unit):
         assert len(bot.calls) == 2 and _styled_everywhere(bot.calls), (pad, [text[-40:] for _, text in bot.calls])
 
 
+@pytest.mark.asyncio
+async def test_overflow_edit_split_leaves_literal_markers_and_a_final_backslash_alone():
+    """An escaped ``\\*args`` is text, not an entity to carry; a reply ending in ``\\`` keeps it."""
+    bot = _BotApi()
+    content = "Use \\*args here. " + "plain words in the reply " * 220 + "C:\\"
+    result = await _adapter(bot)._edit_overflow_split("4242", "99", content, finalize=True)
+    assert result.success and len(bot.calls) == 2
+    shown = "".join(re.sub(r" \(\d+/\d+\)$", "", _strip(text)) for _, text in bot.calls)
+    assert shown.count("*") == 1 and shown.endswith("C:\\"), shown[-30:]
+
+
+def _strip(text: str) -> str:
+    return re.sub(r"\\(.)", r"\1", text)
+
+
 def test_standalone_send_split_never_breaks_an_inline_entity(monkeypatch):
     """The out-of-gateway sender (cron delivery, send_message tool) splits like the live adapter."""
     import asyncio

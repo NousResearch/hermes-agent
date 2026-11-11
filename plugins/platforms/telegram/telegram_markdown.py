@@ -5,7 +5,7 @@ import re
 
 from gateway.platforms.helpers import convert_table_to_bullets as _wrap_markdown_tables
 from plugins.platforms.telegram.rich_code_regions import map_outside_code
-from plugins.platforms.telegram.telegram_latex import normalize_latex_macros, normalize_rich_latex_macros
+from plugins.platforms.telegram.telegram_latex import normalize_latex_macros, replace_macros_outside
 
 # Stands in for the ** of a line-start **> expandable-quote opener while emphasis is resolved.
 _EXPANDABLE_QUOTE = "\x00EQ\x00"
@@ -472,9 +472,21 @@ _RICH_DOLLAR_RE = re.compile(
 )
 
 
+_RICH_BRACKET_MATH_RE = re.compile(r'\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)')
+
+
 def normalize_rich_latex(text: str) -> str:
-    """Bare LaTeX macros in rich-message prose become Unicode; math spans and code stay verbatim."""
-    return map_outside_code(text, normalize_rich_latex_macros) if '\\' in text else text
+    """Bare LaTeX macros in rich-message prose become Unicode. Code, ``\\(...\\)``/``\\[...\\]`` and every
+    dollar span the currency escape keeps as math (``_RICH_DOLLAR_RE``) stay verbatim for the client."""
+    return map_outside_code(text, _rich_latex_prose) if '\\' in text else text
+
+
+def _rich_latex_prose(prose: str) -> str:
+    if '\\' not in prose:
+        return prose
+    spans = [m.span() for m in _RICH_DOLLAR_RE.finditer(prose) if m.group('keep')]
+    spans += [m.span() for m in _RICH_BRACKET_MATH_RE.finditer(prose)]
+    return replace_macros_outside(prose, sorted(spans))
 
 
 def escape_rich_currency_dollars(text: str) -> str:

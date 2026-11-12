@@ -165,6 +165,47 @@ def test_withheld_builtin_key_is_reported_once_with_the_remedy_never_the_key(tmp
     assert "providers.deepseek" not in caplog.text
 
 
+def test_withheld_builtin_key_warning_reaches_every_profile_home(tmp_path, monkeypatch, caplog):
+    """One process serves several profiles: profile A's warning must not silence profile B's."""
+    import logging
+
+    from agent import custom_entry_pool
+    monkeypatch.setattr(custom_entry_pool, "_WARNED_WITHHELD", set())
+    from hermes_cli import runtime_provider as rp
+
+    counts = []
+    for profile in ("a", "b"):
+        (tmp_path / profile).mkdir()
+        _home(tmp_path / profile, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra={})
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            for _ in range(2):
+                rp.resolve_runtime_provider(requested="custom:deepseek")
+        counts.append(sum("providers.deepseek" in r.getMessage() for r in caplog.records))
+    assert counts == [1, 1]
+
+
+def test_withheld_builtin_key_warning_on_the_builtins_own_host_names_the_recording(tmp_path, monkeypatch, caplog):
+    """An entry ON the built-in's host whose only key was recorded for another host is told so,
+    not that it points elsewhere."""
+    import logging
+
+    from agent import custom_entry_pool
+    monkeypatch.setattr(custom_entry_pool, "_WARNED_WITHHELD", set())
+    row = {**_entry_manual_row(), "base_url": "https://elsewhere.example/v1"}
+    home = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra={},
+                 pool={"deepseek": [row]})
+    monkeypatch.delenv("DEEPSEEK_API_KEY")
+    _edit_config(home, entry={"api": BUILTIN_HOST})
+    from hermes_cli import runtime_provider as rp
+
+    with caplog.at_level(logging.WARNING):
+        rp.resolve_runtime_provider(requested="custom:deepseek")
+    warnings = [r.getMessage() for r in caplog.records if "providers.deepseek" in r.getMessage()]
+    assert len(warnings) == 1 and "recorded for another host" in warnings[0]
+    assert MANUAL_KEY not in caplog.text
+
+
 def test_non_shadowing_entry_sends_its_key_env(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch, "mydeep", "DEEPSEEK_API_KEY")
     from hermes_cli import runtime_provider as rp

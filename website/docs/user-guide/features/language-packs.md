@@ -43,8 +43,9 @@ hermes plugins install https://github.com/teknium1/hermes-lang-pl   # or a catal
 hermes config set display.language pl
 ```
 
-Restart running gateways/TUIs so they pick up the pack. The TUI and Desktop language switchers list
-bundled languages, your overlay languages and every installed pack by their native name (endonym).
+Restart running gateways/TUIs and the dashboard so they pick up the pack. The TUI, Desktop and web
+dashboard language switchers list bundled languages, your overlay languages and every installed pack by
+their native name (endonym) — the dashboard lists a pack language once the pack ships web strings.
 The `HERMES_LANGUAGE` entry in `.env` still overrides `display.language`.
 
 ## Writing a pack
@@ -58,6 +59,7 @@ hermes-lang-pl/
     pl.yaml            # core: Python-side strings (approval.*, gateway.*, cli.*, display.*, slash.*, tips.*, ...)
     pl.tui.yaml        # optional: hermes --tui strings
     pl.desktop.yaml    # optional: Hermes Desktop strings
+    pl.web.yaml        # optional: web dashboard strings
 ```
 
 `plugin.yaml`:
@@ -74,16 +76,17 @@ provides_locales:
 
 `provides_locales` entries can also be plain ids (`- pl`); the endonym then defaults to the id.
 When the manifest declares `provides_locales`, the plugin loader registers every
-`locales/<lang>[.tui|.desktop].yaml` automatically.
+`locales/<lang>[.tui|.desktop|.web].yaml` automatically.
 
 ### Files and keys
 
 - **`pl.yaml` (core)** mirrors the structure of the bundled `locales/en.yaml`. Nested YAML flattens to
   dotted keys (`approval.denied`, `gateway.goal_cleared`). Copy `en.yaml`, translate the values, delete
   what you do not want to override.
-- **`pl.tui.yaml` / `pl.desktop.yaml`** mirror the English catalogs of the TUI and Desktop apps. The key
-  sets are exported to `locales/_keys.tui.json` and `locales/_keys.desktop.json` in the Hermes repo,
-  which is what the validator checks against.
+- **`pl.tui.yaml` / `pl.desktop.yaml` / `pl.web.yaml`** mirror the English catalogs of the TUI, the
+  Desktop app and the web dashboard. The key sets are exported to `locales/_keys.tui.json`,
+  `locales/_keys.desktop.json` and `locales/_keys.web.json` in the Hermes repo, which is what the
+  validator checks against. The dashboard reads its layer over `GET /api/i18n/catalog?surface=web`.
 - YAML values must be **text**. A number, list, `true`/`false` or empty value is rejected.
 - Never use YAML reserved words (`on`, `off`, `yes`, `no`) as keys.
 
@@ -92,8 +95,8 @@ When the manifest declares `provides_locales`, the plugin loader registers every
 - Core (Python) strings use **named** placeholders exactly as English does: `"⏳ Draining {count} active agent(s)..."`.
   Keep every `{name}` from the English value; a missing or misspelled placeholder makes Hermes fall
   back to the untranslated string for that key.
-- TUI and Desktop entries whose English value is a *function* (it takes arguments) are written in YAML
-  as strings with **positional** placeholders: `"{0} of {1} sessions"`.
+- TUI, Desktop and web entries whose English value is a *function* (it takes arguments) are written in
+  YAML as strings with **positional** placeholders: `"{0} of {1} sessions"`.
 
 ### Validate
 
@@ -104,7 +107,7 @@ hermes plugins validate ./hermes-lang-pl
 The validator checks that every declared id has `locales/<id>.yaml`, that each file parses and is
 text-only (a non-text value is an **error**), and **warns** — listing them — about keys that do not
 exist in the English catalog for that surface (they are harmless but do nothing). The `.tui.yaml` /
-`.desktop.yaml` checks run when the corresponding `_keys.*.json` export is present.
+`.desktop.yaml` / `.web.yaml` checks run when the corresponding `_keys.*.json` export is present.
 
 ### Register from Python (optional)
 
@@ -122,7 +125,7 @@ def register(ctx):
 ```
 
 `register_locale(lang, source, *, endonym=None, rtl=False, surface="core")` takes a YAML path or a
-mapping; `surface` is `core`, `tui` or `desktop`. Registration is undone when the plugin unloads and
+mapping; `surface` is `core`, `tui`, `desktop` or `web`. Registration is undone when the plugin unloads and
 never changes `display.language`.
 
 ## Personal overrides without a plugin
@@ -146,7 +149,7 @@ on the next start or the next `display.language` change.
   (`pl` needs `locales/pl.yaml`).
 - **A translated string still shows in English** — the key is not in the English catalog (run
   `hermes plugins validate`; unknown keys are listed), or the placeholder set differs from English.
-- **Language listed but the TUI/Desktop is still English** — the pack has no `.tui.yaml` /
-  `.desktop.yaml`; those surfaces render English plus whatever the pack provides. For the 16 bundled
+- **Language listed but the TUI/Desktop/dashboard is still English** — the pack has no `.tui.yaml` /
+  `.desktop.yaml` / `.web.yaml`; those surfaces render English plus whatever the pack provides. For the 16 bundled
   languages the TUI ships its own `locales/<lang>.tui.yaml` in the Hermes tree (the Desktop bundles
   its translations in-app), so a pack for one of those only needs the keys it wants to override.

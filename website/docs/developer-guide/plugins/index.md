@@ -1290,7 +1290,7 @@ parsing `config.yaml` yourself.
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —
 Python (`agent.i18n.t()`: approval prompts, gateway replies, tool verbs, tips), the `hermes --tui`
-interface and the Desktop app. Declare `provides_locales` and ship the YAML; **no Python is needed**:
+interface, the Desktop app and the web dashboard. Declare `provides_locales` and ship the YAML; **no Python is needed**:
 
 ```
 ~/.hermes/plugins/hermes-lang-pl/
@@ -1298,7 +1298,8 @@ interface and the Desktop app. Declare `provides_locales` and ship the YAML; **n
 └── locales/
     ├── pl.yaml            # core (Python) strings — same key tree as the bundled locales/en.yaml
     ├── pl.tui.yaml        # optional: TUI strings (keys in locales/_keys.tui.json)
-    └── pl.desktop.yaml    # optional: Desktop strings (keys in locales/_keys.desktop.json)
+    ├── pl.desktop.yaml    # optional: Desktop strings (keys in locales/_keys.desktop.json)
+    └── pl.web.yaml        # optional: web dashboard strings (keys in locales/_keys.web.json)
 ```
 
 ```yaml

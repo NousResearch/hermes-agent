@@ -1981,7 +1981,7 @@ export interface LanguageOption {
   source: string
   surfaces: LocaleSurface[]
 }
-export type LocaleSurface = 'core' | 'tui' | 'desktop'
+export type LocaleSurface = 'core' | 'tui' | 'desktop' | 'web'
 export interface I18nCatalogParams {
   profile?: string | null
   lang: string

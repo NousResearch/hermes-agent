@@ -1,8 +1,8 @@
 """Catalog layers above the bundled ``locales/`` tree: plugin language packs and the user overlay.
 
 A language pack is per-language and multi-surface: ``<lang>.yaml`` (core, read by ``agent.i18n.t``),
-``<lang>.tui.yaml`` and ``<lang>.desktop.yaml`` (opaque to Python: parsed, flattened, served to the
-renderers over ``i18n.catalog``). Every layer is a flat ``{dotted.key: text}`` mapping and may be
+``<lang>.tui.yaml``, ``<lang>.desktop.yaml`` and ``<lang>.web.yaml`` (opaque to Python: parsed, flattened,
+served to the renderers over ``i18n.catalog`` / the dashboard's ``/api/i18n/catalog``). Every layer is a flat ``{dotted.key: text}`` mapping and may be
 PARTIAL — it only carries the keys it overrides.
 
 Two layers live here:
@@ -28,7 +28,7 @@ from typing import Any, Mapping
 logger = logging.getLogger(__name__)
 
 CORE_SURFACE = "core"
-SURFACES: tuple[str, ...] = (CORE_SURFACE, "tui", "desktop")
+SURFACES: tuple[str, ...] = (CORE_SURFACE, "tui", "desktop", "web")
 
 # ``en``, ``zh-hant``, ``pt-br``, ``sr-latn-rs``: lowercase language subtag + optional region/script parts.
 _LANGUAGE_ID_RE = re.compile(r"^[a-z]{2,3}(-[a-z0-9]{2,8})*$")

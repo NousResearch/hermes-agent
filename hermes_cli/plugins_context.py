@@ -723,7 +723,7 @@ class PluginContext(PluginCapabilityCtxMixin):
     def register_locale_dir(
         self, path: str | Path, *, metadata: Optional[Mapping[str, Mapping[str, Any]]] = None,
     ) -> list[PluginRegistration]:
-        """Register every ``<lang>[.tui|.desktop].yaml`` under ``path`` (a pack's ``locales/`` dir). The
+        """Register every ``<lang>[.tui|.desktop|.web].yaml`` under ``path`` (a pack's ``locales/`` dir). The
         loader calls this for plugins declaring ``provides_locales``; ``metadata`` maps ids to
         ``{endonym, rtl}``. A broken file is skipped with a warning so one typo never disables the pack."""
         from agent.i18n_layers import scan_locale_dir

@@ -1,0 +1,31 @@
+name: emporium
+repo: https://github.com/0xdopewilly/hermes-emporium
+sha: 7b43458565055461b8094ce44199976933275fad
+title: Emporium
+description: "Hermes opens a shop: sell this agent's skills to anyone (people, scripts, other agents) for USDC per job over x402, paid only on delivery. A new gateway platform takes paid HTTP jobs, verifies the payment before work starts and settles it on-chain only when the result is ready, so a failed, timed-out or abandoned job costs the buyer nothing. Each job runs in its own session that loads only the toolsets its service sells, behind a tool lock and a per-job tool cap. Every job is metered (model calls, tokens, and its inference cost from Hermes's own session pricing), so /shop and the dashboard show sales, AI cost, profit and margin. Services can subcontract part of a job to owner-pinned shops, paid out of the job's own price. Hermes can also hire other shops, after checking their receipts on-chain, within a per-job ceiling, a daily budget and its approval gate. Adds a storefront page, /shop, `hermes emporium`, a dashboard tab, and stress and robbery benches. Disclosure — while the gateway runs the shop listens on host:port (default 127.0.0.1:9402) and calls the configured x402 facilitator (default x402.org) to verify and settle payments, and a JSON-RPC endpoint (default the network's public one) to check payments on-chain; the hire tools call the shop URLs the agent is given (public addresses only, unless the owner lists a private shop in buyer_allow_hosts; link-local and metadata addresses never) and the network's RPC; the optional EMPORIUM_BUYER_KEY (read via the secret scope) signs USDC transfer authorizations for hires and subcontracts within the owner's limits; a SQLite ledger of job metadata (never inputs or outputs) is kept under plugin-data/emporium/, and each job is a session in the shop profile's Hermes history. The shop refuses to open on a profile whose memory, persona or project context files would reach buyers' jobs unless the owner sets allow_unsealed_profile, and `hermes emporium init` turns built-in memory off on the shop's own profile (never the main one)."
+maintainer: 0xdopewilly
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+version: "0.2.0"
+docs_url: https://github.com/0xdopewilly/hermes-emporium#readme
+image: https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/7b43458565055461b8094ce44199976933275fad/docs/banner.png
+screenshots:
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/01-storefront.jpg
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/02-approval.jpg
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/03-agents-hiring-agents.jpg
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/04-receipt-on-chain.jpg
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/05-the-books.jpg
+- https://raw.githubusercontent.com/0xdopewilly/hermes-emporium/3054699240bb8dd3d387b01592efdcc709d1bc0d/screenshots/06-lock-held.jpg
+platforms: []
+capabilities:
+  provides_tools:
+  - emporium_browse
+  - emporium_hire
+  provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_api_request
+  - on_session_end
+  provides_middleware: []
+  requires_env: []

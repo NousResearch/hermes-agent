@@ -1,7 +1,7 @@
 """Prompt-cache warm-up gate for batch subagents (``delegation.prefix_stagger_seconds``).
 
-Siblings in one batch send the same tools[] and system-prompt scaffold; only the goal (their first user
-turn) and, when tasks carry different ``context``, the tail of the system prompt differ. Launched together,
+Siblings in one batch send the same tools[] and system prompt; only their first user turn (context, then
+goal) differs. Launched together,
 every child's first request misses the provider cache and pays the full prefix. A provider cache entry is
 readable once the writing response starts streaming, so the gate lets the batch's first child (the leader)
 run at once and holds the siblings that share its route until the leader's first response has started, it

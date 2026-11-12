@@ -7,15 +7,14 @@
  *
  * Three rules the previous single-path probe got wrong:
  *
- *  1. The binary is not always under the REPO ROOT. This is an npm workspaces
- *     repo, and npm only hoists a dependency to the root when nothing conflicts
- *     — otherwise `electron` installs into `apps/desktop/node_modules`. Both
- *     layouts are normal, so both have to be searched, nearest package first.
+ *  1. The binary is not under the REPO ROOT. pnpm links `electron` into
+ *     `apps/desktop/node_modules`, the workspace that declares it, and never
+ *     hoists it to the root.
  *  2. The binary is `electron.exe` on Windows. A bare `electron` never exists
  *     there, so the probe could only ever miss.
  *  3. `which` is not a command on Windows. The PATH fallback spawned it
  *     unconditionally, so on Windows the fallback failed for the wrong reason
- *     and the error message blamed a missing `npm install`.
+ *     and the error message blamed a missing install.
  */
 
 import { spawnSync } from 'node:child_process'
@@ -29,8 +28,7 @@ export function electronBinaryName(platform: NodeJS.Platform = process.platform)
 }
 
 /**
- * Where an npm install can leave the binary, in probe order: nearest package
- * first, so a workspace-local install wins over a stale hoisted one.
+ * Where an install leaves the binary under each root, in probe order.
  */
 export function electronDistCandidates(roots: string[], platform: NodeJS.Platform = process.platform): string[] {
   return roots.map((root) => path.join(root, 'node_modules', 'electron', 'dist', electronBinaryName(platform)))
@@ -64,7 +62,7 @@ export function electronPackagePath(from: string): null | string {
 /**
  * Resolve the Electron binary, or throw with the layouts that were searched.
  *
- * `roots` are searched in order; pass the desktop package before the repo root.
+ * `roots` are searched in order.
  */
 export function resolveElectronBinary(roots: string[]): string {
   for (const root of roots) {
@@ -95,6 +93,6 @@ export function resolveElectronBinary(roots: string[]): string {
 
   throw new Error(
     `Electron binary not found. Searched ${electronDistCandidates(roots).join(', ')} and PATH. ` +
-      'Run "npm install" from the repo root to install devDependencies.',
+      'Run "pnpm install --frozen-lockfile" from the repo root to install devDependencies.',
   )
 }

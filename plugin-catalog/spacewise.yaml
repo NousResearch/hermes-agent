@@ -1,0 +1,43 @@
+name: spacewise
+repo: https://github.com/ardianreffa/spacewise
+sha: 8e4f39aa49d9ad31e5972a67f886434c59dbc988
+title: Spacewise
+description: >-
+  Free up space without the fear of losing what matters. Scans one folder you name for exact
+  duplicates (one copy always stays), leftover .dmg/.pkg installers, similar photos (the sharpest
+  stays) and blurry or near-black photos, and reports large videos, screenshots and other large
+  files without ever proposing them. A local preview page shows what would stay and what would go;
+  only categories you approve move to the Trash of the same disk, and spacewise_undo puts them
+  back. Disclosure — reads image, video and installer files (and the name, size and date of other
+  files) only in a folder you name inside your home folder or on an external drive; refuses the
+  operating system, disk roots, the whole home folder, other users' and shared folders, ~/Library
+  and ~/Applications, hidden and locked items, unreadable folders, symlinks, and app-managed
+  libraries (Photos, Lightroom, Final Cut, iMovie, Music, apps, Time Machine); skips cloud
+  placeholders without opening them. spacewise_trash takes only a scan id and categories (never
+  file paths) and is escalated by its own pre_tool_call hook to Hermes' human-approval gate, so it
+  follows the user's approval settings (YOLO, approvals off or approvals.cron_mode can let it
+  through; with no human present it fails closed); each request gets a one-time rule key. Moves are
+  same-disk renames into ~/.Trash or <drive>/.Trashes/<uid> (freedesktop Trash on Linux), never
+  copies or deletions; files changed since the scan, hard-linked files and RAW+JPEG pairs are left
+  alone. Stores per-file measurements and SHA-256 hashes, recent scans, Trash batches, reports and
+  preview thumbnails in its plugin data folder. Sends to the model provider, as part of the
+  conversation, the scanned folder, counts, sizes and names of listed photos, videos and
+  installers; names of other large files stay in the local report. No network calls, model calls,
+  shell commands or telemetry; no process-wide settings changed. Windows: scan and report only.
+maintainer: ardianreffa
+tier: community
+category: tools
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/ardianreffa/spacewise#readme
+version: "0.1.1"
+platforms: []
+capabilities:
+  provides_tools:
+    - spacewise_scan
+    - spacewise_preview
+    - spacewise_trash
+    - spacewise_undo
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

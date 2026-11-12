@@ -221,10 +221,12 @@ jobs:
     # secret is injected into admission; downstream jobs consume its outputs.
     environment: release-signing
     # The archive step re-downloads every pinned input from R2 to verify its
-    # sha256 (several GB: Chromium, llama.cpp CUDA builds). ~20 s on a normal
+    # sha256 (several GB: Chromium, llama.cpp CUDA builds). ~3 min on a normal
     # day; v0.22.4 rc.1 hit slow R2 reads and the old 5-minute cap cancelled
-    # both Windows chains. The standalone archive job it replaced had 60.
-    timeout-minutes: 30
+    # both Windows chains, and v0.23.1 rc.1 took 28 min on x64 and was
+    # cancelled at 30 on arm64 (single files stalling 5-8 min). 60 matches the
+    # standalone archive job it replaced.
+    timeout-minutes: 60
     permissions:
       contents: read
     outputs:
@@ -489,8 +491,7 @@ jobs:
         run: |
           $paths = @(
             $env:GITHUB_WORKSPACE,
-            $env:RUNNER_TEMP,
-            (npm config get cache)
+            $env:RUNNER_TEMP
           )
           foreach ($p in $paths) {
             try {
@@ -571,7 +572,7 @@ jobs:
       # Universal-bundle assembly reuses two small slices of this leg's preparation
       # rather than the multi-GB dependency snapshot: electron-builder's toolset
       # downloads (winCodeSign kit, ATS dlib, dotnet runtime; preparation points
-      # ELECTRON_BUILDER_CACHE at packager/builder) and npm's content cache.
+      # ELECTRON_BUILDER_CACHE at packager/builder) and pnpm's store.
       # Commit builds hold a read-only cache token, so their save is skipped here.
       - name: Save the bundle-assembly caches
         if: ${{ !cancelled() && steps.prepare.outcome == 'success' && matrix.target.label == 'win32-x64' && inputs.build_commit == '' && inputs.channel == '' }}
@@ -579,8 +580,8 @@ jobs:
         with:
           path: |
             ${{ github.workspace }}/.cache/desktop-inputs/packager/builder
-            ${{ github.workspace }}/.cache/desktop-inputs/npm/_cacache
-          key: win32-assembly-v1-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+            ${{ github.workspace }}/.cache/desktop-inputs/pnpm/store
+          key: win32-assembly-v1-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml') }}
 
       - name: Restore verified payload signatures
         id: payload-signatures
@@ -670,7 +671,7 @@ jobs:
         if: inputs.skip-tests != true
         shell: bash
         working-directory: apps/desktop
-        run: node ../../node_modules/vitest/vitest.mjs run --project electron scripts/payload-sign-cache.test.mjs scripts/batch-sign-binaries.test.mjs
+        run: node node_modules/vitest/vitest.mjs run --project electron scripts/payload-sign-cache.test.mjs scripts/batch-sign-binaries.test.mjs
 
       # Commit jobs share these steps but have read-only cache tokens.
       - name: Save verified payload signatures
@@ -1394,7 +1395,6 @@ jobs:
       HERMES_PAYLOAD_VERSION: ${{ needs.validate.outputs.payload-version }}
       # The paths build-win32-x64 saves its bundle-assembly caches from.
       ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/.cache/desktop-inputs/packager/builder
-      npm_config_cache: ${{ github.workspace }}/.cache/desktop-inputs/npm
       CLOUDFLARE_R2_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
       CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
       CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
@@ -1434,8 +1434,8 @@ jobs:
           archive-inputs: ${{ inputs.disposable_run == '' && inputs.disposable_channel == '' }}
           cache-python: false
           save-tools-cache: false
-          # npm's cache comes from build-win32-x64 below; nothing ever saves
-          # setup-pm's per-job npm key for this read-only job.
+          # pnpm's store comes from build-win32-x64 below; nothing ever saves
+          # setup-pm's per-job node key for this read-only job.
           cache-node: false
 
       - name: Restore the bundle-assembly caches
@@ -1443,15 +1443,19 @@ jobs:
         with:
           path: |
             ${{ github.workspace }}/.cache/desktop-inputs/packager/builder
-            ${{ github.workspace }}/.cache/desktop-inputs/npm/_cacache
-          key: win32-assembly-v1-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+            ${{ github.workspace }}/.cache/desktop-inputs/pnpm/store
+          key: win32-assembly-v1-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml') }}
           restore-keys: win32-assembly-v1-${{ runner.arch }}-
 
       - name: Install the locked Windows bundle tooling
         uses: ./.github/actions/retry
+        env:
+          # The store restored above. A step env, because setup-pm's
+          # GITHUB_ENV export would override a job-level one.
+          pnpm_config_store_dir: ${{ github.workspace }}/.cache/desktop-inputs/pnpm/store
         with:
           # No Electron/native postinstalls: only the builder's SDK downloader.
-          command: npm ci --workspace apps/desktop --include-workspace-root --include=dev --ignore-scripts --no-audit --no-fund
+          command: pnpm install --frozen-lockfile --filter "{./apps/desktop}..." --ignore-scripts
 
       - name: Retrieve Windows packages from R2
         shell: bash
@@ -1792,6 +1796,8 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           toolchain: python
+          # scripts/termux/build.py installs and builds the TUI on this host with pnpm.
+          packages: pnpm
           archive-inputs: true
           cache-python: false
 

@@ -17,11 +17,8 @@ def _single_query_clarify_callback(questions: list) -> dict:
 
     A -q turn never builds the prompt_toolkit app, so the interactive clarify modal
     can never be painted or answered — the CLI callback would poll until
-    ``agent.clarify_timeout`` while the caller sees a silent hang. Mirror the oneshot
-    path and answer immediately instead.
-
-    The oneshot path answers immediately via ``_oneshot_clarify_callback``; single-query turns need the same
-    headless behavior (#94943).
+    ``agent.clarify_timeout`` while the caller sees a silent hang. Answer immediately
+    instead (#94943).
     """
     return {"answers": {}, "outcome": "undelivered", "notice": (
         "single-query mode: no user available to answer. Pick the best choices using your own "
@@ -389,16 +386,10 @@ class CLIAgentSetupMixin:
             if not _fb_provider or not _fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
+                from hermes_cli.fallback_config import fallback_entry_runtime_kwargs
                 # target_model: the fallback entry names the model that will be sent; without it the
                 # ladder keys off config `default` (see _ensure_runtime_credentials, #112600).
-                _fb_kwargs = {"requested": _fb_provider, "target_model": _fb_model}
-                if _fb.get("base_url"):
-                    _fb_kwargs["explicit_base_url"] = _fb["base_url"]
-                _fb_api_key = resolve_entry_api_key(_fb)
-                if _fb_api_key:
-                    _fb_kwargs["explicit_api_key"] = _fb_api_key
-                runtime = resolve_runtime_provider(**_fb_kwargs)
+                runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(_fb))
                 _why_log, _why = primary_failure_wording(primary_exc)  # #117482: quota is not auth
                 logger.warning(
                     "Primary provider %s (%s). Falling through to fallback: %s/%s",

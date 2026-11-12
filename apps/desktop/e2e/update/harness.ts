@@ -278,10 +278,17 @@ function exeOf(pid: number): string {
 /**
  * Live Desktop main processes of this install (the packaged exe, not its zygote/renderer/gpu
  * children). A child between fork and exec still shows the main's exe and argv, so a candidate
- * whose parent is itself a candidate is that child, not a second app.
+ * whose parent is itself a candidate is that child, not a second app. Only the packaged exe
+ * counts: Crashpad's handler runs from the same dir with no `--type=`, is reparented to init, and
+ * can outlive the app it served, so the release dir alone would take it for a relaunched app.
  */
 export function desktopMainProcesses(facts: InstallFacts): ProcInfo[] {
-  const candidates = processesRunningFrom(releaseDir(facts)).filter(proc => !/--type=/.test(proc.cmdline))
+  const app = fs.realpathSync(packagedExe(facts))
+
+  const candidates = processesRunningFrom(releaseDir(facts)).filter(
+    proc => exeOf(proc.pid) === app && !/--type=/.test(proc.cmdline)
+  )
+
   const pids = new Set(candidates.map(proc => proc.pid))
 
   return candidates.filter(proc => !pids.has(proc.ppid))

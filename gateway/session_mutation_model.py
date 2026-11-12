@@ -51,7 +51,7 @@ async def prepare_model(authority, live, payload, prepared):
     config, current = _current_route(authority, live, old)
     reset = is_model_reset(payload)
     if reset:
-        payload = await asyncio.to_thread(_reset_payload, authority, old, current)
+        payload = await asyncio.to_thread(_reset_payload, authority, old, current, payload)
         if 'status' in payload:
             return payload
     # A pick is an explicit user action: it resolves against the owning profile's CURRENT named
@@ -70,9 +70,19 @@ async def prepare_model(authority, live, payload, prepared):
         custom_providers=get_compatible_custom_providers(resolution))
     if not result.success:
         raise RuntimeStoreError('model_resolution_failed')
+    from gateway.session_deferred_pick import pending_model_pick
+    pending = await asyncio.to_thread(
+        pending_model_pick, authority, prepared['snapshot']['receipt']['session_id'])
+    if (payload.get('confirm') and 'service_tier' not in payload and pending is not None
+            and payload['confirm'] == pending.get('awaiting_confirm') and 'service_tier' in pending['payload']
+            and {k: v for k, v in pending['payload'].items() if k not in {'confirm', 'service_tier'}}
+                == {k: v for k, v in payload.items() if k != 'confirm'}):
+        # Older viewers echo only the model fields. Keep the wire payload immutable for exact
+        # receipt retries; consent still binds the current pending tier and application identity.
+        payload = {**payload, 'service_tier': pending['payload']['service_tier']}
     # The configured default is the user's own choice: a reset is never held behind a cost ask.
     refusal = None if reset else await _selection_guard_refusal(
-        authority, live, payload, prepared['snapshot'], current, result)
+        authority, live, payload, prepared['snapshot'], current, result, pending=pending)
     if refusal is not None:
         return refusal
     frozen = old.config()
@@ -102,6 +112,10 @@ async def prepare_model(authority, live, payload, prepared):
         # The level picked with the model lands in the same commit (as prepare_reasoning writes it).
         from gateway.session_policy import pin_reasoning_effort
         pin_reasoning_effort(frozen, payload['reasoning'], session=True)
+    if 'service_tier' in payload:
+        from gateway.session_policy import SESSION_PINS
+        frozen.setdefault('agent', {})['service_tier'] = payload['service_tier']
+        frozen[SESSION_PINS] = {**(frozen.get(SESSION_PINS) or {}), 'service_tier': True}
     if old.follows_profile:
         # A committed /model holds while the profile still targets what it targets now (main's
         # composer_override_profile); a later profile edit supersedes it.
@@ -150,17 +164,38 @@ async def prepare_model(authority, live, payload, prepared):
         key = None
     policy = bind_launch_key(authority, prepared['snapshot']['receipt']['session_id'], policy, key,
                              config_secrets=secrets)
-    return dict(prepared, policy=asdict(policy))
+    if payload.get('service_tier') in {'fast', 'ultrafast'}:
+        await asyncio.to_thread(_validate_model_tier, authority, policy, payload['service_tier'])
+    return dict(prepared, policy=asdict(policy),
+                **({'service_tier': payload['service_tier']} if 'service_tier' in payload else {}))
+
+
+def _validate_model_tier(authority, policy, tier):
+    """Check the resolved destination and its credentials, never the running source agent."""
+    from pathlib import Path
+    from gateway.run import _profile_runtime_scope
+    from gateway.session_policy import route_launch_key
+    from gateway.session_service_tiers import available_service_tiers
+    from gateway.session_worker_construct import route_runtime
+    with _profile_runtime_scope(Path(authority.profile_id)):
+        selected = policy.config(authority)
+        runtime, _ = route_runtime(policy, selected, policy.model,
+                                   route_launch_key(authority, policy, selected), fallback=False)
+        options = available_service_tiers(
+            policy.model, provider=runtime.get('provider'), base_url=runtime.get('base_url'),
+            access_token=runtime.get('api_key'), include_ultrafast=tier == 'ultrafast')
+    if tier not in options:
+        raise RuntimeStoreError('fast_unavailable')
 
 
 def is_model_reset(payload):
-    """``/model reset`` as a ``model`` mutation; with any other selection field it is refused, as on
-    every surface (``parse_model_switch_args``)."""
+    """Reset adopts the profile route; a queued speed choice may travel with it, but an explicit
+    provider or reasoning level still conflicts with reset (``parse_model_switch_args``)."""
     from hermes_cli.model_switch import (
         MODEL_SWITCH_ERR_RESET_WITH_FLAGS, MODEL_SWITCH_ERROR_TEXT, MODEL_SWITCH_RESET_TOKEN)
     if payload['model'].strip().lower() != MODEL_SWITCH_RESET_TOKEN:
         return False
-    if set(payload) - {'model', 'confirm'}:
+    if set(payload) - {'model', 'confirm', 'service_tier'}:
         raise RuntimeStoreError('invalid_params', field='payload',
                                 detail=MODEL_SWITCH_ERROR_TEXT[MODEL_SWITCH_ERR_RESET_WITH_FLAGS])
     return True
@@ -178,7 +213,7 @@ def configured_default(authority):
     return _resolve_gateway_model(profile), '' if provider.lower() == 'auto' else provider
 
 
-def _reset_payload(authority, old, current):
+def _reset_payload(authority, old, current, payload):
     """``/model reset``: the pick becomes the owning profile's configured model, read fresh, so the
     session runs (and, when following, keeps following) its profile again; history is kept. Returns a
     ``noop`` report when the session already runs that model. A safe-mode session never read the
@@ -187,9 +222,10 @@ def _reset_payload(authority, old, current):
     model, provider = ('', '') if old.ignore_user_config else configured_default(authority)
     if not model:
         raise RuntimeStoreError('invalid_params', field='payload.model', detail=t('cli.model.reset_no_default'))
-    if model == current.model and provider in ('', current.provider):
+    if model == current.model and provider in ('', current.provider) and 'service_tier' not in payload:
         return {'status': 'noop', 'model': model, 'note': t('cli.model.reset_none', model=model)}
-    return {'model': model, **({'provider': provider} if provider else {})}
+    return {'model': model, **({'provider': provider} if provider else {}),
+            **({'service_tier': payload['service_tier']} if 'service_tier' in payload else {})}
 
 
 def _provider_resolution_config(authority, config, bypass=False):
@@ -336,7 +372,7 @@ def _persisted_selection_context(authority, snapshot, current):
     return SelectionContext(context_tokens=tokens, current_model=current.model or None) if tokens else None
 
 
-async def _selection_guard_refusal(authority, live, payload, snapshot, current, result):
+async def _selection_guard_refusal(authority, live, payload, snapshot, current, result, *, pending=None):
     """The shared selection-guard registry (cost, data-policy, large-context switch) runs before the
     commit. A flagged target is refused with ``status: confirmation_required`` and a ``confirm``
     token bound to the resolved target, the selection it replaces and the session revision; nothing
@@ -366,7 +402,9 @@ async def _selection_guard_refusal(authority, live, payload, snapshot, current, 
                           result.api_mode or ''],
                'current': [current.model, current.provider, normalize_route_base_url(current.base_url)],
                'session': [snapshot['target'], snapshot['target_revision']],
-               'guards': sorted(w.kind for w in warnings)}
+               'guards': sorted(w.kind for w in warnings), 'service_tier': payload.get('service_tier')}
+    if pending is not None:  # Messaging picks have no local deferred-policy slot.
+        binding['application_id'] = pending['application_id']
     token = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
     if payload.get('confirm') == token:
         return None

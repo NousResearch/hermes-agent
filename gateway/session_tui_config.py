@@ -246,9 +246,8 @@ def current_tier(connection, ref, policy):
 
 def service_tier_options(connection, ref, policy, *, include_ultrafast=True):
     """The session route's speed choices, resolved under its credential scope."""
-    from agent.codex_service_tiers import ultrafast_offered
     from gateway.run import _profile_runtime_scope
-    from hermes_cli.models import resolve_fast_mode_overrides
+    from gateway.session_service_tiers import available_service_tiers
     with _profile_runtime_scope(Path(connection.authority.profile_id)):
         agent = connection.authority.agent(ref)
         config, model = policy.effective(connection.authority, secrets=False) if policy else ({}, None)
@@ -262,40 +261,56 @@ def service_tier_options(connection, ref, policy, *, include_ultrafast=True):
             provider = getattr(agent, 'provider', None) or provider
             base_url = getattr(agent, 'base_url', None) or base_url
             access_token = getattr(agent, 'api_key', None)
-        if not model or resolve_fast_mode_overrides(model, provider=provider, base_url=base_url) is None:
-            return []
-        options = ['normal', 'fast', 'auto', 'cold']
-        if include_ultrafast and ultrafast_offered(model, provider=provider, base_url=base_url,
-                                                   access_token=access_token):
-            options.append('ultrafast')
-        return options
+        return available_service_tiers(model, provider=provider, base_url=base_url,
+                                       access_token=access_token, include_ultrafast=include_ultrafast)
 
 
 async def _set_fast(connection, ref, policy, value):
-    """Session-scoped /fast like main's: validated against the session's route, never config.yaml.
-    The words parse through the shared tier table (``parse_exact_service_tier``, as the classic CLI's
-    ``config.set service_tier`` does); the pin is the same per-session override the next turn reads
-    (``current_service_tier``). TUI-only on top: ``toggle`` / ``status`` and the route check."""
+    # Commit and publication remain owned after the requesting socket disconnects.
+    from gateway.session_runtime_workers import track_mutation
+    task = track_mutation(connection.authority, _set_fast_owned(connection, ref, policy, value))
+    return await asyncio.shield(task)
+
+
+async def _set_fast_owned(connection, ref, policy, value):
+    """A speed pick belongs to a queued model, or to the session's current route."""
     from agent.fast_mode import STATIC_TIERS, parse_exact_service_tier, service_tier_word
+    from gateway.session_deferred_pick import pending_model_pick, set_deferred_service_tier
     if not ref.session_id:
         raise RuntimeStoreError('invalid_params')
-    raw, current = _word(value), current_tier(connection, ref, policy)
-    if raw == 'status':
-        return {'key': 'fast', 'value': service_tier_word(current)}
-    if raw in ('', 'toggle'):
-        raw = 'normal' if current in STATIC_TIERS else 'fast'
-    try:
-        tier = parse_exact_service_tier(raw) or None
-    except ValueError:
-        raise RuntimeStoreError('invalid_params') from None
-    if tier in STATIC_TIERS:
-        options = await asyncio.to_thread(service_tier_options, connection, ref, policy,
-                                          include_ultrafast=tier == 'ultrafast')
-        if service_tier_word(tier) not in options:
-            raise RuntimeStoreError('fast_unavailable')
-    from gateway.session_busy_controls import service_tier_config
-    service_tier_config(connection, ref, {'session_id': ref.session_id, 'value': raw})
-    return {'key': 'fast', 'value': service_tier_word(tier)}
+    authority = connection.authority
+    live = authority.sessions[ref.session_id]
+    async with live.mutation_lock:
+        # Both authority and policy can change while this write waits for the session gate.
+        policy = _authorize_write(connection, ref, {'session_id': ref.session_id})
+        pick = await asyncio.to_thread(pending_model_pick, authority, ref.session_id)
+        current = ((pick.get('payload') or {}).get('service_tier') if pick else None)
+        current = (parse_exact_service_tier(current) if current is not None
+                   else current_tier(connection, ref, policy))
+        raw = _word(value)
+        if raw == 'status':
+            return {'key': 'fast', 'value': service_tier_word(current)}
+        if raw in ('', 'toggle'):
+            raw = 'normal' if current in STATIC_TIERS else 'fast'
+        try:
+            tier = parse_exact_service_tier(raw) or None
+        except ValueError:
+            raise RuntimeStoreError('invalid_params') from None
+        word = service_tier_word(tier)
+        if pick is not None:
+            changed = await asyncio.to_thread(set_deferred_service_tier, authority, ref, pick, word)
+            if changed:
+                live.reask_pick = True
+                authority._schedule(ref)
+            return {'key': 'fast', 'value': word, 'deferred': True}
+        if tier in STATIC_TIERS:
+            options = await asyncio.to_thread(service_tier_options, connection, ref, policy,
+                                              include_ultrafast=tier == 'ultrafast')
+            if word not in options:
+                raise RuntimeStoreError('fast_unavailable')
+        from gateway.session_busy_controls import service_tier_config
+        service_tier_config(connection, ref, {'session_id': ref.session_id, 'value': raw})
+        return {'key': 'fast', 'value': word}
 
 
 def _set_personality(connection, value):

@@ -66,6 +66,36 @@ def defer_pick(authority, actor, ref, params):
     return authority.db._execute_write(write)
 
 
+def pending_model_pick(authority, session_id):
+    """The still-uncommitted model choice; a standalone reasoning slot is not a model."""
+    with authority.db._read_ctx() as conn:
+        row = conn.execute('SELECT value FROM state_meta WHERE key=?', (_PREFIX + session_id,)).fetchone()
+    pick = json.loads(row[0]) if row is not None else None
+    return pick if pick is not None and 'application_id' in pick else None
+
+
+def set_deferred_service_tier(authority, ref, pick, word):
+    """Attach a speed choice without touching the running route or a separate session override."""
+    from uuid import uuid4
+    from hermes_state_runtime import _epoch, _json
+
+    def write(conn):
+        _epoch(conn, authority.epoch)
+        row = conn.execute('SELECT value FROM state_meta WHERE key=?', (_PREFIX + ref.session_id,)).fetchone()
+        current = json.loads(row[0]) if row is not None else None
+        if current is None or current.get('application_id') != pick['application_id']:
+            raise RuntimeStoreError('revision_conflict')
+        if current['payload'].get('service_tier') == word:
+            return False
+        payload = {**current['payload'], 'service_tier': word}
+        payload.pop('confirm', None)
+        current.update(payload=payload, application_id='deferred-pick:' + uuid4().hex)
+        current.pop('awaiting_confirm', None)
+        conn.execute('UPDATE state_meta SET value=? WHERE key=?', (_json(current), _PREFIX + ref.session_id))
+        return True
+    return authority.db._execute_write(write)
+
+
 async def reask_on_attach(authority, ref, live):
     """A guarded pick asked only the viewers present at its boundary (and an owner restart drops
     the stream): a newly attached viewer gets the ask again, re-checked at the next boundary."""

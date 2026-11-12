@@ -8,13 +8,8 @@ METADATA_FIELDS = {'title': str, 'archived': bool, 'hidden': bool, 'pinned': boo
 def validate_action(operation, payload):
     if not isinstance(payload, dict) or not isinstance(operation, str):
         raise RuntimeStoreError('invalid_params')
-    # ``confirm``: the owner's selection-guard token for this exact resolved target (session_mutation_model).
-    # ``reasoning``: a level picked with the model, committed in the same selection.
-    if (operation == 'model' and 'model' in payload and not set(payload) - {'model', 'provider', 'confirm', 'reasoning'}
-            and all(isinstance(v, str) and v.strip() for v in payload.values())):
-        from hermes_constants import parse_reasoning_effort
-        if 'reasoning' not in payload or parse_reasoning_effort(payload['reasoning']) is not None:
-            return
+    if operation == 'model' and _valid_model_payload(payload):
+        return
     if operation == 'branch' and _valid_branch_payload(payload):
         return
     # Session-scope ``/reasoning <level>`` and Desktop's Move to project: revision-fenced edits of
@@ -53,6 +48,23 @@ def validate_action(operation, payload):
         valid = operation in required and set(payload) == required[operation]
     if not valid or any(type(value) is not METADATA_FIELDS[key] for key, value in payload.items()):
         raise RuntimeStoreError('invalid_params')
+
+
+def _valid_model_payload(payload):
+    # Options ride with the selected model through resolution, confirmation and commit.
+    if ('model' not in payload or set(payload) - {'model', 'provider', 'confirm', 'reasoning', 'service_tier'}
+            or not all(isinstance(value, str) and value.strip() for value in payload.values())):
+        return False
+    from hermes_constants import parse_reasoning_effort
+    if 'reasoning' in payload and parse_reasoning_effort(payload['reasoning']) is None:
+        return False
+    if 'service_tier' in payload:
+        from agent.fast_mode import parse_exact_service_tier, service_tier_word
+        try:
+            return service_tier_word(parse_exact_service_tier(payload['service_tier'])) == payload['service_tier']
+        except ValueError:
+            return False
+    return True
 
 
 def _valid_branch_payload(payload):

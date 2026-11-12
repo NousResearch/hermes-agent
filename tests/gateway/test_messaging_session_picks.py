@@ -168,3 +168,35 @@ async def test_a_messaging_chats_effort_wire_is_clamped_for_its_api_mode(tmp_pat
     finally:
         await viewer.close()
         runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_guarded_messaging_model_pick_still_requires_confirmation(tmp_path, monkeypatch):
+    from hermes_cli import model_selection_guards, model_switch
+    monkeypatch.setattr(model_switch, 'switch_model', lambda **k: model_switch.ModelSwitchResult(
+        success=True, new_model=k['raw_input'], target_provider='custom', base_url='http://127.0.0.1:9/v1'))
+    warning = model_selection_guards.SelectionWarning('cost', 'Cost', 'picked', 'custom', 'Confirm this model')
+    monkeypatch.setattr(model_selection_guards, 'selection_warnings', lambda *a, **k: [warning])
+    runner, _source, route, viewer, root, fences = await _compressed_chat(tmp_path)
+    try:
+        picked = await viewer.dispatch(_mutate(root, fences, 'model', {'model': 'picked'}, 'guarded'))
+        assert picked.get('result', {}).get('status') == 'confirmation_required', picked
+        assert picked['result']['target_model'] == 'picked'
+        assert runner._session_model_override(route) is None
+    finally:
+        await viewer.close()
+        runner.session_store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_compound_speed_pick_on_a_messaging_chat_is_explicitly_refused(tmp_path):
+    runner, _source, route, viewer, root, fences = await _compressed_chat(tmp_path)
+    try:
+        picked = await viewer.dispatch(_mutate(root, fences, 'model', {
+            'model': 'picked', 'service_tier': 'fast'}, 'compound'))
+        assert picked.get('error', {}).get('data', {}).get('reason') == 'invalid_params', picked
+        assert runner._session_model_override(route) is None
+        assert runner.session_store.get_model_override(route) is None
+    finally:
+        await viewer.close()
+        runner.session_store.close_all_db_handles()

@@ -69,6 +69,21 @@ failure retains that CAS payload; an explicit revision conflict requires a fresh
 snapshot before retry. Existing REST metadata writers are not migrated by this
 RPC adapter and do not yet provide universal revision fencing.
 
+A local session’s `session.mutate` model payload may carry `service_tier` (`normal`, `fast`,
+`ultrafast`, `auto`, or `cold`) alongside the model and reasoning selection.
+When `config.set` Fast follows a queued model pick, the owner adds the normalized
+tier to that durable selection and returns `deferred: true`. The tier is checked
+against the resolved destination route/account at the turn boundary and committed
+with the accepted model; a refused or unconfirmed model leaves the current tier
+unchanged. Changing a queued tier invalidates an earlier confirmation for that
+selection. Older confirmation resends may omit `service_tier`: for the current pending
+selection's token and matching model/provider/reasoning fields, the owner restores
+the tier before revalidating consent against the full current selection. The wire
+payload stays unchanged for exact receipt retries. A later model pick does not
+inherit the previous pick's queued tier.
+Messaging-chat mutations refuse this compound field explicitly; their existing
+model and reasoning pick behavior is unchanged.
+
 ## Cutover limits
 
 The canonical authority currently exposes a narrower RPC set than the full

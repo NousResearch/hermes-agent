@@ -475,7 +475,8 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
-    endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
+    endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work; a
+    named provider instead keeps its own scoped key, and only on its own endpoint);
     ``provider`` set → full bundle via the runtime provider system (same path as CLI/gateway startup); neither →
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
@@ -485,13 +486,14 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS
 
     if values["base_url"] and not is_native_sdk_provider:
-        if values["provider"] and values["provider"].lower() != "custom" and not values["api_key"]:
+        if (values["provider"] or "").lower() not in ("", "custom", "auto") and not values["api_key"]:
             # A named provider's key belongs to its own endpoint, not the parent's route.
             named = _runtime_provider_credentials(values, explicit_request_overrides)
-            if (named["base_url"] or "").rstrip("/") != values["base_url"].rstrip("/"):
+            if _normalized_runtime_url(named["base_url"]).lower() != _normalized_runtime_url(values["base_url"]).lower():
                 raise ValueError(
-                    f"delegation.base_url differs from provider '{values['provider']}' endpoint; "
-                    "set delegation.api_key for a separate endpoint."
+                    f"delegation.base_url ({values['base_url']}) differs from provider '{values['provider']}' "
+                    f"endpoint ({named['base_url']}); refusing to send that provider's key elsewhere. Remove "
+                    f"delegation.base_url, or set delegation.api_key for a separate endpoint."
                 )
             named["base_url"] = values["base_url"]
             if values["api_mode"]:

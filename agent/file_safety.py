@@ -35,13 +35,32 @@ def _hermes_root_path() -> Path:
     return _constants_path("get_default_hermes_root")
 
 
-def _hermes_dirs() -> list[Path]:
-    """Resolved active HERMES_HOME and global root, deduplicated.
+def _profile_homes() -> list[Path]:
+    """Every directory under ``<root>/profiles`` — the named profile homes, the active one
+    included, plus the ``.deleted`` tombstone (it still holds deleted profiles' stores).
 
-    Both are checked so credential stores at <root>/... stay guarded when
-    running under a profile (HERMES_HOME = <root>/profiles/<name>).
+    A box running several profiles keeps a FULL parallel store per profile —
+    ``.env`` with every platform bot token and API key, ``auth.json``,
+    ``vault/`` (key + ciphertext side by side), ``mcp-tokens/``,
+    ``browser-profile/`` (copied cookies) — plus that profile's ``state.db`` /
+    ``sessions`` history. Only the ACTIVE home and the root were guarded, so the
+    file tools could read another profile's vault key or overwrite its ``.env``
+    with no refusal. Listing the siblings here reuses the same per-store rules;
+    it does NOT reintroduce the cross-profile write isolation retired in #97165.
     """
-    return list(dict.fromkeys(_resolve_each((_hermes_home_path(), _hermes_root_path()))))
+    with suppress(OSError, RuntimeError):
+        return [p for p in sorted(Path(_hermes_root_path(), "profiles").iterdir()) if p.is_dir()]
+    return []
+
+
+def _hermes_dirs() -> list[Path]:
+    """Resolved active HERMES_HOME, global root and every sibling profile home, deduplicated.
+
+    All are checked so credential stores at <root>/... and at
+    <root>/profiles/<other>/... stay guarded when running under a profile
+    (HERMES_HOME = <root>/profiles/<name>).
+    """
+    return list(dict.fromkeys(_resolve_each((_hermes_home_path(), _hermes_root_path(), *_profile_homes()))))
 
 
 def _resolve_each(paths) -> list[Path]:
@@ -191,11 +210,13 @@ def build_write_denied_paths(home: str) -> set[str]:
         (".ssh", "authorized_keys"), (".ssh", "id_rsa"), (".ssh", "id_ed25519"),
         (".netrc",), (".pgpass",), (".npmrc",), (".pypirc",), (".git-credentials",),
     )
-    # Secret material under HERMES_HOME, on both the active profile and the global
-    # root: overwriting the root .env leaks credentials across every profile that
-    # inherits it, and the root Anthropic PKCE store is still read by default /
-    # non-profile sessions when a profile is active. google_oauth.json is an OAuth
-    # token store; SECRET_CACHE_STORES hold secret values and the Photon sidecar token.
+    # Secret material under HERMES_HOME — the active profile, the global root AND
+    # every sibling profile (see ``_profile_homes``): overwriting the root .env
+    # leaks credentials across every profile that inherits it, the root Anthropic
+    # PKCE store is still read by default / non-profile sessions when a profile is
+    # active, and a sibling's .env holds that profile's own bot tokens — no agent
+    # has a reason to edit one. google_oauth.json is an OAuth token store;
+    # SECRET_CACHE_STORES hold secret values and the Photon sidecar token.
     #
     # auth.json, auth.lock, config.yaml and webhook_subscriptions.json are
     # deliberately NOT here: #45947 freed those control files on purpose
@@ -208,7 +229,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     )
     paths = [
         *(os.path.join(home, *f) for f in home_files),
-        *(str(base / f) for f in hermes_files for base in (_hermes_home_path(), _hermes_root_path())),
+        *(str(base / f) for f in hermes_files for base in _hermes_dirs()),
         "/etc/sudoers", "/etc/passwd", "/etc/shadow",
     ]
     return {os.path.realpath(p) for p in paths}
@@ -247,16 +268,20 @@ def build_write_approval_paths(home: str) -> set[str]:
     return {os.path.realpath(os.path.join(home, ".ssh", "config"))}
 
 
-# HERMES_HOME / root subpaths that the agent's generic file tools must not
-# rewrite. Session transcripts (state.db, sessions/) are application-owned
+# HERMES_HOME / root / per-profile subpaths that the agent's generic file tools
+# must not rewrite. Session transcripts (state.db, sessions/) are application-owned
 # state whose rewrite can falsify history and break resume/compression;
 # mcp-tokens/, pairing/, vault/ (key + ciphertext side by side),
 # browser-profile/ (copied cookies / Login Data) and webapp/ (the Webapp's
 # browser credential and its grants to native apps) hold credential material.
+# cron/ is the scheduler's own store: a jobs.json entry is arbitrary scheduled
+# execution under that profile's identity and credentials — a stronger capability
+# than the credentials themselves, and not something a raw-JSON approval prompt
+# can meaningfully review. The `cronjob` tool is the supported path for it.
 # Control files (auth.json, config.yaml, webhook_subscriptions.json) are
 # deliberately NOT here (#45947): read-denied, but the user may ask to edit them.
 _HERMES_PROTECTED_SUBPATHS = (
-    "state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile", "webapp")
+    "state.db", "sessions", "mcp-tokens", "pairing", "vault", "browser-profile", "webapp", "cron")
 
 
 def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:

@@ -284,6 +284,37 @@ def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
     assert "MCP token" in (get_read_block_error(str(root_tok)) or "")
 
 
+def test_profile_mode_blocks_sibling_profile_credentials(tmp_path, monkeypatch):
+    """Only the ACTIVE home and the root were guarded; every other home under
+    ``<root>/profiles/<name>`` is a full parallel store. One profile could read another's
+    ``auth.json`` (provider keys), ``vault/vault.key`` (which decrypts the vault sitting
+    next to it), ``mcp-tokens/`` and browser cookies, and overwrite its ``.env``."""
+    import agent.file_safety as fs
+
+    root = tmp_path / "hermes"
+    active = root / "profiles" / "coder"
+    active.mkdir(parents=True)
+    sibling = root / "profiles" / "ops"
+    monkeypatch.setattr(fs, "_hermes_home_path", lambda: active)
+    monkeypatch.setattr(fs, "_hermes_root_path", lambda: root)
+
+    from agent.file_safety import get_read_block_error, is_write_denied
+
+    for rel in (".env", "auth.json", ".anthropic_oauth.json", "auth/google_oauth.json",
+                "vault/vault.key", "mcp-tokens/gh.json", "browser-profile/Default/Cookies"):
+        stored = _create(sibling, rel)
+        assert get_read_block_error(str(stored)) is not None, f"read_file hands the agent {stored}"
+
+    for rel in ("state.db", "sessions/s.jsonl", os.path.join("cron", "jobs.json"),
+                "vault/vault.key", ".env"):
+        assert is_write_denied(str(_create(sibling, rel))), f"write_file may replace {rel}"
+
+    # The widening is per-store, not profile isolation (retired in #97165): a sibling's
+    # own notes and config stay readable.
+    for rel in ("SOUL.md", "memories/MEMORY.md", "workspace/notes.md", "config.yaml"):
+        assert get_read_block_error(str(_create(sibling, rel))) is None, f"over-blocked read: {rel}"
+
+
 @pytest.mark.parametrize(
     "rel", ["webapp/session-token", "webapp/native-sign-in-tokens.json", "webapp/sign-in-registration.json"])
 def test_the_webapps_sign_in_files_are_neither_read_nor_written(tmp_path, monkeypatch, rel):

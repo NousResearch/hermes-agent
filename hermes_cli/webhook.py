@@ -176,6 +176,19 @@ def webhook_command(args):
         return handler(args)
 
 
+def _route_signature(args, existing: dict, is_update: bool) -> dict:
+    """The ``signature`` key for the saved route. New routes are pinned to timestamp-bound generic
+    signatures; an update keeps the route's pin (or its absence), so re-running subscribe never breaks a
+    provider route created before pins existed. An invalid stored pin (false, "") is kept too: the gateway
+    refuses that route, whereas dropping it would republish it unpinned and accept body-only GitHub/Linear
+    MACs again."""
+    if getattr(args, "signature", None) is not None:
+        return {"signature": args.signature}
+    if not is_update:
+        return {"signature": "generic"}
+    return {"signature": existing["signature"]} if "signature" in existing else {}
+
+
 def _cmd_subscribe(args):
     name = args.name.strip().lower().replace(" ", "-")
     if not re.match(r'^[a-z0-9][a-z0-9_-]*$', name):
@@ -209,9 +222,6 @@ def _cmd_subscribe(args):
         )
         return 1
     secret = args.secret or (None if profile_changed else existing.get("secret")) or secrets.token_urlsafe(32)
-    # New routes are pinned to timestamp-bound generic signatures; an update keeps the route's pin
-    # (or its absence), so re-running subscribe never breaks a provider route created before pins existed.
-    signature = getattr(args, "signature", None) or (existing.get("signature") if is_update else "generic")
     events = [e.strip() for e in args.events.split(",")] if args.events else []
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
@@ -221,7 +231,7 @@ def _cmd_subscribe(args):
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
         "deliver": args.deliver or "log",
         "profile": profile,
-        **({"signature": signature} if signature else {}),
+        **_route_signature(args, existing, is_update),
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
 
     if getattr(args, "deliver_only", False):
@@ -270,7 +280,7 @@ def _cmd_subscribe(args):
     print(f"  Profile: {profile}")
     print(f"  Secret: {secret}")
     print(f"  Events: {', '.join(events) or '(all)'}")
-    print(f"  Signature: {route.get('signature') or 'any supported scheme (unpinned)'}")
+    print(f"  Signature: {route.get('signature', 'any supported scheme (unpinned)')!s}")
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")

@@ -84,3 +84,16 @@ def test_update_of_pre_pin_route_stays_unpinned(monkeypatch):
     route = _load_subscriptions()["hook"]
     assert "signature" not in route
     assert json.loads(json.dumps(route))["secret"] == "s"
+
+
+@pytest.mark.parametrize("bad_pin", [False, ""])
+def test_update_keeps_an_invalid_pin_so_the_gateway_fails_closed(bad_pin):
+    """An update without --signature must not turn an invalid pin into "unpinned" (which accepts the
+    body-only GitHub/Linear MACs again); the gateway refuses the route while the bad pin stays."""
+    _mutate_subscriptions(lambda subs: subs.update(
+        hook={"secret": "s", "prompt": "", "deliver": "log", "signature": bad_pin}))
+    webhook_command(_args(description="updated"))
+    route = _load_subscriptions()["hook"]
+    assert route["signature"] == bad_pin
+    adapter = WebhookAdapter(PlatformConfig(enabled=True, extra={"host": "127.0.0.1", "routes": {}}))
+    assert adapter._dynamic_route_allowed("hook", route) is False

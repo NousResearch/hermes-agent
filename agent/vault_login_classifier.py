@@ -34,9 +34,9 @@ PAYMENT_AUTOFILL_TOKENS = ("cc-number", "cc-name", "cc-exp", "cc-exp-month", "cc
 ADDRESS_AUTOFILL_TOKENS = ("address-line1", "address-line2", "address-level2", "address-level1",
                            "postal-code", "country-name", "country")
 _CHECKOUT_HEURISTICS = (
-    (re.compile(r"\b(?:card\s*number|cardnumber|ccnumber|cc\s*num|pan)\b"), "cc-number"),
-    (re.compile(r"\b(?:name\s*on\s*card|cardholder|cc\s*name|ccname)\b"), "cc-name"),
-    (re.compile(r"\b(?:cvc|cvv|csc|security\s*code|card\s*code)\b"), "cc-csc"),
+    (re.compile(r"\b(?:card\s*(?:number|no)|cardnumber|ccnumber|cc\s*num|pan)\b"), "cc-number"),
+    (re.compile(r"\b(?:name\s*on\s*card|card\s*name|cardholder|cc\s*name|ccname)\b"), "cc-name"),
+    (re.compile(r"\b(?:cvc2?|cvv[23]?|csc|security\s*code|card\s*code|securitycode)\b"), "cc-csc"),
     (re.compile(r"\b(?:exp(?:iry|iration)?\s*month|exp\s*mm|ccmonth)\b"), "cc-exp-month"),
     (re.compile(r"\b(?:exp(?:iry|iration)?\s*year|exp\s*yy(?:yy)?|ccyear)\b"), "cc-exp-year"),
     (re.compile(r"\b(?:exp(?:iry|iration)?(?:\s*date)?|mm\s*yy|valid\s*thru)\b"), "cc-exp"),

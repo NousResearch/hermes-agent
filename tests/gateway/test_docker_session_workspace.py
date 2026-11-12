@@ -427,3 +427,55 @@ def test_named_launch_profiles_managed_worker_turn_keeps_its_sessions_workspace_
     with policy_scope(policy):
         session_kanban.run_worker_turns(Agent(), frame, [])
     assert seen['key'] == session_key
+
+
+@pytest.mark.parametrize('persistent', [False, True])
+def test_kanban_task_turns_run_in_the_tasks_workspace(home, tmp_path, persistent):
+    # A Kanban task's turns (dispatch, recovery nudge, goal loop) never bound the task workspace:
+    # run_conversation got no task_id, so each turn drew a fresh uuid and the Docker terminal
+    # mounted no /workspace while the file tools wrote to the host workspace.
+    from gateway import session_kanban
+    from gateway.session_policy import policy_scope
+    ws = tmp_path / 'task-ws'
+    ws.mkdir()
+    policy = _policy(home, ws, persistent=persistent)
+    seen = []
+
+    class Agent:
+        session_id = 'kanban-s1'
+
+        def run_conversation(self, text, **kwargs):
+            seen.append((kwargs.get('task_id'), _plan(kwargs.get('task_id'))[1]))
+            return {'final_response': 'ok'}
+
+    context = {'skills': [], 'context': '', 'task_id': 't1', 'goal_mode': False}
+    frame = {'policy': asdict(policy), 'text': 'work kanban task t1'}
+    with policy_scope(policy):
+        session_kanban._run_task_turns(Agent(), frame, [], context)
+    assert seen == [('kanban-s1', str(ws))]
+
+
+def test_kanban_task_turns_restore_a_session_binding_they_share_an_id_with(home, tmp_path):
+    # Defensive: if a Kanban turn ever ran under a chat session's id, that session keeps its workspace.
+    from gateway import session_kanban
+    from gateway.session_policy import policy_scope
+    from tools.terminal_tool import resolve_task_overrides
+    chat_ws, task_ws = tmp_path / 'chat-ws', tmp_path / 'task-ws'
+    chat_ws.mkdir(), task_ws.mkdir()
+    with _turn(_policy(home, chat_ws, persistent=False), 'shared-s1'):
+        pass
+    task_policy = _policy(home, task_ws, persistent=False)
+    seen = []
+
+    class Agent:
+        session_id = 'shared-s1'
+
+        def run_conversation(self, text, **kwargs):
+            seen.append(_plan(kwargs.get('task_id'))[1])
+            return {'final_response': 'ok'}
+
+    frame = {'policy': asdict(task_policy), 'text': 'work kanban task t1'}
+    with policy_scope(task_policy):
+        session_kanban._run_task_turns(Agent(), frame, [], {'skills': [], 'context': '', 'task_id': 't1', 'goal_mode': False})
+    assert seen == [str(task_ws)]
+    assert resolve_task_overrides('shared-s1')['cwd'] == str(chat_ws)

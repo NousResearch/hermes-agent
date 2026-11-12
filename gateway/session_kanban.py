@@ -381,20 +381,51 @@ def worker_exit_code(path, params):
 KANBAN_TURN_AUTHOR = {'id': 'kanban:dispatcher', 'name': 'Kanban dispatcher', 'is_bot': True}
 
 
+@contextlib.contextmanager
+def _task_workspace(agent, frame):
+    """A Kanban task's turns in the task's workspace: the claim's policy froze ``task.workspace_path``
+    as its cwd (``build_kanban_policy``), so bind it under the agent's session id exactly as a chat
+    turn does (#140665). Without it every turn drew a fresh uuid task id and the Docker terminal never
+    mounted the workspace the file tools write to. Yields the task id the turns must pass."""
+    task_id = getattr(agent, 'session_id', None)
+    if not task_id or 'terminal_json' not in (frame.get('policy') or {}):
+        # No frozen terminal policy (a bare carrier frame): nothing to bind, as before.
+        yield None
+        return
+    from gateway.session_policy import bind_turn_workspace, restore_policy, unbind_turn_workspace
+    from tools.terminal_tool import register_task_env_overrides, resolve_task_overrides
+    # Kanban session ids are their own today; if one ever reuses a chat session's id, put that
+    # session's workspace binding back afterwards instead of dropping it.
+    prior = dict(resolve_task_overrides(task_id))
+    bind_turn_workspace(restore_policy(frame['policy']), task_id)
+    try:
+        yield task_id
+    finally:
+        if prior.get('cwd_source') == 'session':
+            register_task_env_overrides(task_id, prior)
+        else:
+            unbind_turn_workspace(task_id)
+
+
 def _run_task_turns(agent, frame, history, context):
+    with _task_workspace(agent, frame) as task_id:
+        return _run_bound_task_turns(agent, frame, history, context, {'task_id': task_id} if task_id else {})
+
+
+def _run_bound_task_turns(agent, frame, history, context, bound):
     from agent.skill_commands import build_preloaded_skills_prompt
     skills, loaded, missing = build_preloaded_skills_prompt(context['skills'], task_id=agent.session_id)
     if missing and not loaded:
         raise ValueError('kanban_skills_unavailable')
     prompt = '\n\n'.join(p for p in (skills, context['context'], frame['text']) if p)
-    result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR)
+    result = agent.run_conversation(prompt, conversation_history=history, turn_author=KANBAN_TURN_AUTHOR, **bound)
 
     def recover(nudge):
         nonlocal result
         prior = result.get('messages') if isinstance(result, dict) else None
         result = agent.run_conversation(nudge, conversation_history=prior or
                                         agent._session_db.get_messages_as_conversation(agent.session_id),
-                                        turn_author=KANBAN_TURN_AUTHOR)
+                                        turn_author=KANBAN_TURN_AUTHOR, **bound)
     # Same in-place retry as the one-shot CLI worker (agent/kanban_turn_recovery.py), but the
     # carrier is this frame's bound claim, never the owner process's environment.
     from agent.kanban_turn_recovery import recover_failed_kanban_turns
@@ -417,7 +448,7 @@ def _run_task_turns(agent, frame, history, context):
     def turn(prompt):
         nonlocal result
         result = agent.run_conversation(prompt, conversation_history=agent._session_db.get_messages_as_conversation(agent.session_id),
-                                        turn_author=KANBAN_TURN_AUTHOR)
+                                        turn_author=KANBAN_TURN_AUTHOR, **bound)
         return result.get('final_response', '')
     run_kanban_goal_loop(task_id=context['task_id'], goal_text=context['goal_text'], run_turn=turn,
         task_status_fn=status, block_fn=block, max_turns=context['goal_max_turns'] or DEFAULT_MAX_TURNS,

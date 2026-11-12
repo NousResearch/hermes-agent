@@ -1838,10 +1838,16 @@ export { triggerHaptic as haptic } from '@/lib/haptics'
 export type { HermesOpenTarget } from '@/lib/hermes-open-target'
 /** The app's lucide icon set (RefreshCw, LayoutDashboard, Activity, …). */
 export * as icons from '@/lib/icons'
-/** IME-aware Enter: true only for a real submit Enter, never a CJK composition
- *  commit (`isComposing` or the legacy keyCode 229). Use it on every plugin
- *  text field whose bare Enter performs an action. */
-export { isSubmitEnter } from '@/lib/ime'
+/**
+ * IME-aware key handling for plugin text fields.
+ *
+ * `isSubmitEnter` is true only for a real submit Enter, never a CJK composition
+ * commit (`isComposing` or the legacy keyCode 229) — use it on every plugin
+ * text field whose bare Enter performs an action. `isImeComposing` is the same
+ * test for the other keys a handler reacts to (arrows, Escape), so a keystroke
+ * that belongs to the IME is never read as a shortcut.
+ */
+export { isImeComposing, isSubmitEnter } from '@/lib/ime'
 export { type KeybindContribution, KEYBINDS_AREA, PLUGIN_APP_ACTIONS } from '@/lib/keybinds/actions'
 export { formatModifierToken } from '@/lib/keybinds/combo'
 /** A `Map` with a ceiling, for the module-level caches a plugin keeps across

@@ -43,6 +43,8 @@ export interface PayloadCopyHost {
   freeBytes?: (dir: string) => Promise<number>
   /** Paths live processes run from or hold open (/proc/<pid>/exe and /proc/<pid>/fd). */
   livePaths?: () => Promise<string[]>
+  /** Where `hermes gateway install` writes systemd units (see gatewayUnitDirs). */
+  serviceUnitDirs?: string[]
   isAlive?: (pid: number) => boolean
   pid?: number
 }
@@ -62,6 +64,13 @@ const MARKER = 'complete.json'
 const PARTIAL_PREFIX = '.partial-'
 const BLOCK_SLACK_BYTES = 4096
 const RESERVE_BYTES = 1024 ** 3
+
+/** hermes_cli/gateway.py user_systemd_unit_dir() and _SYSTEM_UNIT_DIR. */
+export function gatewayUnitDirs(env: NodeJS.ProcessEnv, home: string): string[] {
+  const xdg: string | undefined = env.XDG_CONFIG_HOME?.trim()
+
+  return [path.join(xdg || path.join(home, '.config'), 'systemd', 'user'), '/etc/systemd/system']
+}
 
 export function payloadCopiesRoot(env: NodeJS.ProcessEnv, home: string): string {
   const xdg: string | undefined = env.XDG_DATA_HOME
@@ -238,6 +247,23 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/** Installed gateway units. A stopped one runs nothing, so /proc cannot show that its ExecStart names a copy. */
+async function gatewayUnits(dirs: string[]): Promise<string[]> {
+  const units: string[][] = await Promise.all(
+    dirs.map(async (dir): Promise<string[]> => {
+      const names: string[] = await fs.promises.readdir(dir).catch((): string[] => [])
+
+      return Promise.all(
+        names
+          .filter(name => name.startsWith('hermes-gateway') && name.endsWith('.service'))
+          .map(name => fs.promises.readFile(path.join(dir, name), 'utf8').catch(() => ''))
+      )
+    })
+  )
+
+  return units.flat()
+}
+
 async function markedComplete(build: string, key: string): Promise<boolean> {
   try {
     return JSON.parse(await fs.promises.readFile(path.join(build, MARKER), 'utf8'))?.key === key
@@ -283,7 +309,8 @@ const gib = (bytes: number): string => (bytes / 1024 ** 3).toFixed(1)
 
 /**
  * Remove copies of other builds that no live process runs from or holds open (an open Desktop holds
- * its own; see holdPayloadCopy), and partial copies whose writer died. `keepPrevious` keeps the most recently used other build so switching between two
+ * its own; see holdPayloadCopy) and no installed gateway unit runs, and partial copies whose writer
+ * died. `keepPrevious` keeps the most recently used other build so switching between two
  * installed AppImages does not copy the payload again on every switch.
  */
 export async function collectStalePayloadCopies(
@@ -293,6 +320,7 @@ export async function collectStalePayloadCopies(
   const { root, key } = host.plan
   const alive = host.isAlive ?? pidAlive
   const held: string[] = await (host.livePaths ?? procHeldPaths)()
+  const units: string[] = await gatewayUnits(host.serviceUnitDirs ?? [])
   const doomed: string[] = []
   const builds: { dir: string; used: number }[] = []
 
@@ -321,6 +349,12 @@ export async function collectStalePayloadCopies(
 
     if (held.some(used => used.startsWith(`${real}${path.sep}`))) {
       host.log(`[payload] keeping ${dir}: a running process uses it`)
+
+      continue
+    }
+
+    if (units.some(unit => unit.includes(`${dir}${path.sep}`) || unit.includes(`${real}${path.sep}`))) {
+      host.log(`[payload] keeping ${dir}: a gateway service unit runs from it`)
 
       continue
     }
@@ -489,6 +523,7 @@ export const stablePayloadResources: StablePayloadResources = createStablePayloa
   stamp: INSTALL_STAMP,
   readMountinfo: () => fs.promises.readFile('/proc/self/mountinfo', 'utf8'),
   binDir: path.join(os.homedir(), '.local', 'bin'),
+  serviceUnitDirs: gatewayUnitDirs(process.env, os.homedir()),
   log,
   progress
 }))

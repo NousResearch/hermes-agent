@@ -8,6 +8,7 @@ import { afterEach, test, vi } from 'vitest'
 import {
   collectStalePayloadCopies,
   createStablePayloadResources,
+  gatewayUnitDirs,
   type PayloadCopyHost,
   payloadCopyKey,
   payloadCopyPlan,
@@ -136,6 +137,14 @@ test('each build gets its own copy key, and a stamp that cannot tell builds apar
   assert.equal(payloadCopyKey(stamp({ builtAt: null })), null)
   assert.equal(payloadCopyKey(stamp({ commit: '0'.repeat(40) })), null)
   assert.equal(payloadCopyKey(stamp({ source: 'fallback' })), null)
+})
+
+test('cleanup looks for gateway units where `hermes gateway install` writes them', (): void => {
+  assert.deepEqual(gatewayUnitDirs({}, '/home/u'), ['/home/u/.config/systemd/user', '/etc/systemd/system'])
+  assert.deepEqual(gatewayUnitDirs({ XDG_CONFIG_HOME: '/cfg' }, '/home/u'), [
+    '/cfg/systemd/user',
+    '/etc/systemd/system'
+  ])
 })
 
 posix('only a payload on the AppImage FUSE mount is copied, into the XDG data home', (): void => {
@@ -344,49 +353,63 @@ posix(
   }
 )
 
-posix('cleanup keeps the current and previous builds and any build a process runs from', async (): Promise<void> => {
-  const root: string = scratch()
-  const host: PayloadCopyHost = copyHost(root, mountedResources(root))
-  const binDir: string = host.binDir
-  fs.mkdirSync(binDir, { recursive: true })
+posix(
+  'cleanup keeps the current and previous builds and any build a process or gateway unit runs from',
+  async (): Promise<void> => {
+    const root: string = scratch()
+    const host: PayloadCopyHost = copyHost(root, mountedResources(root))
+    const binDir: string = host.binDir
+    fs.mkdirSync(binDir, { recursive: true })
 
-  const builds: Record<string, string> = {}
+    const builds: Record<string, string> = {}
 
-  for (const [name, age] of [
-    [host.plan.key, 0],
-    ['previous', 10],
-    ['old-running', 20],
-    ['old', 30]
-  ] as const) {
-    builds[name] = path.join(host.plan.root, name)
-    fs.mkdirSync(path.join(builds[name], 'agent-payload', 'bin'), { recursive: true })
-    fs.writeFileSync(path.join(builds[name], 'complete.json'), JSON.stringify({ key: name }))
-    const used = new Date(Date.now() - age * 60_000)
-    fs.utimesSync(path.join(builds[name], 'complete.json'), used, used)
+    for (const [name, age] of [
+      [host.plan.key, 0],
+      ['previous', 10],
+      ['old-running', 20],
+      ['old-unit', 25],
+      ['old', 30]
+    ] as const) {
+      builds[name] = path.join(host.plan.root, name)
+      fs.mkdirSync(path.join(builds[name], 'agent-payload', 'bin'), { recursive: true })
+      fs.writeFileSync(path.join(builds[name], 'complete.json'), JSON.stringify({ key: name }))
+      const used = new Date(Date.now() - age * 60_000)
+      fs.utimesSync(path.join(builds[name], 'complete.json'), used, used)
+    }
+
+    fs.symlinkSync(path.join(builds.old, 'agent-payload', 'bin', 'hermes-old'), path.join(binDir, 'hermes-old'))
+    fs.symlinkSync('/usr/bin/env', path.join(binDir, 'unrelated'))
+    // A stopped gateway service generated from an older copy: nothing runs, but its unit names the copy.
+    const units: string = path.join(root, 'config', 'systemd', 'user')
+    fs.mkdirSync(units, { recursive: true })
+    const python: string = path.join(builds['old-unit'], 'agent-payload', 'tools', 'python', 'bin', 'python3')
+    fs.writeFileSync(
+      path.join(units, 'hermes-gateway-work.service'),
+      `[Service]\nExecStart=${python} -m hermes_cli.main gateway run\n`
+    )
+    fs.writeFileSync(path.join(units, 'other.service'), `[Service]\nExecStart=${path.join(builds.old, 'x')}\n`)
+    const deadWriter: string = path.join(host.plan.root, '.partial-999999999-crashed')
+    const liveWriter: string = path.join(host.plan.root, `.partial-${process.pid}-copying`)
+    fs.mkdirSync(deadWriter)
+    fs.mkdirSync(liveWriter)
+
+    const removed: string[] = await collectStalePayloadCopies(
+      {
+        ...host,
+        livePaths: async () => [path.join(fs.realpathSync(builds['old-running']), 'agent-payload', 'tools', 'python3')],
+        serviceUnitDirs: [units, path.join(root, 'no-such-dir')]
+      },
+      true
+    )
+
+    assert.deepEqual(removed.sort(), [builds.old, deadWriter].sort())
+    assert.deepEqual(
+      fs.readdirSync(host.plan.root).sort(),
+      [host.plan.key, 'previous', 'old-running', 'old-unit', path.basename(liveWriter)].sort()
+    )
+    assert.deepEqual(fs.readdirSync(binDir), ['unrelated'])
   }
-
-  fs.symlinkSync(path.join(builds.old, 'agent-payload', 'bin', 'hermes-old'), path.join(binDir, 'hermes-old'))
-  fs.symlinkSync('/usr/bin/env', path.join(binDir, 'unrelated'))
-  const deadWriter: string = path.join(host.plan.root, '.partial-999999999-crashed')
-  const liveWriter: string = path.join(host.plan.root, `.partial-${process.pid}-copying`)
-  fs.mkdirSync(deadWriter)
-  fs.mkdirSync(liveWriter)
-
-  const removed: string[] = await collectStalePayloadCopies(
-    {
-      ...host,
-      livePaths: async () => [path.join(fs.realpathSync(builds['old-running']), 'agent-payload', 'tools', 'python3')]
-    },
-    true
-  )
-
-  assert.deepEqual(removed.sort(), [builds.old, deadWriter].sort())
-  assert.deepEqual(
-    fs.readdirSync(host.plan.root).sort(),
-    [host.plan.key, 'previous', 'old-running', path.basename(liveWriter)].sort()
-  )
-  assert.deepEqual(fs.readdirSync(binDir), ['unrelated'])
-})
+)
 
 linux('cleanup keeps every build an open Desktop selected, even when short of space', async (): Promise<void> => {
   const root: string = scratch()

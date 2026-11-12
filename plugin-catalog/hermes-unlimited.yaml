@@ -1,17 +1,17 @@
 name: hermes-unlimited
 repo: https://github.com/nsolland/hermes-unlimited
-sha: f089ea2e408ff646699a63287a05d2290bb97f5d
+sha: 01698b64e0cd35027240991ffa701e0b8db7ac96
 description: Create and operate AI-native provider organizations with scoped services and Hermes tasks.
 maintainer: nsolland
 tier: community
 category: platform
 requires_hermes: ">=0.21.5"
-version: "0.1.0-alpha.3"
+version: "0.1.0-alpha.4"
 title: "Hermes Unlimited"
 readme: true
 known_issues:
   - "Experimental public core; no live billing, payment settlement or independently attested customer fulfillment."
-  - "Requires a host-provided trusted JustYou session and signed profile verifier; tenant boards must be provisioned on the host."
+  - "Requires a configured JustYou session validator, signed Ed25519 profile bindings and provisioned tenant boards."
 capabilities:
   provides_tools:
     - hermes_unlimited_status
@@ -23,8 +23,7 @@ capabilities:
     - unlimited_company_result
     - unlimited_service_dispatch
     - unlimited_service_result
-    - unlimited_creative_render
-    - unlimited_creative_result
   provides_hooks: []
   provides_middleware: []
-  requires_env: []
+  requires_env:
+    - HERMES_UNLIMITED_JUSTYOU_SESSION_TOKEN

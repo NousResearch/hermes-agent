@@ -50,6 +50,16 @@ _CARD_DESTINATION_REFUSALS = {
 }
 
 
+def _settled_result(fut, outcome: str):
+    """The send's result for the receipt log; None when it never resolved or raised."""
+    if outcome == "ambiguous":
+        return None
+    try:
+        return fut.result(timeout=0)
+    except Exception:  # health: allow BLE001 -- already classified and logged by _approval_send_outcome
+        return None
+
+
 def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     """True when the adapter class renders native approval buttons. BasePlatformAdapter subclasses
     say so through ``supports_exec_approval_buttons``; anything else (test doubles, relay-style
@@ -866,17 +876,20 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             fut = self._schedule(
                 adapter.send(ctx._status_chat_id, msg, metadata=_interim_metadata(metadata)), "Approval text-send scheduling error",
             )
+            # A receipt that times out (or a lost ack) is AMBIGUOUS, not a failure: the prompt may be
+            # on screen, so it stays armed for a typed /approve, exactly like the card path above.
+            outcome = _approval_send_outcome(fut, timeout=15)
             if fut is not None:
-                res = fut.result(timeout=15)
+                res = _settled_result(fut, outcome)
                 # Text-lane receipt (#138133): a card failure lands here, and a failed fallback was silent too.
-                logger.log(logging.INFO if getattr(res, "success", False) else logging.WARNING,
-                           "Exec approval text prompt send (success=%s, message_id=%s, error=%s, request_id=%s, session=%s)",
-                           getattr(res, "success", None), getattr(res, "message_id", None), getattr(res, "error", None),
+                logger.log(logging.INFO if outcome == "sent" else logging.WARNING,
+                           "Exec approval text prompt send (success=%s, outcome=%s, message_id=%s, error=%s, request_id=%s, session=%s)",
+                           getattr(res, "success", None), outcome, getattr(res, "message_id", None), getattr(res, "error", None),
                            approval_data.get("request_id"), ctx.session_key)
                 # No card to edit on the text path: the prompt has no buttons to drop and carries
                 # the /approve instructions, so the timeout notice is posted as a new message.
                 register_timeout_notice(self, approval_data, command=cmd, card_message_id=None)
-            if background and (fut is None or not getattr(res, "success", False)):
+            if background and outcome not in ("sent", "ambiguous"):
                 # Nobody else can still show a background child's prompt: undelivered fails it closed.
                 raise RuntimeError("Approval notification was not delivered")
         except Exception as e:

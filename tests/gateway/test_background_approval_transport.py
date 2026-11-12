@@ -75,3 +75,52 @@ def test_background_transport_refusal_fails_closed(monkeypatch, buttons):
     with pytest.raises(RuntimeError):
         transport.background_notify({"command": "print(1)"})
     assert sent == [("origin-chat", "origin-session")] if buttons else sent == ["text"]
+
+
+@pytest.mark.parametrize("buttons", [False, True], ids=["text-only", "card-fallback"])
+def test_background_text_prompt_whose_receipt_times_out_stays_pending(monkeypatch, buttons):
+    """The text prompt was sent but its receipt timed out: it may be on screen, so it is not withdrawn."""
+    import asyncio
+    from concurrent.futures import TimeoutError as FutureTimeout
+
+    from tools import approval
+    from tools.approval_gateway_wait import _await_gateway_decision
+
+    sent = []
+
+    class Adapter:
+        async def send(self, chat_id, text, metadata=None):
+            sent.append(text)
+            return SimpleNamespace(success=True, message_id="landed")
+
+    class ButtonAdapter(Adapter):
+        async def send_exec_approval(self, **_kwargs):
+            return SimpleNamespace(success=False)
+
+    class LateReceipt:
+        def done(self):
+            return False
+
+        def result(self, timeout=None):
+            raise FutureTimeout("receipt late; the message already went out")
+
+    def schedule(self, coro, *args):
+        result = asyncio.run(coro)
+        if getattr(result, "success", False):
+            return LateReceipt()
+        fut = Future()
+        fut.set_result(result)
+        return fut
+
+    monkeypatch.setattr(TurnRunner, "_schedule", schedule)
+    monkeypatch.setattr(approval.approval_context, "_get_approval_timeout", lambda: 0.02)
+    ctx = TurnContext(session_key="late-receipt", source=_CHAT, _status_chat_id="a",
+                      _status_adapter_pinned=ButtonAdapter() if buttons else Adapter())
+    notify = approval_transport(TurnRunner(None, ctx)).background_notify
+    result = _await_gateway_decision(
+        "late-receipt", notify,
+        {"command": "print(1)", "description": "test", "pattern_key": "k", "pattern_keys": ["k"]})
+
+    # Sent once, never re-sent; it stayed pending until its own timeout (whose notice follows).
+    assert sum("print(1)" in text for text in sent) == 1, sent
+    assert not result.get("notify_failed"), result

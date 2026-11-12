@@ -120,9 +120,11 @@ def _profile_homes(runner: Any) -> list[tuple[str, Path]]:
 
 
 def _capacity() -> int:
+    """The bound profile's ``delegation.max_concurrent_children`` minus the units THIS profile has running."""
+    from hermes_constants import get_hermes_home
     from tools.async_delegation import active_count
     from tools.delegate_tool_config import _get_max_concurrent_children
-    return _get_max_concurrent_children() - active_count()
+    return _get_max_concurrent_children() - active_count(home=get_hermes_home())
 
 
 def tick_profiles(runner: Any) -> list[str]:

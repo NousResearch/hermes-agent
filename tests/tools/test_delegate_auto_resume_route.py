@@ -82,3 +82,22 @@ def test_a_stand_in_that_cannot_be_built_retries_later_and_never_turns_auto_resu
         assert tick(start, capacity=3) == []
     state, _pinned, record = _db_rows(parent)[sid]
     assert (state, record.get("auto_off"), record.get("auto_attempts")) == ("resumable", None, 0)
+
+
+def test_capacity_counts_only_this_profiles_running_units(tmp_path, monkeypatch):
+    """One gateway serves many profiles: another profile's running units never use up this one's slots."""
+    from agent.runtime_scope import bind_profile_scope
+    from gateway.run_auto_resume import _capacity
+    from hermes_constants import hermes_home_key
+    from tools import async_delegation
+    other, mine = tmp_path / "other", tmp_path / "mine"
+    for home, cap in ((other, 2), (mine, 3)):
+        home.mkdir()
+        (home / "config.yaml").write_text(json.dumps({"delegation": {"max_concurrent_children": cap}}))
+    running = {f"u{i}": {"status": "running", "_home": hermes_home_key(other)} for i in range(2)}
+    running["m"] = {"status": "running", "_home": hermes_home_key(mine)}
+    monkeypatch.setattr(async_delegation, "_records", running)
+    with bind_profile_scope(mine, hydrate_secrets=False):
+        assert _capacity() == 2
+    with bind_profile_scope(other, hydrate_secrets=False):
+        assert _capacity() == 0

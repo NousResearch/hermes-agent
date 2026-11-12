@@ -2345,6 +2345,14 @@ export function openSessionTile(
 
   // Already open: relocate the existing pane to the drop target (pane-mirror
   // only docks on first adoption, so a re-drag must move the tree pane itself).
+  // An UNANCHORED re-open (a sidebar click, ⌘T on an already-open tile) carries
+  // no relocation intent — only an explicit anchor (a drop) does. Without this
+  // guard the resolver's dock would leak a move into a plain re-open and yank
+  // the tile into whichever column the pointer happens to hover.
+  if (!anchor) {
+    return
+  }
+
   const tree = $layoutTree.get()
   const target = tree ? findGroupOfPane(tree, dock ?? 'workspace')?.id : null
 

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { SessionTile } from '@/store/session-states'
+
 // The tab verbs (⌘1…⌘9, ⌃Tab, ⌘W / ⌘T) target the zone under the POINTER when
 // there is one, so hovering a pane and hitting ⌘2 lands there without clicking
 // in first. Pointer off the panes falls back to the last interacted zone.
@@ -81,7 +83,11 @@ describe('hovered zone retargets the tab verbs', () => {
     expect(activeOf('grp-side')).toBe('session-tile:c')
     expect(activeOf('grp-main')).toBe('workspace')
 
-    expect(tree.focusedSessionTabAnchor()).toBe('session-tile:c')
+    // Placement (the ⌘T dock anchor) resolves the FOCUSED zone — grp-main's
+    // active session pane, the workspace here — NOT the hovered one. Hover
+    // tracking there was the regression this suite's fix removes; ⌃Tab and ⌘W
+    // below still prove the in-place verbs follow the pointer.
+    expect(tree.focusedSessionTabAnchor()).toBe('workspace')
 
     expect(tree.closeFocusedSessionTab()).toBe(true)
     expect(model.allPaneIds(tree.$layoutTree.get()!)).not.toContain('session-tile:c')
@@ -143,5 +149,45 @@ describe('hovered zone retargets the tab verbs', () => {
     // ⌘W must not close the file tree from a rung that can't serve it.
     expect(activeOf('grp-files')).toBe('files')
     expect(model.allPaneIds(tree.$layoutTree.get()!)).toContain('files')
+  })
+
+  // Regression test for #149088: unanchored re-open of an already-open tile
+  // must NOT relocate the tile to the hovered/focused column.
+  it('unanchored re-open of an already-open tile stays in place', async () => {
+    const { tree } = await setup()
+    const sessionStates = await import('@/store/session-states')
+
+    // Simulate an already-open tile in grp-main (workspace zone)
+    tree.noteActiveTreeGroup('grp-main')
+    tree.noteHoveredTreeGroup('grp-side')
+
+    // Use patchSessionTile to set initial state (saveTiles is not exported)
+    const initialTile: SessionTile = {
+      storedSessionId: 'session-1',
+      anchor: 'workspace',
+      dir: 'right',
+      workspaceMode: 'sessions'
+    }
+    sessionStates.patchSessionTile('session-1', initialTile)
+
+    // Call openSessionTile WITHOUT an anchor (unanchored re-open)
+    sessionStates.openSessionTile('session-1', 'right')
+
+    // The tile should NOT have moved — no relocation intent without explicit anchor
+    const tilesAfter = sessionStates.$sessionTiles.get()
+    expect(tilesAfter.find(t => t.storedSessionId === 'session-1')?.anchor).toBe('workspace')
+  })
+
+  // Regression test for #149088: new tab placement docks into the FOCUSED column,
+  // not the hovered one, when the pointer drifts over another column.
+  it('new tab docks into the focused column despite stray hover', async () => {
+    const { tree } = await setup()
+
+    // Focus on grp-main, but pointer hovers grp-side (simulating drift)
+    tree.noteActiveTreeGroup('grp-main')
+    tree.noteHoveredTreeGroup('grp-side')
+
+    // focusedSessionTabAnchor() should resolve to the FOCUSED zone (grp-main's workspace)
+    expect(tree.focusedSessionTabAnchor()).toBe('workspace')
   })
 })

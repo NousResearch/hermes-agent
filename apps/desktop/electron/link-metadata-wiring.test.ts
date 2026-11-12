@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 
-import { beforeEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 // The guard helpers are tested on their own; this pins how link-metadata.ts
 // wires them: the curl hop dials the vetted answer, a refused hop never reaches
@@ -101,7 +101,14 @@ describe('link-metadata wiring', () => {
   beforeEach(() => {
     h.curl.length = 0
     h.loaded.length = 0
+
+    // A proxy in the host's env would make the curl hop take --proxy instead of the --resolve pin.
+    for (const name of ['http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']) {
+      vi.stubEnv(name, '')
+    }
   })
+
+  afterEach(() => vi.unstubAllEnvs())
 
   test('a curl hop dials the vetted answer, and a refused redirect never reaches the hidden window', async () => {
     h.answers['hop.wiring.test'] = ['93.184.216.34']

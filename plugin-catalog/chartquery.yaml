@@ -3,7 +3,7 @@ title: ChartQuery
 repo: https://github.com/chartquery/hermes-plugin-chartquery
 sha: 8a9fe1903a3cb361959db5b19f116cebfb406979
 version: "1.0.0"
-description: "Tools to render charts, QR codes and barcodes as shareable images, through the ChartQuery API. Disclosure — sends the tool arguments to api.chartquery.com with your CHARTQUERY_API_KEY, and calls can use ChartQuery credits. Reads the key only through Hermes's secret scope. Registers 4 tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+description: "Tools to render charts, QR codes and barcodes as shareable images, through the ChartQuery API. Disclosure — sends the tool arguments (chart configs and data, plain-English chart prompts, QR and barcode contents) to api.chartquery.com with your CHARTQUERY_API_KEY, and calls can use ChartQuery credits. Every image is created with sharing on, so anyone with the returned link can view it; do not chart private data. Reads the key only through Hermes's secret scope. Registers 4 tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
 maintainer: chartquery
 tier: community
 category: tools

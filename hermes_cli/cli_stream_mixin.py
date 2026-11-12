@@ -608,7 +608,7 @@ class CLIStreamMixin:
         from cli import _COMMAND_SPINNER_FRAMES
         return _COMMAND_SPINNER_FRAMES[int(time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)]
 
-    def _command_spinner_in_composer(self) -> bool:
+    def _command_running_in_classic_layout(self) -> bool:
         """True while a slow command runs in the classic layout, whose hint row, prompt and
         placeholder spin. The glyph layout spins once, in the composer's top rule beside the status."""
         return self._command_running and not getattr(self, "_modern_layout", False)

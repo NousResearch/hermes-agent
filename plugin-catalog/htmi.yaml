@@ -1,6 +1,6 @@
 name: htmi
 repo: https://github.com/Thamirawaran/htmi
-sha: e82147f418f01aa58494c873b63807de81a2cd0a
+sha: cbc2c6e72145ccaa0b2be944982815be71d2dd4b
 subdir: hermes
 description: >-
   Review the HTML pages your agent writes, on the page itself: comment on the exact
@@ -22,11 +22,11 @@ maintainer: Thamirawaran
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/Thamirawaran/htmi/tree/e82147f418f01aa58494c873b63807de81a2cd0a/hermes
+docs_url: https://github.com/Thamirawaran/htmi/tree/cbc2c6e72145ccaa0b2be944982815be71d2dd4b/hermes
 version: "0.1.1"
-image: https://raw.githubusercontent.com/Thamirawaran/htmi/e82147f418f01aa58494c873b63807de81a2cd0a/assets/banner.png
+image: https://raw.githubusercontent.com/Thamirawaran/htmi/cbc2c6e72145ccaa0b2be944982815be71d2dd4b/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Thamirawaran/htmi/e82147f418f01aa58494c873b63807de81a2cd0a/hermes/assets/review-tab.png
+  - https://raw.githubusercontent.com/Thamirawaran/htmi/cbc2c6e72145ccaa0b2be944982815be71d2dd4b/hermes/assets/review-tab.png
 readme: true
 platforms: [linux, macos]
 title: HTMi

@@ -19,8 +19,11 @@ import hermes_yaml
 import pytest
 
 from hermes_cli.release_channels import ChannelReader
-from scripts.releases import channel_releases, desktop_targets, handoff
-from tests.ci.desktop_release_roles import canary_publisher, native_builds, stage_step
+from scripts.releases import channel_releases, desktop_targets, handoff, stable
+from scripts.releases.job_groups import DIAGNOSTIC_JOBS
+from tests.ci.desktop_release_roles import (
+    DOWNLOADABLE_DISPATCHES, admitted, canary_publisher, gate, native_builds, needs_of, stage_step,
+)
 from tests.ci.test_desktop_release_tag_admission import _git, _seed_repo
 from tests.scripts.test_release_r2 import r2_server
 
@@ -174,6 +177,24 @@ def test_canary_metadata_is_recorded_and_receipt_bound(canary, r2_server, platfo
     assert entry["sha256"] == hashlib.sha256(body).hexdigest()
     assert metadata["commit"] == env["RELEASE_COMMIT"] and metadata["tag"] == env["RELEASE_TAG"]
     assert metadata["version"] == (env["FIXTURE_WINDOWS_VERSION"] if platform == "win32" else env["RELEASE_TAG"][1:])
+
+
+def test_linux_build_results_never_gate_canary_publication():
+    jobs = workflow_jobs()
+    publisher = jobs[canary_publisher(jobs)]
+    needs = admitted(needs_of(publisher))
+    for name in DIAGNOSTIC_JOBS:
+        needs[name] = {"result": "failure"}
+    tag = DOWNLOADABLE_DISPATCHES["tag"]
+    assert gate(publisher["if"], tag, needs)
+    for group in ("linux-x64", "linux-arm64"):
+        needs["validate"]["outputs"][group] = "false"
+    assert gate(publisher["if"], tag, needs)
+    needs["builds-table"]["result"] = "failure"
+    assert not gate(publisher["if"], tag, needs)
+    controller = {name: {"result": "success"} for name in channel_releases.CANARY_NEEDS}
+    stable.require_success({**controller, **{name: {"result": "failure"} for name in DIAGNOSTIC_JOBS}},
+                           list(channel_releases.CANARY_NEEDS))
 
 
 def stage_canary(clone, identity, env, run):

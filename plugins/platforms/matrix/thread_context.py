@@ -46,8 +46,8 @@ async def _decrypt_thread_event(client: Any, raw: dict[str, Any]) -> Any | None:
 
         event = EncryptedEvent.deserialize(JSON(raw))
         return await asyncio.wait_for(crypto.decrypt_megolm_event(event), timeout=10.0)
-    except Exception as exc:
-        logger.debug("Matrix: could not decrypt thread event %s: %s", raw.get("event_id"), exc)
+    except Exception:
+        logger.debug("Matrix: could not decrypt thread event %s", raw.get("event_id"), exc_info=True)
         return None
 
 
@@ -160,12 +160,12 @@ async def fetch_thread_entries(
                         relations_page.get("chunk"), list
                     ):
                         response = relations_page
-            except Exception as exc:
+            except Exception:
                 logger.debug(
-                    "Matrix: thread cursor rejected for %s in %s: %s",
+                    "Matrix: thread cursor rejected for %s in %s",
                     thread_id,
                     room_id,
-                    exc,
+                    exc_info=True,
                 )
         if response is None:
             response = await asyncio.wait_for(
@@ -175,8 +175,8 @@ async def fetch_thread_entries(
                 timeout=10.0,
             )
             event_key = "events_before"
-    except Exception as exc:
-        logger.debug("Matrix: could not fetch thread %s in %s: %s", thread_id, room_id, exc)
+    except Exception:
+        logger.debug("Matrix: could not fetch thread %s in %s", thread_id, room_id, exc_info=True)
         # Catch-up includes the root only when the scan found no previous turn, which a failed
         # page cannot show. A new thread session still needs the root, which is one event.
         if is_previous_turn is not None:

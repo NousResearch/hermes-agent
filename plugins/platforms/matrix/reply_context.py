@@ -51,7 +51,8 @@ def _content_dict(event: Any) -> dict:
     if callable(serialise):
         try:
             result = serialise()
-        except Exception:
+        except Exception:  # mautrix raises SerializerError for a field it cannot encode
+            logger.debug("Matrix: could not serialise event content", exc_info=True)
             return {}
         if isinstance(result, dict):
             return result
@@ -75,7 +76,8 @@ def _effective_content(event: Any) -> tuple[dict, bool]:
         if callable(serialise):
             try:
                 unsigned = serialise()
-            except Exception:
+            except Exception:  # mautrix raises SerializerError for a field it cannot encode
+                logger.debug("Matrix: could not serialise unsigned event data", exc_info=True)
                 unsigned = None
     relations = unsigned.get("m.relations") if isinstance(unsigned, dict) else None
     replacement = relations.get("m.replace") if isinstance(relations, dict) else None
@@ -182,7 +184,7 @@ def extract_mx_reply_quote(content: Mapping[str, Any]) -> str | None:
     try:
         parser.feed(content["formatted_body"])
         parser.close()
-    except Exception:
+    except (AssertionError, ValueError):
         return None
     text = parser.text().strip()
     first, separator, rest = text.partition("\n")
@@ -258,7 +260,7 @@ class MatrixEventContextCache:
             entry = self._entries[key]
             if entry.redacted:
                 return None
-            if entry.media_path and not Path(entry.media_path).is_file():
+            if entry.media_path and not await asyncio.to_thread(Path(entry.media_path).is_file):
                 self._entries.pop(key)
             else:
                 cached = entry
@@ -282,8 +284,8 @@ class MatrixEventContextCache:
                 if crypto is None:
                     return None
                 event = await asyncio.wait_for(crypto.decrypt_megolm_event(event), self.timeout_seconds)
-        except Exception as exc:
-            logger.debug("Matrix: could not resolve reply target %s in %s: %s", event_id, room_id, exc)
+        except Exception:
+            logger.debug("Matrix: could not resolve reply target %s in %s", event_id, room_id, exc_info=True)
             return None
         return event
 
@@ -312,8 +314,8 @@ class MatrixEventContextCache:
                 media = await asyncio.wait_for(
                     image_loader(content, event_id), self.timeout_seconds
                 )
-            except Exception as exc:
-                logger.debug("Matrix: could not cache quoted image %s: %s", event_id, exc)
+            except Exception:
+                logger.debug("Matrix: could not cache quoted image %s", event_id, exc_info=True)
         entry = MatrixEventContext(
             sender=sender, text=text,
             media_path=media[0] if media else None,

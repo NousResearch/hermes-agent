@@ -67,12 +67,12 @@ async def fetch_room_entries(
             earlier = (
                 response.get("events_before") if isinstance(response, dict) else None
             )
-    except Exception as exc:
+    except Exception:
         logger.debug(
-            "Matrix: could not fetch room context for %s in %s: %s",
+            "Matrix: could not fetch room context for %s in %s",
             event_id,
             room_id,
-            exc,
+            exc_info=True,
         )
         return []
 

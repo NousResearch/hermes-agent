@@ -2347,13 +2347,13 @@ class MatrixAdapter(BasePlatformAdapter):
                         exclude_event_ids=event.merged_message_ids,
                     )
                 )
-            except Exception as exc:
-                logger.debug("Matrix thread context fetch failed: %s", exc)
+            except Exception:
+                logger.debug("Matrix thread context fetch failed", exc_info=True)
         else:
             try:
                 blocks.append(await self.fetch_mention_context(event))
-            except Exception as exc:
-                logger.debug("Matrix mention context fetch failed: %s", exc)
+            except Exception:
+                logger.debug("Matrix mention context fetch failed", exc_info=True)
         note = "\n\n".join(block for block in blocks if block)
         if current is None and not note:
             return None
@@ -3119,9 +3119,9 @@ class MatrixAdapter(BasePlatformAdapter):
             return_exceptions=True,
         )
         for result in reads:
-            if isinstance(result, BaseException) and not isinstance(result, Exception):
+            if isinstance(result, asyncio.CancelledError):
                 raise result
-        failed_reads = [result for result in reads if isinstance(result, Exception)]
+        failed_reads = [result for result in reads if isinstance(result, BaseException)]
         members, profiles = (
             (None, None) if isinstance(member_read, BaseException) else member_read
         )
@@ -3129,7 +3129,7 @@ class MatrixAdapter(BasePlatformAdapter):
             logger.debug("Matrix: room state read failed for %s: %r", room_id, failed_reads[0])
 
         def state_value(event: Any, key: str) -> Optional[str]:
-            if isinstance(event, Exception):
+            if isinstance(event, BaseException):
                 return None
             return (self._state_event_value(event, key) or "").strip() or None
 

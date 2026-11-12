@@ -1,8 +1,8 @@
 name: branchpoint
 repo: https://github.com/Sahil-SS9/hermes-branchpoint
-sha: "7051eda3b968b90602c3c183c45f97f72153d8f7"
+sha: "148f96f59007fad383e9444706af663d8bc869c9"
 title: Branchpoint
-version: "0.2.2"
+version: "0.2.3"
 maintainer: Sahil-SS9
 tier: community
 category: tools
@@ -21,8 +21,9 @@ description: >-
   Includes a loopback live view, decision log, rewind anchors and reversible adoption. Disclosure:
   writes worktree metadata, branches, snapshots and refs/branchpoint/ in the project; only adopt changes
   the original working tree. Optional automatic prompt snapshots can be disabled. File-only child agents
-  have plugin-level worktree guards, not an OS sandbox; trusted project test/lint/type commands run as
-  subprocesses. Goal, rewind context, source excerpts and ledgers go to the user's configured Hermes
+  have plugin-level worktree guards; project test/lint/type commands run in a probed OS sandbox
+  (bubblewrap/sandbox-exec: worktree writable, rest read-only, real home masked, no network, allowlisted
+  env), and real builds refuse without one unless --unsafe-checks is passed. Goal, rewind context, source excerpts and ledgers go to the user's configured Hermes
   model with best-effort credential-pattern scrubbing; secret-looking files are excluded. Artifacts live
   in the profile's plugin-data/branchpoint, or the standalone CLI's local state directory. The view binds
   to 127.0.0.1 with a server token. Spawns Git and headless Hermes; standalone model chats expose only

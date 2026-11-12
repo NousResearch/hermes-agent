@@ -66,19 +66,36 @@ def test_hermes_usage_without_credential_reports_the_kind(capsys):
     assert err.count("\n") == 1 and "openai-codex" in err
 
 
-def test_hermes_usage_names_a_failed_fetch_instead_of_the_generic_line(capsys):
+def test_hermes_usage_names_a_failed_fetch_without_echoing_arbitrary_text(capsys):
     class _Boom(Exception):
         pass
 
     def fetch(provider, **kwargs):
-        kwargs["on_error"](_Boom("HTTP 401 Unauthorized"))
+        kwargs["on_error"](_Boom("opaque-SECRET-marker"))
 
     assert _run(["usage", "--json", "--provider", "anthropic"], fetch) == 1
     out, err = capsys.readouterr()
     doc = json.loads(out)
     assert doc["error"] == "fetch_failed"
-    assert "_Boom" in doc["detail"] and "HTTP 401" in doc["detail"]
-    assert "HTTP 401" in err and err.count("\n") == 1
+    assert doc["detail"] == "the fetch failed: _Boom"
+    assert "opaque-SECRET-marker" not in out + err
+    assert err.count("\n") == 1
+
+
+def test_hermes_usage_names_the_http_status_of_a_rejected_fetch(capsys):
+    import httpx
+
+    request = httpx.Request("GET", "https://api.anthropic.com/api/oauth/usage")
+    response = httpx.Response(401, request=request)
+
+    def fetch(provider, **kwargs):
+        kwargs["on_error"](httpx.HTTPStatusError("401 Unauthorized", request=request, response=response))
+
+    assert _run(["usage", "--json", "--provider", "anthropic"], fetch) == 1
+    out, err = capsys.readouterr()
+    doc = json.loads(out)
+    assert doc["detail"] == "the fetch failed: HTTPStatusError: HTTP 401 Unauthorized"
+    assert "HTTP 401" in err
 
 
 def test_hermes_usage_reports_a_provider_without_a_usage_endpoint(capsys):

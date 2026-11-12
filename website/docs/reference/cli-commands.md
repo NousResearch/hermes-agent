@@ -778,6 +778,8 @@ the same cause goes to stderr):
 
 `error` is one of `no_credential` (no login for the provider), `no_usage_endpoint` (the provider reports no
 usage windows), or `fetch_failed` (the request ran and failed — `detail` carries the redacted cause).
+Transport and HTTP errors keep their message (`HTTP 401`, `ConnectError: ...`); any other exception
+contributes only its class name, so a plugin hook's arbitrary message is never echoed.
 
 ## `hermes status`
 

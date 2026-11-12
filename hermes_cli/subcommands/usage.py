@@ -45,10 +45,8 @@ def _usage_failure(provider: str, failures: list[BaseException]) -> tuple[str, s
     """``(kind, detail)`` for an empty fetch: keep the fetch exception when there is one, otherwise
     name the missing prerequisite."""
     if failures:
-        from agent.redact import redact_sensitive_text
-        exc = failures[0]
-        return "fetch_failed", (f"the fetch failed: {type(exc).__name__}: "
-                                f"{redact_sensitive_text(str(exc), force=True)}")
+        from agent.account_usage import describe_fetch_error
+        return "fetch_failed", f"the fetch failed: {describe_fetch_error(failures[0])}"
     from agent.account_usage_cache import has_account_usage
     if not has_account_usage(provider):
         return "no_usage_endpoint", "the provider has no usage endpoint"

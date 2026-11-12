@@ -146,21 +146,59 @@ def test_fetch_account_usage_reaches_registered_plugin_profile_and_fails_open(mo
 
 
 def test_fetch_account_usage_reports_the_failure_to_the_caller_and_the_log(monkeypatch, caplog):
-    """#154150: a raising fetch still fails open, but the cause reaches the caller and the log."""
+    """#154150: a raising fetch still fails open, but the cause reaches the caller and the log. A
+    non-HTTP exception keeps only its class name — an opaque credential in its message must not
+    reach either surface (review on #154173)."""
     from agent import account_usage
 
     class _Boom(Exception):
         pass
 
     def raising(_base_url, _api_key):
-        raise _Boom("HTTP 401 Unauthorized")
+        raise _Boom("opaque-SECRET-marker")
 
     monkeypatch.setitem(account_usage._USAGE_FETCHERS, "openrouter", raising)
     failures = []
     with caplog.at_level("WARNING", logger="agent.account_usage"):
         assert account_usage.fetch_account_usage("openrouter", on_error=failures.append) is None
     assert [type(exc) for exc in failures] == [_Boom]
-    assert any("HTTP 401" in record.getMessage() for record in caplog.records)
+    assert any("_Boom" in record.getMessage() for record in caplog.records)
+    assert all("opaque-SECRET-marker" not in record.getMessage() for record in caplog.records)
+
+
+def test_fetch_account_usage_codex_without_credentials_is_not_a_failure(monkeypatch):
+    """An empty Codex credential pool is "no credential", not ``fetch_failed`` (review on #154173)."""
+    from types import SimpleNamespace
+
+    from agent import account_usage
+    from hermes_cli.auth import AuthError
+
+    def no_runtime(**_kwargs):
+        raise AuthError("no codex login")
+
+    monkeypatch.setattr(account_usage, "resolve_codex_runtime_credentials", no_runtime)
+    monkeypatch.setattr("agent.credential_pool.load_pool",
+                        lambda provider: SimpleNamespace(select=lambda: None))
+    failures = []
+    assert account_usage.fetch_account_usage("openai-codex", on_error=failures.append) is None
+    assert failures == []
+
+
+def test_fetch_failure_does_not_log_through_last_resort(monkeypatch):
+    """Logging setup failed: ``logger.warning`` would hit lastResort and add a second stderr line,
+    breaking the CLI's one-line contract. The caller still receives the cause."""
+    from agent import account_usage
+
+    def raising(_base_url, _api_key):
+        raise OSError("boom")
+
+    monkeypatch.setitem(account_usage._USAGE_FETCHERS, "openrouter", raising)
+    logged = []
+    monkeypatch.setattr(account_usage.logger, "hasHandlers", lambda: False)
+    monkeypatch.setattr(account_usage.logger, "warning", lambda *a, **k: logged.append(a))
+    failures = []
+    assert account_usage.fetch_account_usage("openrouter", on_error=failures.append) is None
+    assert failures and logged == []
 
 
 def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):

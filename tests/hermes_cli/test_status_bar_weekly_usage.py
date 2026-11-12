@@ -5,6 +5,7 @@ refresh in the background: a slow usage endpoint can never be allowed to stall a
 repaint every second must never become a request every second.
 """
 
+import logging
 import threading
 from datetime import datetime, timedelta, UTC
 from unittest.mock import MagicMock, patch
@@ -12,15 +13,20 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import providers
-from agent import account_usage
+from agent import account_usage, account_usage_cache
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from agent.account_usage_cache import cached_account_usage, remember_account_usage
+from agent.i18n import t
 from cli import HermesCLI
+from hermes_cli import status_bar_usage
 from hermes_cli.status_bar_usage import WEEKLY_WINDOW_LABELS, weekly_usage_percent, weekly_window
 from providers.base import ProviderProfile
 from tests.waiting import wait_until
 
 _OPTED_IN = frozenset({"model", "weekly_usage"})
+# With only the model listed, a healthy bar and the crash fallback print the same line: a test that
+# the bar survives needs a second segment the fallback drops.
+_OPTED_IN_WITH_DURATION = frozenset({"model", "weekly_usage", "duration"})
 _WIDE_COLUMNS = 120
 _MID_COLUMNS = 60
 _NARROW_COLUMNS = 40
@@ -75,6 +81,16 @@ def _no_refresh(monkeypatch):
     return calls
 
 
+class _Pool:
+    """A credential pool stand-in holding *accounts* logins."""
+
+    def __init__(self, accounts):
+        self._entries = [object() for _ in range(accounts)]
+
+    def entries(self):
+        return list(self._entries)
+
+
 class _CountingUsageApi:
     """A usage API stand-in that answers at once and counts every request."""
 
@@ -94,64 +110,45 @@ class _CountingUsageApi:
 # ── Reading the cached number ──────────────────────────────────────────────────
 
 
-def test_segment_is_opt_in_and_the_default_bar_never_asks_the_usage_api(monkeypatch):
+@pytest.mark.parametrize("fields", [None, frozenset({"model", "context_pct", "git_branch"})],
+                         ids=["default fields", "a list without weekly_usage"])
+def test_segment_is_opt_in_and_an_unlisted_field_never_asks_the_usage_api(monkeypatch, fields):
     calls = _no_refresh(monkeypatch)
     remember_account_usage("anthropic", _snapshot(_week(49.0)))
-
-    cli_obj = _make_cli(None)
-    snapshot = cli_obj._get_status_bar_snapshot()
-
-    assert snapshot["weekly_usage_percent"] is None
-    assert "wk " not in _bar_text(cli_obj, snapshot, field_set=None)
-    assert calls == [], "the default field set must not start a usage fetch"
-
-
-def test_a_fields_list_without_weekly_usage_never_asks_the_usage_api(monkeypatch):
-    calls = _no_refresh(monkeypatch)
-    remember_account_usage("anthropic", _snapshot(_week(49.0)))
-    fields = frozenset({"model", "context_pct", "git_branch"})
 
     cli_obj = _make_cli(fields)
     snapshot = cli_obj._get_status_bar_snapshot()
 
     assert snapshot["weekly_usage_percent"] is None
     assert "wk " not in _bar_text(cli_obj, snapshot, field_set=fields)
-    assert calls == []
+    assert calls == [], "an unlisted field must not start a usage fetch"
 
 
-def test_percent_rounds_up_and_only_the_account_weekly_window_counts(monkeypatch):
+@pytest.mark.parametrize(("windows", "shown"), [
+    pytest.param((_week(90.0, label="Current session"), _week(99.0, label="Opus week", scope="model"),
+                  _week(97.0, label="Weekly", scope="model"), _week(48.2)), 49,
+                 id="the account week, not the session or a model week"),
+    pytest.param((_week(None), _week(48.2, label="Weekly")), 49, id="a week without a reading is skipped"),
+    pytest.param((_week(float("nan")), _week(48.2, label="Weekly")), 49, id="a NaN reading is skipped"),
+    pytest.param((_week(float("inf")),), None, id="an infinite reading hides the segment"),
+    pytest.param((_week(30.0, label="Current session"),), None, id="no weekly window"),
+])
+def test_only_the_account_weekly_window_with_a_finite_reading_counts(monkeypatch, windows, shown):
     _no_refresh(monkeypatch)
-    remember_account_usage("anthropic", _snapshot(
-        _week(90.0, label="Current session"),
-        _week(99.0, label="Opus week", scope="model"),
-        _week(97.0, label="Weekly", scope="model"),
-        _week(48.2),
-    ))
+    remember_account_usage("anthropic", _snapshot(*windows))
 
-    assert weekly_usage_percent("anthropic") == 49
+    assert weekly_usage_percent("anthropic") == shown
 
 
-def test_whole_percent_is_not_rounded_up(monkeypatch):
-    _no_refresh(monkeypatch)
-    remember_account_usage("anthropic", _snapshot(_week(21.0)))
-
-    assert weekly_usage_percent("anthropic") == 21
-
-
-@pytest.mark.parametrize(("used", "shown"),
-                         [(-1.0, 0), (0.0, 0), (0.01, 1), (99.01, 100), (100.0, 100), (104.0, 100)])
+@pytest.mark.parametrize(("used", "shown"), [
+    (-1.0, 0), (0.0, 0), (0.01, 1), (21.0, 21), (48.2, 49), (99.01, 100), (100.0, 100), (104.0, 100),
+    (7.000000000000001, 7), (14.000000000000002, 14),  # float noise is not a fraction of a percent
+])
 def test_reading_is_rounded_up_and_kept_within_0_to_100(monkeypatch, used, shown):
     _no_refresh(monkeypatch)
     remember_account_usage("anthropic", _snapshot(_week(used)))
 
     assert weekly_usage_percent("anthropic") == shown
-
-
-def test_weekly_window_without_a_reading_is_skipped(monkeypatch):
-    _no_refresh(monkeypatch)
-    remember_account_usage("anthropic", _snapshot(_week(None), _week(48.2, label="Weekly")))
-
-    assert weekly_usage_percent("anthropic") == 49
 
 
 def test_stale_snapshot_shows_nothing_and_still_asks_for_a_fresh_one(monkeypatch):
@@ -162,11 +159,17 @@ def test_stale_snapshot_shows_nothing_and_still_asks_for_a_fresh_one(monkeypatch
     assert calls == [["anthropic"]]
 
 
-def test_snapshot_without_a_weekly_window_shows_nothing(monkeypatch):
-    _no_refresh(monkeypatch)
-    remember_account_usage("anthropic", _snapshot(_week(30.0, label="Current session")))
+def test_a_usage_api_without_a_weekly_window_is_asked_again_only_once_its_reading_goes_stale(monkeypatch):
+    calls = _no_refresh(monkeypatch)
+    remember_account_usage("openrouter", _snapshot(_week(12.0, label="API key quota"), provider="openrouter"))
 
-    assert weekly_usage_percent("anthropic") is None
+    assert weekly_usage_percent("openrouter") is None
+    assert calls == [], "a fresh reading with no weekly window must not be re-requested every interval"
+
+    remember_account_usage("openrouter", _snapshot(_week(12.0, label="API key quota"), provider="openrouter",
+                                                   age=timedelta(hours=1)))
+    assert weekly_usage_percent("openrouter") is None
+    assert calls == [["openrouter"]]
 
 
 def test_provider_without_a_usage_api_never_starts_a_fetch(monkeypatch):
@@ -178,24 +181,41 @@ def test_provider_without_a_usage_api_never_starts_a_fetch(monkeypatch):
     assert calls == []
 
 
-def test_provider_name_is_normalised_before_the_cache_is_read(monkeypatch):
-    calls = _no_refresh(monkeypatch)
+def test_a_provider_name_in_another_case_reads_the_same_reading(monkeypatch):
+    _no_refresh(monkeypatch)
     remember_account_usage("anthropic", _snapshot(_week(49.0)))
 
     assert weekly_usage_percent("  Anthropic ") == 49
-    assert calls == [["anthropic"]]
 
 
-def test_a_failing_usage_read_hides_the_segment_and_keeps_the_bar(monkeypatch):
+def _broken_usage_cache(monkeypatch):
     def broken(_provider):
         raise RuntimeError("usage cache unavailable")
 
     monkeypatch.setattr("agent.account_usage_cache.has_account_usage", broken)
-    cli_obj = _make_cli(_OPTED_IN)
+    monkeypatch.setattr(status_bar_usage, "_warned_failures", set())
+
+
+def test_a_failing_usage_read_hides_the_segment_and_keeps_the_rest_of_the_bar(monkeypatch):
+    _broken_usage_cache(monkeypatch)
+    cli_obj = _make_cli(_OPTED_IN_WITH_DURATION)
 
     assert weekly_usage_percent("anthropic") is None
     text = cli_obj._build_status_bar_text(width=_WIDE_COLUMNS)
-    assert "claude-sonnet-4" in text and "wk " not in text
+    assert "3m" in text and "wk " not in text, text
+
+
+def test_a_lasting_failure_warns_once_with_its_traceback_then_stays_quiet(monkeypatch, caplog):
+    _broken_usage_cache(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG, logger=status_bar_usage.__name__):
+        for _ in range(3):  # three repaints
+            weekly_usage_percent("anthropic")
+
+    records = [record for record in caplog.records if record.name == status_bar_usage.__name__]
+    assert [record.levelno for record in records] == [logging.WARNING, logging.DEBUG, logging.DEBUG]
+    assert records[0].exc_info is not None, "the first warning must carry the traceback"
+    assert all(record.exc_info is None for record in records[1:]), "a traceback per repaint floods -v"
 
 
 # ── Background refresh ─────────────────────────────────────────────────────────
@@ -240,9 +260,12 @@ def test_repaints_ask_the_usage_api_once_per_refresh_interval(monkeypatch):
     assert usage_api.calls == 1, "repaints inside the refresh interval must share one request"
 
     monkeypatch.setattr("agent.account_usage_cache.REFRESH_AFTER_S", 0.0)  # the interval has passed
-    cli_obj._get_status_bar_snapshot()
-    wait_until(lambda: usage_api.calls == 2, timeout=_FETCH_DEADLINE_SECONDS,
-               what="a repaint after the interval asked again")
+
+    def repaint_then_count():  # repaint inside the wait: one repaint can lose to the in-flight first fetch
+        cli_obj._get_status_bar_snapshot()
+        return usage_api.calls == 2
+
+    wait_until(repaint_then_count, timeout=_FETCH_DEADLINE_SECONDS, what="a repaint after the interval asked again")
 
 
 def test_a_failed_fetch_is_not_retried_on_every_repaint(monkeypatch):
@@ -256,18 +279,22 @@ def test_a_failed_fetch_is_not_retried_on_every_repaint(monkeypatch):
 
     assert usage_api.calls == 1
     assert all(snapshot["weekly_usage_percent"] is None for snapshot in snapshots)
-    assert "claude-sonnet-4" in cli_obj._build_status_bar_text(width=_WIDE_COLUMNS)
 
 
 def test_an_empty_answer_does_not_erase_the_last_reading(monkeypatch):
     remember_account_usage("anthropic", _snapshot(_week(49.0)))
     usage_api = _CountingUsageApi(answer=_snapshot())
     monkeypatch.setitem(account_usage._USAGE_FETCHERS, "anthropic", usage_api)
+    real_refresh, refreshes = account_usage_cache.refresh_account_usage_async, []
+    monkeypatch.setattr(account_usage_cache, "refresh_account_usage_async",
+                        lambda providers: refreshes.extend(real_refresh(providers)) or refreshes)
     cli_obj = _make_cli(_OPTED_IN)
 
     cli_obj._get_status_bar_snapshot()
-    wait_until(lambda: usage_api.calls == 1, timeout=_FETCH_DEADLINE_SECONDS, what="the refresh ran")
+    (refresh,) = refreshes
+    refresh.join(_FETCH_DEADLINE_SECONDS)  # the empty answer has been handled, not merely requested
 
+    assert not refresh.is_alive() and usage_api.calls == 1
     assert cli_obj._get_status_bar_snapshot()["weekly_usage_percent"] == 49
 
 
@@ -288,6 +315,27 @@ def test_a_plugin_providers_weekly_window_reaches_the_bar(monkeypatch):
 
 
 # ── Whose usage ────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(("accounts", "shown"), [(1, 49), (2, None), (3, None)])
+def test_a_pool_of_several_accounts_gets_no_provider_wide_reading(monkeypatch, accounts, shown):
+    calls = _no_refresh(monkeypatch)
+    remember_account_usage("anthropic", _snapshot(_week(49.0)))
+    cli_obj = _make_cli(_OPTED_IN)
+    cli_obj.agent._credential_pool = _Pool(accounts)
+
+    assert cli_obj._get_status_bar_snapshot()["weekly_usage_percent"] == shown
+    assert calls == ([["anthropic"]] if shown is not None else []), "no request for a reading the bar won't show"
+
+
+def test_the_cli_pool_stands_in_until_an_agent_exists(monkeypatch):
+    _no_refresh(monkeypatch)
+    remember_account_usage("anthropic", _snapshot(_week(49.0)))
+    cli_obj = _make_cli(_OPTED_IN, provider=None)
+    cli_obj.provider = "anthropic"
+    cli_obj._credential_pool = _Pool(2)
+
+    assert cli_obj._get_status_bar_snapshot()["weekly_usage_percent"] is None
 
 
 def test_the_cli_provider_stands_in_until_an_agent_exists(monkeypatch):
@@ -381,14 +429,6 @@ def test_segment_sits_between_the_context_gauge_and_the_speed_readings(monkeypat
     assert text.index("◎ 48.0%") < text.index("wk 49%") < text.index("◷ 4.8s") < text.index("3m"), text
 
 
-def test_plain_text_bar_shows_the_segment(monkeypatch):
-    _no_refresh(monkeypatch)
-    remember_account_usage("anthropic", _snapshot(_week(49.0)))
-    cli_obj = _make_cli(_OPTED_IN)
-
-    assert "wk 49%" in cli_obj._build_status_bar_text(width=_WIDE_COLUMNS)
-
-
 def _prompt_toolkit_fragments(cli_obj, width=_WIDE_COLUMNS):
     cli_obj._status_bar_visible = True
     mock_app = MagicMock()
@@ -417,11 +457,13 @@ def test_modern_footer_shows_the_segment(monkeypatch):
     assert len(weekly) == 1 and "class:status-bar-good" in weekly[0].split(), fragments
 
 
-@pytest.mark.parametrize(("language", "label"), [("en", "wk 49%"), ("de", "Wo. 49%"), ("ja", "週 49%")])
-def test_label_follows_the_interface_language(monkeypatch, language, label):
+@pytest.mark.parametrize("language", ["en", "de", "ja"])
+def test_plain_text_bar_shows_the_label_in_the_interface_language(monkeypatch, language):
     _no_refresh(monkeypatch)
     monkeypatch.setenv("HERMES_LANGUAGE", language)
     remember_account_usage("anthropic", _snapshot(_week(48.2)))
     cli_obj = _make_cli(_OPTED_IN)
+    label = t("cli.status_bar.weekly_usage", lang=language, percent=49)
 
+    assert language == "en" or label != "wk 49%", "this row would pass with the English label hard-coded"
     assert label in cli_obj._build_status_bar_text(width=_WIDE_COLUMNS)

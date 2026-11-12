@@ -78,16 +78,20 @@ class CLIStatusBarMixin:
 
     def _status_bar_weekly_usage(self, agent) -> Optional[int]:
         """``wk N%`` reading, opt-in like the branch: reading it starts a background fetch from the
-        provider's usage API, so the default bar never touches that API."""
+        provider's usage API, so the default bar never touches that API. The live agent's provider
+        and credential pool count; the CLI's stand in until an agent exists."""
         field_set = self._get_status_bar_field_set()
         if field_set is None or "weekly_usage" not in field_set:
             return None
         from hermes_cli.status_bar_usage import weekly_usage_percent
 
-        return weekly_usage_percent(getattr(agent, "provider", None) or getattr(self, "provider", None))
+        pool_owner = agent if agent is not None else self
+        return weekly_usage_percent(getattr(agent, "provider", None) or getattr(self, "provider", None),
+                                    credential_pool=getattr(pool_owner, "_credential_pool", None))
 
     def _weekly_usage_segments(self, snapshot, field_set) -> list:
-        """The ``wk N%`` segment, or none: unlisted in the fields, or no reading yet."""
+        """The ``wk N%`` segment, or none: unlisted in the fields, or no usable reading (none fetched
+        yet, stale, or no weekly window for this provider)."""
         percent = snapshot.get("weekly_usage_percent")
         if percent is None or field_set is None or "weekly_usage" not in field_set:
             return []

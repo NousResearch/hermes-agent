@@ -3,7 +3,7 @@ title: Wake
 repo: https://github.com/zzzubair/hermes-wake
 sha: "057facb13abd3c94464d4e68028a23713804d235"
 version: "1.0.0"
-description: "Lets your agent speak first. Scheduled notes and cron jobs arrive as a turn for your own agent in the chat you bind: Desktop Bot Chat, Discord, Telegram, Slack and other gateway chats. Disclosure: starts billed agent turns in the bound chat (opt-in via allow_gateway_injection), plus one optional precheck model call per wake; stores its queue in plaintext under $HERMES_HOME/plugin-data/; no third-party network calls, telemetry or credentials."
+description: "Lets your agent speak first. Scheduled notes and cron jobs arrive as a turn for your own agent in the chat you bind: Desktop Bot Chat, Discord, Telegram, Slack and other gateway chats. Disclosure — once you set plugins.entries.wake.allow_gateway_injection, scheduled wakes (including ones the agent schedules for itself) and cron output sent to the Wake Agent target start billed agent turns in the bound chat, plus one optional precheck call on your model per wake; stores its queue in plaintext under $HERMES_HOME/plugin-data/; no third-party network calls, telemetry or credentials."
 maintainer: zzzubair
 tier: community
 category: automation

@@ -37,6 +37,11 @@ it('provides translated canonical group controls and recovery copy in every supp
       expect(result.current[key as keyof typeof result.current]).toBe(value)
       expect(value.trim(), `${locale}.${key}`).not.toBe('')
 
+      if (locale === 'tr') {
+        const placeholders = (text: string) => (text.match(/\{\w+\}/g) ?? []).sort()
+        expect(placeholders(value), `tr.${key}`).toEqual(placeholders(english![key]!))
+      }
+
       if (locale !== 'en') {
         expect(value, `${locale}.${key}`).not.toBe(english![key])
       }
@@ -46,10 +51,11 @@ it('provides translated canonical group controls and recovery copy in every supp
   }
 })
 
-
 it('translates group chat opening feedback in every supported locale', () => {
   for (const [locale, copy] of Object.entries(TRANSLATIONS)) {
-    if (locale === 'en') {continue}
+    if (locale === 'en') {
+      continue
+    }
 
     for (const key of ['opening', 'lookupFailed', 'missing'] as const) {
       expect(copy.gatewayGroupOpen[key], `${locale}.${key}`).not.toBe(TRANSLATIONS.en.gatewayGroupOpen[key])

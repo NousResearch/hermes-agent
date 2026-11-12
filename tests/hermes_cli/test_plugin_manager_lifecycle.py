@@ -710,3 +710,28 @@ def test_retirement_releases_launch_auth_before_absent_rediscovery(profile_env, 
         assert after_retirement is None
     finally:
         clear_providers()
+
+
+@pytest.mark.parametrize("probe", ["delivery", "portable_mcp"])
+def test_discovery_wait_does_not_return_retired_manager(profile_env, monkeypatch, probe):
+    from hermes_cli import plugins_discovery
+    from hermes_cli.plugins_lifecycle import unload_plugin_manager_for_home
+
+    plugins._reset_plugin_managers_for_tests()
+    old = plugins.get_plugin_manager()
+    monkeypatch.setattr(plugins_discovery, "_delivery_join_abandoned", False)
+    monkeypatch.setattr(plugins, "_background_discovery_thread", type("Running", (), {"is_alive": lambda self: True})())
+    monkeypatch.setattr(plugins.PluginManager, "discover_and_load", lambda self, **kwargs: setattr(self, "_discovered", True) if not self._retired else None)
+    monkeypatch.setattr(plugins.PluginManager, "get_portable_mcp_servers", lambda self: {} if self._retired else {"new-server": {}})
+
+    def retire_during_join():
+        assert unload_plugin_manager_for_home(profile_env)
+        return False
+
+    monkeypatch.setattr(plugins_discovery, "join_background_discovery", retire_during_join)
+    if probe == "delivery":
+        manager = plugins_discovery._delivery_manager()
+        assert manager is not old and not manager._retired and manager._discovered
+    else:
+        assert plugins.get_portable_mcp_server_names_nowait() == {"new-server"}
+    assert old._retired

@@ -14,10 +14,13 @@ import sys
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Dict, Any, Optional, Mapping
+from typing import TYPE_CHECKING, Dict, Any, Optional, Mapping
 from urllib.parse import unquote, urlparse
 
 from agent.i18n import t
+
+if TYPE_CHECKING:
+    from prompt_toolkit.output import Output
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cli")
@@ -209,21 +212,31 @@ def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
     return not pasted_text.strip()
 
 
-class _LiveAreaOutput:
-    """The output the live area paints through, writing every cell without U+FE0F (VS16).
+# U+FE0F VARIATION SELECTOR-16 (VS16): asks for a glyph's emoji presentation, two cells wide.
+_EMOJI_PRESENTATION_SELECTOR = "\ufe0f"
+
+
+class _EmojiWidthOutput:
+    """An output that draws a VS16 glyph, and a zero-width character left in a cell of its own, at
+    the width prompt_toolkit counted.
 
     prompt_toolkit sizes a cell with ``get_cwidth``, which counts VS16 as zero, so ``🗜️`` is one
-    cell to it, while a terminal that honours VS16 (Ghostty, kitty, foot, WezTerm) draws it two
-    cells wide. Every cell right of it then lands a column off: the row's last column falls off
-    the edge, and a diff repaint writes over the wrong cells (#120588). Without the selector a
-    glyph keeps its default presentation, the width prompt_toolkit measured.
+    cell to it, while a terminal that honours VS16 (Ghostty, kitty, foot) draws it two cells wide.
+    Every cell right of it then lands a column off: the row's last column falls off the edge, and
+    a diff repaint writes over the wrong cells (#120588). Without the selector a glyph keeps its
+    default presentation, the width prompt_toolkit measured.
 
     A zero-width character that ends a line (VS16, a keycap's U+20E3) keeps a cell of its own,
     which the renderer counts as one column. The character already went out merged into the cell
-    before it, so the leftover cell goes out as a space and the terminal's cursor keeps pace.
+    before it, so the leftover cell goes out as a space and the terminal's cursor keeps pace. The
+    renderer writes one cell per ``write`` plus its cursor moves (carriage returns and newlines,
+    which no cell holds); escapes go through ``write_raw`` untouched. The screen-diff patch is
+    process-wide, so every prompt_toolkit app that paints after ``HermesCLI.run()`` installs it goes
+    through this (the live area, the subagent monitor). Flags, skin-tone modifiers and ZWJ
+    sequences still over-count (prompt_toolkit adds up their code points).
     """
 
-    def __init__(self, output):
+    def __init__(self, output: Output):
         from prompt_toolkit.utils import get_cwidth  # imported late, like this module's other pt names
 
         self._output, self._get_cwidth = output, get_cwidth
@@ -231,7 +244,7 @@ class _LiveAreaOutput:
     def write(self, data: str) -> None:
         if data.strip("\r\n") and self._get_cwidth(data) == 0:  # a cell measured as no width, not a cursor move
             data = " "
-        self._output.write(data.replace("\ufe0f", ""))
+        self._output.write(data.replace(_EMOJI_PRESENTATION_SELECTOR, ""))
 
     def __getattr__(self, name):
         return getattr(self._output, name)
@@ -241,16 +254,14 @@ def _hermes_call_output_screen_diff(
     orig_osd, app, output, screen, current_pos, color_depth, previous_screen, last_style, is_done, full_screen,
     attrs_for_style_string, style_string_has_style, size, previous_width,
 ):
-    """prompt_toolkit ``_output_screen_diff`` with resize guards, painting without VS16.
+    """prompt_toolkit ``_output_screen_diff`` with resize guards, painting VS16 glyphs at their measured width.
 
     Inflates ``previous_screen.height`` when the new screen is taller so pt skips the
-    cursor move that stamps chrome into scrollback; on a corrupt previous paint buffer
-    (tmux re-attach) retries once as a first paint instead of crashing the loop. Cells go out
-    through ``_LiveAreaOutput``, so each is drawn as wide as pt measured it.
-
-    1. 2. On AttributeError/TypeError from a corrupt previous paint buffer (classic after tmux attach with
-    same width), retry once with ``previous_screen=None`` so pt first-paints cleanly instead of crashing the
-    event loop with ``'cell' object has no attribute 'char'``. See #26137.
+    cursor move that stamps chrome into scrollback. On AttributeError/TypeError from a corrupt
+    previous paint buffer (classic after tmux attach with same width) it retries once with
+    ``previous_screen=None``, so pt first-paints cleanly instead of crashing the event loop with
+    ``'cell' object has no attribute 'char'`` (#26137). Cells go out through ``_EmojiWidthOutput``,
+    so VS16 no longer makes a terminal draw a glyph wider than pt measured it.
     """
     try:
         if previous_screen is not None and hasattr(previous_screen, "height") and previous_screen.height < screen.height:
@@ -258,7 +269,7 @@ def _hermes_call_output_screen_diff(
     except Exception:
         pass
 
-    common = (app, _LiveAreaOutput(output), screen, current_pos, color_depth)
+    common = (app, _EmojiWidthOutput(output), screen, current_pos, color_depth)
     tail = (is_done, full_screen, attrs_for_style_string, style_string_has_style, size)
     try:
         return orig_osd(*common, previous_screen, last_style, *tail, previous_width)

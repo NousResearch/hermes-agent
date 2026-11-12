@@ -773,10 +773,16 @@ function MarkdownTextSurface({
           <thead className={cn('m-0 bg-muted/35 text-muted-foreground', className)} {...props} />
         ),
         th: ResizableMarkdownTh,
+        // Message bodies set `overflow-wrap: anywhere` so long prose tokens stay
+        // in the column. A cell must not inherit it: in auto table layout every
+        // character becomes a break opportunity, the columns shrink to one
+        // letter (`Investig/ación`) and the table never overflows its wrapper.
+        // `break-word` wraps between words, sizes each column to its longest
+        // word, and lets a too-wide table scroll inside `.aui-md-table`.
         td: ({ children, className, ...props }: ComponentProps<'td'>) => (
           <td
             className={cn(
-              'px-2.5 py-1.5 align-top text-[length:var(--conversation-text-font-size)] leading-snug',
+              'min-w-12 px-2.5 py-1.5 align-top text-[length:var(--conversation-text-font-size)] leading-snug wrap-break-word',
               className
             )}
             {...props}

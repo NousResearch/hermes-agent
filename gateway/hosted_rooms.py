@@ -1272,6 +1272,15 @@ def room_state(db_path: DbPath, *, room_id: Any, include_disbanded: bool = False
     return {**_room_from_row(row), **({"authority_claim": _event_from_row(claim_row)} if claim_row is not None else {})}
 
 
+def has_user_message_after(db_path: DbPath, *, room_id: Any, seq: Any) -> bool:
+    """Whether a person posted in the room after ``seq``: only that can open newer work."""
+    room_id = _room_id(room_id)
+    with _transaction(db_path) as conn:
+        return conn.execute(
+            "SELECT 1 FROM hosted_room_events WHERE room_id=? AND kind='message.user' AND seq>? LIMIT 1",
+            (room_id, int(seq))).fetchone() is not None
+
+
 def request_room_stop(
     db_path: DbPath, *, room_id: Any, cancel_id: Any, expected_gateway_id: Any, expected_epoch: Any) -> dict[str, Any]:
     """Append an idempotent fence that supersedes earlier user turns."""

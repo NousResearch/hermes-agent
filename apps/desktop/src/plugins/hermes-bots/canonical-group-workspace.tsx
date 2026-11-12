@@ -1,7 +1,7 @@
 import { Button, host, LruCache, randomUuid } from '@hermes/plugin-sdk'
 import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from 'react'
 
-import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
+import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, hasCanonicalGroupPendingWork, useCanonicalRoomLive } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
 import { offersGroupMethod, offersGroupSafetyMethod, useGroupMethods } from './canonical-group-capabilities'
 import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
@@ -572,8 +572,8 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       first.catch(() => undefined)
       const cancelled = covered && await covered.settled ? await first.catch(() => 0) + await requestStop(true) : await first
 
-      // The replay stopped nothing while the room still works: that work came after its fence.
-      if (replay && !cancelled && state?.driver_status?.working) {await requestStop(true)}
+      // The replay's fence may precede newer work, including another stalled preparation.
+      if (replay && !cancelled && (state?.driver_status?.working || hasCanonicalGroupPendingWork(state?.driver_status))) {await requestStop(true)}
 
       if (alive.current) {
         setNotice('stopped')
@@ -581,6 +581,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       }
     } catch (e) {
       if (alive.current) {setError(e instanceof Error ? e.message : String(e))}
+      throw e
     } finally {
       stopPending.current = false
 
@@ -604,7 +605,9 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         ])
 
         const message = action.kind === 'discard' ? reasons.get(error?.data?.reason)
-          : action.kind === 'retry' && error?.data?.reason === 'session_busy' ? labels.retryBusy : undefined
+          : action.kind === 'retry' && error?.data?.reason === 'session_busy' ? labels.retryBusy
+            // A preparation that fails again answers with a bare code, which says nothing to a person.
+            : action.kind === 'retry' && action.task_id.startsWith('prepare:') && error?.data?.reason ? labels.retryStalled : undefined
 
         const member = memberById.get(action.member_id)
 
@@ -677,7 +680,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
       <CanonicalGroupHeader binding={binding} busy={busy} canDisband={offersGroupMethod(methods, 'groups.disband')} canRename={offersGroupMethod(methods, 'groups.rename')}
         canStop={!!driver && offersGroupSafetyMethod(methods, 'groups.stop')} detailsOpen={detailsOpen} driver={driver} methods={methods} onBack={onBack}
         onChanged={() => void refreshAfterChange().catch(e => setReadError(readFailure(e)))} onDetails={() => setDetailsOpen(open => !open)}
-        onDisband={end} onRename={rename} onReplaced={onReplaced} onStop={() => void stop()}
+        onDisband={end} onRename={rename} onReplaced={onReplaced} onStop={stop}
         room={state ? { ...state.room, members: markRoomLead(state.room.members, state.context) } : undefined} statuses={statuses} stopping={stopping} working={working || !!sending.current || stopping} />
       <CanonicalGroupNotices error={error} journalError={journalError} labels={labels}
         notice={notice ? labels[notice] : ''} onJournalReload={() => setJournalAttempt(value => value + 1)} onRefresh={() => void refresh().catch(e => setReadError(readFailure(e)))}
@@ -686,7 +689,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         {/* Anchored to the composer like a chat thread: a short room sits at the bottom, not the top. */}
         <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-end gap-0.5 py-4">
           <CanonicalGroupHistory avatarFor={avatarFor} binding={binding} disabled={!visible} downloads={offersGroupMethod(methods, 'groups.attachment.download')} events={events} members={members} onReply={replyTo}
-            pause={{ busy, maxContinues: driver?.max_continues, onContinue: continueDiscussion, onStop: stop, stopping }} />
+            pause={{ busy, maxContinues: driver?.max_continues, onContinue: continueDiscussion, onStop: () => stop().catch(() => undefined), stopping }} />
           <CanonicalGroupTyping labels={labels} members={members} statuses={statuses} />
           {(driver?.pending_actions || []).map(action => {
             const member = memberById.get(action.member_id)

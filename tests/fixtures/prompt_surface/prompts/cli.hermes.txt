@@ -37,6 +37,7 @@ After difficult/iterative tasks, offer to save as a skill. If a skill you loaded
     - codex: Delegate coding to OpenAI Codex CLI (features, PRs).
     - computer-use: Drive the desktop background-first; escalate on signal.
     - hermes-agent: Use, configure, theme, extend, and orchestrate Hermes Agent.
+    - tool-audit: Report per-tool calls and provable errors for a session.
   creative:
     - architecture-diagram: Dark-themed SVG architecture/cloud/infra diagrams as HTML.
     - ascii-video: ASCII video: convert video/audio to colored ASCII MP4/GIF.

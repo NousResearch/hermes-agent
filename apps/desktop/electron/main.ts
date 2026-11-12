@@ -7481,7 +7481,7 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
   return saveGatewayDownload(requestPaths, ctx, {
     ...deps,
     download: async (requestPath: string, context: GatewayFileSaveContext): Promise<GatewayFileSaveResult> => {
-      const url: string = `${connection.baseUrl}${requestPath}`
+      const url: string = joinBackendApiUrl(connection.baseUrl, requestPath)
 
       if (connection.authMode === 'oauth') {
         return requestWithOauthFallback(connection.baseUrl, {

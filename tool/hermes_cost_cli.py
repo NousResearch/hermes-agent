@@ -28,8 +28,6 @@ import os
 import time
 from decimal import Decimal
 
-from prompt_toolkit.layout import FormattedTextControl, Window
-
 from cli import HermesCLI
 
 CACHE_FILE = os.path.join(os.path.expanduser("~/.hermes"), "cache", "cost_meter_presets.json")
@@ -143,38 +141,41 @@ def _fmt(usd: float | None) -> str:
 # ── the wrapper ──────────────────────────────────────────────────────────────────
 
 class CostMeterCLI(HermesCLI):
-    """HermesCLI + a live spend line, using only the documented extension hooks."""
-
-    def _get_extra_tui_widgets(self) -> list:
-        widgets = list(super()._get_extra_tui_widgets() or [])
-        widgets.append(
-            Window(
-                FormattedTextControl(self._cost_fragments),
-                height=lambda: 1 if self._cost_ready() else 0,
-                style="class:status-bar-dim",
-                wrap_lines=False,
-            )
-        )
-        return widgets
+    """HermesCLI + a spend segment inside the status bar. No core edits, no extra rows."""
 
     def _cost_ready(self) -> bool:
-        """Nothing to meter before the first priced call — the row stays collapsed."""
+        """Nothing to meter before the first priced call — the segment simply stays out."""
         agent = getattr(self, "agent", None)
         return bool(agent is not None and (getattr(agent, "session_api_calls", 0) or 0) > 0)
 
-    def _cost_fragments(self) -> list[tuple[str, str]]:
-        """One dim line: session spend, this turn's spend, and a hint that /cost exists."""
+    def _cost_label(self) -> str:
+        """``~$0.0014`` — or ``cost: no pricing for <model>`` when the route is unpriced."""
         if not self._cost_ready():
-            return []
+            return ""
         usd, note = session_cost(getattr(self, "agent", None))
-        turn = usd - self._turn_base if (usd is not None and self._turn_base is not None) else None
         if usd is None:
-            return [("class:status-bar-strong", " cost: "), ("class:status-bar-dim", note or "unavailable")]
-        parts = [("class:status-bar-strong", f" {_fmt(usd)}")]
-        if turn is not None and turn > 0:
-            parts.append(("class:status-bar-dim", f" · turn {_fmt(turn)}"))
-        parts.append(("class:status-bar-dim", "  · /cost"))
-        return parts
+            return note or "cost unavailable"
+        return _fmt(usd)
+
+    def _status_bar_segments(self, snapshot, width, field_set, yolo_active, *, styled):
+        """Append the spend segment to the bar the user already has.
+
+        Both the classic and the modern layout build their status line from this one
+        method (``cli_modern_layout._status_line_fragments`` calls it too), so one
+        override lands in either surface. Inserted right after the model segment, which
+        is first, so a narrow terminal trims the tail (git/elapsed) before the spend.
+        """
+        segments = super()._status_bar_segments(
+            snapshot, width, field_set, yolo_active, styled=styled
+        )
+        try:
+            label = self._cost_label()
+        except Exception:
+            return segments
+        if not label:
+            return segments
+        segment = [("class:status-bar-dim", label)]
+        return [*segments[:1], segment, *segments[1:]] if segments else [segment]
 
     def process_command(self, command: str, *, redispatch: bool = False) -> bool:
         if command.strip().lower().startswith("/cost"):

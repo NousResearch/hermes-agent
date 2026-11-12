@@ -68,7 +68,10 @@ def run(prompt: str = "Reply with exactly: hello", boot_s: int = 20, turn_s: int
 def main() -> int:
     text = run()
     lines = [l.rstrip() for l in text.splitlines() if l.strip()]
-    meter = [l for l in lines if re.search(r"~\$\d|cost: ", l) and "/cost" in l]
+    # The meter must sit ON the status bar line (the one carrying the ☤ model glyph),
+    # not on a row of its own — that was the whole point of the exercise.
+    bar = [l for l in lines if "☤" in l]
+    meter = [l for l in bar if re.search(r"~\$\d|cost: ", l)]
     breakdown = [l for l in lines if "Session cost (estimate" in l]
     priced = [l for l in lines if re.search(r"session cost\s+~\$", l)]
     crashed = [l for l in lines if "Traceback" in l or "hermes-cost:" in l]
@@ -81,7 +84,7 @@ def main() -> int:
 
     print("hermes-cost self-test")
     check("no crash", not crashed, crashed[0][:120] if crashed else "")
-    check("meter line rendered", bool(meter), meter[-1].strip()[:80] if meter else "not found")
+    check("meter on the status bar", bool(meter), meter[-1].strip()[:110] if meter else "not found")
     check("/cost breakdown printed", bool(breakdown))
     check("session priced (not 'no pricing')", bool(priced), priced[-1].strip()[:80] if priced else "")
     if "--keep" in sys.argv:

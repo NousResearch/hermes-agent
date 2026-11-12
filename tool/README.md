@@ -3,9 +3,10 @@
 A live session-cost meter for the Hermes CLI, as a **wrapper CLI**. No edits to the
 Hermes source tree, no fork, nothing to re-apply after `hermes update`.
 
+The spend lands **inside the status bar you already have**, right after the model:
+
 ```
- ~$0.0029 · turn ~$0.0004 · /cost
- ☤ deepseek-v4-1-flash-101... │ 20.5K/200K │ 10% │ ◎ 83.5% │ 42m │ ✓ 2s
+ ☤ deepseek-v4-1-flash-101... · ~$0.0043 · 17.9K/1M · [░░░░░░░░░░] 2% · ◎ 20.1% · ◷ 1.6s · ↑ 2 t/s · 1m · ⏲ 2s · ✓ 56s
 ```
 
 ## Why this shape (the research)
@@ -33,9 +34,13 @@ Patching core was the wrong shape for three reasons:
 
 The sanctioned extension point is documented at
 [developer-guide/extending-the-cli](https://hermes-agent.nousresearch.com/docs/developer-guide/extending-the-cli):
-`HermesCLI` exposes five protected hooks, two of which are all this needs —
-`_get_extra_tui_widgets()` (inject a prompt_toolkit widget between the transcript and the
-status bar) and `process_command()` (add `/cost`).
+`HermesCLI` exposes five protected hooks. Two matter here:
+
+- `_status_bar_segments()` — the single method both the classic and the modern layout build
+  their status line from (`cli_modern_layout._status_line_fragments` calls it too). Overriding
+  it appends a segment **inside** the existing bar. (`_get_extra_tui_widgets()` is the other
+  documented hook, but it adds a *separate row above* the bar — not what we want.)
+- `process_command()` — adds `/cost`.
 
 ## Run it
 

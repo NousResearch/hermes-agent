@@ -420,6 +420,10 @@ def _seed_supervise_skeleton(svc_dir: Path) -> None:
             _chown_hermes(control)
 
     _seed(svc_dir)
+    _chown_hermes(svc_dir)
+    run_script = svc_dir / "run"
+    if run_script.exists():
+        _chown_hermes(run_script)
     log_dir = svc_dir / "log"
     if log_dir.is_dir():
         _seed(log_dir)
@@ -488,7 +492,9 @@ class S6ServiceManager:
         return self.scandir / f"{S6_SERVICE_PREFIX}{profile}"
 
     @staticmethod
-    def _render_run_script(profile: str, extra_env: dict[str, str]) -> str:
+    def _render_run_script(
+        profile: str, extra_env: dict[str, str], *, force: bool = False
+    ) -> str:
         """Run script for a profile-gateway s6 service.
 
         Sources HERMES_HOME via with-contenv (run time, not baked in), resets ``HOME`` before the
@@ -537,6 +543,8 @@ class S6ServiceManager:
             gateway_cmd = "hermes gateway run --replace"
         else:
             gateway_cmd = f"hermes -p {shlex.quote(profile)} gateway run --replace"
+            if force:
+                gateway_cmd += " --force"
         # Skip the drop when already non-root (setgroups() lacks CAP_SETGID → s6 boot-loop).
         lines.append(f'[ "$(id -u)" = 0 ] || exec {gateway_cmd}')
         lines.append(f"exec s6-setuidgid hermes {gateway_cmd}")
@@ -618,6 +626,44 @@ class S6ServiceManager:
         self._run_svc("-u", "start", name)
         _write_gateway_desired_state(name, "running")
 
+    def enable_force_run_script(self, name: str) -> None:
+        """Ensure a named profile's s6 ``run`` script passes ``--force`` to ``gateway run``."""
+        profile = _profile_from_service(name)
+        if profile == "default":
+            return
+        service_dir = self._service_dir(profile)
+        if not service_dir.is_dir():
+            raise GatewayNotRegisteredError(profile)
+        run_path = service_dir / "run"
+        if run_path.is_file():
+            existing = run_path.read_text(encoding="utf-8")
+            if "gateway run --replace --force" in existing:
+                return
+            if "gateway run --replace" in existing:
+                rendered = existing.replace(
+                    "gateway run --replace", "gateway run --replace --force"
+                )
+            else:
+                rendered = self._render_run_script(profile, {}, force=True)
+        else:
+            rendered = self._render_run_script(profile, {}, force=True)
+        tmp_path = service_dir / ".run.tmp"
+        tmp_path.write_text(rendered, encoding="utf-8")
+        tmp_path.chmod(0o755)
+        _chown_hermes(tmp_path)
+        tmp_path.replace(run_path)
+
+    def has_force_run_script(self, name: str) -> bool:
+        """True when a named profile's s6 ``run`` script carries ``--force``."""
+        profile = _profile_from_service(name)
+        if profile == "default":
+            return False
+        try:
+            run_path = self._service_dir(profile) / "run"
+            return run_path.is_file() and "--force" in run_path.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            return False
+
     def _svstat_fields(self, name: str, *fields: str) -> list[str] | None:
         """``s6-svstat -o <fields>`` values for ``name``, or None on a nonzero rc or a count mismatch.
 
@@ -669,7 +715,12 @@ class S6ServiceManager:
         return True
 
     def register_profile_gateway(
-        self, profile: str, *, extra_env: dict[str, str] | None = None, start_now: bool = True
+        self,
+        profile: str,
+        *,
+        extra_env: dict[str, str] | None = None,
+        start_now: bool = True,
+        force: bool = False,
     ) -> None:
         """Create the s6 service directory and ``s6-svscanctl -a`` so it is picked up immediately.
 
@@ -705,7 +756,10 @@ class S6ServiceManager:
 
         try:
             (tmp_dir / "type").write_text("longrun\n", encoding="utf-8")
-            _write_script(tmp_dir / "run", self._render_run_script(profile, extra_env or {}))
+            _write_script(
+                tmp_dir / "run",
+                self._render_run_script(profile, extra_env or {}, force=force),
+            )
             _write_script(tmp_dir / "finish", self._render_finish_script())
             (tmp_dir / "log").mkdir()
             _write_script(tmp_dir / "log" / "run", self._render_log_run(profile))

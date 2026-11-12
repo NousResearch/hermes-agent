@@ -774,6 +774,16 @@ _HOME_MODE_ALIASES = {"isolated": "profile", "profile_home": "profile", "profile
                       "host": "real", "user": "real", "real_home": "real", "real-home": "real"}
 
 
+def _bound_terminal_home_mode() -> str | None:
+    """The bound profile's ``TERMINAL_HOME_MODE`` (``"auto"`` when its policy omits it), or ``None``
+    with no terminal scope bound. A served profile's turn must not read the LAUNCH profile's bridged
+    value from ``os.environ`` (#146103). Read through ``sys.modules`` for the same boot-path reason as
+    ``get_hermes_home_override``: no scope can be bound before ``tools.terminal_scope`` is imported."""
+    get_terminal_scope = getattr(sys.modules.get("tools.terminal_scope"), "get_terminal_scope", None)
+    policy = get_terminal_scope() if get_terminal_scope is not None else None
+    return None if policy is None else str(policy.get("TERMINAL_HOME_MODE") or "auto").strip()
+
+
 def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     """Subprocess ``HOME`` override, or ``None``.
 
@@ -782,7 +792,7 @@ def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:
     """
     env = env or {}
     profile_home = _profile_home_path(env)
-    mode = _env_get(env, "TERMINAL_HOME_MODE", "auto").lower() or "auto"
+    mode = (_bound_terminal_home_mode() or _env_get(env, "TERMINAL_HOME_MODE", "auto")).lower() or "auto"
     mode = _HOME_MODE_ALIASES.get(mode, mode)
 
     if mode == "profile":

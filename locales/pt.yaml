@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  COMANDO PERIGOSO: {description}"
+  explanation_line: "O que faz: {text}"
   choose_long: "      [o]uma vez  |  [s]sessão  |  [a]sempre  |  [d]negar"
   choose_short: "      [o]uma vez  |  [s]sessão  |  [d]negar"
   prompt_long: "      Escolha [o/s/a/D]: "
@@ -615,6 +616,7 @@ gateway:
   exec_approval:
     header: "O Hermes quer executar um comando que precisa da sua aprovação"
     reason_label: "Motivo da sinalização"
+    explain_label: "O que faz"
     default_reason: "comando perigoso"
     smart_deny_line: "NEGAR inteligente: a exceção do proprietário vale apenas para esta operação."
     smart_deny_heading: "⚠️ **NEGAR inteligente — exceção do proprietário para uma operação:**"

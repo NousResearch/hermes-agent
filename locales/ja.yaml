@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  危険なコマンド: {description}"
+  explanation_line: "何をするか: {text}"
   choose_long: "      [o]今回のみ  |  [s]セッション中  |  [a]常に許可  |  [d]拒否"
   choose_short: "      [o]今回のみ  |  [s]セッション中  |  [d]拒否"
   prompt_long: "      選択 [o/s/a/D]: "
@@ -615,6 +616,7 @@ gateway:
   exec_approval:
     header: "Hermes があなたの承認が必要なコマンドを実行しようとしています"
     reason_label: "フラグの理由"
+    explain_label: "何をするか"
     default_reason: "危険なコマンド"
     smart_deny_line: "スマート DENY: オーナーによる上書きはこの 1 回の操作にのみ適用されます。"
     smart_deny_heading: "⚠️ **スマート DENY — 1 回の操作に限ったオーナーの上書き:**"

@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  GEVAARLIKE OPDRAG: {description}"
+  explanation_line: "Wat dit doen: {text}"
   choose_long: "      [o]eenmalig  |  [s]sessie  |  [a]altyd  |  [d]weier"
   choose_short: "      [o]eenmalig  |  [s]sessie  |  [d]weier"
   prompt_long: "      Keuse [o/s/a/D]: "
@@ -615,6 +616,7 @@ gateway:
   exec_approval:
     header: "Hermes wil 'n opdrag uitvoer wat jou goedkeuring nodig het"
     reason_label: "Hoekom dit gemerk is"
+    explain_label: "Wat dit doen"
     default_reason: "gevaarlike opdrag"
     smart_deny_line: "Slim WEIER: eienaar-oorskrywing geld slegs vir hierdie een bewerking."
     smart_deny_heading: "⚠️ **Slim WEIER — eienaar-oorskrywing vir een bewerking:**"

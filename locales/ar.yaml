@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  أمر خطير: {description}"
+  explanation_line: "ما الذي يفعله: {text}"
   choose_long: "      [o] مرة  |  [s] الجلسة  |  [a] دائمًا  |  [d] رفض"
   choose_short: "      [o] مرة  |  [s] الجلسة  |  [d] رفض"
   prompt_long: "      الاختيار [o/s/a/D]: "
@@ -615,6 +616,7 @@ gateway:
   exec_approval:
     header: "يريد Hermes تشغيل أمر يحتاج إلى موافقتك"
     reason_label: "سبب التنبيه"
+    explain_label: "ما الذي يفعله"
     default_reason: "أمر خطير"
     smart_deny_line: "رفض ذكي: تجاوز المالك ينطبق على هذه العملية وحدها."
     smart_deny_heading: "⚠️ **رفض ذكي — تجاوز المالك لعملية واحدة:**"

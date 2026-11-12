@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  COMMANDE DANGEREUSE : {description}"
+  explanation_line: "Ce que ça fait : {text}"
   choose_long: "      [o]ne fois  |  [s]ession  |  [t]oujours  |  [r]efuser"
   choose_short: "      [o]ne fois  |  [s]ession  |  [r]efuser"
   prompt_long: "      Choix [o/s/t/R] : "
@@ -704,6 +705,7 @@ gateway:
   exec_approval:
     header: "Hermes veut exécuter une commande qui nécessite votre accord"
     reason_label: "Motif du signalement"
+    explain_label: "Ce que ça fait"
     default_reason: "commande dangereuse"
     smart_deny_line: "Smart DENY : la dérogation du propriétaire ne s'applique qu'à cette seule opération."
     smart_deny_heading: "⚠️ **Smart DENY — dérogation du propriétaire pour une seule opération :**"

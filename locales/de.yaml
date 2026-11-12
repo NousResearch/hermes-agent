@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  GEFÄHRLICHER BEFEHL: {description}"
+  explanation_line: "Was es bewirkt: {text}"
   choose_long: "      [o]einmal  |  [s]sitzung  |  [a]immer  |  [d]ablehnen"
   choose_short: "      [o]einmal  |  [s]sitzung  |  [d]ablehnen"
   prompt_long: "      Auswahl [o/s/a/D]: "
@@ -615,6 +616,7 @@ gateway:
   exec_approval:
     header: "Hermes möchte einen Befehl ausführen, der Ihre Zustimmung braucht"
     reason_label: "Grund der Markierung"
+    explain_label: "Was es bewirkt"
     default_reason: "gefährlicher Befehl"
     smart_deny_line: "Smart DENY: Der Besitzer-Override gilt nur für diesen einen Vorgang."
     smart_deny_heading: "⚠️ **Smart DENY — Besitzer-Override für einen Vorgang:**"

@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  VESZÉLYES PARANCS: {description}"
+  explanation_line: "Mit csinál: {text}"
   choose_long: "      [o]egyszer  |  [s]munkamenet  |  [a]mindig  |  [d]elutasít"
   choose_short: "      [o]egyszer  |  [s]munkamenet  |  [d]elutasít"
   prompt_long: "      Választás [o/s/a/D]: "
@@ -618,6 +619,7 @@ gateway:
   exec_approval:
     header: "A Hermes olyan parancsot futtatna, amihez a jóváhagyásod kell"
     reason_label: "Miért lett megjelölve"
+    explain_label: "Mit csinál"
     default_reason: "veszélyes parancs"
     smart_deny_line: "Okos ELUTASÍTÁS: a tulajdonosi felülbírálás csak erre az egy műveletre vonatkozik."
     smart_deny_heading: "⚠️ **Okos ELUTASÍTÁS — tulajdonosi felülbírálás egy műveletre:**"

@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  ОПАСНАЯ КОМАНДА: {description}"
+  explanation_line: "Что это делает: {text}"
   choose_long: "      [o]один раз  |  [s]сеанс  |  [a]всегда  |  [d]отклонить"
   choose_short: "      [o]один раз  |  [s]сеанс  |  [d]отклонить"
   prompt_long: "      Выбор [o/s/a/D]: "
@@ -615,6 +616,7 @@ gateway:
   exec_approval:
     header: "Hermes хочет выполнить команду, требующую вашего одобрения"
     reason_label: "Почему помечена"
+    explain_label: "Что это делает"
     default_reason: "опасная команда"
     smart_deny_line: "Умный DENY: переопределение владельца действует только на эту одну операцию."
     smart_deny_heading: "⚠️ **Умный DENY — переопределение владельца на одну операцию:**"

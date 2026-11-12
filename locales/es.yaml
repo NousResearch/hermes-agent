@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  COMANDO PELIGROSO: {description}"
+  explanation_line: "Qué hace: {text}"
   choose_long: "      [o]una vez  |  [s]sesión  |  [a]siempre  |  [d]denegar"
   choose_short: "      [o]una vez  |  [s]sesión  |  [d]denegar"
   prompt_long: "      Opción [o/s/a/D]: "
@@ -615,6 +616,7 @@ gateway:
   exec_approval:
     header: "Hermes quiere ejecutar un comando que necesita tu aprobación"
     reason_label: "Por qué se marcó"
+    explain_label: "Qué hace"
     default_reason: "comando peligroso"
     smart_deny_line: "DENEGACIÓN inteligente: la anulación del propietario aplica solo a esta operación."
     smart_deny_heading: "⚠️ **DENEGACIÓN inteligente — anulación del propietario para una sola operación:**"

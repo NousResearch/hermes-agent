@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  COMANDO PERICOLOSO: {description}"
+  explanation_line: "Cosa fa: {text}"
   choose_long: "      [o]una volta  |  [s]essione  |  [a]sempre  |  [d]nega"
   choose_short: "      [o]una volta  |  [s]essione  |  [d]nega"
   prompt_long: "      Scelta [o/s/a/D]: "
@@ -615,6 +616,7 @@ gateway:
   exec_approval:
     header: "Hermes vuole eseguire un comando che richiede il tuo OK"
     reason_label: "Motivo della segnalazione"
+    explain_label: "Cosa fa"
     default_reason: "comando pericoloso"
     smart_deny_line: "DENY intelligente: l'override del proprietario vale solo per questa singola operazione."
     smart_deny_heading: "⚠️ **DENY intelligente — override del proprietario per una sola operazione:**"

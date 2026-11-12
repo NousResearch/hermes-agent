@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  TEHLİKELİ KOMUT: {description}"
+  explanation_line: "Ne yapar: {text}"
   choose_long: "      [b]ir kez  |  [o]turum  |  [h]er zaman  |  [r]eddet"
   choose_short: "      [b]ir kez  |  [o]turum  |  [r]eddet"
   prompt_long: "      Seçim [b/o/h/R]: "
@@ -615,6 +616,7 @@ gateway:
   exec_approval:
     header: "Hermes, onayınızı gerektiren bir komut çalıştırmak istiyor"
     reason_label: "İşaretlenme nedeni"
+    explain_label: "Ne yapar"
     default_reason: "tehlikeli komut"
     smart_deny_line: "Akıllı REDDET: sahip geçersiz kılması yalnızca bu tek işlem için geçerlidir."
     smart_deny_heading: "⚠️ **Akıllı REDDET — tek işlem için sahip geçersiz kılması:**"

@@ -1,5 +1,6 @@
 approval:
   dangerous_header: "⚠️  ORDÚ CONTÚIRTEACH: {description}"
+  explanation_line: "Cad a dhéanann sé: {text}"
   choose_long: "      [o]uair amháin  |  [s]eisiún  |  [a]i gcónaí  |  [d]iúltaigh"
   choose_short: "      [o]uair amháin  |  [s]eisiún  |  [d]iúltaigh"
   prompt_long: "      Rogha [o/s/a/D]: "
@@ -615,6 +616,7 @@ gateway:
   exec_approval:
     header: "Ba mhaith le Hermes ordú a rith a dteastaíonn do chead uaidh"
     reason_label: "Cén fáth ar bratacháladh é"
+    explain_label: "Cad a dhéanann sé"
     default_reason: "ordú contúirteach"
     smart_deny_line: "DIÚLTÚ cliste: ní bhaineann sárú an úinéara ach leis an oibríocht amháin seo."
     smart_deny_heading: "⚠️ **DIÚLTÚ cliste — sárú úinéara d'oibríocht amháin:**"

@@ -322,7 +322,10 @@ function slowPnpm(delay) {
   roots.push(dir)
   const started = join(dir, 'started')
   writeFileSync(join(dir, 'pnpm'), ['#!/bin/sh',
-    `if [ "$1" = install ]; then echo "$$" >> '${started}'; sleep ${delay}; fi`,
+    // Backgrounded and trapped like the signalled shim below: a Ctrl-C landing between the marker
+    // and a foreground sleep's exec is caught by sh's own handler in the forked child, so the
+    // sleep would run its full delay and the job would outlive the signal.
+    `if [ "$1" = install ]; then trap 'kill $! 2>/dev/null; exit 130' INT; echo "$$" >> '${started}'; sleep ${delay} & wait $!; trap - INT; fi`,
     `exec '${pnpmCommand()}' "$@"`, ''].join('\n'))
   chmodSync(join(dir, 'pnpm'), 0o755)
   json(join(dir, 'package.json'), { name: 'pnpm', version: execFileSync(pnpmCommand(), ['--version']).toString().trim() })

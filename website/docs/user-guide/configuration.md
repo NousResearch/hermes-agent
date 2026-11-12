@@ -758,7 +758,7 @@ Anything listed in `docker_forward_env` becomes visible to commands run inside t
 
 ### Running the Container as Your Host User
 
-By default Docker containers run as `root` (UID 0). Files created inside `/workspace` or other bind-mounts end up owned by root on the host, so after a session you have to `sudo chown` them before you can edit them from your host editor. On Linux, when Hermes stops and removes a root container, it first hands the files in its own sandbox bind mounts (`/root` and `/workspace` under `TERMINAL_SANDBOX_DIR`) back to your user (not your `docker_volumes` or mounted host directory; skipped on rootless Docker and userns-remap). Those sandbox files also lose setuid/setgid bits and file capabilities, whatever their owner, so nothing the container left there runs with elevated rights when you execute it on the host; a long-lived container that is never removed gets that strip (without any owner change) whenever a session detaches from it or reattaches, and before the stale-container sweep removes it. The `terminal.docker_run_as_host_user` flag fixes this for every mount and for long-lived containers that are never removed:
+By default Docker containers run as `root` (UID 0). Files created inside `/workspace` or other bind-mounts end up owned by root on the host, so after a session you have to `sudo chown` them before you can edit them from your host editor. On Linux, when Hermes stops and removes a root container, it first hands the files in its own sandbox bind mounts (`/root` and `/workspace` under `TERMINAL_SANDBOX_DIR`) back to your user (not your `docker_volumes` or mounted host directory; skipped on rootless Docker and userns-remap). Those sandbox files also lose setuid/setgid bits and file capabilities, whatever their owner, so nothing the container left there runs with elevated rights when you execute it on the host; a long-lived container that is never removed gets that strip (without any owner change) whenever a session detaches from it or reattaches, and before the stale-container sweep removes it. A file the agent sends with `MEDIA:` that the gateway cannot read (a root-owned `chmod 600` deliverable in a live container) is handed back to your user on its own just before delivery, through that container, so it arrives without waiting for teardown; its mode stays as the agent set it. The `terminal.docker_run_as_host_user` flag fixes this for every mount and for long-lived containers that are never removed:
 
 ```yaml
 terminal:
@@ -1264,6 +1264,7 @@ Semantics:
 - **Notify-only.** The watchdog never kills the turn — contrast `agent.gateway_timeout`, which cancels a run after prolonged inactivity. The stall notice just tells you the agent looks wedged so you can decide (`/new`, `/stop`, or keep waiting).
 - **One notification per stall episode.** The latch clears when the pending inbound drains or activity resumes, so a session that recovers and stalls again notifies again.
 - Progress comes only from the shared activity snapshot (tool calls, API stream progress, compression heartbeats). Pending inbound is a notify gate, not a progress clock.
+- **Before the agent starts.** A turn still setting up (session load, transcript, `agent:start` hooks) answers a follow-up past this timeout with "Still starting this turn … Use /stop if it should be cancelled". Setup itself is bounded by `agent.gateway_timeout`: past it the turn ends with "Turn setup stalled … Please resend your message" and the next message runs. `/stop` and `/new` end a turn still in setup.
 
 ```yaml
 agent:
@@ -2322,7 +2323,7 @@ display:
   # notification; other terminals ignore it) and, inside Warp (TERM_PROGRAM=WarpTerminal with the CLI-agent
   # protocol advertised), a warp://cli-agent OSC 777 event (`stop` on completion, `permission_request` on
   # blocking prompts) so Warp's tab status and notification mailbox track Hermes. No extra keys needed.
-  show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
+  show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide). On a gateway reply that was streamed, it follows the answer as its own message
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar
   vim_mode: false         # CLI only: vi/vim keybindings in the input composer (Esc → NORMAL, i → INSERT). The live NORMAL/INSERT/REPLACE mode shows at the right of the status bar. Config-only, read at startup.
@@ -2493,7 +2494,7 @@ Example footer appended to a Telegram/Discord/Slack reply:
 — claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
 ```
 
-Only the **final** message of a turn gets the footer; interim updates stay clean.
+Only the **final** message of a turn gets the footer; interim updates stay clean. When that final message would otherwise be the footer on its own (a streamed reply, whose text is already on screen, or a reply that is only a `MEDIA:` photo), the footer goes into the last photo's caption instead, on platforms with photo captions (Telegram), and only if it fits the caption limit (1,024 characters on Telegram). Otherwise it is sent as its own short message, as before.
 
 ### Per-platform progress overrides
 
@@ -2517,7 +2518,7 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
-`interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
+`interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming. When disabled, text the model writes in the same message as a `clarify` question is still sent just before the question. The question waits up to 15 seconds in total for that send; a send that is still running after that does not hold the question back, so on a very slow connection the choices can arrive before the end of their explanation.
 
 `show_commentary` (default `true`) controls Codex Responses models' commentary channel — the polished progress narration these models produce alongside their private reasoning. When enabled, each completed commentary message is delivered as a visible mid-turn update (on the gateway this also requires `interim_assistant_messages`). Set it to `false` if the extra narration annoys you: commentary then falls back to the reasoning channel and is only shown when `show_reasoning` is enabled.
 
@@ -2728,7 +2729,7 @@ For separate natural mid-turn assistant updates without progressive token editin
 **Fresh final (Telegram):** Telegram's `editMessageText` preserves the original message timestamp, so a long-running streamed reply would keep the first-token timestamp even after completion. Set `fresh_final_after_seconds > 0` to opt in to delivering old previews as brand-new final messages with best-effort preview deletion. The default is `0`, which always finalizes streamed replies in place and avoids the brief duplicate-message/delete sequence on clients that show both operations.
 
 :::note Per-platform streaming defaults
-The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.
+The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`; those per-platform toggles are re-read on every message, so they apply without a restart. The `streaming:` block itself (`enabled`, `transport`, `edit_interval`, `buffer_threshold`, `cursor`, `fresh_final_after_seconds`) is captured once when the gateway starts: after changing any of those keys, restart the gateway for the change to take effect. Note that a per-platform switch can only narrow the master switch, never enable streaming on its own. Under `gateway.multiplex_profiles`, each served profile's turns use the `streaming:` block from that profile's own `config.yaml` (`hermes -p <profile> config set streaming.enabled true`), not the host profile's. A served profile with no `streaming:` block of its own gets the default (off): it no longer streams just because the host profile does.
 :::
 
 ## Group Chat Session Isolation
@@ -3186,6 +3187,9 @@ delegation:
   max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
   oneshot_max_children: 2                   # Total subagents a one-shot run (hermes chat -q / --oneshot) may spawn; 0 = unlimited. Interactive and gateway sessions are never capped by this.
+  resumable_ttl_hours: 48                   # A child stopped by a restart, crash or provider failure stays continuable (delegate_task action=continue) this long, and its worktree is kept from the startup sweep.
+  max_resumable: 32                         # Per profile, how many such children keep their worktree pinned; the oldest beyond it loses its pin (the record stays).
+  auto_resume: false                        # Opt-in: resume such children automatically. Off = you continue them.
   gateway_mode: auto                        # Gateway sessions: auto | inline | background. auto = join children inside the turn (one answer) on a messaging chat whose display.interim_assistant_messages is off. See Subagent Delegation → Messaging chats without interim messages.
 ```
 

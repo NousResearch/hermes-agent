@@ -1835,7 +1835,7 @@ def model_selection_config_updates(result: ModelSwitchResult, current_model_cfg:
     route changed: left behind it routes the NEW provider's requests to the OLD endpoint's env
     var, but a same-provider same-base_url model re-pick keeps it whatever the provider is. The
     dashboard re-adds an explicitly submitted key / the target provider's own pointer after this
-    (``_apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
+    (``model_assignment.apply_main_model_assignment`` / ``_resolve_assignment_credentials``)."""
     model_cfg = current_model_cfg if isinstance(current_model_cfg, dict) else {}
     updates: dict[str, Any] = {
         "default": result.new_model, "provider": result.target_provider,

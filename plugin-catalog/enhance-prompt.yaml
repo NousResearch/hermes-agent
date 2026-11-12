@@ -1,18 +1,18 @@
 name: enhance-prompt
 repo: https://github.com/tuancookiez-hub/hermes-enhance-prompt
-sha: 8417827ff80db2335e18742c1f5317aeb4b036cb
-version: "0.7.0"
-requires_hermes: ">=0.21.5"
+sha: 07d60168481bb95f575892472db90ad76714e200
+version: "0.8.0"
+requires_hermes: ">=0.23.0"
 title: Enhance Prompt
-description: "A sparkle beside Send that rewrites the composer draft in place without sending it, deepening it into a clarifier, a task list, then a phased plan on further clicks, with a one-click discard back to the original. Also registers the `/enhance` slash command and the `enhance_prompt` tool for the same rewrite from the agent. Draft read and write go through `host.composer`, so `@file` and `/command` chips survive. Disclosure — every click runs one stateless `llm.oneshot` call on your own gateway with the focused chat's model (the auxiliary title model when no chat is focused), followed by a second short call to score the result, so it spends your model credits. It is not an agent turn: no tools run and nothing is written to a session you cannot see. It overrides no model, sends nothing to a third party, never sends the composer message, and carries no telemetry, no credentials and no self-update."
+description: "A sparkle beside Send that rewrites the composer draft in place without sending it, in a voice you pick under Settings > Plugins > enhance-prompt (brief, structured, concise, detailed, questions, verify, or your own words), deepening it into a clarifier, a task list, then a phased plan on further clicks, with a one-click discard back to the original. Also registers the `/enhance` slash command and the `enhance_prompt` tool for the same rewrite from the agent, in the same voice. Draft read and write go through `host.composer`, so `@file` and `/command` chips survive. Disclosure — every click runs one stateless `llm.oneshot` call on your own gateway with the focused chat's model (the plugin's `enhance_prompt` auxiliary task, reasoning off, when no chat is focused), followed by a second short call to score the result, so it spends your model credits. It is not an agent turn: no tools run and nothing is written to a session you cannot see. Only the draft and the chosen voice's instructions are sent; the voice setting is read from your own gateway with `plugins.manage list`. It overrides no model, sends nothing to a third party, never sends the composer message, and carries no telemetry, no credentials and no self-update."
 maintainer: tuancookiez-hub
 tier: community
 category: desktop
-docs_url: https://github.com/tuancookiez-hub/hermes-enhance-prompt/blob/8417827ff80db2335e18742c1f5317aeb4b036cb/README.md
+docs_url: https://github.com/tuancookiez-hub/hermes-enhance-prompt/blob/07d60168481bb95f575892472db90ad76714e200/README.md
 readme: true
-image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-enhance-prompt/8417827ff80db2335e18742c1f5317aeb4b036cb/assets/hero-banner.png
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-enhance-prompt/07d60168481bb95f575892472db90ad76714e200/assets/hero-banner.png
 screenshots:
-  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-enhance-prompt/8417827ff80db2335e18742c1f5317aeb4b036cb/assets/overview.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-enhance-prompt/07d60168481bb95f575892472db90ad76714e200/assets/overview.png
 platforms:
   - linux
   - macos
@@ -26,5 +26,7 @@ capabilities:
 known_issues:
   - "The Desktop half needs a Hermes build with the composer draft API (`host.composer`); on an older Desktop the sparkle reports that an update is needed."
   - "One model call per click, and the score is an extra call. Cancel stops the client-side wait only — the in-flight call may still finish."
-  - "Uses the chat's model; there is no separate model setting. Switch the chat model first to enhance with another one."
+  - "Uses the chat's model; there is no separate model setting. Switch the chat model first to enhance with another one. `/enhance` and the tool use the `enhance_prompt` auxiliary task, which has reasoning off by default."
+  - "The voice shapes only the first click and `/enhance`; the task-list and phased-plan clicks and the score keep their own shape. A saved voice this version does not know falls back to `brief`."
   - "Not a fork of `prompt-enhancer`: this one is a separate plugin with an agent tool, a slash command, three deepening stages and a scorer."
+  - "0.8.0 folds in the voices from the author's separate Prompt Lab plugin, which is not listed."

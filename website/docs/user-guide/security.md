@@ -322,6 +322,8 @@ When both are set, a narrowed `approvers` takes precedence: it is the explicit a
 
 A DM with the bot's owner keeps working when the owner is on the DM admin list. Clarify questions are not commands and only follow `approvers`.
 
+Picker cards (`/model`, `/reasoning`, `/fast` and the usage-limit switch offer) and the `/update` Yes/No prompt always belong to the member who opened them, whatever `approvers` says: only that member and the chat scope's admins can tap them or, for `/update`, answer by typing. Anyone else gets the same private note and the card stays open; their typed text is an ordinary message. A member refused an admin-only command therefore cannot apply an admin's open card instead.
+
 The setting is read when the approval is raised, so with multiplexed profiles each profile's own `config.yaml` decides. Host surfaces (CLI, TUI, Desktop, the API server) answer as the host and are not affected. Matrix keeps its own stricter `MATRIX_APPROVAL_REQUIRE_SENDER` (default on). QQBot already accepts clicks only from the session's own user.
 
 ### Permanent Allowlist
@@ -830,7 +832,7 @@ security:
   allow_private_urls: true   # default: false
 ```
 
-When on, web tools, the browser, vision URL fetches, and gateway media downloads no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
+When on, web tools, the browser, vision URL fetches, gateway media downloads, and cron `monitor_url` fetches no longer reject RFC 1918 / loopback / link-local / CGNAT destinations. Cloud-metadata endpoints (`169.254.169.254`, `metadata.google.internal`, and the like) stay blocked even with this on. **This is a deliberate trust boundary** — only enable it on machines where the agent running arbitrary prompt-injected URLs against the local network is an acceptable risk. Public-facing gateways should leave it off.
 
 The host-substring guard (which blocks lookalike Unicode domain tricks even when the underlying IP is public) stays on regardless of this setting.
 

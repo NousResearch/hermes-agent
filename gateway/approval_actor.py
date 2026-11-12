@@ -28,7 +28,7 @@ clarify question (:func:`clarify_refusal`), each recording its authority when ra
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 
 # Refusal "name" of an entry with no requester recorded; ``refusal_text`` words it as admins-only.
@@ -131,9 +131,10 @@ def approval_refusal(session_key: str, actor_id: Any, *, admin_ids: Any = (),
                                   request_id=request_id, extra=extra, choice=choice)[1]
 
 
-def _authority_refusal(authority: Optional[dict], actor_id: Any, admin_ids: Any, extra: Any,
+def _authority_refusal(authority: Any, actor_id: Any, admin_ids: Any, extra: Any,
                        commands: tuple[str, ...] = ()) -> Optional[str]:
-    if not authority or may_answer(authority, actor_id, admin_ids, extra, commands):
+    # An empty authority ({}) records no restriction: anyone admitted answers, as on main.
+    if not authority or not isinstance(authority, dict) or may_answer(authority, actor_id, admin_ids, extra, commands):
         return None
     return _refusal_name(authority, commands)
 
@@ -170,3 +171,44 @@ def refusal_text(requester: str) -> str:
     if requester.startswith(_ADMIN_ONLY):
         return t("gateway.unauthorized.admin_only", command=requester[len(_ADMIN_ONLY):], suffix="").strip()
     return t("gateway.exec_approval.not_requester", requester=requester)
+
+
+def opener_authority(event: Any) -> Optional[dict]:
+    """Who may answer a picker card (``/model``, ``/reasoning``...) or the ``/update`` prompt *event*'s
+    sender opened: the opener, or an admin of the chat scope (``allow_admin_from`` /
+    ``group_allow_admin_from``), so a member refused an admin-gated command cannot apply an admin's
+    open card instead, and nobody else's tap or typed text answers the opener's prompt.
+    ``None`` (anyone admitted answers, as before) when the sender is unknown, e.g. a shared observed
+    group whose route carries no user, so a card is never left with nobody able to answer it."""
+    source = getattr(event, "source", None)
+    actor = getattr(event, "user_id", None) or getattr(source, "user_id", None)
+    if not actor:
+        return None
+    return {"requester_id": str(actor),
+            "requester_name": str(getattr(event, "user_name", None) or getattr(source, "user_name", None) or actor),
+            "chat_type": str(getattr(source, "chat_type", "") or ""), "approvers": []}
+
+
+def picker_refusal(on_selected: Any, actor_id: Any, *, extra: Any = None) -> Optional[str]:
+    """``None`` when *actor_id* may use the picker card whose selection callback is *on_selected*;
+    otherwise the opener's name for :func:`refusal_text`. The gateway sets the opener's
+    :func:`opener_authority` on the callback as ``prompt_authority``, so every adapter's picker
+    state already carries it; a callback without one is never refused. Adapters pass their
+    platform ``extra`` block (its admins answer any card of that chat scope)."""
+    return _authority_refusal(getattr(on_selected, "prompt_authority", None), actor_id, (), extra)
+
+
+def update_prompt_refusal(actor_id: Any, *, admin_ids: Iterable[str] = (), extra: Any = None) -> Optional[str]:
+    """:func:`picker_refusal` for the pending ``/update`` Yes/No prompt: the authority ``/update``
+    recorded in its pending marker. No marker or no authority in it is never refused."""
+    import json
+
+    from hermes_constants import get_process_hermes_home  # where /update wrote it (gateway.run._hermes_home)
+
+    for name in (".update_pending.claimed.json", ".update_pending.json"):
+        try:
+            marker = json.loads((get_process_hermes_home() / name).read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        return _authority_refusal(marker.get("authority") if isinstance(marker, dict) else None, actor_id, admin_ids, extra)
+    return None

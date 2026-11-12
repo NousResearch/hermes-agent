@@ -218,6 +218,64 @@ class TestFallbackTransport:
         assert "149.154.167.221" in warnings[0].getMessage()
         assert "api.telegram.org" in warnings[0].getMessage()
 
+    @pytest.mark.asyncio
+    async def test_non_retryable_error_after_a_failed_path_still_logs_the_warning(self, monkeypatch, caplog):
+        """IP 1 times out on connect, IP 2 read-times out: the request fails, so the earlier
+        connect failure (INFO so far) must reach the WARNING too (#153448 review)."""
+        calls = []
+        behavior = {"149.154.167.220": "timeout", "149.154.167.221": httpx.ReadTimeout("read timed out")}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
+        with caplog.at_level(logging.INFO, logger=tnet.__name__):
+            with pytest.raises(httpx.ReadTimeout):
+                await transport.handle_async_request(_telegram_request())
+        assert [c["url_host"] for c in calls] == ["149.154.167.220", "149.154.167.221"]
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "149.154.167.220" in warnings[0] and "149.154.167.221" in warnings[0]
+        assert "all paths" not in warnings[0]
+
+    @pytest.mark.asyncio
+    async def test_budget_exhaustion_does_not_claim_untried_paths_failed(self, monkeypatch, caplog):
+        """A slow pool reset consumes the stock 15s connect budget, leaving later
+        pinned IPs and the hostname untried (#152898)."""
+
+        class Clock:
+            now = 0.0
+
+            def monotonic(self):
+                return self.now
+
+        clock = Clock()
+        monkeypatch.setattr(tnet, "time", clock)
+        calls = []
+        behavior = {"149.154.167.220": "timeout"}
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
+        transport = tnet.TelegramFallbackTransport(
+            ["149.154.167.220", "149.154.167.221"],
+            connect_budget=tnet._WALK_CONNECT_BUDGET_S,
+        )
+
+        async def slow_pool_reset(_ip, _transport):
+            clock.now = tnet._WALK_CONNECT_BUDGET_S + 1.0
+
+        monkeypatch.setattr(transport, "_reset_fallback", slow_pool_reset)
+        with caplog.at_level(logging.INFO, logger=tnet.__name__):
+            with pytest.raises(httpx.ConnectTimeout):
+                await transport.handle_async_request(_telegram_request())
+
+        assert [call["url_host"] for call in calls] == ["149.154.167.220"]
+        warnings = [
+            record for record in caplog.records
+            if record.name == tnet.__name__ and record.levelno == logging.WARNING
+        ]
+        assert len(warnings) == 1
+        message = warnings[0].getMessage()
+        assert "connect budget exhausted before all paths were tried" in message
+        assert "149.154.167.220" in message
+        assert "149.154.167.221" not in message
+        assert "api.telegram.org" not in message
+
 class TestFallbackTransportPassthrough:
     """Requests that don't need fallback behavior."""
 

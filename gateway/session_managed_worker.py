@@ -76,7 +76,7 @@ def _bootstrap(authority, ref, row, policy, scope, text=None):
         **({'surface_v1': row['payload']['surface_v1']} if row['payload'].get('surface_v1') else {}),
         **({'display_v1': row['payload']['display_v1']} if row['payload'].get('display_v1') else {})})
     from gateway.session_worker_construct import construct_inputs
-    request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id)
+    request['construct_v1'] = construct_inputs(authority, policy, live.source.chat_id, live.source)
     config = _worker_config(authority, policy)
     hydrated = replace(policy, config_json=json.dumps(config), request_json=json.dumps(request),
                        terminal_json=json.dumps(terminal), credential_ref=None, config_secret_ref=None)

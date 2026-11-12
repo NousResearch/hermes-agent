@@ -573,9 +573,15 @@ class GatewaySlashCommandsMixin(
             return data
 
         def _dedup_payload() -> dict:
-            # Platform + update_id of the triggering /restart, for redelivery detection.
+            from gateway.session_identity import transport_profile_of
+
+            # Scope the update counter to the bot that received /restart, even if its
+            # session executes in a different (or shared) runtime profile.
             data = {"platform": event.source.platform.value if event.source.platform else None,
                     "requested_at": time.time()}
+            transport_profile = transport_profile_of(event.source)
+            if transport_profile is not None:
+                data["transport_profile"] = transport_profile
             if event.platform_update_id is not None:
                 data["update_id"] = event.platform_update_id
             return data
@@ -1337,6 +1343,7 @@ class GatewaySlashCommandsMixin(
         """Handle /update — spawn ``hermes update`` detached (``setsid``) so it survives the gateway
         restart it may trigger; marker files let this or the next gateway process notify the user."""
         import json
+        from gateway.approval_actor import opener_authority
         from gateway.run import _hermes_home, _resolve_hermes_bin
         from hermes_cli.config import is_managed, format_managed_message
         # Block non-messaging platforms (API server, webhooks, ACP); plugin platforms with
@@ -1378,13 +1385,15 @@ class GatewaySlashCommandsMixin(
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:
             return t("gateway.update.hermes_cmd_not_found")
+        if self._update_in_flight():  # before any write: the marker names who answers its prompts
+            return t("gateway.update.already_running")
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
         pending = {
             "platform": src.platform.value, "chat_id": src.chat_id, "chat_type": src.chat_type,
             "user_id": src.user_id, "session_key": self._session_key_for_source(src),
-            "timestamp": datetime.now().isoformat()}
+            "timestamp": datetime.now().isoformat(), "authority": opener_authority(event)}  # who answers its prompts
         # ``profile``: the update watcher (possibly the NEXT gateway process) must answer through the
         # requester's own profile bot, not the default profile's adapter for the same platform.
         pending.update({k: v for k, v in (("thread_id", src.thread_id), ("message_id", event.message_id),

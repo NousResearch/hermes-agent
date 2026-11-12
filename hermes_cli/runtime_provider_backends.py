@@ -183,8 +183,11 @@ def _resolve_openrouter_runtime(
             candidates += [get_env_value_prefer_dotenv("OPENROUTER_API_KEY"), openai_key if openai_key_ok else ""]
     else:
         # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
-        # rung is what a bare ``provider: custom`` block relies on (#67453).
-        candidates = [explicit_api_key, (cfg_api_key if use_config_base_url else ""),
+        # rung is what a bare ``provider: custom`` block relies on (#67453). CUSTOM_BASE_URL
+        # outranks that URL in ``base_url``, so the inline key also checks the URL it is sent to,
+        # as _model_cfg_key_env_for does (#154435).
+        cfg_key_url = cfg_base_url.strip().rstrip("/")
+        candidates = [explicit_api_key, (cfg_api_key if use_config_base_url and base_url == cfg_key_url else ""),
                       (_model_cfg_key_env_for(model_cfg, base_url) if use_config_base_url else ""),
                       *([] if declared else rp._host_gated_env_key_candidates(base_url, ollama=True))]
     api_key = next((str(c or "").strip() for c in candidates if rp.has_usable_secret(c)), "") or entry_key

@@ -57,3 +57,23 @@ def test_catch_all_value_persisted_before_the_fix_is_dropped(model, persisted):
     """Older builds cached the family catch-all; step 1 must not pin it after the specific key lands."""
     from agent.model_metadata import _stale_pre_catalog_cache_entry
     assert _stale_pre_catalog_cache_entry(model, persisted)
+
+
+def test_native_xai_grok_420_upgrade_discards_legacy_2m_cache(tmp_path, monkeypatch):
+    """A pre-fix 2M cache row must not override xAI's documented 1M window after upgrade."""
+    import agent.model_metadata as mm
+
+    base_url = "https://api.x.ai/v1"
+    monkeypatch.setattr(mm, "_get_context_cache_path", lambda: tmp_path / "cache.yaml")
+    monkeypatch.setattr(mm, "_resolve_provider_aware_context_length", lambda *a, **k: None)
+    monkeypatch.setattr(mm, "_query_ollama_api_show", lambda *a, **k: None)
+    for model in ("grok-4.20", "grok-4.20-non-reasoning"):
+        mm.save_context_length(model, base_url, 2_000_000)
+        assert mm.get_cached_context_length(model, base_url) == 2_000_000
+        assert mm.get_model_context_length(model, base_url=base_url, provider="custom") == 1_000_000
+        assert mm.get_cached_context_length(model, base_url) is None
+
+    # OpenRouter may legitimately serve 2M, so its cached limit must survive.
+    reseller = "https://openrouter.ai/api/v1"
+    mm.save_context_length("grok-4.20", reseller, 2_000_000)
+    assert mm.get_model_context_length("grok-4.20", base_url=reseller, provider="openrouter") == 2_000_000

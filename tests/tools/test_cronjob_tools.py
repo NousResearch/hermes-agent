@@ -225,6 +225,19 @@ class TestUnifiedCronjobTool:
         monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
         monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
 
+    def _write_script(self, relative_path="check.py"):
+        from hermes_constants import get_hermes_home
+
+        script = get_hermes_home() / "scripts" / relative_path
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("print('ok')\n", encoding="utf-8")
+        return script
+
+    def _dispatch(self, **args):
+        from tools.registry import registry
+
+        return json.loads(registry.dispatch("cronjob_manage", args))
+
     def test_create_and_list(self):
         created = json.loads(
             cronjob(
@@ -420,6 +433,122 @@ class TestUnifiedCronjobTool:
         assert updated["success"] is True
         stored = get_job(created["job_id"])
         assert stored["deliver"] == "telegram"
+
+    def test_create_with_existing_script_stores_relative_path(self):
+        from cron.jobs import get_job
+
+        self._write_script("check.py")
+
+        created = self._dispatch(
+            action="create", prompt="Check", schedule="every 1h", script="check.py")
+
+        assert created["success"] is True
+        assert created["job"]["script"] == "check.py"
+        assert get_job(created["job_id"])["script"] == "check.py"
+
+    @pytest.mark.parametrize(
+        ("tool_args", "stored_field"),
+        [
+            ({"script": "scripts/check.py"}, "script"),
+            ({"script": "./scripts/check.py"}, "script"),
+            ({"script": "scripts\\check.py"}, "script"),
+            ({"monitor": "scripts/check.py"}, "monitor_script"),
+        ],
+    )
+    def test_create_normalizes_script_paths_before_validation_and_storing(
+        self, tool_args, stored_field
+    ):
+        from cron.jobs import get_job
+
+        self._write_script("check.py")
+
+        created = self._dispatch(
+            action="create", prompt="Check", schedule="every 1h", **tool_args
+        )
+
+        assert created["success"] is True
+        assert created["job"][stored_field] == "check.py"
+        assert get_job(created["job_id"])[stored_field] == "check.py"
+
+    def test_create_rejects_missing_script_after_prefix_normalization(self):
+        created = self._dispatch(
+            action="create", prompt="Check", schedule="every 1h", script="scripts/missing.py"
+        )
+
+        assert created["success"] is False
+        assert "not found" in created["error"].lower()
+
+    @pytest.mark.parametrize(
+        ("tool_args", "stored_field"),
+        [
+            ({"script": "scripts/check.py"}, "script"),
+            ({"monitor": "scripts/check.py"}, "monitor_script"),
+        ],
+    )
+    def test_update_normalizes_script_paths_before_validation_and_storing(
+        self, tool_args, stored_field
+    ):
+        from cron.jobs import get_job
+
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        self._write_script("check.py")
+
+        updated = self._dispatch(
+            action="update", job_id=created["job_id"], **tool_args
+        )
+
+        assert updated["success"] is True
+        assert updated["job"][stored_field] == "check.py"
+        assert get_job(created["job_id"])[stored_field] == "check.py"
+
+    def test_update_rejects_missing_script_after_prefix_normalization(self):
+        from cron.jobs import get_job
+
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+
+        updated = self._dispatch(
+            action="update", job_id=created["job_id"], script="scripts/missing.py"
+        )
+
+        assert updated["success"] is False
+        assert "not found" in updated["error"].lower()
+        assert get_job(created["job_id"]).get("script") is None
+
+    @pytest.mark.parametrize(
+        "script_input,error_text",
+        [
+            ("/tmp/check.py", "absolute"),
+            ("C:\\Users\\evil\\check.py", "absolute"),
+            ("~/check.py", "absolute"),
+            ("../check.py", "traversal"),
+            ("scripts/../check.py", "traversal"),
+        ],
+    )
+    def test_create_rejects_unsafe_script_paths(self, script_input, error_text):
+        created = self._dispatch(
+            action="create", prompt="Check", schedule="every 1h", script=script_input
+        )
+
+        assert created["success"] is False
+        assert error_text in created["error"].lower()
+
+    def test_update_empty_string_clears_script(self):
+        self._write_script("check.py")
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Check",
+                schedule="every 1h",
+                script="check.py",
+            )
+        )
+
+        updated = json.loads(
+            cronjob(action="update", job_id=created["job_id"], script="")
+        )
+
+        assert updated["success"] is True
+        assert "script" not in updated["job"]
 
 
 # =========================================================================

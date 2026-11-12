@@ -413,31 +413,44 @@ def _validate_cron_base_url(
         "for a custom base_url.")
 
 
-def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
-    """Scripts must be relative paths within HERMES_HOME/scripts/ (absolute / ~ / drive-letter
-    rejected — prompt-injection guard). Error string if blocked, else None; empty = clear."""
+def _normalize_cron_script_path(
+    script: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Normalize and validate a script path within HERMES_HOME/scripts/.
+
+    A leading ``scripts/`` is accepted as a convenience prefix. Empty values
+    clear the field; other values must name an existing file.
+    """
     if not script or not script.strip():
-        return None
+        return None, None
 
     from hermes_constants import get_hermes_home
     raw = script.strip()
+    normalized = raw.replace("\\", "/")
     scripts_dir = get_hermes_home() / "scripts"
-    if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
-        return (
+    if normalized.startswith(("/", "~")) or (len(normalized) >= 2 and normalized[1] == ":"):
+        return None, (
             f"Script path must be relative to {scripts_dir}/. "
             f"Got absolute or home-relative path: {raw!r}. "
             f"Place scripts in {scripts_dir}/ and use just the filename.")
 
+    if normalized.startswith("./scripts/"):
+        normalized = normalized[len("./scripts/"):]
+    elif normalized.startswith("scripts/"):
+        normalized = normalized[len("scripts/"):]
+    if ".." in normalized.split("/"):
+        return None, f"Script path escapes the scripts directory via traversal: {raw!r}"
+
     from tools.path_security import validate_within_dir
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    resolved_script = scripts_dir / raw
+    resolved_script = scripts_dir / normalized
     if validate_within_dir(resolved_script, scripts_dir):
-        return f"Script path escapes the scripts directory via traversal: {raw!r}"
+        return None, f"Script path escapes the scripts directory via traversal: {raw!r}"
     if not resolved_script.is_file():
-        return (
+        return None, (
             f"Script file not found: {resolved_script}. "
             f"Create it in {scripts_dir}/ first.")
-    return None
+    return resolved_script.relative_to(scripts_dir).as_posix(), None
 
 
 def _apply_continuity(

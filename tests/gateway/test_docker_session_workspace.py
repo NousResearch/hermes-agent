@@ -530,3 +530,18 @@ def test_root_launched_backend_keeps_the_guards_for_a_mounted_workspace(home, tm
         clear_session_vars(tokens)
     assert ':ws:' in key and mount == str(ws)
     assert terminal_tool._docker_has_host_access(terminal_tool._get_env_config()) is True
+
+
+def test_operator_shared_key_with_ws_marker_keeps_launch_mount(home, tmp_path, monkeypatch):
+    """An operator's shared key containing ':ws:' is not a workspace container."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    launch_home = tmp_path / 'user-home'
+    launch_home.mkdir()
+    _desktop_shared_mode(monkeypatch, launch_home)
+    monkeypatch.setenv('TERMINAL_DOCKER_SHARED_CONTAINER_KEY', 'team:ws:common')
+    tokens = set_session_vars(session_key='desktop-shared-marker', profile='')
+    try:
+        assert _plan('desktop-shared-marker') == ('shared:team:ws:common', str(launch_home))
+    finally:
+        clear_session_vars(tokens)

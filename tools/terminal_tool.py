@@ -743,7 +743,7 @@ def _resolve_task_host_cwd(config: dict[str, Any], task_id: Optional[str]) -> Op
                 return source
         # A workspace-keyed container whose workspace is refused (deleted, in-container path)
         # mounts nothing: the launch dir is exactly what it must never get.
-        if ":ws:" in key:
+        if key.startswith(f"{profile_container_key(_container_profile())}:ws:"):
             return None
         return config.get("host_cwd")
     return _session_workspace_mount_source(task_id)

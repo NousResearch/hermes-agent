@@ -119,10 +119,9 @@ def test_used_api_and_native_delete_restart_exact_retry(tmp_path):
                     assert retry.status_code == 200 and retry.json() == receipt, retry.text
                     changed = client.delete(path, params=params | {'expected_revision': 999}, headers=native_headers(ticket(home, desc)))
                     assert changed.status_code == 409 and 'admission_conflict' in changed.text
-                    foreign = client.delete(path, params=params, headers={'Authorization': 'Bearer foreign-dashboard-owner'})
-                    # Another principal never replays this receipt; for the gone id it gets main's
-                    # idempotent ``already_absent`` (Desktop ghost-row contract, #48641) at most.
-                    assert foreign.status_code != 200 or foreign.json() == {'ok': True, 'already_absent': True}, foreign.text
+                    login = client.delete(path, params=params, headers={'Authorization': 'Bearer foreign-dashboard-owner'})
+                    # The dashboard login is the machine owner: its exact retry replays the receipt.
+                    assert login.status_code == 200 and login.json() == receipt, login.text
             assert asyncio.run(api_request()) == first
             asyncio.run(stale_native(desc, native_sid))
             with sqlite3.connect(home / 'state.db') as db:

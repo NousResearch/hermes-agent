@@ -1208,3 +1208,26 @@ class TestDiscoverySessionExclusion:
         excluded = json.loads(session_search(
             query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
+
+
+class TestBrowseDefaultLimit:
+    def test_no_limit_browse_returns_ten_on_every_entry_point(self, db):
+        """Browse must not inherit discovery's default of 3 via the function, the registry
+        handler, or the inline executor (the live path), each of which used to bake in 3."""
+        from types import SimpleNamespace
+
+        from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
+        from tools.registry import registry
+
+        for i in range(12):
+            db.create_session(f"s_browse_{i:02d}", source="cli")
+            db.append_message(f"s_browse_{i:02d}", role="user", content=f"browse seed {i}")
+        agent = SimpleNamespace(_get_session_db_for_recall=lambda: db, session_id="current")
+        ctx = InlineToolContext(effective_task_id="task-1", tool_call_id="call-1")
+
+        for raw in (session_search(db=db), registry.get_entry("session_search").handler({}, db=db),
+                    INLINE_TOOL_EXECUTORS["session_search"](agent, {}, ctx)):
+            result = json.loads(raw)
+            assert result["mode"] == "browse"
+            assert len(result["results"]) == 10
+        assert len(json.loads(session_search(db=db, limit=4))["results"]) == 4

@@ -233,6 +233,40 @@ def test_lease_acquire_and_release_only_honour_an_id_this_connection_minted(monk
     assert rpc(mine, "display.lease.release", {"viewer_id": minted})["result"]["lease"]["holder"] == _fresh_lease.AGENT
 
 
+def test_a_takeover_counts_as_use_of_an_idle_screen(monkeypatch, tmp_path, _fresh_lease):
+    """The idle stop times out a human lease nothing has used for four windows. A takeover landing on a long
+    idle screen, before its viewer's first frame stamps activity, must not read as an abandoned lease."""
+    import os
+    import time
+
+    from tui_gateway import server
+    from tools.bot_desktop import runtime
+
+    monkeypatch.setattr(runtime, "rfb_socket_path", lambda: tmp_path / "rfb.sock")
+    monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
+    activity = tmp_path / "activity"
+    activity.touch()
+    old = time.time() - 3600
+    os.utime(activity, (old, old))
+
+    class _Peer:
+        def write(self, obj):
+            return True
+
+    # The new lease is visible from the moment it is written (the screen's own idle check reads the file);
+    # by then the stamp must already be there. The listener runs right after the write.
+    seen_idle = []
+    off = _fresh_lease.on_change(lambda _key, held: seen_idle.append(time.time() - activity.stat().st_mtime))
+    try:
+        peer = _Peer()
+        minted = server.dispatch({"jsonrpc": "2.0", "id": 1, "method": "display.observe", "params": {}}, peer)["result"]["viewer_id"]
+        resp = server.dispatch({"jsonrpc": "2.0", "id": 2, "method": "display.lease.acquire", "params": {"viewer_id": minted}}, peer)
+    finally:
+        off()
+    assert resp["result"]["lease"]["holder"] == _fresh_lease.HUMAN
+    assert seen_idle and seen_idle[0] < 60, f"the new lease was visible against a stale stamp: {seen_idle}"
+
+
 def test_install_sudo_card_ignores_a_client_supplied_session_id(monkeypatch):
     """The sudo card is app-level: it goes to the connection that clicked Install (copy_context
     pins the transport) with an EMPTY session. Honouring params.session_id let a caller route the

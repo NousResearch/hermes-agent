@@ -78,7 +78,7 @@ def _warn_config_parse_failure(
         from hermes_cli.config_backend import config_version
         sig = config_version(config_path)
         key = (str(config_path), *sig)
-        _CONFIG_PARSE_FAILURES[str(config_path)] = (*sig, str(exc))
+        _CONFIG_PARSE_FAILURES[str(config_path)] = (*_failure_version(config_path), str(exc))
     except OSError:
         key = (str(config_path), 0, 0, 0, 0)
     if key in _CONFIG_PARSE_WARNED:
@@ -98,14 +98,25 @@ def _warn_config_parse_failure(
         pass
 
 
+def _failure_version(path: Path) -> tuple:
+    """What a parse-failure record is matched on: ``file_cache_version`` hashed even once settled,
+    because the record is compared long after it was taken and a same-tick same-size fix must clear
+    it. An unreadable file (the OSError failures) gets its stat signature and the error's name."""
+    from utils import file_cache_version
+    try:
+        return file_cache_version(path, always_digest=True)
+    except OSError:
+        from hermes_cli.config_backend import config_version
+        return (*config_version(path), None)
+
+
 def get_active_config_parse_failure() -> Optional[str]:
     """Return the recorded parse error while the ACTIVE config.yaml is still byte-identical
-    (mtime_ns + size + ino + ctime_ns) to the file that failed to parse; else None."""
+    (``file_cache_version`` with its content digest) to the file that failed to parse; else None."""
     from hermes_cli.config import get_config_path
     try:
-        from hermes_cli.config_backend import config_version
         record = _CONFIG_PARSE_FAILURES[str(path := get_config_path())]
-        sig = config_version(path)
+        sig = _failure_version(path)
         return record[len(sig)] if sig == record[:len(sig)] else None
     except Exception:
         return None
@@ -118,7 +129,7 @@ class FailedConfigRead(dict):
     after one transient EMFILE/EIO replaced the whole file with the fallback plus the caller's edit.
     A dict subclass so the refusal survives the load→mutate→save round trip at every call site."""
 
-    def __init__(self, data: Any = (), *, error: Exception):
+    def __init__(self, data: Any = (), *, error: BaseException):
         super().__init__(data)
         self.read_error = error
 
@@ -135,6 +146,8 @@ def _refuse_failed_read(config_path: Path, data: Any) -> None:
     exc = data.read_error
     if isinstance(exc, OSError):
         raise _refuse_overwrite(config_path, "could not be read", exc, _read_error_fix(exc))
+    if isinstance(exc, SystemExit):  # ConfigBackendUnavailable: the config backend could not serve it
+        raise RuntimeError(f"The config could not be read, so this change was not saved: {exc.code}")
     raise _refuse_overwrite(
         config_path, "has a formatting error", exc, _FIX_YAML.format(backups=_backups_dir_display()))
 

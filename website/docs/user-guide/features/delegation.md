@@ -31,6 +31,12 @@ Background terminal processes belong to the agent that starts them. Closing a ch
 
 A child should wait for its builds, tests, and other bounded background commands before returning its final summary. Start a CI watcher or server in the parent session if it must continue after the child finishes; returning a process ID does not transfer ownership to the parent.
 
+## Approvals from background children
+
+A background child that needs approval for a command after the parent's turn has ended still asks in the chat the parent was started from. On messaging platforms the approval card (or the plain-text `/approve` prompt) appears there, and `/approve`, `/deny` or a tap on the card answers that child's command. A card the child raised while the parent was still replying stays answerable after the parent finishes. Stopping the child (`/stop`), resetting the session (`/new`) or the child finishing withdraws its open prompts.
+
+Where no chat can show the prompt once the parent's turn is over (API-server runs, webhooks, local viewers), the child's command is refused with an explicit "no approval channel" result. It is never reported as pending.
+
 ## Single Task
 
 ```python
@@ -85,6 +91,8 @@ Subagents start with a **completely fresh conversation**. They have zero knowled
 
 One exception: when the parent has a resolved workspace directory, every subagent's system prompt embeds that workspace's **project context files** (`.hermes.md` > AGENTS.md chain > CLAUDE.md > `.cursorrules` — the same discovery, priority, and size caps as the main agent's system prompt; SOUL.md is excluded). Subagents working in a repo operate under the repo's own conventions without having to rediscover them.
 
+The `context` and `goal` arrive as the subagent's first user message, context first. Its system prompt carries nothing task-specific, so the subagents of one parent send an identical prompt prefix and can read each other's prompt cache, including a context they share. That first message is kept verbatim through context compression.
+
 This means the parent agent must pass **everything** the subagent needs in the call:
 
 ```python
@@ -102,7 +110,7 @@ delegate_task(
 )
 ```
 
-The subagent receives a focused system prompt built from your goal and context, instructing it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
+The subagent's first message is your context followed by the goal. Its system prompt instructs it to complete the task and provide a structured summary of what it did, what it found, any files modified, and any issues encountered.
 
 ### Forwarding Images to a Subagent
 
@@ -191,9 +199,10 @@ Set `delegation.independent_completions: true` to have results land **per comple
 
 When independent completions are enabled:
 
-- Omit `group` when each result is useful to act on separately. Each task reports as soon as it finishes.
-- Use the same `group` string when you want to review outputs together: comparison, synthesis, or one coordinated decision. The group returns **one** consolidated message after all its tasks finish. Even independently executable tasks can belong in one group when their results inform the same decision.
-- Different groups report independently; grouped and ungrouped tasks can share one call.
+- The schema marks `group` as required on every task, so the model states the delivery choice in each call instead of falling into per-task delivery by leaving a field out.
+- The same `group` string on every task is the choice when the parent will respond only once all of them are done: comparison, synthesis, or one coordinated decision. The group returns **one** consolidated message after all its tasks finish. Even independently executable tasks belong in one group when their results inform the same decision.
+- A task gets its own `group` only when the parent will act on that result as soon as it lands. Each such result re-enters alone and costs the parent a turn.
+- Different groups report independently and can share one call. A task that arrives without a `group` (an older transcript, a model that ignores `required`) is still accepted and reports alone, as before.
 
 This is off by default because every unit is a new turn for the orchestrator: a 15-task call becomes up to 15 wake-ups, which fragmented long campaigns. Grouping controls **result delivery, not execution order**: all tasks still run in parallel. If task B needs task A's output to do its work, dispatch A first, then dispatch B with that output after A returns.
 
@@ -541,6 +550,20 @@ The parent agent orchestrates its own running children with the same `delegate_t
 
 Control actions run synchronously in-turn (never backgrounded), are scoped to the caller's own spawn tree — a conversation can never see or control another session's children — and never consume the per-turn subagent spawn cap, so `stop` keeps working even after the cap is hit.
 
+**Continue a finished child.** `{"action": "continue", "subagent_id": "sa-0-1a2b3c4d", "message": "now add tests for it"}` gives a child that already returned its result a follow-up. The child is rebuilt on the same route (model, provider, profile) and toolsets, its history is loaded from its saved transcript, and `message` becomes its next turn; it keeps its `subagent_id` and session (the transcript appends, like `--resume`) and runs as a new background delegation with its own `delegation_id`, so the result arrives as a normal completion. A still-running child is refused with a pointer to `steer`, and so is a child whose inherited route now resolves to a different provider or endpoint because the parent switched since it ran. Only the owning conversation (or an ancestor in its spawn tree) can continue a child; background processes it started are gone, so it gets a fresh terminal, which starts in the directory and worktree the child stopped in. A continue is an ordinary dispatch: a closed chat, `max_concurrent_children`, `max_spawn_depth` and the spawn pause all refuse it the same way they refuse a spawn. It is not offered in one-shot sessions or managed worker sessions.
+
+**Resumable after a restart or crash.** Every child also keeps a durable record in the profile's `state.db`, so `continue` works after a gateway restart, a hard kill or a PC crash, not only while the process still remembers it. After a restart the child's route is re-resolved from its own routing request and must land on the same provider and endpoint. A child that did not complete and was not stopped by you or its parent (gateway shutdown, a crash, a usage limit, a provider refusal) is *resumable*: its completion entry carries `resume_mode`, and a limit failure also carries `failure_resets_at` (and `usage_limit` on a plan window) so you know when continuing can succeed. `resume_mode` is one of:
+
+| `resume_mode` | Typical cause | What continuing needs |
+|---|---|---|
+| `AUTO_AT` | usage/rate limit with a reset time, transient provider errors | wait until `failure_resets_at` |
+| `AUTO_ON_BOOT` | gateway shutdown, crash or hard kill | nothing; check git state and the last tool before re-running side effects |
+| `ON_FIX` | credits, auth, model access, account policy, request-shape errors | you fix the cause first |
+| `REPAIR_THEN_CONTINUE` | the conversation no longer fits, or an image/reasoning part is rejected | the transcript needs repairing first |
+| `HANDOFF` | a provider safety refusal of this conversation | another model, or the parent takes the work over |
+
+A resumable child's worktree (where its terminal was when it stopped, plus any worktree it created) is kept from the startup worktree sweep while its record lives: `delegation.resumable_ttl_hours` (default 48), at most `delegation.max_resumable` (default 32) per profile; beyond the cap the oldest loses its pin first. When the pin ends the normal sweep archives the tree to `refs/hermes/archive/` before removing it. Completed children and children you stopped are not pinned. Nothing resumes on its own unless you opt in with `delegation.auto_resume: true` (default `false`; reserved for the scheduler that reads `resume_mode`).
+
 ### From the TUI / gateway (session-facing)
 
 `steer_subagent(subagent_id, text)` in `tools/delegate_tool_registry.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](../../reference/slash-commands.md) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
@@ -606,7 +629,8 @@ parent in the same turn. Batch children still run in parallel, subject to
 final response before the CLI exits.
 
 - **Automatic joining:** no opt-in or background-mode override is needed.
-  Interactive TTY chat and messaging sessions keep background delegation.
+  Interactive TTY chat keeps background delegation; messaging sessions follow
+  `delegation.gateway_mode` (see below).
 - **Per-input policy:** the CLI records finite consumption with the admitted prompt,
   including when resuming an interactive session. It does not change that session's
   creation policy, sibling viewers, or the daemon environment.
@@ -623,6 +647,61 @@ Closing the CLI detaches rather than terminating its gateway-owned turn. Child
 execution is still process-local to that owner: use a durable scheduler for work
 that must survive an owner restart.
 
+## Messaging chats without interim messages
+
+On a messaging platform, a background delegation tells the parent to send a one-line
+status and end its turn. When `display.interim_assistant_messages` is off for that
+platform, that status is the turn's final answer, so the chat would receive a "working
+on it" message and then the real answer as a second message. `delegation.gateway_mode`
+controls this:
+
+```yaml
+delegation:
+  gateway_mode: auto   # auto (default) | inline | background
+```
+
+- **`auto`:** a messaging chat whose resolved `display.interim_assistant_messages` is off
+  (global value, `display.platforms.<platform>` override or the platform's default) joins
+  its children inside the turn. The parent waits in the `delegate_task` call, gets the
+  results there, and sends one completed answer. Chats with interim messages on, the API
+  server, local sessions and webhooks keep background delegation.
+- **`inline`:** every gateway session joins its children inside the turn.
+- **`background`** (alias `async`): every gateway session keeps background delegation.
+
+An inline session's `delegate_task` says results return in the call and leaves out the
+live-control parameters (`action` list/steer/stop, `subagent_id`, `message`), the same
+schema as a one-shot run. While it waits, the typing indicator stays on and the turn
+behaves like any long tool call. `/stop` stops the children, and so does a follow-up
+message under the default `busy_input_mode: interrupt` (each child returns an interrupted
+result with its partial output); under `queue` the follow-up waits for the turn.
+Nested delegation is unchanged.
+
+Inline turns that run past `agent.gateway_notify_interval` (180 seconds by default) still
+get the periodic "still working" notice, which `display.long_running_notifications`
+controls separately and which is on by default for Telegram, Slack, Discord and WhatsApp.
+For a single message per turn, also set it to `off` for that platform (`generic` only
+changes the notice's wording):
+
+```yaml
+display:
+  interim_assistant_messages: false
+  platforms:
+    telegram:
+      long_running_notifications: false
+```
+
+The mode is part of a session's tool schema, which is pinned with the conversation. A
+change to `gateway_mode` or to `interim_assistant_messages` applies from the next session
+(`/new`). A running chat keeps the mode it started with across gateway restarts, agent
+cache evictions, context compaction and `/reload-mcp`. A scheduled heartbeat turn mutes
+interim messages only for itself and does not change the chat's mode. One exception: the
+first turn after a Hermes update rebuilds the session's tool definitions from the new
+code, so the chat adopts the current setting at that turn.
+
+Listing `delegate_task` in `tools.tool_search.defer` turns inline off for that session:
+the model loads the regular (background) `delegate_task` schema through `tool_describe`,
+and delegation follows the schema the model sees.
+
 ## Lifetime and Durability
 
 :::warning Background completion durability is not durable execution
@@ -630,7 +709,7 @@ Top-level model-facing `delegate_task` calls run in the background automatically
 
 - Normal follow-up messages do not cancel background children, and neither does stopping the current turn: Ctrl+C, Esc, the Desktop/TUI Stop button and an ACP cancel end only the turn. The `/stop` command (gateway `/stop` — also when the session is idle after the dispatching turn ended — or CLI `/stop`) ends the session's running background delegations, and closing or resetting the owning session does the same.
 - Explicit session close/reset interrupts that session's background children. In the CLI and TUI, the gateway owns the session and the client only views it: when the last viewer exits or runs `/new` (a TUI resume switch counts too), the gateway interrupts that session's background children at once and refuses new ones for it until a viewer opens the session again. A plain detach cancels nothing: closing Desktop, a dropped connection, or exiting while another viewer is still attached leaves the work running. Background processes (`terminal(background=True)`) keep running either way.
-- A completion for a CLI or TUI session — a background child's result (including an interrupted one), or a `notify_on_complete` process exit or watch-pattern notice — that reaches the head of the session's queue while no viewer is attached does not start a turn. It is written into the session as a note, and the next turn reads it (for example after `hermes chat --resume`). If a viewer is attached by then, including one that came back after the completion arrived, the completion runs as a turn as before. Messaging chats have no viewers and are unchanged: their completions still start a turn.
+- A background child's final result (including an interrupted one) or a `notify_on_complete` process exit for a CLI, TUI, Desktop or web session runs as the parent's turn whether or not a viewer is attached, so the work carries on while your laptop sleeps, the connection drops or the tab is closed. Results for a chat you closed (exit, `/new`, or a TUI resume or branch switch) are written into that session as a note instead, and the next turn reads it (for example after `hermes chat --resume`). A watch-pattern notice, the early per-task failure notice and a manual cron run's result (`cronjob(action='run')`) are also notes while no viewer is attached. A result with a failed child (an error, a timeout, a provider refusal, a stuck child a stall watchdog had to stop, or an unknown outcome after a restart) wakes the parent at most three times in a row while nobody is watching: a further failure is written as a note until you attach or send a message, so a parent that keeps re-dispatching into the same failure cannot loop. Successful results and `notify_on_complete` process exits (whatever their exit code) have no such limit. When a child failed for a reason that repeats on the same model (a safety-filter refusal `content_policy_blocked`, billing, authentication, an unknown model), the result tells the parent not to re-dispatch it unchanged: use a different model, or report it. Messaging chats have no viewers and are unchanged: their completions still start a turn.
 - A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
 - A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
 - Stopped children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`) whose `summary` is the last text the child produced before the stop (the interrupt placeholder moves to `error`). The stop recurses down the spawn tree — an orchestrator child's synchronous workers are interrupted first and their partial results roll up into the child's own interrupted result — and each background unit's result re-enters the conversation right away as its normal completion notice (`Subagent Task Interrupted: …`), so nothing waits for the child to exhaust its budget.
@@ -709,9 +788,13 @@ delegation:
   max_iterations: 250                       # Max turns per child (default: 250)
   # max_concurrent_children: 10             # Parallel children per batch (default: 10)
   # independent_completions: false          # true = each task/group returns as it finishes (default: one message per call)
+  # gateway_mode: auto                      # auto | inline | background (see Messaging chats without interim messages)
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # resumable_ttl_hours: 48                 # How long a stopped child stays continuable after a restart, worktree kept
+  # max_resumable: 32                       # Resumable children per profile whose worktree is kept (oldest unpinned first)
+  # auto_resume: false                      # Opt-in: resume such children without being asked
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

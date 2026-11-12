@@ -143,8 +143,21 @@ function setup(alreadyRunning = false) {
   }
 
   host.createClient.mockReturnValue({ connection, invoke, invokeDbus: invoke })
-  const primary = { isDestroyed: vi.fn(() => false), webContents: { send: vi.fn() } }
-  const source = { isDestroyed: vi.fn(() => false), webContents: { send: vi.fn() } }
+
+  const primary = {
+    flashFrame: vi.fn(),
+    isDestroyed: vi.fn(() => false),
+    isFocused: vi.fn(() => true),
+    webContents: { send: vi.fn() }
+  }
+
+  const source = {
+    flashFrame: vi.fn(),
+    isDestroyed: vi.fn(() => false),
+    isFocused: vi.fn(() => true),
+    webContents: { send: vi.fn() }
+  }
+
   host.fromWebContents.mockReturnValue(source)
   const focusWindow = vi.fn()
 

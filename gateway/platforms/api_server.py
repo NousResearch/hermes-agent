@@ -92,10 +92,9 @@ def _approval_request_event(run_id: str, approval_data: Optional[dict[str, Any]]
     chat completions): the flagged command redacted before egress (#48456), the ``_run_event``
     envelope, and the ``choices`` the client may send back to ``POST /v1/runs/{id}/approval``."""
     from gateway.platforms.api_server_runs import _run_event
-    event = dict(approval_data or {})
-    if "command" in event:
-        from gateway.run import _redact_approval_command
-        event["command"] = _redact_approval_command(event.get("command"))
+    from gateway.run import _redact_approval_command
+    event = dict(approval_data or {})  # consent prompts (MCP, vault) carry server/model text in the description
+    event.update({k: _redact_approval_command(event[k]) for k in ("command", "description") if k in event})
     event.update(_run_event(run_id, "approval.request", **fields, choices=_approval_event_choices(
         smart_denied=bool(event.get("smart_denied")),
         allow_session=event.get("allow_session") is not False,
@@ -236,8 +235,7 @@ def _clean_request_string(value: Any) -> Optional[str]:
 
 # model_options decoding lives in the topical sibling (line-cap offset);
 # re-exported here so importers are unaffected.
-from gateway.platforms.api_server_request_options import (
-    _request_reasoning_config, _request_service_tier)
+from gateway.platforms.api_server_request_options import _request_reasoning_config, _request_service_tier
 
 
 def _apply_runtime_agent_overrides(
@@ -1370,7 +1368,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "real_ip": self._clean_log_value(request.headers.get("X-Real-IP", "")),
             "method": self._clean_log_value(request.method, max_len=16),
             "path": self._clean_log_value(request.path_qs, max_len=500),
-            "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300)}
+            "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300),
+            # The Portal user a peer pass holder signed in as; set by the dashboard's /api/peer route.
+            "peer_principal": self._clean_log_value(request.headers.get("X-Hermes-Peer-Principal", ""), max_len=128)}
 
     def _request_audit_log_suffix(self, request: web.Request) -> str:
         ctx = self._request_audit_context(request)
@@ -1381,11 +1381,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """Persist safe API source metadata on cron jobs created over HTTP."""
         ctx = self._request_audit_context(request)
         origin = {"platform": "api_server", "chat_id": "api"}
-        for ctx_key, origin_key in (("remote", "source_ip"), ("peer_ip", "peer_ip"),
-                                    ("forwarded_for", "forwarded_for"), ("real_ip", "real_ip"),
-                                    ("user_agent", "user_agent")):
-            if ctx.get(ctx_key):
-                origin[origin_key] = ctx[ctx_key]
+        for key in ("remote", "peer_ip", "forwarded_for", "real_ip", "user_agent", "peer_principal"):
+            if ctx.get(key):
+                origin["source_ip" if key == "remote" else key] = ctx[key]
         return origin
 
     def _expected_api_key(self) -> str:
@@ -1501,21 +1499,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # -- Multi-profile multiplexing (/p/<profile>/...) --------------------------------
 
     def _resolve_request_profile(self, request: web.Request):
-        """Resolve + validate the /p/<profile>/ prefix: ``None`` (no prefix, or multiplexing
-        off and the prefix names this gateway's own profile), the served profile name, or
-        ``_PROFILE_REJECTED`` (-> 404). Fail closed: a foreign prefix must never be ignored."""
-        profile = (request.match_info.get("profile") or "").strip()
-        if not profile:
-            return None
-        cfg = getattr(self.gateway_runner, "config", None)
-        if not getattr(cfg, "multiplex_profiles", False):
-            return None if _prefix_names_served_profile(profile) else _PROFILE_REJECTED
-        try:
-            from hermes_cli.profiles import profiles_to_serve
-            served = {name for name, _ in profiles_to_serve(multiplex=True)}
-        except Exception:
-            return _PROFILE_REJECTED
-        return profile if profile in served else _PROFILE_REJECTED
+        from gateway.platforms.api_server_profile_prefix import resolve_request_profile
+        return resolve_request_profile(self, request)
 
     @staticmethod
     def _profile_scope(profile: Optional[str]):
@@ -1553,7 +1538,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         async def profile_prefix_middleware(request: web.Request, handler):
             profile = self._resolve_request_profile(request)
             if profile is _PROFILE_REJECTED:
-                return web.json_response({"error": "Unknown or unconfigured profile"}, status=404)
+                from gateway.platforms.api_server_profile_prefix import rejection_response
+                return rejection_response(request)
             token = _api_request_profile.set(profile)
             try:
                 with self._profile_scope(profile):
@@ -2303,10 +2289,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         api_platform["metrics"] = api_status
         platforms["api_server"] = api_platform
         # Served BY the gateway process, so gateway_running is True by definition; busy/
-        # drainable use the same shared contract as /api/status so the two never disagree.
+        # drainable share /api/status's contract; its probe waits on _live_lock, run off-loop.
         active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
         from gateway.run import _resolve_gateway_model
-        readiness = collect_runtime_readiness(
+        readiness = await asyncio.to_thread(collect_runtime_readiness,
             configured_model=_resolve_gateway_model(), runtime_status=runtime,
             active_api_runs=active_api_runs, process_completion_queue_depth=process_depth,
             active_delegations=active_delegations)
@@ -3071,19 +3057,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         gateway_session_key = ctx["gateway_session_key"]
         session_id = ctx["session_id"]
         history = await self._conversation_history_for_session(session_id)
-        result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
-        # One policy-gated re-run of a transiently failed turn — the peer-DM transport's half of the
-        # retry the local (``tools.bot_mode_dm``) and relayed (``tui_gateway.methods_bot_relay``)
-        # delivery lanes already apply (#93091 item 5, #115325). Same policy, same gate: transient
-        # classes (429 / 5xx) re-run the SAME session once, a context overflow lets the re-run's
-        # pre-API compaction shrink the transcript first, and auth/quota/config/model never re-run. The
-        # store is read again first: the failed attempt's turn-start persist left the DM as the
-        # transcript's unanswered tail row, and the re-run resumes that row instead of appending a
-        # second copy of it. A turn that fails again reaches the peer client exactly as before.
-        if result_retry_action(result) != RETRY_NONE:
-            history = await self._conversation_history_for_session(session_id)
-            result, usage = await self._run_agent(
-                conversation_history=history, resume_unanswered_turn=True, **ctx["run_kwargs"])
+        from gateway.platforms.api_server_authority_runs import RuntimeStoreError, store_error_response
+        try:
+            result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
+            # One policy-gated re-run of a transiently failed turn, as the local (``tools.bot_mode_dm``)
+            # and relayed (``tui_gateway.methods_bot_relay``) delivery lanes do (#93091 item 5, #115325):
+            # transient classes re-run the SAME session once, resuming the failed attempt's unanswered
+            # tail row from a fresh store read; auth/quota/config/model never re-run.
+            if result_retry_action(result) != RETRY_NONE:
+                history = await self._conversation_history_for_session(session_id)
+                result, usage = await self._run_agent(
+                    conversation_history=history, resume_unanswered_turn=True, **ctx["run_kwargs"])
+        except RuntimeStoreError as exc:  # e.g. a chat-platform-owned session: /v1/runs' 409, not a 500
+            return store_error_response(_openai_error, exc)
         is_dict = isinstance(result, dict)
         effective_session_id = result.get("session_id") if is_dict else session_id
         final_response = _resolve_media_to_data_urls(
@@ -3527,7 +3513,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
             def _detach_fire(fire_fn, *fire_args) -> web.Response:
                 # The done callback owns the reservation once the task is detached.
-                task = asyncio.create_task(asyncio.to_thread(fire_fn, *fire_args, adapters=adapters, loop=loop))
+                task = asyncio.create_task(_api_runs.on_turn_executor(fire_fn, *fire_args, adapters=adapters, loop=loop))
                 reservation["detached"] = True
                 task.add_done_callback(lambda _task: _release_pending_api_work(self, reservation))
                 self._track_background_task(task, tolerate_missing=True)
@@ -3976,9 +3962,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 retryable=False)
             return False
         try:
-            mws = [mw for mw in (
-                self._make_profile_prefix_middleware(), cors_middleware, body_limit_middleware,
-                security_headers_middleware) if mw is not None]
+            from gateway.platforms.api_server_config_guard import config_unavailable_middleware
+            mws = [mw for mw in (  # the config guard outermost: entering a profile scope reads config
+                config_unavailable_middleware, self._make_profile_prefix_middleware(), cors_middleware,
+                body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             assert self._app is not None
             # Native routes + multiplex /p/<profile>/ mirrors (the prefix middleware validates and
@@ -4089,10 +4076,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         routed.clear()
         for store in stores:
             try:
-                store.close()
+                await asyncio.to_thread(store.close)  # a persistence worker may hold its lock
             except Exception:
                 logger.debug("Failed to close response store for %s", self.name, exc_info=True)
-        _api_runs._close_run_state(self)
         with suppress(Exception):
             await asyncio.to_thread(self._memory_sessions.close_all)
         try:
@@ -4103,6 +4089,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await self._runner.cleanup()
                 self._runner = None
         finally:
+            _api_runs._close_run_state(self)  # after site.stop(): no late request re-mints the executor
             self._close_cached_session_dbs()
             self._app = None
         logger.info("[%s] API server stopped", self.name)

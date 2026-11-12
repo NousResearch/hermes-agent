@@ -124,6 +124,14 @@ export const en: Translations = {
     sharedMetricsSaveFailed: "Couldn't save your choice",
   },
 
+  // ── System page: Memory section ──
+  systemMemory: {
+    activeProvider: "Active memory provider",
+    noProvider: "none — built-in only",
+    builtinLayer: "Built-in layer",
+    builtinNote: "MEMORY.md and USER.md are Hermes's own memory, separate from any external provider. Both load into sessions by default; the config toggles (memory.memory_enabled / memory.user_profile_enabled) turn each off. A provider adds to them; it never replaces them.",
+  },
+
   status: {
     actionFailed: "Action failed",
     actionFinished: "Finished",
@@ -448,6 +456,13 @@ export const en: Translations = {
     authRequired: "Auth required",
     authRequiredHint: "Run this command to authenticate:",
     updateGit: "Git pull",
+    updateAll: "Update all",
+    updatingAll: "Updating plugins…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `Updated ${updated}, needs review ${needsReview}, failed ${failed}`,
+    autoUpdate: "Auto-update",
+    autoUpdateDesc: (hours: number) =>
+      `Apply plugin updates automatically when the gateway checks (every ${hours} h). Updated code loads in new sessions.`,
     updateConsentBody: (name: string, sha: string) =>
       `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
     updateScanBody: (name: string, count: number) =>

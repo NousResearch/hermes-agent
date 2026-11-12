@@ -123,6 +123,44 @@ class TestProfileScopedSkills:
         assert default_md.read_text() == before
         assert not (isolated_profiles["default"] / "skills" / "shared-skill-2").exists()
 
+    def test_lock_round_trips_in_target_profile_and_list_carries_it(
+            self, client, isolated_profiles, monkeypatch):
+        """PUT /api/skills/lock keys the record by DIRECTORY (what the write guards resolve)
+        in the requested profile; GET /api/skills maps it back onto the row's load name."""
+        from tools import skill_usage
+
+        worker_skills = isolated_profiles["worker_alpha"] / "skills"
+        d = worker_skills / "dir-name"  # declared name differs from the directory
+        d.mkdir()
+        (d / "SKILL.md").write_text("---\nname: shown-name\ndescription: x\n---\n\n# x\n")
+
+        resp = client.put("/api/skills/lock", params={"profile": "worker_alpha"},
+                          json={"name": "shown-name", "locked": True})
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"ok": True, "name": "shown-name", "locked": True}
+        monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["worker_alpha"]))
+        assert skill_usage.is_locked("dir-name")
+        monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["default"]))
+        assert not skill_usage.is_locked("dir-name")
+
+        rows = client.get("/api/skills", params={"profile": "worker_alpha"}).json()
+        assert {r["name"]: r["locked"] for r in rows} == {"worker-skill": False, "shown-name": True}
+
+        resp = client.put("/api/skills/lock", params={"profile": "worker_alpha"},
+                          json={"name": "shown-name", "locked": False})
+        assert resp.status_code == 200
+        monkeypatch.setenv("HERMES_HOME", str(isolated_profiles["worker_alpha"]))
+        assert not skill_usage.is_locked("dir-name")
+
+    def test_lock_unknown_skill_404_and_corrupt_sidecar_lists_unlocked(
+            self, client, isolated_profiles):
+        resp = client.put("/api/skills/lock", json={"name": "ghost", "locked": True})
+        assert resp.status_code == 404
+        (isolated_profiles["default"] / "skills" / ".usage.json").write_text("{not json")
+        resp = client.get("/api/skills")
+        assert resp.status_code == 200
+        assert [r["locked"] for r in resp.json()] == [False]
+
 
 class TestProfileScopedHubActions:
     def test_hub_install_spawns_with_profile_flag(

@@ -8,7 +8,7 @@ platforms: [linux, macos]
 metadata:
   hermes:
     tags: [Payments, Stripe, Link, Checkout, MPP]
-    related_skills: [mpp-agent, stripe-projects]
+    related_skills: [stripe-projects]
 ---
 
 # Stripe Link CLI Skill
@@ -26,7 +26,7 @@ Trigger phrases:
 - "log in to Link", "connect my Link wallet"
 - HTTP 402 response from a merchant API with `www-authenticate: ... method="stripe"`
 
-If the user wants a paid API call (HTTP 402, no checkout form), the `card` path is wrong — use SPT via this same skill, or hand off to the `mpp-agent` skill.
+If the user wants a paid API call (HTTP 402, no checkout form), the `card` path is wrong — use SPT via this same skill, or install the `pay` plugin (`hermes plugins install pay`) for x402/MPP payments.
 
 ## Prerequisites
 

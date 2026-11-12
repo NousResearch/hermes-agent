@@ -128,8 +128,16 @@ def is_enabled(name: str) -> bool:
     return is_installed(name)
 
 
+def _browser_profile_enabled() -> bool:
+    """The real-profile browser login source is on exactly when ``browser.use_real_profile`` is — the
+    same consent that snapshots the profile's Login Data. Not a bw/op-style installed-CLI check."""
+    from tools.browser_session_cloud import use_real_profile
+    return use_real_profile()
+
+
 def enabled_backends() -> list[LoginBackend]:
-    """Local first (always on), then every detected external manager the user has not turned off."""
+    """Local first (always on), then every detected external manager the user has not turned off,
+    then the read-only real-profile browser source when ``browser.use_real_profile`` is on."""
     from agent.vault_backends.local import LocalLoginBackend
 
     cfg = _cfg()
@@ -138,6 +146,9 @@ def enabled_backends() -> list[LoginBackend]:
         if is_enabled(cls.name):
             section = cfg.get(cls.name) or {}
             out.append(cls(section if isinstance(section, dict) else {}))
+    if _browser_profile_enabled():
+        from agent.vault_backends.browser import BrowserProfileLoginBackend
+        out.append(BrowserProfileLoginBackend())
     from agent.vault_backend_registry import enabled_plugin_backends
     return out + enabled_plugin_backends(cfg)
 

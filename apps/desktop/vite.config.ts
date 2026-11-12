@@ -25,7 +25,7 @@ async function cachedCompilerPass(command: string) {
     command,
     cacheRoot: path.join(__dirname, 'node_modules/.cache/hermes-react-compiler'),
     base: __dirname,
-    toolchain: [path.resolve(__dirname, '../../package-lock.json'), fileURLToPath(import.meta.url)]
+    toolchain: [path.resolve(__dirname, '../../pnpm-lock.yaml'), fileURLToPath(import.meta.url)]
   })
 }
 
@@ -65,13 +65,13 @@ const fsAllow = [
 // React refuses to run when `react` and `react-dom` come from two different
 // installed copies ("Minified React error #527" — a blank window, since it
 // throws before the first paint). Both packages are pinned to one version in
-// this workspace's package.json, but npm hoists whatever *it* considers
+// this workspace's package.json, but npm hoisted whatever *it* considered
 // compatible to the monorepo root: a root dependency whose react peer is a
-// loose range (e.g. `^18 || ^19`) pulls the newest react up there, while
-// react-dom stays at the pinned one. `^19.2.7` accepts `19.2.8`, so npm never
-// warns. Resolving from this workspace instead of a hardcoded root path yields
-// the versions declared here — npm nests a copy under the workspace exactly
-// when the hoisted one differs, so the pair can only ever match.
+// loose range (e.g. `^18 || ^19`) pulled the newest react up there, while
+// react-dom stayed at the pinned one. `^19.2.7` accepts `19.2.8`, so npm never
+// warned. Resolving from this workspace instead of a hardcoded root path yields
+// the versions declared here — pnpm links exactly those into the workspace,
+// so the pair can only ever match.
 const requireFromApp = createRequire(path.join(__dirname, 'vite.config.ts'))
 const reactDir = path.dirname(requireFromApp.resolve('react/package.json'))
 const reactDomDir = path.dirname(requireFromApp.resolve('react-dom/package.json'))
@@ -198,15 +198,13 @@ export default defineConfig(({ command }) => ({
             // heavy groups for the same boot-path reason.
             {
               name: 'vendor-util',
-              test: /node_modules[\\/](lodash-es|es-toolkit|uuid|dayjs|d3-array|d3-color|d3-force|d3-interpolate|d3-time[^\\/]*|dompurify|stylis)[\\/]/
+              test: /node_modules[\\/](lodash-es|es-toolkit|dayjs|d3-array|d3-color|d3-force|d3-interpolate|d3-time[^\\/]*|dompurify)[\\/]/
             },
             // One chunk per heavyweight, lazy-only library family.
             // @streamdown/code lives WITH shiki because it statically imports
-            // the full shiki bundle.
-            {
-              name: 'mermaid',
-              test: /node_modules[\\/](mermaid|cytoscape|dagre|khroma|elkjs|d3|d3-[^\\/]+|@mermaid-js)[\\/]/
-            },
+            // the full shiki bundle. Pele (mermaid fences) is deliberately not
+            // grouped: `pele/lazy` keeps each diagram type in its own small
+            // chunk, and a group would merge them back into one.
             {
               name: 'shiki',
               test: /node_modules[\\/](shiki|@shikijs|react-shiki|@streamdown[\\/]code|oniguruma-to-es|oniguruma-parser|regex(-[^\\/]+)?)[\\/]/

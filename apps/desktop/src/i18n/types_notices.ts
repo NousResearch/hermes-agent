@@ -15,6 +15,8 @@ export interface NoticeTranslations {
   promptNotices: {
     /** An explicit retry of a send whose identityless (legacy) acknowledgement was lost. */
     legacySendUnconfirmed: string
+    /** An interrupted send restored as a draft: its attachments did not outlive the page. */
+    restoredDraftAttachmentsDropped: string
     /** reload.mcp left the chat's servers as they were: a turn was running or waiting. */
     mcpReloadDeferred: string
     /** A reloaded MCP server the chat does not run (no_mcp, an explicit pick, a platform allowlist). */

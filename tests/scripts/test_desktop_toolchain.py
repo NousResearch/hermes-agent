@@ -37,6 +37,8 @@ def test_bootstrap_environment_isolates_owned_paths_without_mutating_caller(tmp_
         "PYTHONPATH": str(original_home / "site"),
         "UV_CACHE_DIR": str(original_home / "uv-cache"),
         "npm_config_cache": str(original_home / "npm-cache"),
+        "pnpm_config_store_dir": str(original_home / "pnpm-store"),
+        "PNPM_CONFIG_STATE_DIR": str(original_home / "pnpm-state"),
         "npm_execpath": str(original_home / "foreign-npm.js"),
         "NPM_CONFIG_USERCONFIG": str(original_home / "credentials.npmrc"),
         "CARGO_HOME": str(original_home / "custom-cargo"),
@@ -55,7 +57,9 @@ def test_bootstrap_environment_isolates_owned_paths_without_mutating_caller(tmp_
         assert Path(environment[key]).is_relative_to(work)
     assert Path(environment["HERMES_RUNTIME_DIR"]) == cache / "tools"
     assert Path(environment["UV_CACHE_DIR"]) == cache / "python/runtime"
-    assert Path(environment["npm_config_cache"]) == cache / "npm"
+    assert Path(environment["pnpm_config_store_dir"]) == cache / "pnpm/store"
+    assert "PNPM_CONFIG_STATE_DIR" not in environment
+    assert "npm_config_cache" not in environment
     assert "npm_execpath" not in environment
     assert "NPM_CONFIG_USERCONFIG" not in environment
     assert environment["npm_config_userconfig"] == os.devnull
@@ -79,10 +83,12 @@ def test_bootstrap_environment_isolates_owned_paths_without_mutating_caller(tmp_
         "Home": str(original_home), "UserProfile": str(original_home), "LocalAppData": "live-local",
         "Hermes_Home": "live-profile", "Hermes_Runtime_Dir": "live-store", "Cargo_Home": "custom-cargo",
         "Rustup_Home": "custom-rustup", "NPM_CONFIG_CACHE": "live-npm", "Path": os.defpath,
+        "PNPM_CONFIG_STORE_DIR": "live-pnpm-store",
     })
     assert mixed["CARGO_HOME"] == "custom-cargo" and mixed["RUSTUP_HOME"] == "custom-rustup"
     assert len([key for key in mixed if key.upper() == "HOME"]) == 1
     assert len([key for key in mixed if key.upper() == "HERMES_RUNTIME_DIR"]) == 1
+    assert [key for key in mixed if key.upper() == "PNPM_CONFIG_STORE_DIR"] == ["pnpm_config_store_dir"]
 
 
 def test_rust_sdists_build_outside_the_nested_uv_cache(tmp_path):
@@ -231,7 +237,7 @@ def test_prepare_tools_uses_pm_native_pins_and_separate_cache(tmp_path, monkeypa
                         raising=False)
     before = dict(os.environ)
     python, node, prepared = desktop_toolchain.prepare_tools(source, work, cache, env)
-    assert acquired == ["uv", "npm"]
+    assert acquired == ["uv", "pnpm"]
     assert python == bins["python"] and node == bins["node"]
     assert prepared["HERMES_PYTHON"] == str(python)
     assert prepared["HERMES_NODE"] == str(node)

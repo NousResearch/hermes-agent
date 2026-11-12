@@ -203,6 +203,7 @@ Only positive integers are honored. Zero, negative, non-numeric, or boolean valu
 Telegram voice bubbles require Opus/OGG audio format:
 
 - **OpenAI, ElevenLabs, and Mistral** produce Opus natively — no extra setup
+- **OpenAI-compatible servers without Opus** (Speaches/Kokoro, OpenRouter's speech route): when the server rejects `response_format: opus` with a 400/422, Hermes asks once more for MP3 and converts it with **ffmpeg**
 - **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
 - **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **Google Gemini TTS** outputs raw PCM and uses **ffmpeg** to encode Opus directly for Telegram voice bubbles
@@ -511,20 +512,22 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 # In ~/.hermes/config.yaml
 stt:
   provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
-  language: "en"              # Global language hint applied to every provider unless a per-provider language overrides it; set "" to restore auto-detect
+  language: "en"              # Global hint; blank falls back to HERMES_LOCAL_STT_LANGUAGE, then auto-detect
   local:
     model: "base"             # tiny, base, small, medium, large-v3, turbo
-    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""              # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   groq:
-    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
+    language: ""              # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
   openai:
     model: "whisper-1"        # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
   mistral:
     model: "voxtral-mini-latest"  # voxtral-mini-latest, voxtral-mini-2602
   xai:
     model: "grok-voice-transcribe-2.0"  # or grok-voice-transcribe-1.0
-    language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else "en"
+    language: ""              # blank inherits stt.language, then HERMES_LOCAL_STT_LANGUAGE
 ```
+
+Blank provider language settings in this example inherit the global `"en"`; they do not select auto-detection. See [STT language resolution](../configuration.md#speech-to-text-stt) for precedence, an auto-detection example, and command-backend limits.
 
 ### Provider Details
 
@@ -547,7 +550,7 @@ HF_HUB_DISABLE_XET=1
 
 `HF_HUB_DISABLE_XET=1` keeps downloads on the mirror's regular HTTP path instead of contacting Xet CAS hosts that do not honor `HF_ENDPOINT`.
 
-**Groq API** — Requires `GROQ_API_KEY`. Good cloud fallback when you want a free hosted STT option. Set `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip Whisper's auto-detect and reduce latency on known-language audio.
+**Groq API** — Requires `GROQ_API_KEY`. Good cloud fallback when you want a free hosted STT option. Use `stt.groq.language` for a provider-specific language hint or `stt.language` for a global hint. `HERMES_LOCAL_STT_LANGUAGE` is used only when neither setting supplies a non-empty hint. Groq Whisper auto-detects when no hint remains after resolution.
 
 **OpenAI API** — Accepts `VOICE_TOOLS_OPENAI_KEY` first and falls back to `OPENAI_API_KEY`. Supports `whisper-1`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`, and `gpt-transcribe`.
 
@@ -660,7 +663,7 @@ For `format: json` / `srt` / `vtt`, Hermes returns the raw file content as the `
 |-----------------|---------|------------------------------------------------------------------------------------------------------|
 | `timeout`       | `300`   | Seconds; the process tree is killed on expiry (Unix `start_new_session`, Windows `taskkill /T`).     |
 | `format`        | `txt`   | One of `txt` / `json` / `srt` / `vtt`. Sets the extension of `{output_path}`.                       |
-| `language`      | `en`    | Forwarded to `{language}`. Defaults to `stt.language` then `en`.                                     |
+| `language`      | `en`    | Forwarded to `{language}`; follows [STT language resolution](../configuration.md#speech-to-text-stt), with a final `en` fallback. |
 | `model`         | empty   | Forwarded to `{model}`. The `model=` argument to `transcribe_audio()` overrides this.                |
 | `normalize`     | `false` | Transcode the input to 16 kHz mono m4a (ffmpeg) before the command runs; `{input_path}` then points at the normalized file. |
 
@@ -694,7 +697,7 @@ For STT engines that aren't built-in AND can't be expressed as a shell command (
 2. **`stt.provider` matches `stt.providers.<name>` with `command:` set** → command-provider runner (see [STT custom command providers](#stt-custom-command-providers)). Wins over a same-name plugin.
 3. **`stt.provider` matches a plugin-registered `TranscriptionProvider`** → plugin dispatch:
    - if the plugin's `is_available()` returns `False` (missing creds or SDK), the call surfaces an unavailability error envelope identifying the plugin — **not** the generic "No STT provider available" message.
-   - otherwise the plugin's `transcribe()` is called with `model` (from the public `model=` arg, falling back to `stt.<provider>.model`) and `language` (from `stt.<provider>.language`).
+   - otherwise the plugin's `transcribe()` is called with `model` (from the public `model=` arg, falling back to `stt.<provider>.model`) and the resolved `language` hint (see [STT language resolution](../configuration.md#speech-to-text-stt)).
 4. **No match** → "No STT provider available" error.
 
 #### Per-provider config namespace
@@ -711,7 +714,7 @@ stt:
     # own config.yaml access in __init__/is_available/transcribe
 ```
 
-The dispatcher forwards `model` and `language` from this section; everything else, the plugin can read itself.
+Other plugin-specific keys are read by the plugin itself.
 
 #### Minimal plugin
 

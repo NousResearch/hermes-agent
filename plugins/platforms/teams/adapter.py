@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import sys
+import uuid
 from collections import deque
 from contextlib import contextmanager, suppress
 from pathlib import Path
@@ -57,13 +58,13 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt, SendResult, cache_image_from_url, cache_media_bytes_async,
-)
+    describe_proxy_error, env_proxy_for_redaction)
 from gateway.platforms.base_exec_approval import approval_timeout_seconds, format_approval_deadline_line
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import (
     coerce_port, extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret,
-    seed_extra_from_env as _seed_extra_from_env, send_error
+    request_never_left, seed_extra_from_env as _seed_extra_from_env, send_error
 )
 
 logger = logging.getLogger(__name__)
@@ -83,6 +84,7 @@ _ALLOWED_TEAMS_SERVICE_HOSTS = frozenset({"smba.trafficmanager.net", "smba.infra
 # hostile value cannot path-traverse out of ``/v3/conversations/<id>/activities``.
 _TEAMS_CONV_ID_RE = re.compile(r"^[A-Za-z0-9:@\-_.]+$")
 _BF_TOKEN_SCOPE = "https://api.botframework.com/.default"
+_TEAMS_SDK_URLS = (_DEFAULT_TEAMS_SERVICE_URL, _BF_TOKEN_SCOPE, "https://login.microsoftonline.com")  # NO_PROXY must bypass all
 
 
 def _bf_token_request(tenant_id: str, client_id: str, client_secret: str) -> tuple[str, dict]:
@@ -186,7 +188,6 @@ def _env_enablement() -> dict | None:
     return seed
 
 
-
 async def _standalone_send(
     pconfig, chat_id: str, message: str, *,
     thread_id: Optional[str] = None, media_files: Optional[list] = None, force_document: bool = False,
@@ -198,7 +199,8 @@ async def _standalone_send(
     extra = getattr(pconfig, "extra", {}) or {}
     client_id, client_secret, tenant_id = _credentials(pconfig)
     if not (client_id and client_secret and tenant_id):
-        return send_error("Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required")
+        return send_error("Teams standalone send: TEAMS_CLIENT_ID, TEAMS_CLIENT_SECRET, and TEAMS_TENANT_ID are all required",
+                          nothing_sent=True)
     raw_service_url = extra.get("service_url") or _get_scoped_secret("TEAMS_SERVICE_URL", "") or _DEFAULT_TEAMS_SERVICE_URL
     service_url = _validate_teams_service_url(raw_service_url)
     for failed, error in (
@@ -209,7 +211,7 @@ async def _standalone_send(
         (not _TEAMS_CONV_ID_RE.match(tenant_id), "TEAMS_TENANT_ID contains characters outside the expected set"),
         (not AIOHTTP_AVAILABLE, "aiohttp not installed")):
         if failed:
-            return send_error(f"Teams standalone send: {error}")
+            return send_error(f"Teams standalone send: {error}", nothing_sent=True)
     token_url, token_form = _bf_token_request(tenant_id, client_id, client_secret)
     activities_url = f"{service_url}v3/conversations/{chat_id}/activities"
     try:
@@ -223,11 +225,12 @@ async def _standalone_send(
             ) as token_resp:
                 if token_resp.status >= 400:
                     body = await token_resp.text()
-                    return send_error(f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}")
+                    return send_error(f"Teams standalone send: token request failed ({token_resp.status}): {body[:300]}",
+                                      nothing_sent=True)  # the activity was never posted
                 token_payload = await token_resp.json()
             access_token = token_payload.get("access_token")
             if not access_token:
-                return send_error("Teams standalone send: token response missing access_token")
+                return send_error("Teams standalone send: token response missing access_token", nothing_sent=True)
             async with session.post(
                 activities_url, json={"type": "message", "text": message, "textFormat": "markdown"},
                 headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
@@ -241,8 +244,9 @@ async def _standalone_send(
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        logger.debug("Teams standalone send raised", exc_info=True)
-        return send_error(f"Teams standalone send failed: {e}")
+        logger.debug("Teams standalone send raised", exc_info=not (shown := describe_proxy_error(e, env_proxy_for_redaction(token_url, activities_url, trust_env=gateway_trust_env()))))
+        # the text may echo the proxy URL
+        return send_error(f"Teams standalone send failed: {shown or e}", nothing_sent=request_never_left(e))
 
 
 # SDK module → names rebound into this module's globals by check_teams_requirements().
@@ -332,10 +336,6 @@ _APPROVAL_LABEL_KEYS = {
 }
 
 
-def _truncate(text: str, limit: int) -> str:
-    return text[:limit] + "..." if len(text) > limit else text
-
-
 def _approval_body(cmd: str, desc: str, *, always: bool = False) -> list:
     """Adaptive Card body blocks for an approval prompt; unless ``always``, empty ``cmd``/``desc`` omit their blocks."""
     body = []
@@ -375,6 +375,9 @@ class TeamsAdapter(BasePlatformAdapter):
         self._require_mention: bool = self._parse_require_mention(config)
         # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
         self._sent_ids: deque = deque(maxlen=500)
+        # prompt id → (command preview, reason) for the resolved card; button data carries only the id,
+        # because a copy per button can push a long non-ASCII command past Teams' ~28 KB card cap.
+        self._approval_previews: dict[str, tuple[str, str]] = {}
 
     @staticmethod
     def _parse_require_mention(config) -> bool:
@@ -476,7 +479,7 @@ class TeamsAdapter(BasePlatformAdapter):
         """Download attachment bytes with SSRF protection. Connector URLs get the bot's bearer token;
         redirects and body size go through the shared guards (as the cache_*_from_url helpers)."""
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
-        from gateway.platforms.base import ssrf_redirect_guard, _read_httpx_body_with_limit
+        from gateway.platforms.base import ssrf_redirect_guard, read_httpx_body_with_limit
         if not is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
         headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
@@ -490,7 +493,7 @@ class TeamsAdapter(BasePlatformAdapter):
             async with client.stream("GET", url, headers=headers) as response:
                 response.raise_for_status()
                 # Never buffer .content — a lying Content-Length must not OOM the gateway.
-                return await _read_httpx_body_with_limit(response, media_type="attachment")
+                return await read_httpx_body_with_limit(response, media_type="attachment")
 
     async def _on_message(self, ctx: ActivityContext[MessageActivity]) -> None:
         activity = ctx.activity
@@ -636,7 +639,7 @@ class TeamsAdapter(BasePlatformAdapter):
     async def _on_card_action(
         self, ctx: ActivityContext[AdaptiveCardInvokeActivity]
     ) -> InvokeResponse[AdaptiveCardActionMessageResponse]:
-        from tools.approval import resolve_gateway_approval, has_blocking_approval
+        from tools.approval import has_blocking_approval, resolve_gateway_approval_card
 
         data = ctx.activity.value.action.data or {}
         hermes_action = data.get("hermes_action", "")
@@ -649,10 +652,18 @@ class TeamsAdapter(BasePlatformAdapter):
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message(t("platform.teams.approval.unknown_action"))
-        if not has_blocking_approval(session_key):
-            return self._invoke_card([TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
-        resolve_gateway_approval(session_key, choice)
-        body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
+        from gateway.approval_actor import approval_refusal, refusal_text
+        clicker = getattr(ctx.activity.from_, "aad_object_id", None) or getattr(ctx.activity.from_, "id", "")
+        if requester := approval_refusal(session_key, clicker, extra=self.config.extra, request_id=data.get("request_id"),
+                                         choice=choice):
+            return self._invoke_message(refusal_text(requester))  # shown to the clicker; card keeps its buttons
+        # Cards from an older build carry cmd/desc in the button data instead.
+        cmd, desc = self._approval_previews.get(data.get("prompt_id", ""), (data.get("cmd", ""), data.get("desc", "")))
+        if not has_blocking_approval(session_key) or not resolve_gateway_approval_card(
+                session_key, choice, data.get("request_id"), actor_id=clicker, extra=self.config.extra):
+            body = _approval_body(cmd, desc)
+            return self._invoke_card([*body, TextBlock(text=t("platform.shared.approval_expired"), wrap=True)])
+        body = _approval_body(cmd, desc)
         body.append(TextBlock(text=t(_APPROVAL_LABEL_KEYS[choice]), wrap=True, weight="Bolder"))
         return self._invoke_card(body)
 
@@ -678,6 +689,7 @@ class TeamsAdapter(BasePlatformAdapter):
         return None
 
     _EA_CMD_BUDGET = 2000
+    _EA_PREVIEWS_KEPT = 256
     _EA_CARD_ACTIONS = {"once": "approve_once", "session": "approve_session", "always": "approve_always", "deny": "deny"}
     _EA_CARD_STYLES = {"primary": "positive", "danger": "destructive"}
 
@@ -685,15 +697,25 @@ class TeamsAdapter(BasePlatformAdapter):
         """Adaptive Card: the shared text is split into its header / fenced command / reason blocks."""
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
-        # Button data carries a truncated cmd — just enough to reconstruct the card body.
-        btn_data_base = {"session_key": prompt.session_key, "cmd": _truncate(prompt.command, 200), "desc": prompt.description}
+        # The resolved card shows the prompt's own command preview, looked up by id on click.
+        cmd = self._truncate_preview(prompt.command, self._EA_CMD_BUDGET)
+        prompt_id = uuid.uuid4().hex
+        self._approval_previews[prompt_id] = (cmd, prompt.description)
+        if len(self._approval_previews) > self._EA_PREVIEWS_KEPT:
+            self._approval_previews.pop(next(iter(self._approval_previews)))
+        btn_data_base = {"session_key": prompt.session_key, "prompt_id": prompt_id}
+        if prompt.request_id:
+            btn_data_base["request_id"] = prompt.request_id
         actions = []
         for label, choice, style in prompt.actions:
             kw = {"style": self._EA_CARD_STYLES[style]} if style else {}
             actions.append(ExecuteAction(
                 title=label, verb="hermes_approve",
                 data={**btn_data_base, "hermes_action": self._EA_CARD_ACTIONS[choice]}, **kw))
-        body = _approval_body(self._truncate_preview(prompt.command, self._EA_CMD_BUDGET), prompt.description, always=True)
+        body = _approval_body(cmd, prompt.description, always=True)
+        if cmd != prompt.command:  # the shared shortened-preview notice: where the rest is, or why Deny only
+            body.append(TextBlock(wrap=True, text=t("gateway.exec_approval.truncated_" + (
+                "full_above" if "once" in prompt.choices else "deny_only"), total=len(prompt.command))))
         body.append(TextBlock(text=format_approval_deadline_line(approval_timeout_seconds()), wrap=True))
         if prompt.smart_denied:
             body.append(TextBlock(text=self._EA_SMART_DENY_LINE.strip(), wrap=True))
@@ -702,8 +724,8 @@ class TeamsAdapter(BasePlatformAdapter):
             result = await self._send_card(prompt.chat_id, card)
             return SendResult(success=True, message_id=getattr(result, "id", None) if result else None)
         except Exception as e:
-            logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)
-            return SendResult(success=False, error=str(e), retryable=True)
+            logger.error("[teams] send_exec_approval failed: %s", (shown := describe_proxy_error(e, env_proxy_for_redaction(*_TEAMS_SDK_URLS))) or e, exc_info=not shown)
+            return SendResult(success=False, error=shown or str(e), retryable=True)
 
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[dict[str, Any]] = None
@@ -724,8 +746,8 @@ class TeamsAdapter(BasePlatformAdapter):
                     result = await self._app.send(chat_id, chunk)
                 last_message_id = getattr(result, "id", None)
                 self._remember_sent(result)
-            except Exception as e:
-                return SendResult(success=False, error=str(e), retryable=True)
+            except Exception as e:  # the SDK's httpx client reads HTTPS_PROXY: the text may echo it
+                return SendResult(success=False, error=describe_proxy_error(e, env_proxy_for_redaction(*_TEAMS_SDK_URLS)) or str(e), retryable=True)
         return SendResult(success=True, message_id=last_message_id)
 
     async def send_typing(self, chat_id: str, metadata: Optional[dict[str, Any]] = None) -> None:
@@ -760,8 +782,8 @@ class TeamsAdapter(BasePlatformAdapter):
             result = await self._send_via_conv_ref(chat_id, activity, activity)
             return SendResult(success=True, message_id=getattr(result, "id", None))
         except Exception as e:
-            logger.error("[teams] send_%s failed: %s", media_label, e, exc_info=True)
-            return SendResult(success=False, error=str(e), retryable=True)
+            logger.error("[teams] send_%s failed: %s", media_label, (shown := describe_proxy_error(e, env_proxy_for_redaction(*_TEAMS_SDK_URLS))) or e, exc_info=not shown)
+            return SendResult(success=False, error=shown or str(e), retryable=True)
 
     async def send_image(self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
                          metadata: Optional[dict[str, Any]] = None) -> SendResult:

@@ -1,0 +1,31 @@
+name: hermes-gruvbox
+repo: https://github.com/AgileIndustrialComplex/hermes-gruvbox
+sha: bb8d6e1a23460947374d46b7059815dec63dc8cb
+description: >-
+  Six Gruvbox themes for the Hermes Desktop app — dark and light, each in hard, medium
+  and soft. Installing the pack writes its skins into <hermes home>/skins/ and has
+  desktop/plugin.js contribute the same six to the app's own theme picker, with their real
+  labels and descriptions instead of the app's hard-coded "Hermes skin". No commands,
+  tools, hooks, middleware, credentials, network access or background work, nothing runs on
+  a turn — it only writes its own skin files, never config.yaml, and it never overwrites a
+  skin you edited or switches your active theme.
+maintainer: AgileIndustrialComplex
+tier: community
+category: desktop
+docs_url: https://github.com/AgileIndustrialComplex/hermes-gruvbox#readme
+version: "1.0.0"
+platforms: [linux, macos, windows]
+requires_hermes: ">=0.22.5"
+image: https://raw.githubusercontent.com/AgileIndustrialComplex/hermes-gruvbox/bb8d6e1a23460947374d46b7059815dec63dc8cb/docs/social-preview.png
+screenshots:
+  - https://raw.githubusercontent.com/AgileIndustrialComplex/hermes-gruvbox/bb8d6e1a23460947374d46b7059815dec63dc8cb/docs/screenshots/gruvbox-dark-hard.png
+  - https://raw.githubusercontent.com/AgileIndustrialComplex/hermes-gruvbox/bb8d6e1a23460947374d46b7059815dec63dc8cb/docs/screenshots/gruvbox-dark-medium.png
+  - https://raw.githubusercontent.com/AgileIndustrialComplex/hermes-gruvbox/bb8d6e1a23460947374d46b7059815dec63dc8cb/docs/screenshots/gruvbox-dark-soft.png
+  - https://raw.githubusercontent.com/AgileIndustrialComplex/hermes-gruvbox/bb8d6e1a23460947374d46b7059815dec63dc8cb/docs/screenshots/gruvbox-light-hard.png
+  - https://raw.githubusercontent.com/AgileIndustrialComplex/hermes-gruvbox/bb8d6e1a23460947374d46b7059815dec63dc8cb/docs/screenshots/gruvbox-light-medium.png
+  - https://raw.githubusercontent.com/AgileIndustrialComplex/hermes-gruvbox/bb8d6e1a23460947374d46b7059815dec63dc8cb/docs/screenshots/gruvbox-light-soft.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

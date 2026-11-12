@@ -204,7 +204,7 @@ async def test_no_scheduler_starts_the_fresh_fifo_before_reset_cleanup_finishes(
         if len(executed) == 3:
             break
         await asyncio.sleep(0.02)
-    new = runner.session_store.lookup_by_session_key(authority.sessions[old.session_id].route).session_id
+    new = runner.session_store.lookup_by_session_key(runner.session_store._generate_session_key(native.source)).session_id
     assert executed == [("A", old.session_id), ("B", new), ("C", new)]
     assert events.index("sync:done") < events.index("turn:B")
 

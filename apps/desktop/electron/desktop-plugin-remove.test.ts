@@ -66,6 +66,24 @@ describe('removeDesktopPlugin', () => {
     expect(fs.existsSync(path.join(root, 'hello', 'plugin.js'))).toBe(true)
   })
 
+  it.each([
+    // An existing folder's exact name removes that folder, never its trimmed `gizmo` neighbour; any other
+    // name is trimmed like the installer (Python's str.strip()): U+FEFF kept, U+0085 and U+001C stripped.
+    ['a BOM-prefixed name', '\ufeffgizmo', '\ufeffgizmo', 'gizmo'],
+    ['an existing folder ending in NEL', 'gizmo\x85', 'gizmo\x85', 'gizmo'],
+    ['an existing folder with outer spaces', ' gizmo ', ' gizmo ', 'gizmo'],
+    ['a name wrapped in NEL and U+001C with no such folder', '\x85gizmo\x1c', 'gizmo', '\ufeffgizmo']
+  ])('removes %s as the matching folder', async (_label, name, folder, neighbour) => {
+    const { root } = makeRoot()
+    write(path.join(root, folder, 'plugin.js'), 'export default {}')
+    write(path.join(root, neighbour, 'plugin.js'), 'export default {}')
+
+    const result = await removeDesktopPlugin(root, name)
+
+    expect(result).toEqual({ ok: true, path: path.join(root, folder) })
+    expect(fs.readdirSync(root)).toEqual([neighbour])
+  })
+
   it('refuses a unified package half (marker present) and a missing folder', async () => {
     const { root } = makeRoot()
     write(path.join(root, 'uni', 'plugin.js'), 'export default {}')

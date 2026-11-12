@@ -91,6 +91,11 @@ def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
     except OSError:
         cwd = ""
     from hermes_cli.profiles import get_active_profile_name
+    from agent.delegation_context import owned_kanban_task
+    extra = {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS}
+    # Resolve in the firing execution before the descendant environment is scrubbed.
+    # This is payload metadata, never permission for the hook to act as the worker.
+    extra["kanban_task_id"] = owned_kanban_task()
     return {
         "tool_name": kwargs.get("tool_name"),
         "tool_input": kwargs.get("args") if isinstance(kwargs.get("args"), dict) else None,
@@ -98,7 +103,7 @@ def _payload_fields(kwargs: dict[str, Any]) -> dict[str, Any]:
         "cwd": cwd,
         # Resolved at fire time: a multiplexed gateway's hook script must know which profile fired it.
         "profile": get_active_profile_name(),
-        "extra": {k: v for k, v in kwargs.items() if k not in _TOP_LEVEL_PAYLOAD_KEYS},
+        "extra": extra,
     }
 
 
@@ -490,9 +495,13 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
         return failed(f"command {spec.command!r} cannot be parsed: {exc}")
     if not argv:
         return failed("empty command")
+    from tools.hosted_tool_policy import host_feature_refusal
+    if refusal := host_feature_refusal("shell_hooks", "A shell hook"):  # the one subprocess site
+        return failed(refusal)
     t0 = time.monotonic()
     # Own process group on POSIX so a timed-out hook's descendants are reaped with it (Windows: kill_process_tree
     # / taskkill /T). Hooks that finish in time keep detached helpers alive.
+    # detached-spawn: ok — awaited hook; its timeout kills the whole group (kill_process_tree)
     popen_kwargs: dict[str, Any] = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
     # HERMES_HOME follows the routed profile (the import-time environ holds the launch profile's), and
     # under multiplexing os.environ carries the DEFAULT profile's secrets, which a secondary's hook
@@ -536,8 +545,10 @@ def _make_callback(spec: ShellHookSpec) -> Callable[..., Optional[dict[str, Any]
 
     def _callback(**kwargs: Any) -> Optional[dict[str, Any]]:
         from agent.safe_worker_policy import safe_worker_enabled
+        from tools.hosted_tool_policy import host_feature_enabled
 
-        if safe_worker_enabled():
+        # A hosted scope's events carry the tenant's payload; a shell hook is a process on this host.
+        if safe_worker_enabled() or not host_feature_enabled("shell_hooks"):
             return None
         if spec.event in _TOOL_EVENTS and not spec.matches_tool(kwargs.get("tool_name")):
             return None
@@ -666,7 +677,17 @@ def _parse_context(data: dict[str, Any]) -> Optional[dict[str, Any]]:
     return {"context": context} if isinstance(context, str) and context.strip() else None
 
 
-_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {"pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify}
+def _parse_pre_llm_call(data: dict[str, Any]) -> Optional[dict[str, Any]]:
+    # A turn veto before any inference request, in either dialect (as for pre_tool_call); else context.
+    for verb, primary, secondary, _ in _PRE_TOOL_DIALECTS:
+        if data.get(verb) == "block":
+            return {"action": "block", "message": _block_message(data.get(primary), data.get(secondary))}
+    return _parse_context(data)
+
+
+_RESPONSE_PARSERS: dict[str, Callable[[dict[str, Any]], Optional[dict[str, Any]]]] = {
+    "pre_tool_call": _parse_pre_tool_call, "pre_verify": _parse_pre_verify, "pre_llm_call": _parse_pre_llm_call,
+}
 
 
 def _parse_response(event: str, stdout: str) -> Optional[dict[str, Any]]:

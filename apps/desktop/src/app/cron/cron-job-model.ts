@@ -42,6 +42,8 @@ export function validateCronEditor(input: CronEditorValidationInput): CronEditor
 }
 
 export interface CronEditorSaveValues {
+  /** Missed-run policy (true run once, false skip, null default); undefined = unchanged, not sent. */
+  catchUp?: boolean | null
   deliver: string
   /** Per-job model override ('' = follow the global default at fire time). */
   model: string
@@ -152,6 +154,11 @@ export function cronEditorUpdates(values: CronEditorSaveValues, options: { scrip
   if (!options.scriptOnlyJob) {
     updates.model = values.model.trim() || null
     updates.provider = values.provider.trim() || null
+  }
+
+  // Sent only when the user changed it, so an edit never rewrites a policy it did not touch.
+  if (values.catchUp !== undefined) {
+    updates.catch_up = values.catchUp
   }
 
   return updates

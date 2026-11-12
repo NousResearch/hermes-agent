@@ -296,7 +296,8 @@ class GatewayGoalsMixin:
         if not sid:
             return None
         await self._warm_goals_session_db(label)
-        return factory(sid)
+        # The manager loads its state from state.db on construction: off the loop, in this scope.
+        return await asyncio.to_thread(factory, sid)
 
     async def _post_turn_goal_continuation(
         self, *, session_entry: Any, source: Any, final_response: str,
@@ -383,16 +384,16 @@ class GatewayGoalsMixin:
                 await hook(session_entry=session_entry, source=source, final_response="" if failed else final_text)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
-        self._publish_local_control(source, only_if_present=True)
+        await self._publish_local_control(source, only_if_present=True)
 
-    def _publish_local_control(self, source: Any, *, only_if_present: bool = False) -> None:
+    async def _publish_local_control(self, source: Any, *, only_if_present: bool = False) -> None:
         """A local (Desktop/Ink) session's goal or loop state just moved here: repaint its viewers' cards,
         whose loop countdown runs off the snapshot's ``next_due_at``."""
         if getattr(source, "platform", None) != Platform.LOCAL:
             return
         from gateway.session_authorities import active_authority
-        from gateway.session_control_actions import publish
-        publish(active_authority(self), source.chat_id, only_if_present=only_if_present)
+        from gateway.session_control_actions import publish_async
+        await publish_async(active_authority(self), source.chat_id, only_if_present=only_if_present)
 
     @staticmethod
     def _turn_failed() -> bool:
@@ -525,7 +526,7 @@ class GatewayGoalsMixin:
             with suppress(Exception):
                 mgr.abandon_tick()
         # Viewers swap the countdown for "running now" (or re-anchor it after a slash tick settled).
-        self._publish_local_control(source)
+        await self._publish_local_control(source)
 
     async def _loop_wakeup_watcher(self, interval: float = 15.0) -> None:
         """Fire due /loop wakeups for idle gateway sessions: a coarse ticker scans persisted loops

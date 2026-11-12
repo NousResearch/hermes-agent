@@ -154,6 +154,21 @@ async def test_overflow_edit_split_chunks_stay_within_telegram_limit_once_escape
     assert all(mode == "MarkdownV2" for mode, _ in bot.calls)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["." * 10000, "```text\n" + "." * 10000 + "\n```"], ids=["dots", "fenced"])
+async def test_overflow_edit_split_of_dense_punctuation_sends_a_handful_of_full_parts(content):
+    """Every ``.`` doubles once escaped; the re-cut must shrink the raw budget by that ratio, not by
+    the formatted overshoot, or 10,000 dots go out as 5,000 two-character messages."""
+    from gateway.platforms.base import utf16_len
+
+    bot = _BotApi()
+    result = await _adapter(bot)._edit_overflow_split("4242", "99", content, finalize=True)
+    assert result.success
+    assert max(utf16_len(text) for _, text in bot.calls) <= 4096
+    assert len(bot.calls) <= 6
+    assert sum(text.count("\\.") for _, text in bot.calls) == 10000
+
+
 def _strip(text: str) -> str:
     return re.sub(r"\\(.)", r"\1", text)
 

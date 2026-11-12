@@ -43,12 +43,27 @@ def test_aux_endpoint_key_is_kept_out_of_config_yaml(monkeypatch, writer):
 
 
 def test_blocked_env_write_stores_neither_the_key_nor_a_dangling_reference(monkeypatch):
-    import hermes_cli.config as config
+    from hermes_cli import config
     get_config_path().write_text("model:\n  provider: openrouter\n  default: x/y\n")
-    monkeypatch.setattr(config, "_env_write_blocked", lambda *a, **k: True)
+    monkeypatch.setattr(config, "env_write_refusal", lambda key, action: f"Cannot {action} {key}: managed")
 
-    with pytest.raises(RuntimeError):
-        _cli_flow(monkeypatch)
+    _cli_flow(monkeypatch)
 
     assert SECRET not in get_config_path().read_text()
     assert "HERMES_CUSTOM_AUX" not in get_config_path().read_text()
+    with pytest.raises(ValueError):
+        _dashboard("vision")(monkeypatch)
+    assert SECRET not in get_config_path().read_text()
+
+
+def test_non_ascii_key_is_stored_sanitized_not_refused(monkeypatch):
+    get_config_path().write_text("model:\n  provider: openrouter\n  default: x/y\n")
+    answers = iter([URL, "qwen3:8b", SECRET + "\u200b"])
+    import hermes_cli.main_provider_setup as mps
+    monkeypatch.setattr(mps, "_ask", lambda *a, **k: next(answers))
+    monkeypatch.setattr(mps, "_prompt_aux_reasoning_effort", lambda *a, **k: None)
+
+    mps._aux_flow_custom_endpoint("compression", {})
+
+    assert SECRET not in get_config_path().read_text()
+    assert load_config()["auxiliary"]["compression"]["api_key"] == SECRET

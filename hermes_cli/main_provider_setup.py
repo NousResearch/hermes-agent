@@ -372,8 +372,12 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     effort = (_prompt_aux_reasoning_effort(task, _aux_effort_word(task_cfg))
               if _aux_task_takes_reasoning(task) else None)
 
-    from hermes_cli.config import store_aux_endpoint_key
-    api_key = store_aux_endpoint_key(task, url, api_key)
+    from hermes_cli.config_aux_endpoint_key import store_aux_endpoint_key
+    try:
+        api_key = store_aux_endpoint_key(task, url, api_key)
+    except ValueError as exc:  # .env write-locked: refuse rather than store the key inline
+        print(exc)
+        return
     _save_aux_choice(task, provider="custom", model=model, base_url=url, api_key=api_key, reasoning_effort=effort)
     print(f"{display_name}: custom ({_short_url(url)})" + (f" · {model}" if model else "")
           + (f" · reasoning {effort}" if effort else ""))

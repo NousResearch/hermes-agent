@@ -730,7 +730,8 @@ def _aux_default_effort(slot: str) -> str:
 
 def _apply_aux_assignment_sync(cfg: dict, provider: str, model: str, task: str, base_url: str, api_key: str,
                                reasoning_effort: Optional[str] = _UNSET) -> dict:
-    from hermes_cli.config import save_config, store_aux_endpoint_key
+    from hermes_cli.config import save_config
+    from hermes_cli.config_aux_endpoint_key import store_aux_endpoint_key
     aux = cfg.get("auxiliary")
     if not isinstance(aux, dict):
         aux = {}

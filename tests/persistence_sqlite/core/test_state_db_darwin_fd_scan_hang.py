@@ -126,6 +126,28 @@ def test_healthy_scan_still_reports_holder(monkeypatch, tmp_path, caplog):
     ), "a successful scan must not log a timeout warning"
 
 
+def test_fail_open_window_expires_instead_of_disabling_the_scan(monkeypatch, tmp_path):
+    """The timeout cache delays the next walk; it must not disable the guard.
+
+    #153123 trades a repeated walk for a short fail-open window. A caller outside
+    that window has to walk again, or a store that briefly looked unjudgeable
+    would never be checked for an orphaned WAL generation again.
+    """
+    walks = []
+    monkeypatch.setattr(
+        dbfile, "_iter_darwin_fd_targets", lambda: walks.append(True) or iter(())
+    )
+    monkeypatch.setattr(dbfile, "_DARWIN_FD_SCAN_WORKER", None, raising=False)
+    monkeypatch.setattr(
+        dbfile, "_DARWIN_FD_SCAN_NEXT_RETRY", time.monotonic() + 60.0, raising=False
+    )
+    assert _iter_darwin_sidecar_holders(tmp_path / "state.db") == []
+    assert walks == [], "a caller inside the fail-open window must not walk libproc"
+
+    monkeypatch.setattr(dbfile, "_DARWIN_FD_SCAN_NEXT_RETRY", 0.0, raising=False)
+    assert _iter_darwin_sidecar_holders(tmp_path / "state.db") == []
+    assert walks == [True], "an expired window must let the guard walk again"
+
 def test_stuck_scan_is_single_flight_across_callers(monkeypatch, tmp_path):
     """Regression for #153123: a timed-out scan cannot multiply libproc workers."""
     monkeypatch.setattr(dbfile, "_DARWIN_FD_SCAN_NEXT_RETRY", 0.0, raising=False)

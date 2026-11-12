@@ -64,17 +64,26 @@ Common gateway problems:
 - **Gateway dies on WSL2 close**: WSL2 requires `systemd=true` in `/etc/wsl.conf` for systemd services to work. Without it, gateway falls back to `nohup` (dies when session closes).
 - **Gateway crash loop**: Reset the failed state: `systemctl --user reset-failed hermes-gateway`
 
+### Verifying a messaging round-trip
+1. Health: `hermes gateway status` (launchd/systemd supervision), `hermes <platform> status` (e.g. `hermes photon status`), and `platforms.<name>.state` in `~/.hermes/gateway_state.json`.
+2. Phone numbers are masked in tool output by secret redaction, so you cannot read the bot's number back to the user — tell them to run `hermes <platform> status` in their own terminal and text the "assigned number".
+3. After they text, grep the log rather than trusting `hermes pairing list`:
+   `grep -E 'platform=<name>|\[<Name>\] Sending' ~/.hermes/logs/gateway.log | tail` — an `inbound message` line plus `response ready` / `Sending response` proves the round-trip.
+4. The number registered during platform setup (e.g. `hermes photon setup --phone`) is already authorized — expect no pairing code; only unknown senders get one (`hermes pairing approve <platform> <CODE>`).
+
 ### Platform-specific issues
 - **Discord bot silent**: Must enable **Message Content Intent** in Bot → Privileged Gateway Intents.
 - **Slack bot only works in DMs**: Must subscribe to `message.channels` event. Without it, the bot ignores public channels.
 - **Windows-specific issues** (`Alt+Enter` newline, WinError 10106, UTF-8 BOM config, line endings): see `references/windows-quirks.md`.
 
 ### Auxiliary models not working
-If `auxiliary` tasks (vision, compression, session_search) fail silently, the `auto` provider can't find a backend. Either set `OPENROUTER_API_KEY` or `GOOGLE_API_KEY`, or explicitly configure each auxiliary task's provider:
+If `auxiliary` tasks (vision, compression, title_generation) fail or are skipped: with an explicit `model.provider` and no `fallback_providers`, an `auto` task is skipped (with a warning) when the main route is down — it does not guess another logged-in provider. Add a fallback chain, or pin the task to a real provider id:
 ```bash
-hermes config set auxiliary.vision.provider <your_provider>
+hermes config set auxiliary.vision.provider <provider_id>
 hermes config set auxiliary.vision.model <model_name>
+hermes doctor   # validates every routed auxiliary task
 ```
+See `references/providers-and-models.md` → "Auxiliary split".
 
 ### "Reset permissions" / auto-approving everything
 See `references/security-privacy.md` — wipe the "Always allow" stores, don't touch yolo mode.

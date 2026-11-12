@@ -99,6 +99,14 @@ enumerate.
 
 ## Pitfalls
 
+- **Banner art ignores `colors`.** The HERMES-AGENT block logo and the caduceus
+  have hex colors hardcoded in their Rich markup (gold `#FFD700`/`#FFBF00`, bronze
+  `#CD7F32`, `#B8860B`). To recolor them, add top-level `banner_logo:` and
+  `banner_hero:` (YAML `|-` blocks) to the skin: copy `HERMES_AGENT_LOGO` /
+  `HERMES_CADUCEUS` from `hermes_cli/banner.py` and swap those four hexes for
+  palette colors. Check it by launching `hermes` in tmux and grepping
+  `capture-pane -e` output for `38;2;R;G;B`.
+
 - **Don't hardcode `~/.hermes`** when a profile is active — resolve the real home
   from `$HERMES_HOME` first, falling back to `~/.hermes`.
 - **Keep `#rrggbb` hex.** Shorthand `#rgb`, `rgb()`, and named colors are not

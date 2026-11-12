@@ -16,7 +16,7 @@ Use, configure, theme, extend, and orchestrate Hermes Agent.
 |---|---|
 | Source | Bundled (installed by default) |
 | Path | `skills/autonomous-ai-agents/hermes-agent` |
-| Version | `3.3.0` |
+| Version | `3.4.0` |
 | Author | Hermes Agent + Teknium |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -110,12 +110,13 @@ Profiles use `~/.hermes/profiles/<name>/` with the same layout. When a profile i
 | CLI commands, subcommands, flags, "how do I run X" | `references/cli-reference.md` |
 | In-session slash commands | `references/slash-commands.md` |
 | Provider setup, API keys, OAuth | `references/providers-and-models.md` |
-| config.yaml sections, toolsets, voice/STT/TTS | `references/configuration.md` |
+| config.yaml sections, toolsets, voice/STT/TTS, "optimize my setup" audit, slimming config.yaml, shared Claude Code login | `references/configuration.md` |
 | AGENTS.md / .hermes.md / CLAUDE.md project rules | `references/project-context-files.md` |
 | Secret redaction, PII, approval modes, "reset permissions" | `references/security-privacy.md` |
 | Delegation, cron, curator, kanban | `references/background-systems.md` |
 | `hermes project` workspaces, multi-folder projects, desktop sidebar groups | `references/projects-and-folders.md` |
 | MCP servers (add, catalog, `hermes mcp`) | `references/native-mcp.md` |
+| Skill install scanner blocks, false positives, fixing scanner false positives, `--force` | `references/skill-scanner-false-positives.md` |
 | Webhook routes and event-driven runs | `references/webhooks.md` |
 | A custom theme/skin ("synthwave theme", "change the gold ●") | `references/themes.md` + `templates/skin.yaml` |
 | A desktop app UI element (pane, widget, ⌘K command, page) | `references/desktop-plugins.md` + `templates/plugin.js` |
@@ -133,6 +134,24 @@ need more than their docs page. For everything else Hermes ships, fetch
 `llms.txt` and it maps the question to the page that answers it.
 
 Two theming rules that hold even without loading the reference: **you apply skins yourself** (`hermes config set display.skin <name>` — every surface repaints live within ~a second; don't tell the user to run `/skin`), and **to tweak one color, edit the ACTIVE skin** (`hermes skin set <key> <hex>`) — never fork `default`, which drops the palette and resets the background.
+
+## Fresh-Install Setup Walkthrough
+
+When the user asks to "set up the basics" on a new install:
+
+1. Audit first, in parallel: `hermes --version`, `hermes doctor`, `hermes config show`, `hermes auth list`, `hermes fallback list`. Report state in a short list (model/auth, working tools, gaps); don't propose anything before reading it.
+2. Let the user pick areas via one multi-select clarify (profile basics, model/provider resilience, messaging gateway, safety/approvals).
+3. Profile basics: ask name/role, timezone, reply style in ONE clarify call. Save name+tz+style to user memory, and also `hermes config set timezone <IANA>` (memory alone doesn't change the agent's clock).
+4. Model resilience: load `references/providers-and-models.md` (pool vs fallback vs aux table, Anthropic sub+credits recipe, aux split). Set what you can non-interactively; give the user the exact command for anything needing a secret.
+5. After the user says they added a credential, check it landed where intended (`hermes auth list <provider>`, `hermes fallback list`) before declaring done — order matters as much as presence.
+6. Verify every config change with `hermes doctor`; report anything not exercised end-to-end (e.g. an actual failover) as unverified.
+7. Safety/persona audit is usually a no-op on fresh installs: read `hermes config get approvals --json`, `security --json`, and `SOUL.md`; report "defaults fine" in one line unless something is off.
+8. Messaging test: check `hermes gateway status` + `hermes <platform> status`, have the user text the bot, then confirm from `~/.hermes/logs/gateway.log` (see `references/troubleshooting.md` → "Verifying a messaging round-trip"). Offer `/sethome` from the phone for cron/notification delivery.
+9. Close with what's done, the user's one remaining command, and open questions — no process replay. Offer the next menu (connect apps, scheduled jobs, voice) as one multi-select.
+
+CLI input FAQ: the classic CLI shows inline ghost-text autosuggestions by default (history for prose, command/subcommand names for `/…`); Tab accepts. Check `hermes_cli/commands_completion.py` before claiming a toggle exists. To check whether keys work, reproduce in tmux and read the cursor position: `tmux display -p '#{cursor_x}'` (a plain `capture-pane` can't tell ghost text from real text; use `-e` and look for the dim styling). On an empty prompt, gray italic text such as "Draft a reply to the last email in my inbox" is a random example prompt (`tips.placeholder.pNN`, chosen by `get_random_composer_placeholder()`), not a suggestion, and Tab never fills it in.
+
+If a clarify times out, apply nothing for that question; restate the recommendation in the final reply and ask.
 
 ## Spawning Additional Hermes Instances
 
@@ -242,4 +261,4 @@ terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_14305
 - **Message role alternation** — never two assistant or two user messages in a row; only `tool` results can repeat.
 - **Secrets in `.env`, settings in `config.yaml`** — never tell a user to put a non-credential setting in `.env`.
 - **Profile-safe paths** — `get_hermes_home()` in code, `$HERMES_HOME` when resolving paths in a session.
-- **Never hand-edit `config.yaml` for the user** — use `hermes config set KEY VAL`; a stray indent can corrupt the file and break the live gateway.
+- **Never hand-edit `config.yaml` for the user** — use `hermes config set KEY VAL`; a stray indent can corrupt the file and break the live gateway. The only exception is the backed-up, round-trip-verified slimming recipe in `references/configuration.md` ("Setup optimization audit").

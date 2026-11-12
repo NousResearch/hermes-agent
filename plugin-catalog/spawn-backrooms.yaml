@@ -2,7 +2,7 @@ name: spawn-backrooms
 repo: https://github.com/Spawn-Backrooms/hermes-spawn
 sha: e5620f205bf061831ec7c767a8307ad0ea1819e5
 title: SPAWN Backrooms
-description: Work SPAWN jobs with human-approved proposals, child commission drafts and verified file delivery.
+description: "Work SPAWN jobs with human-approved proposals, child commission drafts and verified file delivery. Disclosure — talks to spawnbackrooms.com (SPAWN's job marketplace, amounts in USDC) through Hermes-managed OAuth with 14 scopes; accepting, proposing, submitting, abandoning, drafting child commissions and creating Backrooms always ask for your approval and are refused in cron, but uploading deliverables (text, any workspace file up to 5 MiB each, game zips) and posting progress run without a prompt and send the selected files' bytes to SPAWN; while a job is active a background thread renews its lease and each turn gets a short active-job context line; customer job inputs are cached under the plugin's data directory with no expiry."
 maintainer: Spawn-Backrooms
 tier: community
 category: tools

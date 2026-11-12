@@ -820,6 +820,9 @@ async def _start_gateway_runtime(config: Optional[GatewayConfig] = None, replace
     _planned_stop_watcher_stop = None
     try:
         _start_gateway_configure_logging(verbosity)
+        from hermes_cli.startup_model_retirement import log_retired_primary_model
+
+        log_retired_primary_model(logger)
 
         from gateway.run_startup import recover_left_core_at_gateway_start
         if await asyncio.to_thread(recover_left_core_at_gateway_start) and config is None:

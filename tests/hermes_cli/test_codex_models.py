@@ -50,7 +50,7 @@ def test_codex_catalog_never_offers_chatgpt_rejected_pro_slugs(monkeypatch, tmp_
 def test_picker_synthesizes_900k_variants_for_verified_slugs():
     """Every live-verified large-context slug gets an explicit ``-900k``
     picker variant directly after its base entry; slugs that genuinely
-    enforce 272K (gpt-5.5, gpt-5.4-mini) never get one. Base slugs stay
+    enforce 272K (such as gpt-5.4-mini) never get one. Base slugs stay
     in the list as the cheaper 272K default."""
     model_ids = get_codex_model_ids()  # offline curated path
 
@@ -59,9 +59,38 @@ def test_picker_synthesizes_900k_variants_for_verified_slugs():
         assert f"{base}-900k" in model_ids
         assert model_ids.index(f"{base}-900k") == model_ids.index(base) + 1
 
-    assert "gpt-5.5-900k" not in model_ids
     assert "gpt-5.4-mini-900k" not in model_ids
     assert "gpt-5.3-codex-900k" not in model_ids
+
+
+def test_retired_codex_primary_models_are_absent_from_offline_and_synthetic_catalogs(monkeypatch, tmp_path):
+    """Known-retired Codex primaries cannot leak back through either offline source."""
+    from hermes_cli.model_retirement import retired_models_for_provider
+
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    retired = retired_models_for_provider("openai-codex")
+    templates = {model for synthetic, sources in _FORWARD_COMPAT_TEMPLATE_MODELS for model in (synthetic, *sources)}
+
+    assert retired
+    assert retired.isdisjoint(get_codex_model_ids())
+    assert retired.isdisjoint(templates)
+
+
+def test_retired_codex_model_is_filtered_from_stale_local_default(monkeypatch, tmp_path):
+    (tmp_path / "config.toml").write_text('model = "gpt-5.5"\n', encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    assert "gpt-5.5" not in get_codex_model_ids()
+
+
+def test_retired_codex_model_is_filtered_from_stale_local_cache(monkeypatch, tmp_path):
+    (tmp_path / "models_cache.json").write_text(
+        json.dumps({"models": [{"slug": "gpt-5.5", "priority": 0}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    assert "gpt-5.5" not in get_codex_model_ids()
 
 
 def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():

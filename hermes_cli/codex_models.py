@@ -14,8 +14,8 @@ logger = logging.getLogger(__name__)
 
 
 # Curated offline fallback (first-run, transient API failure). Only slugs the ChatGPT Codex
-# OAuth backend actually accepts: the public API's "-pro" variants and the retired
-# gpt-5.3-codex / gpt-5.2-codex / gpt-5.1-codex-max / gpt-5.1-codex-mini return HTTP 400 there
+# OAuth backend actually accepts: the public API's "-pro" variants and retired
+# gpt-5.5 / gpt-5.3-codex / gpt-5.2-codex / gpt-5.1-codex-max / gpt-5.1-codex-mini return HTTP 400 there
 # ("not supported when using Codex with a ChatGPT account"), so listing them leaked dead picker
 # choices (#52492). If OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them
 # up automatically.
@@ -25,7 +25,6 @@ DEFAULT_CODEX_MODELS: list[str] = [
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
-    "gpt-5.5",
     "gpt-5.4-mini",
     "gpt-5.4",
     # Research preview exposed ONLY via the Codex OAuth backend for ChatGPT Pro subscribers —
@@ -43,15 +42,14 @@ DEFAULT_CODEX_MODELS: list[str] = [
 # unsupported — that was wrong; restored here. Keep it in the curated fallback so Pro users still see Spark
 # in `/model` when live discovery is unavailable (offline first run, transient API failure).
 _FORWARD_COMPAT_TEMPLATE_MODELS: list[tuple[str, tuple[str, ...]]] = [
-    ("gpt-6-sol", ("gpt-5.6-sol", "gpt-5.5")),
-    ("gpt-6-luna", ("gpt-5.6-luna", "gpt-5.5")),
-    ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),
-    ("gpt-5.5", ("gpt-5.4", "gpt-5.4-mini")),
+    ("gpt-6-sol", ("gpt-5.6-sol",)),
+    ("gpt-6-luna", ("gpt-5.6-luna",)),
+    ("gpt-5.6-sol", ("gpt-5.4",)),
+    ("gpt-5.6-terra", ("gpt-5.4",)),
+    ("gpt-5.6-luna", ("gpt-5.4",)),
     # Spark surfaces whenever a compatible template is present; the backend (not Hermes)
     # gates real availability by ChatGPT Pro entitlement.
-    ("gpt-5.3-codex-spark", ("gpt-5.4", "gpt-5.5"))]
+    ("gpt-5.3-codex-spark", ("gpt-5.4",))]
 
 
 def _dedupe(model_ids) -> list[str]:
@@ -103,6 +101,13 @@ def _drop_undiscovered_astra(model_ids: list[str]) -> list[str]:
     from agent.reasoning_effort import is_astra_model
 
     return [model for model in model_ids if not is_astra_model(model)]
+
+
+def _drop_retired_offline_models(model_ids: list[str]) -> list[str]:
+    """Remove retired Codex routes from non-authoritative local hints."""
+    from hermes_cli.model_retirement import is_model_retired
+
+    return [model for model in model_ids if not is_model_retired("openai-codex", model)]
 
 
 def codex_catalog_credential_identity() -> str:
@@ -227,6 +232,10 @@ def get_codex_model_ids(access_token: Optional[str] = None, base_url: Optional[s
     from hermes_cli.models_catalog_static import CuratedFallbackModels
 
     default_model = _read_default_model(codex_home)
-    return CuratedFallbackModels(_finalize_codex_models(_drop_undiscovered_astra(_dedupe([
-        *([default_model] if default_model else []), *_read_cache_models(codex_home),
-        *DEFAULT_CODEX_MODELS]))))
+    offline_models = _dedupe([
+        *([default_model] if default_model else []),
+        *_read_cache_models(codex_home),
+        *DEFAULT_CODEX_MODELS,
+    ])
+    offline_models = _drop_retired_offline_models(_drop_undiscovered_astra(offline_models))
+    return CuratedFallbackModels(_finalize_codex_models(offline_models))

@@ -562,7 +562,21 @@ Control actions run synchronously in-turn (never backgrounded), are scoped to th
 | `REPAIR_THEN_CONTINUE` | the conversation no longer fits, or an image/reasoning part is rejected | the transcript needs repairing first |
 | `HANDOFF` | a provider safety refusal of this conversation | another model, or the parent takes the work over |
 
-A resumable child's worktree (where its terminal was when it stopped, plus any worktree it created) is kept from the startup worktree sweep while its record lives: `delegation.resumable_ttl_hours` (default 48), at most `delegation.max_resumable` (default 32) per profile; beyond the cap the oldest loses its pin first. When the pin ends the normal sweep archives the tree to `refs/hermes/archive/` before removing it. Completed children and children you stopped are not pinned. Nothing resumes on its own unless you opt in with `delegation.auto_resume: true` (default `false`; reserved for the scheduler that reads `resume_mode`).
+A resumable child's worktree (where its terminal was when it stopped, plus any worktree it created) is kept from the startup worktree sweep while its record lives: `delegation.resumable_ttl_hours` (default 48), at most `delegation.max_resumable` (default 32) per profile; beyond the cap the oldest loses its pin first. When the pin ends the normal sweep archives the tree to `refs/hermes/archive/` before removing it. Completed children and children you stopped are not pinned. Nothing resumes on its own unless you opt in with `delegation.auto_resume: true` (default `false`, see below).
+
+### Automatic resume (`delegation.auto_resume`, opt-in)
+
+With `delegation.auto_resume: true` the gateway continues stopped background children on its own, through the same claim and `continue` path as `action='continue'`, on the child's own conversation and worktree, with the message "Your run was stopped by <cause>; continue where you left off." Its result arrives in the parent's conversation as a normal completion. A gateway checks every profile it serves every 15 seconds, each under that profile's own configuration, credentials and `state.db`.
+
+- **What resumes:** `AUTO_AT` children once their limit's reset time has passed, and `AUTO_ON_BOOT` children (gateway shutdown, crash, hard kill) once the gateway is back up.
+- **What never resumes:** `ON_FIX`, `REPAIR_THEN_CONTINUE` and `HANDOFF` children (credits, auth, model not found, refusals, deterministic request errors), children you or the parent stopped, expired records, records whose worktree pin was dropped by `max_resumable`, and nested children (an orchestrator subagent's own workers; that orchestrator resumes instead).
+- **The parent wins.** When a child stops, the parent's completion says it WILL resume automatically at a given time (or when the gateway is back) and that `delegate_task(action='stop', subagent_id=...)` cancels it. `stop` on such a waiting child dismisses it: it never resumes and its worktree pin is released (the transcript stays). The resume is also cancelled without the model doing anything (the record becomes `superseded`; it stays pinned and can still be continued by hand until its TTL) when, after the child stopped:
+  - the same parent conversation (or its compression continuation) started another subagent in the same repository, for example after routing around the limit on a fallback provider;
+  - the parent continued the child itself;
+  - the parent conversation was stopped (`/stop`), reset (`/new`), closed, deleted, or no longer exists to receive the result.
+  A parent stopped by the same limit is simply woken by the resumed children's completions (the usual unattended-wake limit applies), so it does not re-dispatch them.
+- **Bounded:** at most 2 automatic attempts per child, counted before each attempt runs, so a child whose resume crashes the gateway every time stops after two boots; the record says why. A resume that hits the limit again goes back to waiting with its attempt counted. Resumes stay within `delegation.max_concurrent_children`, and children waiting on the same reset are started one per provider endpoint per pass (15 s apart) rather than all at once.
+- **Cost:** a resumed child spends tokens with nobody watching, and so does the parent turn its result starts. Leave it off where unattended spend is not wanted.
 
 ### From the TUI / gateway (session-facing)
 
@@ -794,7 +808,7 @@ delegation:
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   # resumable_ttl_hours: 48                 # How long a stopped child stays continuable after a restart, worktree kept
   # max_resumable: 32                       # Resumable children per profile whose worktree is kept (oldest unpinned first)
-  # auto_resume: false                      # Opt-in: resume such children without being asked
+  # auto_resume: false                      # Opt-in: the gateway resumes limit/restart-stopped children itself (spends tokens unattended)
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

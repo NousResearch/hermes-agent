@@ -20,9 +20,14 @@ it.each(['allow-scripts', ''])('sends browser HTML only to its own isolated fram
   expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
   const send = vi.spyOn(frame.contentWindow!, 'postMessage')
   fireEvent.load(frame)
-  expect(send).toHaveBeenLastCalledWith({
-    type: 'hermes-preview-document', html: '<h1>private</h1>', scripts: sandbox === 'allow-scripts'
-  }, '*')
+  expect(send).toHaveBeenLastCalledWith(
+    {
+      type: 'hermes-preview-document',
+      html: '<h1>private</h1>',
+      scripts: sandbox === 'allow-scripts'
+    },
+    '*'
+  )
   rerender(<PreviewDocumentFrame sandbox={sandbox} srcDoc="<h1>updated</h1>" />)
   expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ html: '<h1>updated</h1>' }), '*')
 })

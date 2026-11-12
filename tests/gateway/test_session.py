@@ -125,10 +125,13 @@ async def test_compression_reset_refreshes_origin_names_only_from_a_human_turn(
     runner._evict_cached_agent = MagicMock()
     runner._clear_conversation_scope = MagicMock()
     runner._sync_telegram_topic_binding = MagicMock()
+    runner._overflow_queue = MagicMock(return_value=[])
+    runner._hmwa_replay_exhausted_request = MagicMock()
+    turn_source = replace(initial, **turn_names)
 
     _, new_entry = await runner._hmwa_compression_exhaustion_reset(
-        {"compression_exhausted": True}, "reply", entry, entry.session_key,
-        replace(initial, **turn_names), internal=internal,
+        {"compression_exhausted": True}, "reply", entry, entry.session_key, turn_source,
+        event=MessageEvent(text="next", source=turn_source, internal=internal),
     )
 
     assert new_entry.origin == replace(initial, **origin_names)

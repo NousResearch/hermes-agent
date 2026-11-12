@@ -82,6 +82,39 @@ def test_ui_meta_revision_survives_key_deletion(home):
     assert stale_recreate["ui_meta_conflicts"]["shared-room"]["actual"] == 2
 
 
+def test_existing_legacy_ui_meta_key_starts_at_a_cas_baseline(home):
+    """A pre-CAS namespace is already shared state, not an unwritten key.
+
+    Desktop reads this revision before merging its small change into the server
+    namespace. Reporting zero here let a client treat an existing legacy value
+    as a fresh write and replace fields it had not read.
+    """
+    (home / "profile.yaml").write_text(
+        "ui_meta:\n"
+        "  hermes-bots:\n"
+        "    group: MachineTeam\n"
+        "    groups:\n"
+        "      - MachineTeam\n"
+        "    title: Builder\n",
+        encoding="utf-8",
+    )
+
+    row = _default_profile()
+
+    assert row["ui_meta_revisions"]["hermes-bots"] == 1
+
+    stale = _configure(
+        {"hermes-bots": {"group": None, "groups": []}},
+        {"hermes-bots": 0},
+    )
+
+    assert stale["ui_meta"] is False
+    assert stale["ui_meta_conflicts"] == {
+        "hermes-bots": {"expected": 0, "actual": 1}
+    }
+    assert _default_profile()["ui_meta"]["hermes-bots"]["groups"] == ["MachineTeam"]
+
+
 def test_profiles_list_normalizes_yaml_timestamps_in_ui_meta(home):
     """#92506: an unquoted ISO timestamp under ui_meta is parsed by YAML as datetime; the
     profiles.list row must still be JSON-serializable (the value becomes its ISO string)."""

@@ -72,8 +72,9 @@ function parseIpv6(host: string): bigint | null {
 
   const tailV4 = raw.match(/^(.*:)(\d+\.\d+\.\d+\.\d+)$/)
   // The capture keeps the ':' before the IPv4 tail; drop it so the remaining
-  // groups parse cleanly (`::ffff:` + `127.0.0.1`).
-  const head = tailV4 ? tailV4[1].replace(/:$/, '') : raw
+  // groups parse cleanly (`::ffff:` + `127.0.0.1`), but keep a bare `::`
+  // (`64:ff9b::` + `10.0.0.1`), which is the zero fill itself.
+  const head = tailV4 ? tailV4[1].replace(/([^:]):$/, '$1') : raw
   const v4 = tailV4 ? parseLooseIpv4(tailV4[2]) : null
 
   if (tailV4 && !v4) {
@@ -116,7 +117,7 @@ function parseIpv6(host: string): bigint | null {
 }
 
 const IPV4_BLOCKED_RANGES: readonly (readonly [number, number, string])[] = [
-  [0x00000000, 0x00000000, 'unspecified'], // 0.0.0.0
+  [0x00000000, 0x00ffffff, 'unspecified'], // 0.0.0.0/8 "this network"
   [0x0a000000, 0x0affffff, 'private'], // 10.0.0.0/8
   [0x64400000, 0x647fffff, 'cgnat'], // 100.64.0.0/10 — Tailscale/WireGuard/cloud-internal
   [0x7f000000, 0x7fffffff, 'loopback'], // 127.0.0.0/8
@@ -140,6 +141,8 @@ const IPV6_BLOCKED_RANGES: readonly (readonly [bigint, bigint, string])[] = [
   [0xfd000ec2000000000000000000000254n, 0xfd000ec2000000000000000000000254n, 'metadata'], // AWS metadata (IPv6)
   [0x00000000000000000000000000000000n, 0x00000000000000000000000000000000n, 'unspecified'], // ::
   [0x00000000000000000000000000000001n, 0x00000000000000000000000000000001n, 'loopback'], // ::1
+  [0x00000000000000000000000000000000n, 0x000000000000000000000000ffffffffn, 'ipv4-compatible'], // ::a.b.c.d (deprecated)
+  [0x01000000000000000000000000000000n, 0x0100000000000000ffffffffffffffffn, 'discard'], // 100::/64
   [0xfe800000000000000000000000000000n, 0xfebfffffffffffffffffffffffffffffn, 'link-local'], // fe80::/10
   [0xfec00000000000000000000000000000n, 0xfeffffffffffffffffffffffffffffffn, 'private'], // fec0::/10 site-local (deprecated)
   [0xfc000000000000000000000000000000n, 0xfdffffffffffffffffffffffffffffffn, 'private'], // fc00::/7 ULA
@@ -161,8 +164,15 @@ function ipv6BlockReason(value: bigint): string | null {
   // ::ffff:a.b.c.d (mapped) and ::ffff:0:a.b.c.d (translated) are IPv6
   // wrappers resolvers hand out for IPv4 names; both must classify as their
   // embedded address (tools/url_safety.py::_embedded_ipv4).
-  if (value >> 32n === 0xffffn || value >> 48n === 0xffffn) {
+  // NAT64 (64:ff9b::/96) is translated to its embedded IPv4 by the gateway,
+  // so 64:ff9b::a9fe:a9fe reaches the metadata service on a NAT64 network.
+  if (value >> 32n === 0xffffn || value >> 48n === 0xffffn || value >> 32n === 0x64ff9b_0000_0000_0000_0000n) {
     return ipv4BlockReason(Number(value & 0xffff_ffffn))
+  }
+
+  // 6to4 (2002::/16) carries the relay's IPv4 in bits 16..48.
+  if (value >> 112n === 0x2002n) {
+    return ipv4BlockReason(Number((value >> 80n) & 0xffff_ffffn))
   }
 
   return IPV6_BLOCKED_RANGES.find(([start, end]) => value >= start && value <= end)?.[2] ?? null
@@ -358,6 +368,12 @@ export async function resolveTitleFetchTarget(
   }
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return null
+  }
+
+  // Userinfo is where curl and WHATWG disagree about the host
+  // (`http://a.test\@127.0.0.1/`), and a title GET never needs credentials.
+  if (url.username || url.password) {
     return null
   }
 

@@ -21,6 +21,7 @@ import { fetchWithSafeRedirects } from './safe-http-redirects'
 
 const PROXY_VARS = ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy', 'ALL_PROXY', 'all_proxy'] as const
 const servers = new Set<http.Server>()
+const curlAvailable = spawnSync('curl', ['--version'], { stdio: 'ignore' }).status === 0
 
 afterEach(async () => {
   for (const name of PROXY_VARS) {
@@ -45,6 +46,24 @@ async function listen(handler: http.RequestListener): Promise<number> {
 }
 
 describe('destination classes beyond the private ranges', () => {
+  test('sees through NAT64 and 6to4, and refuses IPv4-compatible, 100::/64 and all of 0.0.0.0/8', () => {
+    for (const host of [
+      '64:ff9b::a9fe:a9fe',
+      '64:ff9b::10.0.0.1',
+      '2002:7f00:1::',
+      '2002:a9fe:a9fe::1',
+      '::7f00:1',
+      '::8.8.8.8',
+      '100::1',
+      '0.1.2.3'
+    ]) {
+      assert.ok(literalTitleBlockReason(host), host)
+    }
+
+    assert.equal(literalTitleBlockReason('64:ff9b::808:808'), null)
+    assert.equal(literalTitleBlockReason('2002:808:808::1'), null)
+  })
+
   test('refuses multicast, the IETF protocol block, .internal and single-label names without DNS', () => {
     for (const host of ['224.0.0.1', '239.255.255.250', 'ff02::1', '192.0.0.8', 'db.ec2.internal', 'intranet']) {
       assert.ok(literalTitleBlockReason(host), host)
@@ -162,8 +181,6 @@ describe('curlTitleTargetArgs', () => {
     )
   })
 
-  const curlAvailable = spawnSync('curl', ['--version'], { stdio: 'ignore' }).status === 0
-
   test.skipIf(!curlAvailable)('real curl connects to the pinned address without resolving the name', async () => {
     const port = await listen((request, response) => response.end(`host=${request.headers.host}`))
 
@@ -231,6 +248,69 @@ describe('fetchWithSafeRedirects', () => {
     assert.equal(result.refused, true)
     assert.deepEqual(requested, [`http://public.test:${port}/start`])
     assert.equal(privateHits, 0)
+  })
+
+  test.skipIf(!curlAvailable)(
+    'real curl never dials the loopback host hidden behind a WHATWG/curl userinfo differential',
+    async () => {
+      let hits = 0
+
+      const port = await listen((_request, response) => {
+        hits += 1
+        response.end('<title>loopback</title>')
+      })
+
+      const curlHop = (url: string, _remaining: number, target: TitleFetchTarget) =>
+        new Promise<{ statusCode: number }>(resolve => {
+          // Same shape as the production curl tier: target args, then the URL as the last argv.
+          const child = spawn('curl', [
+            '--silent',
+            '--max-time',
+            '2',
+            '--connect-timeout',
+            '1',
+            ...curlTitleTargetArgs(target),
+            // Keeps the test off the internet: the hosts the guard vetted are
+            // sent to a closed local port. Only a dial of 127.0.0.1:<port>
+            // itself (the differential) reaches the fixture.
+            '--connect-to',
+            '1.1.1.1:80:127.0.0.1:9',
+            '--connect-to',
+            'example.test:80:127.0.0.1:9',
+            url
+          ])
+
+          child.on('close', () => resolve({ statusCode: 200 }))
+        })
+
+      // WHATWG parses host 1.1.1.1 (or example.test, pinned by --resolve) here;
+      // curl given the raw string treats `<host>\\` as userinfo and dials 127.0.0.1.
+      const lookup = answers({ 'example.test': ['93.184.216.34'] })
+
+      for (const raw of [`http://1.1.1.1\\@127.0.0.1:${port}/lit`, `http://example.test\\@127.0.0.1:${port}/name`]) {
+        await fetchWithSafeRedirects(raw, curlHop, {
+          admit: url => resolveTitleFetchTarget(url, { lookup }),
+          maxRedirects: 0,
+          timeoutMs: 4_000
+        })
+      }
+
+      assert.equal(hits, 0)
+    }
+  )
+
+  test('URLs carrying userinfo are refused before any lookup', async () => {
+    let looked = false
+
+    const lookup = async () => {
+      looked = true
+
+      return [{ address: '93.184.216.34', family: 4 }]
+    }
+
+    assert.equal(await resolveTitleFetchTarget('http://user:pw@example.test/', { lookup }), null)
+    assert.equal(await resolveTitleFetchTarget('http://user@example.test/', { lookup }), null)
+    assert.equal(looked, false)
   })
 
   test('an exhausted redirect budget, a bad Location and a refused first URL all count as refusals', async () => {

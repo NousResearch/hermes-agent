@@ -113,6 +113,12 @@ function curlTitleRequest(
       '--header',
       'Accept-Encoding: identity',
       '--raw',
+      // The URL is the guard's WHATWG serialization; curl must not re-read
+      // `[..]`/`{..}` as globs (one link fanning into many GETs) or speak a
+      // scheme the guard never admitted.
+      '--globoff',
+      '--proto',
+      '=http,https',
       // Arrival URL and redirect hint, each on its own line after the body: a
       // sign-in wall is proven from where curl landed even when the page has
       // no markup id, and the redirect hint is what the manual ladder re-checks.
@@ -318,7 +324,7 @@ function fetchHtmlTitleWithRenderer(rawUrl: string): Promise<string> {
 // Tier ladder (curl → hidden renderer) and its sign-in-wall rule live in
 // electron/link-title-wall.ts; main.ts only supplies the two tiers' I/O.
 function fetchLinkTitle(rawUrl) {
-  const url = String(rawUrl || '').trim()
+  const raw = String(rawUrl || '').trim()
 
   // Scheme gate (#93893): only absolute http(s) URLs enter the title
   // pipeline. Anything else — leaked `@url:` markup, placeholders, garbage —
@@ -327,9 +333,14 @@ function fetchLinkTitle(rawUrl) {
   // loop. canonicalTitleCacheKey's '' return is the second layer of the same
   // guard; this check keeps non-URLs out even when a parseable-but-wrong
   // scheme (file:, mailto:) would still build a cache key.
-  if (!isFetchableHttpUrl(url)) {
+  if (!isFetchableHttpUrl(raw)) {
     return Promise.resolve('')
   }
+
+  // One canonical form for the guard, curl's argv, the cache key and the
+  // hidden window (#126885): curl and WHATWG disagree on raw input such as
+  // `http://1.1.1.1\@127.0.0.1/`, so nothing downstream may see the raw string.
+  const url = new URL(raw).href
 
   // Credential-bearing queries (#126885): a title GET would consume the
   // one-time link (magic login, OAuth code, signed URL) just by rendering it.
@@ -512,7 +523,16 @@ const faviconIo: FaviconIo = {
 }
 
 function resolveFaviconCached(rawUrl: string): Promise<string> {
-  const key = faviconCacheKey(String(rawUrl || '').trim())
+  let pageUrl: string
+
+  // The guard, the cache key and every hop use one WHATWG serialization (#126885).
+  try {
+    pageUrl = new URL(String(rawUrl || '').trim()).href
+  } catch {
+    return Promise.resolve('')
+  }
+
+  const key = faviconCacheKey(pageUrl)
 
   if (!key) {
     return Promise.resolve('')
@@ -531,7 +551,7 @@ function resolveFaviconCached(rawUrl: string): Promise<string> {
     return inflight
   }
 
-  const pending = resolveFavicon(rawUrl, faviconIo)
+  const pending = resolveFavicon(pageUrl, faviconIo)
     .catch(() => '')
     .then(icon => {
       if (cache.size >= FAVICON_CACHE_LIMIT) {

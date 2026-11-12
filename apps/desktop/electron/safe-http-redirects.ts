@@ -56,7 +56,17 @@ export async function fetchWithSafeRedirects<T extends RedirectHop, A>(
   }
 ): Promise<SafeRedirectResult<T>> {
   const deadline = Date.now() + Math.max(1, options.timeoutMs)
-  let currentUrl = String(rawUrl || '').trim()
+  let currentUrl: string
+
+  // Canonicalize before `admit` sees anything: the guard classifies the WHATWG
+  // parse, so the hop must dial that same serialization. Curl reads a raw
+  // `http://1.1.1.1\@127.0.0.1/` as userinfo + loopback; `.href` turns the `\`
+  // into `/`, leaving 1.1.1.1 as the host both of them see.
+  try {
+    currentUrl = new URL(String(rawUrl || '').trim()).href
+  } catch {
+    return { finalUrl: String(rawUrl || ''), refused: true, response: null }
+  }
 
   for (let redirects = 0; ; redirects += 1) {
     let admission: A | null = null

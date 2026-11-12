@@ -1,9 +1,11 @@
 """Capability-gated ``PluginContext`` surface: ``has_capability`` probing and
-``side_question`` (ask the session's own agent after a turn, ``llm.side_question``)."""
+``side_question`` (ask the session's own agent after a turn, ``llm.side_question``), plus the
+read-only ``sessions`` view of the plugin's own profile store."""
 
 from __future__ import annotations
 
 import logging
+from functools import cached_property
 from typing import Optional
 
 from hermes_cli.plugin_capabilities import plugin_capability_granted
@@ -14,6 +16,14 @@ logger = logging.getLogger(__name__)
 
 class PluginCapabilityCtxMixin:
     """Mixed into :class:`hermes_cli.plugins.PluginContext` (``manifest``, ``_manager``, ``plugin_id``)."""
+
+    @cached_property
+    def sessions(self):
+        """Read-only :class:`hermes_cli.session_reader.SessionReader` over THIS plugin's profile
+        ``state.db`` (bound to the manager's home, not the calling thread's ambient profile): plain
+        dicts in a documented projection, never a ``SessionDB`` handle or a write."""
+        from hermes_cli.session_reader import SessionReader
+        return SessionReader(self._manager.home_path)
 
     # -- capability probing (#64228) -----------------------------------------
     def has_capability(self, capability: str) -> bool:

@@ -170,7 +170,7 @@ def cmd_whatsapp(args):
     from hermes_cli.main import _require_tty, get_hermes_home
     _require_tty("whatsapp")
     from hermes_cli.config import get_env_value, save_env_value
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import ensure_private_store, find_node_executable, with_hermes_node_path
     _say("", "☤ WhatsApp Setup", "=" * 50)
 
     wa_mode = _whatsapp_choose_mode(get_env_value, save_env_value)
@@ -198,12 +198,13 @@ def cmd_whatsapp(args):
 
     # Existing session: re-pair or keep.
     session_dir = get_hermes_home() / "whatsapp" / "session"
-    session_dir.mkdir(parents=True, exist_ok=True)
+    # The session holds the account's keys: owner-only, and the pairing child writes at that umask (#80090).
+    store_umask = ensure_private_store(session_dir)
     if (session_dir / "creds.json").exists():
         print("✓ Existing WhatsApp session found")
         if _yes_no("\n  Re-pair? This will clear the existing session. [y/N] "):
             shutil.rmtree(session_dir, ignore_errors=True)
-            session_dir.mkdir(parents=True, exist_ok=True)
+            ensure_private_store(session_dir)
             print("  ✓ Session cleared")
         else:
             if not _whatsapp_has_paired_identity(session_dir):
@@ -241,7 +242,8 @@ def cmd_whatsapp(args):
     pair_result = None
     with contextlib.suppress(KeyboardInterrupt):
         # health: allow HX006 -- interactive child: ends on success, failure or Ctrl+C; a fixed bound kills it mid-prompt
-        pair_result = subprocess.run(pair_command, cwd=str(bridge_dir), env=with_hermes_node_path(), check=False)
+        pair_result = subprocess.run(pair_command, cwd=str(bridge_dir), env=with_hermes_node_path(), check=False,
+                                     umask=store_umask)
 
     print()
     if pair_result is None or pair_result.returncode != 0 or not _whatsapp_has_paired_identity(session_dir):

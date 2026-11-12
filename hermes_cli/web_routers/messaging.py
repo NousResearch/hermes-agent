@@ -451,7 +451,7 @@ def _ensure_whatsapp_bridge_dependencies(bridge_dir: Path) -> None:
 
 def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess.Popen:
     from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import ensure_private_store, find_node_executable, with_hermes_node_path
 
     bridge_dir = resolve_whatsapp_bridge_dir()
     bridge_script = bridge_dir / "bridge.js"
@@ -470,7 +470,7 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
             node = str(installed.binary)
         except pm.InstallError as exc:
             raise HTTPException(status_code=500, detail=f"Node.js preparation failed: {exc}") from exc
-    session_path.mkdir(parents=True, exist_ok=True)
+    store_umask = ensure_private_store(session_path)  # pairing writes creds.json + signal keys (#80090)
 
     env = with_hermes_node_path()
     env["WHATSAPP_MODE"] = mode
@@ -479,7 +479,7 @@ def _spawn_whatsapp_pairing_process(session_path: Path, mode: str) -> subprocess
     return spawn_owned(
         [node, str(bridge_script), "--pair-only", "--pair-json", "--session", str(session_path)],
         purpose="whatsapp-pairing", cwd=str(bridge_dir), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace", env=env, creationflags=windows_hide_flags(),
+        text=True, encoding="utf-8", errors="replace", env=env, creationflags=windows_hide_flags(), umask=store_umask,
     )
 
 

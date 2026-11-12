@@ -47,6 +47,7 @@ def _make_adapter():
     adapter._bridge_port = 19876
     adapter._bridge_script = "/tmp/test-bridge.js"
     adapter._session_path = Path("/tmp/test-wa-session")
+    adapter._profile_home = adapter._session_path.parent  # mirror __init__
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
     adapter._bridge_process = None

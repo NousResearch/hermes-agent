@@ -58,6 +58,7 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter._bridge_port = 19876
     adapter._bridge_script = bridge_script
     adapter._session_path = Path(os.path.abspath(os.path.expanduser(str(session_path))))
+    adapter._profile_home = adapter._session_path.parent  # mirror __init__
     adapter._foreign_bridge_session = None  # mirror __init__; harness builds via __new__
     adapter._bridge_probe_timed_out = False
     adapter._bridge_holder_unproven = False

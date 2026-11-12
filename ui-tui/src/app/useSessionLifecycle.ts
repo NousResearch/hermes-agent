@@ -429,7 +429,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       pendingAttachments.current.add(flight)
 
       try {
-        const setup = gw.isCanonical ? null : await rpc<SetupStatusResponse>('setup.status', {})
+        const setup = await rpc<SetupStatusResponse>('setup.status', {})
 
         if (flight !== attachmentFlight.current) {
           return null
@@ -680,7 +680,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchOverlayState({ sessions: false })
       patchUiState({ status: t('session.status.resuming') })
 
-      return (gw.isCanonical ? Promise.resolve(null) : rpc<SetupStatusResponse>('setup.status', {}))
+      return rpc<SetupStatusResponse>('setup.status', {})
         .then(setup => {
           if (flight !== attachmentFlight.current) {
             return

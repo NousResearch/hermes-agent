@@ -1,19 +1,44 @@
 name: receipt-printer
 repo: https://github.com/thedavidmurray/hermes-receipts
-sha: 2eb05e478e51d3c9771737f6c9943b3084d82eb1
+sha: 99ba291aecc69345db6cb0d1f536a6246d4a399d
 title: Receipts
-description: "Your agent says it's done. Get the receipt. Receipts detects completion and action claims in agent answers (\"tests pass\", \"pushed\", \"task done\") and checks each one against observed evidence: tool calls, file digests, test runs after the version, and git remote readbacks. It prints a receipt with a verdict per claim (supported, contradicted, unverified, not evaluable), where missing evidence is unverified, never called a lie. Output is a PNG, an ASCII receipt, a Desktop pane, or an optional USB thermal printer. Users configure kits, fields, five styles (thermal, minimal-mono, bold, ASCII, dot-matrix), paper width, header/footer/logo, and automatic triggers (on demand, task/goal completion, unattended session end; exceptions-only by default). The verdict block cannot be hidden or recolored by any setting. Disclosure: reads the selected profile's state.db conversations and tool arguments read-only, and stores tool names, argument hashes, coarse results and generated images under its plugin-data directory. No model calls or telemetry. Receipts runs checks itself only when a task manifest asks for them: it re-runs the user's own test command (a trusted argv from the manifest, never a shell string or the agent's text; 120 s timeout; output discarded; file bytes must match before and after), hashes the named files, and runs read-only git (rev-parse, rev-list) against an explicitly named local bare remote, with no fetch. Chat or printer delivery only when the user configures that destination; the USB printer needs explicit device IDs and a separately installed python-escpos."
+description: >-
+  Your agent says it's done. Get the receipt. Receipts detects action and completion
+  claims and checks observed tool history or explicit local task evidence. Each
+  claim is supported, contradicted, unverified or not evaluable; missing evidence
+  is never called a lie. Output: PNG, ASCII, Desktop pane or optional USB printer.
+  Configure kits, fields, five styles, paper, branding and automatic triggers;
+  verdicts cannot be hidden or recolored. Chat requests stay in the caller's
+  session. Disclosure: reads the active profile's state.db history and kanban.db
+  goal-mode metadata read-only; explicit local fleet scans may read chosen other
+  profiles. Stores a private tool-name/argument-hash ledger and PNGs under
+  plugin-data/receipt-printer; configuration and trigger state/PNGs live under the
+  active profile's receipt-printer directory (or its legacy receipts directory).
+  Files remain until manually deleted. Private v1 receipts need review before
+  sharing. Deterministic checks make no network or model calls or telemetry;
+  runtime.jev is off by default and uses an external model API with heuristically
+  redacted inputs. A task manifest CLI hashes named files and checks a named local bare Git
+  remote; it refuses test criteria and never runs manifest test commands.
+  Subprocesses: git -C <plugin-root> rev-parse --short=12 HEAD for version display
+  (3 s); git --git-dir <path> rev-parse --is-bare-repository (5 s) and rev-list --all
+  (10 s) for explicit local bare-remote checks, without fetch. The library-only
+  run_bound_test accepts trusted in-process argv, not a manifest or agent shell
+  string, with no shell, a 120 s timeout, captured/discarded output and matching
+  artifact bytes before/after. Chat/printer delivery requires configured
+  destinations. USB requires explicit device IDs, permissions and separately
+  installed python-escpos; submission does not prove paper. Legacy stamp/blocking
+  are off by default, and nothing approves tools or schedules a digest.
 maintainer: thedavidmurray
 tier: community
 category: desktop
 requires_hermes: ">=0.21.7"
 docs_url: https://github.com/thedavidmurray/hermes-receipts
-version: "0.2.0"
+version: "0.2.1"
 screenshots:
-  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/2eb05e478e51d3c9771737f6c9943b3084d82eb1/assets/kits/contact-sheet.png
-  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/2eb05e478e51d3c9771737f6c9943b3084d82eb1/assets/custom/shop-58mm-dot-matrix.png
-  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/2eb05e478e51d3c9771737f6c9943b3084d82eb1/assets/integration/task-before.png
-  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/2eb05e478e51d3c9771737f6c9943b3084d82eb1/assets/integration/task-after.png
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/99ba291aecc69345db6cb0d1f536a6246d4a399d/assets/kits/contact-sheet.png
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/99ba291aecc69345db6cb0d1f536a6246d4a399d/assets/custom/shop-58mm-dot-matrix.png
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/99ba291aecc69345db6cb0d1f536a6246d4a399d/assets/integration/task-before.png
+  - https://raw.githubusercontent.com/thedavidmurray/hermes-receipts/99ba291aecc69345db6cb0d1f536a6246d4a399d/assets/integration/task-after.png
 readme: true
 platforms: []
 capabilities:

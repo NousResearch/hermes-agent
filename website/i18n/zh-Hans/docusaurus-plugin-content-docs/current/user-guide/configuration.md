@@ -58,6 +58,23 @@ hermes config set OPENROUTER_API_KEY sk-or-...  # 保存到 .env
 机密（API 密钥、bot token、密码）放入 `.env`。其他所有内容（模型、终端后端、压缩设置、内存限制、工具集）放入 `config.yaml`。当两者都设置时，`config.yaml` 对非机密设置优先。
 :::
 
+### Hermes 写入的凭据
+
+当 Hermes 自身为某个配置字段写入凭据时，值保存到当前 profile 的 `.env`，`config.yaml` 中只写入对它的引用。适用于对下列字段执行的 `hermes config set`、dashboard / 桌面端的模型与辅助模型选择器，以及 `hermes model` 的自定义端点和辅助模型流程：
+
+| 字段 | `.env` 中的变量名 | `config.yaml` 中保存 |
+|---|---|---|
+| `model.api_key`（`hermes config set`） | `HERMES_MODEL_API_KEY` | `${HERMES_MODEL_API_KEY}` |
+| dashboard 中选择的自定义端点的 `model.api_key` | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_API_KEY` | `${...}` |
+| `auxiliary.<task>.api_key` | `AUXILIARY_<TASK>_API_KEY` | `${AUXILIARY_<TASK>_API_KEY}` |
+| `delegation.api_key` | `HERMES_DELEGATION_API_KEY` | `${HERMES_DELEGATION_API_KEY}` |
+| 新增的 `custom_providers` 条目 | `HERMES_CUSTOM_<HOST>[_<PORT>][_<PATH>]_API_KEY` | `key_env: <该变量名>` |
+| `custom_providers.<N>.api_key` / `providers.<name>.api_key`（`hermes config set`） | `HERMES_CUSTOM_<NAME>_API_KEY` | `${...}` |
+
+路径部分只在不是 `/v1` 时才加入变量名，因此同一主机和端口后的两个网关各有独立的变量。以引用形式输入的值（`hermes config set model.api_key '${MY_KEY}'`）按原样保存。这些变量与提供商密钥一样，会从终端和子进程环境中移除。使用远程配置后端时（不同主机之间不共享 `.env`），值按原样保存。
+
+`config.yaml` 中已有的内联凭据仍然有效，不会被迁移，但不推荐使用。可用 `hermes config set <字段> <值>` 手动迁移，它会把值改写为引用。
+
 ## 环境变量替换
 
 可以在 `config.yaml` 中使用 `${VAR_NAME}` 语法引用环境变量：

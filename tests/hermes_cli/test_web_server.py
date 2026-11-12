@@ -1410,13 +1410,13 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert model_cfg["base_url"] == "https://text.example.com/v1"
         assert model_cfg["api_key"] == "sk-secret"
 
-        # Registered in custom_providers (dedup by base_url) so the picker shows
-        # a proper ready row instead of the "needs setup" dead-end.
+        # Registered in custom_providers (dedup by base_url) so the picker shows a ready row; the
+        # key lives in .env under the row's key_env (#77471).
         custom = cfg.get("custom_providers") or []
         assert any(
             isinstance(e, dict)
             and e.get("base_url") == "https://text.example.com/v1"
-            and e.get("api_key") == "sk-secret"
+            and os.environ.get(e.get("key_env") or "") == "sk-secret"
             and e.get("model") == "gpt-oss-120b"
             for e in custom
         )

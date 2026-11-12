@@ -315,7 +315,9 @@ class TestListNavigation:
         assert isinstance(reloaded["custom_providers"], list)
         assert len(reloaded["custom_providers"]) == 2
         # Entry 0 was updated
-        assert reloaded["custom_providers"][0]["api_key"] == "new-a"
+        # The secret moved to .env (#77471); the entry holds the reference.
+        assert reloaded["custom_providers"][0]["api_key"] == "${HERMES_CUSTOM_PROVIDER_A_API_KEY}"
+        assert "HERMES_CUSTOM_PROVIDER_A_API_KEY=new-a" in _read_env(_isolated_hermes_home)
         assert reloaded["custom_providers"][0]["name"] == "provider-a"
         assert reloaded["custom_providers"][0]["base_url"] == "https://a.example.com"
         # Entry 1 is untouched
@@ -340,7 +342,7 @@ class TestListNavigation:
         import hermes_yaml as yaml
         reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
         entry = reloaded["custom_providers"][0]
-        assert entry["api_key"] == "rotated"
+        assert entry["api_key"] == "${HERMES_CUSTOM_PROVIDER_A_API_KEY}"
         assert entry["name"] == "provider-a"
         assert entry["base_url"] == "https://a.example.com"
         assert set(entry["models"].keys()) == {"foo", "bar"}
@@ -794,13 +796,12 @@ class TestScalarModelSubKeyPreservation:
         import hermes_yaml as yaml
 
         set_config_value("model", "claude-sonnet")
-        # model.api_key is a sub-key (has a dot), so it stays in config.yaml
         set_config_value("model.api_key", "sk-test")
 
         raw = _read_config(_isolated_hermes_home)
         parsed = yaml.safe_load(raw)
         assert parsed["model"]["default"] == "claude-sonnet"
-        assert parsed["model"]["api_key"] == "sk-test"
+        assert parsed["model"]["api_key"] == "${HERMES_MODEL_API_KEY}"
 
 class TestMalformedYAMLConfigPreservation:
     """#75431: config.yaml with YAML syntax errors must not be overwritten."""

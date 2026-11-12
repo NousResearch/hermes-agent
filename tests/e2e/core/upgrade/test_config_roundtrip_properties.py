@@ -544,6 +544,10 @@ def test_p2_every_documented_key_is_settable_and_changes_exactly_one_key(chunk, 
         if blocked:  # a scalar sits where this key needs a mapping: the guard refuses by design
             continue
         s, want = _set_value_for(path, default, current, rng)
+        from hermes_cli.config_secret_refs import config_path_api_key_env
+        secret_env = config_path_api_key_env(list(path), case.tree)
+        if secret_env:  # a credential is stored in .env and written as its reference (#77471)
+            want = f"${{{secret_env}}}"
         out = io.StringIO()
         try:
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):

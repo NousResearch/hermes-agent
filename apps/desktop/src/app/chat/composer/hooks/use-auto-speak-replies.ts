@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
 import { releaseUnplayedSpokenReply, spokenReplyOf, spokenSegmentKey } from '@/lib/spoken-reply'
-import { playSpeechText } from '@/lib/voice-playback'
+import { playSpeechText, type SpeechStreamSession, startSpeechStream } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
 import { $voicePlayback } from '@/store/voice-playback'
@@ -85,11 +85,16 @@ interface UseAutoSpeakReplies {
 }
 
 /**
- * Pure-TTS auto-speak: when `voice.auto_tts` is on, read each completed assistant
- * turn aloud — no dictation, no conversation loop. Stays off while a full voice
- * conversation runs (it speaks replies itself) and never overlaps clips: a reply
- * landing mid-playback is held and spoken on the playback-idle edge. Always reads
- * the latest reply, so a backlog collapses to the newest.
+ * Pure-TTS auto-speak: when `voice.auto_tts` is on, read assistant replies aloud —
+ * no dictation, no conversation loop. Streaming replies are voiced AS THEY LAND
+ * (owner ruling 2026-11-10): a pending reply opens a SpeechStreamSession and every
+ * message wake appends the new text tail — the server cuts sentences and speaks
+ * each one while the rest of the bubble is still generating, so read-aloud keeps
+ * pace with the text on screen instead of trailing the whole settle. A provider
+ * that cannot stream falls back to the settled whole-text speak. Stays off while
+ * a full voice conversation runs (it speaks replies itself) and never overlaps
+ * clips: a reply landing mid-playback is held and spoken on the playback-idle
+ * edge. Always reads the latest reply, so a backlog collapses to the newest.
  */
 export function useAutoSpeakReplies({
   conversationActive,
@@ -105,6 +110,14 @@ export function useAutoSpeakReplies({
   const latest = useRef({ connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile })
   latest.current = { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile }
 
+  // Live read-aloud stream for this window: one session per message, fed by
+  // wakes; `streamed` keeps a streamed message from being re-said whole.
+  const streamState = useRef<{ live: { id: string; sent: number; session: SpeechStreamSession } | null; starting: Set<string>; streamed: Set<string> }>({
+    live: null,
+    starting: new Set(),
+    streamed: new Set()
+  }).current
+
   useEffect(() => {
     if (!enabled) {
       return undefined
@@ -116,16 +129,112 @@ export function useAutoSpeakReplies({
 
     let attemptSeq = 0
 
+    const claimSegment = (reply: AutoSpeakReply) => {
+      const segmentKey = reply.turnKey
+        ? spokenSegmentKey(reply.turnKey, reply.segmentText ?? reply.text)
+        : null
+
+      // Claiming the settled segment key keeps a SECOND window from voicing
+      // the message whole when this window already streamed it.
+      return claimSpeech(reply.turnKey, `speak:${segmentKey ?? reply.id}`)
+    }
+
+    const feedLive = (entry: { id: string; sent: number; session: SpeechStreamSession }, reply: AutoSpeakReply) => {
+      if (reply.text.length > entry.sent) {
+        entry.session.append(reply.text.slice(entry.sent))
+        entry.sent = reply.text.length
+      }
+
+      if (!reply.pending) {
+        entry.session.finish()
+
+        if (streamState.live === entry) {
+          streamState.live = null
+        }
+
+        // Consume only at seal: pendingReply() answers null once the id is
+        // marked, so marking while still growing would starve the feed.
+        latest.current.markSpoken()
+        void claimSegment(reply)
+      }
+    }
+
     const speakLatest = () => {
       const { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile } = latest.current
+      const reply = pendingReply()
+      const entry = streamState.live
+
+      // A growing reply with a live session streams regardless of the idle
+      // gate: audio already started, keep feeding it.
+      if (entry && reply && reply.id === entry.id) {
+        feedLive(entry, reply)
+
+        return
+      }
+
+      if (entry && (!reply || reply.id !== entry.id)) {
+        // The reply we were voicing was replaced mid-stream: seal honestly.
+        entry.session.finish()
+        streamState.live = null
+      }
 
       if (conversationActive || $voicePlayback.get().status !== 'idle') {
         return
       }
 
-      const reply = pendingReply()
+      if (!reply) {
+        return
+      }
 
-      if (!reply || reply.pending) {
+      if (reply.pending && !streamState.streamed.has(reply.id) && !streamState.starting.has(reply.id)) {
+        // Read aloud AS IT ARRIVES: the first wake that sees a pending reply
+        // opens the stream; later wakes append the growth (see above). The
+        // reply is consumed at seal, not here (feed starvation).
+        streamState.starting.add(reply.id)
+
+        void claimSpeech(reply.turnKey, `speak:live:${reply.id}`).then(async owns => {
+          streamState.starting.delete(reply.id)
+
+          if (!owns) {
+            return
+          }
+
+          const session = await startSpeechStream({
+            connectionId,
+            messageId: reply.id,
+            profile,
+            source: 'read-aloud',
+            ...(reply.turnKey ? { turnKey: reply.turnKey } : {})
+          })
+
+          if (!session) {
+            return                          // provider cannot stream: the settled path speaks it whole
+          }
+
+          streamState.streamed.add(reply.id)
+          const created = { id: reply.id, sent: 0, session }
+          streamState.live = created
+          // A mid-stream 'fallback' (no audio ever produced) releases the
+          // message back to the whole-text path.
+          void session.done.then(outcome => {
+            if (outcome === 'fallback' && streamState.live === created) {
+              streamState.live = null
+              streamState.streamed.delete(created.id)
+              speakLatest()
+            }
+          })
+          feedLive(created, latest.current.pendingReply() ?? reply)
+        })
+
+        return
+      }
+
+      if (streamState.streamed.has(reply.id)) {
+        // Already voiced live: consume it and take the segment claim so no
+        // window says it twice.
+        markSpoken()
+        void claimSegment(reply)
+
         return
       }
 
@@ -182,7 +291,13 @@ export function useAutoSpeakReplies({
 
     return () => {
       attemptSeq += 1
+
+      if (streamState.live) {
+        streamState.live.session.finish()
+        streamState.live = null
+      }
+
       stops.forEach(f => f())
     }
-  }, [$messages, enabled, sessionId])
+  }, [$messages, enabled, sessionId, streamState])
 }

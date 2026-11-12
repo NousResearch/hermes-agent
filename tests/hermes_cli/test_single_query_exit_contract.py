@@ -66,6 +66,23 @@ def test_dispatcher_spawned_worker_signals_a_terminal_provider_error(monkeypatch
     assert _run_non_quiet(monkeypatch, {"failed": True, "failure_reason": reason}) == 1
 
 
+@pytest.mark.parametrize(
+    ("metadata", "expected"),
+    [
+        ({"billing_unverified": False}, KANBAN_TERMINAL_PROVIDER_EXIT_CODE),
+        ({"billing_unverified": True}, KANBAN_RATE_LIMIT_EXIT_CODE),
+        ({"billing_unverified": None}, KANBAN_RATE_LIMIT_EXIT_CODE),
+        ({}, KANBAN_RATE_LIMIT_EXIT_CODE),
+    ],
+)
+def test_billing_worker_exit_respects_verification(monkeypatch, metadata, expected):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_abc123")
+    result = {"failed": True, "failure_reason": "billing", **metadata}
+    assert _run_non_quiet(monkeypatch, result) == expected
+    monkeypatch.delenv("HERMES_KANBAN_TASK")
+    assert _run_non_quiet(monkeypatch, result) == 1
+
+
 def test_dispatcher_spawned_worker_keeps_a_plain_failure_at_one(monkeypatch):
     """Control: a task-level failure (or an unknown reason) is neither transient nor terminal —
     the worker exits 1 and the dispatcher counts it against ``kanban.failure_limit`` as before."""

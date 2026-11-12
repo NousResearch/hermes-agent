@@ -2,7 +2,7 @@ name: plastis3d
 title: Plastis3D
 repo: https://github.com/midnightbobarun/Plastis3D
 sha: 3c76c5c7f206fa31ae765931c955812e541098e0
-description: A local 3D scene editor for Hermes Desktop, with agent tools to build and edit scenes.
+description: "A local 3D scene editor for Hermes Desktop, with agent tools to build and edit scenes. Disclosure — the assistant can import a 3D model file (.glb, .gltf, .obj, .stl, .ply, .splat) from any absolute path on the Hermes machine into a scene; Plastis3D keeps scenes, copies of imported models and images, drafts, renders, screenshots and GLB exports in `<HERMES_HOME>/plugin-data/plastis3d/`, which stays after the plugin is removed; it makes no network calls."
 maintainer: midnightbobarun
 tier: community
 category: desktop

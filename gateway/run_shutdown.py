@@ -1825,6 +1825,9 @@ class GatewayShutdownMixin(GatewaySessionEndMixin, GatewayHomeShutdownNoticeMixi
         await self._cancel_secondary_profile_reconnect_tasks()
         # Notify all chats with active agents BEFORE draining — adapters are still connected here.
         await self._notify_active_sessions_of_shutdown()
+        # Settle now, not only at exit: a process killed mid-drain (supervisor deadline) has already
+        # sent its goodbye, so it must spend its loop slot and owe the "online" before the drain starts.
+        settle_home_online_notice_debt(self)
         logger.info("Shutdown phase: notify_active_sessions done at +%.2fs", ctx.elapsed())
 
     async def _stop_drain_active_work(self, timeout: float, ctx: GatewayShutdownMixin._StopContext) -> None:

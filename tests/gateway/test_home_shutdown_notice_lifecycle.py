@@ -134,3 +134,26 @@ async def test_a_loop_longer_than_the_stored_history_stays_quiet(runner):
         await _stop_cycle(runner, adapter)
 
     assert _home_sends(adapter) == 3  # restart_loop_guard.DEFAULT_MAX_RESTARTS
+
+
+
+class _KilledDuringDrain(Exception):
+    """Stands in for the supervisor's SIGKILL at its stop deadline, while the drain is running."""
+
+
+@pytest.mark.asyncio
+async def test_a_process_killed_during_drain_still_owes_hello_and_spends_its_slot(runner, monkeypatch):
+    """The goodbye is out before the drain; a lifetime that ends there must already have recorded it."""
+    from gateway.run import GatewayRunner
+    runner, adapter = runner
+
+    async def _killed(*_a, **_k):
+        raise _KilledDuringDrain
+    monkeypatch.setattr(GatewayRunner, "_stop_drain_active_work", _killed)
+    for respawn in range(8):
+        with pytest.raises(_KilledDuringDrain):
+            await _stop_cycle(runner, adapter)
+        if respawn == 0:
+            assert planned_restart_marker_path().exists()  # the delivered goodbye is owed a hello
+
+    assert _home_sends(adapter) == 3  # restart_loop_guard.DEFAULT_MAX_RESTARTS

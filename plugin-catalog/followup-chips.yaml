@@ -4,5 +4,5 @@ description: >-
   the question as the next turn; Hermes arc-border hover; the choice persists
   per block across reload. Single-file desktop plugin, no native components.
 repo: https://github.com/nuonrg/hermes-plugin-followup-chips
-sha: 3650ebe8e292c6c6a6046db8d5c2a14c9e8997eb
+sha: 3e44fa90462c23d29402d35f30a7c52f6cc4ae34
 capabilities: []

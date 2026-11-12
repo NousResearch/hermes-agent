@@ -626,7 +626,7 @@ class TestProtectedInstructionFiles:
     def _gate_on(self, monkeypatch):
         import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
-            ft, "_protected_instruction_config", lambda: (True, [])
+            ft, "_protected_instruction_config", lambda: (True, [], [])
         )
         yield
 
@@ -720,7 +720,7 @@ class TestProtectedInstructionFiles:
     def test_config_disabled_skips_gate(self, tmp_path, approvals, monkeypatch):
         import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
-            ft, "_protected_instruction_config", lambda: (False, [])
+            ft, "_protected_instruction_config", lambda: (False, [], [])
         )
         res = self._write(tmp_path / "AGENTS.md", "ok")
         assert not res.get("error"), res
@@ -729,7 +729,7 @@ class TestProtectedInstructionFiles:
     def test_extra_patterns_from_config(self, tmp_path, approvals, monkeypatch):
         import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
-            ft, "_protected_instruction_config", lambda: (True, ["*.mdc"])
+            ft, "_protected_instruction_config", lambda: (True, ["*.mdc"], [])
         )
         approvals["answer"] = "deny"
         res = self._write(tmp_path / "rules.mdc")
@@ -932,7 +932,7 @@ class TestProfileHomeExemptsHermesRoot:
     def _gate_on(self, monkeypatch):
         import tools.file_tools_write_guards as ft
         monkeypatch.setattr(
-            ft, "_protected_instruction_config", lambda: (True, [])
+            ft, "_protected_instruction_config", lambda: (True, [], [])
         )
         # The resolved-home slot is filled once per process; keep the fixture honest.
         monkeypatch.setattr(ft, "_real_hermes_home_loaded", False)
@@ -1078,3 +1078,224 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
             reset_hermes_home_override(tok)
         assert err is not None
         assert "Refusing to write to Hermes config file" in err
+
+
+class TestProtectedInstructionAllowlistDirs:
+    """``security.protected_instruction_allowlist_dirs`` (design t_0f96022e).
+
+    The contradiction the key closes: the write door refuses the LIVE tree
+    (``/Users/hermes_user/.hermes/hermes-agent``), so nothing legitimate lands there, while the
+    protected-instruction gate prompted for every AGENTS.md / SOUL.md under
+    ``/opt/hermes_sandbox/<domain>/work/<lane>/`` — the tree the sanctioned flow says the edit
+    happens in. Headless that prompt fails closed, so the edit was impossible through either door.
+
+    The exemption is deliberately NARROW, and these tests are its fence: the four BUILT-IN
+    basenames only, decided on the RESOLVED path only, with the extra patterns and the
+    project-local ``.hermes`` rule still gating inside an allowlisted tree, a string-prefix
+    sibling (``/opt/hermes_prod_evil`` beside ``/opt/hermes_prod``) still gated, and a symlink
+    pointing OUT of the tree still gated.
+    """
+
+    @pytest.fixture
+    def approvals(self, monkeypatch):
+        """A CLI approval callback that DENIES: a gate that fires is visible, not silent."""
+        from tools.terminal_tool import set_approval_callback
+        state = {"calls": [], "answer": "deny"}
+
+        def cb(command, description, **kwargs):
+            state["calls"].append(
+                {"command": command, "description": description, **kwargs})
+            return state["answer"]
+
+        set_approval_callback(cb)
+        yield state
+        set_approval_callback(None)
+
+    @pytest.fixture
+    def trees(self, tmp_path, monkeypatch):
+        """An allowlisted WORK tree and an un-allowlisted LIVE tree beside it."""
+        import tools.file_tools_write_guards as ft
+        work = tmp_path / "hermes_sandbox"
+        live = tmp_path / "hermes_prod"
+        (work / "platform" / "work" / "platform-coder").mkdir(parents=True)
+        (live / "yaan-platform").mkdir(parents=True)
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config",
+            lambda: (True, [], [os.path.realpath(str(work))]))
+        return work, live
+
+    def _write(self, path, content="edited"):
+        import json
+        from tools.file_tools import write_file_tool
+        return json.loads(write_file_tool(str(path), content))
+
+    # ---- the contradiction the key closes -------------------------------
+
+    @pytest.mark.parametrize("name", ["AGENTS.md", "CLAUDE.md", "SOUL.md", ".cursorrules"])
+    def test_work_tree_files_skip_the_prompt(self, trees, approvals, name):
+        work, _live = trees
+        target = work / "platform" / "work" / "platform-coder" / name
+        res = self._write(target)
+        assert not res.get("error"), res
+        assert target.read_text(encoding="utf-8") == "edited"
+        assert approvals["calls"] == []
+
+    def test_work_tree_nested_file_skips_the_prompt(self, trees, approvals):
+        """The entry names a TREE: every depth inside it is covered."""
+        work, _live = trees
+        deep = work / "platform" / "work" / "platform-coder" / "a" / "b"
+        deep.mkdir(parents=True)
+        res = self._write(deep / "SOUL.md")
+        assert not res.get("error"), res
+        assert approvals["calls"] == []
+
+    def test_live_file_outside_the_allowlist_still_prompts(self, trees, approvals):
+        work, live = trees
+        target = live / "yaan-platform" / "AGENTS.md"
+        res = self._write(target)
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()
+        assert len(approvals["calls"]) == 1
+        # and the same basename in the allowlisted tree is not gated — the fence is the TREE,
+        # not the name
+        assert not self._write(work / "AGENTS.md").get("error")
+
+    def test_string_prefix_sibling_is_not_allowlisted(self, tmp_path, monkeypatch, approvals):
+        """``/x/hermes_sandbox_evil`` shares a STRING prefix with ``/x/hermes_sandbox``."""
+        import tools.file_tools_write_guards as ft
+        work = tmp_path / "hermes_sandbox"
+        evil = tmp_path / "hermes_sandbox_evil"
+        work.mkdir()
+        evil.mkdir()
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config",
+            lambda: (True, [], [os.path.realpath(str(work))]))
+        assert ft._protected_instruction_reason(str(evil / "AGENTS.md")) == "AGENTS.md"
+        assert ft._protected_instruction_reason(str(work / "AGENTS.md")) is None
+        res = self._write(evil / "AGENTS.md")
+        assert res.get("error") and "BLOCKED" in res["error"]
+
+    # ---- the exemption does not widen --------------------------------
+
+    def test_extra_pattern_still_gates_inside_the_work_tree(self, trees, approvals, monkeypatch):
+        """A project's own rule (``*-soul.md``) is absolute — the allowlist never overrides it."""
+        import tools.file_tools_write_guards as ft
+        work, _live = trees
+        monkeypatch.setattr(
+            ft, "_protected_instruction_config",
+            lambda: (True, ["*-soul.md"], [os.path.realpath(str(work))]))
+        target = work / "platform-coder-soul.md"
+        res = self._write(target)
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()
+
+    def test_project_local_hermes_config_gates_inside_the_work_tree(self, trees, approvals):
+        work, _live = trees
+        repo = work / "some-repo" / ".hermes"
+        repo.mkdir(parents=True)
+        assert ft_reason(str(repo / "config.yaml"))
+        target = repo / "config.yaml"
+        res = self._write(target)
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()
+
+    @pytest.mark.require_symlinks
+    def test_symlink_out_of_the_work_tree_stays_gated(self, trees, approvals):
+        """An innocent name under the work tree pointing at a LIVE instruction file."""
+        work, live = trees
+        real = live / "yaan-platform" / "SOUL.md"
+        real.write_text("live original", encoding="utf-8")
+        link = work / "innocent.txt"
+        link.symlink_to(real)
+        res = self._write(link)
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert real.read_text(encoding="utf-8") == "live original"
+        # a protected NAME that is itself such a symlink is gated on the resolved side
+        named = work / "AGENTS.md"
+        named.symlink_to(real)
+        assert ft_reason(str(named)) == "AGENTS.md"
+
+    @pytest.mark.require_symlinks
+    def test_symlink_into_the_work_tree_is_exempt(self, trees):
+        """A path outside the tree whose realpath lands inside it is the sanctioned shape."""
+        work, live = trees
+        real = work / "AGENTS.md"
+        real.write_text("edited", encoding="utf-8")
+        link = live / "AGENTS.md"
+        link.symlink_to(real)
+        assert ft_reason(str(link)) is None
+
+    # ---- entry shapes ---------------------------------------------------
+
+    def test_entry_shapes_that_do_match(self, tmp_path, monkeypatch):
+        """Trailing slash, doubled slash, ``..`` and a symlinked entry all name the same tree."""
+        import tools.file_tools_write_guards as ft
+        work = tmp_path / "hermes_sandbox"
+        (work / "a").mkdir(parents=True)
+        alias = tmp_path / "alias"
+        alias.symlink_to(work)
+        for entry in (f"{work}/", f"{work}//a/..", f"{work}/a/..", f"{work}/./", str(alias)):
+            monkeypatch.setattr(
+                ft, "_protected_instruction_config",
+                lambda e=entry: (True, [], [os.path.realpath(os.path.expanduser(e))]))
+            assert ft._protected_instruction_reason(str(work / "SOUL.md")) is None, entry
+
+    def test_tilde_entry_is_expanded(self, tmp_path, monkeypatch):
+        import hermes_cli.config as cfgmod
+        import tools.file_tools_write_guards as ft
+        home = tmp_path / "home"
+        (home / "repo").mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(cfgmod, "load_config", lambda: {"security": {
+            "protected_instruction_files": True,
+            "protected_instruction_extra_patterns": [],
+            "protected_instruction_allowlist_dirs": ["~/repo"]}})
+        _enabled, _extra, dirs = ft._protected_instruction_config()
+        assert dirs == [os.path.realpath(str(home / "repo"))]
+        assert ft._protected_instruction_reason(str(home / "repo" / "AGENTS.md")) is None
+        assert ft._protected_instruction_reason(str(home / "AGENTS.md")) == "AGENTS.md"
+
+    def test_malformed_entries_are_dropped(self, tmp_path, monkeypatch):
+        """Non-strings, empty/blank strings and RELATIVE entries never name a tree."""
+        import hermes_cli.config as cfgmod
+        import tools.file_tools_write_guards as ft
+        work = tmp_path / "hermes_sandbox"
+        work.mkdir()
+        monkeypatch.setattr(cfgmod, "load_config", lambda: {"security": {
+            "protected_instruction_files": True,
+            "protected_instruction_extra_patterns": [],
+            "protected_instruction_allowlist_dirs": [
+                123, None, "", "   ", "relative/dir", "./also-relative", str(work)]}})
+        _enabled, _extra, dirs = ft._protected_instruction_config()
+        assert dirs == [os.path.realpath(str(work))]
+        assert ft._protected_instruction_reason(str(tmp_path / "elsewhere" / "AGENTS.md")) == "AGENTS.md"
+
+    def test_config_read_failure_keeps_gate_on_and_allowlist_empty(self, monkeypatch):
+        import hermes_cli.config as cfgmod
+        import tools.file_tools_write_guards as ft
+        def boom():
+            raise RuntimeError("config unreadable")
+        monkeypatch.setattr(cfgmod, "load_config", boom)
+        assert ft._protected_instruction_config() == (True, [], [])
+
+    def test_missing_key_is_the_old_gate(self, tmp_path, monkeypatch, approvals):
+        """A host config predating the key gets no exemption at all (fail-closed)."""
+        import hermes_cli.config as cfgmod
+        import tools.file_tools_write_guards as ft
+        monkeypatch.setattr(cfgmod, "load_config", lambda: {"security": {
+            "protected_instruction_files": True,
+            "protected_instruction_extra_patterns": []}})
+        _enabled, _extra, dirs = ft._protected_instruction_config()
+        assert dirs == []
+        target = tmp_path / "repo" / "AGENTS.md"
+        target.parent.mkdir()
+        res = self._write(target)
+        assert res.get("error") and "BLOCKED" in res["error"]
+        assert not target.exists()
+
+
+def ft_reason(path):
+    """``_protected_instruction_reason`` on the module under test (config-driven allowlist)."""
+    import tools.file_tools_write_guards as ft
+    return ft._protected_instruction_reason(str(path))
+

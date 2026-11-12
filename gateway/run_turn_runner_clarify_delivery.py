@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
@@ -23,10 +24,12 @@ UNDELIVERED_DECLINED = "[clarify prompt could not be delivered: destination refu
 UNDELIVERED_NO_SURFACE = "[clarify prompt could not be delivered: no chat surface]"
 
 # Seconds a scheduled card send may take before it is classified ``ambiguous`` (possibly posted).
+# Also the ONE budget the clarify card's explanation gets, shared by the agent thread and the card:
+# a send that never returns (a plugin adapter with no HTTP timeout) must not hold the question back.
 SEND_ACK_WINDOW = 15
-# How much longer the clarify card waits for its explanation's send once it is ready to post. A send
-# that never returns (a plugin adapter with no HTTP timeout) must not hold the question back.
-CARD_WAITS_FOR_CONTEXT = 5
+# ``raw_response`` marker of a card that was not posted because its question was withdrawn
+# (cancelled, answered elsewhere, session reset) while it waited for its explanation.
+WITHDRAWN = "clarify_withdrawn"
 
 
 def text_fallback_coro(adapter, **send_kwargs):
@@ -95,6 +98,10 @@ def _clarify_send_then_wait(fut, *, clarify_id: str, session_key: str, clarify_m
     from gateway.run import _approval_send_outcome
 
     outcome = _approval_send_outcome(fut, timeout=SEND_ACK_WINDOW)
+    if outcome == "failed" and _withdrawn(fut):
+        # Nothing was posted on purpose: no text fallback for a question nobody is waiting on.
+        clarify_mod.wait_for_response(clarify_id, timeout=0.01)  # retire the withdrawn entry
+        return clarify_mod.CANCELLED, False
     if outcome == "failed" and fallback is not None:
         # The text prompt is the last resort: a late failure of ITS send has nothing to retry.
         fut, fallback = fallback(), None
@@ -164,6 +171,8 @@ class _LateFailureWatch:
             # ``_abort_for_outcome`` — stay armed for the late button tap, never re-send, never
             # release; the bounded wait's own timeout covers a card that truly never arrived.
             return
+        if _withdrawn(fut):
+            return  # withdrawn before posting; whoever withdrew it already woke the waiter
         if outcome == "declined":
             # Refused destination: no text retry (see ``_clarify_send_then_wait``), and the notice
             # says so rather than the generic delivery failure.
@@ -188,6 +197,34 @@ class _LateFailureWatch:
         self._clarify_mod.clear_session(self._session_key)
 
 
+def _withdrawn(fut) -> bool:
+    """True when the card send resolved as deliberately not posted (see ``WITHDRAWN``)."""
+    done = getattr(fut, "done", None)
+    if fut is None or not callable(done) or not done() or fut.cancelled() or fut.exception() is not None:
+        return False
+    raw = getattr(fut.result(), "raw_response", None)
+    return isinstance(raw, dict) and bool(raw.get(WITHDRAWN))
+
+
+def withdrawn_result():
+    from gateway.platforms.base import SendResult
+    return SendResult(success=False, error="clarify prompt withdrawn before posting",
+                      raw_response={WITHDRAWN: True})
+
+
+def clarify_card_still_wanted(runner, entry) -> bool:
+    """After the card's awaited explanation: False once the run went stale or the question was
+    withdrawn meanwhile (cancelled, or cleared by ``/new`` / ``/stop``). An answered question keeps
+    posting as before: its waiter returns the answer either way."""
+    still_current = getattr(runner._ctx, "_run_still_current", None)
+    if callable(still_current) and not still_current():
+        return False
+    if entry is None:
+        return True
+    from tools import clarify_gateway
+    return not (entry.event.is_set() and entry.response == clarify_gateway.CANCELLED)
+
+
 def clarify_context_sink(runner) -> Optional[Callable[..., None]]:
     """The ``clarify_context_callback`` for a turn with interim messages off (#102413): prose the model
     wrote in the same message as a ``clarify`` call is what the user is asked to decide on, so it is
@@ -210,27 +247,34 @@ def clarify_context_sink(runner) -> Optional[Callable[..., None]]:
             "clarify context send failed to schedule")
         if fut is None:
             return
-        runner._clarify_context_send = fut  # the card waits for it even after this wait gives up
+        # The card waits for it too, but only for what is left of this one budget.
+        runner._clarify_context_send = fut
+        runner._clarify_context_deadline = deadline = time.monotonic() + SEND_ACK_WINDOW
         try:
-            fut.result(timeout=SEND_ACK_WINDOW)
+            fut.result(timeout=max(0.0, deadline - time.monotonic()))
         except Exception:
             logger.warning("Clarify context could not be sent before the prompt", exc_info=True)
     return send
 
 
 async def await_clarify_context(runner) -> None:
-    """Hold the clarify card until its explanation's send has finished, for at most
-    ``CARD_WAITS_FOR_CONTEXT`` seconds. The agent thread waits only ``SEND_ACK_WINDOW`` for it, and the
-    card path does not take the adapter's text-send lock, so a slow split send would otherwise let the
-    buttons land above the rest of the explanation. A send that never returns still lets the card post:
-    the user must always get the question the turn is waiting on."""
+    """Hold the clarify card until its explanation's send has finished, within what is left of the
+    explanation's ``SEND_ACK_WINDOW`` budget (the agent thread already spent part of it). The card path
+    does not take the adapter's text-send lock, so a slow split send would otherwise let the buttons
+    land above the rest of the explanation. A send that never returns still lets the card post once
+    the budget is spent: the user must always get the question the turn is waiting on."""
     fut, runner._clarify_context_send = getattr(runner, "_clarify_context_send", None), None
+    deadline, runner._clarify_context_deadline = getattr(runner, "_clarify_context_deadline", None), None
     if fut is None or fut.done():
         return
+    remaining = SEND_ACK_WINDOW if deadline is None else deadline - time.monotonic()
+    if remaining <= 0:
+        logger.warning("Clarify context still sending after %ss; posting the prompt anyway", SEND_ACK_WINDOW)
+        return
     try:
-        await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(fut)), CARD_WAITS_FOR_CONTEXT)
+        await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(fut)), remaining)
     except TimeoutError:
         logger.warning("Clarify context still sending after %ss; posting the prompt anyway",
-                       CARD_WAITS_FOR_CONTEXT)
+                       SEND_ACK_WINDOW)
     except Exception:  # a failed explanation send was already logged; the card still goes
         logger.debug("clarify context send failed before the prompt", exc_info=True)

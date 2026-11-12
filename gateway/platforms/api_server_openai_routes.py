@@ -320,6 +320,7 @@ class _ResponsesStream:
         self._batch_buf: list[str] = []
         self._batch_timer: Optional[asyncio.Task] = None
         self._batch_lock = asyncio.Lock()
+        self._outbound = adapter._new_media_response_processor()
 
     async def write_event(self, event_type: str, data: dict[str, Any]) -> None:
         if self.durable_key and 'output_index' in data:
@@ -562,9 +563,11 @@ class _ResponsesStream:
                 method, adapt = handler
                 await getattr(self, method)(adapt(payload))
         elif isinstance(item, str):
-            self._batch_buf.append(item)
-            if self._batch_timer is None:
-                self._batch_timer = asyncio.create_task(self._batch_flush_after(0.05))
+            content = await self._outbound.feed(item)
+            if content:
+                self._batch_buf.append(content)
+                if self._batch_timer is None:
+                    self._batch_timer = asyncio.create_task(self._batch_flush_after(0.05))
 
     async def _batch_flush_after(self, delay: float) -> None:
         try:
@@ -606,17 +609,15 @@ class _ResponsesStream:
                 self.final_text_parts = [self.final_response_text]
                 return
             tail, appended = _post_stream_transform(result)
-            if tail and self.final_text_parts:
-                if appended:
-                    await self.emit_text_delta(tail)
-                else:
-                    self.transformed_final = agent_final
-            if agent_final and not self.final_text_parts:
-                await self.emit_text_delta(agent_final)
+            if tail and self.final_text_parts and not appended:
+                self.transformed_final = await self._outbound.render(agent_final)
             if agent_final and not self.final_response_text:
                 self.final_response_text = agent_final
             if isinstance(result, dict) and result.get("error") and not self.final_response_text:
                 self.agent_error = self._api._redact_api_error_text(result["error"])
+            media_tail = await self._outbound.finish(agent_final)
+            if media_tail:
+                await self.emit_text_delta(media_tail)
         except Exception as e:
             logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
             self.agent_error = self._api._redact_api_error_text(e)
@@ -867,7 +868,7 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _api_request_profile, _chat_usage_payload, _coerce_request_bool,
             _content_has_visible_payload, _derive_chat_session_id, _error_response, _invalid_request,
-            _openai_error, _redact_api_error_text, _resolve_media_to_data_urls)
+            _openai_error, _redact_api_error_text)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -1017,7 +1018,7 @@ class OpenAICompatRoutesMixin:
             return err
         result, usage = outcome
         presentation_muted = result.get("_notification_presentation_suppressed") is True
-        final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
+        final_response = await self._render_outbound_text(result.get("final_response") or "")
         completed, is_partial, is_failed, err_msg = _result_flags(result)
         if err_msg:
             err_msg = _redact_api_error_text(err_msg)
@@ -1159,8 +1160,9 @@ class OpenAICompatRoutesMixin:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
-            _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
+            _abandon_agent_task, _chat_usage_payload, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
+        outbound = self._new_media_response_processor()
 
         def _chunk(delta: dict[str, Any], finish_reason=None, **extra) -> dict[str, Any]:
             return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
@@ -1186,9 +1188,10 @@ class OpenAICompatRoutesMixin:
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
                     await response.write(_sse_frame(delta[1], event="approval.request"))
                 else:
-                    if delta:
+                    content = await outbound.feed(delta)
+                    if content:
                         content_sent = True
-                    await response.write(_sse_frame(_chunk({"content": delta})))
+                        await response.write(_sse_frame(_chunk({"content": content})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
             # partial): surface a non-"stop" finish_reason like the non-streaming path.
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -1199,6 +1202,13 @@ class OpenAICompatRoutesMixin:
             except Exception as exc:
                 agent_error = exc
                 logger.error("Agent task %s failed during SSE streaming: %s", completion_id, exc)
+            authoritative_text = (
+                result.get("final_response", "") if isinstance(result, dict) else ""
+            )
+            media_tail = await outbound.finish(authoritative_text)
+            if media_tail:
+                content_sent = True
+                await response.write(_sse_frame(_chunk({"content": media_tail})))
             completed, is_partial, is_failed, err_msg = _result_flags(result)
             if agent_error is not None:
                 is_failed = True
@@ -1216,14 +1226,15 @@ class OpenAICompatRoutesMixin:
             # once so the client does not see an empty stream (#31449). Mirrors
             # _ResponsesStream.collect_result for /v1/responses.
             if not content_sent and not presentation_muted and isinstance(result, dict):
-                fallback_text = _resolve_media_to_data_urls(result.get("final_response") or "")
+                fallback_text = await outbound.render(result.get("final_response") or "")
                 if fallback_text:
                     await response.write(_sse_frame(_chunk({"content": fallback_text})))
             elif not presentation_muted:
                 # Chat chunks can only append: a non-append rewrite follows the streamed text (as in the CLI).
                 tail, appended = _post_stream_transform(result)
-                if tail:
-                    await response.write(_sse_frame(_chunk({"content": tail if appended else _transformed_notice() + tail})))
+                if tail and not appended:
+                    rendered = await outbound.render(tail)
+                    await response.write(_sse_frame(_chunk({"content": _transformed_notice() + rendered})))
             if finish_reason != "stop":
                 if err_msg and not presentation_muted:
                     finish_chunk["error"] = {
@@ -1369,7 +1380,7 @@ class OpenAICompatRoutesMixin:
         from gateway.platforms.api_server import (
             ThreadSafeAsyncQueue, _coerce_request_bool,
             _error_response, _invalid_request, _redact_api_error_text,
-            _resolve_media_to_data_urls, _responses_usage_payload)
+            _responses_usage_payload)
         # Bound total in-flight agent runs (configurable; #7483).
         limited = self._concurrency_limited_response()
         if limited is not None:
@@ -1462,7 +1473,7 @@ class OpenAICompatRoutesMixin:
             if _settled(replay):
                 return web.json_response(replay['response'], headers=replay.get('headers') or {})
         result, usage = outcome
-        final_response = _resolve_media_to_data_urls(result.get("final_response", ""))
+        final_response = await self._render_outbound_text(result.get("final_response", ""))
         if not final_response:
             final_response = _redact_api_error_text(result.get("error", "(No response generated)"))
         full_history = self._build_response_conversation_history(
@@ -1481,6 +1492,7 @@ class OpenAICompatRoutesMixin:
             "id": response_id, "object": "response", "status": _response_status(result),
             "created_at": created_at, "model": response_model,
             "output": self._extract_output_items(result, start_index=output_start_index,
+                final_response=final_response,
                 **({'response_id': response_id} if durable_key else {})),
             "usage": _responses_usage_payload(usage)}
         response_store = self._current_response_store()  # at use time: the store can be swapped mid-turn
@@ -1594,7 +1606,13 @@ class OpenAICompatRoutesMixin:
         return out
 
     @staticmethod
-    def _extract_output_items(result: dict[str, Any], start_index: int = 0, *, response_id=None) -> list[dict[str, Any]]:
+    def _extract_output_items(
+        result: dict[str, Any],
+        start_index: int = 0,
+        final_response: Optional[str] = None,
+        *,
+        response_id=None,
+    ) -> list[dict[str, Any]]:
         """Output items from ``result["messages"][start_index:]``: ``function_call`` per assistant
         tool_call, ``function_call_output`` per tool message, then the final ``message``."""
         from gateway.platforms.api_server import _redact_api_error_text
@@ -1624,8 +1642,10 @@ class OpenAICompatRoutesMixin:
                     "id": f"fco_{uuid.uuid4().hex[:24]}", "type": "function_call_output",
                     "status": "completed", "call_id": msg.get("tool_call_id", ""),
                     "output": msg.get("content", "")})
-        final = result.get("final_response", "") or _redact_api_error_text(
-            result.get("error", "(No response generated)"))
+        final = final_response
+        if final is None:
+            final = result.get("final_response", "") or _redact_api_error_text(
+                result.get("error", "(No response generated)"))
         items.append(_message_item(final))
         if response_id is not None:
             from gateway.platforms.api_server_response_identity import identify_output

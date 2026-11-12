@@ -1068,13 +1068,27 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     """Drive one admitted run, publish its terminal event/status, release live state."""
     _redact_api_error_text = _api_server._redact_api_error_text
     run_id, loop = run.run_id, asyncio.get_running_loop()
+    outbound = self._new_media_response_processor()
+    media_delta_queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
     _run_started_at = time.perf_counter()
+    has_stream_deltas = False
 
     def _text_cb(delta: Optional[str]) -> None:
+        nonlocal has_stream_deltas
         if delta is None or run_id not in self._run_streams:
             return
+        has_stream_deltas = has_stream_deltas or bool(delta)
         with suppress(Exception):
-            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
+            loop.call_soon_threadsafe(media_delta_queue.put_nowait, delta)
+
+    async def _stream_media_deltas() -> None:
+        while True:
+            delta = await media_delta_queue.get()
+            if delta is None:
+                return
+            content = await outbound.feed(delta)
+            if content:
+                run.put_event(_run_event(run_id, "message.delta", delta=content))
 
     def _interim_cb(text: str, *, already_streamed: bool = False) -> None:
         # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls),
@@ -1099,6 +1113,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             # need not yield to already-scheduled commentary/tool callbacks.
             loop.call_soon(run.put_event, _run_event(run_id, f"run.{status}", **fields, **extra))
 
+    media_delta_task = asyncio.create_task(_stream_media_deltas())
     try:
         # Shutdown landed between admission and the task's first tick: nothing to
         # interrupt yet, and starting a turn now would outlive the gateway.
@@ -1149,6 +1164,12 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         self._record_api_metrics(usage, time.perf_counter() - _run_started_at)
         if not isinstance(result, dict):
             result = {}
+        raw_final_response = result.get("final_response", "")
+        await media_delta_queue.put(None)
+        await media_delta_task
+        rendered_tail = await outbound.finish(raw_final_response if has_stream_deltas else None)
+        if rendered_tail:
+            run.put_event(_run_event(run_id, "message.delta", delta=rendered_tail))
         # The committed outcome decides: a stop issued over WS by another viewer interrupts
         # this run just as much as one issued through this adapter's own /stop.
         status, fields = terminal_run_status(result)
@@ -1165,7 +1186,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 runtime=served_runtime, requested_runtime=requested if any(requested.values()) else None,
                 route_source=("model_routes" if run.agent_kwargs.get("route")
                               else "raw_request" if any(requested.values()) else "global"))
-            _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime)
+            final_response = await outbound.render(raw_final_response)
+            _finish(status, fields, output=final_response, usage=usage, runtime=served_runtime)
     except asyncio.CancelledError:
         _finish("cancelled")
         raise
@@ -1184,6 +1206,9 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         logger.exception("[api_server] run %s failed", run_id)
         _finish("failed", error=_redact_api_error_text(exc))
     finally:
+        if not media_delta_task.done():
+            await media_delta_queue.put(None)
+            await media_delta_task
         # On cancellation (/stop) the executor thread may still block on an approval
         # Event; unregistering releases it. Idempotent on normal completion.
         _unregister_approval_notify(run.approval_session_key)

@@ -637,6 +637,14 @@ class TestStripYamlFrontmatter:
 # =========================================================================
 
 
+class TestPromptBuilderConstants:
+    def test_api_server_hint_scopes_media_tag_guidance(self):
+        """Provider-specific media guidance is injected by the API adapter."""
+        from agent.prompt_builder import PLATFORM_HINTS
+
+        hint = PLATFORM_HINTS["api_server"]
+        assert "MEDIA:" not in hint
+        assert "base64" not in hint.lower()
 
 
 

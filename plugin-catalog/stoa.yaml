@@ -1,22 +1,22 @@
 name: stoa
 title: Stoa
 repo: https://github.com/jarrett-del/hermes-stoa
-sha: becdf53b731bb8e98c9d6b1ed3487185cd30adfb
+sha: 0177c92643e5f7a1de65896c6a36bcf054403ed5
 description: "The CRM for Hermes Agent, a lightweight one you talk to: map a market, find the leads, run the pipeline, and see it through to cash. Hermes runs it and you approve. A Today list of what needs you; what Hermes finds in your email, calls and Slack waits with its evidence for your yes or no; every change sits on an append-only ledger and can be taken back; people shared across records, and companies; invoices, payments, a delivery lane after the win and a weighted forecast; market maps that check every company against your requirements with evidence and become leads in one click; a list in any form, reviewed before anything is saved; a page and a live pane in the Desktop app and Webapp, with a board, a dock to talk to it and sample data to tour; a web dashboard tab; a SQLite desk, playbooks that fit it to any niche, Slack cards whose buttons move a stage at once and hand the writing to Hermes, and meeting notes that become next steps. Disclosure — optional network calls to api.peopledatalabs.com (paid per result, capped), api.exa.ai and public-api.granola.ai only when their keys are set; dictation on the page is the browser's own speech recognition (in Chrome, Google's service) and runs only while its button is on; reads the notes folder, .csv and .tsv files in its imports folder, a folder you name or the working directory, and a file you drop on the page; writes only inside its own data folder; a Slack button works only for the person a card was posted for or the people listed in slack_users; with allow_gateway_injection a button click queues one agent turn in the thread; the page's dock sends what you type to a visible conversation of its own; a scheduled job reaches the desk only when cron is listed in channels, and then only logs and proposes unless you raise the autonomy setting; invoices are an account you keep: it sends none and moves no money; names, emails, notes, invoices and every change with the values before and after stay unencrypted in its SQLite file, and the ledger is never trimmed. Hermes Agent Plugin Hackathon entry."
 maintainer: jarrett-del
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-version: "0.13.1"
+version: "0.13.2"
 platforms: [linux, macos]
-image: https://raw.githubusercontent.com/jarrett-del/hermes-stoa/becdf53b731bb8e98c9d6b1ed3487185cd30adfb/docs/banner.jpg
+image: https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/banner.jpg
 screenshots:
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/becdf53b731bb8e98c9d6b1ed3487185cd30adfb/docs/desktop-today.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/becdf53b731bb8e98c9d6b1ed3487185cd30adfb/docs/desktop-pipeline.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/becdf53b731bb8e98c9d6b1ed3487185cd30adfb/docs/desktop-cash.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/becdf53b731bb8e98c9d6b1ed3487185cd30adfb/docs/desktop-undo.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/becdf53b731bb8e98c9d6b1ed3487185cd30adfb/docs/desktop-market.jpg
-  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/becdf53b731bb8e98c9d6b1ed3487185cd30adfb/docs/desktop-pane.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-today.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-pipeline.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-cash.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-undo.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-market.jpg
+  - https://raw.githubusercontent.com/jarrett-del/hermes-stoa/0177c92643e5f7a1de65896c6a36bcf054403ed5/docs/desktop-pane.jpg
 capabilities:
   provides_tools:
     - gtm_pipeline

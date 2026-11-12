@@ -233,7 +233,8 @@ def _spec(child: Any) -> Optional[dict[str, Any]]:
 
 
 def record_start(run: Any) -> None:
-    """A child began (or resumed) running: durable identity, rebuild spec, owner and starting workspace."""
+    """A child began (or resumed) running: durable identity, rebuild spec, owner and starting workspace. A write
+    that fails stays pending on the run (``_flush``) and is retried, whole, at the next checkpoint and at the stop."""
     child = run.child
     spec = _spec(child)
     sid = run.subagent_id
@@ -263,7 +264,7 @@ def record_start(run: Any) -> None:
                   "delegation_id": getattr(child, "_delegation_id", None), "owners": sorted(owners),
                   # The async unit whose ledger row reports this run (``<call>-k`` with independent completions).
                   "unit_id": getattr(child, "_delegation_unit_id", None),
-                  "start_cwd": start_cwd, "cwd": cwd, "worktree": prev.get("worktree")
+                  "start_cwd": start_cwd, "cwd": durable["cwd"], "worktree": prev.get("worktree")
                   or run.worktree_info, "outcome": "running", "resume_mode": None,
                   # Kept across continues: a tree the child made in an earlier run is still its own.
                   "worktrees_at_start": prev.get("worktrees_at_start") or start_trees,
@@ -272,9 +273,19 @@ def record_start(run: Any) -> None:
         # A running record pins too (its paths are resolved at sweep time): a crash before boot recovery ran must
         # not hand its tree to the sweep. Bounded by the same TTL.
         _upsert(conn, sid, record, state="running", pinned=True, expires_at=time.time() + _settings()[0] * 3600)
+        return True
 
-    _write(path, _do)
+    durable["pending"] = None if _write(path, _do) else _do
     child._delegate_durable = durable
+
+
+def _flush(durable: dict[str, Any]) -> bool:
+    """Retry the run's pending start record in its own transaction; True once it is persisted. Cleared only after
+    that transaction committed, so a later write failing never leaves "persisted" set over a rolled-back row."""
+    pending = durable.get("pending")
+    if pending is not None and _write(durable.get("db"), pending):
+        durable["pending"] = pending = None
+    return pending is None
 
 
 def _ancestor_sessions(child: Any) -> set[str]:
@@ -305,10 +316,14 @@ def checkpoint(run: Any) -> None:
         return
     cwd = _child_cwd(run)
     if not cwd or cwd == durable.get("cwd"):
+        _flush(durable)
         return
     durable["cwd"] = cwd
     baselines = durable["baselines"]
     _note_repo(baselines, durable["start_main"], cwd)
+
+    if not _flush(durable):
+        return  # the full start record goes first; this cwd rides on its next retry or on the stop record
 
     def _do(conn):
         conn.execute("UPDATE resumable_subagents SET record_json=json_set(record_json, '$.cwd', ?, "
@@ -327,8 +342,11 @@ def stop_cause_live(run: Any) -> Optional[str]:
 
 
 def keeps_worktree(run: Any, entry: dict[str, Any]) -> bool:
-    """Whether the stopped child is resumable, so its isolation worktree must survive the stop."""
-    if not run.subagent_id or not isinstance(getattr(run.child, "_delegate_durable", None), dict):
+    """Whether the stopped child is resumable, so its isolation worktree must survive the stop: only with its
+    record persisted (a pending one is retried first); without one nothing pins the tree, so it is finalized as
+    before (archived when it holds work)."""
+    durable = getattr(run.child, "_delegate_durable", None)
+    if not run.subagent_id or not isinstance(durable, dict) or not _flush(durable):
         return False
     return classify(entry, stop_cause_live(run))[0] == "resumable"
 
@@ -339,6 +357,8 @@ def stamp_entry(run: Any, entry: dict[str, Any]) -> None:
     if not run.subagent_id or not isinstance(durable, dict):
         return
     durable["cwd"] = _child_cwd(run) or durable.get("cwd")  # before cleanup drops the child's cwd record
+    if not _flush(durable):
+        return  # no record to continue from: the entry must not offer a resume
     state, mode, _ = classify(entry, stop_cause_live(run))
     if state == "resumable":
         entry["resume_mode"] = mode
@@ -355,6 +375,9 @@ def record_stop(run: Any, entry: Optional[dict[str, Any]]) -> None:
     live_cause = stop_cause_live(run)
     # The segment it stopped in: with ``compression.in_place: false`` each rotation moved it to a new session.
     session_id = getattr(run.child, "session_id", None)
+
+    if not _flush(durable):  # never a partial row (no goal, route or owners) the parent cannot claim
+        return
 
     def _do(conn):
         record = _row(conn, sid) or {}
@@ -513,7 +536,8 @@ def hold_claim(child: Any, parent_agent: Any, sid: str, record: dict[str, Any]) 
 def release_unstarted(child: Any) -> None:
     """Hand back the claim of a continued child whose run ended before ``record_start`` (idempotent)."""
     claim = getattr(child, "_delegate_claim", None)
-    if not isinstance(claim, tuple) or isinstance(getattr(child, "_delegate_durable", None), dict):
+    durable = getattr(child, "_delegate_durable", None)
+    if not isinstance(claim, tuple) or (isinstance(durable, dict) and durable.get("pending") is None):
         return
     child._delegate_claim = None
     path, sid, state = claim

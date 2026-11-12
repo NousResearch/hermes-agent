@@ -197,6 +197,34 @@ function isMachineNotice(displayKind: SessionMessage['display_kind']): boolean {
   return displayKind !== undefined && (NOTICE_DISPLAY_KINDS as readonly string[]).includes(displayKind)
 }
 
+/** A producer's note that names its card (`display_text`): a local chat's cron result
+ *  (`gateway/session_cron.py::deliver_to_local_chat`). It paints as that card, a
+ *  collapsible system row whose report is the note's text, like an async result. */
+function isCardNote(message: SessionMessage): boolean {
+  return message.display_kind === 'internal_notification' && timelineDisplayText(message.display_metadata) !== undefined
+}
+
+function rowDisplayRole(message: SessionMessage): SessionMessage['role'] {
+  return isMachineNotice(message.display_kind) || isCardNote(message) ? 'system' : message.role
+}
+
+/** The collapsible report of an async result or a card note, and whether it is a process log. */
+function asyncResultFields(
+  message: SessionMessage,
+  content: unknown
+): Pick<ChatMessage, 'asyncResult' | 'asyncResultKind'> {
+  const kind = message.display_kind
+
+  if (kind !== 'async_delegation_complete' && kind !== 'process_complete' && !isCardNote(message)) {
+    return {}
+  }
+
+  return {
+    asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)),
+    ...(kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {})
+  }
+}
+
 // A remote backend older than this app serves display_metadata as raw JSON text,
 // and `in` throws on a primitive — which used to fail the whole session resume.
 function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): null | Record<string, unknown> {
@@ -312,10 +340,15 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
 
 // Only parse producer-owned boundaries, never render the model's task preamble.
 // Older backends can persist an unwrapped result rather than an envelope.
+// `cron/scheduler_delivery.py::_deliver_result`'s wrapper header; the card already names the job.
+const CRON_RESPONSE_HEADER_RE = /^Cronjob Response: [^\n]*\n\(job_id: [^\n]*\)\n-+\n+/
+
 function asyncResultBody(content: string): string | undefined {
   let bodies = [content]
 
-  if (content.startsWith('[IMPORTANT: ')) {
+  if (CRON_RESPONSE_HEADER_RE.test(content)) {
+    bodies = [content.replace(CRON_RESPONSE_HEADER_RE, '')]
+  } else if (content.startsWith('[IMPORTANT: ')) {
     // Background-process completion: one `[IMPORTANT: …]` block per process, a batch header first.
     bodies = content
       .split(/\n\n(?=\[IMPORTANT: )/)
@@ -366,6 +399,10 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
         ? 'background agent work finished'
         : `${count} background agent${count === 1 ? '' : 's'} finished`)
     )
+  }
+
+  if (isCardNote(message)) {
+    return timelineDisplayText(message.display_metadata)!
   }
 
   if (message.display_kind === 'process_complete') {
@@ -543,7 +580,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       timelineDisplayContent(message, displayContentForMessage(message.role, content))
     )
 
-    const displayRole = isMachineNotice(message.display_kind) ? 'system' : message.role
+    const displayRole = rowDisplayRole(message)
 
     // Persisted user turns carry `@image:<path>` directive lines inline in
     // the text (see tui_gateway/server.py's persist-time rewrite). The
@@ -700,10 +737,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       role: displayRole,
       parts,
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),
-      ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'
-        ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
-        : {}),
-      ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
+      ...asyncResultFields(message, content),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),

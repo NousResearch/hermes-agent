@@ -6,13 +6,13 @@ import pytest
 
 
 def _picker_keys(config: dict) -> list[str]:
-    from hermes_cli.main_provider_setup import _build_provider_picker_rows
+    from hermes_agent.hermes_cli.main_provider_setup import _build_provider_picker_rows
 
     return [key for key, _, _ in _build_provider_picker_rows(config, "", {}, {})[0]]
 
 
 def test_local_models_row_follows_the_engine_pin_and_exclusions():
-    from hermes_cli.local_runtime import binaries
+    from hermes_agent.hermes_cli.local_runtime import binaries
 
     assert ("llamacpp" in _picker_keys({})) == (binaries.unavailable_reason("cpu") is None)
     assert "llamacpp" not in _picker_keys({"model_catalog": {"excluded_providers": ["llama.cpp"]}})
@@ -22,10 +22,10 @@ def test_local_models_row_follows_the_engine_pin_and_exclusions():
 def test_picked_model_runs_the_quickstart_job_and_reports_how_it_ended(monkeypatch, capsys, outcome):
     """The CLI starts the same quickstart job the desktop's button does and reports that job's
     terminal state; only a finished job claims the default changed."""
-    import hermes_cli.main_provider_setup as provider_setup
-    from hermes_cli import setup
-    from hermes_cli.model_setup_flows_local import _model_flow_local
-    from hermes_cli.web_routers import local_models as lm
+    import hermes_agent.hermes_cli.main_provider_setup as provider_setup
+    from hermes_agent.hermes_cli import setup
+    from hermes_agent.hermes_cli.model_setup_flows_local import _model_flow_local
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     row = {"id": "tiny", "display_name": "Tiny", "fits": True, "needs_engine": False, "recommended": True,
            "downloaded": False, "size_label": "1.0 GB", "fit_summary": "runs fully on your GPU"}

@@ -13,8 +13,8 @@ PREVIEW_LOADS = [
 
 
 def _page(monkeypatch, tmp_path):
-    from hermes_cli import web_server as server
-    from hermes_cli.web_server_dashboard import mount_spa
+    from hermes_agent.hermes_cli import web_server as server
+    from hermes_agent.hermes_cli.web_server_dashboard import mount_spa
 
     (tmp_path / "assets").mkdir()
     (tmp_path / "index.html").write_text("<html><head></head><body></body></html>")

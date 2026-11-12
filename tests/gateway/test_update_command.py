@@ -107,7 +107,7 @@ class TestHandleUpdateCommand:
 
         with patch("hermes_agent.gateway.run._hermes_home", hermes_home), \
              patch("hermes_agent.gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
-             patch("hermes_cli.config.detect_install_method", return_value="git"), \
+             patch("hermes_agent.hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
              patch("subprocess.Popen"):
             await runner._handle_update_command(event)
@@ -147,7 +147,7 @@ class TestHandleUpdateCommand:
 
         with patch("hermes_agent.gateway.run._hermes_home", hermes_home), \
              patch("hermes_agent.gateway.slash_commands.project_root_str", lambda: str(fake_root)), \
-             patch("hermes_cli.config.detect_install_method", return_value="git"), \
+             patch("hermes_agent.hermes_cli.config.detect_install_method", return_value="git"), \
              patch("shutil.which", side_effect=which_no_setsid), \
              patch("subprocess.Popen", mock_popen):
             await runner._handle_update_command(event)
@@ -189,7 +189,7 @@ class TestUpdateCommandPlatformGate:
         """
 
         # Make sure the plugin registry is populated so the fallback fires.
-        from hermes_cli.plugins import PluginManager
+        from hermes_agent.hermes_cli.plugins import PluginManager
         PluginManager().discover_and_load(force=True)
         from hermes_agent.gateway.platform_registry import platform_registry
         discord_entry = platform_registry.get("discord")
@@ -585,9 +585,9 @@ class TestUpdateCommandInstallMethodRefusal:
         mock_popen = MagicMock()
 
         with patch("hermes_agent.gateway.run._hermes_home", hermes_home), \
-             patch("hermes_cli.config.detect_install_method",
+             patch("hermes_agent.hermes_cli.config.detect_install_method",
                    return_value=method), \
-             patch("hermes_cli.config.recommended_update_command_for_method",
+             patch("hermes_agent.hermes_cli.config.recommended_update_command_for_method",
                    return_value=f"steward-update --{method}"), \
              patch("subprocess.Popen", mock_popen):
             result = await runner._handle_update_command(event)

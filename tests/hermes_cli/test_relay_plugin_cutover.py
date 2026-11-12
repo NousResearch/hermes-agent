@@ -8,9 +8,9 @@ from unittest.mock import patch
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.config import migrate_config
-from hermes_cli.doctor_config import collect_relay_plugin_cutover_findings
-from hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
+from hermes_agent.hermes_cli.config import migrate_config
+from hermes_agent.hermes_cli.doctor_config import collect_relay_plugin_cutover_findings
+from hermes_agent.hermes_cli.relay_plugin_cutover import RELAY_PLUGINS_CONFIG_ENV
 
 
 def test_v38_migration_removes_only_legacy_relay_plugin_keys(tmp_path):
@@ -85,10 +85,10 @@ def test_doctor_reports_legacy_exporter_env_without_new_config(monkeypatch):
 @pytest.mark.parametrize("name", ["nemo_relay", "observability/nemo_relay"])
 def test_enable_rejects_removed_relay_plugin_without_discovery(name, capsys):
     with (
-        patch("hermes_cli.plugins_cmd._resolve_plugin_key_and_source") as resolve,
-        patch("hermes_cli.plugins_cmd._set_plugin_enabled") as save_enabled,
+        patch("hermes_agent.hermes_cli.plugins_cmd._resolve_plugin_key_and_source") as resolve,
+        patch("hermes_agent.hermes_cli.plugins_cmd._set_plugin_enabled") as save_enabled,
     ):
-        from hermes_cli.plugins_cmd import cmd_enable
+        from hermes_agent.hermes_cli.plugins_cmd import cmd_enable
 
         with pytest.raises(SystemExit) as exc_info:
             cmd_enable(name, allow_tool_override=False)
@@ -104,12 +104,12 @@ def test_enable_rejects_removed_relay_plugin_without_discovery(name, capsys):
 def test_enable_rejects_alias_resolving_to_removed_relay_plugin(capsys):
     with (
         patch(
-            "hermes_cli.plugins_cmd._resolve_plugin_key_and_source",
+            "hermes_agent.hermes_cli.plugins_cmd._resolve_plugin_key_and_source",
             return_value=("observability/nemo_relay", "user"),
         ),
-        patch("hermes_cli.plugins_cmd._set_plugin_enabled") as save_enabled,
+        patch("hermes_agent.hermes_cli.plugins_cmd._set_plugin_enabled") as save_enabled,
     ):
-        from hermes_cli.plugins_cmd import cmd_enable
+        from hermes_agent.hermes_cli.plugins_cmd import cmd_enable
 
         with pytest.raises(SystemExit) as exc_info:
             cmd_enable("relay-copy", allow_tool_override=False)

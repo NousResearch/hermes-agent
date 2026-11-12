@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fail when a user ``config.yaml`` is read by anything but the config backend.
 
-Every read of ``<hermes home>/config.yaml`` must go through ``hermes_cli.config_backend``
+Every read of ``<hermes home>/config.yaml`` must go through ``hermes_agent.hermes_cli.config_backend``
 (``get_config_backend()`` / the path helpers there) so a non-file backend (design §4.1, D10) sees
 every reader. A direct ``open`` / ``read_text`` / ``yaml.safe_load`` / ``fast_safe_load`` /
 ``load_yaml_file_readonly`` / ``stat`` of a config path silently keeps reading the local file —

@@ -6,7 +6,7 @@ Native Desktop's local connection is the gateway's listener, and Electron's main
 (``apps/desktop/electron/local-gateway.ts``, ``nativeGatewayHttpHeaders``). Here the grant comes from
 the same ``TicketStore`` the control socket mints from, bound to a runner serving the test's home,
 and the peer is recorded as ``GatewayRuntimeAPI`` records it, so the real
-``hermes_cli.dashboard_auth.native_http`` gate admits each request.
+``hermes_agent.hermes_cli.dashboard_auth.native_http`` gate admits each request.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ def native_desktop_client(monkeypatch, profiles: dict[str, Path] | None = None) 
     naming one in ``?profile=`` carries a grant for that home, as Desktop mints one per profile."""
     from hermes_agent.gateway.runtime_bootstrap import TicketStore
     from hermes_agent.gateway.session_authorities import SessionAuthorities
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
     from hermes_constants import get_hermes_home
 
     home = get_hermes_home().resolve()

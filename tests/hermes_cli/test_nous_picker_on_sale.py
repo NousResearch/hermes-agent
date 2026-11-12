@@ -10,12 +10,12 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-import hermes_cli.models as models_mod
-import hermes_cli.models_pricing as mp
-from hermes_cli import model_setup_flows
-from hermes_cli import model_switch_providers as msp
-from hermes_cli.models import union_with_nous_on_sale_models
-from hermes_cli.models_pricing import fetch_models_with_pricing
+import hermes_agent.hermes_cli.models as models_mod
+import hermes_agent.hermes_cli.models_pricing as mp
+from hermes_agent.hermes_cli import model_setup_flows
+from hermes_agent.hermes_cli import model_switch_providers as msp
+from hermes_agent.hermes_cli.models import union_with_nous_on_sale_models
+from hermes_agent.hermes_cli.models_pricing import fetch_models_with_pricing
 
 _LIST = {"prompt": "0.000002", "completion": "0.00001"}
 
@@ -76,8 +76,8 @@ def test_nous_fetch_flags_tool_less_rows_so_the_union_can_skip_them(monkeypatch)
 
 def _stub_portal(monkeypatch, *, free_tier: bool, pricing: dict, allowed=None) -> None:
     monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider, **kw: pricing)
-    monkeypatch.setattr("hermes_cli.models.check_nous_free_tier", lambda **kw: free_tier)
-    monkeypatch.setattr("hermes_cli.models.fetch_nous_recommended_models", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.check_nous_free_tier", lambda **kw: free_tier)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_nous_recommended_models", lambda *a, **kw: None)
     monkeypatch.setattr(mp, "nous_policy_allowed_ids", lambda **kw: allowed)
 
 
@@ -110,10 +110,10 @@ def test_cli_setup_flow_and_gui_picker_agree(monkeypatch):
 
 def _login_picker_ids(monkeypatch, *, free_tier: bool, pricing: dict, allowed=None) -> list:
     """Model ids the post-login picker (``hermes auth add nous`` / re-auth) offers."""
-    from hermes_cli import auth_nous
+    from hermes_agent.hermes_cli import auth_nous
 
     _stub_portal(monkeypatch, free_tier=free_tier, pricing=pricing, allowed=allowed)
-    monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", lambda *a, **kw: ["curated/only"])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.get_curated_nous_model_ids", lambda *a, **kw: ["curated/only"])
     monkeypatch.setattr(auth_nous, "_portal_entitlement_message", lambda *a, **kw: "")
     offered: dict = {}
 
@@ -122,7 +122,7 @@ def _login_picker_ids(monkeypatch, *, free_tier: bool, pricing: dict, allowed=No
         offered["unavailable"] = list(kw.get("unavailable_models") or [])
         return model_ids[0] if model_ids else None
 
-    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", _prompt)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth._prompt_model_selection", _prompt)
     auth_nous._pick_nous_model_after_login({"agent_key": "k", "portal_base_url": ""}, "https://x.test/v1")
     return offered.get("ids", []) + offered.get("unavailable", [])  # selectable, then greyed-out
 

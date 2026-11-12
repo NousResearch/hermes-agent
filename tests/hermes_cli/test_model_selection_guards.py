@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from hermes_cli.model_selection_guards import (
+from hermes_agent.hermes_cli.model_selection_guards import (
     SelectionWarning,
     combined_selection_warning,
     selection_warnings,
@@ -55,7 +55,7 @@ def test_combined_selection_warning_merges_multiple():
         message="POLICY BLOCK",
     )
     with patch(
-        "hermes_cli.model_selection_guards._GUARDS",
+        "hermes_agent.hermes_cli.model_selection_guards._GUARDS",
         (lambda *a: cost, lambda *a: policy),
     ):
         merged = combined_selection_warning("m")
@@ -70,7 +70,7 @@ def test_misbehaving_guard_never_breaks_selection():
         raise RuntimeError("bad guard")
 
     with patch(
-        "hermes_cli.model_selection_guards._GUARDS",
+        "hermes_agent.hermes_cli.model_selection_guards._GUARDS",
         (_boom,),
     ):
         assert selection_warnings("anything") == []

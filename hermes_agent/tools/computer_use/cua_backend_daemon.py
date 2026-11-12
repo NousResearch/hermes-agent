@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_agent.tools.computer_use import cua_backend_driver as _driver
 from hermes_agent.tools.computer_use.permissions import CUA_DRIVER_BUNDLE_ID
-from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 
 logger = logging.getLogger("hermes_agent.tools.computer_use.cua_backend")
 

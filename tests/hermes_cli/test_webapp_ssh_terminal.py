@@ -13,11 +13,11 @@ from tests.hermes_cli.test_webapp_socket_tickets import _SESSION, serve_webapp
 
 @pytest.fixture
 def ssh_webapp(tmp_path, monkeypatch):
-    from hermes_cli import gateway_connections as store
-    from hermes_cli import gateway_connections_ssh as ssh
-    from hermes_cli import webapp_relay_target as reach
-    from hermes_cli.gateway_connections_ssh_transport import SshEndpoint
-    from hermes_cli.web_routers import webapp_relay_proxy as relay
+    from hermes_agent.hermes_cli import gateway_connections as store
+    from hermes_agent.hermes_cli import gateway_connections_ssh as ssh
+    from hermes_agent.hermes_cli import webapp_relay_target as reach
+    from hermes_agent.hermes_cli.gateway_connections_ssh_transport import SshEndpoint
+    from hermes_agent.hermes_cli.web_routers import webapp_relay_proxy as relay
 
     served = serve_webapp(tmp_path, monkeypatch)
     served.host.include_router(relay.router)
@@ -94,7 +94,7 @@ def _fish_cd_target(command: str) -> str:
 
 @pytest.mark.platforms("posix")
 def test_ssh_spawn_uses_the_saved_master_and_quotes_remote_cwd(ssh_webapp, monkeypatch, tmp_path):
-    from hermes_cli import web_server_chat
+    from hermes_agent.hermes_cli import web_server_chat
 
     seen = []
     spawn = web_server_chat.PtyBridge.spawn
@@ -128,7 +128,7 @@ def test_ssh_spawn_uses_the_saved_master_and_quotes_remote_cwd(ssh_webapp, monke
 
 @pytest.mark.parametrize("mutation", ["remove", "host", "user", "port", "keyPath", "remoteProfile"])
 def test_detached_ssh_shell_is_retired_when_its_saved_target_changes(ssh_webapp, mutation):
-    from hermes_cli import gateway_connections as store
+    from hermes_agent.hermes_cli import gateway_connections as store
 
     served = ssh_webapp
     with TestClient(served.host) as client:
@@ -146,7 +146,7 @@ def test_detached_ssh_shell_is_retired_when_its_saved_target_changes(ssh_webapp,
 
 
 def test_ssh_shell_cannot_be_attached_as_a_local_shell_or_another_saved_connection(ssh_webapp):
-    from hermes_cli import gateway_connections as store
+    from hermes_agent.hermes_cli import gateway_connections as store
     from tests.hermes_cli.test_webapp_socket_tickets import _mint
 
     served = ssh_webapp
@@ -168,7 +168,7 @@ def test_cold_ssh_dial_does_not_hold_up_other_new_terminals(ssh_webapp, monkeypa
     """A cold connect can take minutes; it must not run under the registry's spawn lock."""
     import threading
 
-    from hermes_cli import gateway_connections_ssh as ssh
+    from hermes_agent.hermes_cli import gateway_connections_ssh as ssh
     from tests.hermes_cli.test_webapp_socket_tickets import _mint
 
     dialing, release = threading.Event(), threading.Event()
@@ -213,8 +213,8 @@ def test_ssh_terminal_does_not_enable_shells_on_other_surfaces(ssh_webapp, monke
 
 
 def test_ssh_terminal_keeps_relay_ticket_origin_and_identity_checks(ssh_webapp):
-    from hermes_cli.web_routers.webapp import mint_socket_ticket
-    from hermes_cli.web_session_sockets import RELAY_SOCKET
+    from hermes_agent.hermes_cli.web_routers.webapp import mint_socket_ticket
+    from hermes_agent.hermes_cli.web_session_sockets import RELAY_SOCKET
     from tests.hermes_cli.test_webapp_socket_tickets import _mint, _TOKEN
 
     served = ssh_webapp

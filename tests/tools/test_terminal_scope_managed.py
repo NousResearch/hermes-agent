@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import managed_scope
+from hermes_agent.hermes_cli import managed_scope
 from hermes_agent.tools.terminal_scope import TerminalPolicyUnavailable, build_profile_terminal_scope
 
 

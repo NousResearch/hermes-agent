@@ -70,7 +70,7 @@ class TestResolveProviderClientMainAlias:
         assert "beans.local" in str(client.base_url)
 
     def test_main_resolves_plugin_provider_alias(self, tmp_path, request):
-        import hermes_cli.auth
+        import hermes_agent.hermes_cli.auth
         from hermes_agent import providers
         from hermes_agent.providers.base import ProviderProfile
 
@@ -80,13 +80,13 @@ class TestResolveProviderClientMainAlias:
         request.addfinalizer(lambda: (
             providers._REGISTRY.pop("acme-hub", None),
             providers._ALIASES.pop("acme-hub-alias", None),
-            hermes_cli.auth.PROVIDER_REGISTRY.pop("acme-hub", None),
-            hermes_cli.auth.PROVIDER_REGISTRY.pop("acme-hub-alias", None)))
+            hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY.pop("acme-hub", None),
+            hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY.pop("acme-hub-alias", None)))
         _write_config(tmp_path, {
             "model": {"default": "gpt-5.4", "provider": "acme-hub-alias"},
         })
         with (
-            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+            patch("hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
                 "api_key": "acme_test_token",
                 "base_url": "https://api.acme-hub.test/v1",
             }),
@@ -163,7 +163,7 @@ class TestResolveProviderClientModelNormalization:
             "model": {"default": "zai/glm-5.1", "provider": "zai"},
         })
         with (
-            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+            patch("hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
                 "api_key": "glm-key",
                 "base_url": "https://api.z.ai/api/paas/v4",
             }),
@@ -201,7 +201,7 @@ class TestResolveVisionProviderClientModelNormalization:
         })
         with (
             patch("hermes_agent.agent.auxiliary_client._read_nous_auth", return_value=None),
-            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+            patch("hermes_agent.hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
                 "api_key": "glm-key",
                 "base_url": "https://api.z.ai/api/paas/v4",
             }),

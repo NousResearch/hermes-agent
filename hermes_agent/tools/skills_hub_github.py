@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import httpx
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_agent.agent.retry_utils import parse_retry_after_seconds
 from hermes_agent.tools.skills_guard import TRUSTED_REPOS
 from hermes_agent.tools.skills_hub_models import (
@@ -140,7 +140,7 @@ class GitHubAuth:
     def _try_gh_cli(self) -> Optional[str]:
         # Shared with git clones: strips GH_TOKEN/GITHUB_TOKEN, which gh would otherwise echo back
         # instead of its keyring login (the dead .env token would come back as the "gh" credential).
-        from hermes_cli.git_credentials import _gh_cli_token
+        from hermes_agent.hermes_cli.git_credentials import _gh_cli_token
         return _gh_cli_token()
 
     def _try_github_app(self) -> Optional[str]:

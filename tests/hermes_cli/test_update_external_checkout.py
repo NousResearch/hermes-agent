@@ -3,7 +3,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_cli import update_cmd_fleet, update_receipt
+from hermes_agent.hermes_cli import update_cmd_fleet, update_receipt
 
 
 def _checkout(tmp_path: Path, name: str) -> Path:
@@ -114,11 +114,11 @@ def test_collect_fleet_versions_classifies_separate_checkout_gateway(tmp_path, m
         "code_sha": "f" * 40, "code_version": "0.0.1",
     }), encoding="utf-8")
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_agent.hermes_cli.build_info.get_code_identity",
         lambda refresh=False: {"sha": "a" * 40, "short_sha": "a" * 8, "version": "1.0", "source": "git"},
     )
-    monkeypatch.setattr("hermes_cli.profiles._get_default_hermes_home", lambda: home)
-    monkeypatch.setattr("hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no_profiles")
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles._get_default_hermes_home", lambda: home)
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no_profiles")
     monkeypatch.setattr(update_receipt, "_socket_identity", lambda _home: None)
     monkeypatch.setattr("hermes_agent.gateway.status.live_gateway_pid_for_home", lambda _home: 4242)
 

@@ -60,7 +60,7 @@ def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
     aux = _SESSION_AUXILIARY.get()
     if aux is None:
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
             config = load_config_readonly()
         except ImportError:
             return {}
@@ -69,7 +69,7 @@ def _task_config(task: str, _seen: frozenset) -> dict[str, Any]:
     if not isinstance(task_config, dict):
         task_config = {}
     try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        from hermes_agent.hermes_cli.plugins import get_plugin_auxiliary_tasks
         for _entry in get_plugin_auxiliary_tasks():
             if _entry.get("key") == task:
                 _defaults = _entry.get("defaults") or {}

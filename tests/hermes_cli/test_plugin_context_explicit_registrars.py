@@ -6,9 +6,9 @@ import inspect
 
 import pytest
 
-from hermes_cli import plugins_loader
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-from hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
+from hermes_agent.hermes_cli import plugins_loader
+from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_agent.hermes_cli.plugins_registrars import _SCOPED_PROVIDER_REGISTRARS, make_scoped_provider_registrar
 from hermes_constants import get_hermes_home
 
 

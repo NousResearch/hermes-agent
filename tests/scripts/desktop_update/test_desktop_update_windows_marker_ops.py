@@ -275,7 +275,7 @@ def test_marker_op_reclaim_reports_held_while_a_leased_child_outlives_its_owner(
 
 def test_checkout_lock_probe_covers_the_owner_byte_and_every_lease_byte() -> None:
     """Runs everywhere (the live cells above need Windows): Test-CheckoutLockHeld must lock
-    and unlock the same range hermes_cli/update_lock.py::_try_lock judges -- the owner byte at
+    and unlock the same range hermes_agent/hermes_cli/update_lock.py::_try_lock judges -- the owner byte at
     1 MiB plus the 16 R5b lease bytes after it -- or a leased survivor reads as a free checkout."""
     import re
 

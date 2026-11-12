@@ -8,7 +8,7 @@ import threading
 import time
 
 from hermes_agent.gateway.active_lease_io import release_soon
-from hermes_cli import active_sessions
+from hermes_agent.hermes_cli import active_sessions
 
 
 def test_a_queued_release_returns_while_the_registry_is_locked_and_lands_after(tmp_path, monkeypatch):

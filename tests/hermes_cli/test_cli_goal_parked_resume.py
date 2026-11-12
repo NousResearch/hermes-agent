@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import goals
-from hermes_cli.cli_loops_mixin import CLILoopsMixin
+from hermes_agent.hermes_cli import goals
+from hermes_agent.hermes_cli.cli_loops_mixin import CLILoopsMixin
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def test_idle_hook_queues_the_continuation_when_a_timed_barrier_has_elapsed(herm
     mgr.set("finish the thing")
     mgr.wait_for_seconds(1, reason="cooldown")
     cli = _Cli(mgr)
-    with patch("cli._cprint"), patch("cli._DIM", ""), patch("cli._RST", ""):
+    with patch("hermes_agent.cli._cprint"), patch("hermes_agent.cli._DIM", ""), patch("hermes_agent.cli._RST", ""):
         cli._maybe_resume_parked_goal()
         assert cli._pending_input.empty()            # still parked
         mgr.state.waiting_until = time.time() - 1

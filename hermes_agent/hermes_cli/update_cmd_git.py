@@ -1,6 +1,6 @@
 """Git plumbing for ``hermes update``: fork/upstream sync, trampoline-git detection, lockfile/EOL churn cleanup, orphan rescue refs, parked-branch assessment, fetch-failure classification.
 
-Split out of ``update_cmd.py``, which re-imports every name so ``hermes_cli.update_cmd.<name>``
+Split out of ``update_cmd.py``, which re-imports every name so ``hermes_agent.hermes_cli.update_cmd.<name>``
 still resolves/monkeypatches. Origin helpers are imported lazily per function (no cycle;
 test patches on ``update_cmd`` stay effective).
 """
@@ -15,10 +15,10 @@ from datetime import datetime, timedelta, timezone, UTC
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env, windows_hide_flags
-from hermes_cli.update_cmd_common import _record_stop
+from hermes_agent.hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env, windows_hide_flags
+from hermes_agent.hermes_cli.update_cmd_common import _record_stop
 
-logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.hermes_cli.update_cmd")  # log-record parity with the origin module
 
 _ORPHAN_RESCUE_REFS_TO_KEEP = 10
 _ORPHAN_RESCUE_REF_MAX_AGE_DAYS = 30
@@ -44,7 +44,7 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, env=None):
     Windows ANSI code page (#52649). ``check=True`` raises on non-zero exit. The spawn
     always hides its console window (#117781). ``env`` replaces the child's environment.
     """
-    from hermes_cli.update_custody import run_git
+    from hermes_agent.hermes_cli.update_custody import run_git
 
     # THE custody policy (R2): stash push / reset --hard keep the update's lock fd, fetch does not.
     return run_git(
@@ -60,7 +60,7 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, env=None):
 
 def _git_stdout(git_cmd, args, cwd, **kw) -> Optional[str]:
     """Stripped stdout of a successful ``_git_run``; ``None`` on non-zero exit or any exception."""
-    from hermes_cli.update_cmd import _git_run
+    from hermes_agent.hermes_cli.update_cmd import _git_run
     with suppress(Exception):
         result = _git_run(git_cmd, args, cwd, **kw)
         if result.returncode == 0:
@@ -87,7 +87,7 @@ def _prune_orphan_rescue_refs(
     those objects include a full working-tree snapshot (the autostash orphan commit), which can be multi-GB
     when the tree holds large stray files. See #87694.
     """
-    from hermes_cli.update_cmd_git import _git_run
+    from hermes_agent.hermes_cli.update_cmd_git import _git_run
     with suppress(OSError):
         stale: set[str] = set()
         for kind in ("orphan", "diverged", "detached"):
@@ -119,7 +119,7 @@ def _park_detached_head(git_cmd, cwd, branch) -> None:
     scheme and expiry) and name it. When that write fails, refuse (``sys.exit(1)``) rather than
     orphan the work. Attached HEADs and already-reachable commits are left alone.
     """
-    from hermes_cli.update_cmd import _git_run
+    from hermes_agent.hermes_cli.update_cmd import _git_run
     if _git_run(git_cmd, ["symbolic-ref", "-q", "HEAD"], cwd).returncode == 0:
         return  # on a branch
     head = _git_run(git_cmd, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"], cwd)
@@ -151,8 +151,8 @@ def _branch_head_label(git_cmd=None, cwd=None) -> str | None:
     """``"<branch> @ <short-sha>"`` for the checkout (``detached`` when not on a branch), or None. Never raises.
 
     Appended to summary lines so a checkout parked on a stale branch is visible."""
-    from hermes_cli.update_cmd import _m
-    from hermes_cli.update_custody import run_git
+    from hermes_agent.hermes_cli.update_cmd import _m
+    from hermes_agent.hermes_cli.update_custody import run_git
     try:
         cmd = list(git_cmd) if git_cmd else ["git"]
         root = cwd if cwd is not None else _m().PROJECT_ROOT
@@ -185,9 +185,9 @@ def _assess_parked_branch_switch(git_cmd: list[str], cwd: Path, current_branch: 
     - (False, "disabled"|"dirty"|"unverifiable") — caller must NOT touch the branch. Dirty is the
       genuinely unsafe case: uncommitted work riding an autostash across branches.
     A config read failure must not disable the safety checks: fall through with the default."""
-    from hermes_cli.update_cmd_git import _git_run
+    from hermes_agent.hermes_cli.update_cmd_git import _git_run
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         _update_cfg = (load_config() or {}).get("updates", {})
         if isinstance(_update_cfg, dict) and not bool(_update_cfg.get("auto_switch_parked_branch", True)):
             return False, "disabled"
@@ -339,7 +339,7 @@ def _offer_upstream_remote(git_cmd: list[str], cwd: Path, *, assume_yes: bool, i
     """Prompt to add ``upstream`` and add it; False when the user declined, the run is non-interactive, or add failed.
 
     ``--yes`` means "don't block", not "mutate my remotes", so a non-interactive skip is NOT persisted."""
-    from hermes_cli.update_cmd import _add_upstream_remote, _mark_skip_upstream_prompt
+    from hermes_agent.hermes_cli.update_cmd import _add_upstream_remote, _mark_skip_upstream_prompt
     print(
         "\nℹ Your fork is not tracking the official Hermes repository.\n"
         "  This means you may miss updates from NousResearch/hermes-agent.\n"
@@ -389,9 +389,9 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
 
     See #97052.
     """
-    from hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
-    from hermes_cli.update_cmd_check import tracking_refspec
-    from hermes_cli.update_custody import run_git
+    from hermes_agent.hermes_cli.update_cmd import _count_commits_between, _has_upstream_remote, _no_prompt_git_kwargs, _should_skip_upstream_prompt
+    from hermes_agent.hermes_cli.update_cmd_check import tracking_refspec
+    from hermes_agent.hermes_cli.update_custody import run_git
     if not _has_upstream_remote(git_cmd, cwd) and (
         _should_skip_upstream_prompt() or not _offer_upstream_remote(git_cmd, cwd, assume_yes=assume_yes, input_fn=input_fn)
     ):
@@ -423,8 +423,8 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
     print(f"\n→ Fork is {upstream_ahead} commit(s) behind upstream\n→ Pulling from upstream...")
     # A tree move like the pull itself: the marker and the owed tail are armed before git writes,
     # and the just-fetched ref is merged (a second `git pull` fetch could move past the marker's target).
-    from hermes_cli import update_cmd_commit as _commit
-    from hermes_cli._early_recovery import interrupted_pull_marker, is_object_id
+    from hermes_agent.hermes_cli import update_cmd_commit as _commit
+    from hermes_agent.hermes_cli._early_recovery import interrupted_pull_marker, is_object_id
     pre = _git_stdout(git_cmd, ["rev-parse", "HEAD"], cwd)
     if not is_object_id(pre):
         # The marker's ``pre`` is what a killed move is restored to: never arm ``pre=``.
@@ -433,7 +433,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
     target = upstream  # the counted commit is the marker's target and the merge's (m2)
     # Judged BEFORE the move, like the origin target's preflight: the marker goes on git's exit 0,
     # so a broken target must never land on the strength of the caller's later guard (review G1).
-    from hermes_cli.update_cmd import _UPDATE_CRITICAL_FILES
+    from hermes_agent.hermes_cli.update_cmd import _UPDATE_CRITICAL_FILES
     if broken := _commit.target_syntax_error(git_cmd, cwd, target, _UPDATE_CRITICAL_FILES):
         raise UpstreamTargetBroken(target, *broken)
     refused = _commit.arm_commit_point(git_cmd, cwd, _commit.debt_sha_for_move(pre, target), pre=pre,
@@ -577,7 +577,7 @@ def _print_fetch_failure(stderr: str, *, git_cmd=None, root: Optional[Path] = No
 def _probe_fork_bomb(argv: list) -> Optional[bool]:
     """Run ``<argv> --version``; True/False = guard message seen/absent, None = probe itself failed."""
     try:
-        from hermes_cli.update_custody import run_git
+        from hermes_agent.hermes_cli.update_custody import run_git
 
         result = run_git(argv, ["--version"], timeout=15, **_GIT_TEXT_KW)
     except Exception:
@@ -634,7 +634,7 @@ def _ensure_non_trampoline_git(git_cmd: list) -> list:
     """Swap a broken Git-for-Windows trampoline for a real git binary so fetch/pull/checkout keep working;
     if none is found leave the command untouched (fetch-failure handler falls back to ZIP). No-op off
     Windows and when git is healthy."""
-    from hermes_cli.update_cmd import _locate_real_git
+    from hermes_agent.hermes_cli.update_cmd import _locate_real_git
     if sys.platform != "win32" or not _git_is_trampoline(git_cmd):
         return git_cmd
     real_git = _locate_real_git()
@@ -656,7 +656,7 @@ def _discard_lockfile_churn(git_cmd, repo_root, *, checkout_move=None):
     kept when its sibling ``package.json`` is dirty: reverting it alone desyncs spec and lock and every
     later ``npm ci`` fails (#112378). ``pnpm-lock.yaml`` is never touched: pnpm's frozen installs do not
     rewrite it, so a change there is the user's own. Best-effort."""
-    from hermes_cli.update_cmd_git import _git_run
+    from hermes_agent.hermes_cli.update_cmd_git import _git_run
     with suppress(Exception):
         diff = _git_run(git_cmd, ["diff", "--name-only"], repo_root)
         if diff.returncode != 0:
@@ -686,8 +686,8 @@ def _normalize_managed_eol(git_cmd, repo_root, *, checkout_move=None):
     reuses its build-pinned ``install.ps1`` forever — so ``hermes update``, which ships with the checkout
     itself, is the only path left that can fix them. See #67730.
     """
-    from hermes_cli.update_cmd_git import _git_run
-    from hermes_cli.update_custody import run_git
+    from hermes_agent.hermes_cli.update_cmd_git import _git_run
+    from hermes_agent.hermes_cli.update_custody import run_git
     # -c, not config: evaluate the tree as it WOULD look pinned, persisting nothing.
     probe = git_cmd + ["-c", "core.autocrlf=false"]
 

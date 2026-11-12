@@ -42,42 +42,42 @@ class TestSingleQueryApprovalModeParsing:
     def test_default_is_deny(self):
         """When no config is set, single_query_mode defaults to 'deny'."""
         from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {}}):
+        with mock_patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"approvals": {}}):
             assert _get_single_query_approval_mode() == "deny"
 
 
     def test_explicit_approve(self):
         from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "approve"}}):
+        with mock_patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "approve"}}):
             assert _get_single_query_approval_mode() == "approve"
 
     def test_off_maps_to_approve(self):
         """'off' is an alias for 'approve' (matches --yolo semantics)."""
         from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "off"}}):
+        with mock_patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "off"}}):
             assert _get_single_query_approval_mode() == "approve"
 
 
     def test_case_insensitive(self):
         from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "APPROVE"}}):
+        with mock_patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "APPROVE"}}):
             assert _get_single_query_approval_mode() == "approve"
 
     def test_unknown_value_defaults_to_deny(self):
         from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "maybe"}}):
+        with mock_patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "maybe"}}):
             assert _get_single_query_approval_mode() == "deny"
 
     def test_config_load_failure_defaults_to_deny(self):
         """If config loading fails entirely, default to deny (safe)."""
         from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("config broken")):
+        with mock_patch("hermes_agent.hermes_cli.config.load_config_readonly", side_effect=RuntimeError("config broken")):
             assert _get_single_query_approval_mode() == "deny"
 
     def test_yaml_boolean_false_maps_to_deny(self):
         """YAML 1.1 parses bare 'off' as False. Ensure it maps to deny."""
         from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": False}}):
+        with mock_patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": False}}):
             # str(False) = "False", which is not in the approve set, so deny
             assert _get_single_query_approval_mode() == "deny"
 

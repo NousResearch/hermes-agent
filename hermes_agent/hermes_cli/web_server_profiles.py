@@ -12,11 +12,11 @@ from contextlib import contextmanager, nullcontext
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
-from hermes_cli.config import DEFAULT_CONFIG, get_process_hermes_home
-from hermes_cli.web_server_gateway import _ACTION_LOG_FILES
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, get_process_hermes_home
+from hermes_agent.hermes_cli.web_server_gateway import _ACTION_LOG_FILES
 
 # Same logger the code used before extraction (record parity).
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 
 
 def _safe(callable_: Callable[[], Any], default: Any) -> Any:
@@ -56,7 +56,7 @@ def serving_profile_name() -> str:
     answers ``"custom"``) returns "" and keeps the old unnamed behaviour rather than
     risking a wrong-profile write.
     """
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
     try:
         name = (profiles_mod.get_active_profile_name() or "").strip()
         if not name or name == "custom":
@@ -187,7 +187,7 @@ def _fallback_profile_dicts(profiles_mod) -> list[dict[str, Any]]:
 
 def _resolve_profile_dir(name: str) -> Path:
     """Validate ``name`` and resolve to its directory or raise an HTTPException."""
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
     try:
         profiles_mod.validate_profile_name(name)
     except ValueError as e:
@@ -261,7 +261,7 @@ def _config_profile_scope(profile: Optional[str]):
     secret scope rather than the launch profile's.
     """
     from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import get_hermes_home, get_hermes_home_override
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting, launch_secret_scope
 
@@ -313,7 +313,7 @@ def _plugin_terminal_backend_rows() -> list[dict[str, str]]:
     """Picker rows for plugin-registered terminal backends (fail-soft)."""
     rows: list[dict[str, str]] = []
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent — plugin state may not be loaded yet
     except Exception:
         pass
@@ -413,7 +413,7 @@ def _profile_cli_args(profile: Optional[str]) -> list[str]:
     requested = (profile or "").strip()
     if not requested or requested.lower() == "current":
         return []
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
     _resolve_profile_dir(requested)
     return ["-p", profiles_mod.normalize_profile_name(requested)]
 

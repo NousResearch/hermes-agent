@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from hermes_cli import browser_preview_signins as signins
+from hermes_agent.hermes_cli import browser_preview_signins as signins
 
 COOKIES = [
     {"name": "sid", "value": "s3cret", "domain": "app.test", "path": "/", "httpOnly": True, "secure": True,

@@ -124,7 +124,7 @@ class TestCrossProfileStopRefusal:
             record = _pid_record(proc, tmp_path / "bin" / "hermes", root_home)
             (tim_home / "gateway.pid").write_text(json.dumps(record))
 
-            from hermes_cli import gateway as gateway_cli
+            from hermes_agent.hermes_cli import gateway as gateway_cli
 
             assert gateway_cli.stop_profile_gateway() is False
             assert not (tim_home / "gateway.pid").exists(), (
@@ -153,7 +153,7 @@ class TestCrossProfileStopRefusal:
             record = _pid_record(proc, tmp_path / "bin" / "hermes", tim_home)
             (tim_home / "gateway.pid").write_text(json.dumps(record))
 
-            from hermes_cli import gateway as gateway_cli
+            from hermes_agent.hermes_cli import gateway as gateway_cli
 
             assert gateway_cli.stop_profile_gateway() is True
             deadline = time.monotonic() + 15.0
@@ -184,7 +184,7 @@ class TestProfileDeleteStopRefusal:
             record = _pid_record(proc, tmp_path / "bin" / "hermes", root_home)
             (tim_home / "gateway.pid").write_text(json.dumps(record))
 
-            from hermes_cli.profiles import _stop_gateway_process
+            from hermes_agent.hermes_cli.profiles import _stop_gateway_process
 
             _stop_gateway_process(tim_home)
             out = capsys.readouterr().out
@@ -208,7 +208,7 @@ class TestProfileDeleteStopRefusal:
             record = _pid_record(proc, tmp_path / "bin" / "hermes", tim_home)
             (tim_home / "gateway.pid").write_text(json.dumps(record))
 
-            from hermes_cli.profiles import _stop_gateway_process
+            from hermes_agent.hermes_cli.profiles import _stop_gateway_process
 
             _stop_gateway_process(tim_home)
             deadline = time.monotonic() + 15.0

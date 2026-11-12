@@ -13,7 +13,7 @@ from hermes_agent.tools.computer_use import cua_backend_driver
 
 
 def _invoke(monkeypatch, *args: str) -> int:
-    cli_main = import_module("hermes_cli.main")
+    cli_main = import_module("hermes_agent.hermes_cli.main")
     monkeypatch.setattr(sys, "argv", ["hermes", "computer-use", *args])
     monkeypatch.setattr(cli_main, "_prepare_agent_startup", lambda _args: None)
     try:
@@ -28,7 +28,7 @@ def _invoke(monkeypatch, *args: str) -> int:
 
 
 def test_computer_use_status_reports_pm_without_polling_vendor(monkeypatch, capsys, tmp_path):
-    from hermes_cli import tools_config_cua as cua
+    from hermes_agent.hermes_cli import tools_config_cua as cua
 
     monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
     monkeypatch.setattr(cua_backend_driver, "resolve_cua_driver_cmd", lambda: str(tmp_path / "cua-driver"))
@@ -47,7 +47,7 @@ def test_computer_use_status_returns_nonzero_when_driver_is_missing(monkeypatch,
 
 @pytest.mark.parametrize("override", [False, True])
 def test_computer_use_status_reports_unusable_driver(monkeypatch, capsys, tmp_path, override):
-    from hermes_cli import tools_config_cua as cua
+    from hermes_agent.hermes_cli import tools_config_cua as cua
 
     driver = str(tmp_path / "cua-driver")
     if override:
@@ -71,7 +71,7 @@ def test_computer_use_status_reports_unusable_driver(monkeypatch, capsys, tmp_pa
 @pytest.mark.parametrize("ready", [False, True])
 @pytest.mark.parametrize("upgrade", [False, True])
 def test_computer_use_install_propagates_setup_result(monkeypatch, ready, upgrade):
-    from hermes_cli import tools_config_cua as cua
+    from hermes_agent.hermes_cli import tools_config_cua as cua
 
     install = Mock(return_value=ready)
     monkeypatch.setattr(cua, "install_cua_driver", install)

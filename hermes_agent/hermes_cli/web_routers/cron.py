@@ -18,13 +18,13 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from hermes_cli.web_deps import late
-from hermes_cli.config import cfg_get
-from hermes_cli.web_server_cron import (
+from hermes_agent.hermes_cli.web_deps import late
+from hermes_agent.hermes_cli.config import cfg_get
+from hermes_agent.hermes_cli.web_server_cron import (
     _create_cron_job_sync, _cron_optional_text, _cron_string_list, _mutate_cron_for_profile, _normalize_dashboard_cron_script, _raise_if_cron_registration_error, _run_cron_dashboard_io, _validate_dashboard_cron_context_from, _validate_dashboard_cron_effective_job,
 )
-from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
-from hermes_cli.web_routers._common import log as _log
+from hermes_agent.hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
+from hermes_agent.hermes_cli.web_routers._common import log as _log
 from hermes_time import get_timezone as _get_timezone
 from hermes_agent.hermes_state_keys import legacy_cron_run_job
 from hermes_constants import (
@@ -35,17 +35,17 @@ from hermes_constants import (
 
 router = APIRouter()
 
-_find_cron_job_profile = late("_find_cron_job_profile", "hermes_cli.web_server_cron")
-_fire_cron_job_for_profile = late("_fire_cron_job_for_profile", "hermes_cli.web_server_cron")
-_forward_cron_fire_to_gateway = late("_forward_cron_fire_to_gateway", "hermes_cli.web_server_cron")
-_gateway_intentionally_stopped = late("_gateway_intentionally_stopped", "hermes_cli.web_server_cron")
-_notify_cron_provider_for_profile = late("_notify_cron_provider_for_profile", "hermes_cli.web_server_cron")
-_call_cron_for_profile = late("_call_cron_for_profile", "hermes_cli.web_server_cron")
-load_config = late("load_config", "hermes_cli.config")
-_cron_profile_dicts = late("_cron_profile_dicts", "hermes_cli.web_server_cron")
-_cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
-_open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
-_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
+_find_cron_job_profile = late("_find_cron_job_profile", "hermes_agent.hermes_cli.web_server_cron")
+_fire_cron_job_for_profile = late("_fire_cron_job_for_profile", "hermes_agent.hermes_cli.web_server_cron")
+_forward_cron_fire_to_gateway = late("_forward_cron_fire_to_gateway", "hermes_agent.hermes_cli.web_server_cron")
+_gateway_intentionally_stopped = late("_gateway_intentionally_stopped", "hermes_agent.hermes_cli.web_server_cron")
+_notify_cron_provider_for_profile = late("_notify_cron_provider_for_profile", "hermes_agent.hermes_cli.web_server_cron")
+_call_cron_for_profile = late("_call_cron_for_profile", "hermes_agent.hermes_cli.web_server_cron")
+load_config = late("load_config", "hermes_agent.hermes_cli.config")
+_cron_profile_dicts = late("_cron_profile_dicts", "hermes_agent.hermes_cli.web_server_cron")
+_cron_profile_home = late("_cron_profile_home", "hermes_agent.hermes_cli.web_server_cron")
+_open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_agent.hermes_cli.web_server_sessions")
+_config_profile_scope = late("_config_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
 
 def _job_not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="Job not found")

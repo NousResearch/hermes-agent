@@ -1,6 +1,6 @@
 """Profile describer — auto-generate ``description`` for a profile.
 
-Mirrors ``hermes_cli/kanban_specify.py``: lazy aux client import, lenient response parse,
+Mirrors ``hermes_agent/hermes_cli/kanban_specify.py``: lazy aux client import, lenient response parse,
 never raises on expected failure modes. Reads at most ``MAX_SKILLS_FOR_PROMPT`` skill
 names to keep the prompt bounded.
 """
@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli import profiles as profiles_mod
+from hermes_agent.hermes_cli import profiles as profiles_mod
 from hermes_agent.agent.skill_utils import is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ def _sample_skills(names: list[str]) -> list[str]:
 
 
 def _extract_json_blob(raw: str) -> Optional[dict]:
-    from hermes_cli.kanban_specify import _extract_json_blob as _extract
+    from hermes_agent.hermes_cli.kanban_specify import _extract_json_blob as _extract
     return _extract(raw, _FENCE_RE)
 
 

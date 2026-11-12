@@ -106,7 +106,7 @@ def test_build_review_task_includes_excerpt_and_prompt():
 
 def test_load_review_credentials_cfg_reads_config(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "hermes_agent.hermes_cli.config.load_config_readonly",
         lambda: {"auxiliary": {"review": {
             "provider": "openrouter",
             "model": "anthropic/claude-opus-4.6",
@@ -123,14 +123,14 @@ def test_load_review_credentials_cfg_reads_config(monkeypatch):
 
 def test_load_review_credentials_cfg_auto_means_inherit(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "hermes_agent.hermes_cli.config.load_config_readonly",
         lambda: {"auxiliary": {"review": {"provider": "auto", "model": ""}}},
     )
     assert re_mod._load_review_credentials_cfg() is None
 
 def test_load_review_credentials_cfg_missing_section(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly", lambda: {"auxiliary": {}}
+        "hermes_agent.hermes_cli.config.load_config_readonly", lambda: {"auxiliary": {}}
     )
     assert re_mod._load_review_credentials_cfg() is None
 
@@ -388,9 +388,9 @@ def test_review_registered_in_every_aux_surface():
     allowlist (_AUX_TASK_SLOTS). The desktop and web AUX_TASKS tsx arrays
     mirror _AUX_TASK_SLOTS by convention (shared "Must match" comments).
     """
-    from hermes_cli.config import DEFAULT_CONFIG
-    from hermes_cli.main_provider_setup import _AUX_TASKS
-    from hermes_cli.web_server_config import _AUX_TASK_SLOTS
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.main_provider_setup import _AUX_TASKS
+    from hermes_agent.hermes_cli.web_server_config import _AUX_TASK_SLOTS
 
     assert "review" in DEFAULT_CONFIG["auxiliary"], \
         "review missing from DEFAULT_CONFIG['auxiliary']"

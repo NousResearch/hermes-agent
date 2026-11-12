@@ -23,7 +23,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli._early_recovery import (
+from hermes_agent.hermes_cli._early_recovery import (
     RECOVERY_CLOSURE,
     RECOVERY_CLOSURE_INIT,
     RECOVERY_CLOSURE_MANIFEST,
@@ -36,10 +36,10 @@ from hermes_cli._early_recovery import (
     restore_interrupted_pull,
     write_durable_text,
 )
-from hermes_cli.update_cmd_common import _record_stop
-from hermes_cli.update_custody import run_git
+from hermes_agent.hermes_cli.update_cmd_common import _record_stop
+from hermes_agent.hermes_cli.update_custody import run_git
 
-logger = logging.getLogger("hermes_cli.update_cmd")
+logger = logging.getLogger("hermes_agent.hermes_cli.update_cmd")
 # What this run found before it armed anything: {path: bytes or None}. None = nothing armed yet.
 _armed_snapshot: Optional[dict[Path, Optional[bytes]]] = None
 # What this run's latest arm left at each path: disarm hands back only records still exactly these.
@@ -52,15 +52,15 @@ _owner: str = ""
 
 
 def _owns_live_checkout(root: Path) -> bool:
-    from hermes_cli.update_cmd import _m
+    from hermes_agent.hermes_cli.update_cmd import _m
 
     return _m()._pytest_owns_live_checkout(root)
 
 
 def _obligation_paths(root: Path) -> list[Path]:
-    from hermes_cli.update_cmd_fleet import _fleet_restart_pending_marker_path
-    from hermes_cli.update_host_obligation import host_obligation_path
-    from hermes_cli.venv_sync import completion_pending_path
+    from hermes_agent.hermes_cli.update_cmd_fleet import _fleet_restart_pending_marker_path
+    from hermes_agent.hermes_cli.update_host_obligation import host_obligation_path
+    from hermes_agent.hermes_cli.venv_sync import completion_pending_path
 
     return [completion_pending_path(root), _fleet_restart_pending_marker_path(), host_obligation_path()]
 
@@ -129,8 +129,8 @@ def arm_commit_obligations(root: Path, expected_sha: str) -> None:
     global _armed_snapshot, _owner
     import uuid
 
-    from hermes_cli.update_cmd_fleet import _write_fleet_restart_pending_marker
-    from hermes_cli.venv_sync import arm_completion
+    from hermes_agent.hermes_cli.update_cmd_fleet import _write_fleet_restart_pending_marker
+    from hermes_agent.hermes_cli.venv_sync import arm_completion
 
     if _armed_snapshot is None:  # a re-arm runs after a move: too late to load anything
         load_post_move_modules()
@@ -166,7 +166,7 @@ def disarm_commit_obligations() -> None:
             if root is not None:
                 _owe_for(root, head)
             return
-    from hermes_cli.update_host_obligation import host_obligation_path, release_host_obligation, replace_bytes
+    from hermes_agent.hermes_cli.update_host_obligation import host_obligation_path, release_host_obligation, replace_bytes
 
     snapshot, _armed_snapshot = _armed_snapshot, None
     armed = dict(_armed_bytes)
@@ -230,7 +230,7 @@ def arm_commit_point(git_cmd, root: Path, expected_sha: str, **move) -> str | No
     (``disarm_commit_obligations``), and the caller must stop before git writes a file.
     Linux/macOS gateways are paused first: this is every route's first checkout move.
     """
-    from hermes_cli.update_cmd_posix_pause import pause_at_commit_point
+    from hermes_agent.hermes_cli.update_cmd_posix_pause import pause_at_commit_point
     if refused := pause_at_commit_point():
         return refused
     try:
@@ -491,7 +491,7 @@ _COMPILE_ALL = (
 
 def _run_python(argv: list[str], *, stdin: str = "", timeout: float = 60) -> str | None:
     """Stdout of a read-only interpreter child (it never writes the checkout), None when it failed."""
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 
     try:
         done = subprocess.run(argv, input=stdin, capture_output=True, text=True, encoding="utf-8",
@@ -639,7 +639,7 @@ def head_and_branch(git_cmd, root: Path) -> tuple[str, str]:
 def checkout_untouched(git_cmd, root: Path, start: tuple[str, str] | None) -> bool:
     """True when the checkout is exactly where this run found it: same HEAD, same branch, no
     autostash taken, no tree move armed. Only then may a failed git update fall back to ZIP."""
-    from hermes_cli.update_cmd_stash import _unrestored_autostash_notice
+    from hermes_agent.hermes_cli.update_cmd_stash import _unrestored_autostash_notice
 
     if start is None or not start[0]:
         return False
@@ -685,7 +685,7 @@ def preflight_refusal(git_cmd, root: Path, target_ref: str, critical_files) -> s
     root = Path(root)
     if not _owns_live_checkout(root):
         try:
-            from hermes_cli.venv_sync import refuse_foreign_owned_venv
+            from hermes_agent.hermes_cli.venv_sync import refuse_foreign_owned_venv
 
             refuse_foreign_owned_venv(root)
         except ImportError:

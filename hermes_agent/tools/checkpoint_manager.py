@@ -60,8 +60,8 @@ import tempfile
 import time
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
-from hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
-from hermes_cli.gitlock import clear_stale_tmp_packs
+from hermes_agent.hermes_cli._subprocess_compat import selected_git_env, windows_hide_flags
+from hermes_agent.hermes_cli.gitlock import clear_stale_tmp_packs
 from typing import Dict, List, Optional, Set, Tuple
 
 from utils import env_int, rmtree_readonly

@@ -17,7 +17,7 @@ async def readiness(authority, actor, params, *, runtime):
         raise RuntimeStoreError('invalid_params')
     if params.get('profile'):
         from fastapi import HTTPException
-        from hermes_cli.web_server_profiles import _resolve_profile_dir
+        from hermes_agent.hermes_cli.web_server_profiles import _resolve_profile_dir
         try:
             home = _resolve_profile_dir(params['profile']).resolve()
         except HTTPException:
@@ -27,8 +27,8 @@ async def readiness(authority, actor, params, *, runtime):
 
     def probe():
         from hermes_agent.gateway.run import _profile_runtime_scope
-        from hermes_cli.main import _has_any_provider_configured
-        from hermes_cli.runtime_readiness import check_runtime_readiness
+        from hermes_agent.hermes_cli.main import _has_any_provider_configured
+        from hermes_agent.hermes_cli.runtime_readiness import check_runtime_readiness
         with _profile_runtime_scope(Path(authority.profile_id)):
             try:
                 if runtime:
@@ -37,7 +37,7 @@ async def readiness(authority, actor, params, *, runtime):
             except Exception as exc:  # a readiness probe reports, never raises
                 logger.debug('readiness probe failed', exc_info=True)
                 if runtime:
-                    from hermes_cli.runtime_readiness import readiness_failure
+                    from hermes_agent.hermes_cli.runtime_readiness import readiness_failure
                     return readiness_failure(exc)
                 return {'ok': False, 'error': str(exc)}
 

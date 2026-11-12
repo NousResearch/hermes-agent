@@ -22,7 +22,7 @@ import subprocess
 
 import pytest
 
-from hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_cmd
 
 
 class _FakePlist:
@@ -35,12 +35,12 @@ class _FakePlist:
 
 @pytest.fixture
 def launchd(monkeypatch):
-    """Stub hermes_cli.gateway so no real launchctl call is made."""
+    """Stub hermes_agent.hermes_cli.gateway so no real launchctl call is made."""
     calls: list[str] = []
     state = {"plist": _FakePlist(True), "restart_exc": None}
     subprocess_calls: list[list] = []
 
-    import hermes_cli.gateway as gateway_mod
+    import hermes_agent.hermes_cli.gateway as gateway_mod
 
     monkeypatch.setattr(gateway_mod, "get_launchd_label", lambda: "ai.hermes.gateway", raising=False)
     monkeypatch.setattr(gateway_mod, "get_launchd_plist_path", lambda: state["plist"], raising=False)
@@ -144,7 +144,7 @@ class TestServicePidSweepExclusion:
 
     @pytest.fixture
     def macos_launchd(self, monkeypatch):
-        import hermes_cli.gateway as gateway_mod
+        import hermes_agent.hermes_cli.gateway as gateway_mod
 
         state = {"list_rc": 1, "print_rc": 0, "print_out": _PRINT_OUTPUT_RUNNING}
 
@@ -166,37 +166,37 @@ class TestServicePidSweepExclusion:
 
     def test_list_failure_falls_back_to_domain_print(self, macos_launchd):
         """`list` rc=1, `print` reports pid 59038 → the PID is still excluded."""
-        from hermes_cli.gateway import _get_service_pids
+        from hermes_agent.hermes_cli.gateway import _get_service_pids
 
         assert 59038 in _get_service_pids()
 
     def test_both_interfaces_negative_means_no_pid(self, macos_launchd):
         macos_launchd["print_rc"] = 113  # job genuinely not found in the domain
 
-        from hermes_cli.gateway import _get_service_pids
+        from hermes_agent.hermes_cli.gateway import _get_service_pids
 
         assert _get_service_pids() == set()
 
     def test_registered_but_not_running_has_no_pid_line(self, macos_launchd):
         macos_launchd["print_out"] = _PRINT_OUTPUT_RUNNING.replace("\tpid = 59038\n", "")
 
-        from hermes_cli.gateway import _get_service_pids
+        from hermes_agent.hermes_cli.gateway import _get_service_pids
 
         assert _get_service_pids() == set()
 
 
 class TestParseLaunchdPidFromPrintOutput:
     def test_running_service(self):
-        from hermes_cli.gateway import _parse_launchd_pid_from_print_output
+        from hermes_agent.hermes_cli.gateway import _parse_launchd_pid_from_print_output
 
         assert _parse_launchd_pid_from_print_output(_PRINT_OUTPUT_RUNNING) == 59038
 
     def test_no_pid_line(self):
-        from hermes_cli.gateway import _parse_launchd_pid_from_print_output
+        from hermes_agent.hermes_cli.gateway import _parse_launchd_pid_from_print_output
 
         assert _parse_launchd_pid_from_print_output("state = not running\n") is None
 
     def test_nonpositive_pid_is_ignored(self):
-        from hermes_cli.gateway import _parse_launchd_pid_from_print_output
+        from hermes_agent.hermes_cli.gateway import _parse_launchd_pid_from_print_output
 
         assert _parse_launchd_pid_from_print_output("\tpid = -1\n") is None

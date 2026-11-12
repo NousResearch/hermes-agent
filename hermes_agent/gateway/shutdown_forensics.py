@@ -250,7 +250,7 @@ def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:
 def parse_systemd_duration_to_us(raw: str) -> Optional[int]:
     """Parse 'TimeoutStopUSec=1min 30s' / '90s' style values to microseconds. Covers us, ms, s, min,
     h, d, w, month, y; a bare number is seconds. None on anything unexpected; never raises. Public: also consumed by
-    hermes_cli.gateway's restart-wait sizing.
+    hermes_agent.hermes_cli.gateway's restart-wait sizing.
     """
     if not raw:
         return None

@@ -1,6 +1,6 @@
 """Tests for _coalesce_session_name_args — multi-word session name merging."""
 
-from hermes_cli.main import _coalesce_session_name_args
+from hermes_agent.hermes_cli.main import _coalesce_session_name_args
 
 
 def _active_provider(monkeypatch, tmp_path, *, with_cli):

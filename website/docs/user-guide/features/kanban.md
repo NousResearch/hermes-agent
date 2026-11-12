@@ -1071,7 +1071,7 @@ The resulting graph is committed atomically: dispatchers and dashboard readers s
 
 ## `/kanban` slash command {#kanban-slash-command}
 
-Every `hermes kanban <action>` verb is also reachable as `/kanban <action>` — from inside an interactive `hermes chat` session **and** from any gateway platform (Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost, email, SMS). Both surfaces call the exact same `hermes_cli.kanban.run_slash()` entry point that reuses the `hermes kanban` argparse tree, so the argument surface, flags, and output format are identical across CLI, `/kanban`, and `hermes kanban`. You don't have to leave the chat to drive the board.
+Every `hermes kanban <action>` verb is also reachable as `/kanban <action>` — from inside an interactive `hermes chat` session **and** from any gateway platform (Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost, email, SMS). Both surfaces call the exact same `hermes_agent.hermes_cli.kanban.run_slash()` entry point that reuses the `hermes kanban` argparse tree, so the argument surface, flags, and output format are identical across CLI, `/kanban`, and `hermes kanban`. You don't have to leave the chat to drive the board.
 
 ```
 /kanban list
@@ -1215,7 +1215,7 @@ comments — should not silently pile on. Instead it leaves a comment on its own
 card with a recognizable prefix:
 
 ```
-hotspot: hermes_cli/kanban_db.py — third conflicting edit to the dispatch loop this wave
+hotspot: hermes_agent/hermes_cli/kanban_db.py — third conflicting edit to the dispatch loop this wave
 ```
 
 and repeats the flag in its completion `metadata`. Orchestrators (or humans

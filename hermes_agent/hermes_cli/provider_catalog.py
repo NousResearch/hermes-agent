@@ -3,7 +3,7 @@
 The provider list shown by ``hermes model`` (CLI/TUI) and the desktop Settings → Providers tabs
 (Accounts + API keys) **must be the same set**; providers added after those lists were written
 silently went missing from the GUI. ``auth_type`` / ``api_key_env_vars`` / ``base_url_env_var``
-come from :data:`hermes_cli.auth.PROVIDER_REGISTRY` (credential truth); ``display_name`` /
+come from :data:`hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY` (credential truth); ``display_name`` /
 ``description`` / ``signup_url`` from the provider's :class:`hermes_agent.providers.base.ProviderProfile`, falling
 back to the ``CANONICAL_PROVIDERS`` entry's ``label`` / ``tui_desc`` and the ``OPTIONAL_ENV_VARS``
 signup URL (many profiles leave these blank, and openai-api, tencent-tokenplan, xai-oauth have no
@@ -66,12 +66,12 @@ def provider_catalog() -> list[ProviderDescriptor]:
     """One descriptor per provider in the ``hermes model`` universe (:data:`CANONICAL_PROVIDERS`,
     auto-extended by provider plugins). Auth/env from ``PROVIDER_REGISTRY``; display metadata from
     ``ProviderProfile`` with canonical/env fallbacks so profile-less providers still resolve."""
-    from hermes_cli.models_catalog_static import listed_canonical_providers
-    PROVIDER_REGISTRY = _safe_import("hermes_cli.auth", "PROVIDER_REGISTRY", {})
-    OPTIONAL_ENV_VARS = _safe_import("hermes_cli.config", "OPTIONAL_ENV_VARS", {})
+    from hermes_agent.hermes_cli.models_catalog_static import listed_canonical_providers
+    PROVIDER_REGISTRY = _safe_import("hermes_agent.hermes_cli.auth", "PROVIDER_REGISTRY", {})
+    OPTIONAL_ENV_VARS = _safe_import("hermes_agent.hermes_cli.config", "OPTIONAL_ENV_VARS", {})
     # Overlays carry auth_type for providers with no registry/profile entry — notably the ``moa``
     # virtual provider (auth_type "virtual"), which has no credential and no network endpoint.
-    HERMES_OVERLAYS = _safe_import("hermes_cli.providers", "HERMES_OVERLAYS", {})
+    HERMES_OVERLAYS = _safe_import("hermes_agent.hermes_cli.providers", "HERMES_OVERLAYS", {})
     try:
         from hermes_agent.providers import list_providers
         profiles = {p.name: p for p in list_providers()}

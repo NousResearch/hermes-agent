@@ -58,9 +58,9 @@ def _record_kanban_budget_exhausted(
     from multiple exit paths.
     """
     try:
-        from hermes_cli import kanban_db as _kb
-        from hermes_cli import kanban_db_connect as _kbc
-        from hermes_cli import kanban_db_dispatch as _kbd
+        from hermes_agent.hermes_cli import kanban_db as _kb
+        from hermes_agent.hermes_cli import kanban_db_connect as _kbc
+        from hermes_agent.hermes_cli import kanban_db_dispatch as _kbd
         _conn = _kbc.connect()
         try:
             _kbd._record_task_failure(
@@ -104,7 +104,7 @@ def _clone_background_review_messages(messages):
 def _invoke_hook_safely(name: str, logger: logging.Logger, **kwargs) -> list:
     """Fire a lifecycle plugin hook; a failing hook is logged, never fatal."""
     try:
-        from hermes_cli.lifecycle import invoke_hook
+        from hermes_agent.hermes_cli.lifecycle import invoke_hook
         return invoke_hook(name, **kwargs)
     except Exception as exc:
         logger.warning("%s hook failed: %s", name, exc)
@@ -554,7 +554,7 @@ def _run_held_transforms(callbacks, payload: dict, logger) -> Optional[str]:
     """A held turn runs the transforms captured at its start (``held_stream_transforms``), not the live
     registry a mid-turn reload empties. When none rewrote and one raised or timed out, the user gets a
     fixed notice, never the text the plugin had to see first."""
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
 
     try:
         rewrite, failed = get_plugin_manager().run_held_transforms(callbacks, **payload)
@@ -692,7 +692,7 @@ def finalize_turn(
 
     _rollback_interrupted_preflight_display(agent, interrupted)
 
-    from hermes_cli.observability.shared_metrics_harness import finish_turn
+    from hermes_agent.hermes_cli.observability.shared_metrics_harness import finish_turn
     finish_turn(agent, _turn_exit_reason, final_response, interrupted=interrupted, failed=failed)
 
     _cleanup_errors: list[str] = []

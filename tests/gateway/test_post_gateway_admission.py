@@ -20,7 +20,7 @@ HOOK = "post_gateway_admission"
 
 def _register(callback) -> None:
     """Register *callback* on the ACTIVE home's plugin manager (what a loaded plugin does)."""
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
 
     manager = get_plugin_manager()
     manager._discovered = True  # no on-disk plugins in the test home; skip discovery

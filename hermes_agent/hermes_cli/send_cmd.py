@@ -158,10 +158,10 @@ def _load_hermes_env() -> None:
     the profile's external secret sources over it — so it is authoritative as-is; replaying raw
     ``.env`` over it would let a stale user value beat the secret-manager one for this request.
     """
-    from hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.config_backend import config_exists
     import os
     try:
-        from hermes_cli.config import get_hermes_home
+        from hermes_agent.hermes_cli.config import get_hermes_home
         home = get_hermes_home()
     except Exception:
         return
@@ -174,7 +174,7 @@ def _load_hermes_env() -> None:
         env_path = home / ".env"
         if env_path.exists():
             try:
-                from hermes_cli.env_loader import _load_dotenv_with_fallback
+                from hermes_agent.hermes_cli.env_loader import _load_dotenv_with_fallback
                 _load_dotenv_with_fallback(env_path, override=True)
             except Exception:
                 pass
@@ -185,7 +185,7 @@ def _load_hermes_env() -> None:
     if not config_exists(config_path):
         return
     try:
-        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_agent.hermes_cli.config_effective import load_user_config_effective
         cfg = load_user_config_effective(config_path)
     except Exception:
         return

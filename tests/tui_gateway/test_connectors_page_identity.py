@@ -19,7 +19,7 @@ from argparse import Namespace
 import pytest
 
 import hermes_agent.tui_gateway.server as srv
-from hermes_cli import free_tier_offer
+from hermes_agent.hermes_cli import free_tier_offer
 from tests.hermes_cli.anon_portal import install_portal
 from tests.waiting import wait_until
 from hermes_agent.tools.connectors import live
@@ -106,7 +106,7 @@ def test_opening_the_page_creates_no_identity_and_reads_the_public_catalog(porta
 
 @pytest.mark.parametrize("entry", ["cli", "agent"])
 def test_explicit_lists_still_create_one_identity_and_list_from_the_gateway(portal, gateway, entry):
-    from hermes_cli.connectors_cmd import cmd_connectors
+    from hermes_agent.hermes_cli.connectors_cmd import cmd_connectors
     from hermes_agent.tools.connectors.gateway.config import connectors_available
     from hermes_agent.tools.connectors.tool import manage_connections
 

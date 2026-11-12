@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_constants
-from hermes_cli import gateway_migrate as gm
+from hermes_agent.hermes_cli import gateway_migrate as gm
 
 
 def _write_live_gateway(home: Path, served: list[str] | None = None) -> None:

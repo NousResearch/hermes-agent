@@ -34,7 +34,7 @@ def _codex_agent(final_text: str):
 
 
 def test_codex_reply_is_rewritten_before_it_is_returned_or_stored():
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     redactor_home(Path(os.environ["HERMES_HOME"]), "http://127.0.0.1:9/v1", hold=True)
     plugins._reset_plugin_managers_for_tests()

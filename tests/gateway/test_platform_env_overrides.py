@@ -10,7 +10,7 @@ _CORE_ONLY = {"local", "api_server", "webhook", "msgraph_webhook", "relay"}
 
 
 def _entries():
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
     discover_plugins()
     return platform_registry.all_entries()
 
@@ -32,8 +32,8 @@ def test_every_static_plugin_platform_declares_its_env_bridge():
 def test_env_override_secrets_stay_in_terminal_secret_blocklist():
     """The terminal tool's adapter-secret blocklist is built at import time and cannot load adapters,
     so every secret a plugin's env rows read must already be declared where that policy looks."""
-    from hermes_cli.config import PLATFORM_SECRET_ENV_SUFFIXES
-    from hermes_cli.profile_channels import config_env_table_keys
+    from hermes_agent.hermes_cli.config import PLATFORM_SECRET_ENV_SUFFIXES
+    from hermes_agent.hermes_cli.profile_channels import config_env_table_keys
     from hermes_agent.tools.environments.local_env_policy import _ADAPTER_SECRET_ENV
 
     secrets = {name.upper() for name in config_env_table_keys(_entries())

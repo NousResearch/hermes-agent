@@ -5,7 +5,7 @@ this, only ``plugins/platforms/*`` in the repo was scanned, so a third-party pla
 ``requires_env`` prompts/descriptions/password flags never reached the UI.
 """
 
-import hermes_cli.config as config_mod
+import hermes_agent.hermes_cli.config as config_mod
 
 
 def _manifest(path, text):

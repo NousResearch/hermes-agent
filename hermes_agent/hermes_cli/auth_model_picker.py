@@ -1,7 +1,7 @@
 """Interactive model picker used after OAuth login.
 
-Re-exported from ``hermes_cli/auth.py`` (patch targets unchanged); origin helpers are imported
-lazily per function so ``hermes_cli.auth.<helper>`` patches still intercept and no cycle forms.
+Re-exported from ``hermes_agent/hermes_cli/auth.py`` (patch targets unchanged); origin helpers are imported
+lazily per function so ``hermes_agent.hermes_cli.auth.<helper>`` patches still intercept and no cycle forms.
 """
 
 from __future__ import annotations
@@ -9,9 +9,9 @@ from __future__ import annotations
 import logging
 import subprocess
 from typing import Dict, List, Optional
-from hermes_cli.auth_constants import DEFAULT_NOUS_PORTAL_URL
+from hermes_agent.hermes_cli.auth_constants import DEFAULT_NOUS_PORTAL_URL
 
-logger = logging.getLogger("hermes_cli.auth")
+logger = logging.getLogger("hermes_agent.hermes_cli.auth")
 
 _CUSTOM_LABEL = "Enter custom model name"
 _SKIP_LABEL = "Skip (keep current)"
@@ -27,7 +27,7 @@ def _confirm_selection_guards(
     Shows one [y/N] confirm listing every warning that fired. Returns True to proceed.
     """
     try:
-        from hermes_cli.model_selection_guards import combined_message, selection_warnings
+        from hermes_agent.hermes_cli.model_selection_guards import combined_message, selection_warnings
         warnings = selection_warnings(
             model_id, provider=provider, base_url=base_url, api_key=api_key, include_kinds=include_kinds,
         )
@@ -70,7 +70,7 @@ class _ModelPickerRows:
         current_model: str, sale_chrome: bool, usage=None,
         notes: Optional[dict[str, str]] = None,
     ) -> None:
-        from hermes_cli.models_pricing import _format_price_per_mtok, compute_sale_discount
+        from hermes_agent.hermes_cli.models_pricing import _format_price_per_mtok, compute_sale_discount
         self.current_model = current_model
         # Per-model dim annotation (e.g. "usage credits"); the row stays selectable.
         self.notes = notes or {}
@@ -80,7 +80,7 @@ class _ModelPickerRows:
             usage = usage.with_pricing(pricing)
         self.usage = usage
         if self.window_mode:
-            from hermes_cli.model_picker_usage import usage_tag_levels
+            from hermes_agent.hermes_cli.model_picker_usage import usage_tag_levels
             # Tags only: dimming reads ``usage.blocks`` (free_ids), so subscription-billed rows still never dim.
             self.levels = usage_tag_levels(all_models, pricing)
             self.has_pricing = False
@@ -138,7 +138,7 @@ class _ModelPickerRows:
     def _cost_segments(self, mid: str) -> list[tuple[str, str | None]]:
         """Window row: padded name (dim when a full allowance stops it) + Large / Free."""
         segs: list[tuple[str, str | None]] = [(f"{mid:<{self.name_col}}", "dim" if self.usage.blocks(mid) else None)]
-        from hermes_cli.model_picker_usage import usage_level_label
+        from hermes_agent.hermes_cli.model_picker_usage import usage_level_label
         level = self.levels.get(mid)
         word = usage_level_label(level, "en")
         segs.extend(((_GAUGE_GAP, None), (f"{word:<{_COST_COL}}", _LEVEL_STYLE.get(level or ""))))
@@ -181,7 +181,7 @@ class _ModelPickerRows:
         pad = " " * 5
         lines: list[str] = []
         if self.window_mode:
-            from hermes_cli.model_picker_usage import plan_gauge_lines
+            from hermes_agent.hermes_cli.model_picker_usage import plan_gauge_lines
             for i, line in enumerate(plan_gauge_lines(self.usage)):
                 suffix = f" — {self.usage.included_summary}" if i == 0 else ""
                 lines.append(f"{pad}{line}{suffix}")
@@ -206,7 +206,7 @@ class _ModelPickerRows:
         """Window plan with a Large row listed: the one line that says what Large means."""
         if not self.has_top_tier:
             return ""
-        from hermes_cli.model_picker_usage import TOP_TIER_FOOTNOTE
+        from hermes_agent.hermes_cli.model_picker_usage import TOP_TIER_FOOTNOTE
         return TOP_TIER_FOOTNOTE
 
 
@@ -218,7 +218,7 @@ def _picker_order(model_ids: list[str], current_model: str, window_usage) -> tup
     """
     sections: dict[int, str] = {}
     if window_usage is not None:
-        from hermes_cli.model_picker_usage import SECTION_OTHER, SECTION_RECOMMENDED, split_recommended
+        from hermes_agent.hermes_cli.model_picker_usage import SECTION_OTHER, SECTION_RECOMMENDED, split_recommended
         head, rest = split_recommended(list(dict.fromkeys(model_ids)), window_usage.featured_model_ids)
         ordered = head + rest
         if head:
@@ -235,8 +235,8 @@ def _picker_order(model_ids: list[str], current_model: str, window_usage) -> tup
 
 def _print_numbered_rows(rows: _ModelPickerRows, menu_title: str, ordered: list[str], sections: dict[int, str]) -> int:
     """The no-curses fallback's title, numbered rows (+ custom / skip) and footnote; returns the number width."""
-    from hermes_cli.curses_ui import colorize_gauge_bars_ansi, format_radio_item_ansi
-    from hermes_cli.colors import Colors, color
+    from hermes_agent.hermes_cli.curses_ui import colorize_gauge_bars_ansi, format_radio_item_ansi
+    from hermes_agent.hermes_cli.colors import Colors, color
     n, _DIM, _RESET = len(ordered), "\033[2m", "\033[0m"
     for line in menu_title.splitlines():
         if rows.window_mode:
@@ -270,7 +270,7 @@ def _prompt_model_selection(
     *usage* (``model_picker_usage.PickerUsage``, Nous only) swaps ``$/Mtok`` for plan gauges and the
     gateway's per-model usage word on a usage-window plan.
     """
-    from hermes_cli.cli_output import line_input
+    from hermes_agent.hermes_cli.cli_output import line_input
     _unavailable = unavailable_models or []
     # Sale chrome is Nous Portal-only, even if pricing.original is present for another provider.
     sale_chrome = (confirm_provider or "").strip().lower() == "nous"
@@ -308,7 +308,7 @@ def _prompt_model_selection(
 
     # Try arrow-key menu first, fall back to number input.
     try:
-        from hermes_cli.curses_ui import curses_radiolist
+        from hermes_agent.hermes_cli.curses_ui import curses_radiolist
         choices = [rows.segments(mid) for mid in ordered] + [_CUSTOM_LABEL, _SKIP_LABEL]
 
         unavailable_footer = unavailable_message.strip()
@@ -325,7 +325,7 @@ def _prompt_model_selection(
 
         # Search haystack = label + aliases for brand-less wire ids (Kimi `k3` ↔ "kimi"); skip when
         # model_search_text adds nothing beyond the bare id.
-        from hermes_cli.model_search import model_search_text
+        from hermes_agent.hermes_cli.model_search import model_search_text
         model_search_labels = []
         for mid in ordered:
             label, haystack = rows.label(mid), model_search_text(mid)
@@ -395,7 +395,7 @@ def model_choice_save_count() -> int:
 def _save_model_choice(model_id: str) -> None:
     """Save the selected model to config.yaml only — NOT .env, which would stomp in multi-agent setups."""
     global _model_choice_saves
-    from hermes_cli.config import save_config, load_config
+    from hermes_agent.hermes_cli.config import save_config, load_config
     _model_choice_saves += 1
     config = load_config()
     # Always use dict format so provider/base_url can be stored alongside
@@ -404,7 +404,7 @@ def _save_model_choice(model_id: str) -> None:
     else:
         config["model"] = {"default": model_id}
     save_config(config)
-    from hermes_cli.observability.shared_metrics_setup import note_provider_setup_saved
+    from hermes_agent.hermes_cli.observability.shared_metrics_setup import note_provider_setup_saved
 
     note_provider_setup_saved()
 

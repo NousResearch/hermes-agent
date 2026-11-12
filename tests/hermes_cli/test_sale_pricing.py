@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-import hermes_cli.models as models_mod
-from hermes_cli import models_pricing
-from hermes_cli.models_pricing import compute_sale_discount, fetch_models_with_pricing
+import hermes_agent.hermes_cli.models as models_mod
+from hermes_agent.hermes_cli import models_pricing
+from hermes_agent.hermes_cli.models_pricing import compute_sale_discount, fetch_models_with_pricing
 
 
 def test_free_model_gets_flat_100_percent_discount():
@@ -101,7 +101,7 @@ def test_fetch_models_with_pricing_copies_billing_mode_for_nous_only(monkeypatch
 def test_resolve_nous_pricing_credentials_normalizes_either_suffix(monkeypatch):
     """``/v1`` on the override is optional and must not change the result."""
     monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_runtime_credentials", lambda: None
+        "hermes_agent.hermes_cli.auth.resolve_nous_runtime_credentials", lambda: None
     )
     for override in (
         "https://stg-inference-api.nousresearch.com",

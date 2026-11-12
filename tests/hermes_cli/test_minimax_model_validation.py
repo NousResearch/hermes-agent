@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.models_validate import validate_requested_model
+from hermes_agent.hermes_cli.models_validate import validate_requested_model
 
 
 class TestMiniMaxModelValidation:
@@ -26,8 +26,8 @@ class TestMiniMaxModelValidation:
             "suggested_base_url": None,
             "used_fallback": False,
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
-             patch("hermes_cli.models.probe_api_models", return_value=probe_payload):
+        with patch("hermes_agent.hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_agent.hermes_cli.models.probe_api_models", return_value=probe_payload):
             yield
 
     # -------------------------------------------------------------------------

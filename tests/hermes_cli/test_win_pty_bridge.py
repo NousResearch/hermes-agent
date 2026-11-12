@@ -1,4 +1,4 @@
-"""Unit tests for hermes_cli.win_pty_bridge — ConPTY spawning + byte forwarding.
+"""Unit tests for hermes_agent.hermes_cli.win_pty_bridge — ConPTY spawning + byte forwarding.
 
 Windows-only counterpart to tests/hermes_cli/test_pty_bridge.py.  Drives
 ``WinPtyBridge`` with minimal Windows processes (``cmd.exe``, ``python -c …``)
@@ -7,7 +7,7 @@ set of platform-fallback assertions (``is_available``, ``PtyUnavailableError``)
 that run on every OS so the import surface stays exercised in CI.
 
 The bridge is the ConPTY backend behind the dashboard ``/chat`` tab — see
-``hermes_cli/web_server.py`` ``/api/pty`` handler — so these tests are the
+``hermes_agent/hermes_cli/web_server.py`` ``/api/pty`` handler — so these tests are the
 unit-level half of the integration check that the dashboard chat pane is
 actually live on native Windows.
 """
@@ -27,8 +27,8 @@ import pytest
 # WinPtyBridge can be imported on every platform — ``is_available`` just
 # returns False when pywinpty isn't usable.  Importing the module itself
 # must never raise, otherwise the web_server import branch becomes a trap.
-from hermes_cli import win_pty_bridge
-from hermes_cli.win_pty_bridge import PtyUnavailableError, WinPtyBridge
+from hermes_agent.hermes_cli import win_pty_bridge
+from hermes_agent.hermes_cli.win_pty_bridge import PtyUnavailableError, WinPtyBridge
 from tests.waiting import async_wait_until
 
 # ``pytest.mark.platforms("windows")`` rather than a local ``skipif`` alias: the
@@ -205,7 +205,7 @@ class TestWinPtyBridgeUnavailable:
         proc = _StuckProc()
         bridge = WinPtyBridge(proc)
         with patch.object(win_pty_bridge, "_WRITE_SHUTDOWN_GRACE", 0.05), \
-                caplog.at_level(logging.WARNING, logger="hermes_cli.win_pty_bridge"):
+                caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.win_pty_bridge"):
             assert await bridge.write(b"x", timeout=0.01) is False
         proc.release_write.set()
         assert any("thread leaked" in r.getMessage() for r in caplog.records)
@@ -313,7 +313,7 @@ class TestWinPtyBridgeUnavailable:
         from concurrent.futures import ThreadPoolExecutor
         import socket
 
-        from hermes_cli.pty_session import PtySession
+        from hermes_agent.hermes_cli.pty_session import PtySession
 
         class _IdleShell:
             """pywinpty 3.0.5's PtyProcess: a reader thread copies ConPTY output to a
@@ -512,14 +512,14 @@ class TestClampDimension:
     setwinsize will happily raise on out-of-range u16 values."""
 
     def test_clamps_above_max(self):
-        from hermes_cli.win_pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp
+        from hermes_agent.hermes_cli.win_pty_bridge import _MAX_COLS, _MAX_ROWS, _clamp
 
         assert _clamp(131072, _MAX_COLS) == _MAX_COLS
         assert _clamp(131072, _MAX_ROWS) == _MAX_ROWS
 
 
     def test_non_numeric_falls_back_to_min(self):
-        from hermes_cli.win_pty_bridge import _MAX_COLS, _clamp
+        from hermes_agent.hermes_cli.win_pty_bridge import _MAX_COLS, _clamp
 
         assert _clamp(None, _MAX_COLS) == 1  # type: ignore[arg-type]
         assert _clamp("not-a-number", _MAX_COLS) == 1  # type: ignore[arg-type]

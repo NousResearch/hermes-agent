@@ -173,7 +173,7 @@ def _birth_stamp(proc) -> float:
     """A start stamp for *proc* that a clock step cannot move. Linux: ``starttime`` from
     ``/proc/<pid>/stat`` (clock ticks since boot; psutil's ``create_time()`` adds a wall-clock
     boot time, so an NTP/VM/resume step shifts it by whole seconds). Elsewhere:
-    :func:`hermes_cli.process_identity.process_birth` (the unadjusted kernel start on macOS).
+    :func:`hermes_agent.hermes_cli.process_identity.process_birth` (the unadjusted kernel start on macOS).
     On a ``/proc`` host a failed read raises: falling back to a wall-clock value would compare
     an epoch against recorded ticks and disown a live process."""
     if _HAS_PROC:
@@ -181,7 +181,7 @@ def _birth_stamp(proc) -> float:
         # last ")" (comm may hold spaces or ")") fields start at #3, so #22 is index 19.
         stat = Path(f"/proc/{proc.pid}/stat").read_bytes()
         return float(int(stat.rsplit(b")", 1)[1].split()[19]))
-    from hermes_cli.process_identity import process_birth
+    from hermes_agent.hermes_cli.process_identity import process_birth
 
     return process_birth(proc)
 
@@ -240,12 +240,12 @@ def _own_lineage() -> set[int] | None:
 
 def _registered_live_pids(home: Path) -> set[int]:
     """Live pids Hermes registered for *home*: the machine spawn ledger (every long-lived entry
-    point and MCP helper, ``hermes_cli.process_identity``) and the background-process checkpoint
+    point and MCP helper, ``hermes_agent.hermes_cli.process_identity``) and the background-process checkpoint
     (``hermes_agent.tools.process_registry``, ``processes.json``). A recorded start time that no longer
     matches is a reused pid, not ownership."""
     import psutil
 
-    from hermes_cli.process_identity import entry_still_running, spawner_is_dead
+    from hermes_agent.hermes_cli.process_identity import entry_still_running, spawner_is_dead
     from hermes_constants import get_default_hermes_root
 
     root = get_default_hermes_root(home=home)

@@ -5,13 +5,13 @@ in ``credential_pool.nous``. In a process that is not that backend (plain CLI, g
 drop that row instead of handing its welcome-host token to the runtime.
 """
 
-from hermes_cli import anon_auth
+from hermes_agent.hermes_cli import anon_auth
 from tests.hermes_cli.anon_portal import claimed_trial, install_portal, off_local_desktop
 
 
 def test_a_claimed_guest_pool_row_serves_every_surface(monkeypatch, tmp_path):
     from hermes_agent.agent.credential_pool import load_pool
-    from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+    from hermes_agent.hermes_cli.auth_nous import resolve_nous_runtime_credentials
 
     install_portal(monkeypatch, tmp_path)
     claimed_trial(monkeypatch)

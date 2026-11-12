@@ -453,7 +453,7 @@ def real_profile_launches(tmp_path, monkeypatch):
     from hermes_agent.tools import browser_launcher as launcher, browser_lightpanda, browser_session as bs
     from hermes_agent.tools import browser_session_lifecycle as lifecycle
     from hermes_agent.tools.bot_desktop import placement, runtime
-    import hermes_cli.browser_connect as bc
+    import hermes_agent.hermes_cli.browser_connect as bc
     for name in ("_active_sessions", "_session_last_activity", "_session_owner_homes", "_cleanup_failures"):
         monkeypatch.setattr(bs, name, {})
     monkeypatch.setattr(lifecycle, "start_cleanup_thread", lambda: None)

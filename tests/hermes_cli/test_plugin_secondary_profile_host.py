@@ -26,9 +26,9 @@ import pytest
 from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
-from hermes_cli import plugins as plugins_mod
-from hermes_cli import web_server
-from hermes_cli.plugin_host import PluginHost
+from hermes_agent.hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.plugin_host import PluginHost
 from tests.hermes_cli import test_plugin_api_consent_gate as consent_gate
 
 daemon = consent_gate.daemon  # the multiplexed daemon stand-in fixture
@@ -240,7 +240,7 @@ def test_selected_profile_rescan_refreshes_that_profiles_cache_only(daemon):
     """The browser's rescan names its profile with ``?profile=`` beside the owner token, so no native
     grant binds the scope first: it still rescans and counts the selected profile's plugins, and the
     launch profile's cache is left as it was."""
-    from hermes_cli.web_server_plugin_profiles import profile_dashboard_plugins
+    from hermes_agent.hermes_cli.web_server_plugin_profiles import profile_dashboard_plugins
     _install(daemon.beta, NAME)
     _plugins(daemon.launch)
     _plugins(daemon.beta, enabled=[NAME, "later"])
@@ -330,7 +330,7 @@ def test_launch_user_copy_shadowing_a_bundled_name_never_serves_a_secondary_prof
     profile's user code. A secondary profile whose own entry is the bundled copy gets that copy from
     its own host (HTTP) or a named refusal (websocket), never the launch profile's code, whether that
     router is mounted already or would be mounted by this request."""
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: tmp_path / "root")  # no root copy
     bundled = _bundled(tmp_path, monkeypatch, "shadowed")
     launch_imported = _install(daemon.launch, "shadowed")
@@ -352,7 +352,7 @@ def test_disabled_launch_override_does_not_hide_the_bundled_copy_from_a_secondar
         daemon, tmp_path, monkeypatch, selector):
     """The launch profile disabled its own override of a bundled name, so this process has no router a
     secondary profile may use for it: the secondary profile's bundled copy runs in its own host."""
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: tmp_path / "root")
     bundled = _bundled(tmp_path, monkeypatch, "hidden")
     launch_imported = _install(daemon.launch, "hidden")
@@ -491,7 +491,7 @@ async def hang():
 
 @pytest.mark.platforms("posix")  # the host is a real child process
 def test_hung_hosted_request_answers_504_and_the_host_serves_the_next(daemon, monkeypatch):
-    from hermes_cli import web_server_plugin_profiles
+    from hermes_agent.hermes_cli import web_server_plugin_profiles
     monkeypatch.setattr(PluginHost, "asgi_request", _REAL_ASGI_REQUEST)
     monkeypatch.setattr(web_server_plugin_profiles, "HOSTED_REQUEST_TIMEOUT_SECS", 1.0, raising=False)
     _beta_plugin(daemon)
@@ -598,7 +598,7 @@ def test_launch_profiles_hosted_mount_answers_504_too(daemon, monkeypatch):
 def test_unknown_plugin_names_do_not_rescan_the_profile_on_every_request(daemon, monkeypatch):
     """A 404 probe rescans a secondary profile's plugin dirs once per short window, not on every
     request; an explicit rescan, or the end of the window, still finds a plugin installed meanwhile."""
-    from hermes_cli import web_server_dashboard, web_server_plugin_profiles
+    from hermes_agent.hermes_cli import web_server_dashboard, web_server_plugin_profiles
     _beta_plugin(daemon)
     _plugins(daemon.beta, enabled=[NAME, "later", "latest"])
     selected = {"params": {"profile": "beta"}, "headers": daemon.owner}
@@ -625,7 +625,7 @@ def test_unknown_plugin_names_do_not_rescan_the_profile_on_every_request(daemon,
 def test_alternating_unknown_names_each_rescan_once_per_window(daemon, monkeypatch):
     """One name's miss rescan keeps another name's cached miss, so probes alternating two absent
     names scan once per name per window; an explicit rescan, or expiry, finds a plugin installed meanwhile."""
-    from hermes_cli import web_server_dashboard, web_server_plugin_profiles
+    from hermes_agent.hermes_cli import web_server_dashboard, web_server_plugin_profiles
     _beta_plugin(daemon)
     _plugins(daemon.beta, enabled=[NAME, "absent-a", "absent-b"])
     selected = {"params": {"profile": "beta"}, "headers": daemon.owner}
@@ -654,7 +654,7 @@ def test_alternating_unknown_names_each_rescan_once_per_window(daemon, monkeypat
 def test_a_miss_rescan_reads_the_disk_off_the_event_loop_and_unlocked(daemon, monkeypatch):
     """The rescan a missed name triggers runs on a worker thread, without the lock every plugin lookup
     takes, so it stalls neither the gateway's event loop nor other requests' plugin lookups."""
-    from hermes_cli import web_server_dashboard, web_server_plugin_profiles
+    from hermes_agent.hermes_cli import web_server_dashboard, web_server_plugin_profiles
     _beta_plugin(daemon)
     selected = {"params": {"profile": "beta"}, "headers": daemon.owner}
     assert daemon.client.get(PING, **selected).status_code == 200
@@ -677,7 +677,7 @@ def test_a_miss_rescan_reads_the_disk_off_the_event_loop_and_unlocked(daemon, mo
 def test_a_miss_rescan_overtaken_by_an_explicit_rescan_caches_nothing_stale(daemon, monkeypatch):
     """Scans no longer hold the lock, so an explicit rescan can finish inside a miss rescan's scan:
     the miss rescan's older list and its miss are then dropped, and the plugin answers at once."""
-    from hermes_cli import web_server_dashboard, web_server_plugin_profiles
+    from hermes_agent.hermes_cli import web_server_dashboard, web_server_plugin_profiles
     _beta_plugin(daemon)
     _plugins(daemon.beta, enabled=[NAME, "late"])
     overtook = []

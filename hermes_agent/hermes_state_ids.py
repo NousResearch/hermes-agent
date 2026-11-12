@@ -1,7 +1,7 @@
 """Session-id minting: the ONE place that knows the ``YYYYMMDD_HHMMSS_<hex>`` shape.
 
 stdlib-only on purpose: ``agent/``, ``cli.py``, ``gateway/`` and ``hermes_agent/tui_gateway/`` all mint ids and
-must not pull the SessionDB import graph in to do it. ``hermes_cli/session_lost_and_found.py``
+must not pull the SessionDB import graph in to do it. ``hermes_agent/hermes_cli/session_lost_and_found.py``
 classifies schema-less salvage rows by ``is_known_session_id``, so a shape change here is a
 recovery-classification change — keep the prefix stable, and add any NEW derived-id shape to
 ``SESSION_ID_RECOGNIZERS`` or salvage will drop those sessions and mis-infer the table's layout.

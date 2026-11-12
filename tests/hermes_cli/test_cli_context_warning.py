@@ -20,12 +20,12 @@ def _isolate(tmp_path, monkeypatch):
 @pytest.fixture
 def cli_obj(_isolate):
     """Create a minimal HermesCLI instance for banner testing."""
-    with patch("cli.load_cli_config", return_value={
+    with patch("hermes_agent.cli.load_cli_config", return_value={
         "display": {"tool_progress": "new"},
         "terminal": {},
-    }), patch("cli.get_tool_definitions", return_value=[]), \
-         patch("hermes_cli.banner.build_welcome_banner"):
-        from cli import HermesCLI
+    }), patch("hermes_agent.cli.get_tool_definitions", return_value=[]), \
+         patch("hermes_agent.hermes_cli.banner.build_welcome_banner"):
+        from hermes_agent.cli import HermesCLI
         obj = HermesCLI.__new__(HermesCLI)
         obj.model = "test-model"
         obj.enabled_toolsets = ["hermes-core"]
@@ -49,8 +49,8 @@ class TestLowContextWarning:
     def test_warning_for_below_minimum_context(self, cli_obj):
         """Warning shown when context is below Hermes' minimum."""
         cli_obj.agent.context_compressor.context_length = 32768
-        with patch("cli.get_tool_definitions", return_value=[]), \
-             patch("hermes_cli.banner.build_welcome_banner"):
+        with patch("hermes_agent.cli.get_tool_definitions", return_value=[]), \
+             patch("hermes_agent.hermes_cli.banner.build_welcome_banner"):
             cli_obj.show_banner()
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]
@@ -64,8 +64,8 @@ class TestLowContextWarning:
     def test_no_warning_at_boundary(self, cli_obj):
         """No warning at exactly Hermes' minimum context length."""
         cli_obj.agent.context_compressor.context_length = MINIMUM_CONTEXT_LENGTH
-        with patch("cli.get_tool_definitions", return_value=[]), \
-             patch("hermes_cli.banner.build_welcome_banner"):
+        with patch("hermes_agent.cli.get_tool_definitions", return_value=[]), \
+             patch("hermes_agent.hermes_cli.banner.build_welcome_banner"):
             cli_obj.show_banner()
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]
@@ -77,8 +77,8 @@ class TestLowContextWarning:
         """Ollama-specific fix shown when port 11434 detected."""
         cli_obj.agent.context_compressor.context_length = 4096
         cli_obj.base_url = "http://localhost:11434/v1"
-        with patch("cli.get_tool_definitions", return_value=[]), \
-             patch("hermes_cli.banner.build_welcome_banner"):
+        with patch("hermes_agent.cli.get_tool_definitions", return_value=[]), \
+             patch("hermes_agent.hermes_cli.banner.build_welcome_banner"):
             cli_obj.show_banner()
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]
@@ -91,8 +91,8 @@ class TestLowContextWarning:
         """Generic fix shown for unknown servers."""
         cli_obj.agent.context_compressor.context_length = 4096
         cli_obj.base_url = "http://localhost:8080/v1"
-        with patch("cli.get_tool_definitions", return_value=[]), \
-             patch("hermes_cli.banner.build_welcome_banner"):
+        with patch("hermes_agent.cli.get_tool_definitions", return_value=[]), \
+             patch("hermes_agent.hermes_cli.banner.build_welcome_banner"):
             cli_obj.show_banner()
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]
@@ -105,7 +105,7 @@ class TestLowContextWarning:
         cli_obj.agent.context_compressor.context_length = 4096
 
         with patch("shutil.get_terminal_size", return_value=os.terminal_size((70, 40))), \
-             patch("cli._build_compact_banner", return_value="compact banner"):
+             patch("hermes_agent.cli._build_compact_banner", return_value="compact banner"):
             cli_obj.show_banner()
 
         calls = [str(c) for c in cli_obj.console.print.call_args_list]

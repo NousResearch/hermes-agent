@@ -21,7 +21,7 @@ def test_rate_and_eta_report_only_an_honest_number():
     so a single sample, a window too short to divide by, and a stalled
     transfer must all report (None, None) rather than a guess.
     """
-    from hermes_cli.web_routers.local_models import _rate_and_eta
+    from hermes_agent.hermes_cli.web_routers.local_models import _rate_and_eta
 
     mib = 1 << 20
     assert _rate_and_eta(deque([(0.0, 0), (1.0, mib)]), mib, 3 * mib) == (float(mib), 2)
@@ -35,7 +35,7 @@ def test_rate_and_eta_report_only_an_honest_number():
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     monkeypatch.setattr(lm, "_JOBS", {})
     monkeypatch.setattr(lm, "_RUNNING", {})
@@ -59,7 +59,7 @@ def poll(client, job_id, until=("done", "error", "paused")):
 
 
 def test_browsed_download_can_pause_and_resume_pm_transfer(client, monkeypatch, dl_server):
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     payload = bytes(range(256)) * (32 * 1024)
     RangeHandler.payloads["/test.gguf"] = payload
@@ -103,7 +103,7 @@ def test_browsed_download_can_pause_and_resume_pm_transfer(client, monkeypatch, 
 
 
 def test_quickstart_plan_progress_uses_actual_whole_plan_bytes(client, monkeypatch, dl_server, tmp_path):
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     bodies = {"first": b"first", "second": b"second"}
     RangeHandler.payloads = {"/" + name: body for name, body in bodies.items()}
@@ -117,8 +117,8 @@ def test_quickstart_plan_progress_uses_actual_whole_plan_bytes(client, monkeypat
 
 def test_existing_weights_do_not_skip_missing_companion_download(client, monkeypatch, dl_server, tmp_path):
     from dataclasses import replace
-    from hermes_cli.local_runtime.catalog import AssetFile
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.local_runtime.catalog import AssetFile
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     entry = replace(lm.catalog.CATALOG[0], mmproj=AssetFile("projector.gguf", 1000), draft=None)
     variant = entry.variants[0]

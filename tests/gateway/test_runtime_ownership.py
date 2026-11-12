@@ -48,7 +48,7 @@ async def test_reserved_home_is_eligible_for_same_user_bootstrap(tmp_path):
     from hermes_agent.gateway.control_socket import GatewayControlServer
     from hermes_agent.gateway.runtime_bootstrap import TicketStore
     from hermes_agent.gateway.runtime_ownership import ProfileOwnership
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
 
     home = tmp_path / 'new-private-home'
     owner = ProfileOwnership()

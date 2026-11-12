@@ -103,7 +103,7 @@ def _join_url(base: str, prefix: str) -> str:
 
 def _active_profile_name() -> str:
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         return get_active_profile_name() or "default"
     except Exception:
         return os.getenv("HERMES_PROFILE", "default") or "default"
@@ -111,12 +111,12 @@ def _active_profile_name() -> str:
 
 def _profile_home(profile: str) -> Optional[str]:
     with contextlib.suppress(Exception):
-        from hermes_cli.profiles import get_profile_dir
+        from hermes_agent.hermes_cli.profiles import get_profile_dir
         return str(get_profile_dir(profile))
     if profile and profile != "default":
         return os.path.expanduser(f"~/.hermes/profiles/{profile}")
     with contextlib.suppress(Exception):
-        from hermes_cli.config import get_hermes_home
+        from hermes_agent.hermes_cli.config import get_hermes_home
         return str(get_hermes_home())
     return None
 
@@ -393,7 +393,7 @@ class A2AAdapter(BasePlatformAdapter):
         raw = extra.get("agents") or extra.get("served_agents")
         if raw is None:
             try:
-                from hermes_cli.config import load_config
+                from hermes_agent.hermes_cli.config import load_config
                 cfg = load_config() or {}
             except Exception:
                 cfg = {}

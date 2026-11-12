@@ -14,7 +14,7 @@ CLI's main picker surface.
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.cli_model_switch_mixin import _show_model_picker
+from hermes_agent.hermes_cli.cli_model_switch_mixin import _show_model_picker
 
 
 def _run_picker(payload_providers):
@@ -26,7 +26,7 @@ def _run_picker(payload_providers):
 
     cli = SimpleNamespace(model="some-model", provider="", _open_model_picker=MagicMock())
     ctx = SimpleNamespace(user_providers={}, custom_providers=[])
-    with patch("hermes_cli.inventory.build_models_payload", side_effect=_fake_build):
+    with patch("hermes_agent.hermes_cli.inventory.build_models_payload", side_effect=_fake_build):
         _show_model_picker(cli, ctx, force_refresh=False)
     return captured, cli
 

@@ -39,7 +39,7 @@ providers:
 
 
 def _resolve(provider, model):
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     return resolve_runtime_provider(requested=provider, target_model=model)
 

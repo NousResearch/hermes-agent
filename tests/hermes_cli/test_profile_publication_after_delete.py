@@ -10,8 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import profiles
-from hermes_cli.profile_distribution import DistributionManifest, install_distribution, write_manifest
+from hermes_agent.hermes_cli import profiles
+from hermes_agent.hermes_cli.profile_distribution import DistributionManifest, install_distribution, write_manifest
 
 
 @pytest.fixture()
@@ -25,8 +25,8 @@ def profile_env(tmp_path, monkeypatch):
 
 def _create_and_delete(name: str) -> None:
     profiles.create_profile(name, no_alias=True)
-    with patch("hermes_cli.profiles._cleanup_gateway_service"), \
-         patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
+    with patch("hermes_agent.hermes_cli.profiles._cleanup_gateway_service"), \
+         patch("hermes_agent.hermes_cli.profiles._live_default_multiplexer", return_value=False):
         profiles.delete_profile(name, yes=True)
 
 
@@ -47,7 +47,7 @@ def _publish_by_install(tmp_path: Path, name: str) -> None:
 
 def _publish_by_rename(tmp_path: Path, name: str) -> None:
     profiles.create_profile("source", no_alias=True)
-    with patch("hermes_cli.profiles._cleanup_gateway_service"):
+    with patch("hermes_agent.hermes_cli.profiles._cleanup_gateway_service"):
         profiles.rename_profile("source", name)
 
 

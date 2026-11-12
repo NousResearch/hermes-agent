@@ -69,7 +69,7 @@ def _wt():
 
 
 def _env(name: str) -> str:
-    from hermes_cli.config import get_env_value
+    from hermes_agent.hermes_cli.config import get_env_value
     return (get_env_value(name) or "").strip()
 
 

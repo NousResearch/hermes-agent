@@ -15,7 +15,7 @@ from types import SimpleNamespace
 # ── plugins ───────────────────────────────────────────────────────────────────────────────────
 
 def test_plugin_clone_failure_leads_with_next_steps_and_escapes_git_output():
-    from hermes_cli.plugins_cmd import _clone_failure_message
+    from hermes_agent.hermes_cli.plugins_cmd import _clone_failure_message
     msg = _clone_failure_message("https://github.com/acme/nope", "fatal: repository '[x]' not found")
     assert "\\[x]" in msg  # Rich markup escaped so the raw git text renders verbatim
 
@@ -26,7 +26,7 @@ def test_plugin_clone_failure_leads_with_next_steps_and_escapes_git_output():
 # ── doctor / advisories / paths ───────────────────────────────────────────────────────────────
 
 def test_advisory_remediation_uses_active_hermes_home(monkeypatch, tmp_path):
-    from hermes_cli import security_advisories as sa
+    from hermes_agent.hermes_cli import security_advisories as sa
     monkeypatch.setattr(sa, "display_hermes_home", lambda: "~/.hermes/profiles/work")
     hit = SimpleNamespace(advisory=sa.ADVISORIES[0], package="mistralai", installed_version="2.4.6")
     text = "\n".join(sa.full_remediation_text(hit))

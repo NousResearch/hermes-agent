@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db_dispatch
+from hermes_agent.hermes_cli import kanban_db_dispatch
 from hermes_agent.tools.terminal_scope import get_terminal_scope
 
 
@@ -46,7 +46,7 @@ def test_worker_profile_scope_installs_the_assigned_profiles_terminal_policy(pro
 
 def _spawn_env_for_profile_b(monkeypatch, tmp_path):
     """Run ``_default_spawn`` far enough to capture the worker env, never spawning anything."""
-    from hermes_cli.kanban_db import Task
+    from hermes_agent.hermes_cli.kanban_db import Task
     from hermes_agent.tools import process_registry
 
     captured: list[dict] = []
@@ -85,7 +85,7 @@ def test_launch_profiles_own_worker_keeps_its_credentials(tmp_path, monkeypatch)
     monkeypatch.setenv("HERMES_HOME", str(launch))
     monkeypatch.setenv("OPENAI_API_KEY", "dispatcher-launch-key")
 
-    from hermes_cli.kanban_db import Task
+    from hermes_agent.hermes_cli.kanban_db import Task
     from hermes_agent.tools import process_registry
 
     captured: list[dict] = []
@@ -108,7 +108,7 @@ def test_launch_profiles_own_worker_keeps_its_credentials(tmp_path, monkeypatch)
 
 def test_worker_for_another_profile_can_still_import_hermes(profile_b, tmp_path, monkeypatch):
     """The routed-profile scrub strips Hermes-owned PYTHONPATH entries, but the worker IS Hermes
-    (`-m hermes_cli.kanban_worker_client`): a PYTHONPATH-launched dispatcher must hand it a tree
+    (`-m hermes_agent.hermes_cli.kanban_worker_client`): a PYTHONPATH-launched dispatcher must hand it a tree
     it can import, or it dies on `No module named 'hermes_cli'` before reaching the owner."""
     repo_root = Path(kanban_db_dispatch.__file__).resolve().parent.parent
     monkeypatch.setenv("PYTHONPATH", str(repo_root))

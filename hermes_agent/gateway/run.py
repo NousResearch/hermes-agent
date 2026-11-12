@@ -44,9 +44,9 @@ from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 from hermes_agent.agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields, is_compaction_scaffolding, replay_metadata_fields
 from hermes_agent.agent.turn_context import compression_made_progress
 from hermes_agent.agent.session_activity import ActivityProvenance, AwakeIdleMeter
-from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
+from hermes_agent.hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
 from hermes_agent.gateway.run_common import _csv_or_list_to_set
-from hermes_cli.fallback_config import pre_agent_fallback_notice
+from hermes_agent.hermes_cli.fallback_config import pre_agent_fallback_notice
 from hermes_agent.gateway.turn_executor import _UnboundedThreadExecutor
 
 # Per-session AIAgent cache bounds (agents are heavy); see _enforce_agent_cache_cap/_session_housekeeping_watcher.
@@ -877,7 +877,7 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     if platform_value != "telegram":
         return text
 
-    from hermes_cli.commands_platforms import _sanitize_telegram_name
+    from hermes_agent.hermes_cli.commands_platforms import _sanitize_telegram_name
 
     def _replace(match: re.Match[str]) -> str:
         sanitized = _sanitize_telegram_name(match.group(1))
@@ -965,14 +965,14 @@ def _warm_turn_machinery_sync() -> int:
     # registered tool, which dials OpenRouter/DeepInfra for profiles that never enabled them).
     enabled_toolsets = None
     try:
-        from hermes_cli.config import load_config_readonly
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_agent.hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.tools_config import _get_platform_tools
 
         enabled_toolsets = sorted(_get_platform_tools(load_config_readonly(), "cli"))
     except Exception:
         logger.debug("platform toolset resolution failed; warming the full tool surface", exc_info=True)
     tool_defs = model_tools.get_tool_definitions(enabled_toolsets=enabled_toolsets, quiet_mode=True)
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
 
     agent_cfg = load_config_readonly().get("agent")
     if not isinstance(agent_cfg, dict) or agent_cfg.get("environment_probe", True):
@@ -1566,8 +1566,8 @@ from hermes_constants import get_hermes_home, get_hermes_home_override, get_proc
 _hermes_home = get_process_hermes_home()
 
 # Load ~/.hermes/.env first: user-managed env files must override stale shell exports on restart.
-from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
 
@@ -1608,7 +1608,7 @@ def _current_max_iterations() -> int:
     ``agent.max_turns`` straight from config: the ``HERMES_MAX_ITERATIONS`` bridge is one process-wide
     slot holding the launch profile's value, so every secondary would inherit the default's budget."""
     _reload_runtime_env_preserving_config_authority()
-    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+    from hermes_agent.hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
     override = get_hermes_home_override()
     if override:
         config_path = Path(override) / 'config.yaml'
@@ -1641,7 +1641,7 @@ def _multiplex_profile_homes(config: object) -> list[tuple[str, Path]]:
     reserved = getattr(config, "_runtime_profile_homes", None)
     if reserved is not None:
         return list(reserved)
-    from hermes_cli.profiles import profiles_to_serve
+    from hermes_agent.hermes_cli.profiles import profiles_to_serve
     return list(profiles_to_serve(multiplex=True))
 
 
@@ -1651,7 +1651,7 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, Path]]:
     <name>`` gateway's own profile may sit outside ``profiles/`` (custom HERMES_HOME). One host
     process ticks all of them regardless of ``gateway.multiplex_profiles``. Adapter startup
     already skips ``active``."""
-    from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name, get_profile_dir
 
     homes = _multiplex_profile_homes(config)
     active = get_active_profile_name() or "default"  # launch profile, pre-identity (ticker boot)
@@ -1666,7 +1666,7 @@ def _cron_tick_profile_homes(config: object) -> list[tuple[str, Path]]:
 def _cron_profile_gate(name: str, home: Path) -> bool:
     """Tick ``home`` this cycle unless ANOTHER gateway process owns it.
 
-    Same stand-down the serve/Desktop ticker applies (``hermes_cli/web_server.py``): a host that
+    Same stand-down the serve/Desktop ticker applies (``hermes_agent/hermes_cli/web_server.py``): a host that
     has not finished converging onto the one host gateway (``hermes gateway migrate --multiplex``)
     may still run profile B's own gateway, and without this both it and this process race B's
     ``cron/.tick.lock``. The lock stops a simultaneous double-run but not the race: when this
@@ -1774,7 +1774,7 @@ def _load_profile_secret_scope(profile_home: Path) -> dict:
     """Hydrate and load one profile's secrets under its home override."""
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     # Caller already hydrated external sources off-loop (#99519).
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 
     home_token = set_hermes_home_override(str(profile_home))
@@ -1845,7 +1845,7 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     default root, not ``get_hermes_home()`` — a named launcher's home is not the owner
     of the primary adapter map.
     """
-    from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
+    from hermes_agent.hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
     cfg = load_gateway_config()
     log_multiplex_decision(resolve_multiplex_mode(cfg))
     if not cfg.multiplex_profiles:
@@ -1934,7 +1934,7 @@ _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 
 # Internal bridge, not a config source: seed from the canonical default after dotenv so an ambient
 # process/.env value can never control lease safety.
-from hermes_cli.config_defaults import DEFAULT_CONFIG as _DEFAULT_CONFIG
+from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG as _DEFAULT_CONFIG
 os.environ["HERMES_TURN_LEASE_TIMEOUT"] = str(_DEFAULT_CONFIG["agent"]["gateway_turn_lease_timeout"])
 
 # Bridge config.yaml values into env so os.getenv() picks them up. config.yaml unconditionally wins
@@ -2036,7 +2036,7 @@ def _bridge_auxiliary_config_to_env(_auxiliary_cfg: dict) -> None:
     """Bridge auxiliary model/endpoint overrides (vision, approval, plugins); compression reads yaml."""
     _aux_bridged_keys = {"vision", "approval"}
     try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        from hermes_agent.hermes_cli.plugins import get_plugin_auxiliary_tasks
         for _entry in get_plugin_auxiliary_tasks():
             _aux_bridged_keys.add(_entry["key"])
     except Exception:
@@ -2108,7 +2108,7 @@ def _load_bridge_config(config_path: Path) -> dict:
     snapshot = worker_config_snapshot()
     if snapshot is not None:
         return snapshot
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     return load_user_config_effective(config_path)
 
 
@@ -2138,13 +2138,13 @@ except Exception as _bootstrap_exc:
     print(f"  Warning: IPv4 preference application failed: {_bootstrap_exc}", file=sys.stderr)
 
 try:
-    from hermes_cli.config import print_config_warnings
+    from hermes_agent.hermes_cli.config import print_config_warnings
     print_config_warnings()
 except Exception as _bootstrap_exc:
     print(f"  Warning: config validation failed: {_bootstrap_exc}", file=sys.stderr)
 
 try:
-    from hermes_cli.config import warn_deprecated_cwd_env_vars
+    from hermes_agent.hermes_cli.config import warn_deprecated_cwd_env_vars
     warn_deprecated_cwd_env_vars()
 except Exception as _bootstrap_exc:
     print(f"  Warning: deprecation check failed: {_bootstrap_exc}", file=sys.stderr)
@@ -2224,7 +2224,7 @@ _EXECUTOR_QUIESCE_TIMEOUT = 2.0
 def _own_policy_open_startup_violation(config) -> Optional[str]:
     """Return a startup-abort reason when open policy lacks allow-all opt-in."""
     with suppress(Exception):  # idempotent; callers may hand in a config load_gateway_config never built
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()
     for platform, platform_config in getattr(config, "platforms", {}).items():
         if not getattr(platform_config, "enabled", False):
@@ -2280,7 +2280,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     ``resolve_runtime_provider()`` may fall back to env vars; behavioral config is config.yaml only.
     An ``AuthError`` from the primary walks the configured fallback chain through the shared
     ``resolve_runtime_with_fallback`` (the gateway keeps no resolver loop of its own)."""
-    from hermes_cli.runtime_provider import (
+    from hermes_agent.hermes_cli.runtime_provider import (
         resolve_runtime_with_fallback, format_runtime_provider_error, _get_model_config)
 
     # Capture primary provider/model from config before the try block so we
@@ -2371,7 +2371,7 @@ def _resolve_gateway_model_context(
             configured_provider = provider = model_cfg.get("provider") or None
             configured_base_url = base_url = model_cfg.get("base_url") or None
         try:
-            from hermes_cli.config import get_compatible_custom_providers
+            from hermes_agent.hermes_cli.config import get_compatible_custom_providers
             custom_providers = get_compatible_custom_providers(data)
         except Exception:
             custom_providers = data.get("custom_providers")
@@ -2393,12 +2393,12 @@ def _resolve_gateway_model_context(
 
     def _pin_still_applies() -> bool:
         # Drop a configured context_length pin when the effective route no longer matches (or on error).
-        from hermes_cli.route_identity import should_clear_context_pin
+        from hermes_agent.hermes_cli.route_identity import should_clear_context_pin
         return not should_clear_context_pin(
             configured_model, resolved_model, configured_base_url, base_url, configured_provider, provider)
 
     def _custom_ctx() -> Optional[int]:
-        from hermes_cli.config import get_custom_provider_context_length
+        from hermes_agent.hermes_cli.config import get_custom_provider_context_length
         return get_custom_provider_context_length(
             model=resolved_model, base_url=base_url, custom_providers=custom_providers)
 
@@ -2428,7 +2428,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Opti
     ``target_model`` is the model the override will actually send: the ladder's model-keyed rungs
     (Zen/Go relay + api_mode) must see it rather than config's ``default``, or a Go-only override
     resolves an api_mode/base_url the sent model cannot use (#112600)."""
-    from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error
     try:
         runtime = resolve_runtime_provider(requested=provider, target_model=target_model or None)
     except Exception as exc:
@@ -2441,7 +2441,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str, target_model: Opti
 
 def _deep_merge_request_overrides(base: Optional[dict], override: Optional[dict]) -> dict:
     """Merge request_overrides dicts, deep-merging nested dictionaries."""
-    from hermes_cli.config import _deep_merge
+    from hermes_agent.hermes_cli.config import _deep_merge
     base_dict = dict(base or {})
     override_dict = dict(override or {})
     if not base_dict:
@@ -2693,7 +2693,7 @@ def _abandon_timed_out_gateway_turn(
             request_hard_interrupt(agent, _INTERRUPT_REASON_TIMEOUT, tool_reason=_INTERRUPT_TOOL_REASON_TIMEOUT)
         except Exception:
             logger.debug("Timed-out agent interrupt failed", exc_info=True)
-        from hermes_cli.observability.shared_metrics_process import record_watchdog_turn_abort
+        from hermes_agent.hermes_cli.observability.shared_metrics_process import record_watchdog_turn_abort
         record_watchdog_turn_abort(agent)
 
     try:
@@ -2862,7 +2862,7 @@ def _load_gateway_config(config_path: Path | None = None) -> dict:
     if config_path is None:
         config_path = _gateway_config_home() / 'config.yaml'
     try:
-        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_agent.hermes_cli.config_effective import load_user_config_effective
         return load_user_config_effective(config_path)
     except Exception:
         logger.debug("Could not load gateway config from %s", config_path, exc_info=True)
@@ -2876,7 +2876,7 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     """The profile's model when nothing else names one: config.yaml (single source of truth), else the
     claimed welcome trial's. Temporary AIAgents (e.g. /compress) otherwise use the hardcoded default,
     which fails under openai-codex."""
-    from hermes_cli.anon_auth import trial_model
+    from hermes_agent.hermes_cli.anon_auth import trial_model
     model_cfg = (config if config is not None else _load_gateway_config()).get("model", {})
     if isinstance(model_cfg, dict):
         model_cfg = model_cfg.get("default") or model_cfg.get("model")
@@ -2909,14 +2909,14 @@ def _get_channel_override(
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
-    """Hermes update/restart argv: the running interpreter's ``python -m hermes_cli.main``
+    """Hermes update/restart argv: the running interpreter's ``python -m hermes_agent.hermes_cli.main``
     (exactly this install), else ``hermes`` on PATH, else None. The module argv must win: a
     PATH-first lookup lets an attacker-planted ``hermes`` shadow the running install when
     /update or /restart re-execs it (#111569)."""
     try:
         import importlib.util
-        if importlib.util.find_spec("hermes_cli") is not None:
-            return [sys.executable, "-m", "hermes_cli.main"]
+        if importlib.util.find_spec("hermes_agent.hermes_cli") is not None:
+            return [sys.executable, "-m", "hermes_agent.hermes_cli.main"]
     except Exception:
         pass
     import shutil
@@ -3221,7 +3221,7 @@ def _reconnect_attention_after_secs() -> float:
     never stops (transient outages must self-heal), this only makes a permanently-failing loop loud.
     Non-positive disables. Read per call, never cached: one process serves many profiles and a config
     edit must not need a gateway restart (#115635)."""
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
     agent_cfg = load_config_readonly().get("agent")
     raw = agent_cfg.get("reconnect_attention_after") if isinstance(agent_cfg, dict) else None
     try:
@@ -3406,7 +3406,7 @@ class GatewayRunner(
         # standalone opt-out: --config must not turn that profile into a host multiplexer.
         self.config = config if config is not None else load_gateway_config_for_runner()
         if config is not None:
-            from hermes_cli.gateway_multiplex_mode import standalone_launcher_decision, log_multiplex_decision
+            from hermes_agent.hermes_cli.gateway_multiplex_mode import standalone_launcher_decision, log_multiplex_decision
             decision = standalone_launcher_decision(self.config)
             if decision is not None:
                 log_multiplex_decision(decision)
@@ -3615,7 +3615,7 @@ class GatewayRunner(
                 _profile = source.profile
             else:
                 try:
-                    from hermes_cli.profiles import get_active_profile_name
+                    from hermes_agent.hermes_cli.profiles import get_active_profile_name
                     _profile = get_active_profile_name() or "default"
                 except Exception:
                     _profile = None
@@ -3736,7 +3736,7 @@ class GatewayRunner(
     def _active_profile_name(self) -> str:
         """Return the profile name this gateway represents."""
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from hermes_agent.hermes_cli.profiles import get_active_profile_name
             return get_active_profile_name() or "default"
         except Exception:
             return "default"
@@ -4169,7 +4169,7 @@ class GatewayRunner(
         ``build_source``), then the active profile."""
         from hermes_agent.gateway.profile_routing import ProfileRouteRejected
         from hermes_agent.gateway.session_identity import identity_of
-        from hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name, get_profile_dir, profile_exists
         from hermes_constants import get_hermes_home
         identity = identity_of(source)
         if identity is not None:
@@ -4302,7 +4302,7 @@ def _housekeeping_channel_directory(adapters, loop) -> None:
 
 
 def _housekeeping_paste_sweep() -> None:
-    from hermes_cli.debug import _sweep_expired_pastes
+    from hermes_agent.hermes_cli.debug import _sweep_expired_pastes
     deleted, remaining = _sweep_expired_pastes()
     if deleted:
         logger.info("Paste sweep: deleted %d expired paste(s), %d pending", deleted, remaining)
@@ -4328,7 +4328,7 @@ def _housekeeping_plugin_update_check() -> None:
     plugins.auto_update_check_hours, read-only, receipt-surfaced; the
     opt-in auto-apply rides the manual update pipeline. A network error
     costs one warning and a stamped marker — never an apply."""
-    from hermes_cli.plugins_cadence import maybe_run_gateway_check
+    from hermes_agent.hermes_cli.plugins_cadence import maybe_run_gateway_check
 
     maybe_run_gateway_check(log=logger)
 
@@ -4370,7 +4370,7 @@ def _housekeeping_state_db_maintenance(launch: Optional[tuple[Path, Path]] = Non
     or vacuumed by anyone — the dashboard/serve trigger defers to the gateway for every profile a
     gateway owns (``web_server_sessions``). *launch* carries the launch home's configured transcript
     dir (:func:`_launch_sessions_dir`) so its override still governs its own profile."""
-    from hermes_cli.config import load_config as _load_full_config
+    from hermes_agent.hermes_cli.config import load_config as _load_full_config
     from hermes_agent.hermes_state_registry import acquire, release_or_close
     _sess_cfg = (_load_full_config().get("sessions") or {})
     if not (_sess_cfg.get("auto_archive", False) or _sess_cfg.get("auto_prune", False)):
@@ -4410,7 +4410,7 @@ def _housekeeping_deferred_fts_retry() -> None:
 
 def _housekeeping_memory_trim() -> None:
     """Messaging-gateway counterpart to the TUI idle reaper; timer lane: full GC only once idle (#139763)."""
-    from hermes_cli.mem_trim import trim_memory_when_idle
+    from hermes_agent.hermes_cli.mem_trim import trim_memory_when_idle
     trim_memory_when_idle(reason="messaging gateway housekeeping")
 
 
@@ -4865,7 +4865,7 @@ def _claim_host_gateway_role(force: bool = False) -> None:
     from hermes_agent.gateway.host_attach import (
         ATTACH_CHANNEL_WAIT_S, START, host_gateway, launched_by_other_tenant, standalone_attach_decision,
     )
-    from hermes_cli.profiles import profile_is_standalone
+    from hermes_agent.hermes_cli.profiles import profile_is_standalone
     if owner is not None and launched_by_other_tenant(owner.home, get_hermes_home()):
         # The lock is per OS user, so a second tenant root can never win it against the first:
         # refusing 75 here would retry forever and its gateway would never start (#121352).
@@ -4903,7 +4903,7 @@ def _claim_host_gateway_role(force: bool = False) -> None:
 
 
 def _migrate_command() -> str:
-    from hermes_cli.gateway_migrate import MIGRATE_COMMAND
+    from hermes_agent.hermes_cli.gateway_migrate import MIGRATE_COMMAND
 
     return MIGRATE_COMMAND
 
@@ -4960,8 +4960,8 @@ def _log_standalone_profiles_at_boot(runner) -> None:
     try:
         if not getattr(runner.config, "multiplex_profiles", False):
             return
-        from hermes_cli.profiles import profiles_to_serve, profile_is_standalone
-        from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
+        from hermes_agent.hermes_cli.profiles import profiles_to_serve, profile_is_standalone
+        from hermes_agent.hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
         served = set(runner.served_profile_names())
         for name, home in profiles_to_serve(True, include_standalone=True, include_parked=True):
             if name != "default" and name not in served and profile_is_standalone(home):
@@ -5048,8 +5048,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 def _guard_corrupt_user_config() -> None:
     """Fail closed when the active profile's config.yaml cannot be parsed: nobody can repair it on this
     surface, and defaults would let provider auto-detection adopt ``.env`` credentials the config never
-    named. Same policy and escape hatch (``HERMES_IGNORE_USER_CONFIG=1``) as ``hermes_cli/main.py``."""
-    from hermes_cli.config import InvalidUserConfigError, require_parseable_user_config
+    named. Same policy and escape hatch (``HERMES_IGNORE_USER_CONFIG=1``) as ``hermes_agent/hermes_cli/main.py``."""
+    from hermes_agent.hermes_cli.config import InvalidUserConfigError, require_parseable_user_config
 
     try:
         require_parseable_user_config()
@@ -5062,16 +5062,16 @@ def main():
     """CLI entry point for the gateway."""
     # Before any config-dependent startup (watchdog, DB opens, provider resolution).
     _guard_corrupt_user_config()
-    from hermes_cli.resource_limits import apply_malloc_arena_max  # runs before any thread (glibc latches)
+    from hermes_agent.hermes_cli.resource_limits import apply_malloc_arena_max  # runs before any thread (glibc latches)
 
-    # Advertise the harness to children (mirrors _advertise_agent_env in hermes_cli/main.py, inlined to
+    # Advertise the harness to children (mirrors _advertise_agent_env in hermes_agent/hermes_cli/main.py, inlined to
     # avoid its startup side effects). Value must equal registry id ``hermes-agent`` exactly.
     os.environ.setdefault("AI_AGENT", "hermes-agent")
     os.environ.setdefault("HERMES_AGENT", "true")
 
     def _register_identity() -> None:
         # Ledger registration + Windows job-object attach so update-time reapers can identify this gateway.
-        from hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
+        from hermes_agent.hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
         register_self("gateway")
         attach_self_to_kill_on_close_job()
 
@@ -5083,17 +5083,17 @@ def main():
 
     def _utf8_stdio() -> None:
         # Windows: gateway logs and banner would UnicodeEncodeError on cp1252 consoles. No-op on POSIX.
-        from hermes_cli.stdio import configure_windows_stdio
+        from hermes_agent.hermes_cli.stdio import configure_windows_stdio
         configure_windows_stdio()
 
     for _step in (apply_malloc_arena_max, _register_identity, _arm_watchdog, _utf8_stdio):
         _best_effort(_step)
 
     # pm startup contract (PATH provisioning for the store's tools), then the post-update bootstrap: the
-    # same one-pass record-gated maintenance registry the CLI dispatch path runs (hermes_cli/main.py) —
+    # same one-pass record-gated maintenance registry the CLI dispatch path runs (hermes_agent/hermes_cli/main.py) —
     # this entrypoint bypasses that dispatch, so run it here too. Never raises.
     try:
-        from hermes_cli.venv_sync import check_runtime
+        from hermes_agent.hermes_cli.venv_sync import check_runtime
         from pm.paths import install_root
 
         problem = check_runtime(install_root())
@@ -5102,7 +5102,7 @@ def main():
     except Exception:
         logger.debug("pm startup check failed", exc_info=True)
     try:
-        from hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
+        from hermes_agent.hermes_cli.boot_bootstrap import maybe_run_boot_bootstrap
         from pm.paths import install_root
 
         maybe_run_boot_bootstrap(install_root())
@@ -5120,7 +5120,7 @@ def main():
         from hermes_agent.gateway.config_loader import load_gateway_config_file
         config = load_gateway_config_file(args.config)
         # Same boot-time verdict the loaded config gets when the file leaves the flag unset.
-        from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
+        from hermes_agent.hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
         log_multiplex_decision(resolve_multiplex_mode(config))
 
     # start_gateway() completes teardown before returning/raising SystemExit; force-exit after so a
@@ -5165,17 +5165,17 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     def _mark_exited() -> None:
         # Single funnel every graceful exit passes through, so the next boot's unclean-death detector
         # fires only for genuine SIGKILL/OOM/VM deaths. Ownership-guarded against an old --replace life.
-        from hermes_cli.observability.shared_metrics_process import stamp_exit
+        from hermes_agent.hermes_cli.observability.shared_metrics_process import stamp_exit
         stamp_exit("clean")  # the exit-metrics marker too: os._exit skips its atexit stamp (never raises)
         from hermes_agent.gateway.lifecycle_ledger import mark_exited
         mark_exited(exit_code, reason="graceful_shutdown")
 
     def _flush_metrics() -> None:  # after the clean stamp: a supervisor kill mid-flush is no unclean death
-        from hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
+        from hermes_agent.hermes_cli.observability.shared_metrics_process import flush_before_hard_exit
         flush_before_hard_exit()  # the runtimes' atexit flush: open sessions + queued opt-in rows (bounded)
 
     def _write_cpu_profile() -> None:  # --cpu-profile's atexit writer never runs past os._exit; no-op when off
-        from hermes_cli.cpu_profile import write_cpu_profile
+        from hermes_agent.hermes_cli.cpu_profile import write_cpu_profile
         write_cpu_profile()
 
     def _drain_logs() -> None:

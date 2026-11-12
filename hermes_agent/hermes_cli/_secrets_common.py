@@ -1,6 +1,6 @@
 """Helpers shared by the Bitwarden and 1Password ``hermes secrets`` CLIs.
 
-Import-light on purpose: ``hermes_cli.secrets_cli`` must stay free of the Bitwarden backend
+Import-light on purpose: ``hermes_agent.hermes_cli.secrets_cli`` must stay free of the Bitwarden backend
 (``cryptography``) at import time, so nothing here touches a secret-source backend.
 """
 
@@ -17,8 +17,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from hermes_cli.config import load_config, save_config
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_agent.hermes_cli.config import load_config, save_config
+from hermes_agent.hermes_cli.secret_prompt import masked_secret_prompt
 
 
 def yn(b: bool) -> str:

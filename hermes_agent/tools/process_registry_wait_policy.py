@@ -39,13 +39,13 @@ def _effective_config() -> dict:
     """The profile's effective user config (managed overlay, ``${VAR}`` expansion): the same reader the
     completion consumers use (``hermes_agent.gateway.run._load_gateway_config``, ``hermes_agent.tui_gateway.server._load_cfg``), so
     an admin-managed or env-expanded value decides promotion exactly as it decides delivery."""
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     return load_user_config_effective()
 
 
 def _enabled() -> bool:
     """``terminal.process_wait_auto_notify`` (default true); true when config is unreadable."""
-    from hermes_cli.config import cfg_get
+    from hermes_agent.hermes_cli.config import cfg_get
     try:
         return cfg_get(_effective_config(), "terminal", "process_wait_auto_notify", default=True) is not False
     except Exception:  # a broken config.yaml must not break process_manage
@@ -86,7 +86,7 @@ def _can_deliver_completion() -> bool:
         return False
     # ``off`` drains the completion but never starts the agent turn (CLI, TUI and gateway alike). The
     # gateway also honours the HERMES_BACKGROUND_NOTIFICATIONS override; either one saying off is off.
-    from hermes_cli.config import cfg_get
+    from hermes_agent.hermes_cli.config import cfg_get
     try:
         from hermes_agent.gateway.platforms._shared import platform_gate_env
         modes = (platform_gate_env("HERMES_BACKGROUND_NOTIFICATIONS"),

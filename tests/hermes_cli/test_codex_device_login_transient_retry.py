@@ -13,8 +13,8 @@ import ssl
 import httpx
 import pytest
 
-from hermes_cli import auth_codex
-from hermes_cli.auth import AuthError
+from hermes_agent.hermes_cli import auth_codex
+from hermes_agent.hermes_cli.auth import AuthError
 
 
 _SSL_EOF_MESSAGE = (

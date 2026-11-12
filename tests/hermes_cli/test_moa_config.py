@@ -1,7 +1,7 @@
 import pytest
 
 from hermes_agent.agent.errors import MoAPresetNotFoundError
-from hermes_cli.moa_config import (
+from hermes_agent.hermes_cli.moa_config import (
     DEFAULT_MOA_AGGREGATOR,
     DEFAULT_MOA_PRESET_NAME,
     DEFAULT_MOA_REFERENCE_MODELS,
@@ -12,7 +12,7 @@ from hermes_cli.moa_config import (
 
 
 def test_moa_slot_picker_excludes_unconfigured_providers(monkeypatch):
-    from hermes_cli import moa_cmd
+    from hermes_agent.hermes_cli import moa_cmd
 
     captured = {}
     monkeypatch.setattr(moa_cmd, "load_picker_context", lambda: object())
@@ -142,7 +142,7 @@ def test_validate_moa_payload_agrees_with_clean_slot():
     """Contract: a payload validate accepts must survive normalize UNCHANGED in
     its slots — validate and _clean_slot can never disagree (else a payload
     could pass validation and still be swapped for defaults)."""
-    from hermes_cli.moa_config import validate_moa_payload
+    from hermes_agent.hermes_cli.moa_config import validate_moa_payload
 
     payload = {"presets": {"p": _valid_preset_payload()}}
     assert validate_moa_payload(payload) == []
@@ -156,7 +156,7 @@ def test_validate_moa_payload_agrees_with_clean_slot():
 
 def test_config_key_aggregator_fields_are_the_slot_fields_clean_slot_keeps():
     """``config set`` recognizes exactly the aggregator fields the normalizer keeps (no drift)."""
-    from hermes_cli.moa_config import _AGGREGATOR_SLOT_FIELDS, _clean_slot
+    from hermes_agent.hermes_cli.moa_config import _AGGREGATOR_SLOT_FIELDS, _clean_slot
 
     slot = {"provider": "p", "model": "m", "reasoning_effort": "high", "extra": "dropped"}
     assert set(_clean_slot(slot)) == _AGGREGATOR_SLOT_FIELDS
@@ -165,7 +165,7 @@ def test_config_key_aggregator_fields_are_the_slot_fields_clean_slot_keeps():
 def test_print_config_marks_aggregator_as_billed_and_warns_on_provider_mismatch(capsys):
     """#112359: the aggregator is the acting model billed for the run; when it sits on a
     different provider than the main model, ``hermes moa list``/``configure`` say so."""
-    from hermes_cli import moa_cmd
+    from hermes_agent.hermes_cli import moa_cmd
 
     moa_cmd._print_config({"model": {"provider": "openai-codex"}})
 
@@ -177,7 +177,7 @@ def test_print_config_marks_aggregator_as_billed_and_warns_on_provider_mismatch(
 
 @pytest.mark.parametrize("cfg", [{"model": {"provider": "openrouter"}}, {}])
 def test_billing_notice_silent_when_providers_match_or_main_unknown(cfg, capsys):
-    from hermes_cli import moa_cmd
+    from hermes_agent.hermes_cli import moa_cmd
 
     moa_cmd._print_config(cfg)
 

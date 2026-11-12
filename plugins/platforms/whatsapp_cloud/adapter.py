@@ -1103,11 +1103,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
 def _is_connected(config) -> bool:
     """Phone-number id + access token, from ``PlatformConfig.extra`` (YAML / env seeding) or the
-    scope-aware env reader (``hermes_cli.gateway.get_env_value`` so setup-status patches see it)."""
+    scope-aware env reader (``hermes_agent.hermes_cli.gateway.get_env_value`` so setup-status patches see it)."""
     extra = (getattr(config, "extra", None) or {}) if config is not None else {}
     if extra.get("phone_number_id") and extra.get("access_token"):
         return True
-    import hermes_cli.gateway as gateway_mod
+    import hermes_agent.hermes_cli.gateway as gateway_mod
     return all((gateway_mod.get_env_value(name) or "").strip()
                for name in ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"))
 

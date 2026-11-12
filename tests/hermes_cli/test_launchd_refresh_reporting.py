@@ -2,8 +2,8 @@
 import subprocess
 from unittest.mock import MagicMock
 
-from hermes_cli import gateway as gw
-from hermes_cli import gateway_service_owner
+from hermes_agent.hermes_cli import gateway as gw
+from hermes_agent.hermes_cli import gateway_service_owner
 
 def _stale_plist(tmp_path, monkeypatch, *, registered: bool):
     plist_path = tmp_path / "com.hermes.plist"

@@ -7,7 +7,7 @@
 - ``resolve_provider()`` picks the active provider via the documented priority chain.
 - ``OAUTH_PROVIDER_FLOWS`` maps each OAuth provider to its resolver/status builder; the flows live in
   ``auth_nous``/``auth_codex``/``auth_xai``/``auth_qwen``/``auth_minimax``/``auth_openrouter`` and are
-  re-imported here so ``hermes_cli.auth.<name>`` stays the public/patchable surface."""
+  re-imported here so ``hermes_agent.hermes_cli.auth.<name>`` stays the public/patchable surface."""
 
 from __future__ import annotations
 
@@ -33,22 +33,22 @@ from urllib.parse import urlparse
 from hermes_constants import OPENROUTER_BASE_URL, hermes_home_key, secure_parent_dir
 from hermes_agent.agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_json_write, env_float, file_cache_version, is_truthy_value
-from hermes_cli.auth_zai_kimi import (
+from hermes_agent.hermes_cli.auth_zai_kimi import (
     KIMI_CODE_BASE_URL, ZAI_ENDPOINTS, _normalize_lmstudio_runtime_base_url, _resolve_kimi_base_url,
     _resolve_zai_base_url, detect_zai_endpoint)
-from hermes_cli.auth_model_picker import (
+from hermes_agent.hermes_cli.auth_model_picker import (
     _prompt_model_selection, _save_model_choice)
-from hermes_cli.auth_device_flow import (
+from hermes_agent.hermes_cli.auth_device_flow import (
     _can_open_graphical_browser, _default_verify, _is_remote_session,
     _nous_device_auth_timeout_message, _offer_existing_oauth_credentials,
     _poll_device_token_generic, _poll_for_token, _print_device_code_instructions,
     _print_login_success, _print_loopback_ssh_hint, _prompt_yes_no, _request_device_code,
     _resolve_verify, _ssh_user_at_host)
-from hermes_cli.auth_oauth_grants import (
+from hermes_agent.hermes_cli.auth_oauth_grants import (
     SINGLE_USE_REFRESH_POOL_PROVIDERS, _oauth_heal_clean_marks, _oauth_heal_notices,
     consume_oauth_heal_notices, heal_forked_single_use_oauth_grants,
     strip_cloned_single_use_oauth_grants)
-from hermes_cli.auth_nous import (
+from hermes_agent.hermes_cli.auth_nous import (
     NOUS_SESSION_TERMINAL, NOUS_SESSION_UNKNOWN, NOUS_SESSION_VALID, _ALLOWED_NOUS_INFERENCE_HOSTS,
     _agent_key_is_usable, _apply_nous_refreshed_tokens, _assert_nous_inference_jwt_usable,
     _compute_nous_auth_status, _format_nous_entitlement_auth_error, _healed_nous_inference_url,
@@ -62,32 +62,32 @@ from hermes_cli.auth_nous import (
     _write_shared_nous_state, fetch_nous_models, get_nous_auth_status_local,
     get_nous_session_validity, persist_nous_credentials, refresh_nous_oauth_from_state,
     resolve_nous_runtime_credentials, step_up_nous_billing_scope)
-from hermes_cli.auth_minimax import (
+from hermes_agent.hermes_cli.auth_minimax import (
     _MINIMAX_OAUTH_ERROR_BODY_LIMIT, _login_minimax_oauth, _minimax_oauth_login, _minimax_pkce_pair,
     _minimax_poll_token, _minimax_post_form, _minimax_request_user_code,
     _minimax_resolve_token_expiry_unix, _minimax_response_error_text, _minimax_save_auth_state,
     _refresh_minimax_oauth_state, build_minimax_oauth_token_provider,
     resolve_minimax_oauth_runtime_credentials)
-from hermes_cli.auth_xai import (
+from hermes_agent.hermes_cli.auth_xai import (
     _login_xai_oauth, _read_xai_oauth_tokens, _refresh_xai_oauth_tokens, _save_xai_oauth_tokens,
     _write_through_xai_oauth_to_global_root, _xai_access_token_is_expiring,
     _xai_oauth_device_code_login, _xai_oauth_discovery, _xai_oauth_poll_device_token,
     _xai_oauth_request_device_code, _xai_proactive_refresh_skew_seconds,
     _xai_validate_inference_base_url, refresh_xai_oauth_pure, resolve_xai_oauth_runtime_credentials)
-from hermes_cli.auth_codex import (
+from hermes_agent.hermes_cli.auth_codex import (
     _codex_access_token_is_expiring, _codex_device_code_login, _codex_http_client,
     _codex_pool_rate_limit_status, _codex_quota_probe_cache, _codex_usage_probe_url,
     _import_codex_cli_tokens, _is_codex_rate_limit_shaped, _login_openai_codex,
     _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens,
     _refresh_expired_codex_probe_token, _save_codex_tokens, clear_codex_pool_quota_cooldowns,
     refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
-from hermes_cli.auth_openrouter import _openrouter_pkce_login
-from hermes_cli.guest_handoff import note_store_write
-from hermes_cli.auth_qwen import (
+from hermes_agent.hermes_cli.auth_openrouter import _openrouter_pkce_login
+from hermes_agent.hermes_cli.guest_handoff import note_store_write
+from hermes_agent.hermes_cli.auth_qwen import (
     _qwen_access_token_is_expiring, _qwen_base_url, _qwen_cli_auth_path, _read_qwen_cli_tokens,
     _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
     resolve_qwen_runtime_credentials)
-from hermes_cli.auth_constants import (
+from hermes_agent.hermes_cli.auth_constants import (
     _decode_jwt_claims, AUTH_STORE_VERSION, AUTH_LOCK_TIMEOUT_SECONDS, DEFAULT_NOUS_PORTAL_URL,
     DEFAULT_NOUS_INFERENCE_URL, DEFAULT_NOUS_CLIENT_ID, NOUS_BILLING_MANAGE_SCOPE,
     DEFAULT_NOUS_SCOPE, NOUS_DEVICE_CODE_SOURCE, NOUS_AUTH_PATH_INVOKE_JWT,
@@ -238,22 +238,22 @@ _REGISTRY_ROWS: tuple[Any, ...] = (
     # region (hermes_agent/agent/vertex_adapter.py build_vertex_base_url), not a fixed host.
     ("vertex", "Google Vertex AI", "", (), "", "vertex"),
     ("azure-foundry", "Azure Foundry", "", ("AZURE_FOUNDRY_API_KEY",), "AZURE_FOUNDRY_BASE_URL"))
-from hermes_cli.auth_plugin_providers import HomeScopedRegistry  # mirrored rows are read per home
+from hermes_agent.hermes_cli.auth_plugin_providers import HomeScopedRegistry  # mirrored rows are read per home
 PROVIDER_REGISTRY: dict[str, ProviderConfig] = HomeScopedRegistry(
     (p.id, p) for p in (r if isinstance(r, ProviderConfig) else _api_key_provider(*r) for r in _REGISTRY_ROWS))
 # The rows above, before any plugin touches the dict (a user plugin may override these; #48450).
 BUILTIN_PROVIDER_IDS = frozenset(dict.keys(PROVIDER_REGISTRY))
 
-# ``hermes_cli.config`` discovers model-provider plugins while importing, and a plugin may read this
+# ``hermes_agent.hermes_cli.config`` discovers model-provider plugins while importing, and a plugin may read this
 # module's registry during that discovery. Keep the import below ProviderConfig / PROVIDER_REGISTRY so
 # a plugin never observes a partially initialized auth module (CONTRACT: during discovery a plugin may
 # rely only on ``ProviderConfig`` and ``PROVIDER_REGISTRY`` from here — nothing defined below).
-from hermes_cli.config import (
+from hermes_agent.hermes_cli.config import (
     atomic_config_replace, config_exists, get_hermes_home, get_config_path, read_raw_config, require_readable_config_before_write)
 
 # Plugin profiles (plugins/model-providers/<name>/) are mirrored into PROVIDER_REGISTRY with the
 # auth_type they declare; the mirror lives in the sibling so it can be re-run after discovery.
-from hermes_cli.auth_plugin_providers import (
+from hermes_agent.hermes_cli.auth_plugin_providers import (
     canonical_registry_rows as _canonical_registry_rows, get_plugin_oauth_auth_status,
     registry_lookup as _registry_lookup, sync_plugin_provider_registry)
 
@@ -268,7 +268,7 @@ def get_anthropic_key() -> str:
     Checks both the ``.env`` file and the process environment, preferring ``~/.hermes/.env`` so a deliberate
     key rotation isn't shadowed by a stale shell export (matches the api-key resolution path — see #20591).
     """
-    from hermes_cli.config import get_env_value_prefer_dotenv
+    from hermes_agent.hermes_cli.config import get_env_value_prefer_dotenv
     env_vars = PROVIDER_REGISTRY["anthropic"].api_key_env_vars
     return next((v for v in (get_env_value_prefer_dotenv(var) or "" for var in env_vars) if v), "")
 
@@ -358,7 +358,7 @@ def _model_level_key_env(provider_id: str) -> str:
     so credential resolution must consult it (#106336).
     """
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         model_cfg = (load_config() or {}).get("model")
     except Exception:
         return ""
@@ -378,7 +378,7 @@ def _resolve_api_key_provider_secret(provider_id: str, pconfig: ProviderConfig) 
 
     # Prefer ~/.hermes/.env over os.environ so a deliberate key rotation in .env isn't shadowed by
     # a stale shell export inherited from a parent process (Codex CLI, test runners, etc.).
-    from hermes_cli.config import get_env_value_prefer_dotenv
+    from hermes_agent.hermes_cli.config import get_env_value_prefer_dotenv
 
     # Desktop-saved credential pointer: the settings UI persists registry-provider keys as
     # model.key_env → $HERMES_HOME/.env (e.g. HERMES_CUSTOM_LMSTUDIO_API_KEY) while keeping
@@ -1228,7 +1228,7 @@ def _config_selects_provider(normalized: str) -> bool:
     Anthropic credentials for that slot even when the main model is another provider; otherwise
     Claude Code OAuth entries get pruned by ``load_pool("anthropic")`` and MoA advisors fail with
     "no ANTHROPIC_API_KEY" while the picker says Anthropic is logged in."""
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     cfg = load_config()
     if _slot_selects(cfg.get("model"), normalized):
         return True
@@ -1275,7 +1275,7 @@ def _env_secret(name: str) -> bool:
     actually authenticates never disagree — an empty ``DEEPSEEK_API_KEY=`` export in the parent
     shell must not hide a real key in ``.env`` (#77007).
     """
-    from hermes_cli.config import get_env_value_prefer_dotenv
+    from hermes_agent.hermes_cli.config import get_env_value_prefer_dotenv
     return has_usable_secret(get_env_value_prefer_dotenv(name) or "")
 
 
@@ -1287,7 +1287,7 @@ def _explicit_env_credentials_present(normalized: str) -> bool:
     ambient EC2 IMDS / SSO profiles never auto-surface."""
     pconfig = PROVIDER_REGISTRY.get(normalized)
     if pconfig is None:
-        from hermes_cli.providers import get_provider
+        from hermes_agent.hermes_cli.providers import get_provider
         pconfig = get_provider(normalized)
         if not pconfig:
             return False
@@ -1324,7 +1324,7 @@ def _keyless_provider_has_explicit_config(normalized: str) -> bool:
         from hermes_agent.agent.vertex_adapter import has_explicit_vertex_config
         return bool(has_explicit_vertex_config())
     if normalized == "bedrock":
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         bedrock_cfg = load_config().get("bedrock")
         return isinstance(bedrock_cfg, dict) and bool(str(bedrock_cfg.get("region") or "").strip())
     return False
@@ -1397,7 +1397,7 @@ def _refuse_env_adoption_if_config_corrupt() -> None:
     silently adopt the PAID openrouter provider over whatever the broken config really names.
     Fires ONLY on the auto path and clears itself once the file parses again."""
     try:
-        from hermes_cli.config_read_errors import get_active_config_parse_failure
+        from hermes_agent.hermes_cli.config_read_errors import get_active_config_parse_failure
         err = get_active_config_parse_failure()
         if not err:
             return
@@ -1515,7 +1515,7 @@ def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optiona
     try:
         _maybe = _load_auth_store().get("active_provider")
         if _maybe == "nous":
-            from hermes_cli.anon_auth import free_inference_active, has_guest
+            from hermes_agent.hermes_cli.anon_auth import free_inference_active, has_guest
             if has_guest() and (skip_free_tier or not free_inference_active()):
                 return None  # this guest carries no inference here (or is being discounted): not a login
         if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
@@ -1537,7 +1537,7 @@ def _config_model_provider() -> tuple[Any, Optional[str]]:
     dashboard's Ink chat parked every session on Setup Required while ``hermes chat`` worked
     (#108383)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         model_cfg = (load_config() or {}).get("model")
         provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
         provider = provider.strip().lower() if isinstance(provider, str) else ""
@@ -1551,14 +1551,14 @@ def _config_model_provider() -> tuple[Any, Optional[str]]:
         # Bare ``providers:`` name (the ``custom:<name>`` intent spelled without the prefix); reuse the
         # runtime's own lookup so disabled / endpoint-less entries stay excluded.
         if provider:
-            from hermes_cli.runtime_provider_custom import has_named_custom_provider
+            from hermes_agent.hermes_cli.runtime_provider_custom import has_named_custom_provider
             if has_named_custom_provider(provider):
                 return model_cfg, "custom"
         # No provider pin but a base_url the bare-custom runtime rung would honour (a loopback
         # llama.cpp/vLLM/ollama server) — same explicit intent, spelled by URL.
         base_url = str(model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""
         if base_url:
-            from hermes_cli.runtime_provider import _config_base_url_trustworthy_for_bare_custom
+            from hermes_agent.hermes_cli.runtime_provider import _config_base_url_trustworthy_for_bare_custom
             if _config_base_url_trustworthy_for_bare_custom(base_url, provider):
                 return model_cfg, "custom"
         return model_cfg, None
@@ -1633,7 +1633,7 @@ def resolve_provider(
     if normalized in ("openrouter", "custom") or _registry_lookup(normalized) is not None:
         return normalized
     if normalized != "auto":
-        from hermes_cli.auth_error_copy import unknown_provider_hint
+        from hermes_agent.hermes_cli.auth_error_copy import unknown_provider_hint
         hint = unknown_provider_hint(normalized)
         tail = (f"\n\n{hint}" if hint else " Check 'hermes model' for available providers, "
                 "or run 'hermes doctor' to diagnose config issues.")
@@ -1679,7 +1679,7 @@ def resolve_provider(
     # only the desktop's trial claim does (welcome_trial), so provider resolution stays free of network.
     if not skip_free_tier:
         try:
-            from hermes_cli.anon_auth import free_inference_active
+            from hermes_agent.hermes_cli.anon_auth import free_inference_active
             if free_inference_active():
                 return "nous"
         except Exception as exc:
@@ -1688,7 +1688,7 @@ def resolve_provider(
     # below explicit keys and below the free tier.
     try:
         from hermes_agent.agent.bedrock_adapter import has_aws_credentials
-        from hermes_cli.anon_auth import on_local_desktop_backend  # a laptop: no EC2 metadata lookup
+        from hermes_agent.hermes_cli.anon_auth import on_local_desktop_backend  # a laptop: no EC2 metadata lookup
         if has_aws_credentials(instance_metadata=not on_local_desktop_backend()):
             return "bedrock"
     except ImportError:
@@ -1792,7 +1792,7 @@ def resolve_nous_access_token(
     """Refresh-aware Nous Portal token for managed tool gateways, connectors and account reads, never
     the free model: a guest gets a live held token, else a connectors-only mint NAS never challenges.
     Only a NAS from before hermes-portal#1516 challenges that mint; it is worked here as before."""
-    from hermes_cli.anon_challenge import run_with_challenge
+    from hermes_agent.hermes_cli.anon_challenge import run_with_challenge
     return run_with_challenge(lambda: _resolve_nous_access_token(
         timeout_seconds=timeout_seconds, insecure=insecure, ca_bundle=ca_bundle,
         refresh_skew_seconds=refresh_skew_seconds))
@@ -1830,7 +1830,7 @@ def _resolve_nous_access_token(
 
         lock_timeout = max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)
         with _nous_shared_store_lock(timeout_seconds=lock_timeout):
-            from hermes_cli.anon_auth import held_connectors_token, is_guest_state, refresh_guest_state
+            from hermes_agent.hermes_cli.anon_auth import held_connectors_token, is_guest_state, refresh_guest_state
             if is_guest_state(state):
                 # A live held token serves (an inference one is a superset); else mint connectors-only.
                 if access_token := held_connectors_token(state, skew_seconds=refresh_skew_seconds):
@@ -1928,7 +1928,7 @@ class OAuthProviderFlow:
     """Per-provider OAuth plumbing, keyed by provider id in ``OAUTH_PROVIDER_FLOWS``.
 
     Callables are named (strings) and looked up in this module at call time so
-    ``monkeypatch.setattr("hermes_cli.auth.resolve_codex_runtime_credentials", ...)`` applies."""
+    ``monkeypatch.setattr("hermes_agent.hermes_cli.auth.resolve_codex_runtime_credentials", ...)`` applies."""
     provider_id: str
     resolve_fn: str
     status_fn: str
@@ -2010,7 +2010,7 @@ def get_codex_auth_status() -> dict[str, Any]:
         on_pool_miss=_codex_pool_rate_limited_status)
     if str(status.get("source") or "").startswith("pool:"):
         # Pool rows keep the canonical URL; the chat route may send this key to model.base_url.
-        from hermes_cli.auth_codex import _codex_pool_route_base_url
+        from hermes_agent.hermes_cli.auth_codex import _codex_pool_route_base_url
         status["base_url"] = _codex_pool_route_base_url(status.get("base_url"))
     return status
 
@@ -2025,7 +2025,7 @@ def get_xai_oauth_auth_status() -> dict[str, Any]:
 
 def _provider_env_base_url(pconfig: ProviderConfig) -> str:
     if pconfig.id == "actual":
-        from hermes_cli.providers import normalize_provider
+        from hermes_agent.hermes_cli.providers import normalize_provider
 
         model = read_raw_config().get("model")
         if isinstance(model, dict) and normalize_provider(str(model.get("provider") or "")) == "actual":
@@ -2087,7 +2087,7 @@ def _external_process_spec(
         profile = None
     command_env_vars = tuple(getattr(profile, "process_command_env_vars", ()) or ())
     args_env_var = str(getattr(profile, "process_args_env_var", "") or "")
-    from hermes_cli.auth_external_process import external_process_command, resolve_external_process_command
+    from hermes_agent.hermes_cli.auth_external_process import external_process_command, resolve_external_process_command
     command = external_process_command(profile)
     raw_args = os.getenv(args_env_var, "").strip() if args_env_var else ""
     args = shlex.split(raw_args) if raw_args else list(getattr(profile, "process_args", ()) or [])
@@ -2124,7 +2124,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> dict[str, Any]:
     """Generic auth status dispatcher: bespoke builders (``OAUTH_PROVIDER_FLOWS`` plus Azure
     Foundry) first, then the registry ``auth_type`` so a whole provider class (e.g. every
     external-process ACP backend) gets a real status. Builders are looked up by NAME at call time so
-    tests that patch ``hermes_cli.auth.get_*_auth_status`` still apply."""
+    tests that patch ``hermes_agent.hermes_cli.auth.get_*_auth_status`` still apply."""
     target = (provider_id or get_active_provider() or "").strip().lower()
     if not target:
         return {"logged_in": False}
@@ -2159,7 +2159,7 @@ def _get_azure_foundry_auth_status() -> dict[str, Any]:
     ``AZURE_FOUNDRY_API_KEY``."""
     info: dict[str, Any] = {"provider": "azure-foundry"}
     try:
-        from hermes_cli.config import load_config, get_env_value_prefer_dotenv
+        from hermes_agent.hermes_cli.config import load_config, get_env_value_prefer_dotenv
         cfg = load_config()
     except Exception:
         cfg = {}
@@ -2306,7 +2306,7 @@ def _update_config_for_provider(
 
     # Built-in providers resolve credentials from env/auth state, not inline model.api_key left
     # over from a previous custom provider.
-    from hermes_cli.config import clear_model_endpoint_credentials
+    from hermes_agent.hermes_cli.config import clear_model_endpoint_credentials
     clear_model_endpoint_credentials(model_cfg)
 
     # An OpenRouter-formatted default like "anthropic/claude-opus-4.6" fails on direct-API
@@ -2398,7 +2398,7 @@ def logout_command(args) -> None:
         print("No provider is currently logged in.")
         return
     if target == "nous":
-        from hermes_cli.anon_auth import FREE_TIER_NOT_SIGNED_IN, is_guest_state
+        from hermes_agent.hermes_cli.anon_auth import FREE_TIER_NOT_SIGNED_IN, is_guest_state
         if is_guest_state(get_provider_auth_state("nous")):
             # Free tier is not a login; there is nothing to log out of and nothing is cleared.
             print(FREE_TIER_NOT_SIGNED_IN)
@@ -2410,7 +2410,7 @@ def logout_command(args) -> None:
         return
     if target == "nous":
         # A profile logout must not be re-adopted from the cross-profile store on the next boot.
-        from hermes_cli.auth_nous import _clear_shared_nous_state
+        from hermes_agent.hermes_cli.auth_nous import _clear_shared_nous_state
         _clear_shared_nous_state("logout")
     if should_reset_config:
         _reset_config_provider()

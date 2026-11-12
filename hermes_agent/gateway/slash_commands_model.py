@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.event import MessageEvent
-from hermes_cli.config import atomic_config_write
+from hermes_agent.hermes_cli.config import atomic_config_write
 from utils import base_url_host_matches
 
 logger = logging.getLogger("hermes_agent.gateway.run")  # log-record parity with hermes_agent/gateway/run.py
@@ -36,7 +36,7 @@ _FAST_SELECTIONS = {
 def _fast_route_supports(model: str, runtime: dict, tier: Optional[str] = None) -> bool:
     """The turn's own gate (``run_turn.py::_resolve_turn_agent_config``): a tier /fast accepts must be
     one the session's next request actually carries, so proxies and other providers are refused."""
-    from hermes_cli.models import resolve_fast_mode_overrides
+    from hermes_agent.hermes_cli.models import resolve_fast_mode_overrides
 
     return resolve_fast_mode_overrides(
         model, provider=runtime.get("provider"), base_url=runtime.get("base_url"), tier=tier) is not None
@@ -64,7 +64,7 @@ def _model_switch_skew_guard() -> Optional[str]:
 async def _persist_model_switch_to_config(result, config_path) -> None:
     """Write-through a resolved /model switch to the profile config at ``config_path``, off the
     event loop (the route comparison can do cold-start disk I/O)."""
-    from hermes_cli.model_switch import persist_model_selection
+    from hermes_agent.hermes_cli.model_switch import persist_model_selection
     await asyncio.to_thread(persist_model_selection, result, config_path)
 
 
@@ -105,7 +105,7 @@ class _ModelSwitchContext:
                 self.current_base_url = model_cfg.get("base_url", "")
             self.user_provs = cfg.get("providers")
             try:
-                from hermes_cli.config import get_compatible_custom_providers
+                from hermes_agent.hermes_cli.config import get_compatible_custom_providers
                 self.custom_provs = get_compatible_custom_providers(cfg)
             except Exception:
                 self.custom_provs = cfg.get("custom_providers")
@@ -157,7 +157,7 @@ class GatewayModelCommandsMixin:
     ):
         """Resolve a /model switch off-loop. Returns ``(result, None)`` or ``(None, error_text)``."""
         from hermes_agent.gateway.run import _load_gateway_config
-        from hermes_cli.model_switch import switch_model
+        from hermes_agent.hermes_cli.model_switch import switch_model
 
         skew_error = _model_switch_skew_guard()
         if skew_error:
@@ -173,7 +173,7 @@ class GatewayModelCommandsMixin:
         if not result.success:
             return None, t("gateway.model.error_prefix", error=result.error_message)
         try:
-            from hermes_cli.context_switch_guard import enrich_model_switch_warnings_for_gateway
+            from hermes_agent.hermes_cli.context_switch_guard import enrich_model_switch_warnings_for_gateway
             # Off-loop: merge_preflight_compression_warning() runs the sync provider probe ladder.
             await asyncio.to_thread(
                 enrich_model_switch_warnings_for_gateway, result, self, session_key=ctx.session_key,
@@ -217,7 +217,7 @@ class GatewayModelCommandsMixin:
         Returns the warning for a ``--global`` switch whose ``config.yaml`` write or stale-override
         cleanup failed (the switch then stays a session override), else ``None``.
         """
-        from hermes_cli.model_switch import format_model_for_display
+        from hermes_agent.hermes_cli.model_switch import format_model_for_display
 
         # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
         _sess_db = getattr(self, "_session_db", None)
@@ -307,7 +307,7 @@ class GatewayModelCommandsMixin:
     ) -> str:
         """Confirmation text with full metadata (display form shortens opaque Palantir IDs)."""
         from hermes_agent.gateway.run import _load_gateway_config
-        from hermes_cli.model_switch import (
+        from hermes_agent.hermes_cli.model_switch import (
             effective_context_pin, format_model_for_display, resolve_display_context_length_async)
 
         lines = [
@@ -400,7 +400,7 @@ class GatewayModelCommandsMixin:
     def _record_switch_metrics(self, result, ctx: _ModelSwitchContext, source) -> None:
         """Slash dispatch does not install the routed profile's scope, so a multiplexed runner binds
         the owning home for the switch row and its switch_away friction."""
-        from hermes_cli.observability.shared_metrics_events import record_model_switch
+        from hermes_agent.hermes_cli.observability.shared_metrics_events import record_model_switch
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         home = None
@@ -469,7 +469,7 @@ class GatewayModelCommandsMixin:
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
         is session-key-normalized so the picker's thread metadata lands where the next turn reads."""
-        from hermes_cli.model_switch_providers import list_picker_providers
+        from hermes_agent.hermes_cli.model_switch_providers import list_picker_providers
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(
                 list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
@@ -493,8 +493,8 @@ class GatewayModelCommandsMixin:
         self, event: MessageEvent, ctx: _ModelSwitchContext, profile_home
     ) -> Optional[str]:
         """``/model`` with no args: interactive picker where supported, else the text list."""
-        from hermes_cli.model_switch import list_authenticated_providers
-        from hermes_cli.providers import get_label
+        from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
+        from hermes_agent.hermes_cli.providers import get_label
 
         listing_kwargs = dict(
             current_provider=ctx.current_provider, current_base_url=ctx.current_base_url,
@@ -547,7 +547,7 @@ class GatewayModelCommandsMixin:
         rendered confirm buttons itself.
         """
         try:
-            from hermes_cli.model_selection_guards import (
+            from hermes_agent.hermes_cli.model_selection_guards import (
                 combined_selection_warning, selection_context_for_agent)
             warning = await asyncio.to_thread(
                 combined_selection_warning, result.new_model, provider=result.target_provider,
@@ -580,7 +580,7 @@ class GatewayModelCommandsMixin:
 
     async def _handle_model_command_locked(self, event: MessageEvent) -> Optional[str]:
         from hermes_agent.gateway.run import _hermes_home
-        from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
+        from hermes_agent.hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
 
         profile_home = None
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
@@ -590,7 +590,7 @@ class GatewayModelCommandsMixin:
             return f"❌ {request.error_messages()[0]}"  # gateway decoration over canonical copy
         if request.force_refresh:  # bust the disk cache so the picker shows live data
             with contextlib.suppress(Exception):
-                from hermes_cli.models import clear_provider_models_cache
+                from hermes_agent.hermes_cli.models import clear_provider_models_cache
                 clear_provider_models_cache()
         # Normalize like a message turn (Telegram DM topic recovery) before deriving the override
         # key, so the override lands under the key the next turn reads.
@@ -683,7 +683,7 @@ class GatewayModelCommandsMixin:
         shown = default_model or t("gateway.shared.unknown_value")
         if previous is None:
             return t("gateway.model.reset_none", model=shown)
-        from hermes_cli.model_switch import format_model_for_display
+        from hermes_agent.hermes_cli.model_switch import format_model_for_display
         _sess_db = getattr(self, "_session_db", None)
         if _sess_db is not None:  # the dashboard's session-model column (#34850)
             try:
@@ -818,13 +818,13 @@ class GatewayModelCommandsMixin:
     async def _handle_codex_runtime_command(self, event: MessageEvent) -> str:
         """Handle /codex-runtime; a real change evicts the cached agent so the new api_mode applies
         on the next message (avoids prompt-cache invalidation mid-session)."""
-        from hermes_cli import codex_runtime_switch as crs
+        from hermes_agent.hermes_cli import codex_runtime_switch as crs
 
         new_value, errors = crs.parse_args(event.get_command_args().strip() if event else "")
         if errors:
             return "❌ " + "\n❌ ".join(errors)
         try:
-            from hermes_cli.config import load_config, save_config
+            from hermes_agent.hermes_cli.config import load_config, save_config
         except Exception as exc:
             return t("gateway.codex_runtime.config_load_failed", error=exc)
         result = crs.apply(
@@ -838,9 +838,9 @@ class GatewayModelCommandsMixin:
         return f"{'✓' if result.success else '✗'} {result.message}"
 
     async def _handle_personality_command(self, event: MessageEvent) -> str:
-        """Handle /personality — list or set a personality (hermes_cli.personality owns the state)."""
+        """Handle /personality — list or set a personality (hermes_agent.hermes_cli.personality owns the state)."""
         from hermes_agent.gateway.run import _load_gateway_config
-        from hermes_cli.personality import (
+        from hermes_agent.hermes_cli.personality import (
             active_personality_name,
             available_personalities,
             describe_personality,
@@ -883,7 +883,7 @@ class GatewayModelCommandsMixin:
         """Save a dot-separated key to config.yaml (shared by /reasoning, /fast and their pickers)."""
         from hermes_agent.gateway.slash_commands import _nested_dict
         from hermes_agent.gateway.run import _gateway_config_home
-        from hermes_cli.config import read_user_config_raw
+        from hermes_agent.hermes_cli.config import read_user_config_raw
         config_path = _gateway_config_home() / "config.yaml"
         try:
             user_config = read_user_config_raw(config_path)  # raw: never persist merged defaults
@@ -989,7 +989,7 @@ class GatewayModelCommandsMixin:
         # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
         from hermes_agent.agent.reasoning_effort import effort_display_label
         from hermes_agent.gateway.run import _load_gateway_config
-        from hermes_cli.codex_runtime_switch import get_current_runtime
+        from hermes_agent.hermes_cli.codex_runtime_switch import get_current_runtime
         _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
         _model_cfg = {}
         with contextlib.suppress(Exception):  # fail-open on config read errors, like /model does

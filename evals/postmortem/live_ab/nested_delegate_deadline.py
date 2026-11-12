@@ -23,7 +23,7 @@ assert te.__file__.startswith(root)
 from hermes_agent.agent.deadline import resolve_timeout
 print("effective sequential deadline:", resolve_timeout("tools.sequential_call", default=te._resolve_concurrent_tool_timeout()))
 from hermes_agent.run_agent import AIAgent
-from hermes_cli.runtime_provider import resolve_runtime_provider
+from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 MODEL = "z-ai/glm-5.3-flash"
 rt = resolve_runtime_provider(requested="nous", target_model=MODEL)
 sid = f"dl_{arm}_{int(time.time())}"

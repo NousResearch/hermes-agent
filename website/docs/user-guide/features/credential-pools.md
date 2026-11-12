@@ -328,8 +328,8 @@ For the full data flow diagram, see [`docs/credential-pool-flow.excalidraw`](htt
 The credential pool integrates at the provider resolution layer:
 
 1. **`hermes_agent/agent/credential_pool.py`** — Pool manager: storage, selection, rotation, cooldowns; **`hermes_agent/agent/credential_pool_admin.py`** owns locked target resolution, reset, add, removal, and priority mutations; **`hermes_agent/agent/credential_pool_model_cooldowns.py`** owns the per-model Anthropic 429 cooldowns
-2. **`hermes_cli/auth_commands.py`** — CLI commands and interactive wizard
-3. **`hermes_cli/runtime_provider.py`** — Pool-aware credential resolution
+2. **`hermes_agent/hermes_cli/auth_commands.py`** — CLI commands and interactive wizard
+3. **`hermes_agent/hermes_cli/runtime_provider.py`** — Pool-aware credential resolution
 4. **`hermes_agent/agent/turn_api_error.py`** — Error recovery: 429/402/401 → pool rotation → fallback
 
 ## Storage

@@ -6,7 +6,7 @@ pay seconds and timed those RPCs out on a loaded CI runner.
 """
 import pytest
 
-from hermes_cli._subprocess_compat import selected_git_env
+from hermes_agent.hermes_cli._subprocess_compat import selected_git_env
 import pm
 from pm import client, install
 from pm.package import InstallError

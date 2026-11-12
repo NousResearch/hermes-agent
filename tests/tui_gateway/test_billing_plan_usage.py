@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_cli.model_picker_usage as mpu
-import hermes_cli.nous_account as na
+import hermes_agent.hermes_cli.model_picker_usage as mpu
+import hermes_agent.hermes_cli.nous_account as na
 from tests.usage_window_fixtures import usage_window
 from hermes_agent.tui_gateway import billing_view as srv
 

@@ -39,8 +39,8 @@ def _runner(db):
 @pytest.mark.parametrize("alpha_model", ["alpha-model", "beta-model"])
 def test_named_custom_resolver_sync_row_reader_and_canonical_projection_keep_owner(tmp_path, alpha_model):
     """The selected slug chooses its key even when entries share endpoint and model."""
-    from hermes_cli import runtime_provider
-    from hermes_cli.config import atomic_config_write, get_config_path
+    from hermes_agent.hermes_cli import runtime_provider
+    from hermes_agent.hermes_cli.config import atomic_config_write, get_config_path
 
     config = deepcopy(CONFIG)
     config["custom_providers"][0]["model"] = alpha_model
@@ -80,7 +80,7 @@ def test_named_custom_resolver_sync_row_reader_and_canonical_projection_keep_own
 @pytest.mark.parametrize("requested", ["", "auto", "custom"])
 def test_bare_custom_sync_uses_canonical_endpoint_fallback(tmp_path, monkeypatch, requested):
     """Legacy/bare runtime shapes keep the existing URL-based fallback semantics."""
-    from hermes_cli import runtime_provider
+    from hermes_agent.hermes_cli import runtime_provider
 
     monkeypatch.setattr(runtime_provider, "load_config", lambda: CONFIG)
     db = SessionDB(tmp_path / "state.db")
@@ -96,7 +96,7 @@ def test_bare_custom_sync_uses_canonical_endpoint_fallback(tmp_path, monkeypatch
 
 
 def test_tui_runtime_config_and_session_info_keep_requested_custom_slug(monkeypatch):
-    from hermes_cli.config import atomic_config_write, get_config_path
+    from hermes_agent.hermes_cli.config import atomic_config_write, get_config_path
     from hermes_constants import get_hermes_home
 
     atomic_config_write(get_config_path(), CONFIG)
@@ -109,7 +109,7 @@ def test_tui_runtime_config_and_session_info_keep_requested_custom_slug(monkeypa
     assert "sk-beta" not in str(config)
 
 def test_tui_non_custom_adapter_keeps_adapter_identity(monkeypatch):
-    from hermes_cli import runtime_provider
+    from hermes_agent.hermes_cli import runtime_provider
 
     def fail_lookup(**_kwargs):
         raise AssertionError("custom identity lookup must not run for a native adapter")
@@ -125,7 +125,7 @@ async def test_canonical_session_info_snapshot_uses_named_custom_identity(tmp_pa
     from hermes_agent.gateway.session_local_inventory import snapshot_info
     from tests.gateway.test_surface_admission import _authority
 
-    from hermes_cli.config import atomic_config_write, get_config_path
+    from hermes_agent.hermes_cli.config import atomic_config_write, get_config_path
 
     agent = _agent()
     authority = await _authority(tmp_path, monkeypatch, lambda _event: "ok")
@@ -137,7 +137,7 @@ async def test_canonical_session_info_snapshot_uses_named_custom_identity(tmp_pa
 
 def test_non_custom_adapter_does_not_take_requested_custom_identity(tmp_path, monkeypatch):
     """A native/fallback adapter owns its route even if a stale request label is present."""
-    from hermes_cli import runtime_provider
+    from hermes_agent.hermes_cli import runtime_provider
 
     def fail_lookup(*, base_url=None, config_provider=None, model=None):
         raise AssertionError("custom identity lookup must not run for a native adapter")
@@ -162,8 +162,8 @@ NEW_URL = "https://new.example/v1"
 def _edited_entry_agent(*, old_owner=True, old_url=OLD_URL, new_url=NEW_URL):
     """A live session on ``custom:alpha`` whose entry was then moved to another endpoint and key; with
     ``old_owner`` another entry still serves the old endpoint, without it nothing does."""
-    from hermes_cli import runtime_provider
-    from hermes_cli.config import atomic_config_write, get_config_path
+    from hermes_agent.hermes_cli import runtime_provider
+    from hermes_agent.hermes_cli.config import atomic_config_write, get_config_path
 
     config = {
         "model": {"default": "m", "provider": "custom:alpha"},
@@ -231,7 +231,7 @@ def test_moved_entry_with_no_old_owner_is_not_saved_beside_the_old_endpoint(tmp_
 
 def test_live_unpersisted_session_reports_the_requested_entry(monkeypatch):
     """A built session reattached before its first turn reports the entry it runs, not the adapter class."""
-    from hermes_cli.config import atomic_config_write, get_config_path
+    from hermes_agent.hermes_cli.config import atomic_config_write, get_config_path
     from hermes_constants import get_hermes_home
     from hermes_agent.tui_gateway.server import _live_session_identity
 

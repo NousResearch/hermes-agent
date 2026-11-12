@@ -44,13 +44,13 @@ class CommandReply:
 # Executors — pure formatters, no agent/session mutation.
 def _exec_version(ctx: CommandContext) -> CommandReply:
     """Core /version text — the banner version label."""
-    from hermes_cli.banner import format_banner_version_label
+    from hermes_agent.hermes_cli.banner import format_banner_version_label
     return CommandReply(format_banner_version_label())
 
 
 def _exec_egress(ctx: CommandContext) -> CommandReply:
     """Core /egress text — Docker egress proxy status."""
-    from hermes_cli.proxy_cli import format_status_text
+    from hermes_agent.hermes_cli.proxy_cli import format_status_text
     return CommandReply(format_status_text())
 
 
@@ -60,14 +60,14 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
     A multiplexed gateway may pre-resolve the per-source profile/home via ``options``
     (``profile_name`` / ``home_display``); otherwise process-level values are used.
     """
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name
     from hermes_constants import display_hermes_home
     profile_name = str(ctx.options.get("profile_name") or "").strip() or get_active_profile_name()
     home_display = str(ctx.options.get("home_display") or "").strip() or display_hermes_home()
     # Presentation-only display name (profile.yaml); `data.profile` stays the canonical id.
     label = profile_name
     try:
-        from hermes_cli.profiles import format_profile_label, get_profile_dir, read_profile_meta
+        from hermes_agent.hermes_cli.profiles import format_profile_label, get_profile_dir, read_profile_meta
         display = read_profile_meta(get_profile_dir(profile_name)).get("display_name", "")
         label = format_profile_label(profile_name, display)
     except Exception:
@@ -78,7 +78,7 @@ def _exec_profile(ctx: CommandContext) -> CommandReply:
 
 def _exec_autoprune(ctx: CommandContext) -> CommandReply:
     """Core /autoprune text — record the auto-prune decision or show its state."""
-    from hermes_cli.prune_advisor import run_command
+    from hermes_agent.hermes_cli.prune_advisor import run_command
     return CommandReply(run_command(ctx.args))
 
 
@@ -113,7 +113,7 @@ def _skill_commands() -> dict:
 
 def _exec_help(ctx: CommandContext) -> CommandReply:
     """Core gateway /help body (pre platform mention decoration)."""
-    from hermes_cli.commands import gateway_help_lines
+    from hermes_agent.hermes_cli.commands import gateway_help_lines
     # ``allowed_commands`` (gateway, non-admin caller): only the commands the slash-access
     # policy lets this user run; skill commands are hidden too since the gate refuses them.
     allowed = ctx.options.get("allowed_commands")
@@ -137,7 +137,7 @@ def _exec_commands(ctx: CommandContext) -> CommandReply:
 
     ``ctx.options["page_size"]`` is a surface parameter (Telegram uses 15, everything else 20).
     """
-    from hermes_cli.commands import gateway_help_lines
+    from hermes_agent.hermes_cli.commands import gateway_help_lines
     try:
         requested_page = int((ctx.args or "").strip() or 1)
     except ValueError:
@@ -204,7 +204,7 @@ def run_execute(cmd_def: Any, ctx: CommandContext) -> CommandReply | None:
 
 def execute_command(name: str, ctx: CommandContext) -> CommandReply:
     """Run the shared executor for ``name``; ``LookupError`` when unknown or not migrated."""
-    from hermes_cli.commands import resolve_command
+    from hermes_agent.hermes_cli.commands import resolve_command
     cmd_def = resolve_command(name)
     reply = run_execute(cmd_def, ctx) if cmd_def is not None else None
     if reply is None:

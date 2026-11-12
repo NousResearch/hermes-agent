@@ -20,9 +20,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli import runtime_provider as rp
-from hermes_cli import providers as _providers
-from hermes_cli.providers import nous_api_mode
+from hermes_agent.hermes_cli import runtime_provider as rp
+from hermes_agent.hermes_cli import providers as _providers
+from hermes_agent.hermes_cli.providers import nous_api_mode
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +67,7 @@ class TestApiModeRouting:
         """Callers that skip resolve_runtime_provider (fallback, switch_model
         empty-mode path) must still land Claude on Messages — the Hermes
         overlay alone advertises openai_chat for every Nous model."""
-        from hermes_cli.providers import determine_api_mode
+        from hermes_agent.hermes_cli.providers import determine_api_mode
 
         assert (
             determine_api_mode(

@@ -10,6 +10,6 @@ def build_bundles_parser(subparsers) -> None:
         description="Skill bundles let you load several skills under one slash "
             "command. `/<bundle>` from the CLI or gateway loads every "
             "referenced skill at once.")
-    from hermes_cli.bundles import register_cli as _bundles_register, bundles_command
+    from hermes_agent.hermes_cli.bundles import register_cli as _bundles_register, bundles_command
     _bundles_register(bundles_parser)
     bundles_parser.set_defaults(func=bundles_command)

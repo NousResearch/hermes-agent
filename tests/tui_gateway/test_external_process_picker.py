@@ -45,16 +45,16 @@ def picker_env(monkeypatch, tmp_path):
                         lambda cmd, *a, **kw: sys.executable if cmd == profile.process_command else real_which(cmd, *a, **kw))
     from hermes_agent.agent import models_dev
     monkeypatch.setattr(models_dev, "fetch_models_dev", lambda *a, **kw: {})
-    from hermes_cli import inventory
+    from hermes_agent.hermes_cli import inventory
     monkeypatch.setattr(inventory, "_prewarm_pricing_async", lambda *a, **kw: None)
     return home, profile
 
 
 def test_process_provider_reaches_every_shared_picker(picker_env, monkeypatch):
     home, profile = picker_env
-    from hermes_cli.config import save_config
-    from hermes_cli.main_provider_setup import _build_provider_picker_rows
-    from hermes_cli.models import _PROVIDER_LABELS, list_available_providers, provider_model_ids
+    from hermes_agent.hermes_cli.config import save_config
+    from hermes_agent.hermes_cli.main_provider_setup import _build_provider_picker_rows
+    from hermes_agent.hermes_cli.models import _PROVIDER_LABELS, list_available_providers, provider_model_ids
     from hermes_agent.tui_gateway import server
 
     assert any(row["id"] == profile.name for row in list_available_providers())
@@ -88,8 +88,8 @@ def test_process_provider_reaches_every_shared_picker(picker_env, monkeypatch):
         assert row["authenticated"]
 
     # The setup picker dispatches the process row through the generic plugin flow and persists it.
-    from hermes_cli import main, model_setup_flows
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli import main, model_setup_flows
+    from hermes_agent.hermes_cli.config import load_config
     selected = "fake-credit[1m]"
     seen = {}
     monkeypatch.setattr(main, "_pick_provider", lambda *a: profile.name)
@@ -116,8 +116,8 @@ def test_process_provider_reaches_every_shared_picker(picker_env, monkeypatch):
 
 def test_native_picker_selection_preserves_process_runtime(picker_env, monkeypatch):
     home, profile = picker_env
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.models import provider_model_ids
+    from hermes_agent.hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.models import provider_model_ids
     from hermes_agent.tui_gateway import server
 
     save_config(load_config())  # materialize defaults before checking session-only writes

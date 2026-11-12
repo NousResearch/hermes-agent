@@ -16,13 +16,13 @@ from rich.panel import Panel
 from rich.table import Table
 
 
-from hermes_cli._secrets_common import (
+from hermes_agent.hermes_cli._secrets_common import (
     arg, cfg_str, cli_version, disable_secret_source, flag, print_status_panel, print_table,
     prompt_index, register_subcommands, require_enabled, rotate_token, secret_cli_env, section_cfg,
     yn,
 )
-from hermes_cli.config import get_env_path, load_config, save_config, save_env_value
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_agent.hermes_cli.config import get_env_path, load_config, save_config, save_env_value
+from hermes_agent.hermes_cli.secret_prompt import masked_secret_prompt
 
 # Old names kept bound: tests monkeypatch ``secrets_cli._bws_version``.
 _bws_version = cli_version
@@ -49,10 +49,10 @@ def __getattr__(name: str):
     """PEP 562 lazy ``bw`` attribute (tests monkeypatch ``secrets_cli.bw``); an eager binding
     would re-import ``cryptography`` at import time.
 
-    Existing callers (and upstream tests) monkeypatch attributes on ``hermes_cli.secrets_cli.bw`` directly.
+    Existing callers (and upstream tests) monkeypatch attributes on ``hermes_agent.hermes_cli.secrets_cli.bw`` directly.
     Resolving that attribute at module-import time would re-import ``cryptography`` eagerly — the very
     self-lock we are preventing (#86781). Defer the backend import until the first actual attribute access,
-    so ``import hermes_cli.secrets_cli`` stays crypto-free while ``secrets_cli.bw.find_bws`` still resolves.
+    so ``import hermes_agent.hermes_cli.secrets_cli`` stays crypto-free while ``secrets_cli.bw.find_bws`` still resolves.
     """
     if name == "bw":
         return _load_bw()

@@ -51,7 +51,7 @@ class TestAtomicWritersRefuseDeletedProfileHome:
         assert not profile.exists()
 
     def test_late_models_cache_save_after_delete(self, tmp_path):
-        from hermes_cli.models import _write_json_cache
+        from hermes_agent.hermes_cli.models import _write_json_cache
 
         profile = _tombstoned_profile(tmp_path)
         token = set_hermes_home_override(profile)

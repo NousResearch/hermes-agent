@@ -219,8 +219,8 @@ def npm_probe(node_store, monkeypatch):
 def npm_consumers(npm_probe, tmp_path, monkeypatch):
     from hermes_agent.agent.lsp.install import _install_npm
     from hermes_agent.gateway.config import PlatformConfig
-    from hermes_cli.main_platform_setup import _whatsapp_install_bridge
-    from hermes_cli.web_routers.messaging import _ensure_whatsapp_bridge_dependencies
+    from hermes_agent.hermes_cli.main_platform_setup import _whatsapp_install_bridge
+    from hermes_agent.hermes_cli.web_routers.messaging import _ensure_whatsapp_bridge_dependencies
     from plugins.platforms.photon import adapter as photon, cli
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
@@ -325,7 +325,7 @@ def test_adapter_availability_never_provisions_missing_node(tmp_path, monkeypatc
 @pytest.mark.platforms("posix")
 def test_dashboard_pairing_prepares_npm_before_node_lookup(npm_probe, tmp_path, monkeypatch):
     from hermes_agent.gateway.platforms import whatsapp_common
-    from hermes_cli.web_routers.messaging import _spawn_whatsapp_pairing_process
+    from hermes_agent.hermes_cli.web_routers.messaging import _spawn_whatsapp_pairing_process
 
     _home, node, _npm, publish = npm_probe
     node_facts = paths.facts_path().read_bytes()

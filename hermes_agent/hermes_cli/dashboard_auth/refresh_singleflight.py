@@ -19,8 +19,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from hermes_cli.dashboard_auth.base import DashboardAuthProvider, RefreshExpiredError, Session
-from hermes_cli.dashboard_auth.request_utils import scan_session_providers
+from hermes_agent.hermes_cli.dashboard_auth.base import DashboardAuthProvider, RefreshExpiredError, Session
+from hermes_agent.hermes_cli.dashboard_auth.request_utils import scan_session_providers
 
 # The success TTL covers the window between the winning response and the siblings' arrival
 # (a laptop waking from sleep can deliver its burst over many seconds); the failure TTL only

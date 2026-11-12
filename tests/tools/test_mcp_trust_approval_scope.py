@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-from hermes_cli.config import load_config
+from hermes_agent.hermes_cli.config import load_config
 from hermes_agent.tools import approval, approval_prompt, mcp_tool
 from hermes_agent.tools import mcp_tool_handlers as handlers
 from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key

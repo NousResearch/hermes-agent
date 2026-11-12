@@ -40,7 +40,7 @@ def _peer_key_env(name: str) -> str:
 
 
 def _load_peers() -> dict:
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     cfg = load_config() or {}
     peers = cfg.get("bot_peers")
@@ -48,7 +48,7 @@ def _load_peers() -> dict:
 
 
 def _save_peers(peers: dict) -> None:
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     cfg = load_config() or {}
     cfg["bot_peers"] = peers
@@ -71,7 +71,7 @@ def _peer_secret(name: str) -> str:
 def _request(
     url: str, key: str, *, method: str = "GET", body: dict | None = None,
     timeout: int = LIST_TIMEOUT_S, headers: dict[str, str] | None = None) -> dict:
-    from hermes_cli.urllib_security import open_credentialed_url
+    from hermes_agent.hermes_cli.urllib_security import open_credentialed_url
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request_headers = {
         "Authorization": f"Bearer {key}", "Content-Type": "application/json",
@@ -199,7 +199,7 @@ def _parse_target(target: str) -> tuple[str, str | None]:
     if profile:
         # Profile ids are lowercase (normalize_profile_name); 'box/Hermes' must address the
         # peer's real 'hermes' profile on every peer, including those that compare prefixes exactly.
-        from hermes_cli.profiles import normalize_profile_name
+        from hermes_agent.hermes_cli.profiles import normalize_profile_name
         profile = normalize_profile_name(profile)
     return peer, profile
 
@@ -284,7 +284,7 @@ def _peer_add(args) -> int:
     _save_peers(peers)
     key = (getattr(args, "key", "") or "").strip()
     if key:
-        from hermes_cli.config import save_env_value
+        from hermes_agent.hermes_cli.config import save_env_value
 
         save_env_value(_peer_key_env(name), key)
         print(f"Peer '{name}' saved ({url}) — key stored as {_peer_key_env(name)} in ~/.hermes/.env")

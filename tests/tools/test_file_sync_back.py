@@ -373,7 +373,7 @@ class TestSyncBackSizeCap:
 
         # Cap at 1 byte so any non-empty tar exceeds it
         with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.environments.file_sync"):
-            with patch("hermes_cli.config.load_config", return_value={"terminal": {"sync_back_max_bytes": 1}}):
+            with patch("hermes_agent.hermes_cli.config.load_config", return_value={"terminal": {"sync_back_max_bytes": 1}}):
                 mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         # Host file should be untouched because extraction was skipped
@@ -392,12 +392,12 @@ class TestSyncBackSizeCap:
                             bulk_download_fn=_make_download_fn(files))
 
         monkeypatch.setenv("HERMES_SYNC_BACK_MAX_BYTES", "1")  # the first cut's env var: must be ignored
-        monkeypatch.setattr("hermes_cli.config.load_config",
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config",
                             lambda: {"terminal": {"sync_back_max_bytes": 1}})
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"original"  # 1-byte cap: skipped
 
-        monkeypatch.setattr("hermes_cli.config.load_config",
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config",
                             lambda: {"terminal": {"sync_back_max_bytes": "lots"}})
         with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.environments.file_sync"):
             mgr.sync_back(hermes_home=tmp_path / ".hermes")

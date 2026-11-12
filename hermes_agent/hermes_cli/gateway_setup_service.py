@@ -12,7 +12,7 @@ SERVICE_INSTALL_QUESTION = (
 
 
 def record_service_choice(choice: str, config: dict | None = None) -> None:
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     if choice not in {"install", "decline"}:
         raise ValueError("service_install_choice must be install or decline")
@@ -26,8 +26,8 @@ def record_service_choice(choice: str, config: dict | None = None) -> None:
 
 def wants_service_install(*, interactive: bool, install: bool = False,
                           config: dict | None = None) -> bool:
-    from hermes_cli.config import load_config
-    from hermes_cli.gateway import prompt_yes_no
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.gateway import prompt_yes_no
 
     if install:
         return True
@@ -48,7 +48,7 @@ def ensure_gateway_service(context: str = "setup", *, interactive: bool = False,
     Import and ordinary noninteractive callers cannot install, even with a saved
     install preference. False leaves foreground/unmanaged startup to the caller.
     """
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     from hermes_constants import is_container
 
     if is_container():
@@ -112,8 +112,8 @@ def ensure_gateway_service(context: str = "setup", *, interactive: bool = False,
 def _wizard_install_service(backend: str) -> None:
     """Choose persistence once; start-now without persistence stays unmanaged."""
     import subprocess
-    from hermes_cli import gateway as gw
-    from hermes_cli.gateway_runtime import ensure_gateway_runtime
+    from hermes_agent.hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli.gateway_runtime import ensure_gateway_runtime
 
     if not sys.stdin.isatty():
         return

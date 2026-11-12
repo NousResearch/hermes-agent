@@ -90,7 +90,7 @@ def _resolve_auto_decompose_settings(load_config: Callable[[], Any]) -> tuple[bo
 def _gc_retention_days() -> int:
     """``kanban.done_sub_retention_days`` (default 30; 0 disables), re-read per sweep; fails safe to 30."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         return int(((load_config() or {}).get("kanban") or {}).get("done_sub_retention_days", 30))
     except Exception:

@@ -52,7 +52,7 @@ def test_tui_import_exposes_auth_registry_to_provider_plugins(tmp_path):
             sys.executable,
             "-c",
             "from hermes_agent.tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST; "
-            "from hermes_cli.auth import PROVIDER_REGISTRY; "
+            "from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY; "
             "cfg = PROVIDER_REGISTRY['import-order-probe']; "
             "assert cfg.name == 'Plugin injection', cfg; "
             "assert cfg.inference_base_url == 'https://plugin.example/v1', cfg; "

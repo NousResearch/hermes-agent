@@ -36,9 +36,9 @@ import pytest
 
 from fastapi.testclient import TestClient
 
-from hermes_cli import web_server
-from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.dashboard_auth import prefix as prefix_mod
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_agent.hermes_cli.dashboard_auth import prefix as prefix_mod
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -283,7 +283,7 @@ class TestPublicUrlOverride:
 
     @pytest.fixture
     def patch_config(self, monkeypatch):
-        """Replace ``hermes_cli.config.load_config`` with a stub
+        """Replace ``hermes_agent.hermes_cli.config.load_config`` with a stub
         returning the given ``public_url``. Pass ``None`` to set no
         config-side value."""
 
@@ -292,7 +292,7 @@ class TestPublicUrlOverride:
             if public_url is not None:
                 cfg = {"dashboard": {"public_url": public_url}}
             monkeypatch.setattr(
-                "hermes_cli.config.load_config", lambda: cfg
+                "hermes_agent.hermes_cli.config.load_config", lambda: cfg
             )
 
         return _set
@@ -368,7 +368,7 @@ class TestPublicUrlOverride:
         silently discarded. Regression for #42780."""
         import logging
 
-        from hermes_cli.dashboard_auth import prefix as prefix_mod
+        from hermes_agent.hermes_cli.dashboard_auth import prefix as prefix_mod
 
         # Reset the per-value dedup cache so the warning fires in-test
         # regardless of test ordering.
@@ -444,7 +444,7 @@ class TestCookiePathRespectsPrefix:
         spec-compatible without Secure."""
         from fastapi import FastAPI
         from fastapi.responses import Response
-        from hermes_cli.dashboard_auth.cookies import set_pkce_cookie
+        from hermes_agent.hermes_cli.dashboard_auth.cookies import set_pkce_cookie
 
         app = FastAPI()
 
@@ -536,14 +536,14 @@ class TestExternalizePostLoginTarget:
     """Unit tests for ``_externalize_post_login_target``."""
 
     def test_bare_slash_gets_prefix(self):
-        from hermes_cli.dashboard_auth.routes import (
+        from hermes_agent.hermes_cli.dashboard_auth.routes import (
             _externalize_post_login_target,
         )
 
         assert _externalize_post_login_target("/", "/hermes") == "/hermes/"
 
     def test_prefixed_path_unchanged(self):
-        from hermes_cli.dashboard_auth.routes import (
+        from hermes_agent.hermes_cli.dashboard_auth.routes import (
             _externalize_post_login_target,
         )
 
@@ -553,28 +553,28 @@ class TestExternalizePostLoginTarget:
         )
 
     def test_empty_target_returns_empty(self):
-        from hermes_cli.dashboard_auth.routes import (
+        from hermes_agent.hermes_cli.dashboard_auth.routes import (
             _externalize_post_login_target,
         )
 
         assert _externalize_post_login_target("", "/hermes") == ""
 
     def test_empty_prefix_returns_target_unchanged(self):
-        from hermes_cli.dashboard_auth.routes import (
+        from hermes_agent.hermes_cli.dashboard_auth.routes import (
             _externalize_post_login_target,
         )
 
         assert _externalize_post_login_target("/", "") == "/"
 
     def test_trailing_slash_on_prefix_stripped(self):
-        from hermes_cli.dashboard_auth.routes import (
+        from hermes_agent.hermes_cli.dashboard_auth.routes import (
             _externalize_post_login_target,
         )
 
         assert _externalize_post_login_target("/", "/hermes/") == "/hermes/"
 
     def test_exact_prefix_match_returns_target(self):
-        from hermes_cli.dashboard_auth.routes import (
+        from hermes_agent.hermes_cli.dashboard_auth.routes import (
             _externalize_post_login_target,
         )
 
@@ -674,7 +674,7 @@ class TestLoginPageWholeClassPrefix:
         emitted page must carry both the attribute and the JS that reads it
         (the PKCE cookie Path matches the mount, so a root-absolute POST
         would silently drop the cookie and break native login)."""
-        from hermes_cli.dashboard_auth import clear_providers, register_provider
+        from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
         from tests.hermes_cli.test_dashboard_auth_password_login import (
             PasswordProvider)
 
@@ -695,7 +695,7 @@ class TestLoginPageWholeClassPrefix:
         so its font URLs must honour the prefix too (rendered when more
         than one interactive provider is registered)."""
         from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
-        from hermes_cli.dashboard_auth.login_page import (
+        from hermes_agent.hermes_cli.dashboard_auth.login_page import (
             render_native_provider_choice_html)
 
         class _SecondStub(StubAuthProvider):
@@ -718,7 +718,7 @@ class TestLoginPageWholeClassPrefix:
 
     def test_native_chooser_bare_root_without_prefix(self):
         from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
-        from hermes_cli.dashboard_auth.login_page import (
+        from hermes_agent.hermes_cli.dashboard_auth.login_page import (
             render_native_provider_choice_html)
 
         class _SecondStub(StubAuthProvider):

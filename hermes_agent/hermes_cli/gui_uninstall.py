@@ -8,7 +8,7 @@ from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
-from hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.colors import Colors, color
 
 
 def _logger(mark: str, col: str):
@@ -67,7 +67,7 @@ def packaged_gui_app_paths() -> list[Path]:
             [Path(program_files) / "Hermes"] if program_files else [])
     # Linux: an AppImage lives wherever the user put it and deb/rpm files belong to the package manager
     # (see the hint in ``uninstall_gui``), so only the desktop entry + hicolor icons are cleaned here.
-    from hermes_cli.linux_desktop_entry import LEGACY_DESKTOP_ENTRY_NAME, desktop_entry_path
+    from hermes_agent.hermes_cli.linux_desktop_entry import LEGACY_DESKTOP_ENTRY_NAME, desktop_entry_path
     data_base = _env_dir("XDG_DATA_HOME", home / ".local" / "share")
     icons = data_base / "icons" / "hicolor"
     # "scalable" plus every fixed-size dir the installer may have written (panel sizes + older native copies).
@@ -100,7 +100,7 @@ def gui_install_summary(hermes_home: Path | None = None) -> dict:
     # Steward facts, so the UI can gate its destructive options on the same
     # ladder the CLI uninstaller uses: only a git checkout may have its code
     # removed; sealed trees (nix / desktop-app / docker) get data-only.
-    from hermes_cli import steward as steward_mod
+    from hermes_agent.hermes_cli import steward as steward_mod
 
     steward, code_removal_allowed = steward_mod.classify_install(home / "hermes-agent")
 
@@ -161,7 +161,7 @@ def uninstall_gui(hermes_home: Path | None = None, *, remove_userdata: bool = Tr
         # The desktop entry was removed above but the menu caches still list it; reindex so Hermes
         # disappears from the launcher.
         try:
-            from hermes_cli.linux_desktop_entry import desktop_entry_path, refresh_desktop_databases
+            from hermes_agent.hermes_cli.linux_desktop_entry import desktop_entry_path, refresh_desktop_databases
             entry = desktop_entry_path()
             if entry in removed:
                 for tool in refresh_desktop_databases(entry.parent):

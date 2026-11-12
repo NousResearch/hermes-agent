@@ -19,9 +19,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ def test_spawn_resolves_claimed_task_policy(
     """The worker passes identity, while the owner reads overrides from SQLite."""
     from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.gateway.session_kanban import build_kanban_policy
-    from hermes_cli import kanban_worker_client
+    from hermes_agent.hermes_cli import kanban_worker_client
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     profile = kanban_home / "profiles" / "elias"

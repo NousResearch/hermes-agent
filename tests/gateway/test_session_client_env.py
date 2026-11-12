@@ -104,7 +104,7 @@ async def test_each_session_reads_its_own_clients_prefill_file(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_each_session_resolves_its_own_clients_provider_request(tmp_path, monkeypatch):
     from hermes_agent.gateway.session_policy import policy_scope
-    from hermes_cli.runtime_provider import resolve_requested_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_requested_provider
     home = _home(tmp_path, 'platform_toolsets: {cli: []}\nmodel: {default: m}\n')
     monkeypatch.setenv('HERMES_INFERENCE_PROVIDER', 'nous')
     owner, connection = await _owner(home, monkeypatch)
@@ -351,7 +351,7 @@ async def test_host_values_apply_only_over_a_gateway_proven_local_attach(tmp_pat
     from hermes_agent.gateway.session_local_recovery import restore_local_session
     from hermes_agent.gateway.session_policy import policy_scope, restore_policy
     from hermes_agent.gateway.session_worker_construct import session_prefill
-    from hermes_cli.runtime_provider import resolve_requested_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_requested_provider
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     from hermes_agent.tools.environments.local import _make_run_env
@@ -415,7 +415,7 @@ async def test_runtime_describe_lists_client_env(tmp_path, monkeypatch):
 
 
 def test_auto_started_gateway_does_not_inherit_client_behaviour_env(tmp_path, monkeypatch):
-    from hermes_cli import gateway_runtime_start
+    from hermes_agent.hermes_cli import gateway_runtime_start
     home = tmp_path / 'home'
     home.mkdir()
     captured = {}

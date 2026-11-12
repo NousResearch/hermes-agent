@@ -65,10 +65,10 @@ def rig(tmp_path, monkeypatch):
     runner.adapters = {Platform.DISCORD: primary_discord, Platform.TELEGRAM: primary_tg}
     runner._profile_adapters = {"ops": {Platform.TELEGRAM: ops_tg}, "team_b": {Platform.TELEGRAM: team_b_tg}}
     served = [("default", home), ("ops", home / "profiles" / "ops"), ("team_b", home / "profiles" / "team_b")]
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
-            patch("hermes_cli.profiles.get_profile_dir",
+    with patch("hermes_agent.hermes_cli.profiles.profiles_to_serve", return_value=served), \
+            patch("hermes_agent.hermes_cli.profiles.get_profile_dir",
                   side_effect=lambda n: home if n == "default" else home / "profiles" / n), \
-            patch("hermes_cli.profiles.profile_exists", return_value=True):
+            patch("hermes_agent.hermes_cli.profiles.profile_exists", return_value=True):
         yield SimpleNamespace(runner=runner, home=home, primary_discord=primary_discord,
                               primary_tg=primary_tg, ops_tg=ops_tg)
 
@@ -102,7 +102,7 @@ def test_satellite_cannot_send_to_an_unrouted_chat_through_the_primary_bot(rig):
     assert r._delivery_adapter_for(_restored("ops", chat_id="999")) is None
     # send_message from an ops turn takes a caller-chosen chat_id: it must not get the primary bot.
     with patch("hermes_agent.gateway.run._gateway_runner_ref", return_value=r), \
-            patch("hermes_cli.profiles.get_active_profile_name", return_value="ops"):
+            patch("hermes_agent.hermes_cli.profiles.get_active_profile_name", return_value="ops"):
         assert _live_adapter(Platform.DISCORD) == (r, None)
         assert _live_adapter(Platform.TELEGRAM) == (r, rig.ops_tg)
     # A more specific route giving one chat to another profile wins over ops's channel route.

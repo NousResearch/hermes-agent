@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
-from hermes_cli.process_identity import (
+from hermes_agent.hermes_cli.process_identity import (
     own_process_groups, register_child, release_process_group_once_empty, spawn_env, spawned_by_this_process)
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_agent.tools.browser_harness_dirs import (daemon_env, daemon_identity, fit_default_socket_dir, harness_pid_file,
@@ -479,7 +479,7 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
 
 def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     """Point the harness at the user's real-profile copy-browser (a SNAPSHOT of their default Chromium
-    profile, hermes_cli.browser_connect) when consented. Two ways in: the effective backend is already local
+    profile, hermes_agent.hermes_cli.browser_connect) when consented. Two ways in: the effective backend is already local
     (no provider, CDP override, or legacy BU cloud config) → silent upgrade; or ``force_local`` (consent-gated
     ``local`` arg) → the user's browser even under a cloud backend. Operator overrides (BU_CDP_* env,
     /browser connect, ``browser.cdp_url``) own the session either way. A launch error is returned;
@@ -554,7 +554,7 @@ def _group_popen_kwargs() -> dict:
     timeout can take down every process that inherited the capture pipes, not just the CLI
     child. Windows also hides the console window."""
     def _flags() -> dict:
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
         si = subprocess.STARTUPINFO()
         si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         return {"creationflags": windows_hide_flags() | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
@@ -579,7 +579,7 @@ def _kill_cli_process_group(proc) -> None:
     """SIGKILL the CLI's whole process group (POSIX; ``start_new_session`` made pgid == pid) or,
     on Windows, its process tree via ``taskkill /T /F`` — the only group-wide kill it offers."""
     if os.name == "nt":
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
         with contextlib.suppress(OSError, subprocess.SubprocessError):
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
@@ -1019,7 +1019,7 @@ _exec_local_engine: contextvars.ContextVar[Optional[str]] = contextvars.ContextV
 
 def _handle_browser_exec(args: dict, **kw):
     """Registry handler; each call counts against the backend that served it (shared metrics, opt-in)."""
-    from hermes_cli.observability.shared_metrics_loop import record_browser_call
+    from hermes_agent.hermes_cli.observability.shared_metrics_loop import record_browser_call
     from hermes_agent.tools.browser_session_cloud import browser_backend_name
     token = _exec_local_engine.set(None)
     try:

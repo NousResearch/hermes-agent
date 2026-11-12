@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.gateway as gateway_cli
-from hermes_cli import gateway_service_owner
+import hermes_agent.hermes_cli.gateway as gateway_cli
+from hermes_agent.hermes_cli import gateway_service_owner
 
 
 @pytest.fixture

@@ -4,7 +4,7 @@ otherwise live only in the scheduler log. Drives the real ``run_job`` path with 
 ``resolve_runtime_provider`` mocked."""
 from unittest.mock import MagicMock, patch
 
-from hermes_cli.auth import AuthError
+from hermes_agent.hermes_cli.auth import AuthError
 from tests.cron.test_scheduler import _run_owned_job
 
 _JOB = {"id": "fb-test", "name": "fb test", "prompt": "hello", "model": None, "provider": None,
@@ -29,10 +29,10 @@ def _run(tmp_path, *, response: str, primary_fails: bool):
     with patch("hermes_agent.cron.scheduler._hermes_home", tmp_path), \
          patch("hermes_agent.cron.scheduler._get_hermes_home", return_value=tmp_path), \
          patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None), \
-         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+         patch("hermes_agent.hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("hermes_agent.hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_agent.hermes_state_registry.acquire", return_value=fake_db), \
-         patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_resolve), \
+         patch("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_resolve), \
          patch("hermes_agent.run_agent.AIAgent") as agent_cls:
         agent_cls.return_value.run_conversation.return_value = {"final_response": response}
         # Cron turns execute inside the gateway owner: drive the production owner bridge.

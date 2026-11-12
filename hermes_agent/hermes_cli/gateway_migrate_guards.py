@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional
 
 if TYPE_CHECKING:
-    from hermes_cli.gateway_migrate import MigrationPlan, ProfileGateway
+    from hermes_agent.hermes_cli.gateway_migrate import MigrationPlan, ProfileGateway
 
 
 # --------------------------------------------------------------------------- identity resolution
@@ -26,7 +26,7 @@ def _pid_uid(pid: int) -> Optional[int]:
     """Owner uid of a live process: ``/proc`` where it exists, ``ps`` on macOS; None when unknown."""
     with contextlib.suppress(OSError):
         return os.stat(f"/proc/{pid}").st_uid
-    from hermes_cli.gateway import is_macos
+    from hermes_agent.hermes_cli.gateway import is_macos
     if not is_macos():
         return None
     with contextlib.suppress(OSError, ValueError, subprocess.SubprocessError):
@@ -52,7 +52,7 @@ def pid_is_other_users(pid: int) -> bool:
 
 def _system_unit_uid(unit_path: Path) -> Optional[int]:
     """uid a system unit runs as: its ``User=`` (root when absent); None when the name is unknown."""
-    from hermes_cli.gateway import _read_systemd_user_from_unit
+    from hermes_agent.hermes_cli.gateway import _read_systemd_user_from_unit
     user = _read_systemd_user_from_unit(unit_path)
     if user is None:
         return 0
@@ -72,8 +72,8 @@ def gateway_identity(home: Path, pid: Optional[int], services: list[tuple[str, b
     profile directory owner is the account the gateway runs as. None means unknown. runtime_home: the
     HERMES_HOME an installed unit pins, which is where the gateway really runs; ``home`` otherwise.
     """
-    from hermes_cli.gateway import _hermes_home_pinned_by_unit, get_systemd_unit_path
-    from hermes_cli.gateway_migrate import _home_env
+    from hermes_agent.hermes_cli.gateway import _hermes_home_pinned_by_unit, get_systemd_unit_path
+    from hermes_agent.hermes_cli.gateway_migrate import _home_env
 
     uid: Optional[int] = _pid_uid(pid) if pid is not None else None
     runtime_home = home
@@ -118,7 +118,7 @@ def _guard_service_domain(plan: MigrationPlan, profile: ProfileGateway) -> Optio
     reference = plan.default.services or ([target] if target is not None else [])
     if set(profile.services) == set(reference):
         return None
-    from hermes_cli.gateway_migrate import _service_label as _kind_label
+    from hermes_agent.hermes_cli.gateway_migrate import _service_label as _kind_label
     against = (f"the default gateway runs under {_service_label(plan.default)}" if plan.default.services
                else f"the fleet converges on {_kind_label(target)}")
     return (f"Profile '{profile.name}' runs under {_service_label(profile)} while {against}: "
@@ -177,8 +177,8 @@ def masked_default_unit(default_home: Path) -> Optional[Path]:
     """The default profile's systemd unit when the operator MASKED it (``systemctl mask`` links it to
     ``/dev/null``), else None. A masked survivor cannot be enabled at boot, and masking is a deliberate
     "never start this", so the update hook reads it as an opt-out instead of refusing (#139324)."""
-    from hermes_cli import gateway as gw
-    from hermes_cli.gateway_migrate import _home_env
+    from hermes_agent.hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli.gateway_migrate import _home_env
     with _home_env(default_home):
         units = [gw.get_systemd_unit_path(system=system) for system in (False, True)]
     for unit in units:
@@ -193,8 +193,8 @@ def auto_migration_opted_out(default_home: Path) -> bool:
     ``load_config`` the rest of the CLI reads (``DEFAULT_CONFIG`` + config.yaml + the managed overlay), so
     an administrator's managed ``false`` wins over a user's ``true`` and a YAML string ``"false"`` is
     false, not truthy. Only the nested key counts, there is no top-level alias."""
-    from hermes_cli.config import load_config_readonly
-    from hermes_cli.gateway_migrate import _home_env
+    from hermes_agent.hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.gateway_migrate import _home_env
     from utils import is_truthy_value
     with _home_env(default_home):
         gateway_section = load_config_readonly().get("gateway")

@@ -172,7 +172,7 @@ TOOLSETS = {
     # Coding posture, auto-selected in a code workspace (hermes_agent/agent/coding_context.py).
     # `desktop_ui` is folded in separately by the GUI gateway for desktop sessions.
     # posture=True: per-session posture, never auto-recovered into platform tool
-    # config (see the non-configurable-toolset recovery loop in hermes_cli/tools_config.py).
+    # config (see the non-configurable-toolset recovery loop in hermes_agent/hermes_cli/tools_config.py).
     "coding": _ts(
         "Coding-focused toolset: files, terminal, search, web docs, skills, todo, "
         "delegate, vision, browser",

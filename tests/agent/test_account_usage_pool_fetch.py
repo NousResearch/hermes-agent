@@ -85,7 +85,7 @@ def test_read_only_fetch_routes_to_entries_own_host_and_parses(monkeypatch, tmp_
     parses the payload: duration-labeled windows, identity from the JWT, no refresh attempted."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    from hermes_cli import auth as auth_mod
+    from hermes_agent.hermes_cli import auth as auth_mod
 
     rotations: list = []
     monkeypatch.setattr(auth_mod, "resolve_codex_runtime_credentials",
@@ -112,7 +112,7 @@ def test_read_only_401_raises_and_never_retries_with_rotation(monkeypatch, tmp_p
     retry path for the session's own credential."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    from hermes_cli import auth as auth_mod
+    from hermes_agent.hermes_cli import auth as auth_mod
 
     def _forbidden_refresh(**kw):
         raise AssertionError("read-only path must not force-refresh (would rotate a pool credential)")

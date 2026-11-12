@@ -30,7 +30,7 @@ def test_reserve_refuses_an_unreadable_lock_with_recovery_command(tmp_path):
 
 
 def test_discovery_names_the_unreadable_lock_and_its_recovery(tmp_path):
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
     home, lock = _unreadable_lock(tmp_path)
     result = discover_gateway_endpoint(home, timeout=1.0)
     assert (result.state, result.reason_code) == ('inaccessible', 'foreign_stale_lock')

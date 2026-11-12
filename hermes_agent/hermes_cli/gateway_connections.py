@@ -2,7 +2,7 @@
 machine's Webapp read and write.
 
 The file is ``<root>/gateway-connections.json`` beside the machine's UI preferences store (same
-root rule as :func:`hermes_cli.ui_preferences.store_path`: a profile home names its root), mode
+root rule as :func:`hermes_agent.hermes_cli.ui_preferences.store_path`: a profile home names its root), mode
 0600. Its document is Electron's v2 connection registry (``apps/desktop/electron/connection-registry.ts``)
 plus a ``revision`` counter and ``importedFrom`` (the Desktop userData directories already merged in,
 so a connection removed here is never re-imported). Writers share the ``<store>.lock`` directory lock,
@@ -31,8 +31,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
-from hermes_cli import ui_preferences
-from hermes_cli.gateway_connections_normalize import (
+from hermes_agent.hermes_cli import ui_preferences
+from hermes_agent.hermes_cli.gateway_connections_normalize import (
     ConnectionStoreBusy,
     ConnectionStoreError,
     DuplicateConnection,

@@ -389,7 +389,7 @@ async def _dispatch_request(authority_connection: Any, req: Any, req_method: Any
     """One request through the authority when attached, else the legacy dispatcher. A request from the
     local Desktop runs as work for it (the welcome trial and onboarding key on that), and so do the
     threads it hands off to: ``to_thread`` and the legacy pool copy this context."""
-    from hermes_cli.process_identity import serving_local_desktop
+    from hermes_agent.hermes_cli.process_identity import serving_local_desktop
     from hermes_agent.tui_gateway.server_requests import resolve_pinned_response
     if authority_connection is not None and resolve_pinned_response(req, transport):
         # The answer to a request a sidecar RPC sent back to THIS socket (vault.preview.fill's page

@@ -32,8 +32,8 @@ from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
 from hermes_agent.agent.compression_marker import elide_middle
 from hermes_agent.agent.retry_utils import jittered_backoff
-from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 # Load .env from HERMES_HOME first, then project root as a dev fallback.
 load_hermes_dotenv(hermes_home=get_hermes_home(), project_env=Path(project_root_str()) / ".env")

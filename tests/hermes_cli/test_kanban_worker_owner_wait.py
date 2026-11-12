@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from hermes_cli import gateway_client, kanban_worker_client
+from hermes_agent.hermes_cli import gateway_client, kanban_worker_client
 
 
 def _owner(states, submitted):

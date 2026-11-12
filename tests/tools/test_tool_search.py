@@ -45,7 +45,7 @@ class TestConfigParsing:
         """#116404: the curated deferral set lives in DEFAULT_CONFIG (so ``hermes config set``
         recognizes the key); a user list replaces it wholesale, [] keeps every tool eager, and a
         scalar is warned about (naming the expected shape) before falling back to the default."""
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
         from hermes_agent.tools.tool_search import ToolSearchConfig, _DEFAULT_DEFERRED_TOOLS
 
         configured = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
@@ -435,7 +435,7 @@ class TestHandleFunctionCallIntegration:
     def test_tool_search_emits_one_terminal_hook(self, monkeypatch):
         """Inline bridge results still complete the tool lifecycle."""
         from hermes_agent import model_tools
-        from hermes_cli import lifecycle
+        from hermes_agent.hermes_cli import lifecycle
         from hermes_agent.tools import tool_search
 
         events = []

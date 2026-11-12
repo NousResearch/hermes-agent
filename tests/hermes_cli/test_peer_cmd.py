@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.agent.turn_author import TURN_AUTHOR_ENV
-from hermes_cli.subcommands import peer as peer_cmd
+from hermes_agent.hermes_cli.subcommands import peer as peer_cmd
 
 
 # ── target parsing ───────────────────────────────────────────────────────────

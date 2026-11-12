@@ -54,7 +54,7 @@ def _spillover_retention_hours() -> int:
     days later must still find what the ``<persisted-output>`` pointer promises (#126351).
     Falls back to the legacy 24h cache age when the config is unreadable."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         days = float((load_config_readonly().get("sessions") or {}).get("retention_days", 90))
         if not math.isfinite(days):  # YAML ``.inf`` / ``.nan`` parse as floats; int() would raise
             return SPILLOVER_MAX_AGE_HOURS

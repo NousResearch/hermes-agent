@@ -11,7 +11,7 @@ from argparse import Namespace
 
 import pytest
 
-import hermes_cli.sessions_cmd as sc
+import hermes_agent.hermes_cli.sessions_cmd as sc
 
 
 def _args(action, **kw):

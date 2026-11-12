@@ -1,6 +1,6 @@
 """Make an installed plugin's MCP servers and skills usable in THIS process now (#87770 follow-up).
 
-:func:`hermes_cli.plugins_activation.activate_plugin_now` loads the plugin; skills are live from that
+:func:`hermes_agent.hermes_cli.plugins_activation.activate_plugin_now` loads the plugin; skills are live from that
 point (``skill_view`` resolves ``<plugin>:<skill>``). MCP servers are not: nothing connects them until
 ``reload.mcp``. :func:`connect_plugin_mcp` connects the plugin's servers one by one (the connector
 flow's ``register_mcp_servers({name: config})``), and :func:`live_notice` renders what became usable
@@ -76,7 +76,7 @@ def _server_error(name: str) -> Optional[str]:
 def plugin_skills(plugin_key: str) -> list[dict[str, str]]:
     """``[{name, description}]`` for the skills ``plugin_key`` registered (qualified ``<ns>:<skill>``)."""
     try:
-        from hermes_cli.plugins import get_plugin_manager
+        from hermes_agent.hermes_cli.plugins import get_plugin_manager
         skills = get_plugin_manager()._plugin_skills
     except Exception:
         return []
@@ -88,8 +88,8 @@ def catalog_plugin_skill(written: str) -> Optional[str]:
     """The registered name of a plugin skill written ``<catalog-name>:<skill>`` (``blender:blender``), or
     None when that catalog plugin is not installed in this profile or registered no such skill. Skills
     register under the plugin's manifest name, which need not match its catalog entry name."""
-    from hermes_cli.plugins import get_plugin_manager
-    from hermes_cli.plugins_cmd import _catalog_installed_dir
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins_cmd import _catalog_installed_dir
     catalog_name, _, bare = written.partition(":")
     target = _catalog_installed_dir(catalog_name)
     if target is None:

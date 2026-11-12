@@ -8,12 +8,12 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Dict, Iterator, List, NamedTuple, Optional
 from utils import base_url_hostname, is_truthy_value
-from hermes_cli.fallback_config import scoped_fallback_chain
+from hermes_agent.hermes_cli.fallback_config import scoped_fallback_chain
 
 logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 # Runtime-provider sentinel for providers that are not natively known; must
-# match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
+# match hermes_agent.hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
 _RUNTIME_PROVIDER_CUSTOM = "custom"
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 10
@@ -393,7 +393,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     # Foundry, MiniMax, Zhipu, LiteLLM) get the Messages transport instead of 404ing on chat_completions.
     # Without this, subagents would default to chat_completions and hit 404s on endpoints that only speak
     # the Anthropic Messages protocol. Fixes #10213.
-    from hermes_cli.runtime_provider import _detect_api_mode_for_url
+    from hermes_agent.hermes_cli.runtime_provider import _detect_api_mode_for_url
     base_lower = v["base_url"].lower()
     host = base_url_hostname(v["base_url"])
     provider = "custom"
@@ -412,7 +412,7 @@ def _direct_endpoint_credentials(v: dict, explicit_request_overrides) -> dict:
     request_overrides = None
     if v["provider"]:
         try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider
+            from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
             runtime = resolve_runtime_provider(requested=v["provider"], target_model=v["model"])
             request_overrides = dict(runtime.get("request_overrides") or {}) or None
 
@@ -431,7 +431,7 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
     """``delegation.provider`` branch: full bundle via the runtime provider system."""
     configured_provider = v["provider"]
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested=configured_provider, target_model=v["model"])
     except Exception as exc:
         raise ValueError(
@@ -501,14 +501,14 @@ def _load_config() -> dict:
     by the legacy loader, so it stays authoritative when that flag is set."""
     if os.environ.get("HERMES_IGNORE_USER_CONFIG") != "1":
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
             cfg = load_config_readonly().get("delegation") or {}
             if isinstance(cfg, dict):
                 return cfg
         except Exception:
             pass
     try:
-        from cli import CLI_CONFIG
+        from hermes_agent.cli import CLI_CONFIG
         cfg = CLI_CONFIG.get("delegation") or {}
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
@@ -606,7 +606,7 @@ def _resolve_child_runtime(
     if override_api_mode is not None:
         effective_api_mode = override_api_mode
     elif (effective_provider or "").strip().lower() in _NOUS_PROVIDERS:
-        from hermes_cli.providers import nous_api_mode
+        from hermes_agent.hermes_cli.providers import nous_api_mode
         effective_api_mode = nous_api_mode(effective_model)
     elif effective_provider != _parent_provider:
         effective_api_mode = None  # force re-derivation from provider's defaults

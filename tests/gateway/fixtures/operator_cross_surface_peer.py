@@ -20,8 +20,8 @@ async def probe(peer, creator):
     from hermes_agent.gateway.run_runtime import (initialize_gateway_runtime, start_gateway_runtime_api,
                                      publish_gateway_runtime_ready)
     from hermes_agent.gateway.runtime_ownership import process_ownership
-    from hermes_cli import web_server
-    from hermes_cli.dashboard_auth import register_provider, clear_providers
+    from hermes_agent.hermes_cli import web_server
+    from hermes_agent.hermes_cli.dashboard_auth import register_provider, clear_providers
     from hermes_agent.hermes_state_local import local_receipt
     from hermes_agent.hermes_state_runtime import list_session_admissions
     from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider

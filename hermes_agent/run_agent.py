@@ -15,10 +15,10 @@ except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap
 
 import sys
 
-# `hermes-agent` runs this module without hermes_cli.main, which repairs a `hermes update` killed
+# `hermes-agent` runs this module without hermes_agent.hermes_cli.main, which repairs a `hermes update` killed
 # while git wrote the new tree; do it here, before importing anything else from the checkout.
-if "hermes_cli.main" not in sys.modules:
-    from hermes_cli import _early_recovery
+if "hermes_agent.hermes_cli.main" not in sys.modules:
+    from hermes_agent.hermes_cli import _early_recovery
 
     if _early_recovery.restore_interrupted_pull():
         _early_recovery.relaunch_after_restore()
@@ -38,7 +38,7 @@ from pathlib import Path
 
 from hermes_agent.agent.session_source import CLI_FAMILY_SOURCES, session_source_for
 from hermes_constants import get_hermes_home
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 def _launch_cwd_for_session(source: str) -> Optional[str]:
@@ -75,7 +75,7 @@ def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
     profile = getattr(agent, "_profile_name", None)
     if not profile:
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from hermes_agent.hermes_cli.profiles import get_active_profile_name
             profile = get_active_profile_name()
         except Exception:
             profile = None
@@ -90,8 +90,8 @@ def _gateway_origin_json(agent: "AIAgent") -> Optional[str]:
 
 
 from hermes_agent.agent.iteration_budget import IterationBudget
-from hermes_cli.env_loader import load_hermes_dotenv
-from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
+from hermes_agent.hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 
 _hermes_home = get_hermes_home()  # read by agent_init via _ra()._hermes_home
 _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(project_root_str()) / '.env')
@@ -136,7 +136,7 @@ from hermes_agent.agent.codex_responses_adapter import (
     _summarize_user_message_for_log,
 )
 from hermes_agent.agent.tool_guardrails import ToolGuardrailDecision, append_toolguard_guidance, toolguard_synthetic_result
-from hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
+from hermes_agent.hermes_cli.observability.shared_metrics_harness import record_guardrail_decision, record_guardrail_warnings
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens
 
 
@@ -322,7 +322,7 @@ class AIAgent(
             # Persist the profile name explicitly, including "default": profile-keyed consumers treat NULL
             # as unowned.
             try:
-                from hermes_cli.profiles import get_active_profile_name
+                from hermes_agent.hermes_cli.profiles import get_active_profile_name
                 profile_for_session = get_active_profile_name()
             except Exception:
                 # Persist the profile name EXPLICITLY, including "default". NULL used to stand in for the
@@ -462,7 +462,7 @@ class AIAgent(
         if (getattr(self, "lmstudio_load_mode", "explicit") or "explicit").strip().lower() == "jit":
             logger.debug("LM Studio explicit preload skipped: lmstudio_load_mode=jit")
             return None
-        from hermes_cli.models_local import ensure_lmstudio_model_loaded
+        from hermes_agent.hermes_cli.models_local import ensure_lmstudio_model_loaded
 
         if config_context_length is None:
             config_context_length = getattr(self, "_config_context_length", None)
@@ -642,7 +642,7 @@ class AIAgent(
     @staticmethod
     def _provider_model_requires_responses_api(model: str, *, provider: Optional[str] = None) -> bool:
         """Return True when this provider/model pair should use Responses API."""
-        from hermes_cli.providers import is_actual_route
+        from hermes_agent.hermes_cli.providers import is_actual_route
         normalized_provider = (provider or "").strip().lower()
         # Nous serves GPT-5.x via chat completions (its /v1/responses returns 404); generic custom endpoints
         # may relay GPT-5 without full Responses semantics — only direct OpenAI/xAI URLs auto-upgrade.
@@ -652,7 +652,7 @@ class AIAgent(
         # family and have no ``responses`` attribute, so neither primary routing nor GPT-5
         # fallback activation may upgrade them. Keyed on the profile's auth_type: every
         # external-process provider, not one vendor's names.
-        from hermes_cli.runtime_provider_backends import _is_external_process_provider
+        from hermes_agent.hermes_cli.runtime_provider_backends import _is_external_process_provider
         if _is_external_process_provider(normalized_provider):
             return False
         # A provider serving several wires behind one endpoint decides per model (pure, no I/O).
@@ -1019,7 +1019,7 @@ class AIAgent(
     @staticmethod
     def _trim_process_memory() -> None:
         """Return freed pages to the OS; no full GC here (it would freeze every other session), the idle one runs."""
-        from hermes_cli.mem_trim import note_agent_closed, trim_memory
+        from hermes_agent.hermes_cli.mem_trim import note_agent_closed, trim_memory
         note_agent_closed()
         trim_memory(force=True, reason="agent close", collect=False)
 
@@ -1346,7 +1346,7 @@ class AIAgent(
             # would pin those frames via its traceback, so that path leaves the flag for the
             # next completed batch (hermes_agent/agent/tool_executor.py, #70684).
             self._trim_after_tool_batch = False
-            from hermes_cli.mem_trim import trim_memory
+            from hermes_agent.hermes_cli.mem_trim import trim_memory
             trim_memory(reason="large tool result")
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
@@ -1528,7 +1528,7 @@ def main(
 
     # One TLS authority: trust the OS store before any outbound call (bare
     # requests/urllib included) resolves a CA bundle — see hermes_agent/agent/ssl_verify.py.
-    # The `hermes` CLI does this in hermes_cli.main; this console script
+    # The `hermes` CLI does this in hermes_agent.hermes_cli.main; this console script
     # bypasses it. Never raises.
     from hermes_agent.agent.ssl_verify import install_truststore
 

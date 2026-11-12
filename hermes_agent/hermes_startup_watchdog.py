@@ -90,7 +90,7 @@ _ARMED = "armed"
 _DISARMED = "disarmed"
 _FIRING = "firing"
 
-# Module singleton: the arm sites (hermes_cli.main / hermes_cli.gateway /
+# Module singleton: the arm sites (hermes_agent.hermes_cli.main / hermes_agent.hermes_cli.gateway /
 # hermes_agent.gateway.run.main / cli.py --gateway) and the disarm site (GatewayRunner)
 # share no object, and only one gateway startup ever runs per process.
 _handle_lock = threading.Lock()

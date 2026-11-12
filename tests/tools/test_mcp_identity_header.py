@@ -68,7 +68,7 @@ class TestResolveIdentityHeader:
         from hermes_agent.tools.mcp_tool_errors import _resolve_identity_header
 
         with patch(
-            "hermes_cli.profiles.get_active_profile_name",
+            "hermes_agent.hermes_cli.profiles.get_active_profile_name",
             return_value="workbot",
         ):
             result = _resolve_identity_header("srv", {

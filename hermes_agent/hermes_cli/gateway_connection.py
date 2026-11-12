@@ -16,7 +16,7 @@ import queue
 import threading
 import time
 
-from hermes_cli.gateway_client import (DEFAULT_RPC_TIMEOUT, DISCONNECTED, NOT_SENT, RESUME_KEY_MISMATCH,
+from hermes_agent.hermes_cli.gateway_client import (DEFAULT_RPC_TIMEOUT, DISCONNECTED, NOT_SENT, RESUME_KEY_MISMATCH,
                                        GatewayClientError, GatewayRPCError)
 
 logger = logging.getLogger(__name__)
@@ -176,7 +176,7 @@ class GatewayConnection:
         # dial again. Each connect bumps ``epoch``, and its loss is tagged with it (``lost_before``).
         self._detached = False
         self.epoch = 0
-        # /bg and /btw answers by task id (hermes_cli/gateway_side.py); created by whichever of the
+        # /bg and /btw answers by task id (hermes_agent/hermes_cli/gateway_side.py); created by whichever of the
         # waiter or the frame comes first, so an answer faster than the verb's reply is kept.
         self._side: dict[str, queue.Queue] = {}
         self._side_lock = threading.Lock()
@@ -261,7 +261,7 @@ class GatewayConnection:
         self._stop = asyncio.Event()
         connect = self._connect
         if connect is None:
-            from hermes_cli.gateway_client import connect_gateway
+            from hermes_agent.hermes_cli.gateway_client import connect_gateway
             connect = connect_gateway
         try:
             async with connect() as client:
@@ -348,7 +348,7 @@ class GatewayConnection:
             self.events.put(frame)
 
     def _take_side(self, params):
-        from hermes_cli.gateway_side import SIDE_EVENTS
+        from hermes_agent.hermes_cli.gateway_side import SIDE_EVENTS
         payload = params.get("payload")
         if params.get("type") not in SIDE_EVENTS or not isinstance(payload, dict) or not payload.get("task_id"):
             return False
@@ -458,7 +458,7 @@ class GatewayConnection:
         the transport's error; a set ``wake`` without an answer cancels the dial or the wait."""
         connect = self._connect
         if connect is None:
-            from hermes_cli.gateway_client import connect_gateway
+            from hermes_agent.hermes_cli.gateway_client import connect_gateway
             connect = connect_gateway
         task = asyncio.current_task()
         stop = asyncio.ensure_future(asyncio.to_thread(wake.wait))

@@ -10,8 +10,8 @@ tests/hermes_cli/test_meta_prompt_cache.py.
 
 import pytest
 
-from hermes_cli.providers import determine_api_mode, host_mandated_api_mode
-from hermes_cli import runtime_provider as rp
+from hermes_agent.hermes_cli.providers import determine_api_mode, host_mandated_api_mode
+from hermes_agent.hermes_cli import runtime_provider as rp
 
 
 class TestHostMandatedRouterResponses:
@@ -84,7 +84,7 @@ class TestRouterProfileRegistration:
 
 
     def test_auth_registry_autowired(self):
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
         config = PROVIDER_REGISTRY.get("router")
         assert config is not None

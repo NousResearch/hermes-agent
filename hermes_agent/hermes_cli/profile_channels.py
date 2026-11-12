@@ -81,7 +81,7 @@ def platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
 
 def _registry_entries() -> list:
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent per profile scope
         from hermes_agent.gateway.platform_registry import platform_registry
         return list(platform_registry.all_entries())
@@ -89,9 +89,9 @@ def _registry_entries() -> list:
 
 
 def _left_core_platforms() -> list:
-    """Rows of platforms that left core for a catalog plugin (``hermes_cli.left_core_migration``).
+    """Rows of platforms that left core for a catalog plugin (``hermes_agent.hermes_cli.left_core_migration``).
     Their channel ownership comes from the row, so it holds while the plugin is absent."""
-    from hermes_cli.left_core_migration import LEFT_CORE
+    from hermes_agent.hermes_cli.left_core_migration import LEFT_CORE
     return [feature for feature in LEFT_CORE if feature.platform]
 
 
@@ -269,12 +269,12 @@ def _shared_adapters_active(source_dir: Optional[Path], shared: dict[str, tuple[
     """Shared-prefix platforms the SOURCE runs as a channel: explicitly enabled in its config.yaml, or
     auto-enabled by a complete credential set in its ``.env`` and not explicitly disabled — the same
     gate ``hermes_agent.gateway.platform_env.EnvCred`` applies at gateway start."""
-    from hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.config_backend import config_exists
     if source_dir is None:
         return set(shared)  # no source to consult: the historical (strip) behaviour
     raw: dict = {}
     if config_exists(source_dir / "config.yaml"):
-        from hermes_cli.config import read_user_config_raw
+        from hermes_agent.hermes_cli.config import read_user_config_raw
         with contextlib.suppress(Exception):
             raw = read_user_config_raw(source_dir / "config.yaml") or {}
     env = _env_values(source_dir / ".env")
@@ -387,10 +387,10 @@ def _channel_config_paths(raw: dict, platforms: Iterable[str]) -> list[tuple[str
 
 def strip_channel_config(config_path: Path, index: Optional[ChannelKeyIndex] = None) -> list[str]:
     """Remove platform sections from a raw ``config.yaml`` in place. Returns the dotted paths removed."""
-    from hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.config_backend import config_exists
     if not config_exists(config_path):
         return []
-    from hermes_cli.config import atomic_config_replace, read_user_config_raw
+    from hermes_agent.hermes_cli.config import atomic_config_replace, read_user_config_raw
     index = index or ChannelKeyIndex()
     raw = read_user_config_raw(config_path)
     paths = _channel_config_paths(raw, index.platforms)
@@ -452,7 +452,7 @@ def strip_channel_settings(profile_dir: Path, *, include_state: bool, source_dir
 def channel_platforms_configured(profile_dir: Path) -> list[str]:
     """Platform ids with any channel setting in ``profile_dir`` (.env keys or config.yaml sections) —
     what a channel-less clone of it leaves behind. Pure read, in ``profile_dir``'s plugin scope."""
-    from hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.config_backend import config_exists
     index = ChannelKeyIndex(profile_dir)
     found: set[str] = set()
     env_path = profile_dir / ".env"
@@ -464,7 +464,7 @@ def channel_platforms_configured(profile_dir: Path) -> list[str]:
                 found.add(platform)
     config_path = profile_dir / "config.yaml"
     if config_exists(config_path):
-        from hermes_cli.config import read_user_config_raw
+        from hermes_agent.hermes_cli.config import read_user_config_raw
         raw = read_user_config_raw(config_path)
         for path in _channel_config_paths(raw, index.platforms):
             node = raw
@@ -481,9 +481,9 @@ def clone_channels_refusal(source_dir: Path, source_label: str) -> Optional[str]
     """Why ``--clone-channels`` must be refused for ``source_dir``: a live multiplexer already serves
     the source, so the copied bot would be parked as a duplicate credential at once (the same finding
     the migrate preflight reports). ``None`` when the copy is allowed. Shared by CLI, REST and TUI
-    through :func:`hermes_cli.profiles.create_profile`."""
-    from hermes_cli.gateway_multiplex_served import recorded_served_profiles
-    from hermes_cli.profiles import normalize_profile_name
+    through :func:`hermes_agent.hermes_cli.profiles.create_profile`."""
+    from hermes_agent.hermes_cli.gateway_multiplex_served import recorded_served_profiles
+    from hermes_agent.hermes_cli.profiles import normalize_profile_name
     served = recorded_served_profiles()
     if not served or len(served) < 2 or normalize_profile_name(source_label) not in {
         normalize_profile_name(p) for p in served
@@ -502,11 +502,11 @@ def clone_channels_refusal(source_dir: Path, source_label: str) -> Optional[str]
 
 def _config_platform_tokens(config_path: Path) -> dict[str, str]:
     """``{platform: token}`` from ``platforms.<p>.token|api_key`` (both nesting spellings)."""
-    from hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.config_backend import config_exists
     tokens: dict[str, str] = {}
     if not config_exists(config_path):
         return tokens
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     raw = read_user_config_raw(config_path)
     gateway: dict = raw["gateway"] if isinstance(raw.get("gateway"), dict) else {}
     for section in (raw.get("platforms"), gateway.get("platforms")):

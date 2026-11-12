@@ -132,7 +132,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     # Voice/TTS runtime flags. ``hermes_agent/tui_gateway/server.py`` reads these straight
     # off ``os.environ`` at call time (``_voice_mode_enabled`` /
     # ``_voice_tts_enabled``) and, on every completed turn, hands the turn's
-    # final response text to ``hermes_cli.voice.speak_text`` — real synthesis,
+    # final response text to ``hermes_agent.hermes_cli.voice.speak_text`` — real synthesis,
     # real playback, out of the developer's speakers. Blank them per-test so a
     # leak (from the shell, or from an earlier test that drove the
     # ``voice.toggle`` RPC, which writes ``os.environ`` directly) cannot carry

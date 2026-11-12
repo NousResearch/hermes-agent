@@ -12,10 +12,10 @@ import subprocess as sp
 
 import pytest
 
-from hermes_cli import left_core_migration as lcm
-from hermes_cli import plugin_catalog as pc_cat
-from hermes_cli import plugins_cmd as pc
-from hermes_cli import plugins_manifest
+from hermes_agent.hermes_cli import left_core_migration as lcm
+from hermes_agent.hermes_cli import plugin_catalog as pc_cat
+from hermes_agent.hermes_cli import plugins_cmd as pc
+from hermes_agent.hermes_cli import plugins_manifest
 from tests.hermes_cli.test_plugins_cmd_catalog import _commit, _head, world  # world: the seeded catalog + plugins dir
 from tests.pm._fixtures import client, isolated_python  # fixtures world needs
 
@@ -86,8 +86,8 @@ def test_install_proceeds_when_hermes_satisfies_the_spec_or_its_version_is_unkno
 
 
 def test_update_keeps_the_installed_pin_when_the_new_pin_needs_a_newer_hermes(gated):
-    from hermes_cli.plugins_cmd_update_all import plan_update_all
-    from hermes_cli.plugins_updates import run_checks
+    from hermes_agent.hermes_cli.plugins_cmd_update_all import plan_update_all
+    from hermes_agent.hermes_cli.plugins_updates import run_checks
 
     assert pc.dashboard_install_plugin("", force=False, enable=False, catalog_name="cat-plugin")["ok"] is True
     target = gated["plugins_dir"] / "cat-plugin"
@@ -112,7 +112,7 @@ def test_update_keeps_the_installed_pin_when_the_new_pin_needs_a_newer_hermes(ga
 
 def test_portable_catalog_entry_gets_its_hermes_floor_from_the_catalog(gated, tmp_path):
     # A portable package (plugin.json) has no requires_hermes of its own: the catalog entry is its only floor.
-    from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+    from hermes_agent.hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
     repo = tmp_path / "portable-repo"
     repo.mkdir()
     sp.run(["git", "init", "-q"], cwd=repo, check=True)

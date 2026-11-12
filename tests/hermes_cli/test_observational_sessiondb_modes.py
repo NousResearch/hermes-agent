@@ -3,7 +3,7 @@
 from argparse import Namespace
 
 
-from hermes_cli import sessions_cmd
+from hermes_agent.hermes_cli import sessions_cmd
 
 
 
@@ -36,7 +36,7 @@ def test_doctor_write_probe_never_touches_a_store_a_live_writer_holds(monkeypatc
 
     from hermes_agent import hermes_state_holders
     from hermes_agent import hermes_state_repair
-    from hermes_cli import doctor_state
+    from hermes_agent.hermes_cli import doctor_state
 
     state_db = tmp_path / "state.db"
     sqlite3.connect(state_db).execute("CREATE TABLE sessions (id TEXT)").connection.close()

@@ -72,7 +72,7 @@ class SessionAuthorities:
     def starting(self, profile):
         """``(key, started)`` for the reserved slot *profile* names while its authority is still being
         built, else None. ``started`` is set once the build ends: filled, or dropped because it failed."""
-        from hermes_cli.profiles import profile_matches_home
+        from hermes_agent.hermes_cli.profiles import profile_matches_home
         return next(((key, started) for key, started in list(self._starting.items())
                      if profile_matches_home(profile, Path(key))), None)
 

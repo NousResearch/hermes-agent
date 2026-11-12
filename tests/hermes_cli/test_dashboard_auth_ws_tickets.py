@@ -11,8 +11,8 @@ import threading
 
 import pytest
 
-from hermes_cli.dashboard_auth import ws_tickets
-from hermes_cli.dashboard_auth.ws_tickets import (
+from hermes_agent.hermes_cli.dashboard_auth import ws_tickets
+from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import (
     TTL_SECONDS,
     TicketInvalid,
     _reset_for_tests,

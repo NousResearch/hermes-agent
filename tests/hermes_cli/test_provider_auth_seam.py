@@ -103,7 +103,7 @@ def install_provider(tmp_path, monkeypatch):
 
 def _parse_auth_args(argv: list[str]) -> argparse.Namespace:
     """Parse `hermes auth <argv>` through the real subcommand parser."""
-    from hermes_cli.subcommands.auth import build_auth_parser
+    from hermes_agent.hermes_cli.subcommands.auth import build_auth_parser
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
@@ -136,8 +136,8 @@ def test_oauth_plugin_owns_every_auth_action(tmp_path, install_provider, capsys,
     before any built-in path (nothing printed, nothing written to the pool)."""
     install_provider()
 
-    import hermes_cli.auth as auth_mod
-    from hermes_cli.auth_commands import auth_command
+    import hermes_agent.hermes_cli.auth as auth_mod
+    from hermes_agent.hermes_cli.auth_commands import auth_command
 
     assert auth_mod.resolve_provider("fake-auth") == "fake-auth"
     assert auth_mod.PROVIDER_REGISTRY["fake-auth"].auth_type == "oauth_external"
@@ -154,7 +154,7 @@ def test_oauth_plugin_without_handler_fails_loud_and_builtins_are_untouched(tmp_
     api-key prompt or "Unknown provider"); a built-in provider never consults the seam."""
     install_provider("handlerless", with_handler=False)
 
-    from hermes_cli.auth_commands import auth_command
+    from hermes_agent.hermes_cli.auth_commands import auth_command
 
     with pytest.raises(SystemExit) as excinfo:
         auth_command(_parse_auth_args(["add", "handlerless"]))
@@ -179,7 +179,7 @@ def test_external_process_plugin_relogin_hint_never_names_a_failing_auth_add(ins
     monkeypatch.setattr("hermes_constants.profile_cli_selector", lambda: "")
 
     from hermes_agent.agent.turn_failure_copy import oauth_relogin_command, relogin_command_hint
-    from hermes_cli.auth_commands import auth_command
+    from hermes_agent.hermes_cli.auth_commands import auth_command
 
     with pytest.raises(SystemExit) as excinfo:
         auth_command(_parse_auth_args(["add", "cli-owned", "--type", "oauth"]))

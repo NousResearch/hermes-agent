@@ -94,14 +94,14 @@ def test_startup_uses_one_verdict(checked_store, monkeypatch, capsys, caplog, su
 
         monkeypatch.setattr(run, "start_gateway", started)
         monkeypatch.setattr(run, "_exit_after_graceful_shutdown", lambda code: None)
-        monkeypatch.setattr("hermes_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda _root: None)
+        monkeypatch.setattr("hermes_agent.hermes_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda _root: None)
         monkeypatch.setattr(sys, "argv", ["gateway"])
         start = run.main
     else:
-        from hermes_cli import main
+        from hermes_agent.hermes_cli import main
 
         # Stop at --help: exercise the actual startup block, not an agent session.
-        monkeypatch.setattr("hermes_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda _root: None)
+        monkeypatch.setattr("hermes_agent.hermes_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda _root: None)
         for name in ("_set_process_title", "_advertise_agent_env",
                      "_sweep_stale_bytecode_if_checkout_changed",
                      "_try_termux_fast_tui_launch", "_try_termux_fast_cli_launch",

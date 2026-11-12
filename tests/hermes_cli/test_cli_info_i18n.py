@@ -7,10 +7,10 @@ import pytest
 
 from hermes_agent.agent import i18n
 from hermes_agent.agent.i18n import t
-from hermes_cli.commands import COMMAND_REGISTRY, CommandDef
-from hermes_cli import cli_info_mixin
-from hermes_cli.cli_chat_error_copy import agent_init_failure_message, chat_error_response
-from hermes_cli.cli_unknown_command import unknown_command_lines
+from hermes_agent.hermes_cli.commands import COMMAND_REGISTRY, CommandDef
+from hermes_agent.hermes_cli import cli_info_mixin
+from hermes_agent.hermes_cli.cli_chat_error_copy import agent_init_failure_message, chat_error_response
+from hermes_agent.hermes_cli.cli_unknown_command import unknown_command_lines
 
 
 @pytest.fixture(autouse=True)

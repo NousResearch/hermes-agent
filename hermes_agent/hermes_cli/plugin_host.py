@@ -36,15 +36,15 @@ import weakref
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from hermes_cli.plugin_host_wire import (
+from hermes_agent.hermes_cli.plugin_host_wire import (
     Channel, Opaque, PluginHostUnavailable, PluginHostUnsupported, declared_return, decode, encode, restore,
     signature_from,
 )
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
-logger = logging.getLogger("hermes_cli.plugins")
+logger = logging.getLogger("hermes_agent.hermes_cli.plugins")
 
-_HOST_MODULE = "hermes_cli.plugin_host_child"
+_HOST_MODULE = "hermes_agent.hermes_cli.plugin_host_child"
 _START_TIMEOUT_SECS = 30.0
 _SHUTDOWN_GRACE_SECS = 3.0
 # A host that dies is restarted (its plugins reloaded) at most this many times per window; a plugin
@@ -58,7 +58,7 @@ def _hosted_ambient_credentials(home: Path) -> dict[str, str]:
     child-env scrub always strips), read the way that provider reads them in-process: ``get_secret``
     under the home's scope, so the launch home keeps its shell value and a routed home never gets it."""
     from hermes_agent.agent.secret_scope import build_profile_secret_scope, get_secret, reset_secret_scope, set_secret_scope
-    from hermes_cli.plugin_host_profiles import is_hosted_profile
+    from hermes_agent.hermes_cli.plugin_host_profiles import is_hosted_profile
     from hermes_agent.providers import list_providers
     names = {name for p in list_providers() if p.ambient_credentials and is_hosted_profile(p) for name in p.env_vars}
     if not names:
@@ -126,7 +126,7 @@ class PluginHost:
         return context
 
     def _argv(self) -> list:
-        from hermes_cli.plugin_isolation import host_launcher
+        from hermes_agent.hermes_cli.plugin_isolation import host_launcher
         return [*host_launcher(), sys.executable, "-m", _HOST_MODULE]
 
     def _env(self) -> dict[str, str]:
@@ -136,7 +136,7 @@ class PluginHost:
         repo_root = project_root_str()
         env["PYTHONPATH"] = os.pathsep.join(p for p in (repo_root, env.get("PYTHONPATH", "")) if p)
         env.setdefault("HERMES_PLUGIN_HOST_LOG_LEVEL", "WARNING")
-        from hermes_cli.plugin_isolation import HOST_PROCESS_ENV
+        from hermes_agent.hermes_cli.plugin_isolation import HOST_PROCESS_ENV
         env[HOST_PROCESS_ENV] = "1"
         return env
 
@@ -230,7 +230,7 @@ class PluginHost:
     # -- loading ------------------------------------------------------------------------------------
     def load(self, manifest: Any, ctx: Any, *, module_name: Optional[str], entrypoint: bool) -> str:
         """Import ``manifest``'s plugin in the host and replay its registrations onto ``ctx``."""
-        from hermes_cli.plugins import PluginContext, manifest_key
+        from hermes_agent.hermes_cli.plugins import PluginContext, manifest_key
         plugin_key = manifest_key(manifest)
         # Claimed before ensure_started() can block on a host start, so a load abandoned at its deadline there
         # cannot take the key back from a newer load of this plugin when it resumes (see the except branch).
@@ -298,7 +298,7 @@ class PluginHost:
         plugin_key = f"{capture}:{Path(plugin_dir).name}"
         if ctx is not None:
             self._contexts[plugin_key] = ctx
-        from hermes_cli.plugins import PluginContext
+        from hermes_agent.hermes_cli.plugins import PluginContext
         params = {
             # One load per key until it unloads: a fresh instance of the same plugin is not a reload.
             "plugin_key": plugin_key, "load": self._loads.setdefault(plugin_key, next(self._load_ids)),
@@ -421,7 +421,7 @@ class PluginHost:
         return ctx
 
     def _serve_ctx(self, params: dict[str, Any]) -> Any:
-        from hermes_cli.plugin_isolation import (
+        from hermes_agent.hermes_cli.plugin_isolation import (
             HOST_OBJECT_BASES, HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS,
         )
         ctx = self._plugin_ctx(params)
@@ -442,7 +442,7 @@ class PluginHost:
 
         Sent as the plugin whose code made the call (``plugin``, in its load ``load``); False, as before
         this was forwarded, unless that load is the plugin's current one and ``plugin_id`` is its own."""
-        from hermes_cli.plugin_events import emit_plugin_session_event
+        from hermes_agent.hermes_cli.plugin_events import emit_plugin_session_event
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         plugin = str(params.get("plugin") or "")
         ctx = self._contexts.get(plugin)
@@ -459,7 +459,7 @@ class PluginHost:
             reset_hermes_home_override(token)
 
     def _serve_facade(self, params: dict[str, Any]) -> Any:
-        from hermes_cli.plugin_isolation import HOST_REMOTE_FACADES
+        from hermes_agent.hermes_cli.plugin_isolation import HOST_REMOTE_FACADES
         ctx = self._plugin_ctx(params)
         facade, method = str(params.get("facade") or ""), str(params.get("method") or "")
         if facade not in HOST_REMOTE_FACADES or method.startswith("_"):
@@ -477,7 +477,7 @@ class PluginHost:
         return self._encode_for_host(result)
 
     def _encode_for_host(self, value: Any) -> Any:
-        from hermes_cli.plugins_ledger import PluginRegistration
+        from hermes_agent.hermes_cli.plugins_ledger import PluginRegistration
 
         def refs(obj: Any) -> Optional[dict]:
             if isinstance(obj, PluginRegistration):
@@ -650,7 +650,7 @@ def _method_proxy(host: PluginHost, slot: _ObjectSlot, name: str, meta: dict[str
 
 def _host_object_base(hint: Any) -> Optional[type]:
     """``hint`` when it is a provider ABC a hosted object may stand in for (``HOST_OBJECT_BASES``)."""
-    from hermes_cli.plugin_isolation import HOST_OBJECT_BASES
+    from hermes_agent.hermes_cli.plugin_isolation import HOST_OBJECT_BASES
     if isinstance(hint, type) and f"{hint.__module__}:{hint.__qualname__}" in HOST_OBJECT_BASES.values():
         return hint
     return None

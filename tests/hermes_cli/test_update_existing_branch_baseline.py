@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_cmd
 from tests.hermes_cli.test_update_target_identity import git, update_tree
 
 
@@ -223,7 +223,7 @@ def test_early_fork_sync_without_push_still_completes(checkout, monkeypatch):
 
 def test_command_hands_off_after_existing_main_switch(update_tree, monkeypatch, capsys):
     t = update_tree
-    monkeypatch.setattr("hermes_cli.update_owning_install.retarget_to_owning_install", lambda *_: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_owning_install.retarget_to_owning_install", lambda *_: None)
     run = subprocess.run
 
     def local_git_only(command, *args, **kwargs):
@@ -281,8 +281,8 @@ def test_fork_sync_round_trip_is_not_misclassified_as_noop(tmp_path, monkeypatch
 def test_a_refused_branch_switch_prints_the_refusal_not_a_missing_branch(checkout, capsys):
     """CP0's commit point refused (no marker can be written): the user used to read "Branch 'main'
     does not exist locally or on origin." above the real reason (review C8)."""
-    from hermes_cli import update_cmd_commit
-    from hermes_cli._early_recovery import interrupted_pull_marker
+    from hermes_agent.hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli._early_recovery import interrupted_pull_marker
 
     root, old, _tip = checkout
     update_cmd_commit.begin_update_attempt()
@@ -301,7 +301,7 @@ def test_a_refused_branch_switch_prints_the_refusal_not_a_missing_branch(checkou
 def test_a_torn_branch_switch_leaves_the_autostash_parked(checkout, monkeypatch, capsys):
     """A switch that stopped part-way keeps its marker for the next launch's restore; re-applying the
     autostash onto that half-written tree mixed the user's edits into git's partial writes (C8)."""
-    from hermes_cli._early_recovery import interrupted_pull_marker
+    from hermes_agent.hermes_cli._early_recovery import interrupted_pull_marker
 
     root, _old, _tip = checkout
     (root / "cli.py").write_text("value = 'local edit'\n", encoding="utf8")

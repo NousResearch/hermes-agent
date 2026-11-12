@@ -106,7 +106,7 @@ def test_doctor_fix_publishes_and_reads_the_pm_browser(browser_store, monkeypatc
     """Plain ``hermes doctor`` never acquires Chromium; ``--fix`` acquires it explicitly through PM and reports
     the published binary. Only the worker/download boundary is replaced: selection, admission, facts and
     environment composition are the actual PM implementation."""
-    from hermes_cli import doctor_tools
+    from hermes_agent.hermes_cli import doctor_tools
     import pm.client
 
     _, _, publish = browser_store
@@ -127,7 +127,7 @@ def test_doctor_fix_publishes_and_reads_the_pm_browser(browser_store, monkeypatc
 
 def test_termux_ownership_policy_never_provisions(browser_store, monkeypatch):
     # Exercise the real environment policy, not an emulated Android binary.
-    from hermes_cli import doctor_tools
+    from hermes_agent.hermes_cli import doctor_tools
 
     monkeypatch.setenv("TERMUX_VERSION", "test")
     monkeypatch.setenv("PATH", "")

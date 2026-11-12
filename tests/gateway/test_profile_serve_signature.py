@@ -25,7 +25,7 @@ def test_profile_serve_signature_changes_on_replacement_with_pinned_mtime(tmp_pa
 def test_profile_serve_signature_follows_the_config_backend_version(tmp_path, monkeypatch):
     """Remote Config (#122509): a remote layer changes with no local config.yaml change, so the
     signature must come from the config backend's version, not a stat of the local file."""
-    from hermes_cli import config_backend
+    from hermes_agent.hermes_cli import config_backend
 
     class _Backend:
         name = "remote"

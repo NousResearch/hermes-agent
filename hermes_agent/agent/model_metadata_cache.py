@@ -36,7 +36,7 @@ def locked_context_cache(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         from hermes_agent.agent.model_metadata import _get_context_cache_path  # facade seam: tests patch the path there
-        from hermes_cli.auth import _file_lock
+        from hermes_agent.hermes_cli.auth import _file_lock
         path = _get_context_cache_path()
         lock_path = path.with_name(path.name + ".lock")
         with contextlib.ExitStack() as stack:

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.update_lock import UpdateLock, update_in_progress
+from hermes_agent.hermes_cli.update_lock import UpdateLock, update_in_progress
 
 pytestmark = pytest.mark.platforms("windows")
 
@@ -26,7 +26,7 @@ _OWNER = r"""
 import subprocess, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from hermes_cli.update_lock import UpdateLock, bind_child_to_update_tree
+from hermes_agent.hermes_cli.update_lock import UpdateLock, bind_child_to_update_tree
 lock = UpdateLock(path=Path(sys.argv[3]), install_root=sys.argv[2])
 assert lock.acquire()
 child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"],
@@ -87,7 +87,7 @@ _UNBOUND_OWNER = r"""
 import subprocess, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from hermes_cli.update_lock import UpdateLock
+from hermes_agent.hermes_cli.update_lock import UpdateLock
 assert UpdateLock(path=Path(sys.argv[3]), install_root=sys.argv[2]).acquire()
 # The job refused it: a plain child, outside any kill-on-close job (a refused bind still runs).
 child = subprocess.Popen([sys.executable, "-c", sys.argv[4], *sys.argv[1:4]], stdout=subprocess.PIPE,
@@ -329,7 +329,7 @@ def test_a_node_build_the_job_refuses_never_runs_unfenced(tmp_path):
 
 def test_a_refused_job_join_never_runs_the_command(tmp_path):
     """D2: a launcher whose join is refused exits without running its command (m1: and says so)."""
-    from hermes_cli.update_custody import _CUSTODY_UNAVAILABLE, _JOIN_JOB, _REFUSED_EXIT
+    from hermes_agent.hermes_cli.update_custody import _CUSTODY_UNAVAILABLE, _JOIN_JOB, _REFUSED_EXIT
 
     child = "import sys; print('built'); sys.exit(3)"
     launcher = tmp_path / "join_job.py"  # a file, not -c: the guard reads argv text as a command line
@@ -353,7 +353,7 @@ def _escaping_job_launch(tmp_path: Path, *, process_limit: int = 0):
     Returns the launcher's result and the number of processes the job ever held."""
     import ctypes
 
-    from hermes_cli.update_custody import _JOIN_JOB
+    from hermes_agent.hermes_cli.update_custody import _JOIN_JOB
 
     class _Basic(ctypes.Structure):  # JOBOBJECT_BASIC_LIMIT_INFORMATION
         _fields_ = [("user_limits", ctypes.c_int64 * 2), ("LimitFlags", ctypes.c_uint32),
@@ -404,7 +404,7 @@ def test_a_command_that_starts_outside_the_job_is_put_in_it_and_runs(tmp_path):
 def test_a_command_the_job_will_not_take_never_runs(tmp_path):
     """F54 kept: a command that starts outside the job and that Windows will not add to it (here
     the job's one-process limit, held by the launcher) is never run."""
-    from hermes_cli.update_custody import _CUSTODY_UNAVAILABLE, _REFUSED_EXIT
+    from hermes_agent.hermes_cli.update_custody import _CUSTODY_UNAVAILABLE, _REFUSED_EXIT
 
     out, _total = _escaping_job_launch(tmp_path, process_limit=1)
     assert out.returncode == _REFUSED_EXIT, out
@@ -433,7 +433,7 @@ def test_a_completion_child_runs_only_after_its_bind_and_a_refusal_is_receipted(
     import ctypes
     import copy
 
-    from hermes_cli import update_completion, update_lock, update_receipt
+    from hermes_agent.hermes_cli import update_completion, update_lock, update_receipt
 
     root = tmp_path / "checkout"
     (root / "hermes_cli").mkdir(parents=True)
@@ -514,7 +514,7 @@ def test_a_refusal_the_readers_swallow_is_what_the_update_reports(tmp_path):
 def _refusing_job(monkeypatch):
     import ctypes
 
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateEventW.restype = ctypes.c_void_p
@@ -527,7 +527,7 @@ def test_the_takeover_finish_child_is_never_silently_outside_the_job(tmp_path, m
     a refused bind still runs it (the update committed) but is receipted."""
     import json
 
-    from hermes_cli import _update_takeover, update_receipt
+    from hermes_agent.hermes_cli import _update_takeover, update_receipt
 
     root = tmp_path / "checkout"
     (root / "hermes_cli").mkdir(parents=True)
@@ -551,7 +551,7 @@ def test_the_takeover_finish_child_is_never_silently_outside_the_job(tmp_path, m
 def test_the_old_updater_runs_its_takeover_in_the_job(tmp_path, monkeypatch, capsys):
     """N11: the old updater's takeover child syncs and builds the checkout. With this updater
     holding the checkout lock it is bound before it runs; a refused bind is said out loud."""
-    from hermes_cli import _old_updater
+    from hermes_agent.hermes_cli import _old_updater
 
     started = tmp_path / "started"
     lock = UpdateLock(path=tmp_path / "m", install_root=tmp_path)
@@ -576,7 +576,7 @@ def test_a_build_descendant_left_by_its_leader_never_writes_after_a_normal_relea
     """C3: npm exits while a builder grandchild it started keeps running. The launcher returns
     only once that grandchild is gone, so after the owner's ordinary release a contender
     admitted to the checkout sees no late write. Control: the leader's exit status passes through."""
-    from hermes_cli.update_custody import contained_command
+    from hermes_agent.hermes_cli.update_custody import contained_command
 
     install = tmp_path / "checkout"
     install.mkdir()

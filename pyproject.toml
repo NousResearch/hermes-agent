@@ -590,7 +590,7 @@ requires = ["setuptools==84.1.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
-hermes = "hermes_cli.main:main"
+hermes = "hermes_agent.hermes_cli.main:main"
 hermes-agent = "hermes_agent.agent.legacy_cli:main"
 hermes-acp = "hermes_agent.acp_adapter.entry:main"
 
@@ -606,11 +606,16 @@ opt-in-extras = ["kittentts"]
 # must exist; an update to a tree that lacks one is refused. A change that moves one of these
 # files updates its path here.
 update-startup-files = [
-  "hermes_bootstrap.py", "hermes_cli/_parser.py", "hermes_cli/_launchers.py",
-  "hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_cli/update_custody.py",
-  "hermes_cli/update_handoff.py", "hermes_cli/venv_sync.py", "pm/__init__.py", "pm/environments.py",
-  "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
-  "hermes_cli/web_server.py", "cli.py", "run_agent.py", "hermes_agent/run_agent.py", "model_tools.py",
+  "hermes_bootstrap.py", "hermes_agent/hermes_cli/_parser.py", "hermes_cli/_launchers.py",
+  "hermes_agent/hermes_cli/_launchers.py",
+  "hermes_agent/hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_agent/hermes_cli/update_lock.py",
+  "hermes_agent/hermes_cli/update_custody.py",
+  "hermes_agent/hermes_cli/update_handoff.py", "hermes_agent/hermes_cli/venv_sync.py", "pm/__init__.py",
+  "pm/environments.py",
+  "hermes_cli/main.py", "hermes_agent/hermes_cli/main.py", "hermes_agent/hermes_cli/config.py",
+  "hermes_cli/__init__.py", "hermes_agent/hermes_cli/__init__.py",
+  "hermes_agent/hermes_cli/web_server.py", "cli.py", "hermes_agent/cli.py", "run_agent.py", "hermes_agent/run_agent.py",
+  "model_tools.py",
   "hermes_agent/model_tools.py", "toolsets.py",
   "hermes_agent/toolsets.py",
   "hermes_constants.py", "hermes_agent/__init__.py", "hermes_agent/compat/__init__.py",
@@ -737,7 +742,7 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-hermes_cli = [
+"hermes_agent.hermes_cli" = [
   "observability/schemas/*.json",
   "data/*.json",
   "local_runtime/*.json",

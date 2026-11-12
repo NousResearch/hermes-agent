@@ -145,7 +145,7 @@ def slash_confirm_refusal(session_key: str, confirm_id: str, actor_id: Any, *, a
     reply would resolve: the same rule, read from the pending confirm, with the confirmed command as
     the slash floor (answering runs it). Nothing pending (or another confirm id) is never refused: the
     resolver reports it as before."""
-    from hermes_cli.commands import resolve_command
+    from hermes_agent.hermes_cli.commands import resolve_command
     from hermes_agent.tools.slash_confirm import get_pending
 
     pending = get_pending(session_key) or {}

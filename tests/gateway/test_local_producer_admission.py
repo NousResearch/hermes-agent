@@ -155,7 +155,7 @@ def _tick_output(text):
 @pytest.mark.asyncio
 async def test_a_liveness_tick_is_admitted_into_the_session_that_started_the_process(gateway):
     from hermes_agent.gateway.session_automation import admission_display
-    from hermes_cli.gateway_tools_notify import _card
+    from hermes_agent.hermes_cli.gateway_tools_notify import _card
     sid = gateway.launch.session_id
 
     assert await gateway.drain(gateway.tick(gateway.primary, sid, 1)) == [], 'the tick was refused and requeued'

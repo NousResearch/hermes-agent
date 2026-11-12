@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import gitlock
+from hermes_agent.hermes_cli import gitlock
 
 
 def git(repo, *args, check=True):
@@ -164,7 +164,7 @@ def test_failed_shallow_maintenance_restores_original_bytes(tmp_path, caplog, op
     original = shallow.read_bytes().replace(b"\n", b"\r\n")
     shallow.write_bytes(original)
     assert not _walks(clone)
-    with caplog.at_level("DEBUG", logger="hermes_cli.gitlock"):
+    with caplog.at_level("DEBUG", logger="hermes_agent.hermes_cli.gitlock"):
         maintain = (gitlock.repair_broken_shallow_boundaries if operation == "repair"
                     else gitlock.prune_stale_shallow_grafts)
         assert maintain(clone) == 0
@@ -190,7 +190,7 @@ def test_bom_shallow_prune_rolls_back_without_losing_bytes(tmp_path, caplog, bom
     git(clone, "checkout", "-q", "main")
     original = bom + shallow.read_bytes().replace(b"\n", b"\r\n")
     shallow.write_bytes(original)
-    with caplog.at_level("DEBUG", logger="hermes_cli.gitlock"):
+    with caplog.at_level("DEBUG", logger="hermes_agent.hermes_cli.gitlock"):
         assert gitlock.prune_stale_shallow_grafts(clone) == 0
     assert "self-check failed" in caplog.text
     assert shallow.read_bytes() == original

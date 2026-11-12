@@ -93,10 +93,10 @@ class TestProfileEnvIsNotThePrimaryClaim:
         started = []
 
         monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
+            "hermes_agent.hermes_cli.profiles.profiles_to_serve",
             lambda multiplex, **_kw: [("default", default_home), ("worker", worker_home)],
         )
-        monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "worker")
+        monkeypatch.setattr("hermes_agent.hermes_cli.profiles.get_active_profile_name", lambda: "worker")
 
         async def fake_start(profile_name, profile_home, claimed):
             started.append(profile_name)
@@ -182,7 +182,7 @@ class TestSettledHostRecordDecidesRestart:
         self, tmp_path, monkeypatch,
     ):
         """The updater sits on the named profile's home; the host record proves hostness."""
-        from hermes_cli.gateway import _restart_argv_is_host_gateway
+        from hermes_agent.hermes_cli.gateway import _restart_argv_is_host_gateway
 
         _default_home, worker_home = _two_homes(tmp_path)
         self._publish_live_host_record(
@@ -198,7 +198,7 @@ class TestSettledHostRecordDecidesRestart:
         self, tmp_path, monkeypatch,
     ):
         """No live host record + a named-profile home => the argv is that profile's."""
-        from hermes_cli.gateway import _restart_argv_is_host_gateway
+        from hermes_agent.hermes_cli.gateway import _restart_argv_is_host_gateway
 
         _default_home, worker_home = _two_homes(tmp_path)
         (worker_home / "config.yaml").write_text("gateway: {}\n", encoding="utf-8")

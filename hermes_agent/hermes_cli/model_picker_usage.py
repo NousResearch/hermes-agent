@@ -270,7 +270,7 @@ def usage_levels(model_ids: list[str], pricing: Optional[dict[str, dict[str, Any
 
 def is_subscription_billed_row(pricing_row: Any) -> bool:
     """The gateway bills this catalog row to a subscription the account holds (``billing_mode: subscription``)."""
-    from hermes_cli.models import _is_subscription_billed
+    from hermes_agent.hermes_cli.models import _is_subscription_billed
     return _is_subscription_billed(pricing_row)
 
 
@@ -286,7 +286,7 @@ def usage_tag_levels(model_ids: list[str], pricing: Optional[dict[str, dict[str,
 def is_free_model(pricing_row: Optional[dict[str, Any]]) -> bool:
     """True when the catalog lists the model at $0 in and $0 out (``:free`` / natively free). A row
     with no pricing is NOT free — unknown price is not a promise."""
-    from hermes_cli.models_pricing import _price_float
+    from hermes_agent.hermes_cli.models_pricing import _price_float
     if not pricing_row:
         return False
     inp = _price_float(pricing_row.get("prompt"), positive=False)
@@ -416,7 +416,7 @@ def nous_picker_usage(*, warm: bool = False, any_age: bool = False) -> Optional[
     on a cold start. ``any_age`` reads the last snapshot past the 60s TTL (plan-shape callers only:
     its percents may be stale). Never raises."""
     try:
-        from hermes_cli.nous_account import cached_nous_portal_account_info, get_nous_portal_account_info
+        from hermes_agent.hermes_cli.nous_account import cached_nous_portal_account_info, get_nous_portal_account_info
         if warm and cached_nous_portal_account_info() is None:
             # A known window plan needs a real fetch: the JWT snapshot carries no gauges and never fills the cache.
             from hermes_agent.agent.credits_tracker import _window_seed_fields
@@ -431,7 +431,7 @@ def nous_picker_usage(*, warm: bool = False, any_age: bool = False) -> Optional[
 def _nous_catalog(*, fetch: bool = False) -> dict[str, dict[str, Any]]:
     """This profile's Nous ``/v1/models`` rows: its resident cache, one fetch only when ``fetch``. Never a
     catalog cached for another credential (another profile's plan marks different models Large)."""
-    from hermes_cli.models_pricing import get_pricing_for_provider
+    from hermes_agent.hermes_cli.models_pricing import get_pricing_for_provider
     rows = get_pricing_for_provider("nous", cached_only=True) or {}
     if not rows and fetch:
         rows = get_pricing_for_provider("nous") or {}

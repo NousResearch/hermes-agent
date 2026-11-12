@@ -62,8 +62,8 @@ class TestServedJsAssetContentType:
         from fastapi import FastAPI
         from starlette.testclient import TestClient
 
-        import hermes_cli.web_server as ws
-        import hermes_cli.web_server_dashboard as wsd  # imports pin the MIME map
+        import hermes_agent.hermes_cli.web_server as ws
+        import hermes_agent.hermes_cli.web_server_dashboard as wsd  # imports pin the MIME map
 
         dist = tmp_path / "web_dist"
         (dist / "assets").mkdir(parents=True)
@@ -81,7 +81,7 @@ class TestServedJsAssetContentType:
         # that by re-applying the startup normalization NOW, as import of
         # ``web_server_dashboard`` did at process start (and keeps the test
         # meaningful even when an earlier test already imported the module).
-        from hermes_cli.web_asset_mime_types import normalize_web_asset_mime_types
+        from hermes_agent.hermes_cli.web_asset_mime_types import normalize_web_asset_mime_types
 
         normalize_web_asset_mime_types()
         monkeypatch.setattr(ws, "WEB_DIST", dist)
@@ -109,7 +109,7 @@ class TestNormalizeWebAssetMimeTypes:
     """Unit: the normalization overrides the poisoned host map."""
 
     def test_reapplies_over_poisoned_map(self, poisoned_mimetypes):
-        from hermes_cli.web_asset_mime_types import normalize_web_asset_mime_types
+        from hermes_agent.hermes_cli.web_asset_mime_types import normalize_web_asset_mime_types
 
         assert mimetypes.guess_type("a.js")[0] == "text/plain"
         normalize_web_asset_mime_types()
@@ -117,7 +117,7 @@ class TestNormalizeWebAssetMimeTypes:
         assert _is_javascript(mimetypes.guess_type("a.mjs")[0])
 
     def test_idempotent(self):
-        from hermes_cli.web_asset_mime_types import normalize_web_asset_mime_types
+        from hermes_agent.hermes_cli.web_asset_mime_types import normalize_web_asset_mime_types
 
         normalize_web_asset_mime_types()
         normalize_web_asset_mime_types()
@@ -139,17 +139,17 @@ class TestNormalizeWebAssetMimeTypes:
         ],
     )
     def test_pinned_extensions_resolve(self, filename, expected):
-        from hermes_cli.web_asset_mime_types import normalize_web_asset_mime_types
+        from hermes_agent.hermes_cli.web_asset_mime_types import normalize_web_asset_mime_types
 
         normalize_web_asset_mime_types()
         assert mimetypes.guess_type(filename)[0] in expected
 
     def test_table_is_complete_for_served_assets(self):
-        from hermes_cli.web_asset_mime_types import WEB_ASSET_MIME_TYPES
+        from hermes_agent.hermes_cli.web_asset_mime_types import WEB_ASSET_MIME_TYPES
 
         # Every extension we pin must be present in the strict map after import
         # of the dashboard module (module-level call already ran).
-        import hermes_cli.web_server_dashboard
+        import hermes_agent.hermes_cli.web_server_dashboard
 
         for ext, mime in WEB_ASSET_MIME_TYPES.items():
             assert mimetypes.guess_type(f"file{ext}")[0] == mime

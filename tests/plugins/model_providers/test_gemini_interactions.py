@@ -28,8 +28,8 @@ def gemini():
 @pytest.fixture()
 def config(monkeypatch):
     holder: dict = {}
-    import hermes_cli.config
-    monkeypatch.setattr(hermes_cli.config, "load_config_readonly", lambda: holder)
+    import hermes_agent.hermes_cli.config
+    monkeypatch.setattr(hermes_agent.hermes_cli.config, "load_config_readonly", lambda: holder)
     return holder
 
 
@@ -544,7 +544,7 @@ def test_in_stream_snake_case_codes_map_to_http_status(gemini):
 
 
 def test_gemini_api_is_a_known_providers_key(caplog):
-    from hermes_cli.config_providers import _normalize_custom_provider_entry
+    from hermes_agent.hermes_cli.config_providers import _normalize_custom_provider_entry
 
     with caplog.at_level("WARNING"):
         _normalize_custom_provider_entry({"base_url": "https://generativelanguage.googleapis.com/v1beta", "gemini_api": "interactions"},

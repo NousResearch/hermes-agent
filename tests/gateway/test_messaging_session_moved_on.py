@@ -15,7 +15,7 @@ def _home(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_the_control_card_of_a_compressed_messaging_session_reads_its_current_segment(tmp_path):
-    from hermes_cli.goals import GoalState
+    from hermes_agent.hermes_cli.goals import GoalState
     from hermes_agent.gateway.session_ancillary import control_snapshot
     _compressed_lane(tmp_path)
     cold = await _cold(tmp_path)

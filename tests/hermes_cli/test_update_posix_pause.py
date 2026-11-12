@@ -55,7 +55,7 @@ def test_a_killed_updaters_supervised_units_are_adopted_by_the_next_update(tmp_p
 def test_a_prompt_while_the_gateways_are_paused_takes_its_default_at_once(tmp_path, monkeypatch):
     """``/update`` relays prompts through the gateway; while this update holds it stopped nobody can
     answer, so the prompt must not park the update (and the downtime) for its 300 s timeout."""
-    from hermes_cli import update_cmd, update_cmd_posix_pause
+    from hermes_agent.hermes_cli import update_cmd, update_cmd_posix_pause
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(update_cmd_posix_pause, "_RUN", {"platform": "posix", "posix_stopped": True, "resume_needed": True})
@@ -133,7 +133,7 @@ def test_a_record_that_cannot_be_written_leaves_the_update_unpaused_and_ungated(
     """No durable record, no stop. This attempt must leave nothing that arms the checkout's tree
     gate (its required record write would then refuse the update), and an adopted obligation must
     survive exactly as it was."""
-    from hermes_cli import update_cmd_posix_pause as m
+    from hermes_agent.hermes_cli import update_cmd_posix_pause as m
     gateway = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], stdin=subprocess.DEVNULL)
     home = tmp_path / "home"
     home.mkdir()
@@ -180,7 +180,7 @@ def test_a_replayed_gateway_keeps_its_own_exported_token_and_no_one_elses(tmp_pa
 def test_unknown_cgroup_membership_never_authorizes_stopping_the_unit():
     """A unit whose stop could kill this update stays running unless the update is PROVEN outside
     its cgroup; unreadable membership is unknown, never outside."""
-    from hermes_cli.update_cmd_posix_pause import _escape_cgroup
+    from hermes_agent.hermes_cli.update_cmd_posix_pause import _escape_cgroup
     assert _escape_cgroup({"unit": "hermes-gateway-p2probe.service", "pid": 4242, "cgroup": None}) is False
 
 
@@ -189,8 +189,8 @@ def test_unknown_cgroup_membership_never_authorizes_stopping_the_unit():
 def test_a_launchd_job_is_paused_through_launchd_and_restarted_through_it(tmp_path):
     """A KeepAlive job merely killed is respawned by launchd on the old code mid-update; the pause
     boots it out (no respawn) and the restart bootstraps the same plist (a fresh PID)."""
-    from hermes_cli.gateway import _launchd_print_service_pid
-    from hermes_cli.update_cmd_posix_pause import _alive, _start_job, _stop_job
+    from hermes_agent.hermes_cli.gateway import _launchd_print_service_pid
+    from hermes_agent.hermes_cli.update_cmd_posix_pause import _alive, _start_job, _stop_job
     label = f"ai.hermes.p2probe-{os.getpid()}"
     plist = tmp_path / f"{label}.plist"
     plist.write_bytes(plistlib.dumps({"Label": label, "ProgramArguments": ["/bin/sleep", "600"],

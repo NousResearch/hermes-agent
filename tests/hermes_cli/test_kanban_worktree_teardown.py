@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_workspace as kbw
-from hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_workspace as kbw
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
 
 
 def _git(*args: str, cwd: str | None = None) -> str:
@@ -206,13 +206,13 @@ def test_tree_dirtied_between_check_and_removal_preserved(
     ``--force``, git's own dirty guard re-verifies at removal time and the
     removal fails safe.
     """
-    import cli
+    from hermes_agent import cli
 
     wt = _make_worktree(repo, "t_gggg7777")
     (wt / "late-wip.txt").write_text("dirtied after the check\n", encoding="utf-8")
     # Pre-check lies (as if the file appeared just after it ran) — real git
     # must still refuse the removal.
-    from hermes_cli import worktree_ops
+    from hermes_agent.hermes_cli import worktree_ops
 
     monkeypatch.setattr(worktree_ops, "_worktree_is_dirty", lambda _p, *_a, **_k: False)
     kbw._cleanup_worktree_workspace("t_gggg7777", str(wt))

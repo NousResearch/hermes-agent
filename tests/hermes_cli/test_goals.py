@@ -1,4 +1,4 @@
-"""Tests for hermes_cli/goals.py — persistent cross-turn goals."""
+"""Tests for hermes_agent/hermes_cli/goals.py — persistent cross-turn goals."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def hermes_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     # Bust the goal-module's DB cache for each test so it re-resolves HERMES_HOME.
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
 
     goals._DB_CACHE.clear()
     yield home
@@ -39,7 +39,7 @@ def hermes_home(tmp_path, monkeypatch):
 
 class TestParseJudgeResponse:
     def test_clean_json_done(self):
-        from hermes_cli.goals import _parse_judge_response
+        from hermes_agent.hermes_cli.goals import _parse_judge_response
 
         verdict, reason, _pf, wait = _parse_judge_response('{"done": true, "reason": "all good"}')
         assert verdict == "done"
@@ -50,7 +50,7 @@ class TestParseJudgeResponse:
 
 
     def test_wait_verdict_with_pid(self):
-        from hermes_cli.goals import _parse_judge_response
+        from hermes_agent.hermes_cli.goals import _parse_judge_response
 
         v, reason, pf, wait = _parse_judge_response(
             '{"verdict": "wait", "wait_on_pid": 4242, "reason": "CI running"}'
@@ -73,7 +73,7 @@ class TestJudgeGoal:
 
     def test_api_error_continues(self):
         """Judge exception → fail-open continue (don't wedge progress on judge bugs)."""
-        from hermes_cli import goals
+        from hermes_agent.hermes_cli import goals
 
         with patch(
             "hermes_agent.agent.auxiliary_client.call_llm",
@@ -84,7 +84,7 @@ class TestJudgeGoal:
         assert "judge error" in reason.lower()
 
     def test_judge_says_done(self):
-        from hermes_cli import goals
+        from hermes_agent.hermes_cli import goals
 
         with patch(
             "hermes_agent.agent.auxiliary_client.call_llm",
@@ -106,7 +106,7 @@ class TestJudgeGoal:
 class TestGoalManager:
 
     def test_set_then_status(self, hermes_home):
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="test-sid-2", default_max_turns=5)
         state = mgr.set("port the thing")
@@ -129,7 +129,7 @@ class TestGoalManager:
         """The continuation prompt must include the goal text verbatim —
         and must be safe to inject as a user-role message (prompt-cache
         invariants: no system-prompt mutation)."""
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="cont-sid")
         mgr.set("port goal command to hermes")
@@ -163,7 +163,7 @@ class TestJudgeParseFailureAutoPause:
 
     def test_api_error_does_not_count_as_parse_failure(self):
         """Transient network/API errors must not trip the auto-pause guard."""
-        from hermes_cli import goals
+        from hermes_agent.hermes_cli import goals
 
         with patch(
             "hermes_agent.agent.auxiliary_client.call_llm",
@@ -179,8 +179,8 @@ class TestJudgeParseFailureAutoPause:
 
     def test_auto_pause_after_three_consecutive_parse_failures(self, hermes_home):
         """N=3 consecutive parse failures → auto-pause with config pointer."""
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli import goals
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="parse-fail-sid-1", default_max_turns=20)
         mgr.set("do a thing")
@@ -214,7 +214,7 @@ class TestGoalStateSubgoalsBackcompat:
     def test_old_state_meta_row_loads_without_subgoals(self):
         """A goal serialized BEFORE the subgoals field existed must
         round-trip with an empty list, not crash."""
-        from hermes_cli.goals import GoalState
+        from hermes_agent.hermes_cli.goals import GoalState
 
         legacy = json.dumps({
             "goal": "do a thing",
@@ -237,7 +237,7 @@ class TestMigrateGoalToSession:
     goal silently dies when compression rotates session_id."""
 
     def test_migrates_active_goal_to_child(self, hermes_home):
-        from hermes_cli.goals import save_goal, load_goal, migrate_goal_to_session, GoalState
+        from hermes_agent.hermes_cli.goals import save_goal, load_goal, migrate_goal_to_session, GoalState
         save_goal("parent-sid", GoalState(goal="ship the feature"))
         assert migrate_goal_to_session("parent-sid", "child-sid", reason="compression") is True
         child = load_goal("child-sid")
@@ -248,7 +248,7 @@ class TestMigrateGoalToSession:
 
 
     def test_does_not_clobber_existing_child_goal(self, hermes_home):
-        from hermes_cli.goals import save_goal, load_goal, migrate_goal_to_session, GoalState
+        from hermes_agent.hermes_cli.goals import save_goal, load_goal, migrate_goal_to_session, GoalState
         save_goal("p3", GoalState(goal="parent goal"))
         save_goal("c3", GoalState(goal="child already has one"))
         assert migrate_goal_to_session("p3", "c3") is False
@@ -266,7 +266,7 @@ class TestSessionDbCacheAfterProfileDelete:
         from hermes_agent import hermes_state
         import hermes_agent.hermes_state_registry as registry
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-        from hermes_cli.goals import GoalState, _get_session_db, load_goal, save_goal
+        from hermes_agent.hermes_cli.goals import GoalState, _get_session_db, load_goal, save_goal
 
         # conftest re-points DEFAULT_DB_PATH at one fixed file; the registry must resolve the
         # scoped profile home here, as production does.
@@ -293,7 +293,7 @@ class TestSessionDbCacheAfterProfileDelete:
 
 class TestGoalManagerSubgoals:
     def test_add_subgoal(self, hermes_home):
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
         mgr = GoalManager(session_id="sub-add")
         mgr.set("main goal")
         text = mgr.add_subgoal("  use bullet points  ")
@@ -303,7 +303,7 @@ class TestGoalManagerSubgoals:
 
     def test_remove_subgoal_out_of_range(self, hermes_home):
         import pytest
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
         mgr = GoalManager(session_id="sub-oob")
         mgr.set("g")
         mgr.add_subgoal("only")
@@ -321,7 +321,7 @@ class TestJudgeGoalWithSubgoals:
         capture the prompt that would be sent.
         """
         from unittest.mock import patch
-        from hermes_cli import goals
+        from hermes_agent.hermes_cli import goals
 
         captured = {}
 
@@ -352,7 +352,7 @@ class TestJudgeGoalWithSubgoals:
 
     def test_judge_uses_original_template_when_no_subgoals(self, hermes_home):
         from unittest.mock import patch
-        from hermes_cli import goals
+        from hermes_agent.hermes_cli import goals
 
         captured = {}
 
@@ -400,8 +400,8 @@ class TestWaitBarrier:
 
 
     def test_parked_on_live_pid_does_not_continue_or_judge(self, hermes_home):
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli import goals
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         proc = self._spawn_sleeper()
         try:
@@ -428,8 +428,8 @@ class TestWaitBarrier:
 
     def test_wait_on_rejects_a_pid_not_alive_on_this_host(self, hermes_home, monkeypatch):
         """Regression for #110826: do not persist a barrier for remote/dead PIDs."""
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli import goals
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         monkeypatch.setattr(goals, "_pid_alive", lambda pid: False)
         mgr = GoalManager(session_id="wb-dead")
@@ -442,7 +442,7 @@ class TestWaitBarrier:
 
 
     def test_stop_waiting_clears_barrier(self, hermes_home):
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         proc = self._spawn_sleeper()
         try:
@@ -460,8 +460,8 @@ class TestWaitBarrier:
 
     def test_barrier_on_a_process_that_never_exits_expires(self, hermes_home):
         """A poller that outlives the work parked one run for 3h22m; a live barrier ages out."""
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli import goals
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         proc = self._spawn_sleeper()
         try:
@@ -482,7 +482,7 @@ class TestGatherBackgroundProcessesOwnership:
     def test_only_the_owning_sessions_processes_are_seen(self, monkeypatch):
         """The registry task_id collapses to one container key for every agent in the process, so a
         fan-out parent's judge must filter by owner; otherwise a grandchild's poller parks the goal."""
-        from hermes_cli import goals
+        from hermes_agent.hermes_cli import goals
 
         class _Reg:
             def list_sessions(self, task_id=None, session_key=None):
@@ -516,8 +516,8 @@ class TestJudgeDrivenWait:
     def test_judge_wait_on_dead_pid_continues_instead_of_parking(self, hermes_home):
         """#110826: a judge ``wait_on_pid`` naming a pid this host cannot observe (remote, or
         already exited) must not park — the barrier would lift and re-park every turn."""
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli import goals
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="jw-dead-pid", default_max_turns=10)
         mgr.set("ship the PR")
@@ -535,8 +535,8 @@ class TestJudgeDrivenWait:
         """The pid may exit between the judge path's liveness probe and ``wait_on``'s own
         re-check; that race must land on the same continue decision, not raise out of
         ``evaluate_after_turn`` (callers swallow the error and the continuation is lost)."""
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli import goals
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="jw-toctou-pid", default_max_turns=10)
         mgr.set("ship the PR")
@@ -553,8 +553,8 @@ class TestJudgeDrivenWait:
         assert mgr.is_waiting() is False
 
     def test_judge_wait_pid_parks_loop(self, hermes_home):
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli import goals
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         proc = self._spawn_sleeper()
         try:
@@ -591,7 +591,7 @@ class TestJudgeDrivenWait:
 
 
     def test_time_barrier_clears_after_deadline(self, hermes_home):
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="jw-deadline")
         mgr.set("g")
@@ -604,8 +604,8 @@ class TestJudgeDrivenWait:
 
     def test_continue_verdict_still_continues_with_background(self, hermes_home):
         """A running process present but judge says continue → normal loop."""
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli import goals
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="jw-cont", default_max_turns=10)
         mgr.set("do work")
@@ -659,7 +659,7 @@ class TestSessionTriggerBarrier:
 
 
     def test_wait_on_session_validation(self, hermes_home):
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
         mgr = GoalManager(session_id="st-val")
         # No active goal → RuntimeError
         try:
@@ -686,7 +686,7 @@ class TestParseContract:
 
 
     def test_inline_fields_parsed(self):
-        from hermes_cli.goals import parse_contract
+        from hermes_agent.hermes_cli.goals import parse_contract
 
         text = (
             "Migrate auth to JWT\n"
@@ -704,7 +704,7 @@ class TestParseContract:
         assert not contract.is_empty()
 
     def test_alias_variants(self):
-        from hermes_cli.goals import parse_contract
+        from hermes_agent.hermes_cli.goals import parse_contract
 
         _, c = parse_contract("Goal\nverified by: tests green\npreserve: public API")
         assert c.verification == "tests green"
@@ -713,7 +713,7 @@ class TestParseContract:
 
 class TestGoalContractSerialization:
     def test_roundtrip_with_contract(self):
-        from hermes_cli.goals import GoalState, GoalContract
+        from hermes_agent.hermes_cli.goals import GoalState, GoalContract
 
         state = GoalState(
             goal="ship it",
@@ -730,7 +730,7 @@ class TestGoalContractSerialization:
 
     def test_old_row_without_contract_loads_clean(self):
         # A state_meta row written before this feature has no "contract" key.
-        from hermes_cli.goals import GoalState
+        from hermes_agent.hermes_cli.goals import GoalState
 
         legacy = '{"goal": "old goal", "status": "active", "turns_used": 2}'
         state = GoalState.from_json(legacy)
@@ -740,7 +740,7 @@ class TestGoalContractSerialization:
         assert not state.has_contract()
 
     def test_render_block_omits_empty_fields(self):
-        from hermes_cli.goals import GoalContract
+        from hermes_agent.hermes_cli.goals import GoalContract
 
         block = GoalContract(outcome="X", verification="Y").render_block()
         assert "Outcome: X" in block
@@ -753,7 +753,7 @@ class TestGoalManagerContract:
 
 
     def test_set_contract_after_the_fact(self, hermes_home):
-        from hermes_cli.goals import GoalManager, GoalContract
+        from hermes_agent.hermes_cli.goals import GoalManager, GoalContract
 
         mgr = GoalManager(session_id="c-after")
         mgr.set("ship it")
@@ -761,11 +761,11 @@ class TestGoalManagerContract:
         mgr.set_contract(GoalContract(verification="x"))
         assert mgr.has_contract()
         # Survives reload.
-        from hermes_cli.goals import GoalManager as GM2
+        from hermes_agent.hermes_cli.goals import GoalManager as GM2
         assert GM2(session_id="c-after").has_contract()
 
     def test_persistence_roundtrip(self, hermes_home):
-        from hermes_cli.goals import GoalManager, GoalContract
+        from hermes_agent.hermes_cli.goals import GoalManager, GoalContract
 
         GoalManager(session_id="c-persist").set(
             "ship it", contract=GoalContract(outcome="O", verification="V")
@@ -793,8 +793,8 @@ class TestJudgeWithContract:
 
     def test_judge_uses_contract_template(self, hermes_home):
         from unittest.mock import patch
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalContract
+        from hermes_agent.hermes_cli import goals
+        from hermes_agent.hermes_cli.goals import GoalContract
 
         captured = {}
         with patch("hermes_agent.agent.auxiliary_client.call_llm",
@@ -813,7 +813,7 @@ class TestJudgeWithContract:
 class TestDraftContract:
     def test_draft_parses_json(self, hermes_home):
         from unittest.mock import patch
-        from hermes_cli import goals
+        from hermes_agent.hermes_cli import goals
 
         class _FakeMsg:
             content = (
@@ -836,7 +836,7 @@ class TestDraftContract:
 
     def test_draft_returns_none_when_no_client(self, hermes_home):
         from unittest.mock import patch
-        from hermes_cli import goals
+        from hermes_agent.hermes_cli import goals
 
         with patch("hermes_agent.agent.auxiliary_client.call_llm",
                    side_effect=RuntimeError("No LLM provider configured")):
@@ -870,8 +870,8 @@ class TestContractAndBackgroundCompose:
 
     def test_judge_prompt_carries_contract_and_background(self, hermes_home):
         from unittest.mock import patch
-        from hermes_cli import goals
-        from hermes_cli.goals import GoalContract
+        from hermes_agent.hermes_cli import goals
+        from hermes_agent.hermes_cli.goals import GoalContract
 
         captured = {}
         bg = [{
@@ -903,7 +903,7 @@ class TestBlockedVerdict:
     """#100954: a genuinely unachievable goal must be refused, not completed."""
 
     def test_parse_judge_response_accepts_blocked(self):
-        from hermes_cli.goals import _parse_judge_response
+        from hermes_agent.hermes_cli.goals import _parse_judge_response
 
         verdict, reason, parse_failed, _wd = _parse_judge_response(
             '{"verdict": "blocked", "reason": "the repo was deleted"}'
@@ -914,12 +914,12 @@ class TestBlockedVerdict:
 
     def test_blocked_verdict_pauses_goal_instead_of_done(self, hermes_home):
         from unittest.mock import patch
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id="blocked-sid")
         mgr.set("delete a repository that does not exist")
         with patch(
-            "hermes_cli.goals.judge_goal",
+            "hermes_agent.hermes_cli.goals.judge_goal",
             return_value=("blocked", "the repo does not exist", False, None, False),
         ):
             decision = mgr.evaluate_after_turn(
@@ -939,7 +939,7 @@ def test_goal_session_db_is_the_registry_shared_handle(hermes_home):
     """GoalManager must borrow the process-wide registry handle for ``state.db`` rather than
     minting a bare ``SessionDB()``: a second writer per profile carries its own token-writer
     thread and close-time checkpoint beside the gateway's handle (the #90837 corruption shape)."""
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
     import hermes_agent.hermes_state_registry as registry
 
     db = goals._get_session_db()

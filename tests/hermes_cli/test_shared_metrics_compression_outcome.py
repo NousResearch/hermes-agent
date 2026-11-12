@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.observability import shared_metrics_events as events
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
-from hermes_cli.observability.shared_metrics_fields import compression_fields
+from hermes_agent.hermes_cli.observability import shared_metrics_events as events
+from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_agent.hermes_cli.observability.shared_metrics_fields import compression_fields
 
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[2] / "hermes_cli" / "observability" / "schemas"

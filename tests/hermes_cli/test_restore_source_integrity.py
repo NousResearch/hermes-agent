@@ -8,7 +8,7 @@ from contextlib import closing
 
 import pytest
 
-from hermes_cli import backup
+from hermes_agent.hermes_cli import backup
 
 # Unescaped in a file: URI, '#' truncates the path and '%23' decodes to a different one.
 HOME_NAMES = ["x#y", "x%23y", "x y"]
@@ -29,7 +29,7 @@ def _assert_no_decoy(tmp_path, home_name):
 
 @pytest.fixture(params=HOME_NAMES)
 def home(tmp_path, monkeypatch, request):
-    from hermes_cli import gateway
+    from hermes_agent.hermes_cli import gateway
 
     home = tmp_path / request.param
     home.mkdir()
@@ -39,7 +39,7 @@ def home(tmp_path, monkeypatch, request):
     native.mkdir()
     (native / "config.yaml").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(backup, "_get_platform_default_hermes_home", lambda: native)
-    from hermes_cli import gateway_setup_service
+    from hermes_agent.hermes_cli import gateway_setup_service
     monkeypatch.setattr(gateway_setup_service, "ensure_gateway_service", lambda *args, **kwargs: False)
     monkeypatch.setattr(gateway, "_is_service_running", lambda: False)
     return home
@@ -58,7 +58,7 @@ def _restore(entry, home, snapshot_id, source):
 def test_restore_uses_literal_paths_and_preserves_live_connection(
     tmp_path, capsys, home, entry
 ):
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
 
     target = home / "state.db"
     _database(target, 3)

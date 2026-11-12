@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from hermes_cli.main import _resolve_last_session
+from hermes_agent.hermes_cli.main import _resolve_last_session
 
 
 def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
@@ -77,12 +77,12 @@ def test_resolve_last_session_real_db_prefers_workspace(monkeypatch, tmp_path):
 
     monkeypatch.chdir(repo_a)
     monkeypatch.setattr(
-        "hermes_cli.main.subprocess.run",
+        "hermes_agent.hermes_cli.main.subprocess.run",
         lambda cmd, **kw: __import__("subprocess").CompletedProcess(
             cmd, 0, stdout=str(repo_a), stderr=""
         ),
     )
-    monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main.get_hermes_home", lambda: tmp_path)
     assert _resolve_last_session("cli") == "repo_a"
 
 
@@ -107,9 +107,9 @@ def test_resolve_last_session_cli_continues_a_oneshot(monkeypatch, tmp_path):
     finally:
         db.close()
 
-    monkeypatch.setattr("hermes_cli.main._resolve_workspace_key", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main._resolve_workspace_key", lambda: None)
     # The lookup opens the active home's store by explicit path (a served-profile process has no
     # single default home), so the home is the seam — same as the workspace test above.
-    monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main.get_hermes_home", lambda: tmp_path)
     assert _resolve_last_session("cli") == "oneshot_run"
     assert _resolve_last_session("tui") == "tui_chat"

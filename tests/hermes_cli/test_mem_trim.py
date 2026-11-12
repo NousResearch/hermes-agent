@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from hermes_cli import mem_trim
+from hermes_agent.hermes_cli import mem_trim
 
 
 @pytest.fixture(autouse=True)
@@ -129,7 +129,7 @@ def test_config_cooldown_controls_rate_limit(monkeypatch):
     monkeypatch.setattr(mem_trim, "_last_trim_monotonic", 1.0)
     monkeypatch.setattr(mem_trim.time, "monotonic", lambda: 100.0)
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "hermes_agent.hermes_cli.config.load_config_readonly",
         lambda: {
             "context": {
                 "memory_trim": {"enabled": True, "cooldown_seconds": 120.0}

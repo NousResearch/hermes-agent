@@ -9,7 +9,7 @@ import contextvars
 import logging
 import os
 from hermes_agent.agent.i18n import t
-from hermes_cli.config import cfg_get
+from hermes_agent.hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger("hermes_agent.tools.approval")
@@ -59,7 +59,7 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     observability is not.
     """
     try:
-        from hermes_cli.lifecycle import invoke_hook
+        from hermes_agent.hermes_cli.lifecycle import invoke_hook
     except Exception:
         return  # plugin system unavailable (bare tool-only imports, minimal tests)
     try:
@@ -76,7 +76,7 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
 def gateway_approval_surface() -> str:
     """Surface a gateway-rendered approval reports: ``cli`` for a classic CLI session's turn (main
     prompted those in the CLI process), else ``gateway``."""
-    from hermes_cli.plugin_session import session_surface
+    from hermes_agent.hermes_cli.plugin_session import session_surface
     return "cli" if session_surface() == "cli" else "gateway"
 
 
@@ -297,7 +297,7 @@ def _get_approval_config() -> dict:
     """Read the approvals config block: the LIVE config-cache sub-dict
     (load_config_readonly contract) — callers must not mutate it or any nested structure."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         return load_config_readonly().get("approvals", {}) or {}
     except Exception as e:
         logger.warning("Failed to load approval config: %s", e)
@@ -360,7 +360,7 @@ def approval_timeout_notice_kwargs() -> dict:
 def _binary_approval_mode(key: str) -> str:
     """Read ``approvals.<key>`` as 'approve' or 'deny' (default deny)."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         mode = str(cfg_get(load_config_readonly(), "approvals", key, default="deny")).lower().strip()
         return "approve" if mode in {"approve", "off", "allow", "yes"} else "deny"
     except Exception:
@@ -387,7 +387,7 @@ def _get_unattended_approval_mode() -> str:
 def _get_approval_transport_config() -> tuple[str, str | None]:
     """Return explicitly selected transport and fail-closed fallback mode."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         cfg = ((load_config_readonly() or {}).get("security") or {}).get("approval") or {}
         selected = str(cfg.get("transport") or "builtin").strip().lower()
         fallback = str(cfg.get("transport_fallback") or "").strip().lower()

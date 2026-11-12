@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 import hermes_yaml as yaml
 from datetime import UTC
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -409,7 +409,7 @@ def in_tree_catalog_time() -> Optional[float]:
     resolved: Optional[float] = None
     if (root / ".git").exists():
         try:
-            from hermes_cli._subprocess_compat import bounded_git_probe
+            from hermes_agent.hermes_cli._subprocess_compat import bounded_git_probe
 
             # Path history needs missing trees on tree:0 clones. The shared probe disables
             # lazy fetch only for its child and bounds timeout cleanup on every platform.

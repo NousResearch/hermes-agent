@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_cli.gateway as gateway_cli
+import hermes_agent.hermes_cli.gateway as gateway_cli
 
 
 LABEL = "ai.hermes.gateway"

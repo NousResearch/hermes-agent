@@ -18,13 +18,13 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
-from hermes_cli.session_listing import subagent_listing_scope
-from hermes_cli.web_deps import late
-from hermes_cli.web_server_gateway import _strip_session_list_rows
-from hermes_cli.web_server_sessions import _session_latest_descendant
-from hermes_cli.web_models import (
+from hermes_agent.hermes_cli.session_listing import subagent_listing_scope
+from hermes_agent.hermes_cli.web_deps import late
+from hermes_agent.hermes_cli.web_server_gateway import _strip_session_list_rows
+from hermes_agent.hermes_cli.web_server_sessions import _session_latest_descendant
+from hermes_agent.hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
-from hermes_cli.web_routers._common import (
+from hermes_agent.hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
 )
 from hermes_agent.hermes_state import is_malformed_db_error
@@ -35,10 +35,10 @@ list_router = APIRouter()
 search_router = APIRouter()
 manage_router = APIRouter()
 
-_cron_default_profile = late("_cron_default_profile", "hermes_cli.web_server_cron")
-_cron_profile_home = late("_cron_profile_home", "hermes_cli.web_server_cron")
-_open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
-_session_db_path_for_profile = late("_session_db_path_for_profile", "hermes_cli.web_server_sessions")
+_cron_default_profile = late("_cron_default_profile", "hermes_agent.hermes_cli.web_server_cron")
+_cron_profile_home = late("_cron_profile_home", "hermes_agent.hermes_cli.web_server_cron")
+_open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_agent.hermes_cli.web_server_sessions")
+_session_db_path_for_profile = late("_session_db_path_for_profile", "hermes_agent.hermes_cli.web_server_sessions")
 
 _NOT_FOUND = "Session not found"
 
@@ -76,7 +76,7 @@ _PRUNE_ROW_KEYS = ("id", "source", "title", "model", "started_at", "last_active"
 
 def _prune_sessions(body: SessionPrune):
     """Delete ended sessions matching filters (mirrors `hermes sessions prune`)."""
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli.config import get_hermes_home
     has_window = body.started_before is not None or body.started_after is not None
     if body.older_than_days is not None and body.older_than_days < 1 and not has_window:
         raise HTTPException(status_code=400, detail="older_than_days must be >= 1")
@@ -145,7 +145,7 @@ def _with_db(profile: Optional[str], fn: Callable, *, read_only: bool):
             db.close()
     if read_only:
         return run()
-    from hermes_cli.web_server_sessions import _with_session_maintenance
+    from hermes_agent.hermes_cli.web_server_sessions import _with_session_maintenance
     return _with_session_maintenance(profile, run)
 
 
@@ -501,7 +501,7 @@ async def import_sessions_endpoint(request: Request):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid session import payload") from exc
 
-    from hermes_cli.web_server_sessions import _mutate_session_request
+    from hermes_agent.hermes_cli.web_server_sessions import _mutate_session_request
     anchor = body.sessions[0].get('id', '') if body.sessions else ''
     return await _mutate_session_request(request, body.profile, anchor,
         request_id=body.request_id, expected_revision=body.expected_revision,
@@ -571,7 +571,7 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
         # A cron run's liveness is scheduler ownership, not the 300s activity
         # window (#88443): a run inside a long tool call is still owned. A
         # unified-runtime run's local id names no job, so stamp its identity first.
-        from hermes_cli.web_routers.cron import cron_run_scheduler_owned
+        from hermes_agent.hermes_cli.web_routers.cron import cron_run_scheduler_owned
 
         if session.get("source") == "cron":
             session.update(db.cron_run_identity(sid) or {})
@@ -585,7 +585,7 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
 
 @manage_router.get("/api/sessions/{session_id}/mutation-snapshot")
 async def get_session_mutation_snapshot(session_id: str, request: Request, profile: Optional[str] = None):
-    from hermes_cli.web_server_sessions import _session_mutation_context
+    from hermes_agent.hermes_cli.web_server_sessions import _session_mutation_context
     authority, _actor = _session_mutation_context(request, profile)
     if authority is None:  # standalone serve: the counters the offline receipt checks
         row = await asyncio.to_thread(_with_db, profile, lambda db: db.get_session(session_id), read_only=True)
@@ -641,7 +641,7 @@ def _history_profile_home(profile):
         return _cron_profile_home(profile)[1]
     # An omitted profile reads this process's DB (including custom HERMES_HOME),
     # not necessarily the registered default profile used by cron routes.
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli.config import get_hermes_home
 
     return get_hermes_home()
 
@@ -854,7 +854,7 @@ async def get_session_messages_around(
 async def delete_session_endpoint(session_id: str, request: Request, profile: Optional[str] = None,
                                   request_id: Optional[str] = None, expected_revision: Optional[int] = None,
                                   expected_generation: Optional[int] = None):
-    from hermes_cli.web_server_sessions import _mutate_session_request
+    from hermes_agent.hermes_cli.web_server_sessions import _mutate_session_request
     from hermes_agent.hermes_state import SessionDB
     try:
         result = await _mutate_session_request(request, profile, session_id,
@@ -933,7 +933,7 @@ async def backfill_session_owner_profiles(body: SessionOwnerBackfill, request: R
 @manage_router.patch("/api/sessions/{session_id}")
 async def rename_session_endpoint(session_id: str, body: SessionRename, request: Request):
     """Title and sidebar flags share one authoritative revision and receipt."""
-    from hermes_cli.web_server_sessions import _mutate_session_request
+    from hermes_agent.hermes_cli.web_server_sessions import _mutate_session_request
     payload = {key: getattr(body, key) for key in ('title', 'archived', 'hidden', 'pinned', 'unread')
                if getattr(body, key) is not None}
     return await _mutate_session_request(request, body.profile, session_id,
@@ -990,5 +990,5 @@ async def prune_sessions_endpoint(body: SessionPrune):
     # keeps working unnamed (it is the preview the confirm dialog reads).
     body = body.model_copy(update={
         "profile": destructive_profile(body.profile, "POST /api/sessions/prune")})
-    from hermes_cli.web_server_sessions import _with_session_maintenance
+    from hermes_agent.hermes_cli.web_server_sessions import _with_session_maintenance
     return await asyncio.to_thread(_with_session_maintenance, body.profile, _prune_sessions, body)

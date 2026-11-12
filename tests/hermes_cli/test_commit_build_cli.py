@@ -49,7 +49,7 @@ def audit(event, args):
         raise RuntimeError('forbidden update side effect: ' + event)
 sys.addaudithook(audit)
 try:
-    from hermes_cli.main import main
+    from hermes_agent.hermes_cli.main import main
     main()
 finally:
     print('AUDIT=' + json.dumps(attempts))

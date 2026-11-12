@@ -1,5 +1,5 @@
 """prompt_toolkit completer + inline auto-suggest for slash commands. Kept out of
-:mod:`hermes_cli.commands` (which re-exports both classes) so the registry module stays
+:mod:`hermes_agent.hermes_cli.commands` (which re-exports both classes) so the registry module stays
 prompt_toolkit-free for the gateway."""
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional, Tuple
 from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 
-from hermes_cli.commands import COMMANDS, SUBCOMMANDS
+from hermes_agent.hermes_cli.commands import COMMANDS, SUBCOMMANDS
 
 # (config-file signature, personalities) memo for /personality completion.
 _personalities_memo: Optional[
@@ -30,11 +30,11 @@ def _personalities_from_cli_config() -> dict[str, Any]:
     load_cli_config() is a full YAML parse + deep merge and the completer runs per keystroke.
     Falls back to a fresh load when the file cannot be stat'ed."""
     global _personalities_memo
-    from cli import load_cli_config
-    from hermes_cli.personality import available_personalities
+    from hermes_agent.cli import load_cli_config
+    from hermes_agent.hermes_cli.personality import available_personalities
     try:
-        from hermes_cli.config import get_config_path
-        from hermes_cli.config_backend import config_cache_version
+        from hermes_agent.hermes_cli.config import get_config_path
+        from hermes_agent.hermes_cli.config_backend import config_cache_version
         cfg_path = get_config_path()
         sig = (str(cfg_path), *config_cache_version(cfg_path))
     except Exception:
@@ -94,7 +94,7 @@ def _quiet(gen_fn):
 @_quiet
 def _skin_completions(sub_text: str, sub_lower: str):
     """/skin — available skins."""
-    from hermes_cli.skin_engine import list_skins
+    from hermes_agent.hermes_cli.skin_engine import list_skins
     rows = ((s["name"], s.get("description", "") or s.get("source", "")) for s in list_skins())
     yield from _prefix_completions(rows, sub_text)
 
@@ -102,7 +102,7 @@ def _skin_completions(sub_text: str, sub_lower: str):
 @_quiet
 def _personality_completions(sub_text: str, sub_lower: str):
     """/personality — ``none`` plus configured personalities."""
-    from hermes_cli.personality import describe_personality
+    from hermes_agent.hermes_cli.personality import describe_personality
     personalities = _personalities_from_cli_config()
     rows = chain(
         [("none", "clear personality overlay")],
@@ -122,8 +122,8 @@ def _tools_completions(sub_text: str, sub_lower: str):
     if subcommand not in ("enable", "disable"):
         return
     already = set(completed[1:])
-    from hermes_cli.config import load_config_readonly
-    from hermes_cli.tools_config import (
+    from hermes_agent.hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.tools_config import (
         CONFIGURABLE_TOOLSETS, _get_platform_tools, _get_plugin_toolset_keys)
     # Readonly loader: per keystroke and never mutates, so skip load_config()'s deepcopy.
     # Read-only path: the completer only inspects the config (toolset enable state + MCP server names) — it
@@ -468,7 +468,7 @@ class SlashCommandCompleter(Completer):
         try:
             found = self._plugin_commands_provider() if self._plugin_commands_provider else None
             if found is None:
-                from hermes_cli.plugins import get_plugin_commands
+                from hermes_agent.hermes_cli.plugins import get_plugin_commands
                 found = {name: info.get("description", "") for name, info in get_plugin_commands().items()}
             return found
         except Exception:  # a plugin's registry or the gateway call must never break typing
@@ -527,8 +527,8 @@ class SlashCommandAutoSuggest(AutoSuggest):
 def cli_slash_completer(cli):
     """The classic CLI prompt's slash completer; on a gateway session its skills and plugin commands are
     the gateway's (``commands.catalog``), so completing loads no plugin in the CLI process."""
-    from cli import _session_skill_commands, get_skill_bundles
-    from hermes_cli import gateway_plugin_commands
+    from hermes_agent.cli import _session_skill_commands, get_skill_bundles
+    from hermes_agent.hermes_cli import gateway_plugin_commands
     return SlashCommandCompleter(
         skill_commands_provider=lambda: _session_skill_commands(cli), command_filter=cli._command_available,
         skill_bundles_provider=lambda: get_skill_bundles(), plugin_commands_provider=lambda: gateway_plugin_commands.names(cli))

@@ -57,8 +57,8 @@ async def probe():
     from hermes_agent.gateway.platforms.event import MessageEvent
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session import SessionSource
-    from hermes_cli import web_server
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_agent.hermes_cli import web_server
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from hermes_agent.tui_gateway import server
     from hermes_agent.run_agent import AIAgent
     from shared_authority_recovery import prepare_crash, recover_probe, verify_envelope_guards

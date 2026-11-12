@@ -60,11 +60,11 @@ def _run(home: Path, backend_env: str | None) -> str:
 
 
 def _runtime_selects(home: Path, backend_env: str | None) -> str:
-    """The backend a real Hermes start selects: the first config read (``hermes_cli.config`` reads
+    """The backend a real Hermes start selects: the first config read (``hermes_agent.hermes_cli.config`` reads
     at import time) or ``load_hermes_dotenv``'s boot, whichever selects first, reports the backend
     and ends the process right there (there is no plane in this test)."""
     code = ("import os, sys\n"
-            "from hermes_cli.config_backend import FileBackend\n"
+            "from hermes_agent.hermes_cli.config_backend import FileBackend\n"
             "from plugins.config_backends.remote.backend import RemoteBackend\n"
             "def report(name):\n"
             "    def stop(self, *args, **kwargs):\n"
@@ -73,7 +73,7 @@ def _runtime_selects(home: Path, backend_env: str | None) -> str:
             "    return stop\n"
             "RemoteBackend._state = report('remote')\n"
             "FileBackend.boot = report('file')\n"
-            "from hermes_cli import env_loader\n"
+            "from hermes_agent.hermes_cli import env_loader\n"
             "env_loader.load_hermes_dotenv(hermes_home=sys.argv[1], load_external_secrets=False)\n"
             "sys.exit('no backend was selected')\n")
     env = _env(home.parent, backend_env)
@@ -133,6 +133,6 @@ def test_stage2_decides_like_the_runtime_for_utf16_dotenv(home, encode):
     """The runtime sanitizes a UTF-16 / NUL-padded .env before loading it; the early selection
     (stage2, the first config read) parses it the same way, so both pick remote."""
     (home / ".env").write_bytes(encode("OTHER=1\nHERMES_CONFIG_BACKEND=remote\n"))
-    from hermes_cli.env_loader import selected_config_backend_name
+    from hermes_agent.hermes_cli.env_loader import selected_config_backend_name
     assert selected_config_backend_name(home) == "remote"
     assert "MIGRATE_RAN" not in _run(home, None)

@@ -32,10 +32,10 @@ def _level(conn):
 def _config(monkeypatch, database_section):
     """Point apply_database_pragmas at an in-memory config.
 
-    It imports `hermes_cli.config` lazily inside the function body, so the
+    It imports `hermes_agent.hermes_cli.config` lazily inside the function body, so the
     patch has to land on that module rather than on a name in this one.
     """
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     cfg = {"database": database_section}
     monkeypatch.setattr(config_mod, "load_config_readonly", lambda *a, **k: cfg)

@@ -13,8 +13,8 @@ async def test_sessions_discard_yes_resolves_every_unknown_admission_with_its_fe
     non-TTY stdin it refuses, and nothing is resolved."""
     from websockets.asyncio.server import serve
 
-    from hermes_cli import sessions_cmd
-    from hermes_cli.subcommands.sessions import build_sessions_parser
+    from hermes_agent.hermes_cli import sessions_cmd
+    from hermes_agent.hermes_cli.subcommands.sessions import build_sessions_parser
 
     lost = ["admission-lost-a", "admission-lost-b"]
     snapshot = {"session_id": "local-abc", "stored_session_id": "local-abc", "pending": [

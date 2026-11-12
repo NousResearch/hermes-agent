@@ -97,7 +97,7 @@ def _assignee_profile_home(assignee: str | None) -> str | None:
     identity failure (``auth``), never a silent fall-through to the ambient login."""
     if not assignee:
         return None
-    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_agent.hermes_cli.profiles import normalize_profile_name, resolve_profile_env
     try:
         return resolve_profile_env(normalize_profile_name(assignee))
     except (FileNotFoundError, ValueError):

@@ -6,10 +6,10 @@ canonical set consumed by ``agent_init`` is now {chat_completions,
 codex_responses, anthropic_messages, bedrock_converse, codex_app_server},
 and an unrecognized value was silently ignored at BOTH consumption sites:
 
-* ``hermes_cli.config._normalize_custom_provider_entry`` passed the raw
+* ``hermes_agent.hermes_cli.config._normalize_custom_provider_entry`` passed the raw
   string through, so ``agent_init``'s accepted-set check dropped it and
   fell through to hostname detection.
-* ``hermes_cli.runtime_provider._parse_api_mode`` returned None, with the
+* ``hermes_agent.hermes_cli.runtime_provider._parse_api_mode`` returned None, with the
   same fall-through.
 
 For a host with a detection rule (e.g. api.router.com -> codex_responses)
@@ -28,8 +28,8 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli.config import _canonical_api_mode, _normalize_custom_provider_entry
-from hermes_cli.runtime_provider import _parse_api_mode, _VALID_API_MODES
+from hermes_agent.hermes_cli.config import _canonical_api_mode, _normalize_custom_provider_entry
+from hermes_agent.hermes_cli.runtime_provider import _parse_api_mode, _VALID_API_MODES
 
 
 class TestCanonicalApiMode:
@@ -65,7 +65,7 @@ class TestCanonicalApiMode:
 
     def test_every_alias_lands_in_the_valid_set(self):
         """Contract: aliasing must never produce a value the runtime rejects."""
-        from hermes_cli.config import _API_MODE_ALIASES
+        from hermes_agent.hermes_cli.config import _API_MODE_ALIASES
 
         for target in _API_MODE_ALIASES.values():
             assert target in _VALID_API_MODES

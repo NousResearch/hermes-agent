@@ -23,7 +23,7 @@ from urllib.request import Request, urlopen
 
 
 def probe(surface, scenario, directory):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from hermes_agent.tools import process_registry as pr
     from hermes_agent.tools.process_registry_notifications import format_process_notification
     from hermes_agent.tui_gateway import server

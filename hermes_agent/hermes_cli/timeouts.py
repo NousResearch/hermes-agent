@@ -14,7 +14,7 @@ def _configured_timeout(provider_id: str, model: str | None, model_key: str, pro
     if not provider_id:
         return None
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         config = load_config_readonly()
     except Exception:
         return None

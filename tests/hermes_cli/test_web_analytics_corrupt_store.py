@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hermes_cli.web_routers import _common, analytics
+from hermes_agent.hermes_cli.web_routers import _common, analytics
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -37,7 +37,7 @@ def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, 
     app.include_router(analytics.router)
     client = TestClient(app)
 
-    with caplog.at_level(logging.DEBUG, logger="hermes_cli.web_server"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.hermes_cli.web_server"):
         first = client.get("/api/analytics/usage?days=7")
         second = client.get("/api/analytics/usage?days=7")
         third = client.get("/api/analytics/models?days=7")
@@ -48,7 +48,7 @@ def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, 
     # once-per-process SQLite-version advisory on some interpreters (CI's 3.50.4).
     warnings = [
         r for r in caplog.records
-        if r.levelno >= logging.WARNING and r.name.startswith("hermes_cli.web_server")
+        if r.levelno >= logging.WARNING and r.name.startswith("hermes_agent.hermes_cli.web_server")
     ]
     assert len(warnings) == 1, [r.getMessage() for r in warnings]
     assert not any(r.exc_info for r in caplog.records), "no tracebacks for a known corrupt store"
@@ -57,10 +57,10 @@ def test_corrupt_store_polls_return_status_and_warn_once_per_interval(tmp_path, 
     # The gate re-arms once the interval has elapsed (aged, not slept).
     _common._corrupt_store_warned_at[str(db_path)] -= _common._CORRUPT_STORE_WARN_INTERVAL_S + 1
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.web_server"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.web_server"):
         assert client.get("/api/analytics/usage?days=7").status_code == 503
     assert sum(
-        r.levelno >= logging.WARNING and r.name.startswith("hermes_cli.web_server")
+        r.levelno >= logging.WARNING and r.name.startswith("hermes_agent.hermes_cli.web_server")
         for r in caplog.records
     ) == 1
 
@@ -93,7 +93,7 @@ def test_corrupt_store_as_status_maps_replaced_store_errors_to_503_without_fix_n
 
     # Sibling route: GET /api/sessions and the session-id resolver used to let the same
     # RuntimeError family fall through to a generic 500.
-    from hermes_cli.web_routers import sessions
+    from hermes_agent.hermes_cli.web_routers import sessions
 
     class _RetiredDb:
         db_path = str(tmp_path / "state.db")

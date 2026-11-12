@@ -20,14 +20,14 @@ ROUTE_BOUND_KEYS = ('provider', 'base_url', 'api_mode', 'context_length',
 
 
 def _named_entry(name: str, config: dict) -> dict | None:
-    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+    from hermes_agent.hermes_cli.runtime_provider_custom import _get_named_custom_provider
     return _get_named_custom_provider(name, config=config, resolve_credentials=False)
 
 
 def _canonical(name: str) -> str:
-    from hermes_cli.models import normalize_provider
+    from hermes_agent.hermes_cli.models import normalize_provider
     canonical = normalize_provider(name)
-    from hermes_cli.auth import AuthError, resolve_provider
+    from hermes_agent.hermes_cli.auth import AuthError, resolve_provider
     try:
         return resolve_provider(canonical)
     except AuthError:  # not a registry provider: its canonical spelling is its identity
@@ -70,7 +70,7 @@ def resolved_route(model_cfg: dict, config: dict) -> tuple[str, str]:
     base_url = str(model_cfg.get('base_url') or '').strip()
     entry = _named_entry(name, config)
     if entry:
-        from hermes_cli.providers import custom_provider_slug
+        from hermes_agent.hermes_cli.providers import custom_provider_slug
         identity = custom_provider_slug(str(entry.get('name') or ''), str(entry.get('provider_key') or ''))
         base_url = base_url or str(entry.get('base_url') or '').strip()
     else:
@@ -85,6 +85,6 @@ def same_route(a_cfg: dict, b_cfg: dict, config: dict) -> bool:
     if 'auto' in (a_id, b_id):
         return True
     if a_url or b_url:
-        from hermes_cli.route_identity import normalize_route_base_url
+        from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
         return normalize_route_base_url(a_url) == normalize_route_base_url(b_url)
     return a_id == b_id

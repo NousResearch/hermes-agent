@@ -33,7 +33,7 @@ def _fake_rows():
     ]
 
 def test_usage_lists_all_provenances(monkeypatch, capsys):
-    import hermes_cli.curator as curator_cli
+    import hermes_agent.hermes_cli.curator as curator_cli
     from hermes_agent.tools import skill_usage
 
     monkeypatch.setattr(skill_usage, "usage_report", _fake_rows)
@@ -47,7 +47,7 @@ def test_usage_lists_all_provenances(monkeypatch, capsys):
     assert "hub-skill" in out
 
 def test_usage_empty(monkeypatch, capsys):
-    import hermes_cli.curator as curator_cli
+    import hermes_agent.hermes_cli.curator as curator_cli
     from hermes_agent.tools import skill_usage
 
     monkeypatch.setattr(skill_usage, "usage_report", list)

@@ -15,7 +15,7 @@ never pairs with the optimistic plain-text copy, so Desktop renders the correcti
 and reorders it (#121978).
 """
 
-from hermes_cli.web_routers.sessions import _project_for_display
+from hermes_agent.hermes_cli.web_routers.sessions import _project_for_display
 
 
 def test_rest_projection_hides_untyped_gateway_notices_and_keeps_typed_ones():

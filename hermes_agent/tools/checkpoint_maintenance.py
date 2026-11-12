@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
-from hermes_cli.gitlock import clear_stale_tmp_packs
+from hermes_agent.hermes_cli.gitlock import clear_stale_tmp_packs
 from utils import rmtree_readonly
 from hermes_agent.tools.checkpoint_manager import (
     _GIT_TIMEOUT, _LEGACY_PREFIX, _PRUNE_MARKER_NAME, _REFS_PREFIX, _STORE_DIRNAME,
@@ -428,7 +428,7 @@ def auto_prune_from_config() -> dict[str, object]:
     honoured unattended: a missing workdir is ambiguous (deleted vs. unmounted share); orphan
     cleanup is only via explicit ``hermes checkpoints prune``. Never raises."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config().get("checkpoints") or {}
         if not cfg.get("auto_prune", False):
             return {"skipped": True}
@@ -449,7 +449,7 @@ def checkpoint_footprint_notice() -> Optional[str]:
     GB-scale store for a feature they never invoke. The cap is a floor of one snapshot per
     project, so a big store is expected, not broken — the notice names the opt-out. Never raises."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config().get("checkpoints") or {}
         if not cfg.get("enabled", False):
             return None
@@ -463,7 +463,7 @@ def checkpoint_footprint_notice() -> Optional[str]:
         # The notice needs no commit counts: full status runs Git for every project.
         store = _store_path(base)
         project_count = len(_list_projects(store)) if _store_has_head(store) else 0
-        from hermes_cli.sizefmt import format_bytes
+        from hermes_agent.hermes_cli.sizefmt import format_bytes
         return (f"Filesystem checkpoints (/rollback) are on: {format_bytes(size)} across "
                 f"{project_count} project(s), above the {cap_mb} MB cap (one snapshot per project is "
                 f"always kept). Not using /rollback? `hermes config set checkpoints.enabled false` then "

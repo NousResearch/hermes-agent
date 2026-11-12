@@ -6,8 +6,8 @@ import argparse
 
 import pytest
 
-from hermes_cli.connectors_cmd import cmd_connectors
-from hermes_cli.subcommands.connectors import build_connectors_parser
+from hermes_agent.hermes_cli.connectors_cmd import cmd_connectors
+from hermes_agent.hermes_cli.subcommands.connectors import build_connectors_parser
 
 
 def _parse(*argv: str) -> argparse.Namespace:

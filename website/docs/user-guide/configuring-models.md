@@ -401,7 +401,7 @@ hermes config set model.aliases.grok x-ai/grok-4
 > hermes config set display.tool_progress_overrides '{"terminal": "off"}'
 > ```
 
-Both paths feed the same loader (`hermes_cli/model_switch.py`). Entries declared in `model_aliases:` take precedence over `model.aliases:` entries with the same name.
+Both paths feed the same loader (`hermes_agent/hermes_cli/model_switch.py`). Entries declared in `model_aliases:` take precedence over `model.aliases:` entries with the same name.
 
 Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](../reference/slash-commands.md#custom-model-aliases) for the full reference.
 

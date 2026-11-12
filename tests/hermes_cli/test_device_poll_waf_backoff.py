@@ -16,7 +16,7 @@ the server's polling interval once the Portal answers with OAuth JSON again.
 import httpx
 import pytest
 
-from hermes_cli import auth_device_flow as adf
+from hermes_agent.hermes_cli import auth_device_flow as adf
 
 _REQ = httpx.Request("POST", "https://portal.example/api/oauth/token")
 

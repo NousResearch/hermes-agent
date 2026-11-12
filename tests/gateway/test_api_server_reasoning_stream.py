@@ -62,7 +62,7 @@ def _stub_create_agent_runtime(monkeypatch, fake_agent_cls):
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda model="": {}))
     monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
     monkeypatch.setattr("hermes_agent.gateway.run._current_max_iterations", lambda: 90)
-    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+    monkeypatch.setattr("hermes_agent.hermes_cli.tools_config._get_platform_tools", lambda *_: set())
 
 
 @pytest.mark.asyncio

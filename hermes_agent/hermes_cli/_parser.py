@@ -81,7 +81,7 @@ def command_argv(argv: list[str]) -> list[str]:
 
 
 def _inherited_flag(parser, *args, **kwargs):
-    """``parser.add_argument`` + tag the Action ``inherit_on_relaunch`` for ``hermes_cli.relaunch``."""
+    """``parser.add_argument`` + tag the Action ``inherit_on_relaunch`` for ``hermes_agent.hermes_cli.relaunch``."""
     action = parser.add_argument(*args, **kwargs)
     action.inherit_on_relaunch = True
     return action
@@ -340,7 +340,7 @@ def _plugin_command_install_hint(prog: str, value: str):
         from plugins.memory import find_provider_dir
         if find_provider_dir(value) is not None:
             return None
-        from hermes_cli.memory_provider_migration import catalog_install_hint
+        from hermes_agent.hermes_cli.memory_provider_migration import catalog_install_hint
         return catalog_install_hint(value, category="memory")
     except Exception:
         return None
@@ -348,7 +348,7 @@ def _plugin_command_install_hint(prog: str, value: str):
 
 def _moved_command_hint(prog: str, value: str) -> str:
     """Where a command that left core went (``hermes auth spotify``, ``hermes mcp serve``, ...)."""
-    from hermes_cli.left_core_migration import moved_command_hint
+    from hermes_agent.hermes_cli.left_core_migration import moved_command_hint
     return moved_command_hint(prog, value)
 
 

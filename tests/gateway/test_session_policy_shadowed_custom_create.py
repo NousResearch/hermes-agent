@@ -1,6 +1,6 @@
 """A Desktop pick of a custom endpoint named like a built-in freezes the endpoint's own route (#140107).
 
-The Desktop picker identifies a custom endpoint's row by its bare key (``hermes_cli.inventory``), and
+The Desktop picker identifies a custom endpoint's row by its bare key (``hermes_agent.hermes_cli.inventory``), and
 ``session.create`` carries that pick. An entry named ``deepseek`` is shadowed by the built-in in raw
 provider resolution, so a bare ``deepseek`` frozen as the session's route ran on the native provider
 (no key, or an OpenRouter fallback with the private model name).

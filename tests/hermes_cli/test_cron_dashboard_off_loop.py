@@ -12,8 +12,8 @@ import asyncio
 import pytest
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server
-import hermes_cli.web_server_cron as _web_server_cron
+from hermes_agent.hermes_cli import web_server
+import hermes_agent.hermes_cli.web_server_cron as _web_server_cron
 
 
 @pytest.fixture()

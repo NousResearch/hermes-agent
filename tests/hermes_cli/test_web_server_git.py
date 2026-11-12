@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import web_server
-from hermes_cli.web_routers import git as git_router
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.web_routers import git as git_router
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient
@@ -253,7 +253,7 @@ def test_worktree_add_existing_remote_branch_tracks_not_detaches(client, repo_wi
     ).stdout.strip()
     assert upstream == "origin/feature"
     # Registered for the periodic sweep like every other worktree-creation path.
-    from hermes_cli.worktree_registry import registered_repos
+    from hermes_agent.hermes_cli.worktree_registry import registered_repos
     assert os.path.realpath(repo_with_remote) in registered_repos()
 
 
@@ -324,7 +324,7 @@ def test_worktree_add_from_origin_base_on_tag_pinned_clone(tmp_path):
     """``git fetch origin main`` on a tag-only refspec writes FETCH_HEAD and leaves
     ``origin/main`` missing, so ``worktree add`` died with invalid reference."""
     clone, tip = _narrow_clone(tmp_path)
-    from hermes_cli.web_git import worktree_add
+    from hermes_agent.hermes_cli.web_git import worktree_add
 
     added = worktree_add(str(clone), {"base": "origin/main", "name": "x"})
 
@@ -402,7 +402,7 @@ def test_worktree_add_local_slash_branch_named_like_a_remote_stays_local(client,
 def test_worktree_add_glob_base_is_not_fetched(tmp_path):
     """`base` comes from the API; inside a refspec "origin/*" would fetch every branch."""
     clone, _ = _narrow_clone(tmp_path)
-    from hermes_cli.web_git import worktree_add
+    from hermes_agent.hermes_cli.web_git import worktree_add
 
     with pytest.raises(RuntimeError):
         worktree_add(str(clone), {"base": "origin/*", "name": "glob"})
@@ -419,7 +419,7 @@ def test_worktree_add_base_refreshes_valid_branch_names_the_sanitizer_would_rewr
     _git(tmp_path, "clone", "-q", str(origin), str(clone))
     _git(seed, *_IDENT, "commit", "-q", "--allow-empty", "-m", "moved after the clone")
     _git(seed, "push", "-q", str(origin), "HEAD:fix+1")
-    from hermes_cli.web_git import worktree_add
+    from hermes_agent.hermes_cli.web_git import worktree_add
 
     added = worktree_add(str(clone), {"base": "origin/fix+1", "name": "x"})
 

@@ -15,8 +15,8 @@ import socket
 from typing import NamedTuple
 from urllib.parse import urlsplit
 
-from hermes_cli.colors import Colors, color
-from hermes_cli.version_info import hermes_user_agent
+from hermes_agent.hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.version_info import hermes_user_agent
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches, normalize_proxy_env_vars
 
@@ -49,7 +49,7 @@ def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool
     if not getter:
         return False
     try:
-        from hermes_cli import auth
+        from hermes_agent.hermes_cli import auth
         return bool((getattr(auth, getter)() or {}).get("logged_in"))
     except Exception:
         return False
@@ -96,7 +96,7 @@ def _build_apikey_providers_list() -> list:
         from hermes_agent.providers import list_providers
         from hermes_agent.providers.base import ProviderProfile as _PP
         try:
-            from hermes_cli.providers import normalize_provider as _normalize_provider
+            from hermes_agent.hermes_cli.providers import normalize_provider as _normalize_provider
         except Exception:  # pragma: no cover - normalization is best-effort
             def _normalize_provider(_name: str) -> str:
                 return (_name or "").strip().lower()
@@ -151,7 +151,7 @@ def _probe_openrouter() -> ProbeResult:
 
 def _probe_anthropic() -> ProbeResult:
     name = "Anthropic API"
-    from hermes_cli.auth import get_anthropic_key
+    from hermes_agent.hermes_cli.auth import get_anthropic_key
     key = get_anthropic_key()
     if not key:
         return _skip(name)
@@ -219,7 +219,7 @@ def _anthropic_messages_probe(base: str, key: str):
 
 def _model_cfg() -> dict:
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         model_cfg = (load_config_readonly() or {}).get("model")
     except Exception:
         return {}
@@ -297,7 +297,7 @@ def _probe_azure_entra() -> ProbeResult:
     name = "Azure Foundry (Entra ID)"
     label = name.ljust(28)
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config()
         model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
         if not isinstance(model_cfg, dict):
@@ -329,7 +329,7 @@ def _probe_azure_entra() -> ProbeResult:
 
 def _load_network_config() -> dict:
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         net = (load_config_readonly() or {}).get("network")
     except Exception:
         return {}
@@ -386,11 +386,11 @@ def _probe_github_token() -> ProbeResult:
     still carries the stale token so they can remove it.
     """
     name = "GitHub token"
-    from hermes_cli.config import get_env_value, load_env
+    from hermes_agent.hermes_cli.config import get_env_value, load_env
     var = next((v for v in ("GITHUB_TOKEN", "GH_TOKEN") if get_env_value(v)), None)
     if var is None:
         return _skip(name)  # the Skills Hub section already reports gh-CLI / no-token state
-    from hermes_cli.doctor import _DHH
+    from hermes_agent.hermes_cli.doctor import _DHH
     where = f"{_DHH}/.env" if var in load_env() else "the environment"
     try:
         import httpx

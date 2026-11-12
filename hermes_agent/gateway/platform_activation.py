@@ -54,9 +54,9 @@ def _env_names(home: Optional[Path]) -> set[str]:
             names.update(k for k, v in load_env_file(home / ".env").items() if str(v).strip())
             # Values an external secret source (Bitwarden, 1Password) resolved for this home, and
             # the administrator-managed .env: both feed the profile scope the adapters read.
-            from hermes_cli.env_loader import get_secret_source_values
+            from hermes_agent.hermes_cli.env_loader import get_secret_source_values
             names.update(k for k, v in get_secret_source_values(home).items() if str(v).strip())
-        from hermes_cli.managed_scope import load_managed_env
+        from hermes_agent.hermes_cli.managed_scope import load_managed_env
         names.update(k for k, v in load_managed_env().items() if str(v).strip())
     except Exception:
         logger.debug("platform activation: env scan degraded", exc_info=True)

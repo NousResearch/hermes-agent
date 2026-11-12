@@ -32,7 +32,7 @@ def _has_tty() -> bool:
 
 def worktree_state(info: dict) -> Optional[str]:
     """``"dirty"``, ``"unpushed"`` or None (clean and pushed / gone)."""
-    from hermes_cli.worktree_ops import _worktree_has_unpushed_commits, _worktree_is_dirty
+    from hermes_agent.hermes_cli.worktree_ops import _worktree_has_unpushed_commits, _worktree_is_dirty
     path, repo_root = info.get("path", ""), info.get("repo_root", "")
     if not path or not os.path.isdir(path):
         return None
@@ -48,7 +48,7 @@ def _still_in_use(path: str, grace_s: float = 5.0) -> bool:
     the TUI's own backend (``tui_gateway``) takes a moment to exit after the Ink UI closes."""
     import time
 
-    from hermes_cli.worktree_sweep import live_process_pids
+    from hermes_agent.hermes_cli.worktree_sweep import live_process_pids
     deadline = time.monotonic() + grace_s
     while live_process_pids([path], exclude=(os.getpid(),)).get(path):
         if time.monotonic() >= deadline:
@@ -66,7 +66,7 @@ def ask_exit_choice(info: Optional[dict]) -> str:
         return KEEP
     if _still_in_use(info["path"]):
         return KEEP  # something still runs in there; never offer to delete it
-    from hermes_cli.curses_ui import curses_radiolist
+    from hermes_agent.hermes_cli.curses_ui import curses_radiolist
     title = t(f"cli.worktree.exit_question_{state}", path=info["path"])
     items = [t("cli.worktree.exit_choice_keep"), t("cli.worktree.exit_choice_archive"),
              t("cli.worktree.exit_choice_discard")]
@@ -90,8 +90,8 @@ def apply_exit_choice(info: dict, echo) -> bool:
     if choice == ARCHIVE:
         import subprocess
 
-        from hermes_cli.worktree_archive import ArchiveError
-        from hermes_cli.worktree_sweep import archive_then_remove, sweep_settings
+        from hermes_agent.hermes_cli.worktree_archive import ArchiveError
+        from hermes_agent.hermes_cli.worktree_sweep import archive_then_remove, sweep_settings
         echo(t("cli.worktree.archiving", path=path))
         try:
             ref, _kept, removed, why = archive_then_remove(
@@ -107,8 +107,8 @@ def apply_exit_choice(info: dict, echo) -> bool:
             echo(f"\033[33m{t('cli.worktree.archived_kept', path=path, ref=ref, reason=why or '?')}\033[0m")
         echo(f"  {t('cli.worktree.restore_hint', name=name)}")
         return True
-    from hermes_cli._subprocess_compat import noninteractive_git_env
-    from hermes_cli.worktree_ops import _git_quiet, release_lsp_clients
+    from hermes_agent.hermes_cli._subprocess_compat import noninteractive_git_env
+    from hermes_agent.hermes_cli.worktree_ops import _git_quiet, release_lsp_clients
     release_lsp_clients(path)
     _git_quiet(["worktree", "unlock", path], repo_root, log="git worktree unlock failed (non-fatal)")
     _git_quiet(["worktree", "remove", path, "--force"], repo_root, timeout=60, log="Failed to remove worktree")

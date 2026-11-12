@@ -13,7 +13,7 @@ from argparse import Namespace
 import pytest
 
 from hermes_agent.cron.lifecycle_guard import contains_gateway_lifecycle_command as _contains_gateway_lifecycle_command
-from hermes_cli.cron import cron_command
+from hermes_agent.hermes_cli.cron import cron_command
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +364,7 @@ class TestProfileFlagGatewayLifecycle:
         # gateway process itself carries.
         monkeypatch.delenv("HERMES_PROFILE", raising=False)
         monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
-        import hermes_cli.profiles as profiles_mod
+        import hermes_agent.hermes_cli.profiles as profiles_mod
 
         monkeypatch.setattr(profiles_mod, "get_active_profile_name", lambda: "zeus")
         assert _contains_gateway_lifecycle_command("hermes -p zeus gateway restart")
@@ -453,7 +453,7 @@ class TestGatewaySelfTargetingGuard:
         monkeypatch.setattr(
             process_registry, "_is_supervised_gateway_process", lambda: True
         )
-        from hermes_cli.gateway import gateway_command
+        from hermes_agent.hermes_cli.gateway import gateway_command
         args = Namespace(gateway_command="stop", all=False, system=False)
         with pytest.raises(SystemExit) as exc_info:
             gateway_command(args)
@@ -464,7 +464,7 @@ class TestGatewaySelfTargetingGuard:
         monkeypatch.setattr(
             process_registry, "_is_supervised_gateway_process", lambda: True
         )
-        from hermes_cli.gateway import gateway_command
+        from hermes_agent.hermes_cli.gateway import gateway_command
 
         args = Namespace(gateway_command="uninstall", system=False)
         with pytest.raises(SystemExit) as exc_info:
@@ -478,7 +478,7 @@ class TestGatewaySelfTargetingGuard:
         # real signal delivery, which would trip the live-system guard) by
         # short-circuiting the first downstream call with a sentinel.
         monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
-        import hermes_cli.gateway as gw
+        import hermes_agent.hermes_cli.gateway as gw
 
         class _Reached(Exception):
             pass
@@ -1546,7 +1546,7 @@ class TestRelativePathDoesNotDisableDataExemption:
 class TestCreateJobBlocksLifecycleCommands:
     """The regression the CLI-layer-only guard could not catch: the agent's
     `cronjob` model tool calls hermes_agent.cron.jobs.create_job directly, bypassing
-    hermes_cli.cron.cron_create. Enforcing at create_job covers both."""
+    hermes_agent.hermes_cli.cron.cron_create. Enforcing at create_job covers both."""
 
     @pytest.fixture(autouse=True)
     def _setup_cron_dir(self, tmp_path, monkeypatch):
@@ -1707,7 +1707,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         still fails closed, but the error names that reason instead of claiming a lifecycle
         command the model then rewords and retries in a loop (#113944)."""
         import hermes_agent.tools.terminal_tool as tt
-        from hermes_cli.sqlite_safe_read import connect_tracked
+        from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
 
         db = tmp_path / "state.db"
         conn = connect_tracked(db)

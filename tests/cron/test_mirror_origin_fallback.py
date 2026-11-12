@@ -168,7 +168,7 @@ class TestFallbackMirrorEndToEnd:
             return {"success": True, "chat_id": chat_id, "message_id": "1.2"}
 
         import hermes_agent.gateway.platform_registry as reg
-        import hermes_cli.plugins as hp
+        import hermes_agent.hermes_cli.plugins as hp
 
         entry = reg.platform_registry.get("slack")
         if entry is None:

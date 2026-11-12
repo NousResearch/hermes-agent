@@ -6,7 +6,7 @@ from fastapi.responses import Response
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
-from hermes_cli.dashboard_auth.cookies import (
+from hermes_agent.hermes_cli.dashboard_auth.cookies import (
     PKCE_COOKIE,
     SESSION_AT_COOKIE,
     SESSION_PROVIDER_COOKIE,
@@ -223,7 +223,7 @@ def test_encode_parse_pkce_payload_round_trips_hostile_values():
     — byte-for-byte. This is the bug class the JSON codec kills: with
     delimiter-based formats, these bytes collide with the framing.
     """
-    from hermes_cli.dashboard_auth.cookies import (
+    from hermes_agent.hermes_cli.dashboard_auth.cookies import (
         encode_pkce_payload,
         parse_pkce_payload,
     )
@@ -247,7 +247,7 @@ def test_parse_pkce_payload_old_format_cookie_survives_rolling_upgrade():
     value containing ``%3B`` into a bogus delimiter and truncate the
     post-login target.
     """
-    from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
+    from hermes_agent.hermes_cli.dashboard_auth.cookies import parse_pkce_payload
 
     old = (
         "provider=stub;state=s123;verifier=v456;"
@@ -273,7 +273,7 @@ def test_parse_pkce_payload_99176_url_encoded_format_survives_upgrade():
     """
     from urllib.parse import quote
 
-    from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
+    from hermes_agent.hermes_cli.dashboard_auth.cookies import parse_pkce_payload
 
     payload = "provider=stub;state=s123;verifier=v456;next=%2Fsessions"
     wire = quote(payload, safe="")
@@ -299,9 +299,9 @@ def test_pkce_cookie_round_trip_preserves_all_segments():
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from conftest_dashboard_auth import StubAuthProvider  # type: ignore
-    from hermes_cli import web_server
-    from hermes_cli.dashboard_auth import clear_providers, register_provider
-    from hermes_cli.dashboard_auth.cookies import parse_pkce_payload
+    from hermes_agent.hermes_cli import web_server
+    from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+    from hermes_agent.hermes_cli.dashboard_auth.cookies import parse_pkce_payload
 
     clear_providers()
     register_provider(StubAuthProvider())
@@ -374,8 +374,8 @@ def test_pkce_callback_works_when_next_query_includes_encoded_path():
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from conftest_dashboard_auth import StubAuthProvider  # type: ignore
-    from hermes_cli import web_server
-    from hermes_cli.dashboard_auth import clear_providers, register_provider
+    from hermes_agent.hermes_cli import web_server
+    from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
     from urllib.parse import quote, unquote
 
     clear_providers()

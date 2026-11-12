@@ -85,7 +85,7 @@ _probe_cache: dict[str, bool] = {}
 
 
 def _can_import_hermes_cli(interpreter: Path) -> bool:
-    """Whether *interpreter* can import ``hermes_cli.main`` unaided.
+    """Whether *interpreter* can import ``hermes_agent.hermes_cli.main`` unaided.
 
     Runs under ``-I`` (no user site, no PYTHONPATH, no cwd on ``sys.path``) from a neutral cwd, so
     the answer matches a cold desktop environment. Cached per process; an unprobeable interpreter
@@ -98,7 +98,7 @@ def _can_import_hermes_cli(interpreter: Path) -> bool:
     if key in _probe_cache:
         return _probe_cache[key]
     ok = _run_quiet(
-        [key, "-I", "-c", "import hermes_cli.main"],
+        [key, "-I", "-c", "import hermes_agent.hermes_cli.main"],
         cwd=os.path.abspath(os.sep), timeout=15, on_error=None,
     )
     if ok is None:
@@ -115,16 +115,16 @@ def _running_interpreter_fallback() -> str:
 def resolve_exec_command(project_root: Optional[Path] = None) -> str:
     """Build the absolute ``Exec=`` command line for ``hermes desktop``.
 
-    Prefer the real ``hermes`` launcher; fall back to ``<python> -m hermes_cli.main desktop``.
+    Prefer the real ``hermes`` launcher; fall back to ``<python> -m hermes_agent.hermes_cli.main desktop``.
     """
-    from hermes_cli.relaunch import resolve_hermes_bin
+    from hermes_agent.hermes_cli.relaunch import resolve_hermes_bin
 
     bin_path = _resolve_hermes_bin_for_desktop_entry(resolve_hermes_bin, checkout_root=project_root)
     interpreter = _running_interpreter()
     if not _can_import_hermes_cli(Path(interpreter)):
         # Persisting an interpreter that can't import the CLI writes a dead entry (the DE spawns
         # Exec in a cold environment where exactly this import must succeed).
-        # The candidate interpreter cannot actually import hermes_cli.main (checked in isolated mode from a
+        # The candidate interpreter cannot actually import hermes_agent.hermes_cli.main (checked in isolated mode from a
         # neutral cwd — so the probe can't be fooled by a checkout cwd or an inherited PYTHONPATH). Fall
         # back to the module form under the RUNNING interpreter, which by definition has the CLI importable.
         # Probe design follows the isolated-mode capability check proposed by @nosliwhtes (#92122 review
@@ -194,7 +194,7 @@ def _inside_checkout(candidate: str, checkout_root: Path, original_argv0: str) -
     for root in {checkout_root, resolved_root}:
         if root is not None and (path == root or root in path.parents):
             return True
-    # The `python -m hermes_cli.main` relaunch context surfaces the invoking interpreter as
+    # The `python -m hermes_agent.hermes_cli.main` relaunch context surfaces the invoking interpreter as
     # argv[0]; an interpreter is never a launchable entry target (it would persist a bare
     # `<python> desktop`). Compare against argv[0]'s own file, not sys.executable — under test
     # harnesses they differ.
@@ -231,7 +231,7 @@ def _resolve_hermes_bin_for_desktop_entry(
 ) -> Optional[str]:
     """Resolve the launcher binary for the persisted ``.desktop`` entry.
 
-    Wraps :func:`hermes_cli.relaunch.resolve_hermes_bin` with one rule: an ``argv[0]`` inside this
+    Wraps :func:`hermes_agent.hermes_cli.relaunch.resolve_hermes_bin` with one rule: an ``argv[0]`` inside this
     checkout is a launch-context artifact, not a durable installed launcher — persisting it makes
     the entry depend on how the previous launch happened (a bootstrap loop). Skip such candidates
     and fall through to PATH, then to the installer's known wrapper locations. A candidate that
@@ -242,7 +242,7 @@ def _resolve_hermes_bin_for_desktop_entry(
     See #90492.
     """
     if resolve_fn is None:
-        from hermes_cli.relaunch import resolve_hermes_bin as resolve_fn
+        from hermes_agent.hermes_cli.relaunch import resolve_hermes_bin as resolve_fn
 
     if checkout_root is None:
         checkout_root = _project_root()
@@ -430,7 +430,7 @@ def _tree_desktop_state(tree: Path) -> Optional[bool]:
     """
     if any((tree / entry).is_file() for entry in _DESKTOP_APP_ENTRIES):
         return True
-    from hermes_cli.steward import is_bundled_payload
+    from hermes_agent.hermes_cli.steward import is_bundled_payload
 
     if is_bundled_payload(tree):
         return True
@@ -480,7 +480,7 @@ def _persisted_exec_serves_desktop(exec_command: str) -> Optional[bool]:
     """Desktop-capability of a rendered ``Exec`` line, ignoring an interpreter prefix.
 
     ``[<interpreter>, <launcher>, desktop]`` is judged by the launcher. The module fallback
-    ``[<interpreter>, -m, hermes_cli.main, desktop]`` passes: it is only ever written by a
+    ``[<interpreter>, -m, hermes_agent.hermes_cli.main, desktop]`` passes: it is only ever written by a
     process that already passed the desktop launch checks.
     """
     try:
@@ -494,7 +494,7 @@ def _persisted_exec_serves_desktop(exec_command: str) -> Optional[bool]:
         if len(tokens) > 1 and tokens[1] != "-m":
             candidate = tokens[1]  # `[<interpreter>, <launcher>, desktop]` prefix form
         else:
-            # Module fallback `[<interpreter>, -m, hermes_cli.main, desktop]`: only a process
+            # Module fallback `[<interpreter>, -m, hermes_agent.hermes_cli.main, desktop]`: only a process
             # that already passed the desktop launch checks writes it, so it is not
             # second-guessed here.
             return None
@@ -754,7 +754,7 @@ def _launcher_entry_management_enabled() -> bool:
     not first-run presence. Any config error reads as enabled (default).
     """
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
 
         desktop_cfg = (load_config_readonly() or {}).get("desktop") or {}
         raw = desktop_cfg.get("manage_launcher_entry", True)

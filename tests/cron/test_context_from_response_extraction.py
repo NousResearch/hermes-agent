@@ -52,7 +52,7 @@ def _run_stub_job(monkeypatch, job, answer):
             return {"final_response": answer, "completed": True, "failed": False}
 
     monkeypatch.setattr(run_agent, "AIAgent", Agent)
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
                         lambda **kwargs: {"provider": "openai", "api_key": "fixture"})
     return hermes_agent.cron.scheduler.run_job(job)
 

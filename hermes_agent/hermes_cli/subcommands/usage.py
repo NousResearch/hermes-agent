@@ -38,7 +38,7 @@ def usage_snapshot_document(snapshot) -> dict:
 def cmd_usage(args: argparse.Namespace) -> int:
     """Print the configured (or ``--provider``) account's usage windows; exit 1 when nothing could be fetched."""
     from hermes_agent.agent.account_usage import fetch_account_usage, render_account_usage_lines
-    from hermes_cli.runtime_provider import resolve_requested_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_requested_provider
 
     provider = resolve_requested_provider(getattr(args, "provider", None))
     # No explicit key: the fetcher resolves the credential exactly as a session without a live agent

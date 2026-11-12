@@ -17,8 +17,8 @@ it.
 
 from unittest.mock import patch
 
-from hermes_cli.model_switch import switch_model
-from hermes_cli.models_validate import validate_requested_model
+from hermes_agent.hermes_cli.model_switch import switch_model
+from hermes_agent.hermes_cli.models_validate import validate_requested_model
 
 
 def test_openai_codex_unknown_but_plausible_model_is_accepted_with_warning():
@@ -26,7 +26,7 @@ def test_openai_codex_unknown_but_plausible_model_is_accepted_with_warning():
     with a warning instead of hard-rejecting it.
     """
     with patch(
-        "hermes_cli.models.provider_model_ids",
+        "hermes_agent.hermes_cli.models.provider_model_ids",
         return_value=["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"],
     ):
         result = validate_requested_model("gpt-5.3-codex-spark", "openai-codex")
@@ -43,7 +43,7 @@ def test_switch_model_allows_openai_codex_model_missing_from_listing():
     even when the listing has not caught up yet.
     """
     with patch(
-        "hermes_cli.models.provider_model_ids",
+        "hermes_agent.hermes_cli.models.provider_model_ids",
         return_value=["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"],
     ):
         result = switch_model(

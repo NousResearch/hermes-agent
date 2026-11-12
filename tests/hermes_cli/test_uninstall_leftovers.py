@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import uninstall
+from hermes_agent.hermes_cli import uninstall
 
 
 @pytest.fixture
@@ -32,8 +32,8 @@ def launch_agents(fake_home, monkeypatch):
         uninstall, "get_launchd_plist_path",
         lambda: agents / "ai.hermes.gateway.plist", raising=False,
     )
-    # _remove_launchd_gateway imports it from hermes_cli.gateway at call time.
-    from hermes_cli import gateway
+    # _remove_launchd_gateway imports it from hermes_agent.hermes_cli.gateway at call time.
+    from hermes_agent.hermes_cli import gateway
     monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: agents / "ai.hermes.gateway.plist")
     return agents
 

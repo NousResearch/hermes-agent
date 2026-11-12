@@ -201,7 +201,7 @@ async def test_a_route_that_cannot_authenticate_does_not_block_switching_away(ho
     try:
         live = await _create(owner, authority, home, 'bare')
         sid = next(sid for sid, value in authority.sessions.items() if value is live)
-        from hermes_cli.auth_constants import AuthError
+        from hermes_agent.hermes_cli.auth_constants import AuthError
         with pytest.raises(AuthError):
             _route(runner, live)
 

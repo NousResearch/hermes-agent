@@ -17,9 +17,9 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.agent import prepared_compaction as pc
-from hermes_cli.observability import shared_metrics_contract as contract
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
-from hermes_cli.observability.shared_metrics_snapshot import collect_install_snapshot
+from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
+from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_agent.hermes_cli.observability.shared_metrics_snapshot import collect_install_snapshot
 from tests.agent.test_prepared_compaction import _agent, _compressor, _grow, _messages
 
 SCHEMA_PATH = (
@@ -54,7 +54,7 @@ def test_snapshot_reports_prepare_ahead_and_older_snapshots_still_package(tmp_pa
 @pytest.fixture
 def marks(monkeypatch):
     """Rows as the real producer emits them, with the profile and thread each was recorded under."""
-    from hermes_cli.observability import relay_shared_metrics
+    from hermes_agent.hermes_cli.observability import relay_shared_metrics
     from hermes_constants import get_hermes_home
 
     rows = []

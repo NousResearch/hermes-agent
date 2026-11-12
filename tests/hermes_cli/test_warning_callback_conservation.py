@@ -5,7 +5,7 @@ import pytest
 import hermes_yaml as yaml
 
 from hermes_agent.agent.status_output import StatusOutputMixin
-from hermes_cli.cli_stream_mixin import CLIStreamMixin
+from hermes_agent.hermes_cli.cli_stream_mixin import CLIStreamMixin
 
 
 class Agent(StatusOutputMixin):
@@ -25,7 +25,7 @@ class CLI(CLIStreamMixin):
 
 @pytest.mark.parametrize("setting", [None, False, True])
 def test_cli_notice_and_wait_callbacks_keep_default_output(tmp_path, monkeypatch, setting):
-    import cli
+    from hermes_agent import cli
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(
         {} if setting is None else {"display": {"suppress_warning_notifications": setting}}))

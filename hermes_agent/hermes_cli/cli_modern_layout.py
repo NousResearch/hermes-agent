@@ -38,7 +38,7 @@ def busy_input_mode_from_config(display: dict) -> str:
 
 
 def _skin_hex(key: str, fallback: str) -> str:
-    from hermes_cli.skin_engine import get_active_skin
+    from hermes_agent.hermes_cli.skin_engine import get_active_skin
     return get_active_skin().get_color(key, fallback) or fallback
 
 
@@ -52,14 +52,14 @@ def _fg(hex_color: str, bold: bool = False) -> str:
 
 def _brand_glyph() -> tuple[str, str]:
     """(glyph, name) from the skin's response label, e.g. ``" ☤ Hermes "`` → ("☤", "Hermes")."""
-    from hermes_cli.skin_engine import get_active_skin
+    from hermes_agent.hermes_cli.skin_engine import get_active_skin
     label = get_active_skin().get_branding("response_label", " ☤ Hermes ")
     parts = label.split(None, 1)
     return (parts[0], parts[1].strip()) if len(parts) == 2 else ("☤", label.strip() or "Hermes")
 
 
 def prompt_glyph() -> str:
-    from hermes_cli.skin_engine import get_active_skin
+    from hermes_agent.hermes_cli.skin_engine import get_active_skin
     return get_active_skin().get_branding("prompt_symbol", "❯").strip() or "❯"
 
 
@@ -224,7 +224,7 @@ def _cwd_label() -> str:
     cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
     home = os.path.expanduser("~")
     short = "~" + cwd[len(home):] if cwd == home or cwd.startswith(home + os.sep) else cwd
-    from hermes_cli.status_bar_git import current_git_branch
+    from hermes_agent.hermes_cli.status_bar_git import current_git_branch
     branch = current_git_branch(cwd)
     return f"{short} ({branch})" if branch else short
 
@@ -241,7 +241,7 @@ def _turn_elapsed(cli) -> str:
     started = getattr(cli, "_prompt_start_time", None)
     if started is None:
         return ""
-    from cli import format_duration_compact
+    from hermes_agent.cli import format_duration_compact
     return format_duration_compact(max(0.0, time.time() - float(started)))
 
 
@@ -371,8 +371,8 @@ def modern_input_rules(cli, kb):
 
     def _can_queue() -> bool:
         from prompt_toolkit.application import get_app
-        from cli import _looks_like_slash_command
-        from hermes_cli.cli_subagent_monitor import modal_prompt_active
+        from hermes_agent.cli import _looks_like_slash_command
+        from hermes_agent.hermes_cli.cli_subagent_monitor import modal_prompt_active
         buf = get_app().current_buffer
         text = buf.text.strip()
         return bool(getattr(cli, "_agent_running", False) and text and buf.complete_state is None

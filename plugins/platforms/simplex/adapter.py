@@ -678,9 +678,9 @@ _SETUP_PROMPTS = (
 
 def interactive_setup() -> None:
     """``hermes setup gateway`` → SimpleX wizard (writes ``~/.hermes/.env``); CLI helpers are lazy-imported."""
-    from hermes_cli.config import get_env_value, save_env_value
-    from hermes_cli.cli_output import print_header, print_info, prompt
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from hermes_agent.hermes_cli.config import get_env_value, save_env_value
+    from hermes_agent.hermes_cli.cli_output import print_header, print_info, prompt
+    from hermes_agent.hermes_cli.setup_platforms import declines_reconfigure
     print_header("SimpleX Chat")
     if declines_reconfigure("SimpleX", "Reconfigure SimpleX?", "SIMPLEX_WS_URL"):
         return

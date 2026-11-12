@@ -45,7 +45,7 @@ def _pid_alive(pid: int) -> bool:
 
 
 def _state_endpoint() -> dict | None:
-    from hermes_cli.local_runtime.recovery import (
+    from hermes_agent.hermes_cli.local_runtime.recovery import (
         is_modern,
         legacy_recorded_process,
         read_state,
@@ -99,7 +99,7 @@ def resolve_llamacpp_endpoint(config: dict | None = None,
     if managed:
         return managed
 
-    from hermes_cli.local_runtime.detect import detect_server
+    from hermes_agent.hermes_cli.local_runtime.detect import detect_server
 
     ports = ((config or {}).get("local_runtime") or {}).get("detect_ports") or []
     hit = detect_server(extra_ports=tuple(int(p) for p in ports))
@@ -118,7 +118,7 @@ _KICK_LOCK = threading.Lock()
 def _load_config_if_none(config: dict | None) -> dict | None:
     if config is not None:
         return config
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     return load_config()
 
@@ -131,7 +131,7 @@ def _kick_managed_boot(config: dict | None) -> None:
 
     def _boot() -> None:
         try:
-            from hermes_cli.local_runtime.bootstrap import ensure_local_runtime
+            from hermes_agent.hermes_cli.local_runtime.bootstrap import ensure_local_runtime
 
             ensure_local_runtime(_load_config_if_none(config))
         except Exception:
@@ -151,7 +151,7 @@ def _boot_in_flight(config: dict | None) -> bool:
         section = (_load_config_if_none(config) or {}).get("local_runtime") or {}
         if not section.get("enabled"):
             return False
-        from hermes_cli.local_runtime.binaries import installed_engine
+        from hermes_agent.hermes_cli.local_runtime.binaries import installed_engine
 
         return installed_engine(section.get("backend") or "auto") is not None
     return False

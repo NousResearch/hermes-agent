@@ -6,23 +6,23 @@ import os
 from pathlib import Path
 from typing import Dict, List, NoReturn, Optional, Set
 
-from hermes_cli.cli_output import print_info as _print_info
-from hermes_cli.colors import Colors, color
-from hermes_cli.config import cfg_get, load_config, save_config, get_env_value
-from hermes_cli.nous_subscription import (
+from hermes_agent.hermes_cli.cli_output import print_info as _print_info
+from hermes_agent.hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.config import cfg_get, load_config, save_config, get_env_value
+from hermes_agent.hermes_cli.nous_subscription import (
     NousSubscriptionFeatures, apply_nous_managed_defaults, get_nous_subscription_features)
-from hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
-from hermes_cli.toolset_scope import (
+from hermes_agent.hermes_cli.platforms import PLATFORMS as _PLATFORMS_REGISTRY
+from hermes_agent.hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
-from hermes_cli.toolset_validation import parse_platform_toolsets_value
-# Re-exports: keep ``hermes_cli.tools_config.X`` callers and test patch targets resolving.
-from hermes_cli.tools_config_cua import (
+from hermes_agent.hermes_cli.toolset_validation import parse_platform_toolsets_value
+# Re-exports: keep ``hermes_agent.hermes_cli.tools_config.X`` callers and test patch targets resolving.
+from hermes_agent.hermes_cli.tools_config_cua import (
     _post_setup_no_window_flags, _cua_driver_cmd, _cua_version_summary, _resolved_cua_driver_cmd, _cua_driver_env,
     _cua_driver_contract_status, _cua_driver_install_ready)
-from hermes_cli.tools_config_post_setup import (
+from hermes_agent.hermes_cli.tools_config_post_setup import (
     _ensure_browser_use_cli, _run_post_setup, valid_post_setup_keys, run_post_setup_command, _POST_SETUP_INSTALLED,
     _post_setup_already_installed, _module_installed, _POST_SETUP_READY)
-from hermes_cli.tools_config_providers import (
+from hermes_agent.hermes_cli.tools_config_providers import (
     _plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, _plugin_browser_providers,
     _plugin_tts_providers, web_provider_capabilities, _visible_providers, provider_readiness_status,
     _toolset_needs_configuration_prompt, _configure_tool_category, _web_tier_matches, _is_provider_active,
@@ -31,7 +31,7 @@ from hermes_cli.tools_config_providers import (
     _select_plugin_image_gen_provider, _select_plugin_video_gen_provider, STT_MODEL_CATALOG, _configure_stt_model,
     _write_provider_config, apply_provider_selection, _configure_provider, _reconfigure_provider,
     _configure_vision_backend, _configure_vision_provider_model, _configure_simple_requirements)
-from hermes_cli.tools_config_mcp import (
+from hermes_agent.hermes_cli.tools_config_mcp import (
     _configure_mcp_tools_interactive, _apply_toolset_change, _apply_mcp_change, tools_disable_enable_command)
 
 
@@ -39,7 +39,7 @@ def _pip_install(
     args: list[str], *, timeout: int = 300, capture_output: bool = True
 ) -> NoReturn:
     # Shim to suppress old updater work until relaunch, not install or report success.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_agent.hermes_cli._old_updater import stop_for_relaunch
 
     stop_for_relaunch()
 
@@ -50,14 +50,14 @@ logger = logging.getLogger(__name__)
 def install_cua_driver(*args, **kwargs) -> NoReturn:
     # A running pre-PM updater can still import the vendor installer here.
     # Stop it before any old retry or completion branch can run.
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_agent.hermes_cli._old_updater import stop_for_relaunch
 
     stop_for_relaunch()
 
 # Platforms already warned about an all-invalid platform_toolsets list (warn once, not per resolution).
 _warned_invalid_platform_toolsets: set[str] = set()
 
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 PROJECT_ROOT = Path(project_root_str())
 
@@ -119,7 +119,7 @@ def _xai_credentials_present() -> bool:
     """Cheap offline check for xAI credentials (auth store + env only); the runtime ``check_fn`` still gates
     schema registration if creds expire. Also used by ``provider_readiness_status`` for ``xai_grok`` rows."""
     try:
-        from hermes_cli.auth import _read_xai_oauth_tokens
+        from hermes_agent.hermes_cli.auth import _read_xai_oauth_tokens
         _read_xai_oauth_tokens()
         return True
     except Exception:
@@ -158,7 +158,7 @@ def _get_effective_configurable_toolsets():
     try:
         projected = _projected_plugin_toolsets()
         if projected is None:
-            from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
+            from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_toolsets
             discover_plugins()  # idempotent — ensures plugins are loaded
         for entry in projected[0] if projected is not None else get_plugin_toolsets():
             if entry[0] not in seen:
@@ -176,7 +176,7 @@ def _get_plugin_toolset_keys() -> set:
             return {key for key, _, _ in projected[0]}
         # Non-blocking on CLI startup: while background discovery is still importing, serve last
         # launch's persisted key set instead of joining the discovery thread.
-        from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+        from hermes_agent.hermes_cli.plugins import get_plugin_toolset_keys_nowait
         return get_plugin_toolset_keys_nowait()
     except Exception:
         return set()
@@ -414,7 +414,7 @@ def enabled_mcp_server_names(config: dict) -> set[str]:
     try:
         projected = _projected_plugin_toolsets()
         if projected is None:
-            from hermes_cli.plugins import get_portable_mcp_server_names_nowait
+            from hermes_agent.hermes_cli.plugins import get_portable_mcp_server_names_nowait
         portable = projected[1] if projected is not None else get_portable_mcp_server_names_nowait()
         names |= portable - set(mcp_servers)  # native config wins on a name collision (mirrors _load_mcp_config)
     except Exception:
@@ -763,7 +763,7 @@ def _warn_all_invalid_platform_toolsets(platform: str, explicit: list, config: d
     The own-bundle and registered-toolset checks run first because this is reached on every schema build
     (the kanban gate resolves every saved platform row) and on bypass launches that must not read profile
     plugin state; the resolver's manifest scan and plugin lookup run only for names those cannot place."""
-    from hermes_cli.toolset_validation import is_known_platform_bundle, saved_toolset_resolver
+    from hermes_agent.hermes_cli.toolset_validation import is_known_platform_bundle, saved_toolset_resolver
     from hermes_agent.toolsets import validate_toolset
 
     if platform in _warned_invalid_platform_toolsets:
@@ -866,7 +866,7 @@ def _toolset_has_keys(
 
 def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
     """Single-select menu (arrow keys). Delegates to curses_radiolist."""
-    from hermes_cli.curses_ui import curses_radiolist
+    from hermes_agent.hermes_cli.curses_ui import curses_radiolist
     return curses_radiolist(question, choices, selected=default, cancel_returns=default)
 
 
@@ -908,7 +908,7 @@ def _estimate_tool_tokens() -> dict[str, int]:
 
 def _prompt_toolset_checklist(platform_label: str, enabled: set[str], platform: str = "cli", *, force_fresh: bool = True) -> set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
-    from hermes_cli.curses_ui import curses_checklist
+    from hermes_agent.hermes_cli.curses_ui import curses_checklist
     from hermes_agent.toolsets import resolve_toolset
 
     tool_tokens = _estimate_tool_tokens()
@@ -999,7 +999,7 @@ def _shared_metrics_menu_label(config: dict) -> str:
 
 def _configure_shared_metrics_interactive(config: dict) -> None:
     """Toggle shared-metrics collection/sending via the setup wizard prompt (single home for the consent rules)."""
-    from hermes_cli.setup import setup_telemetry
+    from hermes_agent.hermes_cli.setup import setup_telemetry
 
     before = _shared_metrics_state(config)
     setup_telemetry(config)

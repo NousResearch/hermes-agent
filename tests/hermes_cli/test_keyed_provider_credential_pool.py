@@ -66,7 +66,7 @@ def test_get_named_custom_provider_exposes_provider_key_and_key_env(
     )
     monkeypatch.setenv("B_AI_API_KEY", "sk-from-env-not-the-pool")
 
-    from hermes_cli.runtime_provider import _get_named_custom_provider
+    from hermes_agent.hermes_cli.runtime_provider import _get_named_custom_provider
 
     entry = _get_named_custom_provider("b-ai")
     assert entry is not None
@@ -80,7 +80,7 @@ def test_keyed_provider_runtime_uses_durable_pool_slug(tmp_path, monkeypatch):
     """Main turns must send the pooled key, not the no-key-required placeholder."""
     _write_keyed_provider_home(tmp_path, monkeypatch)
 
-    from hermes_cli import runtime_provider as rp
+    from hermes_agent.hermes_cli import runtime_provider as rp
 
     resolved = rp.resolve_runtime_provider(requested="b-ai")
     assert resolved["base_url"] == ENDPOINT
@@ -95,7 +95,7 @@ def test_keyed_provider_runtime_falls_back_to_legacy_custom_namespace(
     """Older auth.json rows stored under custom:<display-name> must still work."""
     _write_keyed_provider_home(tmp_path, monkeypatch, pool_id="custom:b.ai")
 
-    from hermes_cli import runtime_provider as rp
+    from hermes_agent.hermes_cli import runtime_provider as rp
 
     resolved = rp.resolve_runtime_provider(requested="b-ai")
     assert resolved["api_key"] == LEGACY_KEY
@@ -152,7 +152,7 @@ def test_prune_keeps_active_legacy_pool_for_keyed_provider(tmp_path, monkeypatch
         encoding="utf-8",
     )
 
-    from hermes_cli.model_setup_flows_common import (
+    from hermes_agent.hermes_cli.model_setup_flows_common import (
         _prune_replaced_custom_model_config_credentials,
     )
 
@@ -221,8 +221,8 @@ def test_explicit_launch_key_wins_over_named_provider_pool(tmp_path, monkeypatch
     ``providers.<key>`` pool must not silently replace it (live and frozen-config paths)."""
     _write_keyed_provider_home(tmp_path, monkeypatch)
 
-    from hermes_cli import runtime_provider as rp
-    from hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
+    from hermes_agent.hermes_cli import runtime_provider as rp
+    from hermes_agent.hermes_cli.runtime_provider_custom import _resolve_named_custom_runtime
 
     frozen = rp.load_config()
     for resolved in (rp.resolve_runtime_provider(requested="b-ai", explicit_api_key="sk-launch-explicit"),
@@ -237,7 +237,7 @@ def test_named_provider_pool_requires_matching_endpoint(tmp_path, monkeypatch):
     _write_keyed_provider_home(tmp_path, monkeypatch)
 
     from hermes_agent.agent.credential_pool import custom_provider_pool_key_candidates
-    from hermes_cli import runtime_provider as rp
+    from hermes_agent.hermes_cli import runtime_provider as rp
 
     assert custom_provider_pool_key_candidates("https://elsewhere.example/v1", "b-ai") == []
     assert custom_provider_pool_key_candidates(ENDPOINT + "/", "b-ai")[0] == "b-ai"

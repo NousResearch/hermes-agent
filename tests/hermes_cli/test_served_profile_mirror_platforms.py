@@ -44,7 +44,7 @@ def test_messaging_card_shows_mirrored_api_server_enabled_without_local_config(s
     409s: the shared listener already serves ``/p/<profile>/v1``), so the REAL enablement
     reads (False, False) from its own empty config and the card printed Disabled over a
     live mirror. No ``_platform_enablement`` monkeypatch here: that mask hid the bug."""
-    from hermes_cli.web_routers import messaging
+    from hermes_agent.hermes_cli.web_routers import messaging
     entry = {"id": "api_server", "name": "API server", "description": "", "docs_url": "", "env_vars": [],
              "required_env": []}
     alpha = served_root / "profiles" / "alpha"
@@ -101,7 +101,7 @@ def test_messaging_card_for_the_default_home_rekeys_by_the_profile_not_the_dirna
     ``profiles/<name>``. On the default home the fold came back empty and the Channels card read
     "Restart needed" forever while the multiplexer served its flat-keyed adapters (#123088)."""
     from hermes_agent.gateway import status
-    from hermes_cli.web_routers import messaging
+    from hermes_agent.hermes_cli.web_routers import messaging
     root = tmp_path / ".hermes"  # the shipped default root's literal name — never equal to "default"
     root.mkdir()
     (root / "config.yaml").write_text("gateway: {multiplex_profiles: true}\n", encoding="utf-8")
@@ -127,7 +127,7 @@ def test_messaging_card_for_the_default_home_rekeys_by_the_profile_not_the_dirna
 
 
 def test_messaging_card_for_a_served_profile_reads_connected_not_restart_needed(served_root, monkeypatch):
-    from hermes_cli.web_routers import messaging
+    from hermes_agent.hermes_cli.web_routers import messaging
     monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
     entry = {"id": "api_server", "name": "API server", "description": "", "docs_url": "", "env_vars": [],
              "required_env": []}
@@ -143,7 +143,7 @@ def test_messaging_card_ignores_a_served_profiles_stale_own_runtime_record(serve
     pre-multiplex or standalone run (``stopped``, empty platforms) used to shadow the multiplexer's
     record: the fallback only ran when the file was missing, the bare-key lookup found nothing, and
     the card read "Restart needed" forever for a platform that was connected (#112765)."""
-    from hermes_cli.web_routers import messaging
+    from hermes_agent.hermes_cli.web_routers import messaging
     monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
     entry = {"id": "telegram", "name": "Telegram", "description": "", "docs_url": "", "env_vars": [],
              "required_env": []}
@@ -168,7 +168,7 @@ def test_messaging_card_keeps_a_live_own_gateway_record_over_the_multiplexer(ser
     own record (rung 3) before the multiplexer (rung 4); the card must read the same record, or
     liveness and platform state come from two different gateways."""
     from hermes_agent.gateway import status
-    from hermes_cli.web_routers import messaging
+    from hermes_agent.hermes_cli.web_routers import messaging
     monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))
     alpha = served_root / "profiles" / "alpha"
     # Two live gateways: this process is the default multiplexer; a second (fake, never signalled)
@@ -204,7 +204,7 @@ def test_served_profile_mirrors_the_default_relay(served_root, monkeypatch, rela
     read the default's live state, not fall through to ``pending_restart`` ("Restart needed"
     forever for a channel that is answering), and the profile's own enable/disable still decides."""
     from hermes_agent.gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
-    from hermes_cli.web_routers import messaging
+    from hermes_agent.hermes_cli.web_routers import messaging
     if relay_url:
         monkeypatch.setenv("GATEWAY_RELAY_URL", relay_url)
     else:
@@ -239,7 +239,7 @@ def test_served_profile_reads_a_dead_default_relay_as_its_own_failure(
 ):
     """The default's Relay adapter serves every profile, so when it is fatal the served profile's
     Relay is too: show that failure, not "Restart needed" (a restart of the profile changes nothing)."""
-    from hermes_cli.web_routers import messaging
+    from hermes_agent.hermes_cli.web_routers import messaging
     monkeypatch.setenv("GATEWAY_RELAY_URL", "https://connector.example")
     record = json.loads((served_root / "gateway_state.json").read_text(encoding="utf-8"))
     record["platforms"]["relay"] = {"state": "fatal", "error_code": "relay_auth_failed",

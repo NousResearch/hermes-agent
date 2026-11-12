@@ -8,19 +8,19 @@ OPENAI_API_KEY exported (or model.provider set) got routed to Anthropic.
 """
 import pytest
 
-from hermes_cli.auth import resolve_provider, AuthError
+from hermes_agent.hermes_cli.auth import resolve_provider, AuthError
 
 
 def _login(monkeypatch, provider_id):
     """Simulate a logged-in OAuth active_provider in auth.json."""
-    monkeypatch.setattr("hermes_cli.auth._load_auth_store",
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth._load_auth_store",
                         lambda: {"active_provider": provider_id})
-    monkeypatch.setattr("hermes_cli.auth.get_auth_status",
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.get_auth_status",
                         lambda p: {"logged_in": p == provider_id})
 
 
 def _config(monkeypatch, model_cfg):
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": model_cfg})
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda: {"model": model_cfg})
 
 
 def _no_aws(monkeypatch):
@@ -89,7 +89,7 @@ def portal(monkeypatch, tmp_path):
 
 def _never_mint(monkeypatch):
     """The resolver is a READ: any call into the creator from inside it is a bug."""
-    monkeypatch.setattr("hermes_cli.anon_auth.ensure_portal_identity",
+    monkeypatch.setattr("hermes_agent.hermes_cli.anon_auth.ensure_portal_identity",
                         lambda **kw: (_ for _ in ()).throw(AssertionError("resolve_provider must not mint")))
 
 

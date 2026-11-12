@@ -34,7 +34,7 @@ from concurrent.futures import Future
 from pathlib import PurePath
 from typing import Any, BinaryIO, Callable, Dict, Optional
 
-logger = logging.getLogger("hermes_cli.plugins")
+logger = logging.getLogger("hermes_agent.hermes_cli.plugins")
 
 PROTOCOL_VERSION = 1
 

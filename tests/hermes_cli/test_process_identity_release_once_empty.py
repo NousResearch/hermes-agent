@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from hermes_cli import process_identity
+from hermes_agent.hermes_cli import process_identity
 
 @pytest.fixture
 def released(monkeypatch):

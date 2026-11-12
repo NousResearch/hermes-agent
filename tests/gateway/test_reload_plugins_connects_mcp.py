@@ -52,7 +52,7 @@ def gateway_home(tmp_path, monkeypatch):
         "mcpServers": {"rpprobe": {"type": "stdio", "command": "./server.py", "args": []}}}), encoding="utf-8")
     (home / "config.yaml").write_text("plugins:\n  enabled: [rpprobe]\n  disabled: []\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
     from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
     plugins._reset_plugin_managers_for_tests()
     loop = asyncio.new_event_loop()

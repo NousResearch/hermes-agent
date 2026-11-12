@@ -53,8 +53,8 @@ agent:
     root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
 
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
 
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
 
@@ -90,8 +90,8 @@ def test_default_spawn_does_not_pass_mutable_launch_overrides(monkeypatch, tmp_p
     root.joinpath("config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
 
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
 
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
     captured = {}
@@ -131,8 +131,8 @@ def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp
     monkeypatch.setenv("MY_PASSTHROUGH_VAR", "dispatcher-value")
 
     from hermes_agent.agent.secret_scope import set_multiplex_active
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
 
     monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
 
@@ -169,8 +169,8 @@ def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tm
     from contextlib import closing
     from types import SimpleNamespace
 
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
     from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.gateway.session_kanban import build_kanban_policy
 
@@ -180,7 +180,7 @@ def test_worker_toolsets_come_from_the_assignee_profile_not_the_parent_config(tm
     monkeypatch.setenv("HERMES_HOME", str(profile))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
-    monkeypatch.setattr("hermes_cli.profiles.resolve_profile_env", lambda name: str(profile))
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles.resolve_profile_env", lambda name: str(profile))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     kb.create_board("owned")  # explicit creation; connect() never creates a board (#43243)

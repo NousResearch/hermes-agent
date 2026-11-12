@@ -1,7 +1,7 @@
 """Qwen OAuth (qwen-cli token file) runtime credentials and status.
 
-Split out of ``hermes_cli/auth.py``; origin helpers are imported lazily per function so
-``hermes_cli.auth.<helper>`` patches still intercept and no cycle forms.
+Split out of ``hermes_agent/hermes_cli/auth.py``; origin helpers are imported lazily per function so
+``hermes_agent.hermes_cli.auth.<helper>`` patches still intercept and no cycle forms.
 """
 
 from __future__ import annotations
@@ -12,12 +12,12 @@ import os
 import time
 from pathlib import Path
 from typing import Any, Dict
-from hermes_cli.auth_constants import (
+from hermes_agent.hermes_cli.auth_constants import (
     AuthError, DEFAULT_QWEN_BASE_URL, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_OAUTH_CLIENT_ID,
     QWEN_OAUTH_TOKEN_URL, _FORM_JSON_HEADERS, _qwen_err, httpx,
 )
 
-logger = logging.getLogger("hermes_cli.auth")
+logger = logging.getLogger("hermes_agent.hermes_cli.auth")
 
 _RERUN = "Re-run 'qwen auth qwen-oauth'."
 
@@ -27,7 +27,7 @@ def _qwen_cli_auth_path() -> Path:
 
 
 def _read_qwen_cli_tokens() -> dict[str, Any]:
-    from hermes_cli.auth import _qwen_cli_auth_path
+    from hermes_agent.hermes_cli.auth import _qwen_cli_auth_path
     auth_path = _qwen_cli_auth_path()
     if not auth_path.exists():
         raise _qwen_err("Qwen CLI credentials not found. Run 'qwen auth qwen-oauth' first.", "qwen_auth_missing")
@@ -43,7 +43,7 @@ def _read_qwen_cli_tokens() -> dict[str, Any]:
 
 
 def _save_qwen_cli_tokens(tokens: dict[str, Any]) -> Path:
-    from hermes_cli.auth import _qwen_cli_auth_path, _save_private_json
+    from hermes_agent.hermes_cli.auth import _qwen_cli_auth_path, _save_private_json
     auth_path = _qwen_cli_auth_path()
     _save_private_json(auth_path, tokens, sort_keys=True)
     return auth_path
@@ -103,7 +103,7 @@ def _refresh_qwen_cli_tokens(tokens: dict[str, Any], timeout_seconds: float = 20
 
 def _mark_qwen_oauth_active(creds: dict[str, Any]) -> None:
     """Set active_provider to qwen-oauth with a minimal state entry (tokens stay in the Qwen CLI file)."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store, _save_provider_state
+    from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store, _save_provider_state
     with _auth_store_lock():
         auth_store = _load_auth_store()
         state: dict[str, Any] = {"base_url": str(creds["base_url"])} if creds.get("base_url") else {}
@@ -119,7 +119,7 @@ def resolve_qwen_runtime_credentials(
     *, force_refresh: bool = False, refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> dict[str, Any]:
-    from hermes_cli.auth import _qwen_cli_auth_path, _refresh_qwen_cli_tokens
+    from hermes_agent.hermes_cli.auth import _qwen_cli_auth_path, _refresh_qwen_cli_tokens
     tokens = _read_qwen_cli_tokens()
     should_refresh = bool(force_refresh)
     if not should_refresh and refresh_if_expiring:
@@ -139,7 +139,7 @@ def resolve_qwen_runtime_credentials(
 
 
 def get_qwen_auth_status() -> dict[str, Any]:
-    from hermes_cli.auth import _qwen_cli_auth_path, resolve_qwen_runtime_credentials
+    from hermes_agent.hermes_cli.auth import _qwen_cli_auth_path, resolve_qwen_runtime_credentials
     auth_path = _qwen_cli_auth_path()
     try:
         # Refresh-validate: otherwise stale CLI tokens read as "logged in" and break `hermes model`.

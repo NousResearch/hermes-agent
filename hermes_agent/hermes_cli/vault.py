@@ -143,7 +143,7 @@ def _cmd_sources(args) -> None:
     """Show the detected password managers; `--disable`/`--enable` flip the opt-out (`vault.<name>.enabled`)."""
     from hermes_agent.agent.vault_backends import enabled_backends
     from hermes_agent.agent.vault_backends.base import external_backend_classes, is_installed
-    from hermes_cli.config import _ensure_dict, load_config, save_config
+    from hermes_agent.hermes_cli.config import _ensure_dict, load_config, save_config
 
     c = _console()
     classes = {cls.name: cls for cls in external_backend_classes()}
@@ -239,7 +239,7 @@ def _ensure_keychain_extra(c) -> bool:
 
 
 def _set_key_storage(value: str) -> None:
-    from hermes_cli.config import _ensure_dict, load_config, save_config
+    from hermes_agent.hermes_cli.config import _ensure_dict, load_config, save_config
 
     cfg = load_config()
     _ensure_dict(cfg, "vault")["key_storage"] = value

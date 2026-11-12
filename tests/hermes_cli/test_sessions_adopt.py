@@ -38,8 +38,8 @@ def _seed(home):
 
 
 def _run_adopt(capsys, *argv):
-    from hermes_cli import sessions_cmd
-    from hermes_cli.subcommands.sessions import build_sessions_parser
+    from hermes_agent.hermes_cli import sessions_cmd
+    from hermes_agent.hermes_cli.subcommands.sessions import build_sessions_parser
     parser = argparse.ArgumentParser()
     build_sessions_parser(parser.add_subparsers(dest='command'), cmd_sessions=sessions_cmd.cmd_sessions)
     args = parser.parse_args(['sessions', 'adopt', *argv])
@@ -65,7 +65,7 @@ async def _browser_resume(home, descriptor, sid):
     """What a browser opens on the gateway's own listener: ``/api/ws`` on its dashboard mount
     (``chat_ws.gateway_ws``), with an Origin, as the loopback session-token login; never a native grant."""
     from websockets.asyncio.client import connect
-    from hermes_cli.web_server_boundary import _DESKTOP_ATTACHMENT_WS_MAX_BYTES
+    from hermes_agent.hermes_cli.web_server_boundary import _DESKTOP_ATTACHMENT_WS_MAX_BYTES
     origin = descriptor['api_origin']
     url = origin.replace('http:', 'ws:') + '/api/ws?token=' + _BROWSER_TOKEN
     async with connect(url, origin=origin, proxy=None, max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES) as socket:
@@ -139,7 +139,7 @@ def _store_files(home):
 
 def _refused_adopt(capsys, monkeypatch, home, *argv):
     """Runs adopt where no gateway is reachable: the store has to answer before any connection."""
-    from hermes_cli import gateway_client
+    from hermes_agent.hermes_cli import gateway_client
 
     def no_gateway(**_kwargs):
         raise AssertionError('adopt connected to the gateway')

@@ -48,7 +48,7 @@ os.environ['HERMES_SHARED_AUTH_DIR']=str(home/'shared')
 from hermes_agent.run_agent import AIAgent
 from hermes_agent.agent.turn_iteration_prep import prepare_iteration
 import hermes_agent.agent.client_lifecycle as lifecycle
-from hermes_cli import auth
+from hermes_agent.hermes_cli import auth
 print(json.dumps({'mode':MODE,'module':lifecycle.__file__,'has_new':hasattr(AIAgent,'_adopt_nous_key_before_expiry'),'home':str(home)}),flush=True)
 if MODE=='main':
     spec=importlib.util.spec_from_file_location('main_prep',Path(__file__).with_name('main-turn_iteration_prep.py')); mod=importlib.util.module_from_spec(spec);sys.modules[spec.name]=mod;spec.loader.exec_module(mod);prepare_iteration=mod.prepare_iteration

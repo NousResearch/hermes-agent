@@ -134,7 +134,7 @@ class TestBannerUpdateCheckNonBlocking:
     def test_banner_does_not_block_on_pending_update_check(self):
         """When the prefetch hasn't finished, the banner path must return in
         well under the old 500ms blocking wait."""
-        from hermes_cli import banner
+        from hermes_agent.hermes_cli import banner
 
         with patch.object(banner, "_update_check_done", threading.Event()), \
              patch.object(banner, "_deferred_update_notice_started", False):
@@ -149,7 +149,7 @@ class TestBannerUpdateCheckNonBlocking:
         """The late notice lands after patch_stdout owns stdout, where raw ESC bytes are
         sanitized into visible ``?[1;33m`` text (#83969). It must reach prompt_toolkit as a
         parsed ANSI fragment — never as a bare ``Console.print`` to stdout."""
-        from hermes_cli import banner
+        from hermes_agent.hermes_cli import banner
         from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 
         printed = []

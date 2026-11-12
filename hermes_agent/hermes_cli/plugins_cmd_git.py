@@ -1,7 +1,7 @@
 """Plugin install metadata (``.install-metadata.json`` source/revision/pin records) and the git plumbing
 behind clone, exact-revision checkout, credential scrubbing and the autostashing ``git pull``.
 
-Sibling of :mod:`hermes_cli.plugins_cmd` (the facade re-exports the names other modules use and is
+Sibling of :mod:`hermes_agent.hermes_cli.plugins_cmd` (the facade re-exports the names other modules use and is
 imported late here, never at module level).
 """
 
@@ -16,14 +16,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Optional
 
-from hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_agent.hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_constants import get_hermes_home
 from utils import atomic_write_text
 
 
 def _pc():
     """The facade, read at call time: tests patch ``plugins_cmd.<name>`` and sibling calls must see it."""
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     return plugins_cmd
 
 
@@ -63,7 +63,7 @@ def _install_metadata_lock():
     """Serialize read-modify-write of the sidecar across threads and processes. Installs overlap (the
     Desktop install card runs its rows a second apart); each held a snapshot read before its clone, so
     the later write dropped the earlier plugin's record."""
-    from hermes_cli.auth import _file_lock
+    from hermes_agent.hermes_cli.auth import _file_lock
 
     path = _install_metadata_path()
     with _file_lock(path.with_name(f"{path.name}.lock"), _INSTALL_METADATA_LOCK_HOLDER, 10.0,
@@ -263,7 +263,7 @@ def _run_plugin_git(
     """Run one git command inside a plugin checkout (non-interactive). *auth_url* names the remote
     a network verb talks to; it runs anonymously first and a stored user credential for that host
     is attached only when the remote refuses anonymous access (private repos)."""
-    from hermes_cli.git_credentials import run_git_with_credential_fallback
+    from hermes_agent.hermes_cli.git_credentials import run_git_with_credential_fallback
     return run_git_with_credential_fallback(
         [git_exe, *args], auth_url, env=noninteractive_git_env(), capture_output=True, text=True,
         encoding='utf-8', errors='replace', timeout=timeout, cwd=str(target))
@@ -302,7 +302,7 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[str, str]:
         return "", ""
     # `git add -N` entries make `git stash push` fail outright (see update_cmd_stash), so promote them
     # to real staged adds first; the checkout's own local edits are otherwise unstashable.
-    from hermes_cli.update_cmd_stash import _intent_to_add_paths
+    from hermes_agent.hermes_cli.update_cmd_stash import _intent_to_add_paths
 
     intent_to_add = _intent_to_add_paths(status.stdout)
     if intent_to_add:

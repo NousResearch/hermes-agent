@@ -17,7 +17,7 @@ def _config(model: str, provider: str, base_url: str) -> dict:
 
 
 def test_model_info_degrades_when_the_context_probe_exceeds_its_budget(monkeypatch):
-    from hermes_cli.web_routers import models as router
+    from hermes_agent.hermes_cli.web_routers import models as router
 
     monkeypatch.setattr(
         router, "_load_config_scoped",
@@ -46,7 +46,7 @@ def test_model_info_degrades_when_the_context_probe_exceeds_its_budget(monkeypat
 
 
 def test_model_info_surfaces_the_context_value_when_the_probe_is_fast(monkeypatch):
-    from hermes_cli.web_routers import models as router
+    from hermes_agent.hermes_cli.web_routers import models as router
 
     monkeypatch.setattr(
         router, "_load_config_scoped",

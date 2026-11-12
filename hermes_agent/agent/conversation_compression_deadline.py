@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from hermes_agent.agent.conversation_compression import CompressionCommitFence
 
-# Defaults for the in-agent progress-aware wrap; mirror hermes_cli.config.DEFAULT_CONFIG["compression"] keys.
+# Defaults for the in-agent progress-aware wrap; mirror hermes_agent.hermes_cli.config.DEFAULT_CONFIG["compression"] keys.
 DEFAULT_CONTEXT_TIMEOUT_SECONDS = 120.0
 DEFAULT_CONTEXT_TOTAL_CEILING_SECONDS = 600.0
 
@@ -31,7 +31,7 @@ def resolve_context_compression_timeouts(compression_cfg: Optional[dict] = None)
     if cfg is None:
         cfg = {}
         with contextlib.suppress(Exception):
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
             raw = load_config()
             maybe = raw.get("compression", {}) if isinstance(raw, dict) else {}
             cfg = maybe if isinstance(maybe, dict) else {}

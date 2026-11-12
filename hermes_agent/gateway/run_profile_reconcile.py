@@ -8,7 +8,7 @@ handoff/kanban watchers, shared ingress) already reads ``profiles_to_serve()`` /
 live, so reconciling those three is enough for a profile created after boot to be served.
 
 ``reconcile_served_profiles`` runs on the loop under one lock, triggered by the ``rescan-profiles`` control
-verb (``hermes_cli/profiles.py`` create/delete fire it through the control socket) and by the supervised
+verb (``hermes_agent/hermes_cli/profiles.py`` create/delete fire it through the control socket) and by the supervised
 ``_profile_reconcile_watcher`` every ``_PROFILE_RESCAN_INTERVAL_SECS`` as the safety net. A served profile whose ``config.yaml``/``.env``
 changed since its adapters were last built is re-scanned too: creators make the profile first and add the
 bot token afterwards, and without this an adapter-less profile would stay adapter-less forever.
@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_agent.gateway.run_shutdown import _log_suppressed
-from hermes_cli.config_backend import ConfigBackendUnavailable
+from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
 from utils import file_cache_version
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ def profile_serve_signature(home: Path) -> tuple:
     digest going empty would read as a change and reconnect the profile's adapters. A remote layer
     changes with no local file change, so its signature is the backend's version. A config backend
     outage raises ``ConfigBackendUnavailable``; the reconcile cycle contains it and retries."""
-    from hermes_cli.config_backend import config_version_or_none, supports_file_tooling
+    from hermes_agent.hermes_cli.config_backend import config_version_or_none, supports_file_tooling
     cfg = Path(home) / "config.yaml"
     sig = [_stat_signature(cfg) if supports_file_tooling() else config_version_or_none(cfg)]
     for name in _PROFILE_SIGNATURE_FILES:
@@ -68,8 +68,8 @@ def profile_serve_signature(home: Path) -> tuple:
 def _added_profile_blocker(launch: Path) -> Optional[str]:
     """Why a single-profile boot must not start multiplexing now that a second profile exists: the
     ``gateway.auto_multiplex_migration: false`` opt-out on the default profile, else boot's preflight."""
-    from hermes_cli.gateway_migrate_guards import auto_migration_opted_out
-    from hermes_cli.gateway_multiplex_mode import AUTO_MIGRATION_OPTED_OUT_REASON, implicit_multiplex_blocker
+    from hermes_agent.hermes_cli.gateway_migrate_guards import auto_migration_opted_out
+    from hermes_agent.hermes_cli.gateway_multiplex_mode import AUTO_MIGRATION_OPTED_OUT_REASON, implicit_multiplex_blocker
     if auto_migration_opted_out(launch):
         return AUTO_MIGRATION_OPTED_OUT_REASON
     return implicit_multiplex_blocker()
@@ -174,7 +174,7 @@ class GatewayProfileReconcileMixin:
         whose store is unusable is parked (logged, not served) and left for an explicit rescan.
         Returns ``{"added", "removed", "rescanned", "parked", "served_profiles"}``."""
         from hermes_agent.gateway.run import MultiplexConfigError
-        from hermes_cli.profiles import profiles_to_serve
+        from hermes_agent.hermes_cli.profiles import profiles_to_serve
         result: dict[str, Any] = {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason}
         if not self._multiplex_on() and not await self._multiplex_for_added_profile():
             return {**result, "multiplex": False, "served_profiles": self.served_profile_names()}
@@ -245,7 +245,7 @@ class GatewayProfileReconcileMixin:
         whose home another gateway owns or whose store is unusable is parked, not served."""
         from hermes_agent.gateway.run import MultiplexConfigError
         from hermes_agent.gateway.run_runtime import park_profile, unpark_profile
-        from hermes_cli.profiles import profiles_to_serve
+        from hermes_agent.hermes_cli.profiles import profiles_to_serve
         active = getattr(self, "_primary_profile_name", None) or "default"
         result = dict(result or {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason})
         result.setdefault("parked", [])
@@ -364,10 +364,10 @@ class GatewayProfileReconcileMixin:
         latched, so the next rescan or watcher tick retries once the blocker clears. The switch is an
         automatic migration, so ``gateway.auto_multiplex_migration: false`` holds it back the same way
         (re-read on every rescan: setting it back to true converges without a restart). True when armed."""
-        from hermes_cli.gateway_multiplex_mode import (
+        from hermes_agent.hermes_cli.gateway_multiplex_mode import (
             AUTO_MIGRATION_OPTED_OUT_REASON, SINGLE_PROFILE_REASON, MultiplexDecision, log_multiplex_decision,
             record_multiplex_decision, recorded_standalone_reason)
-        from hermes_cli.profiles import profiles_to_serve
+        from hermes_agent.hermes_cli.profiles import profiles_to_serve
         from hermes_constants import get_default_hermes_root, get_process_hermes_home
         # Serialized with reconcile: a second rescan (watcher + creator) resuming mid-activation
         # reset the reservation the first one's reconcile had already grown.
@@ -579,7 +579,7 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
     loop = asyncio.get_running_loop()
 
     async def apply(name):
-        from hermes_cli.profiles import profiles_to_serve, profile_is_parked
+        from hermes_agent.hermes_cli.profiles import profiles_to_serve, profile_is_parked
         if not runner._multiplex_on() or not runner._running or runner._served_profile_homes is None:
             return {"error": "host multiplexer is not ready"}
         async with runner._reconcile_lock():

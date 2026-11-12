@@ -4,8 +4,8 @@ from pathlib import Path, PurePosixPath
 import re
 import struct
 
-from hermes_cli._startup_fast import project_root_str
-from hermes_cli.main_desktop import (
+from hermes_agent.hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.main_desktop import (
     _HTML_TAG_WITH_URL,
     _MODULE_TAG,
     _desktop_build_needed,

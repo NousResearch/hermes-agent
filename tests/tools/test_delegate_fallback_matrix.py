@@ -230,7 +230,7 @@ def test_declared_child_chain_activates_on_primary_failure():
             return_value=(fallback_client, "deepseek-chat"),
         ),
         patch(
-            "hermes_cli.model_normalize.normalize_model_for_provider",
+            "hermes_agent.hermes_cli.model_normalize.normalize_model_for_provider",
             side_effect=lambda model, _provider: model,
         ),
     ):

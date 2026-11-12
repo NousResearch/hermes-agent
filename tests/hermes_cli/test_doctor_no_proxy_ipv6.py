@@ -13,7 +13,7 @@ import pytest
 
 pytest.importorskip("httpx")
 
-from hermes_cli import doctor_connectivity as dc
+from hermes_agent.hermes_cli import doctor_connectivity as dc
 
 # The exact environment Clash Verge / mihomo exports (issue #118159).
 _CLASH_NO_PROXY = "127.0.0.1,localhost,::1,[::1]"
@@ -60,7 +60,7 @@ def test_run_probes_leaves_a_clean_environment_untouched(clash_env, monkeypatch)
 
 def test_run_probes_keeps_aws_instance_metadata_only_when_asked(monkeypatch):
     import os
-    from hermes_cli import doctor_connectivity as dc
+    from hermes_agent.hermes_cli import doctor_connectivity as dc
     monkeypatch.delenv("AWS_EC2_METADATA_DISABLED", raising=False)
     read = [("p", lambda: os.environ.get("AWS_EC2_METADATA_DISABLED"))]
     assert dc.run_probes(read) == ["true"]  # doctor: no 2 s IMDS lookup per Bedrock probe

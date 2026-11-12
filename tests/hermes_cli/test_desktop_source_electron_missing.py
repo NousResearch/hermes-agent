@@ -5,7 +5,7 @@ copy). If the reinstall then fails, apps/desktop/dist and its freshness receipt 
 still current, and `hermes desktop --source` would skip the build and fail to launch
 the missing runtime instead of relinking it.
 """
-from hermes_cli import main_desktop, source_build
+from hermes_agent.hermes_cli import main_desktop, source_build
 
 
 def _source_tree(tmp_path, monkeypatch, *, electron: bool):

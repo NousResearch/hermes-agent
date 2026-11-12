@@ -324,7 +324,7 @@ class LocalSessionPolicy:
 
     @property
     def max_turns(self):
-        from hermes_cli.config import resolve_turn_limit
+        from hermes_agent.hermes_cli.config import resolve_turn_limit
         cfg = self.config()
         return resolve_turn_limit(cfg.get('agent', {}).get('max_turns', cfg.get('max_turns')))
 
@@ -357,7 +357,7 @@ def profile_target(config):
 
 def model_route(block):
     """``(provider, endpoint)`` identity of a ``model:`` block: what an endpoint-bound credential belongs to."""
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
     block = block if isinstance(block, dict) else {}
     return str(block.get('provider') or '').strip().lower(), normalize_route_base_url(block.get('base_url'))
 
@@ -380,7 +380,7 @@ def entry_serves(block, config):
     serves in *config*: its named provider (``providers:`` / ``custom_providers:``), or the alias its
     ``api_key_from`` points into. That entry's key (inline, ``key_env``, ``key_cmd``) authenticates the
     entry's own endpoint, so a pick held on the old one ends rather than carry the new key there."""
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
     block = block if isinstance(block, dict) else {}
     url = normalize_route_base_url(block.get('base_url'))
     if not url:
@@ -514,7 +514,7 @@ def _profile_workspace_cwd(home):
     from hermes_constants import profile_name_for_home
     if profile_name_for_home(home) in {None, 'default'}:
         return None
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     terminal = read_user_config_raw(Path(home) / 'config.yaml').get('terminal')
     raw = str((terminal if isinstance(terminal, dict) else {}).get('cwd') or '').strip()
     configured = os.path.abspath(os.path.expanduser(raw)) if raw not in {'', '.', 'auto', 'cwd'} else None
@@ -562,7 +562,7 @@ def _with_entry_pick(params, config):
         return params
     identity = profile_route_identity(config)
     if picked.strip().lower() == 'custom':
-        from hermes_cli.runtime_provider_custom import _route_key, routed_custom_identity
+        from hermes_agent.hermes_cli.runtime_provider_custom import _route_key, routed_custom_identity
         url, model = params.get('base_url'), str(params.get('model') or '')
         own_url = _route_key(model_route(config.get('model'))[1])
         if identity == 'custom' and own_url and (
@@ -585,7 +585,7 @@ def _with_entry_pick(params, config):
 def _apply_launch_overrides(params, config):
     """Validate the explicit model/agent launch overrides and fold them into *config*."""
     from urllib.parse import urlsplit
-    from hermes_cli.config import resolve_turn_limit
+    from hermes_agent.hermes_cli.config import resolve_turn_limit
     from hermes_constants import parse_reasoning_effort
     params = _with_entry_pick(_without_auto_pick(params), config)
     picks_profile_entry = 'provider' in params and _keeps_profile_route(params['provider'], config)
@@ -658,8 +658,8 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
     """Validate explicit toolsets and return the session's enabled toolset set. Without a pick, a
     *coding_posture* session runs ``focus_toolsets`` instead of the profile default while the profile
     stays on ``focus``; the gateway decides it, never the client."""
-    from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
-    from hermes_cli.toolset_validation import saved_toolset_resolver
+    from hermes_agent.hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
+    from hermes_agent.hermes_cli.toolset_validation import saved_toolset_resolver
     from hermes_agent.toolsets import validate_toolset
     explicit = params.get('toolsets')
     if 'toolsets' in params:
@@ -705,7 +705,7 @@ def _resolve_toolsets(params, config, source, safe_mode, coding_posture=False, b
         enabled |= surface - (disabled - {'desktop_ui'})
     if safe_mode:
         # Plugin toolsets are user customizations; the safe worker never imports them.
-        from hermes_cli.tools_config import _get_plugin_toolset_keys
+        from hermes_agent.hermes_cli.tools_config import _get_plugin_toolset_keys
         enabled -= _get_plugin_toolset_keys()
     return enabled
 
@@ -724,7 +724,7 @@ def _in_coding_workspace(config, source, cwd):
 def _extract_config_secrets(value, private, path=()):
     # Reuse the configuration owner's structural classification; opaque keys need
     # not match a vendor prefix. Only the authority keeps their original values.
-    from hermes_cli.config import _SECRET_CONFIG_KEYS
+    from hermes_agent.hermes_cli.config import _SECRET_CONFIG_KEYS
     from hermes_agent.agent.credential_persistence import _is_secret_payload_key
     containers = {'env', 'headers', 'extra_headers', 'docker_env', 'docker_extra_args',
                   'terminal_docker_env', 'terminal_docker_extra_args'}
@@ -1056,7 +1056,7 @@ def local_desktop_turn(runner, source, scope):
 
 @contextmanager
 def _serving_local_desktop_within(scope):
-    from hermes_cli.process_identity import serving_local_desktop
+    from hermes_agent.hermes_cli.process_identity import serving_local_desktop
     with scope, serving_local_desktop(True):
         yield
 

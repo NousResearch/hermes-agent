@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from hermes_agent.agent.i18n import t
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _config_text(capsys, api_key) -> str:

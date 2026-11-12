@@ -43,9 +43,9 @@ def _at(raw: dict, dotted: str):
 
 
 def test_update_keeps_user_values_of_an_unversioned_config_and_migrates_legacy_keys(hermes_home):
-    from hermes_cli.config import DEFAULT_CONFIG, set_config_value
-    from hermes_cli.personality import persist_personality
-    from hermes_cli.update_cmd import _check_and_apply_config_migration
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, set_config_value
+    from hermes_agent.hermes_cli.personality import persist_personality
+    from hermes_agent.hermes_cli.update_cmd import _check_and_apply_config_migration
 
     # Seeded before the template carried a stamp; early-2026 templates shipped this retired key.
     (hermes_home / "config.yaml").write_text(
@@ -74,7 +74,7 @@ def test_update_keeps_user_values_of_an_unversioned_config_and_migrates_legacy_k
 
 def test_config_seeded_from_the_template_reads_as_current(hermes_home):
     """install.sh, install.ps1, docker/stage2-hook.sh and `hermes doctor --fix` copy the template."""
-    from hermes_cli.config import check_config_version
+    from hermes_agent.hermes_cli.config import check_config_version
 
     shutil.copy(TEMPLATE, hermes_home / "config.yaml")
 

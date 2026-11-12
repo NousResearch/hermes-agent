@@ -51,8 +51,8 @@ def _rpc(action: str, **params):
 @pytest.fixture
 def world(tmp_path, monkeypatch):
     """``(home, repo, pin)``: a repo published through catalog entry ``demo``; ``pin(sha)`` re-pins it."""
-    from hermes_cli import plugins_cmd, plugins_cmd_catalog
-    from hermes_cli.plugin_catalog import PluginCatalogEntry
+    from hermes_agent.hermes_cli import plugins_cmd, plugins_cmd_catalog
+    from hermes_agent.hermes_cli.plugin_catalog import PluginCatalogEntry
     repo = tmp_path / "demo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
@@ -100,7 +100,7 @@ def test_a_disabled_tree_at_another_commit_is_not_enabled_for_the_reviewed_one(w
 
     assert "already exists" in result["error"]["message"]
     assert _record(home)["revision"] == old
-    from hermes_cli.plugins_cmd import _get_enabled_set
+    from hermes_agent.hermes_cli.plugins_cmd import _get_enabled_set
     assert "demo" not in _get_enabled_set()
 
 

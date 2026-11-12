@@ -136,7 +136,7 @@ class TestAllowPrivateUrlsConfig:
 
     def test_browser_config_string_false_stays_disabled(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.config_effective.load_user_config_effective",
+            "hermes_agent.hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {"allow_private_urls": "false"}},
         )
 

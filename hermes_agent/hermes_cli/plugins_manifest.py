@@ -1,6 +1,6 @@
 """Plugin manifest model and parsing (``plugin.yaml`` v1/v2, portable ``plugin.json``).
 
-Split out of :mod:`hermes_cli.plugins`; validation warns and never fails a load.
+Split out of :mod:`hermes_agent.hermes_cli.plugins`; validation warns and never fails a load.
 """
 
 from __future__ import annotations
@@ -15,14 +15,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from utils import fast_safe_load
-from hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
+from hermes_agent.hermes_cli.plugin_capabilities import parse_declared_capabilities as _parse_declared_capabilities
 
 try:
     import hermes_yaml as yaml
 except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
 
-logger = logging.getLogger("hermes_cli.plugins")
+logger = logging.getLogger("hermes_agent.hermes_cli.plugins")
 
 _VALID_PLUGIN_KINDS: set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 
@@ -45,14 +45,14 @@ _CONFIG_SCHEMA_TYPES: dict[str, tuple] = {
     "str": (str,), "string": (str,), "int": (int,), "integer": (int,), "float": (int, float),
     "number": (int, float), "bool": (bool,), "boolean": (bool,), "list": (list,), "array": (list,),
     "dict": (dict,), "object": (dict,),
-    # ``secret`` values live in ``.env`` (see hermes_cli.plugins_settings), so a config.yaml copy is
+    # ``secret`` values live in ``.env`` (see hermes_agent.hermes_cli.plugins_settings), so a config.yaml copy is
     # only ever a stray string.
     "secret": (str,),
 }
 
 
 def _plugins_debug() -> bool:
-    from hermes_cli import plugins as _origin
+    from hermes_agent.hermes_cli import plugins as _origin
     return _origin._PLUGINS_DEBUG
 
 
@@ -415,7 +415,7 @@ class PluginManifest:
     provides_locales: list[str] = field(default_factory=list)
     locale_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Dotted paths in Hermes' own config sections the plugin reads (``memory.retaindb``), so
-    # ``hermes config get/set`` recognizes them while the plugin is active (hermes_cli/config_runtime_keys.py).
+    # ``hermes config get/set`` recognizes them while the plugin is active (hermes_agent/hermes_cli/config_runtime_keys.py).
     config_keys: list[str] = field(default_factory=list)
 
 
@@ -460,7 +460,7 @@ _VERSION_COMPARATOR_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
 
 def running_hermes_version() -> str:
     """Base release version of the Hermes code that is running."""
-    from hermes_cli.version_info import get_version_info
+    from hermes_agent.hermes_cli.version_info import get_version_info
 
     return get_version_info().base_version
 
@@ -512,7 +512,7 @@ def requires_hermes_error(manifest: PluginManifest | Mapping[str, Any]) -> Optio
 
 def portable_plugin_manifest(child: Path, source: str, prefix: str) -> PluginManifest:
     """Build the manifest for a portable Agent Plugin directory (``plugin.json``); diagnostics warn."""
-    from hermes_cli.agent_plugins import manifest_config_schema, manifest_hermes_extension, read_agent_plugin_manifest
+    from hermes_agent.hermes_cli.agent_plugins import manifest_config_schema, manifest_hermes_extension, read_agent_plugin_manifest
     data, diagnostics = read_agent_plugin_manifest(child)
     for diagnostic in diagnostics:
         logger.warning("Agent Plugin '%s': %s", child, diagnostic.message)

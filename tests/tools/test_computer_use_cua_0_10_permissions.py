@@ -160,9 +160,9 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
         cua_backend, "_cua_no_overlay", return_value=False,
     ), patch.object(cua_backend.subprocess, "Popen", return_value=process) as popen, patch.object(
         cua_backend.subprocess, "run", side_effect=[status, stopped]
-    ), patch("hermes_cli.process_identity._update_supervised_pgids") as supervise, patch(
+    ), patch("hermes_agent.hermes_cli.process_identity._update_supervised_pgids") as supervise, patch(
         # A Mock pid must never reach the real owner-death supervisor or the spawn ledger.
-        "hermes_cli.process_identity.register_child"
+        "hermes_agent.hermes_cli.process_identity.register_child"
     ), patch.object(
         # stop() releases the group once it is empty; the Mock process has no real group to probe.
         cua_backend_daemon, "release_process_group_once_empty",

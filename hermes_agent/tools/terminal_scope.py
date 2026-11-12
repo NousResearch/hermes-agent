@@ -87,7 +87,7 @@ def terminal_env(name: str, default: str = "") -> str:
 
 
 def _apply_terminal_mapping(scope: dict[str, str], mapping: dict[str, Any]) -> None:
-    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
+    from hermes_agent.hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
 
     for cfg_key, value in mapping.items():
         # cwd placeholders are resolved per-surface later; not a policy value.
@@ -104,7 +104,7 @@ def _apply_terminal_mapping(scope: dict[str, str], mapping: dict[str, Any]) -> N
 def default_terminal_scope() -> dict[str, str]:
     """Code-default ``TERMINAL_*`` policy: what a profile-bypassing session freezes instead of
     reading ``.env``/``config.yaml``. Total like the profile projection, minus the profile."""
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 
     scope: dict[str, str] = {}
     _apply_terminal_mapping(scope, {**_TOOL_LEVEL_DEFAULTS, **(DEFAULT_CONFIG.get("terminal") or {})})
@@ -128,9 +128,9 @@ def build_profile_terminal_scope(
     closes. It sits where the process env sits in the standalone bridge — explicit YAML keys
     still win (``apply_terminal_config_to_env``).
     """
-    from hermes_cli import managed_scope
-    from hermes_cli.config import _deep_merge
-    from hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli import managed_scope
+    from hermes_agent.hermes_cli.config import _deep_merge
+    from hermes_agent.hermes_cli.config_backend import config_exists
 
     home = Path(hermes_home)
     scope = default_terminal_scope()
@@ -171,7 +171,7 @@ def build_profile_terminal_scope(
         raise TerminalPolicyUnavailable(f"cannot resolve terminal config in {home}: {exc}") from exc
     raw_terminal = None
     if has_config:
-        from hermes_cli.config_backend import read_config_doc_readonly
+        from hermes_agent.hermes_cli.config_backend import read_config_doc_readonly
 
         try:
             # Signature-cached: a scope is rebuilt per routed turn/poll, the file rarely changes.

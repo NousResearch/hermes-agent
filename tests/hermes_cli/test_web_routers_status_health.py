@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli.version_info import VersionInfo
+from hermes_agent.hermes_cli.version_info import VersionInfo
 
 
 def _info(commit: str | None) -> VersionInfo:
@@ -22,8 +22,8 @@ def _info(commit: str | None) -> VersionInfo:
 def test_health_reports_the_boot_commit_from_version_info(monkeypatch, commit):
     from starlette.testclient import TestClient
 
-    from hermes_cli.web_routers import status
-    import hermes_cli.web_server as ws
+    from hermes_agent.hermes_cli.web_routers import status
+    import hermes_agent.hermes_cli.web_server as ws
 
     monkeypatch.setattr(status, "get_version_info", lambda: _info(commit))
 

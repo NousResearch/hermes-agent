@@ -348,7 +348,7 @@ def test_config_gate_off_no_ledger_writes(ledger_env, monkeypatch):
     from hermes_agent.tools import skill_ledger
     from hermes_agent.tools.skill_manager_tool import skill_manage
 
-    import hermes_cli.config as _cfg
+    import hermes_agent.hermes_cli.config as _cfg
 
     off = {"skills": {"ledger": False}}
     monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: off)
@@ -622,7 +622,7 @@ def test_auto_compact_triggers_at_threshold(ledger_env, monkeypatch):
 
     from hermes_agent.tools import skill_ledger
 
-    import hermes_cli.config as _cfg
+    import hermes_agent.hermes_cli.config as _cfg
 
     cap = {"skills": {"ledger_max_bytes": 8192}}
     monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: cap)
@@ -659,7 +659,7 @@ def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
     survives verbatim."""
     from hermes_agent.tools import skill_ledger
 
-    import hermes_cli.config as _cfg
+    import hermes_agent.hermes_cli.config as _cfg
 
     cap = {"skills": {"ledger_max_bytes": 0}}  # no sweeps while seeding
     monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: cap)
@@ -720,7 +720,7 @@ def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
 
     from hermes_agent.tools import skill_ledger
 
-    import hermes_cli.config as _cfg
+    import hermes_agent.hermes_cli.config as _cfg
 
     cap = {"skills": {"ledger_max_bytes": 4096}}  # padded rows ~600 B: a trim on nearly every append
     monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: cap)

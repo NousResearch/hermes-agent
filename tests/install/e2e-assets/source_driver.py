@@ -65,7 +65,7 @@ def probe_pm(root: Path, desktop: str, command: list[str]) -> None:
     # Use the launcher's Python ABI, but deliberately do NOT execute its
     # bootstrap: that would complete dependencies or recover markers for it.
     sys.path.insert(0, str(root))
-    from hermes_cli._launchers import runtime_command
+    from hermes_agent.hermes_cli._launchers import runtime_command
     from pm.environments import selected_venv, site_packages
 
     if command != runtime_command(root):

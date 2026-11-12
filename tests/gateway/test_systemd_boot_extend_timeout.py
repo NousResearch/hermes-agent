@@ -37,7 +37,7 @@ async def test_secondary_boot_extends_systemd_start_timeout(tmp_path, monkeypatc
         (profile / ".env").write_text(f"{var}={name}-token\n{extra}", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles.get_active_profile_name", lambda: "default")
     if connect_timeout is None:
         monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
     else:  # an unbounded connect budget has no finite extension; every secondary must still connect

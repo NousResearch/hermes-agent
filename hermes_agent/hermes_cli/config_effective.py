@@ -18,10 +18,10 @@ import copy
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from hermes_cli import config as _config
-from hermes_cli import managed_scope
-from hermes_cli.config_backend import read_config_doc
-from hermes_cli.config_read_errors import _warn_config_parse_failure
+from hermes_agent.hermes_cli import config as _config
+from hermes_agent.hermes_cli import managed_scope
+from hermes_agent.hermes_cli.config_backend import read_config_doc
+from hermes_agent.hermes_cli.config_read_errors import _warn_config_parse_failure
 
 # path -> raw user mapping from the last successful parse in this process; served (through the
 # normal pipeline) when the file is later found mid-edit as broken YAML.
@@ -42,7 +42,7 @@ def _recover_user_raw(config_path: Path, path_key: str, exc: Exception) -> dict[
     raw = _LAST_GOOD_USER_RAW.get(path_key)
     fallback = "last-known-good"
     if raw is None:
-        from hermes_cli.config_backups import load_newest_good_backup
+        from hermes_agent.hermes_cli.config_backups import load_newest_good_backup
         raw = load_newest_good_backup(config_path)
         fallback = "last-known-good-backup"
     _warn_config_parse_failure(config_path, exc, fallback=fallback if raw is not None else "defaults")
@@ -99,7 +99,7 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
                 # Only for the ACTIVE home — a read of another profile's file (doctor, TUI cwd lookup)
                 # must not create backups/ inside that profile.
                 if config_path == _config.get_config_path():
-                    from hermes_cli.config_backups import backup_config
+                    from hermes_agent.hermes_cli.config_backups import backup_config
                     backup_config(config_path, "good")
 
         env_snapshot = _config._env_ref_snapshot(raw)

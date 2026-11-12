@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from hermes_cli import _launchers
+from hermes_agent.hermes_cli import _launchers
 from pm.environments import install_state_dir, site_packages
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -145,7 +145,7 @@ def test_launcher_resolves_default_home_at_use_not_publication(tmp_path, monkeyp
     pytest.param("cmd", marks=pytest.mark.platforms("windows")),
 ])
 def test_profile_publication_preserves_shared_launcher_default_home(tmp_path, monkeypatch, publisher):
-    from hermes_cli import boot_bootstrap, post_update
+    from hermes_agent.hermes_cli import boot_bootstrap, post_update
 
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -287,7 +287,7 @@ def test_boot_migrates_legacy_conveniences_to_selected_runtime(tmp_path, monkeyp
 
 
 def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
-    from hermes_cli.runtime_state import collect_generations
+    from hermes_agent.hermes_cli.runtime_state import collect_generations
 
     repo, _home, interpreter = fixture_tree(tmp_path, monkeypatch)
     out = tmp_path / "bin"
@@ -304,7 +304,7 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
                 command = [sys.executable, "-I", str(repo / "scripts/hermes-gateway"), "--help"]
                 args = ["gateway", "--help"]
             elif surface == "ssh":
-                from hermes_cli.windows_ssh_runtime import _resolve_direct_command
+                from hermes_agent.hermes_cli.windows_ssh_runtime import _resolve_direct_command
                 command = [*_resolve_direct_command(str(launcher)), *args]
             elif surface == "published":
                 result = subprocess.run([str(launcher), "--print-runtime-command", "--", *args],
@@ -312,7 +312,7 @@ def _command_survives_generation_collection(tmp_path, monkeypatch, surface):
                 assert result.returncode == 0, result.stderr
                 command = json.loads(result.stdout)
             else:
-                from hermes_cli import gateway
+                from hermes_agent.hermes_cli import gateway
                 monkeypatch.setattr(gateway, "PROJECT_ROOT", repo)
                 if surface == "launchd":
                     import plistlib
@@ -450,7 +450,7 @@ def test_repin_without_distlib_retires_stale_native_launcher(tmp_path, monkeypat
 
 @pytest.mark.platforms("windows")
 def test_windows_repair_upgrades_healthy_old_pm_external_launchers(tmp_path, monkeypatch):
-    from hermes_cli._install_repair import ensure_windows_bin_launchers
+    from hermes_agent.hermes_cli._install_repair import ensure_windows_bin_launchers
 
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     managed = home / "hermes-agent"
@@ -471,7 +471,7 @@ def test_windows_repair_upgrades_healthy_old_pm_external_launchers(tmp_path, mon
 
 
 def test_dashboard_action_boots_selected_dependencies(tmp_path, monkeypatch):
-    from hermes_cli import web_server, web_server_gateway
+    from hermes_agent.hermes_cli import web_server, web_server_gateway
 
     repo, home, _ = fixture_tree(tmp_path, monkeypatch)
     select_generation(repo, 'current', 'selected')
@@ -519,7 +519,7 @@ def test_external_interpreter_keeps_its_owned_dependencies(tmp_path, monkeypatch
 @pytest.mark.platforms("posix")
 @pytest.mark.spawns_gateway_lookalike
 def test_service_survives_python_tool_replacement(tmp_path, monkeypatch):
-    from hermes_cli import gateway
+    from hermes_agent.hermes_cli import gateway
 
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(gateway, "PROJECT_ROOT", repo)
@@ -546,7 +546,7 @@ def test_service_survives_python_tool_replacement(tmp_path, monkeypatch):
 def test_sync_migrates_old_store_wrapper_before_python_collection(tmp_path, monkeypatch, create):
     import builtins
 
-    from hermes_cli.venv_sync import publish_launchers
+    from hermes_agent.hermes_cli.venv_sync import publish_launchers
 
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(Path, "home", lambda: home)
@@ -611,7 +611,7 @@ def _torn_by_a_killed_merge(tmp_path, monkeypatch):
     git("commit", "-qam", "target")
     target = git("rev-parse", "HEAD")
     git("reset", "-q", "--hard", pre)
-    from hermes_cli import _early_recovery
+    from hermes_agent.hermes_cli import _early_recovery
 
     marker = _early_recovery.interrupted_pull_marker(repo)
     # The updater records the git it moved the tree with: a Windows install's only git is PM's
@@ -660,7 +660,7 @@ def test_a_merge_killed_writing_hermes_constants_is_repaired_by_the_next_launch(
 
 
 def test_update_import_probe_uses_selected_dependencies(tmp_path, monkeypatch):
-    from hermes_cli import update_cmd, update_cmd_validation
+    from hermes_agent.hermes_cli import update_cmd, update_cmd_validation
 
     repo, _, _ = fixture_tree(tmp_path, monkeypatch)
     selected = install_state_dir(repo) / "environments" / "current" / "venv"
@@ -712,7 +712,7 @@ def test_stage_launcher_ignores_an_inherited_runtime_directory(tmp_path, monkeyp
 
 @pytest.mark.platforms("posix")
 def test_service_launcher_binds_the_tree_store_despite_inherited_runtime_override(tmp_path, monkeypatch):
-    from hermes_cli import gateway
+    from hermes_agent.hermes_cli import gateway
 
     repo, home, interpreter = fixture_tree(tmp_path, monkeypatch)
     monkeypatch.setattr(gateway, "PROJECT_ROOT", repo)

@@ -37,7 +37,7 @@ def _make_broken_trampoline(tmp_path: Path) -> Path:
 
 class TestGitTrampolineLive:
     def test_runner_git_is_not_a_trampoline(self):
-        from hermes_cli import update_cmd
+        from hermes_agent.hermes_cli import update_cmd
 
         # Healthy PATH git on the runner: probe must report False and the
         # probe itself must actually run git (sanity: git exists here).
@@ -49,13 +49,13 @@ class TestGitTrampolineLive:
         assert update_cmd._git_is_trampoline(["git"]) is False
 
     def test_broken_trampoline_detected_live(self, tmp_path):
-        from hermes_cli import update_cmd
+        from hermes_agent.hermes_cli import update_cmd
 
         bat = _make_broken_trampoline(tmp_path)
         assert update_cmd._git_is_trampoline([str(bat)]) is True
 
     def test_locate_real_git_finds_runner_git_core(self):
-        from hermes_cli import update_cmd
+        from hermes_agent.hermes_cli import update_cmd
 
         real = update_cmd._locate_real_git()
         # windows-latest ships Git for Windows under Program Files with the
@@ -71,7 +71,7 @@ class TestGitTrampolineLive:
         assert "git version" in probe.stdout.lower()
 
     def test_ensure_non_trampoline_git_swaps_live(self, tmp_path, capsys):
-        from hermes_cli import update_cmd
+        from hermes_agent.hermes_cli import update_cmd
 
         bat = _make_broken_trampoline(tmp_path)
         broken_cmd = [str(bat), "-c", "windows.appendAtomically=false"]
@@ -90,7 +90,7 @@ class TestGitTrampolineLive:
         assert "switching to real git" in capsys.readouterr().out
 
     def test_healthy_git_command_untouched_live(self):
-        from hermes_cli import update_cmd
+        from hermes_agent.hermes_cli import update_cmd
 
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
         assert update_cmd._ensure_non_trampoline_git(git_cmd) == git_cmd

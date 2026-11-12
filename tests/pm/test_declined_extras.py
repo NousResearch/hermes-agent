@@ -224,7 +224,7 @@ def test_automatic_repair_never_undoes_a_without_that_landed_after_its_read(monk
     `--without matrix` completing between that read and PM's lock wins: repair's request was
     Hermes's choice, not the user's, so it neither re-adds matrix nor clears the new decline."""
     import pm.client
-    from hermes_cli import main_install_repair
+    from hermes_agent.hermes_cli import main_install_repair
 
     monkeypatch.setattr(install, "_feature_policy", lambda extras, *, repair: (None, None))
     package = _BlockingVenv()

@@ -36,7 +36,7 @@ def update_scope_homes() -> set[Path]:
         if (home := _resolved(get_hermes_home())) is not None:
             homes.add(home)
     with suppress(Exception):
-        from hermes_cli.update_receipt import _profile_homes
+        from hermes_agent.hermes_cli.update_receipt import _profile_homes
         for _profile, home in _profile_homes():
             if (resolved := _resolved(home)) is not None:
                 homes.add(resolved)
@@ -58,7 +58,7 @@ def _ledger_gateway_home(pid: int) -> str | None:
     only for an exact live ``(pid, create_time)`` match. Proof for a gateway whose environment is
     unreadable (elevated, or another account's service) while its create time still is."""
     with suppress(Exception):
-        from hermes_cli.process_identity import ledger_entries
+        from hermes_agent.hermes_cli.process_identity import ledger_entries
         for entry in ledger_entries(verified_only=True):
             if entry.get("pid") == pid and entry.get("purpose") == "gateway":
                 return entry.get("hermes_home") or None
@@ -69,7 +69,7 @@ def gateway_pid_home(pid: int) -> str | None:
     """The home gateway *pid* runs on: its live environment, else the exact-birth ledger witness;
     ``None`` when neither proves one. Discovery, the Windows pause record and its readiness check
     share it, so the home discovery proved is the home the restart debt keeps."""
-    from hermes_cli.dashboard_procs import _hermes_home_for_pid
+    from hermes_agent.hermes_cli.dashboard_procs import _hermes_home_for_pid
     try:
         home = _hermes_home_for_pid(pid)
     except Exception:  # health: allow BLE001 -- tri-state resolver: any environment-read failure is "unknown" and the ledger witness decides
@@ -98,7 +98,7 @@ def partition_gateway_pids_by_scope(pids, scope: set[Path] | None = None) -> tup
             home = None
             if verdict is False:
                 with suppress(Exception):
-                    from hermes_cli.dashboard_procs import _hermes_home_for_pid
+                    from hermes_agent.hermes_cli.dashboard_procs import _hermes_home_for_pid
                     home = _hermes_home_for_pid(pid)
             foreign.append((pid, home))
     return owned, foreign
@@ -108,12 +108,12 @@ def systemd_unit_hermes_home(scope_cmd: list, svc_name: str) -> str | None:
     """Home the systemd unit *svc_name* runs on: its live MainPID's environment first, then the
     unit's declared ``Environment=HERMES_HOME``; for a user-scope unit that declares none, the
     user's own default home. ``None`` when nothing readable names a home."""
-    from hermes_cli.update_cmd_fleet import _systemctl, _unit_main_pid
+    from hermes_agent.hermes_cli.update_cmd_fleet import _systemctl, _unit_main_pid
 
     pid = _unit_main_pid(scope_cmd, svc_name)
     if pid > 0:
         with suppress(Exception):
-            from hermes_cli.dashboard_procs import _hermes_home_for_pid
+            from hermes_agent.hermes_cli.dashboard_procs import _hermes_home_for_pid
             if (home := _hermes_home_for_pid(pid)) is not None:
                 return home
     try:
@@ -151,7 +151,7 @@ def launchd_label_foreign_home(label: str, scope: set[Path] | None = None) -> st
     decides whether a job exists; only a proven foreign home is refused)."""
     import plistlib
     with suppress(Exception):
-        from hermes_cli.gateway import get_launchd_plist_path
+        from hermes_agent.hermes_cli.gateway import get_launchd_plist_path
         plist_path = get_launchd_plist_path().with_name(f"{label}.plist")
         if not plist_path.exists():
             return None
@@ -175,7 +175,7 @@ def announce_skipped_runtime(kind: str, name: str, home: str | None) -> None:
     and the restart phase runs in a fresh completion process, so only the run's receipt (handed to
     that process) knows what the pause already announced. No open receipt: every call prints.
     """
-    from hermes_cli import update_receipt
+    from hermes_agent.hermes_cli import update_receipt
     entry = [kind, name, home]
     current = update_receipt._current.get()
     announced = list((current.data if current is not None else {}).get("runtimes_left_alone") or [])

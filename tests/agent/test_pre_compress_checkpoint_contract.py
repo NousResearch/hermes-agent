@@ -494,7 +494,7 @@ def test_turn_finalizer_never_micro_compacts_while_checkpoint_gate_armed(
     )
     from hermes_agent.agent.turn_finalizer import finalize_turn
 
-    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
 
     class _RecordingCompressor:
         _micro_compact_enabled = True

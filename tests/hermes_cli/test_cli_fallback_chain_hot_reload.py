@@ -11,8 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import cli
-from hermes_cli.config import get_config_path
+from hermes_agent import cli
+from hermes_agent.hermes_cli.config import get_config_path
 
 FALLBACK = [{"provider": "xai-oauth", "model": "grok-4.6"}]
 

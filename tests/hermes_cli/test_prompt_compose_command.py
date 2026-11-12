@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.cli_commands_mixin import CLICommandsMixin
+from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
 
 
 class _Stub(CLICommandsMixin):

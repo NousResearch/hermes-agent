@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli._scan_venv_blockers import _is_pausable_gateway
+from hermes_agent.hermes_cli._scan_venv_blockers import _is_pausable_gateway
 
 
 @pytest.mark.parametrize(
@@ -71,7 +71,7 @@ def _run_legacy_cli(tmp_path, *args):
     # -S omits site-packages, including psutil: this entry point must work on
     # a half-updated tree, without inspecting or terminating live processes.
     return subprocess.run(
-        [sys.executable, "-S", "-m", "hermes_cli._scan_venv_blockers", *args],
+        [sys.executable, "-S", "-m", "hermes_agent.hermes_cli._scan_venv_blockers", *args],
         cwd=Path(__file__).resolve().parents[2],
         env={**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": ""},
         capture_output=True,

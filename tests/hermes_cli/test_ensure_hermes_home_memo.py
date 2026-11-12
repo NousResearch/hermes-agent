@@ -3,7 +3,7 @@ load_config), but a deleted home must still be recreated on the next call."""
 
 import shutil
 
-from hermes_cli import config as cfg
+from hermes_agent.hermes_cli import config as cfg
 
 
 def test_repeat_calls_are_memoized_but_deleted_home_is_recreated(tmp_path, monkeypatch):

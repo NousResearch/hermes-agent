@@ -10,7 +10,7 @@ import pytest_asyncio
 from acp.schema import TextContentBlock
 
 from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 from tests.gateway.fixtures.replay_gap_owner import FINAL, Owner, frame_cap  # frame_cap: autouse
 from tests.waiting import async_wait_until as until
 

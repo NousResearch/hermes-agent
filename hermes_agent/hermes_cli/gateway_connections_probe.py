@@ -14,8 +14,8 @@ from typing import Any
 
 from starlette.concurrency import run_in_threadpool
 
-from hermes_cli import gateway_connections as store
-from hermes_cli import gateway_connections_reach as reach
+from hermes_agent.hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli import gateway_connections_reach as reach
 
 _TIMEOUT_S = 8.0
 
@@ -41,7 +41,7 @@ def _credential_headers(connection_id: str) -> tuple[str, dict[str, str]]:
 async def _probe(base_url: str, headers: dict[str, str]) -> dict[str, Any]:
     import httpx
 
-    from hermes_cli.web_routers.config_env import _endpoint_probe_client
+    from hermes_agent.hermes_cli.web_routers.config_env import _endpoint_probe_client
 
     async with _endpoint_probe_client(base_url, _TIMEOUT_S) as client:
         try:
@@ -65,7 +65,7 @@ async def probe_connection(connection_id: str) -> dict[str, Any]:
     if entry is None:
         raise store.NoSuchConnection(f'No connection with id "{connection_id}".')
     if entry["kind"] == "local":
-        from hermes_cli import __version__
+        from hermes_agent.hermes_cli import __version__
 
         return {"ok": True, "baseUrl": None, "version": __version__}
     if entry["kind"] == "ssh":

@@ -748,7 +748,7 @@ def _build_child_goal_message(goal: str, images: list[str], child) -> Any:
         from hermes_agent.agent.image_routing import build_native_content_parts, decide_image_input_mode
         cfg = None
         with _quiet(None):
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
             cfg = load_config_readonly()
         mode = decide_image_input_mode(
             str(getattr(child, "provider", "") or ""), str(getattr(child, "model", "") or ""), cfg,

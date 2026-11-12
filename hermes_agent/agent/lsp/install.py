@@ -18,7 +18,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import find_node_executable, with_hermes_node_path
 
 logger = logging.getLogger("hermes_agent.agent.lsp.install")
@@ -224,7 +224,7 @@ _NODE_PM_ARGV: dict[str, Callable[[str], list]] = {
 def _node_package_manager() -> Optional[str]:
     """``lsp.package_manager`` from config (npm default); an unknown value fails closed (``None``)."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         lsp_cfg = load_config_readonly().get("lsp") or {}
     except Exception:
         return "npm"

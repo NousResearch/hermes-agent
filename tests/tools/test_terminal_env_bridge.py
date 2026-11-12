@@ -120,7 +120,7 @@ def test_defaults_backfill_when_neither_config_nor_env_selects_backend():
 
 
 def test_bridge_config_failure_does_not_crash(monkeypatch):
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     monkeypatch.setattr(
         config_mod,

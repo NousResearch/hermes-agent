@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Optional
 
-from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
+from hermes_agent.hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_common import FTS_STORAGE_VERSION, SCHEMA_VERSION
 from hermes_agent.hermes_state_repair import _db_opens_cleanly
@@ -195,10 +195,10 @@ def _copy_source_bundle(source: Path, snapshot_dir: Path) -> tuple[Path, list[st
 
     Checking for a live connection and *then* copying would be a check/use race: a connection could open in
     that window, and the copy's ``close()`` would cancel its POSIX advisory locks -- the failure class
-    ``hermes_cli.sqlite_safe_read`` exists to prevent (see #71724). Holding the lock means no connection can
+    ``hermes_agent.hermes_cli.sqlite_safe_read`` exists to prevent (see #71724). Holding the lock means no connection can
     appear mid-copy, across the main file and every sidecar.
     """
-    from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
+    from hermes_agent.hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
     snapshot_source = snapshot_dir / source.name
     copied: list[str] = []
     try:
@@ -1031,7 +1031,7 @@ def _lost_and_found_plausibility_errors(
     ``started_at = 0.0`` when no timestamped message survived, so they are
     excluded from the denominator.
     """
-    from hermes_cli.session_lost_and_found import _EPOCH_LOW, STUB_TITLE_PREFIX
+    from hermes_agent.hermes_cli.session_lost_and_found import _EPOCH_LOW, STUB_TITLE_PREFIX
 
     errors: list[str] = []
     checks = (
@@ -1064,7 +1064,7 @@ def _recover_via_lost_and_found(
     """Best-effort page-level salvage when table schemas are unreadable: the sqlite3 CLI's ``.recover``
     (shell-only, not in Python's ``sqlite3``) rebuilds rows into a scratch lost_and_found database which
     is then heuristically mapped into a fresh current-schema database."""
-    from hermes_cli.session_lost_and_found import (
+    from hermes_agent.hermes_cli.session_lost_and_found import (
         SQLITE3_CLI_GUIDANCE, LostAndFoundError, find_sqlite3_cli, find_sqlite3_cli_refusal, map_lost_and_found_rows,
         rebuild_fts_indexes, run_cli_lost_and_found_recover, stub_missing_parent_sessions,
     )

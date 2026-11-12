@@ -34,7 +34,7 @@ class TestIsHeadedMode:
 
     def test_config_true(self):
         cfg = {"browser": {"headed": True}}
-        with patch("hermes_cli.config_effective.load_user_config_effective", return_value=cfg):
+        with patch("hermes_agent.hermes_cli.config_effective.load_user_config_effective", return_value=cfg):
             assert bs_cloud.is_headed_mode() is True
 
 

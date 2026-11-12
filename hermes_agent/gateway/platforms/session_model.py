@@ -94,8 +94,8 @@ class _SessionModelSettingsMixin:
         Only slug, name, models, total_models and is_current leave core. On older Hermes,
         feature-detect this method with getattr (see the platform adapter guide).
         """
-        from hermes_cli.config import get_compatible_custom_providers
-        from hermes_cli.model_switch_providers import list_picker_providers
+        from hermes_agent.hermes_cli.config import get_compatible_custom_providers
+        from hermes_agent.hermes_cli.model_switch_providers import list_picker_providers
 
         with self._session_model_settings_context(source) as resolved:
             if resolved is None:

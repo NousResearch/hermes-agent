@@ -95,7 +95,7 @@ def _mcp_servers(policy, config, live, toolsets, secrets, replaced):
     off as build_policy does (a managed worker binds this config, so it connects exactly these), and their
     names into the returned toolsets. An editor-MCP session keeps its frozen servers."""
     from hermes_agent.gateway.session_policy import _extract_config_secrets, _resolve_toolsets
-    from hermes_cli.tools_config import enabled_mcp_server_names
+    from hermes_agent.hermes_cli.tools_config import enabled_mcp_server_names
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     if policy.editor_mcp_json is not None:
         return toolsets

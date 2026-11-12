@@ -20,10 +20,10 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.agent import relay_runtime
-from hermes_cli import lifecycle, plugins
-from hermes_cli.observability import relay_shared_metrics
-from hermes_cli.observability import shared_metrics_process as process_metrics
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli import lifecycle, plugins
+from hermes_agent.hermes_cli.observability import relay_shared_metrics
+from hermes_agent.hermes_cli.observability import shared_metrics_process as process_metrics
+from hermes_agent.hermes_cli.plugins import PluginManager
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tests.waiting import wait_until
 
@@ -75,7 +75,7 @@ def metrics_home(tmp_path, monkeypatch):
     policy = {"on": True}
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config_readonly",
+        "hermes_agent.hermes_cli.config.read_raw_config_readonly",
         lambda: {"telemetry": {"shared_metrics": {"enabled": policy["on"], "send": False}}},
     )
     _zero_plugin_runtimes(monkeypatch)
@@ -130,8 +130,8 @@ def test_compute_host_shutdown_frame_writes_the_open_sessions_summary(metrics_ho
 def test_sigtermed_kanban_worker_writes_the_open_sessions_summary(metrics_home, monkeypatch):
     import signal
 
-    import cli
-    from hermes_cli import cli_single_query
+    from hermes_agent import cli
+    from hermes_agent.hermes_cli import cli_single_query
 
     home, _ = metrics_home
     _finished_task_in_open_session()
@@ -293,8 +293,8 @@ def test_graceful_exit_drains_the_root_profiles_deferred_host_count(tmp_path, mo
     was deferred in memory; the graceful exit still writes it there (and only there) once the store
     frees, instead of losing it to ``os._exit``."""
     import hermes_agent.gateway.run as gateway_run
-    from hermes_cli.observability import shared_metrics_engagement as engagement
-    from hermes_cli.observability.shared_metrics import SharedMetricsStore
+    from hermes_agent.hermes_cli.observability import shared_metrics_engagement as engagement
+    from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 
     root = (tmp_path / "root").resolve()
     profile = root / "profiles" / "work"

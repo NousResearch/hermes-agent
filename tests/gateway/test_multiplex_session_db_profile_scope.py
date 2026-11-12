@@ -718,7 +718,7 @@ def test_profile_resolution_failure_fails_closed(multiplex_homes, monkeypatch):
     ownership check the failure would be indistinguishable from "no named
     owner" and silently route the row to root.
     """
-    import hermes_cli.profiles as profiles_mod
+    import hermes_agent.hermes_cli.profiles as profiles_mod
 
     root, _profile = multiplex_homes
     store = _multiplex_store(root)

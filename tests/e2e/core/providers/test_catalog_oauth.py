@@ -1,6 +1,6 @@
 """Real-process E2E: OAuth / device-code providers against a loopback vendor.
 
-Every cell drives the real ``python -m hermes_cli.main`` in a hermetic HOME (fake HOME, HERMES_HOME
+Every cell drives the real ``python -m hermes_agent.hermes_cli.main`` in a hermetic HOME (fake HOME, HERMES_HOME
 under it, no real credentials) against ``tests.fakes.providers.catalog_oauth.OAuthFake`` — the
 vendor's OAuth authorization server and a bearer-checking inference server on 127.0.0.1. All other
 egress goes through the ``CatalogFake`` sentinel proxy, which refuses and records any non-loopback

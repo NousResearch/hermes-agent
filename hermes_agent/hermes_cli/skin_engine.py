@@ -356,7 +356,7 @@ def _routed_home_key() -> Optional[str]:
 
 def _profile_config() -> dict:
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         return load_config_readonly() or {}
     except Exception:
         return {}

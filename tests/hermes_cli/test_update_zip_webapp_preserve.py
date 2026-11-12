@@ -6,8 +6,8 @@ import zipfile
 
 import pytest
 
-from hermes_cli import update_cmd_zip
-from hermes_cli.webapp import webapp_dist_dir
+from hermes_agent.hermes_cli import update_cmd_zip
+from hermes_agent.hermes_cli.webapp import webapp_dist_dir
 
 
 def _git(root, *args):
@@ -48,7 +48,7 @@ def test_clean_webapp_output_is_admitted_but_dirty_source_still_refuses(clean_in
 
 
 def test_local_zip_grafts_both_renderers_and_preswap_guard_keeps_dirty_source(clean_install, tmp_path, monkeypatch):
-    from hermes_cli import main
+    from hermes_agent.hermes_cli import main
 
     root = clean_install
     monkeypatch.setattr(main, "PROJECT_ROOT", root)

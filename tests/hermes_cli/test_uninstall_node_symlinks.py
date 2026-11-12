@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.uninstall.remove_node_symlinks.
+"""Tests for hermes_agent.hermes_cli.uninstall.remove_node_symlinks.
 
 Regression for #34536: the POSIX installer drops node/npm/npx symlinks in
 ~/.local/bin pointing into $HERMES_HOME/node and prepends ~/.local/bin to
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import uninstall
+from hermes_agent.hermes_cli import uninstall
 
 
 @pytest.fixture

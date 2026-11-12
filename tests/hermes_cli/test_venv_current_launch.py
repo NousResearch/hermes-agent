@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import venv_sync
+from hermes_agent.hermes_cli import venv_sync
 
 
 @pytest.fixture
 def launch(tmp_path, monkeypatch):
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root = tmp_path / "checkout"
     (root / ".git").mkdir(parents=True)

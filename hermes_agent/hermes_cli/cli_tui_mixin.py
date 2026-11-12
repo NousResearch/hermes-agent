@@ -1,7 +1,7 @@
-# health: allow FILE_LINES -- usage-window plans: /model picker hooks only (a multi-row hint, Large/Free row labels); the logic lives in hermes_cli/model_picker_usage.py
+# health: allow FILE_LINES -- usage-window plans: /model picker hooks only (a multi-row hint, Large/Free row labels); the logic lives in hermes_agent/hermes_cli/model_picker_usage.py
 """prompt_toolkit TUI construction, key-binding handlers, and overlay display fragments for the
 interactive CLI. Mixin bound onto ``HermesCLI`` via the MRO; cli.py-internal symbols are imported
-LAZILY inside each method (``from cli import ...``) — never at module load (import cycle)."""
+LAZILY inside each method (``from hermes_agent.cli import ...``) — never at module load (import cycle)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ import time
 
 from hermes_agent.agent.i18n import t
 from hermes_agent.agent.interrupt_compat import request_hard_interrupt
-from hermes_cli.commands_completion import SlashCommandAutoSuggest, cli_slash_completer
+from hermes_agent.hermes_cli.commands_completion import SlashCommandAutoSuggest, cli_slash_completer
 from pathlib import Path
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory
@@ -39,11 +39,11 @@ from prompt_toolkit.styles import Style as PTStyle
 from prompt_toolkit.widgets import TextArea
 from typing import Optional
 
-from hermes_cli import cli_enter_burst as _enter_burst
-from hermes_cli.cli_enter_burst import RAPID_INPUT_ENTER_WINDOW_S as _RAPID_INPUT_ENTER_WINDOW_S
-from hermes_cli.cli_footer_split import FooterSplit
-from hermes_cli.cli_panel import _Panel
-from hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
+from hermes_agent.hermes_cli import cli_enter_burst as _enter_burst
+from hermes_agent.hermes_cli.cli_enter_burst import RAPID_INPUT_ENTER_WINDOW_S as _RAPID_INPUT_ENTER_WINDOW_S
+from hermes_agent.hermes_cli.cli_footer_split import FooterSplit
+from hermes_agent.hermes_cli.cli_panel import _Panel
+from hermes_agent.hermes_cli.cli_tui_wrap import _prefix_wrapped_rows, _wrap_rows
 
 # Rows below an overlay panel taken by spinner/tool-progress, status bar, input, separators and
 # prompt symbol (measured ~6 during live PTY approval prompts) — shared by every panel budget.
@@ -67,7 +67,7 @@ def _approval_choice_label(choice: str) -> str:
 
 def _agent_name() -> str:
     try:
-        from hermes_cli.skin_engine import get_active_skin
+        from hermes_agent.hermes_cli.skin_engine import get_active_skin
         return get_active_skin().get_branding("agent_name", "Hermes")
     except Exception:
         return "Hermes"
@@ -104,7 +104,7 @@ class CLITuiMixin:
 
     def _get_slash_confirm_display_fragments(self):
         """Render the /new-/clear-style confirmation panel."""
-        from cli import _panel_box_width, _wrap_panel_text_keep_ws
+        from hermes_agent.cli import _panel_box_width, _wrap_panel_text_keep_ws
         state = self._slash_confirm_state
         if not state:
             return []
@@ -152,7 +152,7 @@ class CLITuiMixin:
         or with a long multi-paragraph description. The description sits at the bottom
         and is truncated to the remaining row budget, so HSplit never clips approve/deny off-screen.
         """
-        from cli import _panel_box_width, _wrap_panel_text_keep_ws
+        from hermes_agent.cli import _panel_box_width, _wrap_panel_text_keep_ws
         state = self._approval_state
         if not state:
             return []
@@ -236,13 +236,13 @@ class CLITuiMixin:
         leading icon. A non-default profile name is prepended (``coder ❯``).
         """
         try:
-            from hermes_cli.skin_engine import get_active_prompt_symbol
+            from hermes_agent.hermes_cli.skin_engine import get_active_prompt_symbol
             symbol = get_active_prompt_symbol("❯ ")
         except Exception:
             symbol = "❯ "
         symbol = (symbol or "❯ ").rstrip() + " "
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from hermes_agent.hermes_cli.profiles import get_active_profile_name
             profile = get_active_profile_name()
             if profile not in {"default", "custom"}:
                 symbol = f"{profile} {symbol}"
@@ -317,10 +317,10 @@ class CLITuiMixin:
         that paints its own ``bg:`` (status bar, completion menu) is left alone — its fg was tuned
         for that dark bg and remapping would give dark-on-dark; the terminal's mode is irrelevant.
         """
-        from cli import _detect_light_mode, _maybe_remap_for_light_mode
+        from hermes_agent.cli import _detect_light_mode, _maybe_remap_for_light_mode
         style_dict = dict(getattr(self, "_tui_style_base", {}) or {})
         try:
-            from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
+            from hermes_agent.hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
             style_dict.update(get_prompt_toolkit_style_overrides())
         except Exception:
             pass
@@ -423,7 +423,7 @@ class CLITuiMixin:
         """Batch (multi-question) clarify panel: "N questions" header, one status line per question
         (✓ answered → answer / ▸ active / · pending), and the active question's numbered choices
         (+ Other) expanded beneath its status line."""
-        from cli import _panel_box_width, _wrap_panel_text
+        from hermes_agent.cli import _panel_box_width, _wrap_panel_text
         state = self._clarify_state
         if not state:
             return []
@@ -524,7 +524,7 @@ class CLITuiMixin:
         the terminal rows or the bottom border and trailing items get clipped on long lists
         (e.g. Ollama Cloud's 36+ models). ``state["_scroll_offset"]`` is updated in place.
         """
-        from cli import HermesCLI, _panel_box_width, _wrap_panel_text
+        from hermes_agent.cli import HermesCLI, _panel_box_width, _wrap_panel_text
         # ``hint`` may be several rows (a window plan's limit line above the usual hint).
         hints = list(hint) if isinstance(hint, (list, tuple)) else [hint]
         box_width = _panel_box_width(title, hints + labels, min_width=min_width, max_width=max_width)
@@ -583,7 +583,7 @@ class CLITuiMixin:
                      model=state.get('current_model', _unknown),
                      provider=state.get('current_provider', _unknown))
         elif state.get("stage") == "reasoning":
-            from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
+            from hermes_agent.hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
             result = state.get("switch_result")
             picked = getattr(result, "new_model", "") or t("cli.shared.noun_model")
             title = t("cli.tui.picker_title_effort", model=picked)
@@ -605,7 +605,7 @@ class CLITuiMixin:
             filtered_pairs = self._filter_model_picker_entries(model_list, _query)
             state["_filtered_pairs"] = filtered_pairs
             model_labels = [e for (_i, e) in filtered_pairs]
-            from hermes_cli.model_picker_usage import annotate_window_plan_rows
+            from hermes_agent.hermes_cli.model_picker_usage import annotate_window_plan_rows
             row_labels, limit_line = annotate_window_plan_rows(provider_data, model_labels)
             choices = row_labels + [t("cli.shared.back"), t("cli.shared.cancel")]
             if _query:
@@ -640,7 +640,7 @@ class CLITuiMixin:
         self, title: str, body_lines: list[str], row_styles: list[str] | None = None
     ):
         """Bordered ``sudo-*`` panel: blank, each body line, blank, body-final line, blank."""
-        from cli import _panel_box_width
+        from hermes_agent.cli import _panel_box_width
         box_width = _panel_box_width(title, body_lines)
         panel = _Panel('class:sudo-border', box_width, title, 'class:sudo-title')
         panel.blank()
@@ -820,7 +820,7 @@ class CLITuiMixin:
         Runs on prompt_toolkit's event-loop thread: any blocking call here (locks, sd.wait,
         disk I/O) freezes the whole UI, so all heavy work goes to daemon threads.
         """
-        from cli import _DIM, _RST, _cprint, logger
+        from hermes_agent.cli import _DIM, _RST, _cprint, logger
         if not self._voice_mode:
             return
         if self._voice_recording:
@@ -873,7 +873,7 @@ class CLITuiMixin:
 
     def _tui_cancel_voice_recording(self, event) -> bool:
         """Cancel an active recording; True when one was cancelled (caller stops there)."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         _recorder_ref = None
         with self._voice_lock:
             if self._voice_recording and self._voice_recorder:
@@ -1061,7 +1061,7 @@ class CLITuiMixin:
     def _tui_handle_ignored_terminal_sequence(self, event):
         """Consume parser-level ignored terminal sequences before self-insert.
 
-        hermes_cli.pt_input_extras registers focus reports (CSI I / CSI O) as Keys.Ignore at the
+        hermes_agent.hermes_cli.pt_input_extras registers focus reports (CSI I / CSI O) as Keys.Ignore at the
         VT100 parser; without this no-op binding the default self-insert would still land the
         bytes in the buffer. Focus-in additionally schedules a rate-limited full repaint: while
         hidden, the emulator may have coalesced output or repainted, so prompt_toolkit's
@@ -1096,14 +1096,14 @@ class CLITuiMixin:
 
     def _tui_handle_ctrl_z(self, event):
         """Ctrl+Z suspends the process (Unix only)."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         if sys.platform == 'win32':
             _cprint(f"\n{_DIM}{t('cli.tui.suspend_unsupported')}{_RST}")
             event.app.invalidate()
             return
         import signal as _sig
         from prompt_toolkit.application import run_in_terminal
-        from hermes_cli.skin_engine import get_active_skin
+        from hermes_agent.hermes_cli.skin_engine import get_active_skin
         agent_name = get_active_skin().get_branding("agent_name", "Hermes Agent")
         msg = "\n" + t("cli.tui.suspended", agent_name=agent_name)
 
@@ -1212,7 +1212,7 @@ class CLITuiMixin:
         if state.get("stage") == "provider":
             max_idx = len(state.get("providers") or [])
         elif state.get("stage") == "reasoning":
-            from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
+            from hermes_agent.hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
             max_idx = len(_picker_reasoning_rows()) + 1  # + Back + Cancel
         else:
             # +1 for "← Back" and Cancel over the filtered visible rows.
@@ -1372,7 +1372,7 @@ class CLITuiMixin:
             event.app.invalidate()
 
     def _tui_wake_startup(self):
-        from cli import logger
+        from hermes_agent.cli import logger
         try:
             self._maybe_start_wake_word()
         except Exception as e:
@@ -1396,7 +1396,7 @@ class CLITuiMixin:
         redirect / interrupt queue / next-turn queue); idle → ``_pending_input``. Slash and bang
         commands always take the local-dispatch path (never steer/interrupt text to the model).
         """
-        from cli import _apply_backslash_line_continuation, _is_backslash_line_continuation
+        from hermes_agent.cli import _apply_backslash_line_continuation, _is_backslash_line_continuation
         if self._tui_enter_overlay(event):
             return
         buf = event.app.current_buffer
@@ -1413,13 +1413,13 @@ class CLITuiMixin:
             event.app.invalidate()
             return
         # Enter mid-burst: a pasted newline (#10994), or the end of a scripted `text`+Enter write.
-        from hermes_cli.cli_enter_burst import handle_burst_enter
+        from hermes_agent.hermes_cli.cli_enter_burst import handle_burst_enter
         if not handle_burst_enter(self, event, buf):
             self._tui_submit_buffer(event, buf)
 
     def _tui_submit_buffer(self, event, buf):
         """Submit the composer: inline commands, busy routing or ``_pending_input``."""
-        from cli import _looks_like_slash_command
+        from hermes_agent.cli import _looks_like_slash_command
         text = buf.text.strip()
         has_images = bool(self._attached_images)
         if not (text or has_images):
@@ -1478,7 +1478,7 @@ class CLITuiMixin:
         steer → agent.steer(text) mid-run (images can't ride along; a missing/rejecting steer() falls back
         to queue). interrupt → agent.redirect() when supported, else the legacy interrupt queue. queue →
         next turn: text-only on the gateway's session is a ``/queue`` FIFO admission (#134889 N5)."""
-        from cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
+        from hermes_agent.cli import CLI_CONFIG, _ACCENT, _DIM, _RST, _cprint, _hermes_home
         _effective_mode = mode or self.busy_input_mode
         redirected = False
         if _effective_mode == "steer":
@@ -1545,7 +1545,7 @@ class CLITuiMixin:
 
     def _tui_enter_overlay(self, event) -> bool:
         """Enter while a modal overlay is up: submit it. True when handled."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         buf = event.app.current_buffer
         if self._connection_state:
             state = self._connection_state
@@ -1590,7 +1590,7 @@ class CLITuiMixin:
             try:
                 # Picker selections follow the same session-scoped default as /model <name>
                 # (model.persist_switch_by_default).
-                from hermes_cli.model_switch import resolve_persist_behavior
+                from hermes_agent.hermes_cli.model_switch import resolve_persist_behavior
                 self._handle_model_picker_selection(persist_global=resolve_persist_behavior(False, False))
             except Exception as _exc:
                 _cprint("  " + t("cli.tui.model_selection_failed", error=_exc))
@@ -1651,7 +1651,7 @@ class CLITuiMixin:
 
     def _tui_collapse_paste(self, text: str, line_count: int, *, fallback: bool) -> str:
         """Save a large paste under ~/.hermes/pastes and return the placeholder for the buffer."""
-        from cli import _hermes_home, datetime, logger
+        from hermes_agent.cli import _hermes_home, datetime, logger
         self._tui_paste_counter += 1
         paste_dir = _hermes_home / "pastes"
         paste_dir.mkdir(parents=True, exist_ok=True)
@@ -1674,7 +1674,7 @@ class CLITuiMixin:
         """Bracketed paste: strip leaked terminal responses, auto-attach a clipboard image only
         for image-only/empty gestures (so text pastes and dictation never attach stale images),
         and collapse large pastes to a file-reference placeholder, preserving existing text."""
-        from cli import (
+        from hermes_agent.cli import (
             _should_auto_attach_clipboard_image_on_paste,
             _strip_leaked_bracketed_paste_wrappers,
             _strip_leaked_terminal_responses_with_meta,
@@ -1724,7 +1724,7 @@ class CLITuiMixin:
         but batch newlines; Alt+Enter adds 1 newline per event so never trips it).
         """
         self._tui_last_text_change = _enter_burst.note_text_change(self)
-        from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
+        from hermes_agent.cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         text = _strip_leaked_bracketed_paste_wrappers(buf.text)
         text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)
         if _had_mouse_reports:
@@ -1762,7 +1762,7 @@ class CLITuiMixin:
         A stack (not a single slot) is what makes repeated Ctrl+S safe: a second stash never
         silently overwrites the first, both stay reachable in the panel.
         """
-        from hermes_cli.prompt_stash import ACTION_RESTORED, ACTION_STASHED, resolve_ctrl_s
+        from hermes_agent.hermes_cli.prompt_stash import ACTION_RESTORED, ACTION_STASHED, resolve_ctrl_s
         buf = event.app.current_buffer
         action, payload = resolve_ctrl_s(self._prompt_stash, buf.text, self._attached_images)
         if action == ACTION_STASHED:
@@ -1789,7 +1789,7 @@ class CLITuiMixin:
         self._tui_recall_without_recollapse(buf, lambda: buf.auto_down(count=event.arg))
 
     def _tui_image_bar_fragments(self):
-        from cli import _format_image_attachment_badges
+        from hermes_agent.cli import _format_image_attachment_badges
         if not self._attached_images:
             return []
         badges = _format_image_attachment_badges(self._attached_images, self._image_counter)
@@ -1815,7 +1815,7 @@ class CLITuiMixin:
 
     def _tui_init_run_state(self):
         """Reset the per-run REPL state (queues, modal states, voice state, config watcher)."""
-        from hermes_cli.config_backend import config_version_or_none
+        from hermes_agent.hermes_cli.config_backend import config_version_or_none
         self._agent_running = False
         self._pending_input = queue.Queue()     # normal input (commands + new queries)
         self._interrupt_queue = queue.Queue()   # messages typed while the agent is running
@@ -1833,7 +1833,7 @@ class CLITuiMixin:
         # No PluginManager._cli_ref: plugins load in the gateway, not here (PLG-7).
 
         # Config file watcher — detect mcp_servers changes and auto-reload.
-        from hermes_cli.config import get_config_path as _get_config_path
+        from hermes_agent.hermes_cli.config import get_config_path as _get_config_path
         _cfg_path = _get_config_path()
         self._config_sig: tuple | None = config_version_or_none(_cfg_path)
         self._config_mcp_servers: dict = self.config.get("mcp_servers") or {}
@@ -1889,7 +1889,7 @@ class CLITuiMixin:
         binding, so the generic handlers (Tab, history Up/Down) are registered before or after
         their filtered modal overrides deliberately.
         """
-        from cli import (
+        from hermes_agent.cli import (
             CLI_CONFIG,
             _bind_prompt_submit_keys,
             _cli_multiline_shortcuts_enabled,
@@ -1937,7 +1937,7 @@ class CLITuiMixin:
         kb.add(Keys.BracketedPaste, eager=True)(self._tui_handle_paste)
         kb.add('c-v')(self._tui_handle_ctrl_v)
         kb.add('escape', 'v')(self._tui_handle_alt_v)
-        from hermes_cli.cli_subagent_monitor import modal_prompt_active, open_monitor, toggle_dock
+        from hermes_agent.hermes_cli.cli_subagent_monitor import modal_prompt_active, open_monitor, toggle_dock
         for key in ('c-t', 'f6'):
             kb.add(key, filter=Condition(lambda: not modal_prompt_active(self)))(
                 lambda event: open_monitor(self))
@@ -2054,7 +2054,7 @@ class CLITuiMixin:
         recording-hint renders can never drift from the live key even if the config is edited
         mid-session.
         """
-        from cli import logger
+        from hermes_agent.cli import logger
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key) Default: Ctrl+B (avoids
         # conflict with Ctrl+R readline reverse-search). Config spellings (ctrl/control/alt/option/opt) are
         # normalized to prompt_toolkit's c-x / a-x format via
@@ -2064,8 +2064,8 @@ class CLITuiMixin:
         # notice the TUI/CLI split instead of a silent mismatch (round-11).
         _raw_key: object = "ctrl+b"
         try:
-            from hermes_cli.config import load_config
-            from hermes_cli.voice import (
+            from hermes_agent.hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.voice import (
                 normalize_voice_record_key_for_prompt_toolkit,
                 pt_key_to_sequence,
                 voice_record_key_from_config)
@@ -2098,7 +2098,7 @@ class CLITuiMixin:
     def _tui_build_layout(self, kb):
         """Build the TUI widgets, Layout and Style; registers wrapper keybindings on ``kb``."""
         cli_ref = self
-        from hermes_cli.cli_subagent_monitor import install_dock
+        from hermes_agent.hermes_cli.cli_subagent_monitor import install_dock
         install_dock(self)
         input_area = self._tui_build_input_area()
         spinner_widget = Window(
@@ -2135,7 +2135,7 @@ class CLITuiMixin:
             char='─', height=lambda: cli_ref._tui_input_rule_height("bottom"), style='class:input-rule',
         )
         if getattr(self, "_modern_layout", False):
-            from hermes_cli.cli_modern_layout import modern_input_rules
+            from hermes_agent.hermes_cli.cli_modern_layout import modern_input_rules
             input_rule_top, input_rule_bot = modern_input_rules(self, kb)
         image_bar = Window(
             content=FormattedTextControl(self._tui_image_bar_fragments),
@@ -2185,7 +2185,7 @@ class CLITuiMixin:
     def _tui_build_input_area(self):
         """Multi-line prompt TextArea with slash completion, paste-collapse tracking and
         placeholder/password processors."""
-        from cli import _estimate_tui_input_height
+        from hermes_agent.cli import _estimate_tui_input_height
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
         from prompt_toolkit.completion import ThreadedCompleter
         cli_ref = self

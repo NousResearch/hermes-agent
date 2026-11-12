@@ -44,8 +44,8 @@ class TestNamedCustomProviderCatalogs:
                 }
             }
         )
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models",
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_agent.hermes_cli.model_switch_providers._fetch_picker_live_models",
             return_value=["model-a", "model-b"],
         ):
             catalogs = _named_custom_provider_catalogs()
@@ -69,8 +69,8 @@ class TestNamedCustomProviderCatalogs:
                 }
             }
         )
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models", return_value=None
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_agent.hermes_cli.model_switch_providers._fetch_picker_live_models", return_value=None
         ):
             assert _named_custom_provider_catalogs() == []
 
@@ -85,8 +85,8 @@ class TestNamedCustomProviderCatalogs:
                 }
             }
         )
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models", return_value=None
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_agent.hermes_cli.model_switch_providers._fetch_picker_live_models", return_value=None
         ):
             assert _named_custom_provider_catalogs() == []
 
@@ -102,8 +102,8 @@ class TestNamedCustomProviderCatalogs:
                 }
             ]
         )
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models", return_value=None
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_agent.hermes_cli.model_switch_providers._fetch_picker_live_models", return_value=None
         ):
             catalogs = _named_custom_provider_catalogs()
 
@@ -119,11 +119,11 @@ class TestNamedCustomProviderCatalogs:
                 }
             }
         )
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models_local.should_use_ollama_native_catalog",
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_agent.hermes_cli.models_local.should_use_ollama_native_catalog",
             return_value=True,
         ), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models",
+            "hermes_agent.hermes_cli.model_switch_providers._fetch_picker_live_models",
             return_value=["qwen3:1.7b"],
         ):
             catalogs = _named_custom_provider_catalogs()
@@ -138,11 +138,11 @@ class TestNamedCustomProviderCatalogs:
                 }
             ]
         )
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models_local.should_use_ollama_native_catalog",
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_agent.hermes_cli.models_local.should_use_ollama_native_catalog",
             return_value=True,
         ), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models",
+            "hermes_agent.hermes_cli.model_switch_providers._fetch_picker_live_models",
             return_value=["qwen3:1.7b"],
         ) as fetch:
             catalogs = _named_custom_provider_catalogs()
@@ -160,13 +160,13 @@ class TestNamedCustomProviderCatalogs:
                 }
             }
         )
-        from hermes_cli.model_switch_providers import _NativePickerModelList
+        from hermes_agent.hermes_cli.model_switch_providers import _NativePickerModelList
 
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.models_local.should_use_ollama_native_catalog",
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_agent.hermes_cli.models_local.should_use_ollama_native_catalog",
             return_value=True,
         ), patch(
-            "hermes_cli.model_switch_providers._fetch_picker_live_models",
+            "hermes_agent.hermes_cli.model_switch_providers._fetch_picker_live_models",
             return_value=_NativePickerModelList(),
         ):
             assert _named_custom_provider_catalogs() == [
@@ -233,7 +233,7 @@ class TestModelStateIncludesNamedProviders:
     @pytest.mark.asyncio
     async def test_configured_provider_inventory_row_uses_custom_choice_id(self):
         """A ``providers:`` row must not expose its raw config key to ACP."""
-        from hermes_cli.models import parse_model_input
+        from hermes_agent.hermes_cli.models import parse_model_input
 
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(model="model-a", provider="relay")
@@ -251,8 +251,8 @@ class TestModelStateIncludesNamedProviders:
             "providers": [{"slug": "relay", "name": "Relay", "is_user_defined": True, "models": ["model-a"]}]
         }
 
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch(
-            "hermes_cli.inventory.build_models_payload", return_value=inventory
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg), patch(
+            "hermes_agent.hermes_cli.inventory.build_models_payload", return_value=inventory
         ), patch(
             "hermes_agent.acp_adapter.model_catalog._named_custom_provider_catalogs",
             return_value=[("custom:relay", "Relay", [("model-a", "")])],
@@ -267,7 +267,7 @@ class TestModelStateIncludesNamedProviders:
 
     def test_selector_choice_id_round_trips_through_parse_model_input(self):
         """The encoded choice id must resolve back to the named provider."""
-        from hermes_cli.models import parse_model_input
+        from hermes_agent.hermes_cli.models import parse_model_input
 
         choice_id = "custom:bedrock-mantle:openai.gpt-5.5"
         cfg = {
@@ -278,14 +278,14 @@ class TestModelStateIncludesNamedProviders:
                 }
             }
         }
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg):
             provider, model = parse_model_input(choice_id, "bedrock")
         assert provider == "custom:bedrock-mantle"
         assert model == "openai.gpt-5.5"
 
     def test_selector_choice_id_round_trips_colon_bearing_custom_identity(self):
         """Configured provider and model IDs may both contain colons."""
-        from hermes_cli.models import parse_model_input
+        from hermes_agent.hermes_cli.models import parse_model_input
 
         cfg = {
             "providers": {
@@ -295,7 +295,7 @@ class TestModelStateIncludesNamedProviders:
                 }
             }
         }
-        with patch("hermes_cli.config.load_config", return_value=cfg):
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg):
             provider, model = parse_model_input(
                 "custom:local-127.0.0.1:11434:qwen3:1.7b", "custom"
             )
@@ -318,7 +318,7 @@ class TestModelStateIncludesNamedProviders:
              "api_url": "https://or.example/api/v1", "models": ["model-a"]},
         ]}
 
-        with patch("hermes_cli.inventory.build_models_payload", return_value=inventory), patch(
+        with patch("hermes_agent.hermes_cli.inventory.build_models_payload", return_value=inventory), patch(
             "hermes_agent.acp_adapter.model_catalog._named_custom_provider_catalogs",
             return_value=[("custom:openrouter", "openrouter", [("model-a", "")])],
         ):

@@ -2,7 +2,7 @@
 
 Catalog rule 9 ("public surfaces only") is enforced for runtime rebinds by
 ``plugin_validate_core_override``; an import of a core internal (``tools.tirith_security``,
-``hermes_cli.cli_config_load._parse_service_tier_config``) passes that check yet breaks the plugin on
+``hermes_agent.hermes_cli.cli_config_load._parse_service_tier_config``) passes that check yet breaks the plugin on
 the release that moves or removes the internal. This static pass lists those imports, with
 file:line, so reviewers see the coupling at admission. Imports of the plugin's own modules, the
 standard library and third-party packages are never flagged; neither are ``TYPE_CHECKING`` imports.
@@ -18,15 +18,15 @@ from pathlib import Path
 
 from hermes_agent.compat.moves import MOVES
 from hermes_agent.compat.paths import current_globs, current_module, original_module
-from hermes_cli.plugin_validate_core_override import _hermes_top_level, _python_files
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.plugin_validate_core_override import _hermes_top_level, _python_files
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 _PLUGIN_API = Path(__file__).resolve().parent / "data" / "plugin_api.json"
 
 
 @lru_cache(maxsize=1)
 def _public_api() -> frozenset:
-    """The published plugin API (``hermes_cli/data/plugin_api.json``): ``module`` entries allow the
+    """The published plugin API (``hermes_agent/hermes_cli/data/plugin_api.json``): ``module`` entries allow the
     module (underscore names excepted), ``module:Name`` entries allow one name. The docs page
     ``developer-guide/plugins/public-api.md`` is generated from the same file."""
     data = json.loads(_PLUGIN_API.read_text(encoding="utf-8-sig"))

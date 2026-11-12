@@ -18,7 +18,7 @@ def _ready_payload(home: str) -> dict:
 
 
 def test_endpoint_matches_served_home_under_any_canonical_spelling(tmp_path):
-    from hermes_cli.gateway_runtime import _canonical_home, _endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import _canonical_home, _endpoint
     real = tmp_path / 'real-home'
     real.mkdir()
     served = str(real.resolve())
@@ -43,7 +43,7 @@ def test_endpoint_matches_served_home_under_any_canonical_spelling(tmp_path):
 def test_ready_endpoint_carries_the_owner_boot_commit(tmp_path):
     """`gateway ensure --json` publishes the code the owner BOOTED from, so Desktop can restart a
     gateway that outlived `hermes update` instead of re-attaching it forever (503 Restart required)."""
-    from hermes_cli.gateway_runtime import _endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import _endpoint
     home = tmp_path / 'home'
     home.mkdir()
     served = str(home.resolve())

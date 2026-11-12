@@ -31,13 +31,13 @@ def signal_stale_fleet_survivors(fleet: list, restart, drain_budget: float) -> l
     Bookkeeping lands in ``restart.killed_pids`` so the receipt and the survivor sweep see them.
     Never raises: verification must still finalize the receipt (with an owed restart).
     """
-    from hermes_cli.update_cmd_fleet import _drain_or_signal_gateway_for_update
+    from hermes_agent.hermes_cli.update_cmd_fleet import _drain_or_signal_gateway_for_update
 
     pids = stale_fleet_survivor_pids(fleet, set(restart.killed_pids))
     if not pids:
         return []
     try:
-        from hermes_cli.gateway import _get_service_pids
+        from hermes_agent.hermes_cli.gateway import _get_service_pids
         service_pids = set(_get_service_pids(all_profiles=True))
     except Exception:
         service_pids = set()

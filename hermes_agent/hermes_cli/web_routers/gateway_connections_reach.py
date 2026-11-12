@@ -21,9 +21,9 @@ from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from starlette.concurrency import run_in_threadpool
 
-from hermes_cli import gateway_connections as store
-from hermes_cli import gateway_connections_oauth as oauth
-from hermes_cli import gateway_connections_ssh as ssh
+from hermes_agent.hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli import gateway_connections_oauth as oauth
+from hermes_agent.hermes_cli import gateway_connections_ssh as ssh
 
 router = APIRouter()
 

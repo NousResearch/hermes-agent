@@ -106,7 +106,7 @@ def test_store_project_credentials_round_trip(
 def test_load_user_numbers_falls_back_to_home_channel(
     tmp_hermes_home: Path,
 ) -> None:
-    from hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli.config import save_env_value
 
     save_env_value("PHOTON_HOME_CHANNEL", "+15551234567")
 
@@ -155,12 +155,12 @@ def test_load_project_credentials_env_override(
 
 # ---------------------------------------------------------------------------
 # Cross-process auth.json lock (issue: photon wrote auth.json without the
-# cross-process lock hermes_cli/auth.py's ~15 other writers all use, so a
+# cross-process lock hermes_agent/hermes_cli/auth.py's ~15 other writers all use, so a
 # concurrent refresh from elsewhere could silently lose photon's update or
 # vice versa).
 
 def _hold_auth_lock_then_release(hold_event: threading.Event, release_event: threading.Event) -> None:
-    from hermes_cli.auth import _auth_store_lock
+    from hermes_agent.hermes_cli.auth import _auth_store_lock
 
     with _auth_store_lock():
         hold_event.set()

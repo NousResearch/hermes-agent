@@ -320,7 +320,7 @@ def served_room_link_endpoint(target_profile: str) -> dict[str, Any]:
     if target_profile == "default":
         return local_room_link_endpoint()
     from hermes_agent.agent.secret_scope import is_multiplex_active
-    from hermes_cli.profiles import get_profile_dir
+    from hermes_agent.hermes_cli.profiles import get_profile_dir
     override = os.getenv("HERMES_ROOM_LINK_URL")
     if override is None and (own := _room_link_url_from_config(str(get_profile_dir(target_profile)))):
         return local_room_link_endpoint(own)

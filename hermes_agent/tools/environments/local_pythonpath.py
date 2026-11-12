@@ -78,7 +78,7 @@ def _validated_runtime_venv(env: dict) -> Path | None:
     layout AND a real ``pyvenv.cfg``."""
     from pm.environments import payload_venv, runtime_facts_path, selected_venv
 
-    from hermes_cli._startup_fast import project_root_str
+    from hermes_agent.hermes_cli._startup_fast import project_root_str
     root = Path(project_root_str())
     if runtime_facts_path(root).is_file():
         return selected_venv(root)

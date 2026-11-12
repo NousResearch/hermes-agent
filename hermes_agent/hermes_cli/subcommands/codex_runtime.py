@@ -3,7 +3,7 @@
 ``hermes codex-runtime migrate [--dry-run] [--json]`` runs the same ``~/.codex/config.toml``
 migration the slash command triggers when the codex app-server runtime is enabled, on the
 selected profile home (``hermes -p NAME codex-runtime migrate``), so automation no longer has to
-import ``hermes_cli.codex_runtime_plugin_migration`` directly (issue #79023).
+import ``hermes_agent.hermes_cli.codex_runtime_plugin_migration`` directly (issue #79023).
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ import json
 
 def cmd_codex_runtime_migrate(args: argparse.Namespace) -> int:
     """Project Hermes MCP servers (+ codex plugins) into ~/.codex/config.toml; 1 on any error."""
-    from hermes_cli.codex_runtime_plugin_migration import migrate
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.codex_runtime_plugin_migration import migrate
+    from hermes_agent.hermes_cli.config import load_config
 
     report = migrate(load_config(), dry_run=args.dry_run)
     if args.json:

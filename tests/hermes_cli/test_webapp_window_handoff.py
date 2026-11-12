@@ -7,20 +7,20 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture
 def local_webapp(monkeypatch):
-    from hermes_cli import web_server as server
+    from hermes_agent.hermes_cli import web_server as server
 
     monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
     monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
     monkeypatch.setattr(server.app.state, "bound_host", "127.0.0.1", raising=False)
     monkeypatch.setattr(server.app.state, "webapp_window_tickets", {}, raising=False)
     monkeypatch.setattr(server, "_SESSION_TOKEN", "a" * 43)
-    monkeypatch.setattr("hermes_cli.dashboard_auth.prefix.resolve_public_url", lambda: "")
+    monkeypatch.setattr("hermes_agent.hermes_cli.dashboard_auth.prefix.resolve_public_url", lambda: "")
     return server, TestClient(server.app, base_url="http://127.0.0.1")
 
 
 @pytest.mark.parametrize("public_url", ["", "http://localhost", "http://127.0.0.1:8080"])
 def test_child_handoff_is_private_single_use_and_authorizes_real_api(local_webapp, tmp_path, monkeypatch, public_url):
-    monkeypatch.setattr("hermes_cli.dashboard_auth.prefix.resolve_public_url", lambda: public_url)
+    monkeypatch.setattr("hermes_agent.hermes_cli.dashboard_auth.prefix.resolve_public_url", lambda: public_url)
     server, client = local_webapp
     token = server._SESSION_TOKEN
     headers = {"X-Hermes-Session-Token": token}
@@ -71,7 +71,7 @@ def test_child_handoff_is_private_single_use_and_authorizes_real_api(local_webap
 
 @pytest.mark.parametrize("invalidate", ["expiry", "restart", "gated", "dashboard"])
 def test_child_handoff_is_bound_to_local_webapp_start(local_webapp, monkeypatch, invalidate):
-    from hermes_cli.web_routers import webapp
+    from hermes_agent.hermes_cli.web_routers import webapp
 
     server, client = local_webapp
     issued = client.post("/api/webapp/window-ticket", headers={"X-Hermes-Session-Token": server._SESSION_TOKEN})
@@ -94,8 +94,8 @@ def test_child_handoff_is_bound_to_local_webapp_start(local_webapp, monkeypatch,
 
 def test_pending_handoffs_keep_the_credentials_generation_not_the_credential(local_webapp):
     """Window and launch tickets waiting to be spent record the browser credential's generation
-    (``hermes_cli.browser_credential``), never the credential itself, and still hand it over once."""
-    from hermes_cli.web_routers import webapp
+    (``hermes_agent.hermes_cli.browser_credential``), never the credential itself, and still hand it over once."""
+    from hermes_agent.hermes_cli.web_routers import webapp
 
     server, client = local_webapp
     token = server._SESSION_TOKEN

@@ -33,7 +33,7 @@ from pathlib import Path
 from hermes_agent.gateway.control_socket import windows_pipe_name
 from hermes_agent.gateway import runtime_bootstrap_windows as native
 from hermes_dir_acl import process_is_elevated
-from hermes_cli.gateway_runtime import discover_gateway_endpoint
+from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
 home = Path(sys.argv[1])
 out = {"pipe": windows_pipe_name(home), "elevated": process_is_elevated()}
 try:

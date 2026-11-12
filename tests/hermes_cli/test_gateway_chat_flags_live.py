@@ -79,9 +79,9 @@ def test_continue_latest_footer_and_tool_listing(tmp_path):
             latest, latest_sid = hermes("chat", "--resume", "latest", "-q", "latest in b", "-Q", cwd=repo_b)
             assert latest.returncode == 0 and latest_sid == sid_b, latest
 
-            tools, _ = hermes("--list-toolsets", cwd=repo_a, module="cli")
+            tools, _ = hermes("--list-toolsets", cwd=repo_a, module="hermes_agent.cli")
             assert tools.returncode == 0 and "terminal" in tools.stdout, tools
-            listing, _ = hermes("--list-tools", "--toolsets", "file", cwd=repo_a, module="cli")
+            listing, _ = hermes("--list-tools", "--toolsets", "file", cwd=repo_a, module="hermes_agent.cli")
             assert listing.returncode == 0 and "read_file" in listing.stdout and "[file]" in listing.stdout, listing
         finally:
             if daemon.poll() is None:

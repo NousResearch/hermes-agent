@@ -8,10 +8,10 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.dashboard_auth import refresh_singleflight as replay
-from hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError, Session
-from hermes_cli.dashboard_auth.routes import router
+from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_agent.hermes_cli.dashboard_auth import refresh_singleflight as replay
+from hermes_agent.hermes_cli.dashboard_auth.base import ProviderError, RefreshExpiredError, Session
+from hermes_agent.hermes_cli.dashboard_auth.routes import router
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -180,7 +180,7 @@ class _RotatingReuseDetectingProvider(Provider):
 
 @pytest.fixture
 def gated_web_app():
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     prev = {k: getattr(web_server.app.state, k, None) for k in ("bound_host", "bound_port", "auth_required")}
     web_server.app.state.bound_host = "gw.example.test"

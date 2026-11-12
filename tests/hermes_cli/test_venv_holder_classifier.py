@@ -2,7 +2,7 @@
 
 import pytest
 
-from hermes_cli.update_cmd import (
+from hermes_agent.hermes_cli.update_cmd import (
     _hermes_holder_subcommand,
 )
 
@@ -44,7 +44,7 @@ class TestHolderSubcommand:
         import shlex
         from pathlib import Path
 
-        from hermes_cli._launchers import runtime_command
+        from hermes_agent.hermes_cli._launchers import runtime_command
 
         cmdline = shlex.join(runtime_command(Path("/opt/hermes-agent"), ["dashboard"], python="/opt/store/python"))
         assert _hermes_holder_subcommand(cmdline) == "dashboard"

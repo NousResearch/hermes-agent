@@ -47,7 +47,7 @@ class BrowserProfileLoginBackend(LoginBackend):
     # ── detection / snapshot location ─────────────────────────────────────────────────────────────
 
     def _browser_name(self) -> Optional[str]:
-        from hermes_cli.browser_connect import detect_default_chromium
+        from hermes_agent.hermes_cli.browser_connect import detect_default_chromium
         return detect_default_chromium()
 
     def _browser_label(self) -> str:
@@ -59,7 +59,7 @@ class BrowserProfileLoginBackend(LoginBackend):
         browser = self._browser_name()
         if not browser:
             return None
-        from hermes_cli.browser_connect import real_profile_copy_dir
+        from hermes_agent.hermes_cli.browser_connect import real_profile_copy_dir
         return real_profile_copy_dir(browser)
 
     def _ensure_snapshot(self) -> Optional[str]:
@@ -125,7 +125,7 @@ class BrowserProfileLoginBackend(LoginBackend):
         if not browser:
             return True
         try:
-            from hermes_cli.browser_connect import (
+            from hermes_agent.hermes_cli.browser_connect import (
                 _SNAPSHOT_DONE_MARKER, _resolve_source_profile, _snapshot_source,
                 real_profile_data_dir)
             snap_source = _snapshot_source(os.path.join(copy_dir, _SNAPSHOT_DONE_MARKER))

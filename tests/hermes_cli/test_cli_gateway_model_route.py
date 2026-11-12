@@ -7,15 +7,15 @@ admission's ``model_override``.
 import queue
 from types import SimpleNamespace
 
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.model_switch import ModelSwitchResult
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
 
 class RecordingConnection:
     epoch = 1
 
     def __init__(self, info):
-        from hermes_cli.gateway_connection import SessionState
+        from hermes_agent.hermes_cli.gateway_connection import SessionState
         self.events = queue.Queue()
         self.calls = []
         self.closed = False
@@ -56,7 +56,7 @@ class RecordingConnection:
 
 
 def _agent(conn, **kw):
-    from hermes_cli.gateway_agent import GatewayAgent
+    from hermes_agent.hermes_cli.gateway_agent import GatewayAgent
     return GatewayAgent(connection=conn, session_id="s", **kw)
 
 
@@ -68,7 +68,7 @@ def _model_routes(conn):
 
 
 def test_classic_cli_model_switch_reaches_the_gateway_session(monkeypatch):
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     from tests.hermes_cli.test_cli_model_once import _StubCLI
     conn = RecordingConnection({"model": "old/model", "provider": "openrouter"})
     stub = _StubCLI()
@@ -78,13 +78,13 @@ def test_classic_cli_model_switch_reaches_the_gateway_session(monkeypatch):
     stub.session_id = "s"
     printed = []
     monkeypatch.setattr(cli_mod, "_cprint", lambda s, *a, **k: printed.append(str(s)))
-    monkeypatch.setattr("hermes_cli.inventory.load_picker_context", lambda: SimpleNamespace(
+    monkeypatch.setattr("hermes_agent.hermes_cli.inventory.load_picker_context", lambda: SimpleNamespace(
         user_providers=None, custom_providers=None,
         with_overrides=lambda **_: SimpleNamespace(user_providers=None, custom_providers=None)))
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_: ModelSwitchResult(
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", lambda **_: ModelSwitchResult(
         success=True, new_model="claude-sonnet-4.6", target_provider="anthropic", api_key="sk-ant",
         base_url="https://api.anthropic.com", api_mode="anthropic_messages", provider_label="Anthropic"))
-    monkeypatch.setattr("hermes_cli.model_switch.resolve_display_context_length", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.resolve_display_context_length", lambda *a, **k: None)
 
     cli_mod.HermesCLI._handle_model_switch(stub, "/model claude-sonnet-4.6 --provider anthropic")
 

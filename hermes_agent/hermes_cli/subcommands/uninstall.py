@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import Callable
 
-from hermes_cli.subcommands._shared import add_yes_flag
+from hermes_agent.hermes_cli.subcommands._shared import add_yes_flag
 
 
 def build_uninstall_parser(subparsers, *, cmd_uninstall: Callable) -> None:

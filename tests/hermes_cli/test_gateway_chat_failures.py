@@ -7,8 +7,8 @@ import pytest
 
 
 def test_direct_query_alias_survives_noninteractive_launch(monkeypatch):
-    from hermes_cli import gateway_chat
-    from hermes_cli import gateway_chat_startup
+    from hermes_agent.hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli import gateway_chat_startup
     seen = []
 
     async def run(args, emitter=None):
@@ -24,8 +24,8 @@ def test_direct_query_alias_survives_noninteractive_launch(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_explicit_remote_failure_never_ensures_local(monkeypatch):
-    from hermes_cli.gateway_client import connect_gateway, GatewayClientError
-    from hermes_cli import gateway_runtime
+    from hermes_agent.hermes_cli.gateway_client import connect_gateway, GatewayClientError
+    from hermes_agent.hermes_cli import gateway_runtime
 
     def forbidden(*args, **kwargs):
         raise AssertionError("Remote failure invoked local lifecycle")
@@ -42,7 +42,7 @@ async def test_explicit_remote_failure_never_ensures_local(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_oneshot_matches_own_terminal_receipt_not_neighbor(capsys):
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
 
     class Peer:
         events = asyncio.Queue()
@@ -66,8 +66,8 @@ async def test_oneshot_matches_own_terminal_receipt_not_neighbor(capsys):
 async def test_stream_json_oneshot_filters_neighbor_events_that_arrive_before_submit_receipt(capsys):
     """Same-session work from another admission must not contaminate this invocation's JSONL."""
     import json
-    from hermes_cli.gateway_chat_view import GatewayChatView
-    from hermes_cli.stream_json import StreamJsonEmitter
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.stream_json import StreamJsonEmitter
 
     class Peer:
         events = asyncio.Queue()
@@ -136,7 +136,7 @@ _BUDGET = {"completed": False, "failed": False, "interrupted": False, "partial":
 async def test_finite_exit_code_follows_the_committed_result_not_the_outcome(outcome, result, chat_code, z_code, capsys):
     """A finite attached turn exits with the in-process contract judged from the settled result:
     `chat -q`/`-Q` 0/1/130 (``turn_exit_code``) and `-z` 0/2/130 (``_oneshot_exit_code``)."""
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
 
     for unattended, expected in ((False, chat_code), (True, z_code)):
         view = GatewayChatView(_SettledPeer(outcome, result), {"stored_session_id": "stored"}, quiet=True)
@@ -149,7 +149,7 @@ async def test_finite_exit_code_follows_the_committed_result_not_the_outcome(out
 async def test_textless_oneshot_names_the_failure_on_stderr(capsys):
     """`-z` exits 1 for a completed turn with no reply text, and says so on stderr as the in-process
     one-shot did (#139666): a script must not get a silent exit 1."""
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
 
     view = GatewayChatView(_SettledPeer("completed", {"completed": True, "final_response": ""}),
                            {"stored_session_id": "stored"}, quiet=True)
@@ -163,8 +163,8 @@ async def test_stream_json_result_record_reports_an_unfinished_turn(capsys):
     """The terminal JSONL ``result`` carries the same non-zero exit for a --max-turns stop, plus the
     committed token counts, and the process exit code matches it."""
     import json
-    from hermes_cli.gateway_chat_view import GatewayChatView
-    from hermes_cli.stream_json import StreamJsonEmitter
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.stream_json import StreamJsonEmitter
 
     peer = _SettledPeer("completed", {**_BUDGET, "input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
     view = GatewayChatView(peer, {"stored_session_id": "stored"}, emitter=StreamJsonEmitter(model="m", session_id="stored"))
@@ -176,8 +176,8 @@ async def test_stream_json_result_record_reports_an_unfinished_turn(capsys):
 
 @pytest.mark.asyncio
 async def test_oneshot_replay_gap_fails_instead_of_waiting_forever():
-    from hermes_cli.gateway_chat_view import GatewayChatView
-    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
     class Peer:
         events = asyncio.Queue()
@@ -198,7 +198,7 @@ async def test_oneshot_replay_gap_fails_instead_of_waiting_forever():
 async def test_oneshot_refuses_unknown_blocked_session_before_submitting(capsys):
     """After a SIGKILL mid-turn the head admission is ``unknown``; a new -q admission would queue
     behind it forever. One-shot refuses BEFORE submitting (exit 3) and names the discard remedy."""
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
 
     class Peer:
         events = asyncio.Queue()
@@ -220,8 +220,8 @@ async def test_stream_json_oneshot_always_closes_with_a_result_record(capsys, bl
     """``--format stream-json`` consumers parse stdout: every exit-3 detach (unknown row refused,
     approval needed) must end the JSONL with a failed ``result`` record carrying exit_code 3."""
     import json
-    from hermes_cli.gateway_chat_view import GatewayChatView
-    from hermes_cli.stream_json import StreamJsonEmitter
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.stream_json import StreamJsonEmitter
 
     class Peer:
         events = asyncio.Queue()

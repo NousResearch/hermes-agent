@@ -1,5 +1,5 @@
-from hermes_cli.main_provider_setup import _prompt_reasoning_effort_selection
-from hermes_cli.setup import _current_reasoning_effort
+from hermes_agent.hermes_cli.main_provider_setup import _prompt_reasoning_effort_selection
+from hermes_agent.hermes_cli.setup import _current_reasoning_effort
 
 
 def test_reasoning_menu_orders_minimal_before_low(monkeypatch):
@@ -10,7 +10,7 @@ def test_reasoning_menu_orders_minimal_before_low(monkeypatch):
         captured["selected"] = selected
         return selected  # pick the pre-selected (current) entry
 
-    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", _fake_radiolist)
+    monkeypatch.setattr("hermes_agent.hermes_cli.curses_ui.curses_radiolist", _fake_radiolist)
 
     selected = _prompt_reasoning_effort_selection(
         ["low", "minimal", "medium", "high"],
@@ -37,14 +37,14 @@ def test_current_reasoning_effort_reads_dict_form():
 def test_hermes_model_offers_reasoning_whenever_a_pick_is_saved(tmp_path, monkeypatch):
     """Same model ID on a new provider, or a re-pick of the current model, still gets the effort
     step (like chat /model); a flow that saves nothing does not."""
-    from hermes_cli import main
-    from hermes_cli.auth import _save_model_choice
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli import main
+    from hermes_agent.hermes_cli.auth import _save_model_choice
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     save_config({**load_config(), "model": {"default": "m", "provider": "openrouter"}})
     prompted = []
-    monkeypatch.setattr("hermes_cli.main_provider_setup._prompt_main_reasoning_effort",
+    monkeypatch.setattr("hermes_agent.hermes_cli.main_provider_setup._prompt_main_reasoning_effort",
                         lambda model, provider: prompted.append((model, provider)))
     monkeypatch.setattr(main, "_clear_stale_openai_base_url", lambda: None)
 

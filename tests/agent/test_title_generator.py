@@ -101,12 +101,12 @@ class TestGenerateTitle:
     def test_title_language_reads_config(self):
         cfg = {"auxiliary": {"title_generation": {"language": "  French "}}}
 
-        with patch("hermes_cli.config.load_config", return_value=cfg), patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg), patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg):
             assert _title_language() == "French"
-        with patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}):
+        with patch("hermes_agent.hermes_cli.config.load_config", return_value={}), patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={}):
             assert _title_language() == ""
-        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")), \
-         patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("bad config")):
+        with patch("hermes_agent.hermes_cli.config.load_config", side_effect=RuntimeError("bad config")), \
+         patch("hermes_agent.hermes_cli.config.load_config_readonly", side_effect=RuntimeError("bad config")):
             assert _title_language() == ""
 
 
@@ -480,12 +480,12 @@ class TestMaybeAutoTitle:
         main_runtime = {"provider": main_provider, "base_url": "http://127.0.0.1:8080/v1"}
         keyed = {"providers": {"gptoss": {"name": "GPTOSS Local", "base_url": "http://127.0.0.1:8080/v1"}}}
         with patch.object(tg, "_title_config", return_value=title_cfg), \
-                patch("hermes_cli.config.load_config_readonly", return_value=keyed):
+                patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=keyed):
             assert tg.title_upgrade_must_wait_for_turn(main_runtime) is deferred
 
     def test_kanban_worker_is_named_after_its_card_without_the_llm_thread(self, tmp_path, monkeypatch):
         """A worker's session takes the board card's title synchronously; no auxiliary model call (#111166)."""
-        from hermes_cli import kanban_db, kanban_db_connect
+        from hermes_agent.hermes_cli import kanban_db, kanban_db_connect
 
         with kanban_db_connect.connect_closing(board="default") as conn:
             task_id = kanban_db.create_task(conn, title="Fix flaky worker startup", board="default")
@@ -503,7 +503,7 @@ class TestMaybeAutoTitle:
 
     def test_kanban_worker_with_an_overlong_card_title_is_still_named(self, tmp_path, monkeypatch):
         """Cards have no length cap; the store rejects past MAX_TITLE_LENGTH, so the card title is trimmed, not dropped."""
-        from hermes_cli import kanban_db, kanban_db_connect
+        from hermes_agent.hermes_cli import kanban_db, kanban_db_connect
 
         card = "Investigate why the swap modal intermittently fails to render its confirmation step on mobile Safari after a retry"
         assert len(card) > SessionDB.MAX_TITLE_LENGTH
@@ -567,7 +567,7 @@ class TestMaybeAutoTitle:
                 "enabled": True, "model_upgrade_enabled": False,
             }}
         }
-        with patch("hermes_cli.config.load_config_readonly", return_value=config), \
+        with patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=config), \
              patch("hermes_agent.agent.memory_provider.spawn_context_thread") as thread, \
              patch("hermes_agent.agent.title_generator.call_llm") as call_llm:
             maybe_auto_title(db, "sess-1", "repair startup memory routing", [])
@@ -580,7 +580,7 @@ class TestMaybeAutoTitle:
         resp = MagicMock()
         resp.choices = [MagicMock()]
         resp.choices[0].message.content = '{"title": "Repair startup memory routing"}'
-        with patch("hermes_cli.config.load_config_readonly", return_value=config), \
+        with patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=config), \
              patch("hermes_agent.agent.title_generator.call_llm", return_value=resp):
             assert generate_title("repair startup memory routing") == "Repair startup memory routing"
 
@@ -592,7 +592,7 @@ class TestMaybeAutoTitle:
                 "enabled": False, "model_upgrade_enabled": True,
             }}
         }
-        with patch("hermes_cli.config.load_config_readonly", return_value=config), \
+        with patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=config), \
              patch("hermes_agent.agent.memory_provider.spawn_context_thread") as thread, \
              patch("hermes_agent.agent.title_generator.call_llm") as call_llm:
             maybe_auto_title(db, "sess-1", "repair startup memory routing", [])

@@ -23,7 +23,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from hermes_cli import update_pause_record as pause_record
+from hermes_agent.hermes_cli import update_pause_record as pause_record
 
 REPO = Path(__file__).resolve().parents[2]
 pytestmark = [pytest.mark.platforms("windows"), pytest.mark.live_system_guard_bypass]
@@ -55,7 +55,7 @@ def _orphan(profiles: dict) -> dict:
 
 _UPDATER = """
 import sys
-from hermes_cli import update_pause_record as r
+from hermes_agent.hermes_cli import update_pause_record as r
 token = {"pause_id": sys.argv[1], "resume_needed": True, "profiles": {"default": 4242}}
 r.write(token, owner=r.identity())
 print("written", flush=True)
@@ -162,7 +162,7 @@ def _sc(*args: str) -> subprocess.CompletedProcess:
 
 @pytest.mark.parametrize("gateway", ["absent", "ready"])
 def test_a_running_service_owes_its_gateway_until_that_gateway_is_ready(tmp_path, monkeypatch, service_wrapper, gateway):
-    from hermes_cli import update_cmd_windows as w
+    from hermes_agent.hermes_cli import update_cmd_windows as w
 
     home = tmp_path / "home"
     home.mkdir()
@@ -203,7 +203,7 @@ def test_a_running_service_owes_its_gateway_until_that_gateway_is_ready(tmp_path
 
 _RECOVERING_LAUNCH = """
 import json, time
-from hermes_cli import update_pause_record as r
+from hermes_agent.hermes_cli import update_pause_record as r
 started = time.monotonic()
 r.recover(["status"])
 print(json.dumps({"seconds": time.monotonic() - started,
@@ -260,8 +260,8 @@ def _logs(home: Path) -> str:
 
 @pytest.mark.parametrize("discovered", ["this process", "an earlier process at this pid"])
 def test_a_pause_force_kills_only_the_process_it_discovered(tmp_path, monkeypatch, discovered):
-    from hermes_cli import update_cmd_windows as w
-    from hermes_cli.gateway import ProfileGatewayProcess
+    from hermes_agent.hermes_cli import update_cmd_windows as w
+    from hermes_agent.hermes_cli.gateway import ProfileGatewayProcess
 
     home = tmp_path / "home"
     home.mkdir()

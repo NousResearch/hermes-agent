@@ -3,7 +3,7 @@
 Route handlers live in ``web_routers/``; their helpers live in the sibling
 ``web_server_<concern>`` modules and are re-imported here so ``web_server.<name>``
 stays the single late-binding seam tests monkeypatch (``web_deps.late``).
-Usage: ``python -m hermes_cli.main web [--port 8080]``.
+Usage: ``python -m hermes_agent.hermes_cli.main web [--port 8080]``.
 """
 
 from contextlib import asynccontextmanager
@@ -22,24 +22,24 @@ import threading
 import time
 import urllib.parse
 
-from hermes_cli.install_identity import get_install_id as _shared_get_install_id
-from hermes_cli.process_identity import is_desktop_owned_backend
-from hermes_cli.pty_session import run_reaper
-from hermes_cli import web_server_file_tickets as _file_tickets
-from hermes_cli.web_server_session_token import resolve_session_token
+from hermes_agent.hermes_cli.install_identity import get_install_id as _shared_get_install_id
+from hermes_agent.hermes_cli.process_identity import is_desktop_owned_backend
+from hermes_agent.hermes_cli.pty_session import run_reaper
+from hermes_agent.hermes_cli import web_server_file_tickets as _file_tickets
+from hermes_agent.hermes_cli.web_server_session_token import resolve_session_token
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 PROJECT_ROOT = Path(project_root_str())
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
-from hermes_cli.config import load_config
-from hermes_cli.version_info import get_version_info
+from hermes_agent.hermes_cli.config import load_config
+from hermes_agent.hermes_cli.version_info import get_version_info
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -67,7 +67,7 @@ WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.enviro
 _log = logging.getLogger(__name__)
 
 
-from hermes_cli.web_server_lifecycle import (
+from hermes_agent.hermes_cli.web_server_lifecycle import (
     PORT_IN_USE_EXIT_CODE,
     _dashboard_forwarded_allow_ips,
     _eager_reconcile_own_session_db,
@@ -87,7 +87,7 @@ def _gateway_owns_cron(name: str, home) -> bool:
     """A gateway already ticks this profile's store with live adapters: its OWN process, or the
     live default multiplexer (a served satellite has no gateway.pid of its own). Winning the
     tick-lock race here would deliver through the standalone path (#52202, #100489, #107485)."""
-    from hermes_cli.profiles import _check_gateway_running, _served_by_running_multiplexer
+    from hermes_agent.hermes_cli.profiles import _check_gateway_running, _served_by_running_multiplexer
 
     return _check_gateway_running(Path(home)) or (
         name != "default" and _served_by_running_multiplexer(name))
@@ -122,7 +122,7 @@ def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) 
     start_kwargs: dict = {"interval": interval}
     if isinstance(provider, InProcessCronScheduler):
         try:
-            from hermes_cli.profiles import profiles_to_serve
+            from hermes_agent.hermes_cli.profiles import profiles_to_serve
 
             # Same served set as the multiplexer: default + every live profile under profiles/.
             # The ticker re-enumerates this callable every cycle. Passing a
@@ -182,7 +182,7 @@ def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) 
 _DESKTOP_MCP_DISCOVERY_DELAY_S = 1.0
 
 
-from hermes_cli.web_server_app import app_lifespan
+from hermes_agent.hermes_cli.web_server_app import app_lifespan
 
 
 def _app_state_default(app: FastAPI, name: str, factory):
@@ -209,14 +209,14 @@ def _get_pty_active_session_files(app: FastAPI) -> dict[str, Path]:
 
 app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=app_lifespan)
 
-from hermes_cli.dashboard_auth.body_limit import AuthBodyLimitMiddleware
+from hermes_agent.hermes_cli.dashboard_auth.body_limit import AuthBodyLimitMiddleware
 
 # Register first (innermost): auth gates run before this, JSON parsing after it.
 app.add_middleware(AuthBodyLimitMiddleware)
 
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
-from hermes_cli.memory_oauth import router as _memory_oauth_router
+from hermes_agent.hermes_cli.memory_oauth import router as _memory_oauth_router
 
 app.include_router(_memory_oauth_router)
 
@@ -284,7 +284,7 @@ def _ssh_runtime_intact() -> bool:
 # share one testable seam.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
-from hermes_cli.web_upload_limit import ChatFileUploadLimitMiddleware
+from hermes_agent.hermes_cli.web_upload_limit import ChatFileUploadLimitMiddleware
 
 # Inside every auth/Host middleware: those checks run before body ingestion,
 # and the receive limit runs before FastAPI can spool a multipart attachment.
@@ -293,7 +293,7 @@ app.add_middleware(ChatFileUploadLimitMiddleware)
 # Endpoints that do NOT require the session token; everything else under /api/
 # is gated below. Shared with the OAuth gate so the two allowlists cannot
 # drift (/api/status once 401'd under the OAuth gate, breaking the portal probe).
-from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS as _PUBLIC_API_PATHS
+from hermes_agent.hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS as _PUBLIC_API_PATHS
 
 
 def _has_valid_session_token(request: Request) -> bool:
@@ -352,7 +352,7 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> stays the public seam
+from hermes_agent.hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> stays the public seam
     _DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     _LOOPBACK_HOST_VALUES,
     _dashboard_public_hosts,
@@ -405,10 +405,10 @@ async def host_header_middleware(request: Request, call_next):
 # groups. Not an import cycle: web_server_dashboard reaches back into this module only inside
 # functions, so the position is not load-bearing. What is load-bearing is the middleware
 # registration order below (the HTTP gate before the auth middlewares, so it runs after them).
-from hermes_cli.web_server_dashboard import (
+from hermes_agent.hermes_cli.web_server_dashboard import (
     PluginApiWebSocketGate, _plugin_api_name, _plugin_api_request_refused,
 )
-from hermes_cli.web_server_plugin_profiles import forward_secondary_plugin_request, plugin_request_scope
+from hermes_agent.hermes_cli.web_server_plugin_profiles import forward_secondary_plugin_request, plugin_request_scope
 
 
 @app.middleware("http")
@@ -451,7 +451,7 @@ async def _dashboard_auth_gate(request: Request, call_next):
 
     Registered between host_header and auth_middleware: host check → cookie auth → token auth.
     """
-    from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
+    from hermes_agent.hermes_cli.dashboard_auth.middleware import gated_auth_middleware
     return await gated_auth_middleware(request, call_next)
 
 
@@ -486,11 +486,11 @@ async def _token_auth_seam(request: Request, call_next):
     + ``token_authenticated`` so downstream gates skip enforcement. Non-token
     routes pass through untouched. ``/api/peer/`` is owned by the peer-pass check instead.
     """
-    from hermes_cli.dashboard_auth.peer_pass import is_peer_path, peer_pass_middleware
+    from hermes_agent.hermes_cli.dashboard_auth.peer_pass import is_peer_path, peer_pass_middleware
     if is_peer_path(request.url.path):  # only a peer pass opens it; nothing else is tried
         return await peer_pass_middleware(request, call_next)
-    from hermes_cli.dashboard_auth.native_http import authenticate_native_http, native_profile_scope
-    from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
+    from hermes_agent.hermes_cli.dashboard_auth.native_http import authenticate_native_http, native_profile_scope
+    from hermes_agent.hermes_cli.dashboard_auth.token_auth import token_auth_middleware
     rejection = await authenticate_native_http(request)
     if rejection is not None:
         return rejection
@@ -561,15 +561,15 @@ async def _dashboard_health_middleware(request: Request, call_next):
         raise
     # /api/peer answers carry the gateway api_server's status (asleep, restarting, its own errors),
     # which the gateway component reports; they say nothing about this process.
-    from hermes_cli.dashboard_auth.peer_pass import is_peer_path
+    from hermes_agent.hermes_cli.dashboard_auth.peer_pass import is_peer_path
     if response.status_code >= 500 and not is_peer_path(request.url.path):
         DASHBOARD_HEALTH.record_error(f"http_{response.status_code}", request.url.path)
     return response
 
 
 def _is_trusted_local_origin(origin: str) -> bool:
-    """The dashboard app's :func:`hermes_cli.web_server_boundary.is_trusted_local_origin`."""
-    from hermes_cli.web_server_boundary import is_trusted_local_origin
+    """The dashboard app's :func:`hermes_agent.hermes_cli.web_server_boundary.is_trusted_local_origin`."""
+    from hermes_agent.hermes_cli.web_server_boundary import is_trusted_local_origin
     return is_trusted_local_origin(origin, app.state)
 
 
@@ -630,11 +630,11 @@ async def _dashboard_selftest_loop() -> None:
 
 # Action registries/spawner are owned by web_server_gateway; routers and tests reach them
 # there, so this module reads them through the module too (one patch seam).
-from hermes_cli import web_server_gateway as _gateway_mod
-from hermes_cli.web_server_gateway import _ACTION_LOG_FILES, _terminate_desktop_managed_gateway
-from hermes_cli.web_server_sessions import _auto_archive_ticker_loop
-from hermes_cli.web_server_chat import PTY_REGISTRY
-from hermes_cli.web_server_dashboard import (
+from hermes_agent.hermes_cli import web_server_gateway as _gateway_mod
+from hermes_agent.hermes_cli.web_server_gateway import _ACTION_LOG_FILES, _terminate_desktop_managed_gateway
+from hermes_agent.hermes_cli.web_server_sessions import _auto_archive_ticker_loop
+from hermes_agent.hermes_cli.web_server_chat import PTY_REGISTRY
+from hermes_agent.hermes_cli.web_server_dashboard import (
     _discover_dashboard_plugins, _mount_plugin_api_routes, mount_spa,
 )
 
@@ -765,7 +765,7 @@ _dashboard_plugins_cache: Optional[list] = None
 def _get_dashboard_plugins(force_rescan: bool = False) -> list:
     """The active scope's dashboard plugins: a secondary profile's are its own (PLG-3)."""
     global _dashboard_plugins_cache
-    from hermes_cli.web_server_plugin_profiles import profile_dashboard_plugins, secondary_profile_home
+    from hermes_agent.hermes_cli.web_server_plugin_profiles import profile_dashboard_plugins, secondary_profile_home
     home = secondary_profile_home()
     if home is not None:
         return profile_dashboard_plugins(home, force_rescan)
@@ -779,7 +779,7 @@ def _get_dashboard_plugins(force_rescan: bool = False) -> list:
 
 # Router mounting. ORDER IS ROUTE-MATCHING ORDER: literal paths must land before
 # templated siblings (e.g. /api/sessions/bulk-delete before /api/sessions/{id}).
-from hermes_cli.web_routers import (
+from hermes_agent.hermes_cli.web_routers import (
     files as _files_routes,
     git as _git_routes,
     local_models as _local_models_routes,
@@ -815,10 +815,10 @@ from hermes_cli.web_routers import (
     peer as _peer_routes,
 )
 
-import hermes_cli.web_routers.desktop_plugins as _desktop_plugin_routes
-import hermes_cli.web_routers.uploads as _upload_routes
+import hermes_agent.hermes_cli.web_routers.desktop_plugins as _desktop_plugin_routes
+import hermes_agent.hermes_cli.web_routers.uploads as _upload_routes
 from fastapi import Depends as _Depends
-from hermes_cli.web_server_surface import route_on as _route_on
+from hermes_agent.hermes_cli.web_server_surface import route_on as _route_on
 
 app.include_router(_files_routes.router)
 # The Webapp's routes exist only on the surfaces whose policy names them (404 elsewhere).
@@ -869,7 +869,7 @@ app.include_router(_gateway_connections_reach_routes.router, dependencies=[_Depe
 # mount before the SPA catch-all so /{full_path:path} doesn't swallow them. Auth
 # routes are always mounted — the gate middleware decides enforcement.
 _mount_plugin_api_routes()
-from hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router
+from hermes_agent.hermes_cli.dashboard_auth.routes import router as _dashboard_auth_router
 
 app.include_router(_dashboard_auth_router)
 mount_spa(app)
@@ -901,7 +901,7 @@ def _no_auth_provider_message(host: str) -> str:
         public_url = own_url or ""
         if own_url is None:
             try:
-                from hermes_cli.dashboard_auth.prefix import resolve_public_url
+                from hermes_agent.hermes_cli.dashboard_auth.prefix import resolve_public_url
 
                 public_url = resolve_public_url()
             except Exception:
@@ -944,8 +944,8 @@ def _no_auth_provider_message(host: str) -> str:
     # Credentials exist but the bundled provider is disabled (#54489). Basic
     # auth needs a username AND a credential; a half-configured block is silent.
     try:
-        from hermes_cli.config import load_config as _load_cfg
-        from hermes_cli.plugins_cmd import _BASIC_AUTH_PLUGIN_KEYS
+        from hermes_agent.hermes_cli.config import load_config as _load_cfg
+        from hermes_agent.hermes_cli.plugins_cmd import _BASIC_AUTH_PLUGIN_KEYS
 
         cfg = _load_cfg()
         ba = (cfg.get("dashboard") or {}).get("basic_auth") or {}
@@ -1021,7 +1021,7 @@ def _configure_auth_gate(
 
     if app.state.auth_required:
         # No escape hatch serves a gated dashboard without a provider.
-        from hermes_cli.dashboard_auth import list_providers
+        from hermes_agent.hermes_cli.dashboard_auth import list_providers
         if not list_providers():
             raise SystemExit(_no_auth_provider_message(host))
         _log.info(
@@ -1070,7 +1070,7 @@ def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
     ping_interval, ping_timeout = (None, None) if _is_loopback else (
         _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
     if ssh_isolated:
-        from hermes_cli.web_server_idle_exit import (
+        from hermes_agent.hermes_cli.web_server_idle_exit import (
             TUNNEL_WS_PING_INTERVAL_S, TUNNEL_WS_PING_TIMEOUT_S, IdleClientTracker, wrap_asgi_with_ws_tracking)
         app.state.ssh_isolated_clients = IdleClientTracker()
         served_app = wrap_asgi_with_ws_tracking(app, app.state.ssh_isolated_clients)
@@ -1118,7 +1118,7 @@ def _reclaim_host_from_orphaned_owner(role: str) -> bool:
     False and the caller stays observe-only. Never raises.
     """
     from hermes_agent.gateway import host_rendezvous as hr
-    from hermes_cli.process_identity import reap_orphaned_backend_owner
+    from hermes_agent.hermes_cli.process_identity import reap_orphaned_backend_owner
 
     try:
         owner = hr.read_record(role)
@@ -1220,12 +1220,12 @@ def _on_server_started(
     # new tree (EMFILE / missing tabs). The watchdog only protects *this*
     # process going forward.
     def _reap_desktop_serves() -> None:
-        from hermes_cli.dashboard_procs import _reap_orphaned_desktop_local_serves
+        from hermes_agent.hermes_cli.dashboard_procs import _reap_orphaned_desktop_local_serves
 
         _reap_orphaned_desktop_local_serves()
 
     def _reap_mcp_helpers() -> None:
-        from hermes_cli.process_identity import reap_orphaned_mcp_helpers
+        from hermes_agent.hermes_cli.process_identity import reap_orphaned_mcp_helpers
 
         reap_orphaned_mcp_helpers()
 
@@ -1240,7 +1240,7 @@ def _on_server_started(
     # SSH-isolated backends are detached from any parent on purpose (#91668); their liveness signal
     # is "does a client still hold a WebSocket" (#101626).
     if getattr(app.state, "ssh_isolated_clients", None) is not None:
-        from hermes_cli.web_server_idle_exit import DEFAULT_IDLE_GRACE_S, start_idle_watchdog
+        from hermes_agent.hermes_cli.web_server_idle_exit import DEFAULT_IDLE_GRACE_S, start_idle_watchdog
         try:
             grace = float((load_config().get("dashboard") or {}).get("ssh_isolated_idle_grace_s", DEFAULT_IDLE_GRACE_S))
         except (TypeError, ValueError):
@@ -1253,13 +1253,13 @@ def _on_server_started(
         # outlives the handoff, #99859), so it retires itself (between turns) when the install
         # moves on. The retirement fence closes admission process-wide before the exit, so a
         # connected Desktop just sees its next request reconnect-respawn the backend on new code.
-        from hermes_cli.web_server_skew_exit import start_code_skew_watchdog
+        from hermes_agent.hermes_cli.web_server_skew_exit import start_code_skew_watchdog
 
         start_code_skew_watchdog(server)
     if getattr(app.state, "ssh_isolated_clients", None) is not None and ssh_lock_path and _SSH_OWNER_NONCE:
         # A reconnect that cannot prove this pid is its own drops the lock without signalling us
         # and spawns a new nonce (#132034); retire (between turns) once the lock names that spawn.
-        from hermes_cli.web_server_owner_exit import start_owner_watchdog
+        from hermes_agent.hermes_cli.web_server_owner_exit import start_owner_watchdog
 
         start_owner_watchdog(server, lock_path=ssh_lock_path, nonce=_SSH_OWNER_NONCE)
 
@@ -1274,7 +1274,7 @@ def _on_server_started(
     # ACTUAL port — what lets `hermes update` relaunch a manually-started serve
     # on its real endpoint (#63206).
     def _register_identity() -> None:
-        from hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
+        from hermes_agent.hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
 
         register_self(
             "serve" if headless else "dashboard",
@@ -1308,7 +1308,7 @@ def _on_server_started(
         # a piped stdout otherwise surfaces this minutes after the sentinel.
         print(f"  Hermes backend listening on {host}:{actual_port}", flush=True)
     else:
-        from hermes_cli.url_utils import format_url_host
+        from hermes_agent.hermes_cli.url_utils import format_url_host
 
         print(f"  Hermes Web UI → http://{format_url_host(host)}:{actual_port}")
     _maybe_open_browser(host, actual_port, open_browser, initial_profile)
@@ -1319,7 +1319,7 @@ def _on_server_started(
         # second later when the shell is painted and idle. An agent build inside
         # that second fires the deferred start itself (wait_for_mcp_discovery).
         try:
-            from hermes_cli.mcp_startup import defer_background_mcp_discovery
+            from hermes_agent.hermes_cli.mcp_startup import defer_background_mcp_discovery
 
             defer_background_mcp_discovery(
                 logger=_log,
@@ -1448,21 +1448,21 @@ def _start_server_runtime(
     until the ready sentinel is written so its SDK import can't hold the GIL
     against the pre-bind path.
     """
-    from hermes_cli.update_proxy_env import restore_user_proxy_env
+    from hermes_agent.hermes_cli.update_proxy_env import restore_user_proxy_env
     restore_user_proxy_env()  # a backend an update replayed keeps the user's proxy env, not the update's
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).
-    from hermes_cli.resource_limits import apply_nofile_soft_limit
+    from hermes_agent.hermes_cli.resource_limits import apply_nofile_soft_limit
 
     apply_nofile_soft_limit()
 
     import uvicorn
 
     try:
-        from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+        from hermes_agent.hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
 
         start_nous_auth_keepalive()
     except Exception as exc:
@@ -1536,7 +1536,7 @@ def _start_server_runtime(
                 ssh_lock_path=ssh_lock_path,
             )
             if headless:
-                from hermes_cli.observability.shared_metrics_startup import record_process_ready
+                from hermes_agent.hermes_cli.observability.shared_metrics_startup import record_process_ready
                 record_process_ready("serve_boot", background=True)
 
             await server.main_loop()

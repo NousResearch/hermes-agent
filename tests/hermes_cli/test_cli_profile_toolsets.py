@@ -5,8 +5,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from hermes_cli.gateway_connection import GatewayConnection
-from hermes_cli.gateway_session_store import GatewaySessionStore
+from hermes_agent.hermes_cli.gateway_connection import GatewayConnection
+from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
 from tests.hermes_cli.test_gateway_session_store import FakeClient
 
 CONFIG = {"agent": {}, "platform_toolsets": {"cli": ["terminal", "gone_plugin"]}}
@@ -28,12 +28,12 @@ def store():
 def _launch(monkeypatch, db, toolsets=None, coding=None):
     """``_build_cli_from_args`` then the session's gateway create; HermesCLI is the real toolset init on a
     bare host. Returns the CLI and the lines its startup printed."""
-    import cli as cli_mod
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    import hermes_agent.cli as cli_mod
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
     monkeypatch.setattr(cli_mod, "CLI_CONFIG", CONFIG)
     monkeypatch.setattr("hermes_agent.agent.coding_context.coding_selection", lambda **_: coding)
-    monkeypatch.setattr("hermes_cli.plugins.get_plugin_toolset_keys_nowait", lambda: set())
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.get_plugin_toolset_keys_nowait", lambda: set())
     printed = []
 
     class Host(CLIInitMixin):

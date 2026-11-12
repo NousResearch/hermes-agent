@@ -22,8 +22,8 @@ from typing import Optional
 def _normalized(name: Optional[str]) -> str:
     if not name:
         return ""
-    # Late import: ``hermes_cli.profiles`` imports gateway modules back.
-    from hermes_cli.profiles import normalize_profile_name
+    # Late import: ``hermes_agent.hermes_cli.profiles`` imports gateway modules back.
+    from hermes_agent.hermes_cli.profiles import normalize_profile_name
 
     return normalize_profile_name(name)
 
@@ -81,7 +81,7 @@ def _from_host_record() -> Optional[HostGatewayTopology]:
 def _from_served_record() -> Optional[HostGatewayTopology]:
     """A gateway started before the host record existed still publishes ``served_profiles`` into
     the default home's ``gateway_state.json``; that plus a proven-live PID is the same fact."""
-    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
+    from hermes_agent.hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
 
     pid = live_default_gateway_pid()
     if pid is None:
@@ -106,7 +106,7 @@ def host_gateway_serving(profile_name: Optional[str] = None) -> Optional[HostGat
     if topology is None:
         return None
     if profile_name is None:
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
 
         profile_name = get_active_profile_name()
     return topology if topology.serves(profile_name) else None

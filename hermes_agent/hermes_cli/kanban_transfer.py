@@ -31,9 +31,9 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli.archive_safe import (
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli.archive_safe import (
     archive_root_dirs,
     copy_regular_files,
     make_targz,
@@ -155,7 +155,7 @@ def export_board(
         attachments = copy_regular_files(kb.attachments_root(slug), staged / "attachments") if include_attachments else 0
         logs = copy_regular_files(kb.worker_logs_dir(slug), staged / "logs") if include_logs else 0
 
-        from hermes_cli.version_info import get_version_info
+        from hermes_agent.hermes_cli.version_info import get_version_info
 
         manifest = {
             "format": ARCHIVE_FORMAT,

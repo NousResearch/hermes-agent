@@ -1,6 +1,6 @@
 """The plugin docs' Python code blocks import only names on the published plugin API.
 
-``hermes_cli/data/plugin_api.json`` is the list ``hermes plugins validate`` enforces; a docs example
+``hermes_agent/hermes_cli/data/plugin_api.json`` is the list ``hermes plugins validate`` enforces; a docs example
 that imports anything else teaches plugin authors an import validate warns on. Blocks that still need
 a seam are named in ``plugin_docs_import_seams.json``, which may only shrink.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 
 from markdown_it import MarkdownIt
 
-from hermes_cli.plugin_validate_private_imports import (
+from hermes_agent.hermes_cli.plugin_validate_private_imports import (
     _core_module_exists,
     _hermes_packages,
     _imported,

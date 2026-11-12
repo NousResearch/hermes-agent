@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.service_manager — the abstract ServiceManager
+"""Tests for hermes_agent.hermes_cli.service_manager — the abstract ServiceManager
 protocol, the detect_service_manager() entry point, and the host-side
 adapter wrappers (Systemd / Launchd / Windows).
 
@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from hermes_cli.service_manager import (
+from hermes_agent.hermes_cli.service_manager import (
     S6ServiceManager,
 )
 
@@ -124,7 +124,7 @@ def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     """Verifies the dirs + FIFO the helper lays down."""
     import stat
 
-    from hermes_cli.service_manager import _seed_supervise_skeleton
+    from hermes_agent.hermes_cli.service_manager import _seed_supervise_skeleton
 
     svc_dir = tmp_path / "gateway-foo"
     svc_dir.mkdir()
@@ -166,7 +166,7 @@ def test_seed_supervise_skeleton_sets_setgid_on_event_dirs(tmp_path) -> None:
     """
     import stat
 
-    from hermes_cli.service_manager import _seed_supervise_skeleton
+    from hermes_agent.hermes_cli.service_manager import _seed_supervise_skeleton
 
     svc_dir = tmp_path / "gateway-foo"
     svc_dir.mkdir()

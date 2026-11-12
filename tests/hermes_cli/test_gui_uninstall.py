@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.gui_uninstall — GUI-only uninstall + install discovery.
+"""Tests for hermes_agent.hermes_cli.gui_uninstall — GUI-only uninstall + install discovery.
 
 Covers the cross-platform artifact discovery, the agent/GUI detection the
 desktop UI gates options on, and that ``uninstall_gui`` removes only GUI
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.gui_uninstall as gu
+import hermes_agent.hermes_cli.gui_uninstall as gu
 
 
 def _make_agent(hermes_home: Path) -> Path:
@@ -55,7 +55,7 @@ def test_gui_install_summary_shape(tmp_path, monkeypatch):
 def test_uninstall_removes_launcher_entry_and_refreshes_cache(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg"))
 
-    from hermes_cli import linux_desktop_entry as lde
+    from hermes_agent.hermes_cli import linux_desktop_entry as lde
 
     entry = lde.desktop_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
@@ -102,7 +102,7 @@ def test_remove_path_handles_symlink(tmp_path):
 
 def test_uninstall_args_namespace_mode_mapping():
     """_UninstallArgs maps mode → the gui/full flags run_uninstall reads."""
-    from hermes_cli import uninstall
+    from hermes_agent.hermes_cli import uninstall
 
     gui = uninstall._UninstallArgs(mode="gui")
     assert gui.gui is True and gui.full is False and gui.yes is True

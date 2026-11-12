@@ -3,9 +3,9 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
-from hermes_cli.auth import resolve_provider, resolve_api_key_provider_credentials
-from hermes_cli.models import normalize_provider
-from hermes_cli.model_normalize import normalize_model_for_provider, detect_vendor
+from hermes_agent.hermes_cli.auth import resolve_provider, resolve_api_key_provider_credentials
+from hermes_agent.hermes_cli.models import normalize_provider
+from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider, detect_vendor
 from hermes_agent.agent.models_dev import list_agentic_models
 
 
@@ -74,7 +74,7 @@ class TestGeminiCredentials:
 
     def test_runtime_gemini(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         result = resolve_runtime_provider(requested="gemini")
         assert result["provider"] == "gemini"
         assert result["api_mode"] == "chat_completions"

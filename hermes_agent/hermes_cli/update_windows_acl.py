@@ -3,7 +3,7 @@ user back access to the home tree that run may have left Administrators-only (#1
 Split from ``update_cmd_maint.py``."""
 import logging
 
-logger = logging.getLogger("hermes_cli.update_cmd")
+logger = logging.getLogger("hermes_agent.hermes_cli.update_cmd")
 
 
 def repair_windows_home_acl(*, elevated: bool | None = None) -> None:

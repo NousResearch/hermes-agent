@@ -21,14 +21,14 @@ _VAR = "CUA_DRIVER_RS_TELEMETRY_ENABLED"
 class TestTelemetryDisabledFlag:
 
     def test_explicit_false_disables(self):
-        with patch("hermes_cli.config.load_config",
+        with patch("hermes_agent.hermes_cli.config.load_config",
                    return_value={"computer_use": {"cua_telemetry": False}}):
             assert cua_backend._cua_telemetry_disabled() is True
 
 
     def test_config_load_failure_fails_safe(self):
         # Unreadable config => default to disabling telemetry (privacy-safe).
-        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+        with patch("hermes_agent.hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
             assert cua_backend._cua_telemetry_disabled() is True
 
 

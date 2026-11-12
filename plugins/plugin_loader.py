@@ -159,7 +159,7 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: tuple[str
     if not init_file.exists():
         return None
     if synthetic_namespace:  # user code: never imported in-process under plugins.isolation: host
-        from hermes_cli.plugin_isolation import in_process_import_refusal
+        from hermes_agent.hermes_cli.plugin_isolation import in_process_import_refusal
         refusal = in_process_import_refusal(f"plugin {plugin_dir.name!r} (loaded as {module_name})")
         if refusal:
             logger.warning("%s", refusal)

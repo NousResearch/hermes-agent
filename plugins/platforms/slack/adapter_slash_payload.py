@@ -14,7 +14,7 @@ def slash_command_text(command: dict) -> str:
     if slash_name not in {"hermes", ""}:
         return f"/{slash_name}" if not raw_text else f"/{slash_name} {raw_text}"
     legacy_text = raw_text.strip()
-    from hermes_cli.commands_platforms import slack_subcommand_map
+    from hermes_agent.hermes_cli.commands_platforms import slack_subcommand_map
     subcommand_map = slack_subcommand_map()
     subcommand_map["compact"] = "/compress"
     first_word = legacy_text.split()[0] if legacy_text.split() else ""

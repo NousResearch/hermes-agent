@@ -1,6 +1,6 @@
 """Dispatcher: crash/stale/orphan detection, failure accounting and the respawn circuit breaker, memory-aware concurrency caps, the one-shot ``dispatch_once`` pass, worker spawning (``_default_spawn``), worker-log rotation and the long-lived ``run_daemon`` loop.
 
-Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
+Split out of ``hermes_agent.hermes_cli.kanban_db``; origin-resident helpers are reached
 late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 ``kanban_db.<name>`` keeps working.
 """
@@ -26,11 +26,11 @@ from typing import Mapping
 from typing import Optional
 from typing import TYPE_CHECKING
 
-from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 if TYPE_CHECKING:
-    from hermes_cli.kanban_db import Task
+    from hermes_agent.hermes_cli.kanban_db import Task
 
 
 # After this many consecutive non-success attempts on a task/profile the
@@ -264,7 +264,7 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
     """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
 
     The durable twin of ``_recent_worker_exits``: written by the worker itself
-    (``hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
+    (``hermes_agent.hermes_cli.quiet_single_query.exit_single_query``), so it is there whether
     or not the process running this sweep ever reaped the worker. Last trailer
     wins — the log is append-mode across re-runs.
     """
@@ -663,7 +663,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
     ).fetchall()
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill
+    from hermes_agent.hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill
     for row in rows:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
@@ -778,7 +778,7 @@ def detect_stale_running(
         "WHERE t.status = 'running'"
     ).fetchall()
 
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill
+    from hermes_agent.hermes_cli.kanban_owner_recovery import owner_reclaim_blocked, owner_reclaim_blocked_after_kill
     for row in rows:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
@@ -868,7 +868,7 @@ def reconcile_orphaned_running(conn: sqlite3.Connection) -> list[str]:
         "WHERE status = 'running' "
         "  AND (claim_lock IS NULL OR claim_expires IS NULL)"
     ).fetchall()
-    from hermes_cli.kanban_owner_recovery import owner_reclaim_blocked
+    from hermes_agent.hermes_cli.kanban_owner_recovery import owner_reclaim_blocked
     for row in rows:
         if owner_reclaim_blocked(conn, row["id"]):
             continue
@@ -1172,7 +1172,7 @@ def _reclaim_dead_workers(conn: sqlite3.Connection, board: Optional[str] = None)
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = _kb._host_prefix()
-        from hermes_cli.kanban_owner_recovery import apply_attempt_note, managed_run_exit_code, owner_reclaim_blocked
+        from hermes_agent.hermes_cli.kanban_owner_recovery import apply_attempt_note, managed_run_exit_code, owner_reclaim_blocked
         for row in rows:
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
@@ -1693,7 +1693,7 @@ def _is_handoff_event(kind: str, payload: Optional[str]) -> bool:
 
 
 def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
-    """``hermes_cli.profiles.profile_exists``, or ``None`` when it cannot be
+    """``hermes_agent.hermes_cli.profiles.profile_exists``, or ``None`` when it cannot be
     imported (local import avoids a cycle; callers fall back to trusting the
     assignee).
 
@@ -1703,7 +1703,7 @@ def _profile_exists_fn() -> Optional[Callable[[str], bool]]:
     Foreign assignees land in the existing ``skipped_nonspawnable`` bucket.
     """
     try:
-        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        from hermes_agent.hermes_cli.profiles import normalize_profile_name, profile_exists
     except Exception:
         return None
     allowlist = _dispatch_profile_allowlist(normalize_profile_name)
@@ -1741,7 +1741,7 @@ def _dispatch_profile_allowlist(normalize_profile_name) -> Optional[frozenset]:
     board must never widen this home's claim scope silently (#113620).
     """
     try:
-        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_agent.hermes_cli.config_effective import load_user_config_effective
         kanban = (load_user_config_effective(fail_closed=True) or {}).get("kanban", {})
     except Exception as exc:
         _kb._log.warning(
@@ -1777,7 +1777,7 @@ def dispatch_profile_allowlist_summary() -> str:
     the sorted allowed names, or ``none (fail-closed: ...)``.
     """
     try:
-        from hermes_cli.profiles import normalize_profile_name
+        from hermes_agent.hermes_cli.profiles import normalize_profile_name
     except Exception as exc:
         return f"none (fail-closed: profiles unavailable: {exc})"
     allowlist = _dispatch_profile_allowlist(normalize_profile_name)
@@ -1824,7 +1824,7 @@ def review_dispatch_enabled() -> bool:
     ``sdlc-review``); operators disable it for human-only review boards.
     """
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         return bool((load_config() or {}).get("kanban", {}).get("review_dispatch", True))
     except Exception:
         return True
@@ -1892,7 +1892,7 @@ def configured_max_in_progress() -> Optional[int]:
     positive integer wins, anything else falls through to the derived default.
     """
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         raw = (load_config_readonly() or {}).get("kanban", {}).get("max_in_progress")
     except Exception:
         return None
@@ -2466,9 +2466,9 @@ def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
 
 
 def _module_hermes_argv() -> list[str]:
-    """Interpreter-bound Hermes CLI invocation (``hermes_cli.main`` is the
+    """Interpreter-bound Hermes CLI invocation (``hermes_agent.hermes_cli.main`` is the
     console-script target — there is no top-level ``hermes`` package)."""
-    return [sys.executable, "-m", "hermes_cli.main"]
+    return [sys.executable, "-m", "hermes_agent.hermes_cli.main"]
 
 
 def _absolute_hermes_path(path: str) -> str:
@@ -2533,7 +2533,7 @@ def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
     same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
+    hermes_agent.hermes_cli.main`` (exactly this install; also covers shim-less cron,
     systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
     search, batch shims fall back to the module form) only when ``hermes_cli``
     is not importable. The module argv must win over PATH: a PATH-first lookup
@@ -2554,7 +2554,7 @@ def _resolve_hermes_argv() -> list[str]:
         return _module_hermes_argv()
 
     try:
-        if importlib.util.find_spec("hermes_cli") is not None:
+        if importlib.util.find_spec("hermes_agent.hermes_cli") is not None:
             return _module_hermes_argv()
     except Exception:
         pass
@@ -2652,8 +2652,8 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
     if not hermes_home:
         return None
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.tools_config import _get_platform_tools
 
         with _worker_profile_scope(hermes_home):
             cfg = load_config()
@@ -2698,7 +2698,7 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
     """The profile owner executes; this subprocess only waits for its receipt."""
     import sys
-    return [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    return [sys.executable, "-m", "hermes_agent.hermes_cli.kanban_worker_client"]
 
 
 def _open_worker_log(task: Task, board: Optional[str]):
@@ -2709,7 +2709,7 @@ def _open_worker_log(task: Task, board: Optional[str]):
     log_dir = _kb.worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
-    from hermes_cli.kanban_worker_log import rotate_worker_log, worker_log_rotation_config
+    from hermes_agent.hermes_cli.kanban_worker_log import rotate_worker_log, worker_log_rotation_config
     rotate_worker_log(log_path, *worker_log_rotation_config())
     return open(log_path, "ab")
 
@@ -2764,7 +2764,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
-    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_agent.hermes_cli.profiles import normalize_profile_name, resolve_profile_env
 
     profile_arg = normalize_profile_name(task.assignee)
 
@@ -2861,7 +2861,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
-    # The worker is `-m hermes_cli.kanban_worker_client` with no console-script bootstrap, and the scrub
+    # The worker is `-m hermes_agent.hermes_cli.kanban_worker_client` with no console-script bootstrap, and the scrub
     # above strips our PYTHONPATH entries, so a PYTHONPATH-launched dispatcher's child died on
     # `No module named 'hermes_cli'` (#112729). Pinned last, after every other env decision.
     from hermes_agent.cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
@@ -2958,6 +2958,6 @@ def run_daemon(
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb
-from hermes_cli import kanban_db_connect as _kbc
-from hermes_cli import kanban_db_workspace as _kbw
+from hermes_agent.hermes_cli import kanban_db as _kb
+from hermes_agent.hermes_cli import kanban_db_connect as _kbc
+from hermes_agent.hermes_cli import kanban_db_workspace as _kbw

@@ -1,6 +1,6 @@
 """What a profile export scrubs from its staged copy, and the saved-gateways stores profiles never carry.
 
-Split out of :mod:`hermes_cli.profiles` (its facade over the clone/export paths).
+Split out of :mod:`hermes_agent.hermes_cli.profiles` (its facade over the clone/export paths).
 """
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 import re
 from pathlib import Path
 
-# The machine's saved-gateways list and its OAuth sign-ins (``hermes_cli.gateway_connections``), with
+# The machine's saved-gateways list and its OAuth sign-ins (``hermes_agent.hermes_cli.gateway_connections``), with
 # their ``.lock`` dir and ``.corrupt-<ms>`` sidecars: machine-wide root state every profile reads at the
 # root, holding plaintext session tokens. A copy in a clone is dead weight, and an export must not ship it.
 GATEWAY_CONNECTION_STORES = ("gateway-connections.json", "gateway-connection-tokens.json")

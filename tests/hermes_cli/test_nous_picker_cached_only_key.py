@@ -13,9 +13,9 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-import hermes_cli.models as models_mod
-import hermes_cli.models_pricing as mp
-from hermes_cli import model_switch_providers as msp
+import hermes_agent.hermes_cli.models as models_mod
+import hermes_agent.hermes_cli.models_pricing as mp
+from hermes_agent.hermes_cli import model_switch_providers as msp
 
 _BASE = "https://inference.example.test/v1"
 _LIST = {"prompt": "0.000002", "completion": "0.00001"}
@@ -50,11 +50,11 @@ def test_picker_on_sale_union_reads_the_authenticated_prewarm(monkeypatch):
 
     # The picker path: NO stub on get_pricing_for_provider/_cached_only_pricing — the real
     # cached_only read must resolve the same entry the prewarm filled.
-    monkeypatch.setattr("hermes_cli.models.check_nous_free_tier", lambda **kw: False)
-    monkeypatch.setattr("hermes_cli.models.fetch_nous_recommended_models", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.check_nous_free_tier", lambda **kw: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_nous_recommended_models", lambda *a, **kw: None)
     monkeypatch.setattr(mp, "nous_policy_allowed_ids", lambda **kw: None)
     monkeypatch.setattr(
-        "hermes_cli.model_switch_providers.get_pricing_for_provider",
+        "hermes_agent.hermes_cli.model_switch_providers.get_pricing_for_provider",
         mp.get_pricing_for_provider,
         raising=False,
     )

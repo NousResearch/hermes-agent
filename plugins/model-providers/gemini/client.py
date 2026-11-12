@@ -37,7 +37,7 @@ _INTERACTIONS_HOST = "generativelanguage.googleapis.com"
 
 def _configured_api(model: str, bare: str) -> str:
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         config = load_config_readonly()
     except Exception:  # an unreadable config keeps the default routing; never fail the request over it
         logger.debug("gemini_api: config unreadable, using auto", exc_info=True)

@@ -7,8 +7,8 @@ import sys
 import hermes_yaml as yaml
 import pytest
 
-from hermes_cli import plugins as plugins_mod
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli.plugins import PluginManager
 from tests.gateway.test_session_plugin_rpc import two_profile_runner
 
 PLUGIN = '''
@@ -53,7 +53,7 @@ def register(ctx):
 @pytest.mark.parametrize("isolation", ["host", "in_process"])
 def test_plugin_rpc_and_session_events_in_either_isolation_mode(tmp_path, monkeypatch, isolation):
     from hermes_agent.gateway import run_api
-    from hermes_cli.plugins_dispatch import resolve_plugin_command_result
+    from hermes_agent.hermes_cli.plugins_dispatch import resolve_plugin_command_result
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch, secondary = tmp_path / "launch", tmp_path / "secondary"
@@ -158,7 +158,7 @@ def test_hosted_session_event_is_sent_only_as_the_live_plugin_running_it(tmp_pat
     from hermes_agent.gateway import run_api
     from hermes_agent.gateway.config import Platform
     from hermes_agent.gateway.session_authorities import SessionAuthorities
-    from hermes_cli.plugins_dispatch import resolve_plugin_command_result
+    from hermes_agent.hermes_cli.plugins_dispatch import resolve_plugin_command_result
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from tests.gateway.test_session_plugin_rpc import _live
     from tests.waiting import wait_until
@@ -206,7 +206,7 @@ def test_hosted_session_event_is_sent_only_as_the_live_plugin_running_it(tmp_pat
         assert manager._plugins["hostrpc"].error is None
         assert (call("pane.own"), call("pane.own_async")) == (True, True)
         assert sent() == ["plugin.hostrpc.pane.own", "plugin.hostrpc.pane.own_async"]
-        caplog.set_level("WARNING", logger="hermes_cli.plugins")
+        caplog.set_level("WARNING", logger="hermes_agent.hermes_cli.plugins")
         assert call("pane.foreign") is False
         assert call("pane.later", {"gate": "reload"}) is True
         pid = manager._plugin_host_instance.pid

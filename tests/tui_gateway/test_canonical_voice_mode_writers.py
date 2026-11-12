@@ -72,7 +72,7 @@ class _Runner:
 @pytest.fixture
 def owner(monkeypatch):
     mic, sink = _Mic(), _Sink()
-    monkeypatch.setitem(sys.modules, "hermes_cli.voice", mic)
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.voice", mic)
     monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(server, "_tts_lease_async", lambda *a: None)
     monkeypatch.setattr(server, "_stdio_transport", sink)

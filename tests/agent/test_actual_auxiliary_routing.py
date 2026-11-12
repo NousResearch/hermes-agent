@@ -132,7 +132,7 @@ def test_actual_background_tasks_reach_chat_completions(
     from hermes_agent.agent.auxiliary_client import async_call_llm
     from hermes_agent.agent.context_compressor import ContextCompressor
     from hermes_agent.agent.title_generator import generate_title
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     base_url, requests = actual_endpoint
     if hosted:
@@ -244,7 +244,7 @@ def test_actual_runtime_transitions_reach_chat_completions(
     tmp_path, monkeypatch, actual_endpoint, provider, hosted, entrypoint
 ):
     from hermes_agent.agent.error_classifier import FailoverReason
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_agent.run_agent import AIAgent
 
     base_url, requests = actual_endpoint
@@ -483,10 +483,10 @@ def test_actual_auxiliary_fallback_reaches_chat_completions(
 def test_actual_setup_keeps_provider_settings_in_yaml(
     tmp_path, monkeypatch, override, configured_provider
 ):
-    from hermes_cli import config as config_module
-    from hermes_cli import model_setup_flows as setup
-    from hermes_cli.auth import resolve_api_key_provider_credentials
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli import config as config_module
+    from hermes_agent.hermes_cli import model_setup_flows as setup
+    from hermes_agent.hermes_cli.auth import resolve_api_key_provider_credentials
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_agent.providers import get_provider_profile
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

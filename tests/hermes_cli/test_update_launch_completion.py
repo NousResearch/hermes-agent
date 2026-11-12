@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from hermes_cli import venv_sync
+from hermes_agent.hermes_cli import venv_sync
 from pm.environments import runtime_facts_path
 
 
@@ -25,7 +25,7 @@ def _no_tool_downloads(monkeypatch):
 def completion_tail(monkeypatch):
     """Record the source-completion child prepare_launch spawns after a sync instead of running it.
 
-    The real child is ``hermes_cli/source_completion.py`` from the checkout under test — a
+    The real child is ``hermes_agent/hermes_cli/source_completion.py`` from the checkout under test — a
     scratch tree here — building products with the selected interpreter; the tests below
     cover the sync decision, not the build.
     """
@@ -40,7 +40,7 @@ def completion_tail(monkeypatch):
         spawned.kwargs = kwargs
         return subprocess.CompletedProcess(command, spawned.exit_code)
 
-    from hermes_cli import update_custody
+    from hermes_agent.hermes_cli import update_custody
 
     monkeypatch.setattr(update_custody, "run", run)
     return spawned
@@ -64,9 +64,9 @@ def _committed_checkout(tmp_path, monkeypatch):
     Mirrors a fresh official install: the installer ran the full tail and
     recorded the tree, so launching at the same commit owes no rebuild.
     """
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
-    from hermes_cli.source_stamp import write_source_stamp
+    from hermes_agent.hermes_cli.source_stamp import write_source_stamp
 
     root = tmp_path / "checkout"
     root.mkdir()
@@ -157,7 +157,7 @@ def test_metadata_query_never_waits_on_source_completion(tmp_path, monkeypatch, 
 def test_failed_completion_tail_is_retried_without_rebuilding_dependencies(tmp_path, monkeypatch, completion_tail):
     """Dependencies committed, tail failed: the next launch owes the tail only."""
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root = _self_checkout(tmp_path, monkeypatch)
     fact = runtime_facts_path(root)
@@ -200,7 +200,7 @@ def test_failed_completion_tail_is_retried_without_rebuilding_dependencies(tmp_p
 def test_prepared_completion_import_does_not_start_another_tail(tmp_path, monkeypatch, completion_tail, script):
     """Maintenance imports the CLI while its own completion marker is still present."""
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root = _self_checkout(tmp_path, monkeypatch)
     worker = root / "hermes_cli" / script
@@ -219,7 +219,7 @@ def test_prepared_completion_import_does_not_start_another_tail(tmp_path, monkey
 def test_same_named_script_outside_the_checkout_still_repairs(tmp_path, monkeypatch, completion_tail):
     """Only this checkout's own tail is exempt: another tree's worker still owes this one's repair."""
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root = _self_checkout(tmp_path, monkeypatch)
     foreign = tmp_path / "other" / "hermes_cli" / "source_completion.py"
@@ -238,7 +238,7 @@ def test_same_named_script_outside_the_checkout_still_repairs(tmp_path, monkeypa
 def test_completion_tail_output_stays_off_stdout(tmp_path, monkeypatch, completion_tail):
     """The automatic tail runs in front of the user's command, which may be piping JSON."""
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root = _self_checkout(tmp_path, monkeypatch)
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
@@ -250,7 +250,7 @@ def test_completion_tail_output_stays_off_stdout(tmp_path, monkeypatch, completi
 
 def test_first_launch_syncs_without_marker_then_uses_completion_fact(tmp_path, monkeypatch, completion_tail):
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root = tmp_path / "checkout"
     root.mkdir()
@@ -354,7 +354,7 @@ def test_failed_dependency_sync_backs_off_only_for_the_same_inputs(tmp_path, mon
     """A failed launch sync counts toward the retry bound, so relaunches stop redoing the same
     failing repair (#139952); a corrected source update is a different repair and runs."""
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root = _self_checkout(tmp_path, monkeypatch)
     syncs = []
@@ -382,7 +382,7 @@ def test_failed_dependency_sync_backs_off_only_for_the_same_inputs(tmp_path, mon
 
 def test_blessed_legacy_install_is_adopted_before_sync(tmp_path, monkeypatch, completion_tail):
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -442,7 +442,7 @@ def test_live_old_update_blocks_launch_sync(tmp_path, monkeypatch):
         venv_sync.prepare_launch(root, [])
     assert marker.is_file()
     # Fresh post-sync verification children may boot under a live updater.
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: True)
     monkeypatch.setattr(_launchers, "resolve_store_python", lambda _, **__: Path(sys.executable))
     assert venv_sync.prepare_launch(root, []) is None
@@ -454,7 +454,7 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     process tree of the update that owns the pending tail it must be a no-op, not recurse."""
     import time
     import pm
-    from hermes_cli.update_lock import update_marker_path
+    from hermes_agent.hermes_cli.update_lock import update_marker_path
 
     root = _self_checkout(tmp_path, monkeypatch)
     pending = venv_sync.completion_pending_path(root)
@@ -500,7 +500,7 @@ def test_supervised_launch_leaves_a_pending_tail_to_the_cli(
     supervised launch and still repays the tail.
     """
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root = _self_checkout(tmp_path, monkeypatch)
     pending = venv_sync.completion_pending_path(root)
@@ -535,7 +535,7 @@ def test_supervised_launch_with_stale_dependencies_still_syncs(
     exemption above must not swallow this one-shot condition.
     """
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root = _self_checkout(tmp_path, monkeypatch)
     syncs = []

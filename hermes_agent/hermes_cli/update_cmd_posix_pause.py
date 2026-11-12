@@ -75,7 +75,7 @@ def arm_pause(*, no_gateway_restart: bool) -> dict | None:
     _REPLAY_ENVS.clear()
     if sys.platform == "win32" or no_gateway_restart:
         return None
-    from hermes_cli import update_pause_record as pause_record
+    from hermes_agent.hermes_cli import update_pause_record as pause_record
     token = _empty_token()
     try:
         adopted, claims = pause_record.adopt_orphans()
@@ -96,7 +96,7 @@ def gateways_paused() -> bool:
 # --------------------------------------------------------------------------- discovery
 
 def _unit_cgroup(scope_cmd: list, unit: str) -> str | None:
-    from hermes_cli.update_cmd_fleet import _systemctl
+    from hermes_agent.hermes_cli.update_cmd_fleet import _systemctl
     with suppress(OSError, subprocess.TimeoutExpired):
         result = _systemctl(scope_cmd + ["show", unit, "--property=ControlGroup", "--value"], timeout=10)
         if result.returncode == 0 and result.stdout.strip():
@@ -124,8 +124,8 @@ def _inside(cgroup: str | None, unit_cgroup: str | None) -> bool:
 
 def _discover_systemd() -> list[dict]:
     """Active ``hermes-gateway*`` units of this install, one per live MainPID."""
-    from hermes_cli.gateway import _ensure_user_systemd_env, supports_systemd_services
-    from hermes_cli.update_cmd_fleet import (
+    from hermes_agent.hermes_cli.gateway import _ensure_user_systemd_env, supports_systemd_services
+    from hermes_agent.hermes_cli.update_cmd_fleet import (
         _for_each_systemd_gateway_unit, _systemd_gateway_unit_listings, _systemd_unit_owned_by_update,
         _unit_main_pid,
     )
@@ -155,11 +155,11 @@ def _discover_launchd() -> list[dict]:
     """Loaded ``ai.hermes.gateway*`` jobs of this install with a live process (macOS)."""
     if sys.platform != "darwin":
         return []
-    from hermes_cli.gateway import (
+    from hermes_agent.hermes_cli.gateway import (
         _locate_launchd_gateway_service, get_launchd_plist_path, launchd_gateway_labels_for_install,
         legacy_launchd_labels_for_install,
     )
-    from hermes_cli.update_fleet_scope import launchd_label_foreign_home
+    from hermes_agent.hermes_cli.update_fleet_scope import launchd_label_foreign_home
     derived = launchd_gateway_labels_for_install()
     jobs = []
     for label in derived + legacy_launchd_labels_for_install(exclude=set(derived)):
@@ -176,7 +176,7 @@ def _discover_launchd() -> list[dict]:
 
 def _home_of(pid: int) -> str | None:
     """The Hermes home *pid* serves (its control socket lives there), or ``None``."""
-    from hermes_cli.update_fleet_scope import gateway_pid_home
+    from hermes_agent.hermes_cli.update_fleet_scope import gateway_pid_home
     with suppress(Exception):
         if home := gateway_pid_home(pid):
             return str(home)
@@ -186,7 +186,7 @@ def _home_of(pid: int) -> str | None:
 def _supervisor_markers(pid: int) -> str | None:
     """Why *pid* answers to a supervisor other than a hermes unit/job (it would respawn it on old
     code), or ``None``."""
-    from hermes_cli.gateway import _capture_gateway_argv
+    from hermes_agent.hermes_cli.gateway import _capture_gateway_argv
     if "--external-supervisor" in (_capture_gateway_argv(pid) or []):
         return "--external-supervisor"
     try:
@@ -212,7 +212,7 @@ def _respawning_service(pid: int) -> str | None:
     MainPID or its direct child (a non-exec wrapper that exits with it). The inherited
     INVOCATION_ID is no evidence: a terminal tab's shell carries one (its .scope is never
     respawned), and so does anything deep under a CI runner's service."""
-    from hermes_cli.update_cmd_fleet import _systemctl, _unit_main_pid
+    from hermes_agent.hermes_cli.update_cmd_fleet import _systemctl, _unit_main_pid
     cgroup = _pid_cgroup(pid) or ""
     leaf = cgroup.rsplit("/", 1)[-1]
     if not leaf.endswith(".service"):
@@ -229,9 +229,9 @@ def _respawning_service(pid: int) -> str | None:
 def _discover_bare(service_pids: set[int]) -> tuple[list[dict], list[str]]:
     """``(bare gateways, notices)``: this install's ``gateway run`` processes outside any unit."""
     from hermes_agent.gateway.status import get_process_start_time
-    from hermes_cli.gateway import _capture_gateway_argv, _get_service_pids, find_gateway_pids
-    from hermes_cli.update_cmd_fleet import _scoped_manual_gateway_pids
-    from hermes_cli.update_fleet_scope import gateway_pid_home
+    from hermes_agent.hermes_cli.gateway import _capture_gateway_argv, _get_service_pids, find_gateway_pids
+    from hermes_agent.hermes_cli.update_cmd_fleet import _scoped_manual_gateway_pids
+    from hermes_agent.hermes_cli.update_fleet_scope import gateway_pid_home
     exclude = set(service_pids) | set(_get_service_pids(all_profiles=True))
     pids = _scoped_manual_gateway_pids(find_gateway_pids(exclude_pids=exclude, all_profiles=True))
     bare, notices = [], []
@@ -294,7 +294,7 @@ def _escape_cgroup(unit: dict) -> bool:
 
 def _left_running(units: list[dict], jobs: list[dict]) -> tuple[list[dict], list[dict], list[str]]:
     """Drop the runtimes whose stop would kill this updater; name each one."""
-    from hermes_cli.gateway import _is_pid_ancestor_of_current_process
+    from hermes_agent.hermes_cli.gateway import _is_pid_ancestor_of_current_process
     keep_units, keep_jobs, notices = [], [], []
     for unit in units:
         if _manage_cmd(unit["scope"]) is None:
@@ -318,7 +318,7 @@ def _left_running(units: list[dict], jobs: list[dict]) -> tuple[list[dict], list
 # --------------------------------------------------------------------------- stop / start
 
 def _manage_cmd(scope: str) -> list | None:
-    from hermes_cli.update_cmd_fleet import _needs_sudo, _sudo_noninteractive_ok
+    from hermes_agent.hermes_cli.update_cmd_fleet import _needs_sudo, _sudo_noninteractive_ok
     cmd = ["systemctl", "--user"] if scope == "user" else ["systemctl"]
     cmd = cmd + ["--no-ask-password"]
     if scope == "system" and _needs_sudo(scope):
@@ -337,8 +337,8 @@ def _stop_unit(unit: dict) -> None:
     ignores SIGTERM keeps it in ``deactivating`` for up to twice TimeoutStopSec), it keeps the
     supervisor from respawning the gateway, and a rollback ``start`` would only queue behind it
     and boot the gateway seconds before the checkout moves."""
-    from hermes_cli.update_cmd_fleet import _unit_main_pid
-    from hermes_cli.update_cmd_fleet_unit_budget import UNIT_JOB_STILL_RUNNING, run_unit_job
+    from hermes_agent.hermes_cli.update_cmd_fleet import _unit_main_pid
+    from hermes_agent.hermes_cli.update_cmd_fleet_unit_budget import UNIT_JOB_STILL_RUNNING, run_unit_job
     cmd = _manage_cmd(unit["scope"])
     if cmd is None:
         raise PauseRefused(f"no privilege to stop system unit {unit['unit']}")
@@ -353,10 +353,10 @@ def _stop_unit(unit: dict) -> None:
 def _start_unit(unit: dict) -> int:
     """Start *unit* through systemd; the new MainPID (raises when it does not come up). The unit
     gets the definition repair the restart it replaces ran first (``_restart_one_systemd_gateway_unit``)."""
-    from hermes_cli.update_cmd_fleet import (
+    from hermes_agent.hermes_cli.update_cmd_fleet import (
         _repair_unit_without_fatal_exit_park, _systemctl, _unit_main_pid, _wait_for_service_active,
     )
-    from hermes_cli.update_cmd_fleet_unit_budget import run_unit_job
+    from hermes_agent.hermes_cli.update_cmd_fleet_unit_budget import run_unit_job
     cmd = _manage_cmd(unit["scope"])
     if cmd is None:
         raise RuntimeError(f"no privilege to start system unit {unit['unit']}")
@@ -372,8 +372,8 @@ def _start_unit(unit: dict) -> int:
 def _stop_job(job: dict, *, drained: bool = False) -> None:
     """Boot *job* out of launchd. *drained*: its gateway already exited through the drain; the
     bootout only keeps KeepAlive from serving the update."""
-    from hermes_cli.gateway import _locate_launchd_gateway_service
-    from hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
+    from hermes_agent.hermes_cli.gateway import _locate_launchd_gateway_service
+    from hermes_agent.hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
     if not drained and job.get("home"):
         _write_update_planned_stop_marker(Path(job["home"]), job["pid"])
     result = subprocess.run(["launchctl", "bootout", f"{job['domain']}/{job['label']}"],
@@ -388,7 +388,7 @@ def _stop_job(job: dict, *, drained: bool = False) -> None:
 def _start_job(job: dict) -> None:
     """Load and start *job*. The invoking profile's plist is regenerated first, as the restart it
     replaces does (``launchd_restart``); that refresh also loads it."""
-    from hermes_cli.gateway import (
+    from hermes_agent.hermes_cli.gateway import (
         _launchctl_bootstrap, _wait_for_launchd_service_pid, get_launchd_label, refresh_launchd_plist_if_needed,
     )
     if not (job["label"] == get_launchd_label() and refresh_launchd_plist_if_needed()):
@@ -440,7 +440,7 @@ def _ask_to_drain(entry: dict) -> bool:
 
 def _stop_at_once(entry: dict) -> None:
     """The stop for a gateway that did not take the drain: its supervisor's, else marker + SIGTERM."""
-    from hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
+    from hermes_agent.hermes_cli.update_cmd_windows import _write_update_planned_stop_marker
     if entry.get("kind") == "systemd":
         _stop_unit(entry)
     elif entry.get("kind") == "launchd":
@@ -453,7 +453,7 @@ def _stop_at_once(entry: dict) -> None:
 
 def _drain_budget() -> float:
     """The post-update restart's wait for a drained gateway (after-turn wait + stop drain + headroom)."""
-    from hermes_cli.update_cmd_fleet import _gateway_drain_budget
+    from hermes_agent.hermes_cli.update_cmd_fleet import _gateway_drain_budget
     return _gateway_drain_budget()
 
 
@@ -463,8 +463,8 @@ def _stop_gateways(token: dict, entries: list[dict]) -> None:
     its supervisor at once: its exit 75 asks for a restart, which systemd honours after
     ``RestartSec=5`` and launchd immediately, still on the old tree. Past the budget a supervised
     survivor gets its supervisor's stop and a bare one SIGKILL, as the restart path escalates."""
-    from hermes_cli import update_pause_record as pause_record
-    from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+    from hermes_agent.hermes_cli import update_pause_record as pause_record
+    from hermes_agent.hermes_cli.update_cmd_drain_report import drain_progress_reporter
     budget, waiting = _drain_budget(), []
     for entry in entries:
         pause_record.mark_stop_sent(token, entry["pid"])  # before the request: see _ask_to_drain
@@ -592,7 +592,7 @@ def pause_at_commit_point() -> str | None:
 
 
 def _pause(token: dict) -> str | None:
-    from hermes_cli import update_pause_record as pause_record
+    from hermes_agent.hermes_cli import update_pause_record as pause_record
     try:
         units, jobs = _discover_systemd(), _discover_launchd()
         units, jobs, notices = _left_running(units, jobs)
@@ -606,7 +606,7 @@ def _pause(token: dict) -> str | None:
     if not supervised and not bare:
         return None
     from hermes_agent.gateway.status import get_process_start_time
-    from hermes_cli.update_cmd_windows import _planned_stop_marker_path
+    from hermes_agent.hermes_cli.update_cmd_windows import _planned_stop_marker_path
     before = copy.deepcopy(token)  # what this attempt may add; a failed record puts it back
     for entry in supervised + bare:
         entry["ct"] = get_process_start_time(entry["pid"])  # native birth stamp: what _alive compares

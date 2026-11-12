@@ -7,8 +7,8 @@ import logging
 import sys
 from typing import Any
 
-from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
-from hermes_cli.proxy.server import (
+from hermes_agent.hermes_cli.proxy.adapters import ADAPTERS, get_adapter
+from hermes_agent.hermes_cli.proxy.server import (
     AIOHTTP_AVAILABLE, DEFAULT_HOST, DEFAULT_PORT, run_server
 )
 
@@ -34,7 +34,7 @@ def cmd_proxy_start(args: Any) -> int:
         auth_hint = getattr(adapter, "auth_hint", f"hermes auth add {adapter.name}")
         _err(f"Not logged into {adapter.display_name}. Run `{auth_hint}` first.")
         return 2
-    from hermes_cli.url_utils import format_url_host
+    from hermes_agent.hermes_cli.url_utils import format_url_host
 
     host = getattr(args, "host", None) or DEFAULT_HOST
     port = getattr(args, "port", None) or DEFAULT_PORT

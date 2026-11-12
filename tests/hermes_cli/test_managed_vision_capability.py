@@ -27,7 +27,7 @@ def hermes_home(tmp_path, monkeypatch):
 
 def _stage(home_root, name):
     # Machine-scoped models dir (the shared root — tmp HERMES_HOME IS the root here).
-    from hermes_cli.local_runtime.bootstrap import models_dir
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import models_dir
 
     mdir = models_dir()
     mdir.mkdir(parents=True, exist_ok=True)
@@ -35,7 +35,7 @@ def _stage(home_root, name):
 
 
 def test_not_ours_returns_none(hermes_home):
-    from hermes_cli.local_runtime.capabilities import managed_model_supports_vision
+    from hermes_agent.hermes_cli.local_runtime.capabilities import managed_model_supports_vision
 
     assert managed_model_supports_vision("gpt-4o") is None
 
@@ -43,9 +43,9 @@ def test_not_ours_returns_none(hermes_home):
 def test_catalog_vision_model_with_projector_on_disk(hermes_home):
     """Staged catalog model with an mmproj present: True (server down —
     the catalog + on-disk projector answer)."""
-    from hermes_cli.local_runtime.bootstrap import assets_dir
-    from hermes_cli.local_runtime.capabilities import managed_model_supports_vision
-    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import assets_dir
+    from hermes_agent.hermes_cli.local_runtime.capabilities import managed_model_supports_vision
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
 
     entry = next(e for e in CATALOG if e.mmproj is not None)
     variant = entry.variants[-1]
@@ -60,8 +60,8 @@ def test_catalog_vision_model_with_projector_on_disk(hermes_home):
 def test_catalog_vision_model_missing_projector_is_blind(hermes_home):
     """Same model, projector NOT on disk: False — it genuinely cannot see,
     and claiming otherwise sends an image to a model that errors on it."""
-    from hermes_cli.local_runtime.capabilities import managed_model_supports_vision
-    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.local_runtime.capabilities import managed_model_supports_vision
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
 
     entry = next(e for e in CATALOG if e.mmproj is not None)
     variant = entry.variants[-1]
@@ -73,9 +73,9 @@ def test_catalog_vision_model_missing_projector_is_blind(hermes_home):
 def test_live_props_beats_catalog(hermes_home, monkeypatch):
     """A running child's modalities report wins over the catalog: the
     server that will receive the image is the authority."""
-    import hermes_cli.local_runtime.capabilities as caps
+    import hermes_agent.hermes_cli.local_runtime.capabilities as caps
 
-    from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_agent.hermes_cli.local_runtime.catalog import CATALOG
 
     entry = next(e for e in CATALOG if e.mmproj is not None)
     variant = entry.variants[-1]
@@ -91,7 +91,7 @@ def test_lookup_chain_consults_managed_runtime(hermes_home, monkeypatch):
     import hermes_agent.agent.image_routing as ir
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.capabilities.managed_model_supports_vision",
+        "hermes_agent.hermes_cli.local_runtime.capabilities.managed_model_supports_vision",
         lambda mid: True)
 
     def catalog_must_not_run(*a, **k):

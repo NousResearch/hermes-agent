@@ -5,8 +5,8 @@ so that file keeps its main-pinned line cap; moved code keeps its cap)."""
 import json
 from unittest.mock import MagicMock
 
-import hermes_cli.web_server as ws
-import hermes_cli.web_server_gateway as _web_server_gateway
+import hermes_agent.hermes_cli.web_server as ws
+import hermes_agent.hermes_cli.web_server_gateway as _web_server_gateway
 
 
 class TestProbeGatewayHealth:

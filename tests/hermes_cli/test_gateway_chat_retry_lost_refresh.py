@@ -15,7 +15,7 @@ class _DropRefreshOnce:
         self.mutated, self.dropped = False, False
 
     async def rpc(self, method, **params):
-        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_agent.hermes_cli.gateway_client import GatewayClientError
         if method == 'session.resume' and self.mutated and not self.dropped:
             self.dropped = True
             raise GatewayClientError('connection lost')
@@ -35,9 +35,9 @@ async def test_retry_after_a_lost_refresh_replays_the_same_rewind(tmp_path, monk
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.gateway.session_local import create_local_session
-    from hermes_cli.gateway_chat_commands import run_command
-    from hermes_cli.gateway_client import GatewayClientError
-    from hermes_cli.gateway_mutations import PreparedMutations
+    from hermes_agent.hermes_cli.gateway_chat_commands import run_command
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_mutations import PreparedMutations
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})

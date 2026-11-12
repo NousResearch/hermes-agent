@@ -4,8 +4,8 @@
 config that now exists but cannot be stat'ed would let the next save erase every other setting.
 """
 
-from hermes_cli import config_backend
-from hermes_cli.config_read_errors import FailedConfigRead
+from hermes_agent.hermes_cli import config_backend
+from hermes_agent.hermes_cli.config_read_errors import FailedConfigRead
 from hermes_agent.tui_gateway import server
 
 

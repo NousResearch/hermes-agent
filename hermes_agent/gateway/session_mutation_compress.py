@@ -34,7 +34,7 @@ async def prepare_compress(authority, live, payload, prepared):
     from hermes_agent.agent.context_compressor import ContextCompressor
     from hermes_agent.agent.agent_init import _parse_config_int
     from hermes_agent.agent.model_metadata import estimate_request_tokens_rough
-    from hermes_cli.partial_compress import (
+    from hermes_agent.hermes_cli.partial_compress import (
         rejoin_compressed_head_and_tail, split_history_for_partial_compress, summarize_compress_preview)
     from utils import is_truthy_value
     request = compress_request(payload)
@@ -121,7 +121,7 @@ def _engine_compress(engine, head, tail, messages, request, memory_context):
     conversation (the agent path refuses a growing result the same way)."""
     from hermes_agent.agent.conversation_compression import _supported_compression_kwargs
     from hermes_agent.agent.model_metadata import estimate_messages_tokens_rough, estimate_request_tokens_rough
-    from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+    from hermes_agent.hermes_cli.partial_compress import rejoin_compressed_head_and_tail
     engine._last_compress_refused_would_grow = False
     compressed = engine.compress(json.loads(json.dumps(head)), **_supported_compression_kwargs(
         engine.compress, current_tokens=estimate_request_tokens_rough(head),
@@ -146,7 +146,7 @@ def _configured_context_length(config, model, provider, base_url, custom_provide
     """The configured window agent init hands a plugin engine: ``model.context_length`` when it
     describes this runtime, else the matching custom provider's entry."""
     from hermes_agent.agent.agent_init import _scope_context_length_to_default_runtime
-    from hermes_cli.config import get_custom_provider_context_length
+    from hermes_agent.hermes_cli.config import get_custom_provider_context_length
     model_cfg = config.get('model') if isinstance(config.get('model'), dict) else {}
     try:
         configured = int(model_cfg['context_length']) if model_cfg.get('context_length') is not None else None
@@ -182,7 +182,7 @@ def _plugin_engine(authority, policy, config, model, runtime, resident, target):
     thresholds = (config.get('compression') or {}).get('model_thresholds')
     if isinstance(thresholds, dict) and thresholds:  # before update_model, like agent init
         engine.model_thresholds = {str(k): float(v) for k, v in thresholds.items()}
-    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_agent.hermes_cli.config import get_compatible_custom_providers
     base_url, api_key = runtime.get('base_url') or '', runtime.get('api_key') or ''
     provider = runtime.get('provider') or ''
     providers = get_compatible_custom_providers(config)

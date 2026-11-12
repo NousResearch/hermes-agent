@@ -19,7 +19,7 @@ from unittest.mock import patch, AsyncMock
 
 import pytest
 
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server
 
 @pytest.fixture(autouse=True)
 def _reset_plugin_cache():
@@ -36,7 +36,7 @@ def test_client(monkeypatch, tmp_path):
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
 
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     # Isolate HERMES_HOME so config reads go to our tmp.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -99,7 +99,7 @@ class TestPluginApiRuntimeGate:
         call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
 
         with patch.object(web_server, "_get_dashboard_plugins", return_value=[fake_plugin]), \
-             patch("hermes_cli.web_server_dashboard._plugin_enable_sets_here", return_value=({"hot"}, {"hot"})):
+             patch("hermes_agent.hermes_cli.web_server_dashboard._plugin_enable_sets_here", return_value=({"hot"}, {"hot"})):
             response = await web_server._plugin_api_runtime_gate(request, call_next)
 
         assert response.status_code == 404
@@ -149,7 +149,7 @@ class TestPluginApiRuntimeGate:
         call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
 
         with patch.object(web_server, "_get_dashboard_plugins", return_value=[]), \
-             patch("hermes_cli.web_server_dashboard._plugin_enable_sets_here", return_value=(set(), set())):
+             patch("hermes_agent.hermes_cli.web_server_dashboard._plugin_enable_sets_here", return_value=(set(), set())):
             response = await web_server._plugin_api_runtime_gate(request, call_next)
 
         assert response.status_code == 404
@@ -177,7 +177,7 @@ class TestPluginApiRuntimeGate:
         call_next = AsyncMock(return_value=JSONResponse({"ok": True}))
 
         with patch.object(web_server, "_get_dashboard_plugins", return_value=[{"name": "hot", "source": "user"}]), \
-             patch("hermes_cli.web_server_dashboard._plugin_enable_sets_here", return_value=({"hot"}, {"hot"})):
+             patch("hermes_agent.hermes_cli.web_server_dashboard._plugin_enable_sets_here", return_value=({"hot"}, {"hot"})):
             response = await web_server._plugin_api_runtime_gate(request, call_next)
 
         assert response.status_code == 404
@@ -205,14 +205,14 @@ class TestBundledPluginAssetGate:
 
         with patch.object(web_server, "_get_dashboard_plugins", return_value=[fake_plugin]):
             # Sanity: asset is served when not disabled.
-            with patch("hermes_cli.web_server_dashboard._plugin_enable_sets_here", return_value=(set(), set())):
+            with patch("hermes_agent.hermes_cli.web_server_dashboard._plugin_enable_sets_here", return_value=(set(), set())):
                 resp = test_client.get("/dashboard-plugins/bundledx/dist/index.js")
                 assert resp.status_code == 200, (
                     "Sanity: bundled plugin asset should be served when not disabled"
                 )
 
             # Disable it.
-            with patch("hermes_cli.web_server_dashboard._plugin_enable_sets_here", return_value=(set(), {"bundledx"})):
+            with patch("hermes_agent.hermes_cli.web_server_dashboard._plugin_enable_sets_here", return_value=(set(), {"bundledx"})):
                 resp = test_client.get("/dashboard-plugins/bundledx/dist/index.js")
                 assert resp.status_code == 404, (
                     "Disabled bundled plugin asset must return 404"

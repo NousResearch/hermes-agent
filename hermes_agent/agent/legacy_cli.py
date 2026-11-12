@@ -15,9 +15,9 @@ try:
 except ModuleNotFoundError:
     pass  # partial `hermes update` — only skips the Windows UTF-8 stdio setup
 
-# The `hermes-agent` console script lands here without hermes_cli.main: repair a `hermes update` killed
+# The `hermes-agent` console script lands here without hermes_agent.hermes_cli.main: repair a `hermes update` killed
 # while git wrote the new tree before importing anything else from the checkout.
-from hermes_cli import _early_recovery
+from hermes_agent.hermes_cli import _early_recovery
 
 if _early_recovery.restore_interrupted_pull():
     _early_recovery.relaunch_after_restore()
@@ -27,7 +27,7 @@ from typing import Callable, List, Optional
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    from hermes_cli import __release_date__, __version__
+    from hermes_agent.hermes_cli import __release_date__, __version__
 
     parser = argparse.ArgumentParser(
         prog="hermes-agent",

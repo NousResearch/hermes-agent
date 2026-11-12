@@ -10,11 +10,11 @@ goals, notifications, shutdown, ...), sessions in `session*.py`, slash handlers 
 `slash_commands_*.py` mixins, authorization in `authz_mixin.py`, adapters in `platforms/<name>.py`
 over `platforms/base.py`. The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
 `DEFAULT_CONFIG` — a key the CLI sees but the gateway doesn't means you're on the wrong loader
-(`hermes_cli/AGENTS.md`). Each adapter picks a base toolset (Telegram → `"messaging"`).
+(`hermes_agent/hermes_cli/AGENTS.md`). Each adapter picks a base toolset (Telegram → `"messaging"`).
 
 Slash commands: handlers are looked up by name through `_command_handler_table`; a command is
 listed in `_IDLE_COMMANDS` or `_PLAIN_COMMANDS` (works mid-run) in `run_busy.py`. No
-`if canonical == ...` chains. Registry + adding a command: `hermes_cli/AGENTS.md`.
+`if canonical == ...` chains. Registry + adding a command: `hermes_agent/hermes_cli/AGENTS.md`.
 
 ## The gateway has TWO message guards — both must bypass approval/control commands
 
@@ -208,7 +208,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
 - **One launch-home identity.** "Does this task serve a routed profile?" compares the override
   with `hermes_constants.get_routing_process_hermes_home()` (`hermes_agent/agent/secret_scope.py::
   serves_routed_profile` and `_is_process_home`, `hermes_agent/tools/environments/local.py::_is_routed_home`,
-  `hermes_cli/env_loader.py::_process_hermes_home`), never with `os.environ["HERMES_HOME"]` read
+  `hermes_agent/hermes_cli/env_loader.py::_process_hermes_home`), never with `os.environ["HERMES_HOME"]` read
   live: an embedding host that mirrors the served profile into the env var per turn (Hermes
   WebUI) pins its own home with `pin_process_hermes_home()`, and without a pin the resolver is
   `get_process_hermes_home()` unchanged. Do not add another routing decision that compares

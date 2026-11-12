@@ -22,9 +22,9 @@ async def held(tmp_path, monkeypatch):
     from hermes_agent.gateway.session import SessionStore
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_cli import gateway_runtime
-    from hermes_cli.active_sessions import release_active_session, try_acquire_active_session
-    from hermes_cli.gateway_client import rpc_error
+    from hermes_agent.hermes_cli import gateway_runtime
+    from hermes_agent.hermes_cli.active_sessions import release_active_session, try_acquire_active_session
+    from hermes_agent.hermes_cli.gateway_client import rpc_error
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.tools import bot_live_delivery, bot_mode_dm
 
@@ -245,7 +245,7 @@ async def test_a_retiring_or_retired_owner_refuses_settle_through_a_retained_con
     refused before it writes: receipt files carry no epoch and the mailbox lock is this authority's
     own, so nothing else keeps it from racing the home's next owner."""
     from hermes_agent.gateway import run_runtime
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
     from hermes_agent.tools.bot_live_delivery import find_canonical_live_owner, read_delivery_result, settle_held_delivery
     owner = find_canonical_live_owner(held.home)
     held.authority.retiring = True
@@ -285,7 +285,7 @@ async def test_a_settle_refused_by_a_retired_owner_keeps_the_unknown_outcome(hel
 async def test_a_refusal_alone_leaves_the_id_open_for_a_same_id_retry(held):
     """Only the Bot DM tool's settle records a not-sent disposition. A producer that retries its
     queued record under the same id (the cron drain) after a held refusal still admits it once."""
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
     delivery_id = 'c' * 64
     with pytest.raises(GatewayRPCError) as refused:
         await asyncio.to_thread(_resubmit, held, delivery_id, 'cron report')

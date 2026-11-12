@@ -37,7 +37,7 @@ class TestGetBrowserEngine:
     def test_config_lightpanda(self):
         """Config browser.engine = 'lightpanda' is respected."""
         cfg = {"browser": {"engine": "lightpanda"}}
-        with patch("hermes_cli.config_effective.load_user_config_effective", return_value=cfg):
+        with patch("hermes_agent.hermes_cli.config_effective.load_user_config_effective", return_value=cfg):
             assert bs_cloud.get_browser_engine() == "lightpanda"
 
 

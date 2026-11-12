@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli import kanban_db
-from hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
 
 # These probe the kanban guard against the real root on purpose.
 pytestmark = pytest.mark.allow_real_home_io

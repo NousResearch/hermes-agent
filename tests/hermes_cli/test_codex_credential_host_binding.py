@@ -104,7 +104,7 @@ def test_picker_model_base_url_only_gateway_keeps_pool_key_on_gateway(monkeypatc
     home = _home(monkeypatch)
     _write_config(home, base_url=GW)
     _write_pool(home, key)
-    from hermes_cli.models import _codex_catalog
+    from hermes_agent.hermes_cli.models import _codex_catalog
 
     _codex_catalog("openai-codex", force_refresh=True)
 
@@ -116,7 +116,7 @@ def test_picker_pool_row_with_its_own_gateway_url(monkeypatch, picker_http):
     home = _home(monkeypatch)
     _write_config(home)
     _write_pool(home, JWT, row_base=OTHER_GW)
-    from hermes_cli.models import _codex_catalog
+    from hermes_agent.hermes_cli.models import _codex_catalog
 
     _codex_catalog("openai-codex", force_refresh=True)
 
@@ -127,7 +127,7 @@ def test_picker_uses_the_route_base_not_a_mismatched_env(monkeypatch, picker_htt
     """env/route mismatch: the caller's resolved route wins over a stale process env — the
     credential is composed with the base it was resolved with, not an ambient re-read."""
     monkeypatch.setenv("HERMES_CODEX_BASE_URL", OTHER_GW)
-    from hermes_cli.codex_models import get_codex_model_ids
+    from hermes_agent.hermes_cli.codex_models import get_codex_model_ids
 
     get_codex_model_ids(access_token=JWT, base_url=GW)
 
@@ -140,7 +140,7 @@ def test_setup_flow_status_carries_the_pool_entry_route(monkeypatch):
     home = _home(monkeypatch)
     _write_config(home, base_url=GW)
     _write_pool(home, OPAQUE)
-    from hermes_cli.auth import get_codex_auth_status
+    from hermes_agent.hermes_cli.auth import get_codex_auth_status
 
     status = get_codex_auth_status()
 
@@ -152,7 +152,7 @@ def test_setup_flow_status_carries_a_pool_row_own_gateway_url(monkeypatch):
     home = _home(monkeypatch)
     _write_config(home)
     _write_pool(home, OPAQUE, row_base=OTHER_GW)
-    from hermes_cli.auth import get_codex_auth_status
+    from hermes_agent.hermes_cli.auth import get_codex_auth_status
 
     assert get_codex_auth_status()["base_url"] == OTHER_GW
 
@@ -165,8 +165,8 @@ def test_model_setup_flow_catalog_goes_to_the_pool_entry_gateway(monkeypatch, pi
     _write_pool(home, OPAQUE)
     monkeypatch.setattr("builtins.input", lambda prompt="": "1")  # reuse existing credentials
     confirm = {}
-    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda *a, **kw: confirm.update(kw))
-    from hermes_cli.model_setup_flows import _model_flow_openai_codex
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth._prompt_model_selection", lambda *a, **kw: confirm.update(kw))
+    from hermes_agent.hermes_cli.model_setup_flows import _model_flow_openai_codex
 
     _model_flow_openai_codex({}, current_model="gpt-5.5")
 
@@ -180,7 +180,7 @@ def test_cli_default_model_swap_asks_the_session_route(monkeypatch, picker_http)
     ``(api_key, base_url)`` route, even when the process env names another gateway."""
     from types import MethodType
 
-    from hermes_cli.cli_model_switch_mixin import CLIModelSwitchMixin
+    from hermes_agent.hermes_cli.cli_model_switch_mixin import CLIModelSwitchMixin
 
     monkeypatch.setenv("HERMES_CODEX_BASE_URL", OTHER_GW)
     cli = SimpleNamespace(model="", api_key=JWT, base_url=GW, _model_is_default=True,
@@ -197,7 +197,7 @@ def test_picker_direct_chatgpt_positive_control(monkeypatch, picker_http):
     home = _home(monkeypatch)
     _write_config(home)
     _write_singleton(home, JWT)
-    from hermes_cli.models import _codex_catalog
+    from hermes_agent.hermes_cli.models import _codex_catalog
 
     _codex_catalog("openai-codex", force_refresh=True)
 
@@ -209,7 +209,7 @@ def test_full_picker_discovers_codex_models_with_pinned_canonical_url(monkeypatc
     """A saved canonical URL must not bypass account discovery via the relay-only API-key path."""
     import httpx
 
-    from hermes_cli.inventory import build_model_options_payload, load_picker_context
+    from hermes_agent.hermes_cli.inventory import build_model_options_payload, load_picker_context
 
     home = _home(monkeypatch)
     _write_config(home, base_url=CHATGPT + suffix)
@@ -228,9 +228,9 @@ def test_full_picker_discovers_codex_models_with_pinned_canonical_url(monkeypatc
     monkeypatch.setattr(httpx, "get", catalog_get)
     # Unrelated metadata sources stay offline; config, auth, discovery, cache and picker are real.
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
-    monkeypatch.setattr("hermes_cli.models.get_curated_nous_model_ids", list)
-    monkeypatch.setattr("hermes_cli.models.fetch_ollama_cloud_models", lambda **kw: [])
-    monkeypatch.setattr("hermes_cli.models_pricing.get_pricing_for_provider", lambda *a, **kw: {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.get_curated_nous_model_ids", list)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_ollama_cloud_models", lambda **kw: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_pricing.get_pricing_for_provider", lambda *a, **kw: {})
     # The picker's background usage refresh outlives this test: left running, it sends the JWT
     # through whatever ``httpx.Client`` a LATER case has patched in, polluting that case's recorder.
     monkeypatch.setattr("hermes_agent.agent.account_usage_cache.refresh_account_usage_async", lambda *a, **kw: [])
@@ -262,7 +262,7 @@ def test_full_picker_discovers_codex_models_with_pinned_canonical_url(monkeypatc
 
 def test_picker_refuses_opaque_key_aimed_at_chatgpt(picker_http):
     """Defense in depth: a non-JWT key composed with chatgpt.com is never sent there."""
-    from hermes_cli.codex_models import get_codex_model_ids
+    from hermes_agent.hermes_cli.codex_models import get_codex_model_ids
 
     get_codex_model_ids(access_token=OPAQUE, base_url=CHATGPT)
 
@@ -406,8 +406,8 @@ def _exhausted_jwt_pool(home: Path) -> None:
 
 @pytest.fixture
 def usage_probe_http(monkeypatch):
-    from hermes_cli import auth as auth_mod
-    from hermes_cli import auth_codex
+    from hermes_agent.hermes_cli import auth as auth_mod
+    from hermes_agent.hermes_cli import auth_codex
     seen = []
     auth_mod._codex_quota_probe_cache.clear()
     monkeypatch.setattr(auth_codex, "_codex_http_client", lambda **kw: _UsageRecorder(seen))
@@ -419,7 +419,7 @@ def test_quota_restored_probe_of_a_persisted_entry_asks_the_gateway(monkeypatch,
     home = _home(monkeypatch)
     _write_config(home, base_url=GW)
     _exhausted_jwt_pool(home)
-    from hermes_cli.auth_codex import _probe_codex_pool_entry_quota_restored
+    from hermes_agent.hermes_cli.auth_codex import _probe_codex_pool_entry_quota_restored
 
     entry = json.loads((home / "auth.json").read_text())["credential_pool"]["openai-codex"][0]
     assert _probe_codex_pool_entry_quota_restored(entry) is True
@@ -444,7 +444,7 @@ def test_quota_restored_probe_direct_chatgpt_positive_control(monkeypatch, usage
     home = _home(monkeypatch)
     _write_config(home)
     _exhausted_jwt_pool(home)
-    from hermes_cli.auth_codex import _probe_codex_pool_entry_quota_restored
+    from hermes_agent.hermes_cli.auth_codex import _probe_codex_pool_entry_quota_restored
 
     entry = json.loads((home / "auth.json").read_text())["credential_pool"]["openai-codex"][0]
     _probe_codex_pool_entry_quota_restored(entry)
@@ -499,8 +499,8 @@ def test_route_fallback_reads_the_profile_scoped_override_not_a_sibling_process_
     ``HERMES_CODEX_BASE_URL`` — never a multiplexed sibling's process env."""
     from hermes_agent.agent import secret_scope
     from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
-    from hermes_cli import runtime_provider
-    from hermes_cli.auth_codex import _codex_pool_route_base_url
+    from hermes_agent.hermes_cli import runtime_provider
+    from hermes_agent.hermes_cli.auth_codex import _codex_pool_route_base_url
 
     def _boom(*_a, **_kw):
         raise RuntimeError("route resolution failed")

@@ -174,7 +174,7 @@ class ScratchDashboard:
         env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
         env["HERMES_ISO_CERTIFY_SYNTH_TURN"] = "1"
         cmd = [
-            python, "-m", "hermes_cli.main", "dashboard",
+            python, "-m", "hermes_agent.hermes_cli.main", "dashboard",
             "--no-open", "--host", "127.0.0.1", "--port", str(self.port),
         ]
         self.proc = subprocess.Popen(

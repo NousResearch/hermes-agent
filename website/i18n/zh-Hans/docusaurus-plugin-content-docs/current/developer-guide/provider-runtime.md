@@ -16,9 +16,9 @@ Hermes 拥有一个共享的 provider 运行时解析器，用于以下场景：
 
 主要实现：
 
-- `hermes_cli/runtime_provider.py` — 凭据解析，`_resolve_custom_runtime()`
-- `hermes_cli/auth.py` — provider 注册表，`resolve_provider()`
-- `hermes_cli/model_switch.py` — 共享 `/model` 切换流水线（CLI + gateway）
+- `hermes_agent/hermes_cli/runtime_provider.py` — 凭据解析，`_resolve_custom_runtime()`
+- `hermes_agent/hermes_cli/auth.py` — provider 注册表，`resolve_provider()`
+- `hermes_agent/hermes_cli/model_switch.py` — 共享 `/model` 切换流水线（CLI + gateway）
 - `hermes_agent/agent/auxiliary_client.py` — 辅助模型路由
 - `providers/` — ABC + 注册表入口点（`ProviderProfile`、`register_provider`、`get_provider_profile`、`list_providers`）
 - `plugins/model-providers/<name>/` — 每个 provider 的插件（内置），声明 `api_mode`、`base_url`、`env_vars`、`fallback_models` 并在首次访问时将自身注册到注册表。用户插件位于 `$HERMES_HOME/plugins/model-providers/<name>/`，会覆盖同名的内置插件。

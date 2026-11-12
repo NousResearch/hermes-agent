@@ -103,7 +103,7 @@ def _turn(srv, home, session_id, text, history, agent=None):
 
 def _refresh_prompts(monkeypatch, home: Path, *extra: str) -> None:
     """Run the real CLI entrypoint against ``home`` (what an operator's update script calls)."""
-    import hermes_cli.main as main_mod
+    import hermes_agent.hermes_cli.main as main_mod
 
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "refresh-prompts", *extra])
@@ -306,7 +306,7 @@ def test_refresh_keeps_the_sessions_tools_pin(profile, monkeypatch):
 
 
 def test_refresh_prompts_unknown_session_fails(profile, monkeypatch, capsys):
-    import hermes_cli.main as main_mod
+    import hermes_agent.hermes_cli.main as main_mod
 
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", "refresh-prompts", "--session", "nope"])
     with pytest.raises(SystemExit) as exc:

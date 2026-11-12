@@ -48,10 +48,10 @@ class _NoNetwork:
 async def test_local_session_debug_local_returns_the_report_without_uploading(text):
     guard = _NoNetwork()
     bundle = {'report': 'REDACTED-REPORT-BODY', 'agent.log': 'FULL-LOG'}
-    with patch('hermes_cli.debug.upload_to_pastebin', guard), \
-            patch('hermes_cli.diagnostics_upload.share_to_nous', guard), \
-            patch('hermes_cli.debug._schedule_auto_delete', guard), \
-            patch('hermes_cli.debug.collect_share_bundle', return_value=bundle), \
+    with patch('hermes_agent.hermes_cli.debug.upload_to_pastebin', guard), \
+            patch('hermes_agent.hermes_cli.diagnostics_upload.share_to_nous', guard), \
+            patch('hermes_agent.hermes_cli.debug._schedule_auto_delete', guard), \
+            patch('hermes_agent.hermes_cli.debug.collect_share_bundle', return_value=bundle), \
             patch.object(socket.socket, 'connect', guard):
         out = await _runner()._handle_debug_command(_event(Platform.LOCAL, text))
     assert guard.calls == []
@@ -62,11 +62,11 @@ async def test_local_session_debug_local_returns_the_report_without_uploading(te
 @pytest.mark.asyncio
 async def test_messaging_debug_still_uploads_the_summary():
     uploaded = []
-    with patch('hermes_cli.debug.upload_to_pastebin', lambda report: uploaded.append(report) or 'https://paste.rs/x'), \
-            patch('hermes_cli.debug._schedule_auto_delete', lambda urls: None), \
-            patch('hermes_cli.debug._best_effort_sweep_expired_pastes', lambda: None), \
-            patch('hermes_cli.debug._capture_dump', lambda: 'dump'), \
-            patch('hermes_cli.debug.collect_debug_report', lambda **kw: 'SUMMARY'):
+    with patch('hermes_agent.hermes_cli.debug.upload_to_pastebin', lambda report: uploaded.append(report) or 'https://paste.rs/x'), \
+            patch('hermes_agent.hermes_cli.debug._schedule_auto_delete', lambda urls: None), \
+            patch('hermes_agent.hermes_cli.debug._best_effort_sweep_expired_pastes', lambda: None), \
+            patch('hermes_agent.hermes_cli.debug._capture_dump', lambda: 'dump'), \
+            patch('hermes_agent.hermes_cli.debug.collect_debug_report', lambda **kw: 'SUMMARY'):
         out = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug'))
     assert uploaded == ['SUMMARY']
     assert 'https://paste.rs/x' in out
@@ -76,11 +76,11 @@ async def test_messaging_debug_still_uploads_the_summary():
 async def test_messaging_debug_local_is_refused_without_uploading():
     """``/debug local`` from a chat is a named refusal pointing at bare ``/debug``; nothing is uploaded."""
     guard = _NoNetwork()
-    with patch('hermes_cli.debug.upload_to_pastebin', guard), \
-            patch('hermes_cli.diagnostics_upload.share_to_nous', guard), \
-            patch('hermes_cli.debug._schedule_auto_delete', guard), \
-            patch('hermes_cli.debug._best_effort_sweep_expired_pastes', guard), \
-            patch('hermes_cli.debug.collect_debug_report', guard), \
+    with patch('hermes_agent.hermes_cli.debug.upload_to_pastebin', guard), \
+            patch('hermes_agent.hermes_cli.diagnostics_upload.share_to_nous', guard), \
+            patch('hermes_agent.hermes_cli.debug._schedule_auto_delete', guard), \
+            patch('hermes_agent.hermes_cli.debug._best_effort_sweep_expired_pastes', guard), \
+            patch('hermes_agent.hermes_cli.debug.collect_debug_report', guard), \
             patch.object(socket.socket, 'connect', guard):
         out = await _runner()._handle_debug_command(_event(Platform.TELEGRAM, '/debug local'))
     assert guard.calls == []
@@ -92,8 +92,8 @@ async def test_local_debug_local_real_collector_opens_no_socket(tmp_path, monkey
     """The real collector, unpatched: no socket connect and no upload helper is reached."""
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     guard = _NoNetwork()
-    with patch('hermes_cli.debug.upload_to_pastebin', guard), \
-            patch('hermes_cli.diagnostics_upload.share_to_nous', guard), \
+    with patch('hermes_agent.hermes_cli.debug.upload_to_pastebin', guard), \
+            patch('hermes_agent.hermes_cli.diagnostics_upload.share_to_nous', guard), \
             patch.object(socket.socket, 'connect', guard), \
             patch.object(socket.socket, 'connect_ex', guard), \
             patch('socket.create_connection', guard):

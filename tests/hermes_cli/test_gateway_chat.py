@@ -5,7 +5,7 @@ import pytest
 
 
 def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
-    from hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli import gateway_chat
     calls = []
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: calls.append(True))
     for option in ("image", "worktree", "run_budget"):
@@ -33,7 +33,7 @@ def test_unsupported_launch_options_fail_before_connection(monkeypatch, capsys):
 
 def test_resume_repeating_source_desktop_matches_the_stored_gui_session():
     """`--source desktop` creates as `gui`; repeating it on `--resume` is the same session source."""
-    from hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli import gateway_chat
     frozen = {"info": {"launch_request": {"source": "gui"}}}
     gateway_chat.check_resume_policy(argparse.Namespace(resume="stored", source="desktop", query="x"), frozen)
 
@@ -41,7 +41,7 @@ def test_resume_repeating_source_desktop_matches_the_stored_gui_session():
 def test_refusals_name_the_replacement_and_a_runnable_safe_mode_example(monkeypatch, capsys):
     """An exit-2 refusal tells the user where every refused flag went; the safe-mode
     refusal prints a command they can run as-is."""
-    from hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli import gateway_chat
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: pytest.fail("connected"))
     assert gateway_chat.launch_from_args(argparse.Namespace(worktree=True, run_budget=30.0)) == 2
     err = capsys.readouterr().err
@@ -53,7 +53,7 @@ def test_refusals_name_the_replacement_and_a_runnable_safe_mode_example(monkeypa
     err = capsys.readouterr().err
     example = next(line.split("Example: ", 1)[1] for line in err.splitlines() if "Example: " in line)
     import shlex
-    from hermes_cli._parser import build_top_level_parser
+    from hermes_agent.hermes_cli._parser import build_top_level_parser
     parsed = build_top_level_parser()[0].parse_args(shlex.split(example)[1:])
     assert parsed.safe_mode and parsed.model and parsed.provider and parsed.query
 
@@ -61,8 +61,8 @@ def test_refusals_name_the_replacement_and_a_runnable_safe_mode_example(monkeypa
 @pytest.mark.asyncio
 async def test_creation_preserves_advertised_cwd_model_and_toolsets(monkeypatch, tmp_path):
     from contextlib import asynccontextmanager
-    from hermes_cli import gateway_chat
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
     calls = []
 
     class Peer:
@@ -105,8 +105,8 @@ async def test_finite_runs_create_oneshot_sessions_and_explicit_source_wins(monk
     """Finite ``-q``/``-z`` runs are stored as ``oneshot`` (kept out of human pickers); ``--source``
     always wins, and a gateway that does not advertise ``oneshot`` still gets a plain ``cli`` run."""
     from contextlib import asynccontextmanager
-    from hermes_cli import gateway_chat
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
     created, sources = [], ["cli", "tool", "oneshot"]
 
     class Peer:
@@ -140,7 +140,7 @@ async def test_rpc_preserves_notifications_and_errors():
     import json
     from websockets.asyncio.server import serve
     from websockets.asyncio.client import connect
-    from hermes_cli.gateway_client import GatewayClient, GatewayClientError
+    from hermes_agent.hermes_cli.gateway_client import GatewayClient, GatewayClientError
 
     async def peer(ws):
         async for raw in ws:
@@ -162,7 +162,7 @@ async def test_rpc_preserves_notifications_and_errors():
 async def test_yolo_slash_toggles_the_session_bypass_on_the_owner(capsys):
     """`/yolo` in an attached `hermes chat` was refused as an unsupported command, so a `--yolo`
     launch could not be revoked from the classic CLI; it is the owner's session-scoped config.set."""
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
     calls = []
 
     class Peer:
@@ -183,8 +183,8 @@ def test_every_relocation_hint_names_a_command_that_parses():
     user to a command argparse rejects."""
     import re
     import shlex
-    from hermes_cli import gateway_chat
-    from hermes_cli.main import _build_cli_parser
+    from hermes_agent.hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli.main import _build_cli_parser
     parser = _build_cli_parser()
     parser = parser[0] if isinstance(parser, tuple) else parser
     for hint in gateway_chat._RELOCATED.values():
@@ -194,7 +194,7 @@ def test_every_relocation_hint_names_a_command_that_parses():
 
 def test_one_letter_alias_refusal_names_a_flag_the_user_can_type(monkeypatch, capsys):
     """`cli.main(w=True)` (`python cli.py -w`) is refused as `-w`; `--w` is not an option anywhere."""
-    from hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli import gateway_chat
     monkeypatch.setattr(gateway_chat, "connect_gateway", lambda: pytest.fail("connected"))
     assert gateway_chat.launch_from_args(argparse.Namespace(w=True)) == 2
     err = capsys.readouterr().err
@@ -208,8 +208,8 @@ async def test_documented_env_opt_ins_ride_the_classic_create_and_bypass_needs_a
     must ride session.create (Ink's localCreationOptions set), and an env bypass without -m is
     refused before connecting, exactly as the flag is."""
     from contextlib import asynccontextmanager
-    from hermes_cli import gateway_chat
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
     flags = ["yolo", "ignore_rules", "safe_mode", "ignore_user_config", "accept_hooks"]
     created = []
 
@@ -249,8 +249,8 @@ async def test_launch_key_flags_are_never_silently_dropped(monkeypatch, tmp_path
     refuses them (exit 2) instead of running on the profile's endpoint; classic chat re-supplies
     the launch key on resume (an owner restart revoked it) and `/new` keeps it."""
     from contextlib import asynccontextmanager
-    from hermes_cli import gateway_chat, gateway_chat_commands, main as main_mod
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli import gateway_chat, gateway_chat_commands, main as main_mod
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
     monkeypatch.setattr(main_mod, "_launch_tui", lambda *_a, **_k: pytest.fail("TUI launched without the flags"))
     for flag in ("api_key", "base_url", "reasoning"):
         with pytest.raises(SystemExit) as refused:
@@ -290,8 +290,8 @@ async def test_launch_key_flags_are_never_silently_dropped(monkeypatch, tmp_path
 async def test_new_and_branch_move_the_terminal_continue_pointer(monkeypatch, tmp_path, command):
     """P3: a bare `hermes -c` after `/new` or `/branch` continues the session this terminal is
     now on (the in-process CLI re-wrote its breadcrumb on every switch), not the old one."""
-    from hermes_cli import gateway_chat_commands, terminal_breadcrumbs
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli import gateway_chat_commands, terminal_breadcrumbs
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("TMUX_PANE", "%9")
     monkeypatch.setattr(terminal_breadcrumbs.os, "ttyname", lambda fd: (_ for _ in ()).throw(OSError()),
@@ -326,8 +326,8 @@ async def test_oneshot_z_writes_no_session_lines_to_stderr_like_main(monkeypatch
     """Main's ``hermes -z`` printed the reply on stdout and nothing on stderr; ``-q -Q`` keeps the
     ``Session:`` / ``session_id:`` lines automation wrappers read."""
     from contextlib import asynccontextmanager
-    from hermes_cli import gateway_chat
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
 
     class Peer:
         async def rpc(self, method, **params):

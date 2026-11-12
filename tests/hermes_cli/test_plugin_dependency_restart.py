@@ -19,8 +19,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import plugins_activation
-from hermes_cli.plugins_loader import installed_in_selected_environment, missing_python_dependencies
+from hermes_agent.hermes_cli import plugins_activation
+from hermes_agent.hermes_cli.plugins_loader import installed_in_selected_environment, missing_python_dependencies
 
 DIST = "hermes-depprobe-fixture"
 REQ = f"{DIST}>=1.0,<2"
@@ -64,11 +64,11 @@ def home(tmp_path, monkeypatch):
 
 
 def _discover(caplog):
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     plugins._reset_plugin_managers_for_tests()
     caplog.clear()
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.plugins"):
         plugins.discover_plugins(force=True)
     manager = plugins.get_plugin_manager()
     messages = [r.getMessage() for r in caplog.records if "depprobe" in r.getMessage()]
@@ -84,7 +84,7 @@ def test_discovery_says_restart_when_the_selected_generation_has_the_dependency(
         summary = plugins_activation.plugin_activation_summary(manager, "depprobe")
         assert summary["missing_dependencies"] == [REQ]
     finally:
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
         plugins._reset_plugin_managers_for_tests()
 
 
@@ -94,14 +94,14 @@ def test_discovery_keeps_the_repair_remedy_when_nothing_installed_it(home, caplo
         _manager, messages = _discover(caplog)
         assert any("not installed" in m and "pm repair" in m for m in messages), messages
     finally:
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
         plugins._reset_plugin_managers_for_tests()
 
 
 def test_an_importable_dependency_is_not_reported(home, monkeypatch):
     site = _select_generation(home, with_dist=True)
     monkeypatch.syspath_prepend(str(site))
-    from hermes_cli.plugins import PluginManifest
+    from hermes_agent.hermes_cli.plugins import PluginManifest
 
     manifest = PluginManifest(name="depprobe", python_dependencies=[REQ])
     assert missing_python_dependencies(manifest) == []
@@ -174,7 +174,7 @@ def test_selected_generation_probe_is_false_without_a_selection(home):
 def test_a_dependency_excluded_by_its_marker_is_never_missing():
     """PM never installs a marker-excluded requirement here; reporting it would demand a restart
     (or repair) on every enable that can never help."""
-    from hermes_cli.plugins import PluginManifest
+    from hermes_agent.hermes_cli.plugins import PluginManifest
 
     excluded = f"{DIST}>=1.0,<2; python_version < '3.0'"
     manifest = PluginManifest(name="depprobe", python_dependencies=[excluded, REQ])
@@ -186,7 +186,7 @@ def test_a_plugin_importing_its_new_dependency_at_load_still_asks_for_a_restart(
     load fails, so the plugin has no activation summary; the reload answer must still carry what
     blocked it, or enable reports "nothing of this plugin needs a session or restart"."""
     from hermes_agent.gateway.run_plugin_rewire import reload_plugins_verb
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
     from hermes_agent.tui_gateway.contracts.tools_mcp_plugins import PluginActivation
 
     _select_generation(home, with_dist=True)
@@ -217,7 +217,7 @@ def test_restart_follows_what_pm_installs_for_the_plugin(home, shape, restart):
     """The probe reads the declaration the way PM admission does: an authored pyproject.toml, the
     legacy ``pip_dependencies`` alias, and nothing for a ``python_runtime: external`` sidecar (its
     dependencies never enter Hermes's environment, so no restart or repair can load them)."""
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     _select_generation(home, with_dist=True)
     plugin = home / "plugins" / "depprobe"
@@ -251,7 +251,7 @@ def test_an_installed_version_the_requirement_rejects_is_missing(home, monkeypat
     running = tmp_path / "running-site"
     _dist_info(running, "1.0")
     monkeypatch.syspath_prepend(str(running))
-    from hermes_cli.plugins import PluginManifest
+    from hermes_agent.hermes_cli.plugins import PluginManifest
 
     raised = f"{DIST}>=1.5,<2"
     assert missing_python_dependencies(PluginManifest(name="depprobe", python_dependencies=[raised])) == [raised]

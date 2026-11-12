@@ -53,8 +53,8 @@ def _dispatch(transport, request_id, method, params=None):
 
 
 def _patch_fast_probe_env(monkeypatch, resolve):
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
-    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("custom/m", None))
 
 

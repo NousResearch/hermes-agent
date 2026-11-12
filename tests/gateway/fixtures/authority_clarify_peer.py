@@ -52,7 +52,7 @@ async def probe(peer):
     from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
     from hermes_agent.gateway.session import SessionSource
     from hermes_agent.gateway.session_authority import initialize_session_authority
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
     from hermes_agent.tools import clarify_gateway
 
     class Adapter(BasePlatformAdapter):

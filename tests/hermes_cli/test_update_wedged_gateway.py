@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-import hermes_cli.gateway as gateway_cli
+import hermes_agent.hermes_cli.gateway as gateway_cli
 from hermes_agent.gateway.shutdown_watchdog import (
     get_loop_heartbeat_path,
     get_loop_tick_socket_path,

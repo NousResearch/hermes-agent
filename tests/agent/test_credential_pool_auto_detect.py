@@ -41,12 +41,12 @@ class TestCredentialPoolPreservedOnAutoDetect:
              patch('hermes_agent.agent.anthropic_credentials.resolve_anthropic_token', return_value=''), \
              patch('hermes_agent.agent.anthropic_credentials._is_oauth_token', return_value=False), \
              patch('hermes_agent.agent.azure_identity_adapter.is_token_provider', return_value=False), \
-             patch('hermes_cli.model_normalize.normalize_model_for_provider', return_value='test-model'), \
+             patch('hermes_agent.hermes_cli.model_normalize.normalize_model_for_provider', return_value='test-model'), \
              patch('hermes_agent.agent.credential_pool.load_pool', return_value=MagicMock()), \
-             patch('hermes_cli.config.load_config', return_value={}), \
-             patch('hermes_cli.config.get_compatible_custom_providers', return_value=[]), \
+             patch('hermes_agent.hermes_cli.config.load_config', return_value={}), \
+             patch('hermes_agent.hermes_cli.config.get_compatible_custom_providers', return_value=[]), \
              patch('hermes_agent.agent.iteration_budget.IterationBudget'), \
-             patch('hermes_cli.config.cfg_get', return_value=None):
+             patch('hermes_agent.hermes_cli.config.cfg_get', return_value=None):
 
             init_agent(
                 agent,

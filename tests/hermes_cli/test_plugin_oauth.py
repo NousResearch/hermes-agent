@@ -20,10 +20,10 @@ from urllib.request import urlopen
 
 import pytest
 
-from hermes_cli import auth_oauth_pkce_plugin as pkce
-from hermes_cli import plugin_oauth
-from hermes_cli import plugin_provider_requests as ppr
-from hermes_cli.auth_constants import AuthError
+from hermes_agent.hermes_cli import auth_oauth_pkce_plugin as pkce
+from hermes_agent.hermes_cli import plugin_oauth
+from hermes_agent.hermes_cli import plugin_provider_requests as ppr
+from hermes_agent.hermes_cli.auth_constants import AuthError
 from tests.providers.fake_pkce_idp import FakeIdP
 
 CLIENT_ID = "voice-client.apps.example"
@@ -124,7 +124,7 @@ def idp(monkeypatch, tmp_path):
     monkeypatch.setenv("VOICE_CLIENT_SECRET", SECRET)
     server = FakeIdP().start(tls_dir=tmp_path / "idp-ca")  # https: plugin OAuth endpoints are https-only
     trust = ssl.create_default_context(cafile=str(server.ca_pem))
-    monkeypatch.setattr("hermes_cli.auth._default_verify", lambda: trust)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth._default_verify", lambda: trust)
     server.opened = []
 
     def browser(url: str) -> bool:
@@ -134,7 +134,7 @@ def idp(monkeypatch, tmp_path):
         return True
 
     monkeypatch.setattr(pkce.webbrowser, "open", browser)
-    monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
     yield server
     server.stop()
 
@@ -157,7 +157,7 @@ def _signed_in(idp: FakeIdP, **entry_overrides):
 
 
 def test_sign_in_stores_the_grant_then_status_refresh_and_logout(idp, capsys):
-    from hermes_cli import auth_commands
+    from hermes_agent.hermes_cli import auth_commands
 
     _plugin(oauth=[_entry(idp)])
     args = SimpleNamespace(provider=KEY, no_browser=False, timeout=None)
@@ -310,7 +310,7 @@ def test_two_threads_with_an_expiring_token_refresh_once(idp, api):
 
 
 def test_live_token_is_sent_while_another_thread_holds_the_auth_lock(idp, api):
-    from hermes_cli.auth import _auth_store_lock
+    from hermes_agent.hermes_cli.auth import _auth_store_lock
 
     allowed, _ = api
     plugin = _signed_in(idp)
@@ -434,7 +434,7 @@ def test_custom_prefix_never_routes_to_a_plugin_grant(idp):
 
 
 def test_other_auth_store_writes_keep_the_plugin_grant(idp):
-    from hermes_cli.auth import _save_active_provider_state
+    from hermes_agent.hermes_cli.auth import _save_active_provider_state
 
     _signed_in(idp)
     before = _grant()
@@ -443,7 +443,7 @@ def test_other_auth_store_writes_keep_the_plugin_grant(idp):
 
 
 def test_install_notice_and_repin_delta_name_the_oauth_entry(idp, tmp_path):
-    from hermes_cli.plugins_cmd_catalog import plugin_surface, surface_delta, surface_delta_lines
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import plugin_surface, surface_delta, surface_delta_lines
 
     manifest = {"name": "voice", "oauth": [_entry(idp)]}
     notice = ppr.requires_auth_notice(manifest)
@@ -546,7 +546,7 @@ def test_revoked_grant_keeps_no_tokens_and_uninstall_drops_the_grant(idp, api):
         plugin.call("google", allowed.url)
     assert set(_grant()) == {"dead", "fingerprint"}
 
-    from hermes_cli.plugins_cmd_remove import _remove_user_plugin
+    from hermes_agent.hermes_cli.plugins_cmd_remove import _remove_user_plugin
 
     # Broken manifest after sign-in: logout still removes the grant.
     assert _auth("add") is True and _grant()["access_token"]

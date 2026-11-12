@@ -24,10 +24,10 @@ import hermes_yaml as yaml
 def client(monkeypatch, _isolate_hermes_home):
     from starlette.testclient import TestClient
 
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
-    monkeypatch.setattr("hermes_cli.model_cost_guard.expensive_model_warning", lambda *_a, **_k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_cost_guard.expensive_model_warning", lambda *_a, **_k: None)
     cfg = load_config()
     cfg["model"] = {"provider": "openrouter", "default": "openai/gpt-5.5"}
     save_config(cfg)
@@ -43,7 +43,7 @@ def _race_second_writer_into_first_writers_save(monkeypatch, first, second, time
     ``load_config`` before saving. Unlocked, ``second`` loads the stale document and its save
     erases ``first``'s mutation. With the RMW lock ``second`` blocks before its load, ``first``'s
     wait times out, and the two writes serialize. Returns ``(first_response, second_response)``."""
-    import hermes_cli.config as cfg_mod
+    import hermes_agent.hermes_cli.config as cfg_mod
 
     real_save, real_load = cfg_mod.save_config, cfg_mod.load_config
     first_at_save, second_loaded = threading.Event(), threading.Event()
@@ -108,7 +108,7 @@ def test_custom_endpoint_upsert_racing_config_autosave_keeps_both_writes(client,
 def test_custom_endpoint_activate_racing_moa_save_keeps_both_writes(client, monkeypatch):
     """Two worker-thread writers (custom-endpoint activate vs MoA save) serialize through the
     same lock — the ``model`` switch and the ``moa`` section are both on disk afterwards."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     cfg = load_config()
     cfg["providers"] = {"racebox": {"base_url": "http://racebox:8000/v1", "model": "race-model", "api_key": "k"}}

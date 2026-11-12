@@ -1,6 +1,6 @@
 """Shared harness for the native-dialect provider wire suites (``test_native_*.py``).
 
-Every scenario drives the REAL ``hermes`` CLI (``python -m hermes_cli.main chat -q ... -Q``) as a
+Every scenario drives the REAL ``hermes`` CLI (``python -m hermes_agent.hermes_cli.main chat -q ... -Q``) as a
 subprocess with a hermetic fake HOME / HERMES_HOME, a config.yaml that selects a native provider,
 and the provider's endpoint redirected to a loopback fake from ``tests/fakes/providers/``. Only the
 vendor boundary is faked; runtime resolution, the adapter, the agent loop, tools and SQLite are real.
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import hermes_yaml as yaml
-from hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
+from hermes_agent.hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TURN_TIMEOUT = 180.0

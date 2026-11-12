@@ -14,8 +14,8 @@ async def test_runtime_preserves_browser_ticket_gate(tmp_path):
                                      publish_gateway_runtime_ready)
     from hermes_agent.gateway.runtime_ownership import process_ownership
     from hermes_constants import get_hermes_home
-    from hermes_cli.dashboard_auth import register_provider, clear_providers
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_agent.hermes_cli.dashboard_auth import register_provider, clear_providers
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
     home = get_hermes_home()

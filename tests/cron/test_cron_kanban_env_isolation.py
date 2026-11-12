@@ -231,7 +231,7 @@ class TestRunJobKanbanIsolation:
         fake_mod.AIAgent = agent_cls or FakeAgent
         monkeypatch.setitem(sys.modules, "hermes_agent.run_agent", fake_mod)
 
-        from hermes_cli import runtime_provider as _rtp
+        from hermes_agent.hermes_cli import runtime_provider as _rtp
 
         monkeypatch.setattr(
             _rtp, "resolve_runtime_provider",
@@ -361,9 +361,9 @@ def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch)
     import json
     from pathlib import Path
     import sys
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
-    from hermes_cli.kanban_db_dispatch import _default_spawn
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli.kanban_db_dispatch import _default_spawn
 
     monkeypatch.setenv("HOME", str(tmp_path))
     db = tmp_path / "board.db"
@@ -384,7 +384,7 @@ def test_dispatcher_grants_only_the_assigned_worker_scope(tmp_path, monkeypatch)
     )
     worker.chmod(0o700)
     # Observe the real spawn grant without launching an owner or inference.
-    monkeypatch.setattr("hermes_cli.kanban_db_dispatch._worker_argv",
+    monkeypatch.setattr("hermes_agent.hermes_cli.kanban_db_dispatch._worker_argv",
                         lambda *_args: [sys.executable, str(worker)])
     # Building a new worker under an existing task must replace, not inherit, its scope.
     monkeypatch.setenv("HERMES_KANBAN_TASK", "prior-task")

@@ -62,7 +62,7 @@ def test_reasoning_hide_and_footer_reach_the_local_clients_config_read(tmp_path)
         peer.server_close()
         thread.join(timeout=5)
 
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     saved = read_user_config_raw(home / 'config.yaml')
     # The per-platform key is what the command wrote; no second, global key appears.
     assert saved['display']['platforms']['cli']['show_reasoning'] is False, saved
@@ -123,7 +123,7 @@ def test_classic_cli_display_reads_the_local_key():
 
 
 def test_classic_cli_reasoning_hide_saves_the_local_key(monkeypatch):
-    from hermes_cli import cli_commands_mixin as mixin
+    from hermes_agent.hermes_cli import cli_commands_mixin as mixin
 
     saved = {}
     monkeypatch.setattr(mixin, '_save', lambda key, value: saved.__setitem__(key, value))
@@ -145,7 +145,7 @@ def test_footer_writes_global_from_chat_and_cli_key_locally(tmp_path, monkeypatc
     from hermes_agent.gateway.config import Platform
     from hermes_agent.gateway.platforms.base import MessageEvent
     from hermes_agent.gateway.session import SessionSource
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
 
     (tmp_path / 'config.yaml').write_text(json.dumps({'display': {'runtime_footer': {'enabled': False}}}))
     monkeypatch.setattr(run, '_gateway_config_home', lambda: tmp_path)
@@ -171,10 +171,10 @@ def test_settings_reasoning_toggle_wins_after_a_local_reasoning_hide(tmp_path, m
     the real ``PUT /api/config`` keeps the nested key, and ``config.get full`` and the launch default follow it."""
     from starlette.testclient import TestClient
 
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
     from hermes_agent.gateway.local_viewer_events import launch_shows_reasoning
     from hermes_agent.gateway.session_config import _client_config
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     config_mod._LOAD_CONFIG_CACHE.clear()

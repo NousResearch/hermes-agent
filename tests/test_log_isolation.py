@@ -1,6 +1,6 @@
 """The test suite must never write into the operator's real Hermes logs.
 
-`hermes_cli/main.py` calls `setup_logging()` at module scope, which resolves
+`hermes_agent/hermes_cli/main.py` calls `setup_logging()` at module scope, which resolves
 `get_hermes_home()` and attaches rotating file handlers to the ROOT logger.
 Importing it - which many test modules do, directly or transitively - wires
 the whole pytest session's logging to `<HERMES_HOME>/logs/agent.log`.
@@ -77,7 +77,7 @@ class TestLogIsolation:
         )
 
     def test_importing_the_cli_does_not_target_the_real_logs(self):
-        pytest.importorskip("hermes_cli.main")
+        pytest.importorskip("hermes_agent.hermes_cli.main")
 
         real_logs = str(_real_hermes_home() / "logs")
         offenders = [p for p in _all_file_destinations() if p.startswith(real_logs)]

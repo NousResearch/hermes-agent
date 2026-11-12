@@ -12,14 +12,14 @@ from threading import Event, Thread
 
 import pytest
 
-from hermes_cli import config
+from hermes_agent.hermes_cli import config
 from hermes_agent.hermes_state_wal import apply_wal_with_fallback
 from utils import atomic_yaml_write
 import hermes_agent.hermes_state_wal as wal
 
 
 def test_config_import_and_provider_env_catalog_never_read_config(tmp_path):
-    """Importing hermes_cli.config and building the provider part of OPTIONAL_ENV_VARS list no
+    """Importing hermes_agent.hermes_cli.config and building the provider part of OPTIONAL_ENV_VARS list no
     providers through discovery (which reads config), so neither can take part in a config/WAL
     lock-order cycle with a thread opening a database."""
     script = textwrap.dedent(

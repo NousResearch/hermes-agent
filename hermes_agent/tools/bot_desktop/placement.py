@@ -37,7 +37,7 @@ class Placement:
 
 
 def _setting() -> str:
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
     cfg = load_config_readonly().get("bot_desktop") or {}
     value = str(cfg.get("placement") or "auto").strip().lower()
     return value if value in ("auto", TERMINAL, GATEWAY) else "auto"
@@ -57,7 +57,7 @@ def _plugin_host_isolated() -> bool:
     # Under host isolation a plugin's environment object reaches Hermes as an opaque placeholder, so its
     # exec_prefix() is unreachable. (No bundled plugin backend declares supports_streams, so bundled
     # plugins, which stay in-process, are not a case here.)
-    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    from hermes_agent.hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
     return isolation_mode() == ISOLATION_HOST
 
 

@@ -4,9 +4,9 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import cli as cli_module
+import hermes_agent.cli as cli_module
 from hermes_agent.agent.i18n import t
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 class _FakeBuffer:
@@ -200,7 +200,7 @@ class TestCliApprovalUi:
 
         import shutil as _shutil
 
-        with patch("cli.shutil.get_terminal_size",
+        with patch("hermes_agent.cli.shutil.get_terminal_size",
                    return_value=_shutil.os.terminal_size((100, 24))):
             fragments = cli._get_approval_display_fragments()
 

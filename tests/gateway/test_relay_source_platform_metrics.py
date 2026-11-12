@@ -10,7 +10,7 @@ from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.relay.adapter import RelayAdapter
 from hermes_agent.gateway.session import SessionSource
 from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-from hermes_cli.observability import shared_metrics_gateway as smg
+from hermes_agent.hermes_cli.observability import shared_metrics_gateway as smg
 from tests.gateway.relay.test_relay_adapter import _CaptureTransport, make_desc
 from tests.gateway.test_platform_shared_metrics import rows
 
@@ -77,7 +77,7 @@ def test_an_unstamped_chat_on_a_multiplatform_connector_is_not_labelled_as_its_p
 
 
 def test_a_relay_stamped_turn_is_a_gateway_message():
-    from hermes_cli.observability.shared_metrics_contract import task_start_fields
+    from hermes_agent.hermes_cli.observability.shared_metrics_contract import task_start_fields
 
     assert task_start_fields({"platform": "relay"}) == {
         "entrypoint": "gateway_message", "execution_surface": "gateway", "platform": "relay"}

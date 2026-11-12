@@ -18,7 +18,7 @@ import types
 
 import pytest
 
-from hermes_cli.auth import AuthError
+from hermes_agent.hermes_cli.auth import AuthError
 from hermes_agent.agent.i18n import t
 
 
@@ -45,11 +45,11 @@ def _restore_cli_and_tool_modules():
 
 def _import_cli():
     for name in list(sys.modules):
-        if name == "cli" or name == "hermes_agent.run_agent" or name == "hermes_agent.tools" or name.startswith("hermes_agent.tools."):
+        if name == "hermes_agent.cli" or name == "hermes_agent.run_agent" or name == "hermes_agent.tools" or name.startswith("hermes_agent.tools."):
             sys.modules.pop(name, None)
     if "firecrawl" not in sys.modules:
         sys.modules["firecrawl"] = types.SimpleNamespace(Firecrawl=object)
-    return importlib.import_module("cli")
+    return importlib.import_module("hermes_agent.cli")
 
 
 def _make_shell(cli, monkeypatch):
@@ -68,7 +68,7 @@ def test_credentials_ready_false_when_no_provider(monkeypatch):
     def _raise(**kwargs):
         raise AuthError("No inference provider configured.", code="no_provider_configured")
 
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise)
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", _raise)
     shell = _make_shell(cli, monkeypatch)
     assert shell._runtime_credentials_ready() is False
 
@@ -78,7 +78,7 @@ def test_credentials_ready_false_on_empty_openrouter_key(monkeypatch):
     cli = _import_cli()
 
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **kw: {
             "provider": "openrouter",
             "api_key": "",
@@ -94,7 +94,7 @@ def test_credentials_ready_true_with_key(monkeypatch):
     cli = _import_cli()
 
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **kw: {
             "provider": "openrouter",
             "api_key": "sk-test",
@@ -111,7 +111,7 @@ def test_credentials_ready_true_for_keyless_local_endpoint(monkeypatch):
     cli = _import_cli()
 
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **kw: {
             "provider": "custom",
             "api_key": "",
@@ -127,7 +127,7 @@ def test_credentials_ready_true_for_callable_bearer_provider(monkeypatch):
     cli = _import_cli()
 
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **kw: {
             "provider": "azure-foundry",
             "api_key": lambda: "tok",
@@ -145,7 +145,7 @@ def test_credentials_ready_never_prints(monkeypatch, capsys):
     def _raise(**kwargs):
         raise AuthError("No inference provider configured.", code="no_provider_configured")
 
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise)
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", _raise)
     shell = _make_shell(cli, monkeypatch)
     capsys.readouterr()  # drain construction output
     shell._runtime_credentials_ready()
@@ -167,15 +167,15 @@ def test_offer_first_run_setup_routes_into_shared_picker(monkeypatch):
     def _fake_picker():
         picker_calls["count"] += 1
 
-    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", _fake_picker)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main.select_provider_and_model", _fake_picker)
     monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
     # After the picker "runs", config has a provider and creds resolve.
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {"model": {"provider": "nous", "default": "hermes-4-405b"}},
     )
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **kw: {
             "provider": "nous",
             "api_key": "portal-token",
@@ -201,9 +201,9 @@ def test_offer_first_run_setup_re_resolves_reasoning_for_picked_model(monkeypatc
         "reasoning_overrides": {"hermes-4-405b": "high"}})
     shell = _make_shell(cli, monkeypatch)
     assert shell.reasoning_config["effort"] == "medium"
-    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main.select_provider_and_model", lambda: None)
     monkeypatch.setattr("builtins.input", lambda *a, **k: "y")
-    monkeypatch.setattr("hermes_cli.config.load_config",
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config",
                         lambda: {"model": {"provider": "nous", "default": "hermes-4-405b"}})
     monkeypatch.setattr(shell, "_runtime_credentials_ready", lambda: True)
 
@@ -219,7 +219,7 @@ def test_offer_first_run_setup_declined(monkeypatch):
     def _fail_picker():
         raise AssertionError("picker must not run when declined")
 
-    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", _fail_picker)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main.select_provider_and_model", _fail_picker)
     monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
     assert shell._offer_first_run_setup() is False
 
@@ -231,7 +231,7 @@ def test_offer_first_run_setup_picker_cancel_is_graceful(monkeypatch):
     def _cancel_picker():
         raise KeyboardInterrupt()
 
-    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", _cancel_picker)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main.select_provider_and_model", _cancel_picker)
     monkeypatch.setattr("builtins.input", lambda *a, **k: "")
     # Empty answer defaults to yes -> picker runs -> cancels -> False, no raise.
     assert shell._offer_first_run_setup() is False
@@ -246,7 +246,7 @@ def test_empty_key_error_names_actual_provider(monkeypatch, capsys):
     cli = _import_cli()
 
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **kw: {
             "provider": "fireworks",
             "api_key": "",
@@ -258,7 +258,7 @@ def test_empty_key_error_names_actual_provider(monkeypatch, capsys):
     # A custom base_url would get the no-key placeholder; force the
     # openrouter-shaped branch by pointing base_url at openrouter.
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **kw: {
             "provider": "fireworks",
             "api_key": "",
@@ -296,7 +296,7 @@ def _bench_nous_pool(monkeypatch, **entry_fields):
 
 
 def _forbid_wizard(monkeypatch, shell):
-    monkeypatch.setattr("hermes_cli.main.select_provider_and_model",
+    monkeypatch.setattr("hermes_agent.hermes_cli.main.select_provider_and_model",
                         lambda: (_ for _ in ()).throw(AssertionError("wizard must not run")))
     monkeypatch.setattr(shell, "_offer_first_run_setup",
                         lambda: (_ for _ in ()).throw(AssertionError("wizard must not be offered")))
@@ -314,7 +314,7 @@ def test_benched_credential_prints_cooldown_instead_of_wizard(monkeypatch, capsy
         raise AuthError("Hermes is not logged into Nous Portal.", provider="nous",
                         code="nous_auth_missing", relogin_required=True)
 
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise)
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", _raise)
     _bench_nous_pool(monkeypatch, last_error_code=429, last_error_reason="rate_limited")
     _forbid_wizard(monkeypatch, shell)
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
@@ -338,7 +338,7 @@ def test_auth_json_only_login_explains_instead_of_wizard(monkeypatch, capsys, tm
     Control: the resolver's ``no_provider_configured`` still reaches the wizard."""
     import dataclasses
 
-    import hermes_cli.runtime_provider as rp
+    import hermes_agent.hermes_cli.runtime_provider as rp
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("model:\n  default: some-model\n", encoding="utf-8")
@@ -368,7 +368,7 @@ def test_auth_json_only_login_explains_instead_of_wizard(monkeypatch, capsys, tm
 
     offered = []
     monkeypatch.setattr(shell, "_offer_first_run_setup", lambda: offered.append(True) or True)
-    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", lambda **kw: (_ for _ in ()).throw(
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", lambda **kw: (_ for _ in ()).throw(
         AuthError("Hermes is not connected to any AI provider yet.", code="no_provider_configured")))
     shell._maybe_offer_first_run_setup()
     assert offered == [True]

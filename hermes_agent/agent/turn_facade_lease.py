@@ -63,7 +63,7 @@ class DurableTurnLease:
         """Create (not schedule) the liveness watchdog when configured: lease renewal is NOT
         evidence of progress; a silently stalled turn would renew forever."""
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
 
             liveness_config = load_config_readonly() or {}
         except Exception:
@@ -86,7 +86,7 @@ class DurableTurnLease:
         # Stamp the activity clock at turn entry: `_last_activity_ts` persists across turns, so
         # without this the watchdog would measure idle from the PREVIOUS turn and abort a fresh one.
         self.agent._touch_activity("starting new turn")
-        from hermes_cli.observability.shared_metrics_process import arm_turn
+        from hermes_agent.hermes_cli.observability.shared_metrics_process import arm_turn
         arm_turn(self.agent)
         from hermes_agent.agent.periodic_scheduler import schedule
 

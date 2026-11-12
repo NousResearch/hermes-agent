@@ -1,6 +1,6 @@
 """PM download bytes and install phases remain separate, faithful UI facts."""
 
-from hermes_cli.web_routers.local_models import _download_progress_hook, _job, _runtime_progress_hook
+from hermes_agent.hermes_cli.web_routers.local_models import _download_progress_hook, _job, _runtime_progress_hook
 
 
 def test_runtime_stages_preserve_pm_whole_plan_progress():

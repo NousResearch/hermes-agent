@@ -10,15 +10,15 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
     from hermes_agent.gateway.session_contract import AdmissionReceipt, SessionActor, SessionRef
     from hermes_agent.gateway.session_finite import execute_finite_admission, finite_turn_required, unattended_turn
     from hermes_agent.gateway.session_kanban import run_task
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
     from hermes_agent.tools.approval_context import _is_single_query_approval_context
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
     for name in ('HERMES_KANBAN_DB', 'HERMES_DELEGATED_CHILD', 'HERMES_SINGLE_QUERY_SESSION'):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path))
+    monkeypatch.setattr('hermes_agent.hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path))
     workspace = tmp_path / 'workspace'
     workspace.mkdir()
     kb.create_board('owned')
@@ -70,8 +70,8 @@ def kanban_owner(tmp_path, monkeypatch):
     import json
     from hermes_agent.gateway import run
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
     from tests.gateway.test_session_follow_profile_config import _owner
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -79,7 +79,7 @@ def kanban_owner(tmp_path, monkeypatch):
     for name in ('HERMES_KANBAN_DB', 'HERMES_DELEGATED_CHILD', 'HERMES_SINGLE_QUERY_SESSION', 'HERMES_YOLO_MODE'):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(run, '_hermes_home', tmp_path)
-    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path))
+    monkeypatch.setattr('hermes_agent.hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path))
 
     def build(config):
         (tmp_path / 'config.yaml').write_text(json.dumps(config))

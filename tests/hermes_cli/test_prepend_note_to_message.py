@@ -5,7 +5,7 @@ Regression coverage for the TypeError raised when a queued /model or
 ``can only concatenate str (not "list") to str``.
 """
 
-from cli import _prepend_note_to_message
+from hermes_agent.cli import _prepend_note_to_message
 
 
 def test_string_message_gets_note_prepended():

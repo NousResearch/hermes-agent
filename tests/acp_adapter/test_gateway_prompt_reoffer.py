@@ -6,7 +6,7 @@ import pytest
 from acp.schema import AllowedOutcome, DeniedOutcome
 
 from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
 APPROVAL = {"kind": "approval", "prompt_id": "p-1", "execution_generation": 3, "command": "rm -r x",
             "description": "remove", "choices": ["once", "deny"]}

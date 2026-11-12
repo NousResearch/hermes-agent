@@ -126,7 +126,7 @@ def test_owner_start_lists_a_legacy_compressed_chain_once(tmp_path, root_created
     since is hidden from ``--source cli``. The owner's start stamps it once; a second start has
     nothing left to do."""
     from hermes_agent.gateway.session_authority import backfill_compression_created_sources
-    from hermes_cli.gateway_session_store import SurfaceLabelReader
+    from hermes_agent.hermes_cli.gateway_session_store import SurfaceLabelReader
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

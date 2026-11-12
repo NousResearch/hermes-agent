@@ -2,7 +2,7 @@
 one-click "update all" (Desktop, dashboard, ``/plugins update``), the one-updater-per-plugin lock,
 and the notice ``hermes update`` prints when it moved catalog pins.
 
-Sibling of :mod:`hermes_cli.plugins_cmd` (the facade is imported late, never at module level).
+Sibling of :mod:`hermes_agent.hermes_cli.plugins_cmd` (the facade is imported late, never at module level).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ _lock_holders_guard = threading.Lock()
 
 
 def _pc():
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     return plugins_cmd
 
 
@@ -38,7 +38,7 @@ def plugin_update_lock(target: Path) -> Iterator[None]:
     gateway's auto-apply tick, a terminal ``hermes plugins update``, Desktop and the dashboard).
     A busy lock raises ``PluginOperationError`` after a short wait, so every caller reports it like
     any other refusal (nothing changed); reentrant per thread."""
-    from hermes_cli.auth import _file_lock
+    from hermes_agent.hermes_cli.auth import _file_lock
     from hermes_constants import get_hermes_home
 
     lock = get_hermes_home() / "cache" / "plugin-update-locks" / f"{target.name}.lock"
@@ -77,7 +77,7 @@ def unattended_gate(name: str, target: Path):
     return the ``surface_gate(manifest, tree)`` a Git update runs on its candidate before publication.
     The gate raises ``RepinConsentRequired`` when the candidate adds tools, hooks, capabilities or
     other surface the installed plugin lacks, the same review a widened catalog pin gets."""
-    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired, plugin_surface, surface_delta
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import RepinConsentRequired, plugin_surface, surface_delta
     pc = _pc()
     if held_with_ref(pc._read_install_metadata().get(target.name)):
         raise HeldWithRef(HELD_WITH_REF.format(name=name))
@@ -95,7 +95,7 @@ def apply_unattended(name: str) -> None:
     raise (``RepinConsentRequired`` for a widened pin, ``PluginOperationError``) so the tick can tell
     a pending review from a failure; ``cmd_update`` would turn both into an exit. :class:`HeldWithRef`
     when the install was held after the check."""
-    from hermes_cli.plugins_cmd_update import update_one
+    from hermes_agent.hermes_cli.plugins_cmd_update import update_one
     pc = _pc()
     target = pc._user_installed_plugin_dir(name)
     if target is None:
@@ -107,7 +107,7 @@ def apply_unattended(name: str) -> None:
 
 def auto_update_state() -> dict[str, Any]:
     """``{"auto_apply", "check_hours"}`` for the active profile."""
-    from hermes_cli.plugins_cadence import auto_apply_enabled, check_interval_hours
+    from hermes_agent.hermes_cli.plugins_cadence import auto_apply_enabled, check_interval_hours
     return {"auto_apply": auto_apply_enabled(), "check_hours": check_interval_hours()}
 
 
@@ -115,8 +115,8 @@ def set_auto_update(enabled: bool) -> dict[str, Any]:
     """Write ``plugins.auto_apply`` for the active profile and return the new state. Turning it on also
     clears the check marker, so the gateway's next housekeeping tick checks and applies instead of
     waiting out the rest of the interval."""
-    from hermes_cli.config import get_config_path, is_managed
-    from hermes_cli.config_backend import write_config_key
+    from hermes_agent.hermes_cli.config import get_config_path, is_managed
+    from hermes_agent.hermes_cli.config_backend import write_config_key
     from hermes_constants import get_hermes_home
 
     if is_managed():
@@ -129,7 +129,7 @@ def set_auto_update(enabled: bool) -> dict[str, Any]:
 
 
 def _clear_check_marker(home: Path) -> None:
-    from hermes_cli.plugins_cadence import _MARKERS_DIR
+    from hermes_agent.hermes_cli.plugins_cadence import _MARKERS_DIR
     (home / _MARKERS_DIR / "last-run").unlink(missing_ok=True)
 
 
@@ -140,7 +140,7 @@ def _apply_one(name: str) -> dict[str, str]:
     Git update) or a caution scan of a git update is NOT accepted on the user's behalf: the row comes
     back ``needs_review`` (a catalog re-pin accepts caution: a reviewer read that pin at admission).
     An install held with ``--ref`` after the check comes back ``held``."""
-    from hermes_cli.plugins_cmd_update import dashboard_update_user_plugin
+    from hermes_agent.hermes_cli.plugins_cmd_update import dashboard_update_user_plugin
     try:
         res = dashboard_update_user_plugin(name, unattended=True)
     except Exception as exc:  # per-plugin batch boundary: one crash must not stop the rest
@@ -163,9 +163,9 @@ def update_all_unattended() -> dict[str, Any]:
     Returns ``{"results": [{name, status, detail}], "skipped": [{name, reason}], "current": n}``;
     status is ``updated`` / ``current`` / ``failed`` / ``needs_review`` (nothing changed; the
     plugin's own Update action walks the consent or scan review)."""
-    from hermes_cli.plugins_cadence import record_check_results, snapshot_installs
-    from hermes_cli.plugins_cmd_update_all import plan_update_all
-    from hermes_cli.plugins_updates import run_checks
+    from hermes_agent.hermes_cli.plugins_cadence import record_check_results, snapshot_installs
+    from hermes_agent.hermes_cli.plugins_cmd_update_all import plan_update_all
+    from hermes_agent.hermes_cli.plugins_updates import run_checks
 
     plugins_dir = _pc()._plugins_dir()
     checked = snapshot_installs(plugins_dir)
@@ -224,9 +224,9 @@ def catalog_pins_behind(home: Path) -> list[str]:
     """Catalog installs under *home* whose installed pin is not the in-tree catalog's pin. Offline:
     reads the install records and the catalog shipped with this checkout. An install held with
     ``--ref`` is not behind: the user chose that commit."""
-    from hermes_cli.plugin_catalog import get_catalog_entry
-    from hermes_cli.plugins_cmd_catalog import at_catalog_pin
-    from hermes_cli.plugins_provenance import read_sidecar_rows
+    from hermes_agent.hermes_cli.plugin_catalog import get_catalog_entry
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import at_catalog_pin
+    from hermes_agent.hermes_cli.plugins_provenance import read_sidecar_rows
 
     behind = []
     for name, row in read_sidecar_rows(home / "plugins").items():

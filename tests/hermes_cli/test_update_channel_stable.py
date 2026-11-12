@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.update_cmd import _source_update_channel
+from hermes_agent.hermes_cli.update_cmd import _source_update_channel
 
 
 class _Args:
@@ -23,14 +23,14 @@ class TestSourceUpdateChannel:
     def test_transient_channel_flag_wins(self):
         """--channel is the per-invocation override (--set-channel persists);
         no config read happens when it is present."""
-        with patch("hermes_cli.config.require_readable_config_before_write") as load_config:
+        with patch("hermes_agent.hermes_cli.config.require_readable_config_before_write") as load_config:
             for channel in ("stable", "main", "canary"):
                 assert _source_update_channel(_Args(channel=channel)) == channel
                 assert _source_update_channel(channel=channel) == channel
             load_config.assert_not_called()
 
     def test_per_install_record_activates(self, tmp_path, monkeypatch):
-        from hermes_cli.update_channel import install_id
+        from hermes_agent.hermes_cli.update_channel import install_id
 
         root = tmp_path / "install"
         root.mkdir()
@@ -40,7 +40,7 @@ class TestSourceUpdateChannel:
         config = {
             "update": {"installs": {install_id(root): {"path": str(root), "channel": "stable"}}}
         }
-        from hermes_cli import update_cmd
+        from hermes_agent.hermes_cli import update_cmd
 
         monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", root)
         home = tmp_path / "home"
@@ -55,7 +55,7 @@ class TestSourceUpdateChannel:
         (root / "install-stamp.json").write_text(
             '{"schemaVersion": 2, "updateMechanism": "self"}'
         )
-        from hermes_cli import update_cmd
+        from hermes_agent.hermes_cli import update_cmd
 
         monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", root)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))

@@ -1,6 +1,6 @@
 """Interactive messaging-platform setup wizards: WhatsApp (bridge + Cloud API), Slack manifest.
 
-Split out of ``hermes_cli/main.py``. Names that still live in main are imported lazily at call time.
+Split out of ``hermes_agent/hermes_cli/main.py``. Names that still live in main are imported lazily at call time.
 """
 
 import contextlib
@@ -9,8 +9,8 @@ import shutil
 import subprocess
 import sys
 
-from hermes_cli.cli_output import line_input
-from hermes_cli.model_setup_flows_common import _say
+from hermes_agent.hermes_cli.cli_output import line_input
+from hermes_agent.hermes_cli.model_setup_flows_common import _say
 
 
 def _err(msg: str) -> None:
@@ -167,9 +167,9 @@ def _whatsapp_has_paired_identity(session_dir):
 
 def cmd_whatsapp(args):
     """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
-    from hermes_cli.main import _require_tty, get_hermes_home
+    from hermes_agent.hermes_cli.main import _require_tty, get_hermes_home
     _require_tty("whatsapp")
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_agent.hermes_cli.config import get_env_value, save_env_value
     from hermes_constants import find_node_executable, with_hermes_node_path
     _say("", "☤ WhatsApp Setup", "=" * 50)
 
@@ -267,7 +267,7 @@ def cmd_whatsapp(args):
 def cmd_whatsapp_cloud(args):
     """Set up WhatsApp Business Cloud API (official Meta integration) — complementary to the
     ``hermes whatsapp`` Baileys bridge wizard. See ``plugins/platforms/whatsapp_cloud/setup_wizard.py``."""
-    from hermes_cli.main import _require_tty
+    from hermes_agent.hermes_cli.main import _require_tty
     _require_tty("whatsapp-cloud")
     from plugins.platforms.whatsapp_cloud.setup_wizard import run_whatsapp_cloud_setup
     return run_whatsapp_cloud_setup()
@@ -288,7 +288,7 @@ def cmd_slack(args):
         return 1
 
     if sub == "manifest":
-        from hermes_cli.slack_cli import slack_manifest_command
+        from hermes_agent.hermes_cli.slack_cli import slack_manifest_command
         status = slack_manifest_command(args)
         if status:
             raise SystemExit(status)

@@ -37,8 +37,8 @@ def _install_secondary(monkeypatch, runner, stamps):
 
     monkeypatch.setattr(gateway_run, "_profile_runtime_scope", fake_scope)
     monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
-    monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda home: {})
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.env_loader.hydrate_profile_secret_sources", lambda home: {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr(
         "hermes_agent.gateway.config.load_gateway_config",
         lambda: GatewayConfig(
@@ -76,7 +76,7 @@ async def test_secondary_relay_without_primary_is_reported_unserved(monkeypatch,
     }) in stamps
     # ...and the CLI reader turns that stamp into the status line.
     from hermes_agent.gateway.status import write_runtime_status
-    from hermes_cli import gateway_multiplex_served as served
+    from hermes_agent.hermes_cli import gateway_multiplex_served as served
     key, kw = next(s for s in stamps if s[0] == "work:relay")
     write_runtime_status(platform=key, **kw)
     monkeypatch.setattr(served, "live_default_gateway_pid", lambda: 4242)

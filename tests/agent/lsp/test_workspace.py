@@ -43,7 +43,7 @@ def test_nearest_root_finds_first_marker(tmp_path: Path):
 
 
 def test_nearest_root_skips_package_dirs(tmp_path: Path):
-    # hermes_cli/setup.py is a module inside a package, not a project
+    # hermes_agent/hermes_cli/setup.py is a module inside a package, not a project
     # marker; treating it as one spawned a second pyright per worktree.
     root = tmp_path / "p"
     pkg = root / "hermes_cli"

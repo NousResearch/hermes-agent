@@ -1,4 +1,4 @@
-"""Tests for the `hermes project` CLI dispatch (hermes_cli/projects_cmd)."""
+"""Tests for the `hermes project` CLI dispatch (hermes_agent/hermes_cli/projects_cmd)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,8 @@ import argparse
 
 import pytest
 
-from hermes_cli import projects_cmd
-from hermes_cli import projects_db as pdb
+from hermes_agent.hermes_cli import projects_cmd
+from hermes_agent.hermes_cli import projects_db as pdb
 
 
 def _run(argv):

@@ -26,7 +26,7 @@ from tests.gateway.test_run_progress_topics import _make_runner
 
 async def _local_turn(*, hold, monkeypatch):
     import hermes_agent.gateway.run as gateway_run
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     home = Path(os.environ["HERMES_HOME"])
     authority = MagicMock()

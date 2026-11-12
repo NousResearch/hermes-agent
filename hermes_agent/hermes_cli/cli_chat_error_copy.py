@@ -38,7 +38,7 @@ def refusal_text(error: BaseException | str) -> str:
     named one (``invalid_params (toolsets: unknown or invalid toolset name: 'mcp-codegraph')``).
 
     The gateway sends ``field``/``detail`` in the JSON-RPC error's ``data``
-    (``hermes_agent/gateway/session_controls.py``), and ``hermes_cli.gateway_client.rpc_error`` carries the
+    (``hermes_agent/gateway/session_controls.py``), and ``hermes_agent.hermes_cli.gateway_client.rpc_error`` carries the
     bounded scalars onto ``GatewayRPCError.data``. A refusal from anywhere else has no ``data`` and
     reads exactly as before."""
     if str(error) == "launch_credentials_unavailable":
@@ -90,7 +90,7 @@ def agent_init_failure_message(error: BaseException) -> str:
     A gateway that cannot be reached keeps its whole first line: its discovery detail is already
     bounded (``DiscoveryError.bounded_detail``) and ends in the repair command, which the summary
     limit would cut mid-path."""
-    from hermes_cli.gateway_client import GatewayUnavailableError
+    from hermes_agent.hermes_cli.gateway_client import GatewayUnavailableError
 
     limit = None if isinstance(error, GatewayUnavailableError) else _SUMMARY_LIMIT
     return t("cli.error.agent_init_failed", error=_short(refusal_text(error), limit) or type(error).__name__)

@@ -14,7 +14,7 @@ import zipfile
 from unittest.mock import patch
 
 import pytest
-from hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_cmd
 
 
 def _build_zip_with_symlink_member(zip_path: str, link_name: str, target: str) -> None:
@@ -46,8 +46,8 @@ def test_update_via_zip_rejects_symlink_member(tmp_path, monkeypatch):
     fake_root = tmp_path / "install_dir"
     fake_root.mkdir()
 
-    from hermes_cli import main as hermes_main
-    from hermes_cli.update_cmd import _update_via_zip
+    from hermes_agent.hermes_cli import main as hermes_main
+    from hermes_agent.hermes_cli.update_cmd import _update_via_zip
 
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fake_root)
     monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: None)
@@ -109,7 +109,7 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     fake_root = tmp_path / "install_dir"
     fake_root.mkdir()
 
-    from hermes_cli import main as hermes_main
+    from hermes_agent.hermes_cli import main as hermes_main
 
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", fake_root)
     monkeypatch.setattr(update_cmd, "_complete_source_update", lambda request: None)

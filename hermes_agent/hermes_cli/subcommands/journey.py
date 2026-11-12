@@ -15,8 +15,8 @@ def build_journey_parser(subparsers) -> None:
             "(oldest at top, newest at bottom) plus a playable constellation "
             "scrubber. Mirrors the TUI `/journey` overlay and the desktop panel.")
     try:
-        from hermes_cli.journey import register_cli as _register_journey_cli
+        from hermes_agent.hermes_cli.journey import register_cli as _register_journey_cli
 
         _register_journey_cli(journey_parser)
     except Exception as _exc:
-        logging.getLogger("hermes_cli.main").debug("journey CLI wiring failed: %s", _exc)
+        logging.getLogger("hermes_agent.hermes_cli.main").debug("journey CLI wiring failed: %s", _exc)

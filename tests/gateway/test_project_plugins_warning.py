@@ -124,7 +124,7 @@ async def test_an_unlistable_plugins_folder_never_blocks_the_session(tmp_path, m
 
 
 def test_classic_cli_prints_the_sessions_config_warning(capsys):
-    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
 
     class Connection:
         final = False

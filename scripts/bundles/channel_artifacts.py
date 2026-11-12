@@ -6,7 +6,7 @@ import hashlib
 from pathlib import Path
 
 
-from hermes_cli.release_channels import ChannelError, build_prefix, canonical_json, validate_manifest
+from hermes_agent.hermes_cli.release_channels import ChannelError, build_prefix, canonical_json, validate_manifest
 from scripts.bundles.release_artifacts import single, validate_windows_bundle, write_appinstaller
 from scripts.releases.desktop_targets import MANIFEST_TARGETS
 
@@ -79,7 +79,7 @@ def assemble(request: dict, native: dict, root: Path, *, artifact_prefix: str,
     if all(row.get("receiverProtocol") == 1 for row in rows):
         manifest["receiverProtocol"] = 1
     tag = request.get("releaseTag", "")
-    from hermes_cli.update_channel import is_canary_tag
+    from hermes_agent.hermes_cli.update_channel import is_canary_tag
     record = {"name": request["channel"], "repository": request["repository"], "identity": request["identity"],
               "policy": ("canary-release" if is_canary_tag(tag) else "stable-release") if tag else "preview", "head": None}
     validate_manifest(manifest, record, base)

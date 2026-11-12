@@ -7,7 +7,7 @@ every command's mid-run behavior is declared on its CommandDef via
 rather than hand-maintained.
 """
 
-from hermes_cli.commands import (
+from hermes_agent.hermes_cli.commands import (
     ACTIVE_SESSION_BYPASS_COMMANDS,
     COMMAND_REGISTRY,
     is_interrupt_then_dispatch,

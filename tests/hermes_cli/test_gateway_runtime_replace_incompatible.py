@@ -14,9 +14,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway_runtime as runtime
-from hermes_cli import gateway_runtime_replace as replace
-from hermes_cli.gateway_runtime import GatewayDiscovery, GatewayEndpoint
+from hermes_agent.hermes_cli import gateway_runtime as runtime
+from hermes_agent.hermes_cli import gateway_runtime_replace as replace
+from hermes_agent.hermes_cli.gateway_runtime import GatewayDiscovery, GatewayEndpoint
 
 
 def _ready(home: Path) -> GatewayDiscovery:
@@ -50,7 +50,7 @@ def test_ensure_replaces_an_incompatible_owner_of_this_home(home, monkeypatch):
                           GatewayDiscovery("absent"), _ready(home)])
     monkeypatch.setattr(replace, "replace_incompatible_owner",
                         lambda h, *, deadline: stopped.append(h) or None)
-    from hermes_cli import gateway_runtime_service as service, gateway_runtime_start as start
+    from hermes_agent.hermes_cli import gateway_runtime_service as service, gateway_runtime_start as start
     monkeypatch.setattr(service, "discover_existing_gateway_service", lambda h, deadline: None)
     monkeypatch.setattr(start, "spawn_unmanaged_gateway",
                         lambda h, deadline, idle_exit=False: SimpleNamespace(poll=lambda: None, pid=1))

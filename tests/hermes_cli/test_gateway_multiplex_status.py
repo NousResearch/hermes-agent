@@ -43,7 +43,7 @@ def _fake_multiplexer(monkeypatch, tmp_path, *, multiplex: bool, pid_file: bool 
     )
 
 def _run_status():
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
 
     buf = io.StringIO()
     with redirect_stdout(buf):
@@ -53,7 +53,7 @@ def _run_status():
     return buf.getvalue().splitlines()[0]
 
 def test_served_named_profile_reports_running(monkeypatch, tmp_path):
-    from hermes_cli.profiles import list_profiles
+    from hermes_agent.hermes_cli.profiles import list_profiles
 
     _fake_multiplexer(monkeypatch, tmp_path, multiplex=True)
 
@@ -62,7 +62,7 @@ def test_served_named_profile_reports_running(monkeypatch, tmp_path):
     assert _run_status().startswith("✓ Gateway is running via the default-profile multiplexer")
 
 def test_unserved_named_profile_still_reports_stopped(monkeypatch, tmp_path):
-    from hermes_cli.profiles import list_profiles
+    from hermes_agent.hermes_cli.profiles import list_profiles
 
     _fake_multiplexer(monkeypatch, tmp_path, multiplex=False)
 
@@ -72,7 +72,7 @@ def test_unserved_named_profile_still_reports_stopped(monkeypatch, tmp_path):
 
 def test_served_named_profile_reports_running_without_default_pid_file(monkeypatch, tmp_path):
     """A live multiplexer whose PID file is missing still serves the profile it ticks (#110166)."""
-    from hermes_cli.profiles import list_profiles
+    from hermes_agent.hermes_cli.profiles import list_profiles
 
     _fake_multiplexer(monkeypatch, tmp_path, multiplex=True, pid_file=False)
 
@@ -84,7 +84,7 @@ def test_standalone_profile_status_reports_standalone_by_config(monkeypatch, tmp
     """`hermes -p X gateway status` on a standalone X says so and never claims the multiplexer."""
     _fake_multiplexer(monkeypatch, tmp_path, multiplex=True)
     (tmp_path / "profiles" / "beta" / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
 
     buf = io.StringIO()
     with redirect_stdout(buf):

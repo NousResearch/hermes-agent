@@ -80,8 +80,8 @@ def _agent_ladder_mode(provider: str, base_url: str, api_mode: str) -> str:
 
 def test_registered_plugin_dialect_reaches_every_gate(install_dialect_plugin):
     """profile.api_mode → determine_api_mode → resolve_runtime_provider → agent ladder → delegation."""
-    from hermes_cli.providers import determine_api_mode
-    from hermes_cli.runtime_provider import _parse_api_mode, resolve_runtime_provider
+    from hermes_agent.hermes_cli.providers import determine_api_mode
+    from hermes_agent.hermes_cli.runtime_provider import _parse_api_mode, resolve_runtime_provider
     from hermes_agent.tools.delegate_tool_config import _direct_endpoint_credentials
 
     install_dialect_plugin("example-dialect", "example_dialect", register=True)
@@ -99,8 +99,8 @@ def test_registered_plugin_dialect_reaches_every_gate(install_dialect_plugin):
 
 def test_unregistered_profile_mode_still_degrades_to_chat_completions(install_dialect_plugin):
     """The sets stay closed: a profile naming a transport nobody registered is not admitted."""
-    from hermes_cli.providers import determine_api_mode
-    from hermes_cli.runtime_provider import _parse_api_mode, resolve_runtime_provider
+    from hermes_agent.hermes_cli.providers import determine_api_mode
+    from hermes_agent.hermes_cli.runtime_provider import _parse_api_mode, resolve_runtime_provider
 
     install_dialect_plugin("example-bogus", "bogus_mode", register=False)
 

@@ -1,5 +1,5 @@
 """External-tool checks for hermes doctor: terminal backends, git/rg, Node + Chromium, pnpm/npm audit, tool availability.
-Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_cli.doctor.<name>`` keeps resolving (and monkeypatching)."""
+Split out of ``hermes_agent/hermes_cli/doctor.py``, which re-exports every name so ``hermes_agent.hermes_cli.doctor.<name>`` keeps resolving (and monkeypatching)."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from hermes_cli.doctor_platform import _system_package_install_cmd
-from hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
-from hermes_cli.vercel_auth import describe_vercel_auth
+from hermes_agent.hermes_cli.doctor_platform import _system_package_install_cmd
+from hermes_agent.hermes_cli.doctor_report import Finding, _fail_and_issue, check_bool, check_info, check_ok, check_warn, doctor_check
+from hermes_agent.hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import is_termux as _is_termux
 from hermes_agent.tools.environments.docker import docker_runtime_name, docker_runtime_start_hint, find_docker
 
@@ -148,8 +148,8 @@ def _apply_doctor_tool_availability_overrides(available: list[str], unavailable:
 def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
     """Return toolsets enabled for the CLI, or None if config resolution fails."""
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.tools_config import _get_platform_tools
         return {str(toolset) for toolset in _get_platform_tools(load_config() or {}, "cli")}
     except Exception:
         return None
@@ -274,7 +274,7 @@ def _check_vercel_backend(issues: list[str]) -> None:
 
 def _check_plugin_backend(terminal_env: str, issues: list[str]) -> None:
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()
         from hermes_agent.agent.terminal_env_registry import get_provider
         provider = get_provider(terminal_env)
@@ -314,7 +314,7 @@ def _check_terminal_backend(should_fix: bool, f: Finding) -> None:
 def _chromium_not_needed_reason() -> str:
     """Why this profile's config needs no local Chromium (``""`` when it does). Config-only, no I/O: a CDP
     override attaches to the user's browser, Lightpanda is its own engine, and a cloud provider hosts one."""
-    from hermes_cli.config import cfg_get, load_config_readonly
+    from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly
 
     config = load_config_readonly()
     if os.environ.get("BROWSER_CDP_URL") or cfg_get(config, "browser", "cdp_url"):
@@ -329,7 +329,7 @@ def _check_chromium(should_fix: bool) -> None:
     """The Chromium browser_exec launches for a local session (``chromium_executable()``: browser.executable_path,
     pm, the Docker image's baked build, a Termux system build). Only --fix may acquire it through PM."""
     import pm
-    from hermes_cli.browser_runtime import chromium_executable, chromium_missing_hint
+    from hermes_agent.hermes_cli.browser_runtime import chromium_executable, chromium_missing_hint
 
     found = chromium_executable()
     if not found and should_fix and not _is_termux():
@@ -444,7 +444,7 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
     never part of a routine check (#38772). The WhatsApp bridge may live under a writable HERMES_HOME
     mirror rather than the (possibly read-only) Docker install tree, hence the shared resolver.
     """
-    from hermes_cli.doctor import PROJECT_ROOT
+    from hermes_agent.hermes_cli.doctor import PROJECT_ROOT
     staged = _pm_tool_path("npm")
     npm_bin = str(staged) if staged else (_safe_which("npm") if _is_termux() else None)
     # Termux has no pnpm: nothing installs the JS workspaces on device.
@@ -476,7 +476,7 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
 
 @doctor_check("Could not check tool availability", "({e})")
 def _check_tool_availability(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.doctor import PROJECT_ROOT
+    from hermes_agent.hermes_cli.doctor import PROJECT_ROOT
     if str(PROJECT_ROOT) not in sys.path:
         sys.path.insert(0, str(PROJECT_ROOT))
     from hermes_agent.model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
@@ -509,8 +509,8 @@ def _check_tool_availability(should_fix: bool, f: Finding) -> None:
 def _warn_partially_stripped_toolsets(f: Finding) -> None:
     """An enabled CLI toolset that agent.disabled_toolsets cuts down still reads as available above;
     name the missing tools and the entry removing them (#134593)."""
-    from hermes_cli.config import load_config
-    from hermes_cli.tools_config import _get_platform_tools, toolsets_partially_stripped
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.tools_config import _get_platform_tools, toolsets_partially_stripped
     config = load_config() or {}
     for ts, (tools, by, hint) in toolsets_partially_stripped(config, _get_platform_tools(config, "cli")).items():
         check_warn(f"{ts} (partly disabled)", f"({', '.join(tools)} removed by agent.disabled_toolsets: {', '.join(by)})")

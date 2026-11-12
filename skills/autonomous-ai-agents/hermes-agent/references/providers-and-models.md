@@ -35,7 +35,7 @@ Fallback chain when the primary fails: `hermes fallback add|remove|list`.
 ### User-defined model aliases
 
 Work with `/model <name>` in CLI and every gateway platform. Resolved by
-`hermes_cli/model_switch.py::resolve_alias()`; user aliases are checked BEFORE
+`hermes_agent/hermes_cli/model_switch.py::resolve_alias()`; user aliases are checked BEFORE
 the built-in table, so a user `sonnet`/`grok` shadows the built-in.
 
 ```yaml

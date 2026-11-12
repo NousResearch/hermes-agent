@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli.web_session_sockets import GATEWAY_SOCKET
+from hermes_agent.hermes_cli.web_session_sockets import GATEWAY_SOCKET
 
 _MINT = "/api/webapp/socket-ticket?socket=gateway"
 
@@ -19,7 +19,7 @@ _TOKEN = "a" * 43
 
 @pytest.fixture
 def webapp(monkeypatch, tmp_path):
-    from hermes_cli import web_server as server
+    from hermes_agent.hermes_cli import web_server as server
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
@@ -31,7 +31,7 @@ def webapp(monkeypatch, tmp_path):
 
 def _socket(ticket):
     """A stand-in for the browser's ``/api/ws`` upgrade, good enough for ``_ws_auth_ok``."""
-    from hermes_cli import web_server_chat as chat
+    from hermes_agent.hermes_cli import web_server_chat as chat
 
     class _Query(dict):
         def get(self, key, default=""):
@@ -43,7 +43,7 @@ def _socket(ticket):
 
 
 def test_loopback_ticket_names_the_session_token_owner_and_is_spent_once(webapp):
-    from hermes_cli import web_server_chat as chat
+    from hermes_agent.hermes_cli import web_server_chat as chat
 
     _server, client = webapp
     assert client.post(_MINT).status_code == 401

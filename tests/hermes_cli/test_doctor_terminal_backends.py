@@ -3,7 +3,7 @@ plain words and points at `hermes setup terminal`, never at raw TERMINAL_* env v
 
 import pytest
 
-from hermes_cli import doctor_tools
+from hermes_agent.hermes_cli import doctor_tools
 
 @pytest.fixture
 def issues():

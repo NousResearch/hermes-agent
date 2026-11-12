@@ -35,15 +35,15 @@ Invariants pinned, and WHERE each is enforced:
    reader must report it as ``refused``.
 
 Only paths/env are monkeypatched; every receipt is produced by the real
-``hermes_cli.update_receipt`` / ``hermes_cli.update_inventory`` API.
+``hermes_agent.hermes_cli.update_receipt`` / ``hermes_agent.hermes_cli.update_inventory`` API.
 """
 
 import json
 
 import pytest
 
-import hermes_cli.update_receipt as ur
-from hermes_cli.update_inventory import (
+import hermes_agent.hermes_cli.update_receipt as ur
+from hermes_agent.hermes_cli.update_inventory import (
     RuntimeRecord,
     UpdatePlan,
     match_runtime_outcomes,
@@ -58,7 +58,7 @@ def receipt_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setattr(
-        "hermes_cli.config.get_hermes_home", lambda: home, raising=False
+        "hermes_agent.hermes_cli.config.get_hermes_home", lambda: home, raising=False
     )
     ur._current.set(None)
     yield home

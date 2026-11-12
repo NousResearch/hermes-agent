@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 
 from hermes_agent.agent.i18n import t
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
 
 def _t(key, **kw):
@@ -71,7 +71,7 @@ def _restored(cli, connection, result, file_path):
     restored = {"hash": result.get("restored_to", ""), "reason": result.get("reason", "")}
     print(f"  {_t('rollback.restored_file', file=file_path, **restored)}" if file_path
           else f"  {_t('rollback.restored_all', **restored)}")
-    from hermes_cli.cli_commands_session_tools import _rollback_kept
+    from hermes_agent.hermes_cli.cli_commands_session_tools import _rollback_kept
     _rollback_kept(result)  # the in-process CLI's own lines
     print(f"  {_t('rollback.snapshot_saved')}")
     if result.get("history_removed"):

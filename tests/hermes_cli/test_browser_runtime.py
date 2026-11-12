@@ -5,7 +5,7 @@ import os
 import pytest
 
 import pm
-from hermes_cli import browser_runtime
+from hermes_agent.hermes_cli import browser_runtime
 from pm import paths
 
 

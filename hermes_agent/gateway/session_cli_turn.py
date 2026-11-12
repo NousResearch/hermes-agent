@@ -95,8 +95,8 @@ def one_turn_runtime(override, model, runtime_kwargs, config):
     written: the session's route, policy and cached agent are untouched, so the next turn runs its own
     route again (main's ``/model --once`` restore). Raises ``RuntimeError`` with the switch's own
     sentence when the target cannot be resolved; the caller fails the turn with it."""
-    from hermes_cli.config import get_compatible_custom_providers
-    from hermes_cli.model_switch import switch_model
+    from hermes_agent.hermes_cli.config import get_compatible_custom_providers
+    from hermes_agent.hermes_cli.model_switch import switch_model
     result = switch_model(
         raw_input=override['model'], current_provider=runtime_kwargs.get('provider') or '',
         current_model=model or '', current_base_url=runtime_kwargs.get('base_url') or '',
@@ -117,8 +117,8 @@ def one_turn_runtime(override, model, runtime_kwargs, config):
         # them. The wire follows the target only where the provider picks it per model (a profile's
         # ``api_mode_for_model``, Nous Portal, OpenCode; ``_rederive_per_model_route``); otherwise ``result.api_mode`` describes the
         # default host, not this session's endpoint, and the session's wire stays.
-        from hermes_cli.model_switch import model_derived_api_mode
-        from hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
+        from hermes_agent.hermes_cli.model_switch import model_derived_api_mode
+        from hermes_agent.hermes_cli.models import normalize_opencode_base_url, opencode_provider_family
         if model_derived_api_mode(result.target_provider, result.new_model) is not None and result.api_mode:
             runtime['api_mode'] = result.api_mode
         api_mode = runtime.get('api_mode') or None
@@ -181,7 +181,7 @@ def take_cli_result_fields(result, *, aux_before=None, session_db=None, session_
     steer = result.pop('pending_steer', None)
     fields['pending_steer'] = steer or None
     if aux_before is not None:
-        from hermes_cli.oneshot import _attach_auxiliary_usage
+        from hermes_agent.hermes_cli.oneshot import _attach_auxiliary_usage
         holder = {'session_id': result.get('session_id') or session_id}
         _attach_auxiliary_usage(holder, session_db, aux_before, fallback_session_id=session_id)
         fields['auxiliary_usage'] = holder.get('auxiliary_usage') or {}
@@ -217,7 +217,7 @@ def run_classic_cli_turn(turn, run):
     aux_before = cli_db = None
     if finite_turn_required() is True:
         # `chat -q --usage-file` / stream-json: this turn's auxiliary spend, as oneshot.py read it.
-        from hermes_cli.oneshot import _auxiliary_usage
+        from hermes_agent.hermes_cli.oneshot import _auxiliary_usage
         runner_db = turn._runner._session_db
         cli_db = getattr(runner_db, "_db", runner_db)
         aux_before = _auxiliary_usage(cli_db, turn._ctx.session_id)

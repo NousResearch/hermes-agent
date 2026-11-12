@@ -10,7 +10,7 @@ from contextlib import suppress
 from typing import Any, Optional
 
 from hermes_agent.agent.lazy_forward import forward as _forward, forward_static as _forward_static, lazy_attr as _lazy_attr
-from hermes_cli.timeouts import get_provider_request_timeout
+from hermes_agent.hermes_cli.timeouts import get_provider_request_timeout
 from utils import base_url_host_matches, env_float
 
 logger = logging.getLogger("hermes_agent.run_agent")  # origin module's logger name: log records / caplog filters unchanged
@@ -23,7 +23,7 @@ _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running 
 
 def _routermint_headers() -> dict:
     """User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
-    from hermes_cli.version_info import get_version_info
+    from hermes_agent.hermes_cli.version_info import get_version_info
     return {"User-Agent": f"HermesAgent/{get_version_info().base_version}"}
 
 
@@ -581,7 +581,7 @@ class ClientLifecycleMixin:
         # No silent account swap: a non-singleton credential (manual pool entry, explicit api_key=) must not be
         # replaced by the device_code singleton's tokens — the pool's reactive recovery owns that case.
         try:
-            from hermes_cli import auth as _auth
+            from hermes_agent.hermes_cli import auth as _auth
             resolve = (
                 _auth.resolve_codex_runtime_credentials if self.provider == "openai-codex"
                 else _auth.resolve_xai_oauth_runtime_credentials
@@ -617,7 +617,7 @@ class ClientLifecycleMixin:
         if self.provider != "nous" or self.api_mode not in ("chat_completions", "anthropic_messages"):
             return False
         try:
-            from hermes_cli.auth import resolve_nous_runtime_credentials
+            from hermes_agent.hermes_cli.auth import resolve_nous_runtime_credentials
             timeout = env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15)
             # Pass the bearer that just 401'd so a refresh already done by a sibling process is
             # adopted instead of rotating the grant again.
@@ -635,7 +635,7 @@ class ClientLifecycleMixin:
             return False  # store holds the same key on the same route: nothing to adopt, no client rebuild
         if require_account is not None:
             try:
-                from hermes_cli.auth_constants import _decode_jwt_claims
+                from hermes_agent.hermes_cli.auth_constants import _decode_jwt_claims
                 new_account = _decode_jwt_claims(str(api_key)).get("sub")
             except Exception:
                 new_account = None
@@ -680,7 +680,7 @@ class ClientLifecycleMixin:
         if getattr(self, "provider", "") != "nous" or not getattr(self, "api_key", None):
             return False
         try:
-            from hermes_cli.auth_constants import _decode_jwt_claims
+            from hermes_agent.hermes_cli.auth_constants import _decode_jwt_claims
             claims = _decode_jwt_claims(self.api_key)
         except Exception:
             return False
@@ -701,7 +701,7 @@ class ClientLifecycleMixin:
         """
         try:
             from hermes_agent.agent.credential_pool import get_env_prefer_dotenv
-            from hermes_cli.auth import PROVIDER_REGISTRY
+            from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
         except ImportError:
             return None
         pconfig = PROVIDER_REGISTRY.get(self.provider)
@@ -715,18 +715,18 @@ class ClientLifecycleMixin:
             default_base = (pconfig.inference_base_url or "").strip().rstrip("/")
             base_url = env_url or default_base
             if self.provider == "actual":
-                from hermes_cli.auth import normalize_actual_base_url
-                from hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
+                from hermes_agent.hermes_cli.auth import normalize_actual_base_url
+                from hermes_agent.hermes_cli.runtime_provider import _config_base_url_for_provider, _get_model_config
                 configured_base = _config_base_url_for_provider(_get_model_config(), "actual")
                 base_url = normalize_actual_base_url(configured_base or base_url)
             elif self.provider in ("kimi-coding", "zai"):
-                from hermes_cli import auth as _auth
+                from hermes_agent.hermes_cli import auth as _auth
                 resolver = _auth._resolve_kimi_base_url if self.provider == "kimi-coding" else _auth._resolve_zai_base_url
                 base_url = resolver(api_key, pconfig.inference_base_url, env_url).rstrip("/")
         elif self.provider == "custom":
             # Named custom provider: identity in config, credential in key_env; no key_env → nothing to watch.
             try:
-                from hermes_cli.runtime_provider import _get_named_custom_provider
+                from hermes_agent.hermes_cli.runtime_provider import _get_named_custom_provider
             except ImportError:
                 return None
             custom_provider = _get_named_custom_provider(getattr(self, "requested_provider", "") or "")
@@ -776,7 +776,7 @@ class ClientLifecycleMixin:
         if not self._should_adopt_env_credentials(api_key, base_url, default_base):
             self._env_creds_seen = (base_url, api_key)
             return False
-        from hermes_cli.route_identity import normalize_route_base_url
+        from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(base_url)
         prior_api_key, prior_base_url = self.api_key, self.base_url
         prior_client_kwargs = dict(self._client_kwargs)
@@ -923,7 +923,7 @@ class ClientLifecycleMixin:
         # Per-provider extra_headers last so they survive swaps/rebuilds. SECURITY: may carry credentials; never log.
         if self.api_mode not in ("anthropic_messages", "bedrock_converse"):
             try:
-                from hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
+                from hermes_agent.hermes_cli.config import apply_custom_provider_extra_headers_to_client_kwargs
                 apply_custom_provider_extra_headers_to_client_kwargs(self._client_kwargs, base_url)
             except Exception:
                 logger.debug("custom-provider extra_headers skipped", exc_info=True)
@@ -944,14 +944,14 @@ class ClientLifecycleMixin:
         rotation; the caller treats a refused swap as "no entry")."""
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
-        from hermes_cli.providers import is_actual_route
+        from hermes_agent.hermes_cli.providers import is_actual_route
         actual_route = is_actual_route(getattr(self, "provider", ""), runtime_base)
         if actual_route:
-            from hermes_cli.auth import normalize_actual_base_url
+            from hermes_agent.hermes_cli.auth import normalize_actual_base_url
             runtime_base = normalize_actual_base_url(runtime_base)
         stripped_base = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
         # Refuse BEFORE any state changes below: a refused swap must leave the agent exactly as it was.
-        from hermes_cli.anon_auth import route_can_serve_model
+        from hermes_agent.hermes_cli.anon_auth import route_can_serve_model
         if not route_can_serve_model(getattr(self, "provider", None), stripped_base, getattr(self, "model", None)):
             logger.info("Credential %s skipped: its route cannot serve model %s", getattr(entry, "id", "?"), self.model)
             return False
@@ -960,7 +960,7 @@ class ClientLifecycleMixin:
             if hasattr(self, "_transport_cache"):
                 self._transport_cache.clear()
         self._credential_pool_entry_id = getattr(entry, "id", None)
-        from hermes_cli.route_identity import normalize_route_base_url
+        from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
         route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(runtime_base)
         if self.api_mode == "anthropic_messages":
             with suppress(Exception):
@@ -994,7 +994,7 @@ class ClientLifecycleMixin:
         self._client_kwargs.pop("ssl_verify", None)
         self._client_kwargs.pop("ssl_ca_cert", None)
         try:
-            from hermes_cli.config import (
+            from hermes_agent.hermes_cli.config import (
                 apply_custom_provider_tls_to_client_kwargs, get_compatible_custom_providers, load_config_readonly,
             )
             apply_custom_provider_tls_to_client_kwargs(

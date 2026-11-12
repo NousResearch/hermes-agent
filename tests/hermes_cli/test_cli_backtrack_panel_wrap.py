@@ -3,7 +3,7 @@
 import pytest
 from prompt_toolkit.utils import get_cwidth
 
-from hermes_cli.cli_render import _append_panel_line, _wrap_panel_text
+from hermes_agent.hermes_cli.cli_render import _append_panel_line, _wrap_panel_text
 
 
 @pytest.mark.parametrize("text", ["Which option?\n1) keep\n2) drop", "选哪个?\n1) 保留\n2) 删除"])
@@ -44,7 +44,7 @@ def test_other_panels_keep_long_words_whole():
 
 def test_a_long_cjk_prompt_wraps_in_one_pass(monkeypatch):
     """Each character's width is read a bounded number of times, not once per wrapped row."""
-    from hermes_cli import cli_render
+    from hermes_agent.hermes_cli import cli_render
     calls = []
     real = cli_render._cells
     monkeypatch.setattr(cli_render, "_cells", lambda text: calls.append(len(text)) or real(text))

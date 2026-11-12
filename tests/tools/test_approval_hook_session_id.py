@@ -36,7 +36,7 @@ class TestApprovalHookSessionId:
         )
         try:
             with patch(
-                "hermes_cli.lifecycle.invoke_hook",
+                "hermes_agent.hermes_cli.lifecycle.invoke_hook",
                 side_effect=_capture_hook(captured),
             ):
                 approval_context._fire_approval_hook(
@@ -61,7 +61,7 @@ class TestApprovalHookSessionId:
         )
         try:
             with patch(
-                "hermes_cli.lifecycle.invoke_hook",
+                "hermes_agent.hermes_cli.lifecycle.invoke_hook",
                 side_effect=_capture_hook(captured),
             ):
                 approval_context._fire_approval_hook(
@@ -78,7 +78,7 @@ class TestApprovalHookSessionId:
     def test_absent_when_unbound(self):
         captured = []
         with patch(
-            "hermes_cli.lifecycle.invoke_hook",
+            "hermes_agent.hermes_cli.lifecycle.invoke_hook",
             side_effect=_capture_hook(captured),
         ):
             approval_context._fire_approval_hook(

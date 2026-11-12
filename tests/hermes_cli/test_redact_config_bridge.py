@@ -1,7 +1,7 @@
 """Regression test for config.yaml `security.redact_secrets: false` toggle.
 
 Bug: `hermes_agent/agent/redact.py` snapshots `_REDACT_ENABLED` from the env var
-`HERMES_REDACT_SECRETS` at module-import time. `hermes_cli/main.py` at
+`HERMES_REDACT_SECRETS` at module-import time. `hermes_agent/hermes_cli/main.py` at
 line ~174 calls `setup_logging(mode="cli")` which transitively imports
 `hermes_agent.agent.redact` — BEFORE any config bridge ran. So if a user set
 `security.redact_secrets: false` in config.yaml (instead of as an env var
@@ -9,7 +9,7 @@ in .env), the toggle was silently ignored in both `hermes chat` and
 `hermes gateway run`.
 
 Fix: bridge `security.redact_secrets` from config.yaml → `HERMES_REDACT_SECRETS`
-env var in `hermes_cli/main.py` BEFORE the `setup_logging()` call.
+env var in `hermes_agent/hermes_cli/main.py` BEFORE the `setup_logging()` call.
 """
 import os
 import subprocess
@@ -38,7 +38,7 @@ def test_redact_secrets_false_in_config_yaml_is_honored(tmp_path):
     # Empty .env so nothing else sets the env var
     (hermes_home / ".env").write_text("")
 
-    # Spawn a fresh Python process that imports hermes_cli.main and checks
+    # Spawn a fresh Python process that imports hermes_agent.hermes_cli.main and checks
     # _REDACT_ENABLED. Must be a subprocess — we need a clean module state.
     probe = textwrap.dedent(
         """\

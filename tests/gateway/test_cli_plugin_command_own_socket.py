@@ -19,7 +19,7 @@ from tests.gateway.test_cli_plugin_command_in_gateway import (
 )
 from tests.waiting import wait_until
 
-# The command socket's thread (hermes_cli/gateway_connection.py); none may outlive its command.
+# The command socket's thread (hermes_agent/hermes_cli/gateway_connection.py); none may outlive its command.
 _COMMAND_THREAD = 'hermes-gateway-command'
 
 
@@ -29,10 +29,10 @@ def _command_threads():
 
 def _cli(monkeypatch, home):
     """``(cli, connection)``: a classic CLI on its own production connection to ``home``."""
-    import cli as cli_mod
-    from cli import HermesCLI
-    from hermes_cli.gateway_connection import GatewayConnection
-    from hermes_cli.gateway_session_store import GatewaySessionStore
+    import hermes_agent.cli as cli_mod
+    from hermes_agent.cli import HermesCLI
+    from hermes_agent.hermes_cli.gateway_connection import GatewayConnection
+    from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
     _no_local_plugins(monkeypatch)
     monkeypatch.setattr(cli_mod, '_ensure_skill_commands', dict)
     monkeypatch.setattr(cli_mod, 'get_skill_bundles', dict)
@@ -64,8 +64,8 @@ def test_a_stopped_plugin_command_leaves_the_cli_connection_free(tmp_path, monke
     CLI's connection answers a prompt admission, a receipt read and the interrupt of that turn, in
     order. Released, the handler's late reply is never shown and no command socket or pending
     request is left."""
-    from hermes_cli import gateway_plugin_commands
-    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli import gateway_plugin_commands
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
     models, model_post = [], Model.do_POST
 
     def seen_post(handler):  # the loopback model server, to hold and release the admitted turn
@@ -140,7 +140,7 @@ def test_a_gateway_hang_up_during_a_plugin_command_ends_the_wait_and_leaves_noth
         try:
             with daemon(root, home, env, barrier=True, fixture='plugin_mcp_daemon.py') as (proc, _desc):
                 c._ensure_gateway_session()
-                from hermes_cli import gateway_plugin_commands
+                from hermes_agent.hermes_cli import gateway_plugin_commands
                 assert 'ppslow' in (gateway_plugin_commands.names(c) or {})
                 capsys.readouterr()
                 waiting = _typed_in_thread(c, '/ppslow hangup')

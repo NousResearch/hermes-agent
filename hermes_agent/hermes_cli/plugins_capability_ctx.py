@@ -6,14 +6,14 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from hermes_cli.plugin_capabilities import plugin_capability_granted
-from hermes_cli.plugins_loader import _plugin_home_scope
+from hermes_agent.hermes_cli.plugin_capabilities import plugin_capability_granted
+from hermes_agent.hermes_cli.plugins_loader import _plugin_home_scope
 
 logger = logging.getLogger(__name__)
 
 
 class PluginCapabilityCtxMixin:
-    """Mixed into :class:`hermes_cli.plugins.PluginContext` (``manifest``, ``_manager``, ``plugin_id``)."""
+    """Mixed into :class:`hermes_agent.hermes_cli.plugins.PluginContext` (``manifest``, ``_manager``, ``plugin_id``)."""
 
     # -- capability probing (#64228) -----------------------------------------
     def has_capability(self, capability: str) -> bool:
@@ -48,7 +48,7 @@ class PluginCapabilityCtxMixin:
         """Consent read from THIS manager's profile home: plugins call from their own threads,
         where the active profile may be the launch profile's."""
         try:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
             with _plugin_home_scope(self._manager.home_path):
                 cfg = load_config() or {}
         except Exception:  # health: allow BLE001 -- fail closed: unreadable consent state never grants

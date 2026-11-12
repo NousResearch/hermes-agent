@@ -4,8 +4,8 @@ import pytest
 
 @pytest.mark.parametrize("surface", ["db", "builtin", "cli"])
 def test_creator_origin_survives_without_dependency_parent(tmp_path, monkeypatch, capsys, surface):
-    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kn
-    from hermes_cli.kanban_db_graph import decompose_triage_task
+    from hermes_agent.hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kn
+    from hermes_agent.hermes_cli.kanban_db_graph import decompose_triage_task
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -22,8 +22,8 @@ def test_creator_origin_survives_without_dependency_parent(tmp_path, monkeypatch
         else:
             import json
             import argparse
-            from hermes_cli.kanban import kanban_command
-            from hermes_cli.kanban_parser import build_parser
+            from hermes_agent.hermes_cli.kanban import kanban_command
+            from hermes_agent.hermes_cli.kanban_parser import build_parser
             parser = argparse.ArgumentParser()
             build_parser(parser.add_subparsers())
             monkeypatch.setenv("HERMES_KANBAN_TASK", owner)

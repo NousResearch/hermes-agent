@@ -12,7 +12,7 @@ from pathlib import Path
 from contextlib import suppress
 from typing import Optional
 
-from hermes_cli.home_data_layout import SECRET_CACHE_STORES
+from hermes_agent.hermes_cli.home_data_layout import SECRET_CACHE_STORES
 
 
 def _constants_path(getter_name: str) -> Path:
@@ -133,7 +133,7 @@ def _homes_and_resolved(path: str) -> tuple[set[str], str]:
 #   * ``\\\\?\\GLOBALROOT...`` — re-entry into the NT namespace.
 #
 # Plain drive-letter extended-length paths (``\\\\?\\C:\\...``) stay ALLOWED:
-# they are a routine local form (see hermes_cli/windows_ssh_runtime.py) and
+# they are a routine local form (see hermes_agent/hermes_cli/windows_ssh_runtime.py) and
 # carry no remote-auth trigger. Plain UNC shares (``\\\\server\\share``) are
 # also unchanged here — blocking ordinary UNC reads is a policy question,
 # not part of this namespace-bypass guard.
@@ -207,7 +207,7 @@ def build_write_denied_paths(home: str) -> set[str]:
     return {os.path.realpath(p) for p in paths}
 
 
-# Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_cli.profiles).
+# Home-relative credential directories (POSIX paths). Also dropped from profile exports (hermes_agent.hermes_cli.profiles).
 HOME_CREDENTIAL_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh", ".config/gcloud")
 
 

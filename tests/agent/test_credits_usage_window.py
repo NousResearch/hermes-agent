@@ -454,7 +454,7 @@ class TestHardStops:
     def test_a_pause_for_another_reason_never_claims_a_payment_failed(self):
         """The server may send any reason (\"unknown\" for a malformed one): still a pause, neutral copy."""
         from hermes_agent.agent import account_usage
-        from hermes_cli import nous_account
+        from hermes_agent.hermes_cli import nous_account
         show, _ = _run(_state(paid_access=False, paused_reason="unknown", spend_source=None), new_credits_latch())
         assert [k for k, _l, _t in show] == [CREDITS_DEPLETED_KEY]
         assert "payment" not in show[0][2] and "add credits in /topup" in show[0][2]
@@ -718,7 +718,7 @@ class TestUsageCommand:
     def test_portal_window_account_renders_today_week_and_top_tier(self, monkeypatch):
         from hermes_agent.agent import account_usage
         top_reset_ms = int(time.time() * 1000) + 20 * 86_400_000
-        monkeypatch.setattr("hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
+        monkeypatch.setattr("hermes_agent.hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
         info = SimpleNamespace(
             logged_in=True, paid_service_access=True,
             paid_service_access_info=SimpleNamespace(purchased_credits_remaining=5.0, subscription_credits_remaining=0.0, total_usable_credits=5.0),
@@ -781,7 +781,7 @@ class TestUsageCommand:
 
     def test_header_gauge_raises_stale_portal_percents(self, monkeypatch):
         from hermes_agent.agent import account_usage
-        monkeypatch.setattr("hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
+        monkeypatch.setattr("hermes_agent.hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
         info = SimpleNamespace(
             logged_in=True, paid_service_access=True,
             paid_service_access_info=SimpleNamespace(purchased_credits_remaining=5.0, subscription_credits_remaining=0.0, total_usable_credits=5.0),
@@ -809,7 +809,7 @@ class TestUsageCommand:
 
     def test_portal_paused_window_account(self, monkeypatch):
         from hermes_agent.agent import account_usage
-        monkeypatch.setattr("hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
+        monkeypatch.setattr("hermes_agent.hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
         info = SimpleNamespace(
             logged_in=True, paid_service_access=False,
             paid_service_access_info=SimpleNamespace(purchased_credits_remaining=0.0),
@@ -825,9 +825,9 @@ class TestUsageCommand:
         """Keep going on credits off: /usage names the setting, the used-up line points at the other
         included usage (a balance doesn't unlock it), and the 402 guidance links billing, not top-up."""
         from hermes_agent.agent import account_usage
-        from hermes_cli import nous_account
-        monkeypatch.setattr("hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
-        monkeypatch.setattr("hermes_cli.nous_account.nous_portal_billing_url", lambda info: "https://portal/billing")
+        from hermes_agent.hermes_cli import nous_account
+        monkeypatch.setattr("hermes_agent.hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
+        monkeypatch.setattr("hermes_agent.hermes_cli.nous_account.nous_portal_billing_url", lambda info: "https://portal/billing")
         now = int(time.time() * 1000)
         window = SimpleNamespace(gauges=_gauges(7_600, 4_000, top_tier_bp=10_000, day_reset=now + 3600_000,
                                                 week_reset=now + 3 * 86_400_000, top_reset=now + 20 * 86_400_000),
@@ -857,7 +857,7 @@ class TestUsageCommand:
             assert "https://portal/topup" in nous_account.format_usage_window_block_guidance(info)
 
     def test_account_dto_carries_keep_going_on_credits(self):
-        from hermes_cli.nous_account import NousUsageWindowInfo, _coerced_dataclass
+        from hermes_agent.hermes_cli.nous_account import NousUsageWindowInfo, _coerced_dataclass
         assert _coerced_dataclass(NousUsageWindowInfo, {"keep_going_on_credits": False}).keep_going_on_credits is False
         assert _coerced_dataclass(NousUsageWindowInfo, {}).keep_going_on_credits is None
 
@@ -865,7 +865,7 @@ class TestUsageCommand:
         """Gate on a readable gauge list, not on the block's presence: an empty block, or one whose list
         has nothing that stops every model, keeps the dollar usage model and the credit-grant 402 guidance."""
         from hermes_agent.agent.billing_usage import usage_model_from_account
-        from hermes_cli.nous_account import NousUsageWindowInfo, format_usage_window_block_guidance
+        from hermes_agent.hermes_cli.nous_account import NousUsageWindowInfo, format_usage_window_block_guidance
         complete = NousUsageWindowInfo(gauges=ct.parse_gauges(_gauges(100, 50)))
         top_only = NousUsageWindowInfo(gauges=ct.parse_gauges([g for g in _gauges() if g["scope"] == "top_tier"]))
         for window, is_window in ((complete, True), (NousUsageWindowInfo(), False), (top_only, False)):
@@ -881,7 +881,7 @@ class TestUsageCommand:
 
     def test_portal_legacy_account_is_unchanged(self, monkeypatch):
         from hermes_agent.agent import account_usage
-        monkeypatch.setattr("hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
+        monkeypatch.setattr("hermes_agent.hermes_cli.nous_account.nous_portal_topup_url", lambda info: "https://portal/topup")
         info = SimpleNamespace(
             logged_in=True, paid_service_access=True,
             paid_service_access_info=SimpleNamespace(purchased_credits_remaining=1.0, subscription_credits_remaining=18.0, total_usable_credits=19.0),
@@ -1149,19 +1149,19 @@ class TestBlockedResponseCapture:
 class TestPicker:
     def test_custom_entry_is_always_offered(self, monkeypatch):
         # Window plans no longer restrict models, so every picker keeps "Enter custom model name".
-        from hermes_cli import auth_model_picker as picker
+        from hermes_agent.hermes_cli import auth_model_picker as picker
         captured = {}
 
         def fake_radiolist(title, choices, **kw):
             captured["choices"] = choices
             return -1
 
-        monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", fake_radiolist)
+        monkeypatch.setattr("hermes_agent.hermes_cli.curses_ui.curses_radiolist", fake_radiolist)
         picker._prompt_model_selection(["a/m1", "b/m2"])
         assert picker._CUSTOM_LABEL in captured["choices"]
 
     def test_account_payload_usage_window_is_parsed(self):
-        from hermes_cli import nous_account as na
+        from hermes_agent.hermes_cli import nous_account as na
         payload = {
             "user": {"email": "x@y.z"}, "organisation": {"id": "o1"},
             "paid_service_access": {"allowed": True},
@@ -1253,7 +1253,7 @@ class TestRefusalReadsAsTheStopLine:
         """A new subscriber's first limit (setting off by default, no top-up): the stop line, the next-steps
         payload and the 402 guidance all name both steps, since either one alone is still refused."""
         from hermes_agent.agent.conversation_loop import _usage_window_refusal
-        from hermes_cli import nous_account
+        from hermes_agent.hermes_cli import nous_account
         agent = self._agent(purchased_micros=0, keep_going_on_credits=False)
         text, _resets_at, limit = _usage_window_refusal(agent, SimpleNamespace(error_context={"usage_window": True}))
         assert text.endswith(" · add credits and turn on Keep going in /topup")

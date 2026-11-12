@@ -141,7 +141,7 @@ def _resolve_matrix_bang_command(name: str) -> str | None:
         return None
     candidates = list(dict.fromkeys((name.lower(), name.lower().replace("_", "-"))))
     try:
-        from hermes_cli.commands import is_gateway_known_command
+        from hermes_agent.hermes_cli.commands import is_gateway_known_command
         for candidate in candidates:
             if is_gateway_known_command(candidate):
                 return candidate
@@ -1717,11 +1717,11 @@ class MatrixAdapter(BasePlatformAdapter):
             return await self.send(
                 chat_id, t("platform.matrix.picker.no_models"), metadata=metadata)
         try:
-            from hermes_cli.providers import get_label
+            from hermes_agent.hermes_cli.providers import get_label
             provider_label = get_label(current_provider)
         except Exception:
             provider_label = current_provider
-        from hermes_cli.model_picker_usage import picker_row_suffix
+        from hermes_agent.hermes_cli.model_picker_usage import picker_row_suffix
         rows_by_slug = {str(p.get("slug") or ""): p for p in providers or []}
         plan_lines = [f"⚠️ {p['plan_line']}" for p in providers or [] if p.get("plan_line")]
         unknown = t("platform.shared.unknown")
@@ -3183,9 +3183,9 @@ def _standalone_payloads(message: str) -> list[dict[str, Any]]:
 
 def interactive_setup() -> None:
     """Interactive credential setup (setup_fn); CLI helpers are lazy-imported."""
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
-    from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from hermes_agent.hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_agent.hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_info, print_success, print_warning
+    from hermes_agent.hermes_cli.setup_platforms import declines_reconfigure
     print_header("Matrix")
     if declines_reconfigure("Matrix", "Reconfigure Matrix?", "MATRIX_ACCESS_TOKEN", "MATRIX_PASSWORD"):
         return
@@ -3259,10 +3259,10 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
 
 
 def _is_connected(config) -> bool:
-    """Connected = homeserver + token (or password). Reads via hermes_cli.gateway.get_env_value so
+    """Connected = homeserver + token (or password). Reads via hermes_agent.hermes_cli.gateway.get_env_value so
     setup-status callers that patch it see the same value; PlatformConfig extras are honored."""
     extra = getattr(config, "extra", {}) or {}
-    import hermes_cli.gateway as gateway_mod
+    import hermes_agent.hermes_cli.gateway as gateway_mod
     homeserver = extra.get("homeserver") or gateway_mod.get_env_value("MATRIX_HOMESERVER") or ""
     token = (getattr(config, "token", None) or gateway_mod.get_env_value("MATRIX_ACCESS_TOKEN")
              or gateway_mod.get_env_value("MATRIX_PASSWORD") or "")

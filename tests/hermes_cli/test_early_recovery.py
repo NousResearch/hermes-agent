@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import _early_recovery as er
-from hermes_cli import _early_recovery_zip as erz
+from hermes_agent.hermes_cli import _early_recovery as er
+from hermes_agent.hermes_cli import _early_recovery_zip as erz
 from pm import recovery
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

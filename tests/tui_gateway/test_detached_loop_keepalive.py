@@ -22,7 +22,7 @@ def hermes_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
 
     goals._DB_CACHE.clear()
     yield home
@@ -31,7 +31,7 @@ def hermes_home(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def server(hermes_home):
-    with patch.dict("sys.modules", {"hermes_cli.env_loader": MagicMock(), "hermes_cli.banner": MagicMock()}):
+    with patch.dict("sys.modules", {"hermes_agent.hermes_cli.env_loader": MagicMock(), "hermes_agent.hermes_cli.banner": MagicMock()}):
         mod = importlib.import_module("hermes_agent.tui_gateway.server")
         yield mod
         mod._sessions.clear()
@@ -76,13 +76,13 @@ def detached(server, monkeypatch):
 
 
 def _set_loop(session_key: str, route: dict | None = None):
-    from hermes_cli.loops import LoopManager
+    from hermes_agent.hermes_cli.loops import LoopManager
 
     LoopManager(session_key).set("reconcile the spec", interval_seconds=1800, route=route)
 
 
 def _set_heartbeat(session_key: str):
-    from hermes_cli.heartbeat import HeartbeatManager
+    from hermes_agent.hermes_cli.heartbeat import HeartbeatManager
 
     return HeartbeatManager(session_key).set("check the board", interval_seconds=1800)
 
@@ -106,7 +106,7 @@ def test_orphan_reap_keeps_detached_session_with_active_desktop_loop(server, det
 def test_orphan_reap_still_collects_session_once_loop_stops(server, detached):
     sid, session, popped = detached
     _set_loop(session["session_key"])
-    from hermes_cli.loops import LoopManager
+    from hermes_agent.hermes_cli.loops import LoopManager
 
     LoopManager(session["session_key"]).clear()
 
@@ -171,7 +171,7 @@ def test_orphan_reap_keeps_detached_session_with_active_local_heartbeat(server, 
 @pytest.mark.parametrize("release", ["pause", "clear"])
 def test_paused_or_cleared_heartbeat_releases_detached_session(server, detached, release):
     sid, session, popped = detached
-    from hermes_cli.heartbeat import HeartbeatManager
+    from hermes_agent.hermes_cli.heartbeat import HeartbeatManager
 
     _set_heartbeat(session["session_key"])
     getattr(HeartbeatManager(session["session_key"]), release)()

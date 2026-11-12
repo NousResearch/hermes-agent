@@ -6,8 +6,8 @@ import shlex
 import subprocess
 import sys
 
-from hermes_cli import kanban_db as kb
-from hermes_cli.kanban_db_connect import connect
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli.kanban_db_connect import connect
 from hermes_agent.tools import kanban_tools
 from hermes_agent.tools.environments.local import LocalEnvironment
 

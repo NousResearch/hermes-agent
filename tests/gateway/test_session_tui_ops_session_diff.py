@@ -11,7 +11,7 @@ from tests.gateway.fixtures.local_recovery_probe import rpc, websocket
 from tests.gateway.test_session_busy_controls import owner
 from tests.gateway.test_session_tui_ops import _checkpoint, _git_rpc
 
-# The classic CLI's frame cap (hermes_cli/gateway_client.py ``connect(..., max_size=...)``).
+# The classic CLI's frame cap (hermes_agent/hermes_cli/gateway_client.py ``connect(..., max_size=...)``).
 CLIENT_MAX_FRAME = 8 * 1024 * 1024
 
 

@@ -1,13 +1,13 @@
 """Tests for /compress --preview/--dry-run/--aggressive flags and the
 /compact alias (PR #3243 salvage).
 
-Covers the pure helpers in ``hermes_cli.partial_compress`` plus alias
+Covers the pure helpers in ``hermes_agent.hermes_cli.partial_compress`` plus alias
 resolution in the command registry. The CLI and gateway surfaces both
 route through these helpers, so the flag semantics are pinned here once.
 """
 
-from hermes_cli.commands import resolve_command
-from hermes_cli.partial_compress import (
+from hermes_agent.hermes_cli.commands import resolve_command
+from hermes_agent.hermes_cli.partial_compress import (
     DEFAULT_KEEP_LAST,
     extract_compress_flags,
     parse_partial_compress_args,

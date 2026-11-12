@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
+from hermes_agent.hermes_cli._subprocess_compat import harden_git_argv, noninteractive_git_env
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ def _run_git(args, cwd: str, timeout: int = _GIT_TIMEOUT, env=None):
 def local_backend_active() -> bool:
     """True when the terminal backend is local (worktrees visible to tools)."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
 
         backend = (load_config_readonly().get("terminal") or {}).get("backend") or "local"
         return str(backend).strip().lower() in ("", "local")
@@ -88,7 +88,7 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
         base = _run_git(["rev-parse", "HEAD"], cwd=repo_root)
         base_commit = base.stdout.strip() if base.returncode == 0 else ""
         # The checkout runs the repo-named smudge filter; skip isolation when it cannot be neutralized.
-        from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+        from hermes_agent.hermes_cli._subprocess_compat import noninteractive_repo_git_env
         add_env = noninteractive_repo_git_env(repo_root)
         if add_env is None:
             logger.warning("subagent worktree: filter discovery failed; not creating a worktree")
@@ -102,7 +102,7 @@ def create_subagent_worktree(parent_cwd: Optional[str], subagent_id: Optional[st
         logger.warning("subagent worktree: git worktree add failed: %s", result.stderr.strip())
         return None
     logger.info("subagent worktree created: %s (branch %s)", wt_path, branch)
-    from hermes_cli.worktree_registry import record_worktree_repo
+    from hermes_agent.hermes_cli.worktree_registry import record_worktree_repo
     record_worktree_repo(repo_root)
     return {"path": str(wt_path), "branch": branch, "repo_root": repo_root, "base_commit": base_commit}
 
@@ -157,7 +157,7 @@ def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> d
         return mark_worktree_payload_unproven(
             payload, "no base_commit recorded — commit count unmeasurable", unmeasured="commits")
     # The status probe re-hashes files the child touched, which runs repo-named clean filters.
-    from hermes_cli._subprocess_compat import noninteractive_repo_git_env
+    from hermes_agent.hermes_cli._subprocess_compat import noninteractive_repo_git_env
     probe_env = noninteractive_repo_git_env(path)
     if probe_env is None:
         return mark_worktree_payload_unproven(payload, "filter discovery failed", unmeasured="dirty")
@@ -182,8 +182,8 @@ def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> d
         return mark_worktree_payload_unproven(payload, "; ".join(failed), unmeasured="/".join(unmeasured))
     if not payload["dirty"]:
         # status trusts skip-worktree / assume-unchanged: edits behind them are invisible to it.
-        from hermes_cli.worktree_archive import ArchiveError
-        from hermes_cli.worktree_retention import hidden_index_edits
+        from hermes_agent.hermes_cli.worktree_archive import ArchiveError
+        from hermes_agent.hermes_cli.worktree_retention import hidden_index_edits
         try:
             payload["dirty"] = bool(hidden_index_edits(path))
         except (ArchiveError, OSError, subprocess.SubprocessError) as exc:
@@ -193,7 +193,7 @@ def finalize_subagent_worktree(info: dict[str, str], *, prune: bool = True) -> d
     if prune and payload["commits"] == 0 and not payload["dirty"]:
         cwd = info.get("repo_root", "") or path
         try:
-            from hermes_cli.worktree_ops import release_lsp_clients, removal_blocked
+            from hermes_agent.hermes_cli.worktree_ops import release_lsp_clients, removal_blocked
             blocked = removal_blocked(path)  # an embedded repo / private ref dies with the tree
             if blocked:
                 payload["note"] = f"Worktree kept at {path}: {blocked[1]}."
@@ -217,8 +217,8 @@ def _archive_finished_worktree(info: dict[str, str], payload: dict[str, Any]) ->
     The branch is kept (the parent reviews and merges it); the archive also covers uncommitted
     edits. ``worktrees.archive_dirty: false`` or a failed snapshot keeps the tree as before.
     """
-    from hermes_cli.worktree_archive import ArchiveError
-    from hermes_cli.worktree_sweep import archive_then_remove, live_process_pids, sweep_settings
+    from hermes_agent.hermes_cli.worktree_archive import ArchiveError
+    from hermes_agent.hermes_cli.worktree_sweep import archive_then_remove, live_process_pids, sweep_settings
     settings = sweep_settings()
     if not settings["archive_dirty"]:
         return payload

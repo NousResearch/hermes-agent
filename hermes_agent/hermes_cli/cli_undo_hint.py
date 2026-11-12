@@ -12,7 +12,7 @@ import os
 
 def _undone_span(before: list, turns_undone: int):
     """``(target stamp, kept prefix)`` of the oldest undone user turn in the pre-undo history."""
-    from hermes_cli.cli_session_mixin import _user_turn_indices
+    from hermes_agent.hermes_cli.cli_session_mixin import _user_turn_indices
     indices = _user_turn_indices(before)
     if not indices or turns_undone < 1:
         return None, []
@@ -21,7 +21,7 @@ def _undone_span(before: list, turns_undone: int):
 
 
 def print_undo_rollback_hint(cli, before: list, turns_undone: int) -> None:
-    from hermes_cli.gateway_side import connection_for
+    from hermes_agent.hermes_cli.gateway_side import connection_for
     from hermes_agent.tools.checkpoint_undo_hint import undo_hint_payload, undo_span_start
     target_ts, kept = _undone_span(before, turns_undone)
     if target_ts is None:

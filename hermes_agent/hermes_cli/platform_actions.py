@@ -85,7 +85,7 @@ class PlatformActions:
 
     def _capability_granted(self) -> bool:
         try:
-            from hermes_cli.plugin_capabilities import plugin_capability_granted
+            from hermes_agent.hermes_cli.plugin_capabilities import plugin_capability_granted
 
             return plugin_capability_granted(self._plugin_id, CAPABILITY_ID)
         except Exception:
@@ -117,7 +117,7 @@ class PlatformActions:
         resolve_fn = getattr(runner, "_authorization_adapter", None)
         if callable(resolve_fn):
             try:
-                from hermes_cli.profiles import get_active_profile_name
+                from hermes_agent.hermes_cli.profiles import get_active_profile_name
 
                 profile_name = get_active_profile_name()
             except Exception:

@@ -12,9 +12,9 @@ from types import SimpleNamespace
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from hermes_cli import gateway_connections as store
-from hermes_cli.gateway_connections_watch import watch_store
-from hermes_cli.web_routers import webapp_relay_proxy
+from hermes_agent.hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli.gateway_connections_watch import watch_store
+from hermes_agent.hermes_cli.web_routers import webapp_relay_proxy
 from tests.hermes_cli import test_webapp_relay_proxy as relay_tests
 from tests.waiting import wait_until
 
@@ -79,9 +79,9 @@ def test_another_writers_re_point_or_remove_closes_the_relayed_socket_and_a_rena
 
 def test_one_entrys_failed_teardown_still_tears_down_the_others(monkeypatch):
     """An SSH host that stopped answering raises from its teardown; the next entry is still torn down."""
-    from hermes_cli import gateway_connections_reach as reach
-    from hermes_cli import gateway_connections_watch as watch_mod
-    from hermes_cli.gateway_connections_ssh_transport import SshReachError
+    from hermes_agent.hermes_cli import gateway_connections_reach as reach
+    from hermes_agent.hermes_cli import gateway_connections_watch as watch_mod
+    from hermes_agent.hermes_cli.gateway_connections_ssh_transport import SshReachError
 
     closed, forgotten = [], []
     monkeypatch.setattr(webapp_relay_proxy, "close_gateway_sockets", closed.append)
@@ -102,8 +102,8 @@ def test_the_webapp_lifespan_ending_closes_every_ssh_tunnel_it_opened(tmp_path, 
     from fastapi import FastAPI
     from starlette.testclient import TestClient
 
-    from hermes_cli import gateway_connections_ssh as ssh
-    from hermes_cli.web_server_app import http_lifespan
+    from hermes_agent.hermes_cli import gateway_connections_ssh as ssh
+    from hermes_agent.hermes_cli.web_server_app import http_lifespan
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     torn: list[str] = []

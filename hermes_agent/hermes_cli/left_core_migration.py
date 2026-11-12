@@ -35,11 +35,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-from hermes_cli.memory_provider_migration import (
+from hermes_agent.hermes_cli.memory_provider_migration import (
     _failed_recently, _home_consent, _home_label, _install_command, _interactive,
     _note_failure, _unattended_consent,
 )
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ LEFT_CORE_TERMINAL_KEYS = {"terminal.singularity_image": "TERMINAL_SINGULARITY_I
 
 
 def _read_config(home: Path) -> dict:
-    from hermes_cli.config_backend import read_config_doc
+    from hermes_agent.hermes_cli.config_backend import read_config_doc
     try:
         data = read_config_doc(home / "config.yaml")
     except Exception:  # missing/unreadable/invalid YAML: nothing we can see is in use
@@ -67,7 +67,7 @@ def _merged_platform_block(home: Path, name: str) -> Optional[dict]:
     gw_data = config_loader.load_legacy_gateway_json(home)
     gw_data = gw_data if isinstance(gw_data, dict) else {}
     try:
-        from hermes_cli import managed_scope
+        from hermes_agent.hermes_cli import managed_scope
         yaml_cfg = config_loader.read_yaml_layers(home)
         managed = managed_scope.apply_managed_overlay({})
     except Exception:  # malformed config.yaml: the gateway falls back to gateway.json alone too
@@ -180,16 +180,16 @@ def yuanbao_in_use(home: Path, *, process_env: bool = False) -> bool:
 
 
 # ``hermes_agent.gateway.config.Platform`` members in neither table above. Named, not imported: hermes_agent.gateway.config imports
-# hermes_cli.config, which loads this module (the left-core test asserts every member is covered).
+# hermes_agent.hermes_cli.config, which loads this module (the left-core test asserts every member is covered).
 _GATEWAY_ONLY_PLATFORMS = ("msgraph_webhook", "relay")
 
 
 def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
-    """Every platform name core knows, minus *platform*: the ``hermes_cli.platforms`` table, the shipped
+    """Every platform name core knows, minus *platform*: the ``hermes_agent.hermes_cli.platforms`` table, the shipped
     ``plugins/platforms/<name>`` dirs (the dir is the registered name), the gateway-only ``Platform``
     members, the ``acp`` surface and *others*
     (platforms other rows moved out). Off-platforms derived here cover a platform added later too."""
-    from hermes_cli.platforms import PLATFORMS
+    from hermes_agent.hermes_cli.platforms import PLATFORMS
     try:
         bundled = {p.name for p in (Path(project_root_str()) / "plugins" / "platforms").iterdir()
                    if (p / "plugin.yaml").is_file()}
@@ -292,7 +292,7 @@ def singularity_in_use(home: Path, *, process_env: bool = False) -> bool:
     terminal = terminal if isinstance(terminal, dict) else {}
     configured = str(terminal.get("backend") or terminal.get("env_type") or "").strip()
     if not configured:
-        from hermes_cli.env_loader import resolve_home_dotenv
+        from hermes_agent.hermes_cli.env_loader import resolve_home_dotenv
         configured = resolve_home_dotenv(home).get("TERMINAL_ENV", "").strip()
     if not configured and process_env:
         from hermes_constants import get_routing_process_hermes_home, hermes_home_key
@@ -314,7 +314,7 @@ def _home_env(home: Path, name: str, *, process_env: bool) -> str:
     from the secret scope bound for *home* (a multiplexed secondary's external secret sources live only there),
     else, with *process_env* and for the launch home only, the process environment."""
     from hermes_agent.agent.secret_scope import current_secret_scope, current_secret_scope_home
-    from hermes_cli.env_loader import resolve_home_dotenv
+    from hermes_agent.hermes_cli.env_loader import resolve_home_dotenv
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     value = resolve_home_dotenv(home).get(name, "").strip()
     scope_home = current_secret_scope_home()
@@ -356,9 +356,9 @@ def _route_slots(home: Path) -> list[dict]:
     and the user's own ``providers:`` / ``custom_providers:`` endpoints (``get_compatible_custom_providers``)."""
     from hermes_agent.cron.scheduler_preflight import cron_default_provider
     from hermes_agent.gateway import config_loader
-    from hermes_cli.config_providers import get_compatible_custom_providers
-    from hermes_cli.fallback_config import get_fallback_chain
-    from hermes_cli.moa_config import normalize_moa_config
+    from hermes_agent.hermes_cli.config_providers import get_compatible_custom_providers
+    from hermes_agent.hermes_cli.fallback_config import get_fallback_chain
+    from hermes_agent.hermes_cli.moa_config import normalize_moa_config
     try:
         cfg = config_loader.read_yaml_layers(home)
     except Exception:  # malformed config.yaml: the agent reads nothing from it either
@@ -436,7 +436,7 @@ def _names_custom_endpoint(home: Path, name: str) -> bool:
     """*name* resolves to one of *home*'s own ``providers:`` / ``custom_providers:`` endpoints (the
     resolver's named-custom rung: ``named_custom_provider_config_path``), not to the provider it aliases."""
     from hermes_agent.gateway import config_loader
-    from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
+    from hermes_agent.hermes_cli.runtime_provider_custom import named_custom_provider_config_path
     try:
         return named_custom_provider_config_path(name, config_loader.read_yaml_layers(home)) is not None
     except Exception:  # malformed config.yaml: the resolver finds no custom entry in it either
@@ -517,7 +517,7 @@ class LeftCoreFeature:
     platform: str = ""
     # Channel ownership core declared for that platform, kept while the plugin is absent (migration
     # pending, declined, failed) so a channel-less profile clone still strips the source's identity
-    # (hermes_cli/profile_channels.py): the env whose presence enabled the adapter, and the env
+    # (hermes_agent/hermes_cli/profile_channels.py): the env whose presence enabled the adapter, and the env
     # prefixes it shared with the feature's tools (stripped only when the source runs the adapter).
     enable_env: tuple[str, ...] = ()
     channel_env_prefixes: tuple[str, ...] = ()
@@ -868,7 +868,7 @@ def _notices_locked(home: Path):
     """The cross-process lock every append and claim of *home*'s kept notices holds: an append never lands
     in a file a claimant already read, and a claimant never reads a half-written line."""
     import threading
-    from hermes_cli.auth import _file_lock
+    from hermes_agent.hermes_cli.auth import _file_lock
     path = _notice_file(home)
     # A fresh holder: the helper's per-thread reentrancy must never skip one home's lock inside another's.
     with _file_lock(path.with_name(f"{path.name}.lock"), threading.local(), 5.0,
@@ -995,7 +995,7 @@ def _turn_off_replaced(config: dict, feature: LeftCoreFeature) -> None:
     and ``agent.disabled_toolsets`` takes them, which also covers platforms on a default composite. One the
     user had already disabled there disables the plugin's toolsets too (they are on by default)."""
     from hermes_agent.agent.skill_utils import parse_config_string_list
-    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    from hermes_agent.hermes_cli.toolset_validation import parse_platform_toolsets_value
     replaced = set(feature.replaces_toolsets)
     saved = config.get("platform_toolsets")
     for platform, value in (saved.items() if isinstance(saved, dict) else ()):
@@ -1033,9 +1033,9 @@ def _record_migration(home: Path, feature: LeftCoreFeature) -> None:
     (it stays inert on a core that still ships the feature) still needs it. Completion is marked
     under ``_left_core_scoped`` so a later run never undoes a choice the user made since
     (``hermes tools``). Raises when config.yaml cannot be read or written."""
-    from hermes_cli.config import atomic_config_write, read_user_config_raw
-    from hermes_cli.config_backend import config_exists
-    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    from hermes_agent.hermes_cli.config import atomic_config_write, read_user_config_raw
+    from hermes_agent.hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.toolset_validation import parse_platform_toolsets_value
     path = home / "config.yaml"
     created = not config_exists(path)
     config = read_user_config_raw(path)
@@ -1075,8 +1075,8 @@ def _stamp_created(home: Path, config: dict) -> None:
     """A missing config.yaml reads as the current schema, so no config step ever ran on this home: the file
     the conversion creates carries that stamp (unstamped, every boot warns it predates the support floor)
     and, as a plain save's first stamp does, the rows in use, or the stamp makes the home look post-split."""
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-    from hermes_cli.config_version_stamp import note_first_stamp
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config_version_stamp import note_first_stamp
     config["_config_version"] = DEFAULT_CONFIG["_config_version"]
     note_first_stamp(home, {}, config)
 
@@ -1088,7 +1088,7 @@ def _pending(home: Path, *, say: Callable[[str], None], process_env: bool = Fals
     (:func:`_record_migration`), installed or not; a row whose scope cannot be recorded is
     reported and skipped, never installed unscoped. A row marked installed is done for good.
     *backoff* (startup) skips a row whose last attempt failed recently, before any network."""
-    from hermes_cli.memory_provider_migration import catalog_source
+    from hermes_agent.hermes_cli.memory_provider_migration import catalog_source
     out = []
     for feature in LEFT_CORE:
         if _marked(_read_config(home), _INSTALLED_KEY, feature):
@@ -1143,7 +1143,7 @@ def _noticed(message: str, home: Path, feature: LeftCoreFeature, process_env: bo
 
 def _install_into(home: Path, *, consent: Optional[bool] = None) -> Callable[[str], dict]:
     def _install(name: str) -> dict:
-        from hermes_cli.plugins_cmd import dashboard_install_plugin
+        from hermes_agent.hermes_cli.plugins_cmd import dashboard_install_plugin
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(home)
         try:
@@ -1200,7 +1200,7 @@ def migrate_all_homes(*, say: Callable[[str], None] = print) -> list[str]:
     """``hermes update`` hook: every profile home sharing this venv. Grouped by plugin and each home's
     unattended consent like the memory migration: homes of one group share dependency answers, and a
     failure names the rest of its group in one line instead of failing them one by one."""
-    from hermes_cli.plugins_cmd_install import shared_dependency_answers
+    from hermes_agent.hermes_cli.plugins_cmd_install import shared_dependency_answers
     from hermes_constants import get_routing_process_hermes_home, hermes_home_key
     from pm.plugins_state import dependency_homes
 

@@ -4,7 +4,7 @@ import pytest
 
 pytest.importorskip("pwd")  # POSIX systemd helper, same gate as test_gateway_service
 
-import hermes_cli.gateway as gateway_cli
+import hermes_agent.hermes_cli.gateway as gateway_cli
 
 
 def test_ready_only_on_final_check_exports_env_once(monkeypatch):

@@ -107,7 +107,7 @@ def _approve(env=None):
 def test_only_a_desktop_session_carries_the_tool():
     from hermes_agent import model_tools
     from hermes_agent import toolsets
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
     from hermes_agent.tools.tool_search import is_deferrable_tool_name
 
     # A config may name the toolset; `all` never brings it in.
@@ -135,7 +135,7 @@ def test_a_session_off_the_desktop_never_hears_of_the_tool_even_through_tool_sea
     from hermes_agent import model_tools
     from hermes_agent.agent.agent_init import _load_tools
 
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.discover_plugins", lambda: None)
     enabled, disabled = _desktop_child_toolsets() if platform == "subagent" else (["catalog", "web"], None)
     assert "catalog" in enabled
     agent = SimpleNamespace(quiet_mode=True, platform=platform, enabled_toolsets=enabled, disabled_toolsets=disabled)
@@ -187,7 +187,7 @@ def test_unknown_and_unsupported_ids_fail_at_once_with_the_reason_and_are_never_
 
 
 def test_an_approved_row_installs_into_the_chats_profile_and_lists_the_live_tools():
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     b_home = Path(create_profile("b", no_alias=True))
@@ -208,7 +208,7 @@ def test_an_approved_row_installs_into_the_chats_profile_and_lists_the_live_tool
 
 
 def test_advanced_values_pick_the_profile_force_and_pin(tmp_path):
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
 
     work = create_profile("work", no_alias=True)
     installer = FakeInstaller([_entry("blender")])
@@ -316,7 +316,7 @@ def test_a_clawhub_install_is_read_back_through_its_card_id(monkeypatch):
             install_path="agent-git-oracle", files=["SKILL.md"])
         return True
 
-    monkeypatch.setattr("hermes_cli.skills_hub.do_install", do_install)
+    monkeypatch.setattr("hermes_agent.hermes_cli.skills_hub.do_install", do_install)
     installer = HostInstaller()
 
     assert installer.install_skill("agent-git-oracle", force=False, source="clawhub") == {

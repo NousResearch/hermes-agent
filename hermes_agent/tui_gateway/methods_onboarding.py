@@ -15,7 +15,7 @@ def _(rid, params: dict) -> dict:
 
 @method("onboarding.set_run")
 def _(rid, params: dict) -> dict:
-    from hermes_cli.onboarding_run import set_run
+    from hermes_agent.hermes_cli.onboarding_run import set_run
     if not isinstance(params.get("run"), bool):
         return _err(rid, 4002, "onboarding.set_run requires a boolean 'run'")
     try:
@@ -32,9 +32,9 @@ def _run_state(*, assume_fresh: bool = False) -> dict:
     backend and something can carry the first chat (the welcome trial or a configured provider);
     remote backends answer at once and run onboarding only from Settings. On the local backend the
     answer comes from the boot computation (``onboarding_due``); ``--fresh-install`` asks live."""
-    from hermes_cli import onboarding_due
-    from hermes_cli.anon_auth import on_local_desktop_backend
-    from hermes_cli.onboarding_run import should_run
+    from hermes_agent.hermes_cli import onboarding_due
+    from hermes_agent.hermes_cli.anon_auth import on_local_desktop_backend
+    from hermes_agent.hermes_cli.onboarding_run import should_run
 
     if not on_local_desktop_backend():
         return {"run": should_run(assume_fresh=assume_fresh), "eligible": False, **_active_run()}
@@ -43,8 +43,8 @@ def _run_state(*, assume_fresh: bool = False) -> dict:
 
 
 def _due_now(*, assume_fresh: bool = False) -> dict[str, bool]:
-    from hermes_cli.onboarding_run import should_run
-    from hermes_cli.welcome_trial import inference_available
+    from hermes_agent.hermes_cli.onboarding_run import should_run
+    from hermes_agent.hermes_cli.welcome_trial import inference_available
 
     # Read in the default profile, where onboarding runs, not the launch profile.
     home = _profile_home("default")
@@ -58,7 +58,7 @@ def _due_stamp() -> tuple:
     (``onboarding.run``), the default profile's config, ``.env`` and ``auth.json`` (what carries a
     first chat), the shared Nous store (another profile's sign-in or connector guest) and the managed
     layer's ``config.yaml`` and ``.env`` (an admin's onboarding or provider policy)."""
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
     from hermes_constants import get_default_hermes_root
     home = Path(_profile_home("default") or get_default_hermes_root())
     managed = managed_scope.get_managed_dir()
@@ -69,7 +69,7 @@ def _due_stamp() -> tuple:
 
 def _shared_nous_store() -> tuple[Path, ...]:
     """The shared Nous store as ``_read_shared_nous_state`` finds it: none when the test seat belt trips."""
-    from hermes_cli.auth_nous import _nous_shared_store_path
+    from hermes_agent.hermes_cli.auth_nous import _nous_shared_store_path
     try:
         return (_nous_shared_store_path(),)
     except RuntimeError:
@@ -88,7 +88,7 @@ def start_due_boot() -> None:
     """Work out the local Desktop's due answer off the RPC path, after the setup bootstrap has recorded
     a fresh install (``begin_local_desktop_boot``)."""
     from hermes_agent.agent.memory_provider import spawn_context_thread
-    from hermes_cli import free_tier_bootstrap, onboarding_due
+    from hermes_agent.hermes_cli import free_tier_bootstrap, onboarding_due
 
     finish = onboarding_due.begin_boot(_due_stamp)
 
@@ -111,8 +111,8 @@ def begin_local_desktop_boot() -> None:
     left unsettled."""
     global _local_desktop_boot_started
     from hermes_agent.agent.memory_provider import spawn_context_thread
-    from hermes_cli import free_tier_bootstrap
-    from hermes_cli.process_identity import serving_local_desktop
+    from hermes_agent.hermes_cli import free_tier_bootstrap
+    from hermes_agent.hermes_cli.process_identity import serving_local_desktop
     from hermes_agent.tui_gateway.launch_profile_policy import launch_profile_scope_if_multiplexed
 
     with _local_desktop_boot_lock:
@@ -152,9 +152,9 @@ def _claim_before_run(scope: dict, *, assume_fresh: bool):
     a refused claim (error 5079) leaves no guest and no chat, and the install still due. A blocked claim
     (another install took the trial since the due check) with no trial or provider to run on is error
     5080, with no chat either: the desktop lands on provider setup and sign-in, not a chat that fails."""
-    from hermes_cli import anon_auth
-    from hermes_cli.onboarding_run import set_run
-    from hermes_cli.welcome_trial import claim_desktop_free_tier, provider_configured
+    from hermes_agent.hermes_cli import anon_auth
+    from hermes_agent.hermes_cli.onboarding_run import set_run
+    from hermes_agent.hermes_cli.welcome_trial import claim_desktop_free_tier, provider_configured
     if not anon_auth.on_local_desktop_backend():  # hermes_agent/gateway/session_onboarding.py::_claim_before_run
         raise _NoModelForTheRun("First-run onboarding starts only in the Desktop app on this machine.")
     set_run(True)
@@ -171,8 +171,8 @@ def _(rid, params: dict) -> dict:
     from hermes_agent.agent.onboarding_flow import End, Facts
     from hermes_agent.agent.onboarding_record import advance, load, open_session_ids, start
     from hermes_agent.agent.onboarding_text import CHAT_TITLE, opening_prompt
-    from hermes_cli.auth_constants import AuthError
-    from hermes_cli import free_tier_bootstrap
+    from hermes_agent.hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli import free_tier_bootstrap
     # The app's once-per-launch start: closing the app mid-run does not count, so that run's chat goes
     # and the run starts over. A second window or a reconnect sends no flag and gets the run back.
     fresh_launch = bool(params.get("fresh_launch"))

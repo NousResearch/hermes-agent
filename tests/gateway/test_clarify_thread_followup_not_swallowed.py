@@ -112,7 +112,7 @@ async def _dispatch(runner, event):
     def _tripwire(_key):
         raise _FellThroughIntercept()
 
-    with patch("hermes_cli.plugins.invoke_hook", return_value=[]), \
+    with patch("hermes_agent.hermes_cli.plugins.invoke_hook", return_value=[]), \
             patch.object(slash_confirm_mod, "get_pending", _tripwire):
         return await runner._handle_message(event)
 

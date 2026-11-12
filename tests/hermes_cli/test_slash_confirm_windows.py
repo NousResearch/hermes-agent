@@ -36,7 +36,7 @@ import pytest
 
 def _make_cli():
     """Minimal HermesCLI shell exposing the prompt/modal helpers."""
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     obj = object.__new__(cli_mod.HermesCLI)
     obj._app = MagicMock()
@@ -184,7 +184,7 @@ class TestConfirmDestructiveSlash:
         """The bare /new confirm drives the modal (not stdin) and returns the
         chosen outcome — bug #33961 froze this path on native Windows."""
         cli = self._make_interactive_cli()
-        with patch("cli.load_cli_config", return_value={"approvals": {"destructive_slash_confirm": True}}):
+        with patch("hermes_agent.cli.load_cli_config", return_value={"approvals": {"destructive_slash_confirm": True}}):
             outcome = _run_on_daemon(
                 lambda: cli._confirm_destructive_slash(
                     "new",

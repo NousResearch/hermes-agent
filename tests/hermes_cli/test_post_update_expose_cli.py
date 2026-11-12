@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import _launchers, post_update
+from hermes_agent.hermes_cli import _launchers, post_update
 
 posix_only = pytest.mark.platforms("posix")
 
@@ -298,7 +298,7 @@ class TestExposeCli:
     @pytest.mark.parametrize("hermes", ["missing", "foreign"])
     def test_repair_only_preserves_missing_and_foreign_commands(self, fake_install, monkeypatch, hermes):
         home, root = fake_install
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda: pytest.fail("repair read config"))
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda: pytest.fail("repair read config"))
         wrapper_dir = home / ".local" / "bin"
         extra = home / "bin"
         assert _launchers.expose_cli(create=False) == {"ok": True, "written": []}
@@ -369,7 +369,7 @@ class TestExposeCli:
     @posix_only
     def test_config_gate_disables(self, fake_install, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "hermes_agent.hermes_cli.config.load_config",
             lambda: {"cli": {"expose_on_path": False}},
         )
         result = _launchers.expose_cli()
@@ -401,7 +401,7 @@ class TestExposeCli:
             (payload / "bin" / name).write_text("\x7fELF fake shim\n", encoding="utf-8")
         monkeypatch.setenv("HERMES_INSTALL_ROOT", str(payload / "repo"))
         if not create:
-            monkeypatch.setattr("hermes_cli.config.load_config", lambda: pytest.fail("repair read config"))
+            monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda: pytest.fail("repair read config"))
         result = _launchers.expose_cli(create=create)
         assert result == {"ok": True, "skipped": "bundle-owns-launchers"}
         assert not (fake_install[0] / ".local/bin").exists()
@@ -458,7 +458,7 @@ def test_direct_packaged_cli_exposes_shims_before_electron(tmp_path):
     }), encoding="utf-8")
     bin_dir = payload / "bin"
     bin_dir.mkdir()
-    code = f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r}); from hermes_cli.main import main; main()"
+    code = f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[2])!r}); from hermes_agent.hermes_cli.main import main; main()"
     for name in ("hermes", "hermes-agent", "hermes-acp"):
         shim = bin_dir / name
         shim.write_text(f'#!/bin/sh\nexec {shlex.join([sys.executable, "-I", "-c", code])} "$@"\n', encoding="utf-8")

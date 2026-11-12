@@ -8,7 +8,7 @@ from dataclasses import replace
 from hermes_agent.gateway.platforms.event import MessageEvent, ProcessingOutcome
 from hermes_agent.gateway.session_envelope import restore_native
 from hermes_agent.gateway.session_producer_lifecycle import close_producer_turn, producer_turn
-from hermes_cli.observability.shared_metrics_busy import (
+from hermes_agent.hermes_cli.observability.shared_metrics_busy import (
     busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
 

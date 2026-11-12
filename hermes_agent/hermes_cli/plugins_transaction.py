@@ -9,7 +9,7 @@ import shutil
 
 def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
     """Recover a shipped caller's row through the stdlib boot-journal owner."""
-    from hermes_cli.runtime_state import _recover_plugin_publication
+    from hermes_agent.hermes_cli.runtime_state import _recover_plugin_publication
 
     _recover_plugin_publication(project, row, journal)
 
@@ -27,7 +27,7 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
     from pm.store import tree_digest
 
     if require_consent and not assume_consent:
-        from hermes_cli import plugins_cmd
+        from hermes_agent.hermes_cli import plugins_cmd
         from pm.workspace import enabled_plugin_dirs
 
         if target.resolve() in enabled_plugin_dirs(installing=target):
@@ -37,7 +37,7 @@ def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata:
                 outcome = ("Reinstall declined: {}. The installed plugin and active environment are unchanged."
                            if target.exists() else "Install declined: {}. Nothing was installed.")
                 # The refusal carries its closed class (plugins_cmd_install._ConsentRefusal).
-                from hermes_cli.observability.shared_metrics_fields import tagged_failure_class
+                from hermes_agent.hermes_cli.observability.shared_metrics_fields import tagged_failure_class
 
                 raise plugins_cmd.PluginOperationError(
                     outcome.format(reason), failure_class=tagged_failure_class(reason) or "other")
@@ -59,8 +59,8 @@ def _refresh_declared_dependencies(target: Path, staged: Path, manifest: dict, *
     rebuilt in the staged copy when its package.json/lock moved (custom pulls copy a stale
     node_modules; catalog re-pins clone without one).
     """
-    from hermes_cli import plugins_cmd as pc
-    from hermes_cli.runtime_state import _bytes
+    from hermes_agent.hermes_cli import plugins_cmd as pc
+    from hermes_agent.hermes_cli.runtime_state import _bytes
     from pm.plugin_declarations import read_python_declaration
     from pm.workspace import enabled_plugin_dirs, install_node_sidecar
 
@@ -111,8 +111,8 @@ def update_plugin(
     refuse the candidate before it is scanned or published."""
     import tempfile
 
-    from hermes_cli import plugins_cmd as pc
-    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired, refuse_if_installed_removed
+    from hermes_agent.hermes_cli import plugins_cmd as pc
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import RepinConsentRequired, refuse_if_installed_removed
     from pm.store import tree_digest
 
     target = target.resolve()
@@ -125,8 +125,8 @@ def update_plugin(
         raise pc.PluginOperationError(f"Plugin '{target.name}' has no owned Git checkout; reinstall from its source.")
     feed_revision = None
     if catalog_entry is None:
-        from hermes_cli.plugins_provenance import Provenance, ProvenanceClass
-        from hermes_cli.plugins_updates import check_local_provenance, default_fetch, parse_feed_yml
+        from hermes_agent.hermes_cli.plugins_provenance import Provenance, ProvenanceClass
+        from hermes_agent.hermes_cli.plugins_updates import check_local_provenance, default_fetch, parse_feed_yml
 
         checked = check_local_provenance(Provenance(target.name, ProvenanceClass.GIT, target, record))
         if checked.needs_fixing:
@@ -164,7 +164,7 @@ def update_plugin(
                 )
                 record.pop("catalog_name", None)
                 record.pop("catalog_tier", None)
-                from hermes_cli.plugins_cmd_catalog import write_catalog_sidecar_record
+                from hermes_agent.hermes_cli.plugins_cmd_catalog import write_catalog_sidecar_record
                 write_catalog_sidecar_record(staged, catalog_record, revision)
             else:
                 # Copy Git metadata and local changes. Autostash only ever touches the copy.

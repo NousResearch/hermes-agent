@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.resource_limits import glibc_malloc
+from hermes_agent.hermes_cli.resource_limits import glibc_malloc
 
 _REPO = Path(__file__).resolve().parents[2]
 
@@ -52,7 +52,7 @@ _WORKERS = textwrap.dedent("""
         return xml.count("<heap nr=")
 """)
 
-# The real CLI entry point: importing hermes_cli.main runs its startup (profile, .env, config) for
+# The real CLI entry point: importing hermes_agent.hermes_cli.main runs its startup (profile, .env, config) for
 # the given argv; only then do worker threads start.
 _ENTRY_CHILD = _WORKERS + textwrap.dedent("""
     import json, sys

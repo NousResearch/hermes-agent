@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import worktree_ops
+from hermes_agent.hermes_cli import worktree_ops
 
 
 def _git(args, cwd):
@@ -87,7 +87,7 @@ def test_removed_dirty_tree_restores_byte_for_byte_and_archiving_never_touches_t
     """I1 + I4: HEAD, staged, unstaged (CRLF) and untracked bytes survive delete -> restore,
     even under eol rules from info/attributes and core.attributesFile (which ``--attr-source``
     does not replace); the archive step leaves the real index and every working file untouched."""
-    from hermes_cli.worktree_archive import restore_archive, snapshot_worktree
+    from hermes_agent.hermes_cli.worktree_archive import restore_archive, snapshot_worktree
 
     (repo / ".git" / "info").mkdir(exist_ok=True)
     (repo / ".git" / "info" / "attributes").write_text("*.md text eol=crlf\n", encoding="utf-8")
@@ -172,7 +172,7 @@ def test_a_tree_resumed_mid_sweep_is_never_removed(repo, monkeypatch, capsys):
     archived, an edit made while a tree's own snapshot ran, or an index-only edit (``git apply
     --cached``: no file, HEAD or reflog mtime moves) made right after capture keeps that tree, and
     the sweep reports it as archived-but-kept, not removed."""
-    from hermes_cli import worktree_archive, worktree_cmd, worktree_sweep
+    from hermes_agent.hermes_cli import worktree_archive, worktree_cmd, worktree_sweep
 
     first, second = _tree(repo, "lane-a", dirty=True), _tree(repo, "lane-b", dirty=True)
     staged = _tree(repo, "lane-staged", dirty=True)
@@ -213,8 +213,8 @@ def test_dirty_submodule_work_is_never_archived_away(repo, tmp_path, monkeypatch
     submodule; a deinitialized one whose retained module repository holds an unpushed private
     commit; and one whose submodule file is edited right after the snapshot step. The shared
     snapshot entry point (exit-time Archive, subagent finalization) refuses them too."""
-    from hermes_cli import worktree_archive, worktree_sweep
-    from hermes_cli.worktree_archive import ArchiveError, snapshot_worktree
+    from hermes_agent.hermes_cli import worktree_archive, worktree_sweep
+    from hermes_agent.hermes_cli.worktree_archive import ArchiveError, snapshot_worktree
 
     sub_origin, sub_work = tmp_path / "sub.git", tmp_path / "subwork"
     _git(["init", "-q", "--bare", "-b", "main", str(sub_origin)], tmp_path)
@@ -375,7 +375,7 @@ def test_prune_older_than_bounds_what_the_sweep_removes(repo, capsys):
     """`hermes worktree prune --older-than N` never archives or removes a tree idle < N days."""
     import argparse
 
-    from hermes_cli.worktree_cmd import cmd_worktree
+    from hermes_agent.hermes_cli.worktree_cmd import cmd_worktree
 
     dirty, clean = _tree(repo, "hermes-dirty", dirty=True), _tree(repo, "hermes-clean")
     for tree in (dirty, clean):
@@ -417,7 +417,7 @@ def test_cron_sweep_visits_only_the_active_profiles_registered_repos(repo, tmp_p
         gone = tmp_path / "gone"
         _git(["init", "-q", str(gone)], tmp_path)
         (gone / ".worktrees").mkdir()
-        from hermes_cli.worktree_registry import record_worktree_repo
+        from hermes_agent.hermes_cli.worktree_registry import record_worktree_repo
         record_worktree_repo(gone)
         import shutil
         shutil.rmtree(gone)
@@ -436,7 +436,7 @@ def test_cron_sweep_visits_only_the_active_profiles_registered_repos(repo, tmp_p
 
 def test_exit_question_never_prompts_without_a_tty(repo, monkeypatch):
     """I5: a dirty tree at a non-interactive exit is kept without any prompt."""
-    from hermes_cli import curses_ui, worktree_exit
+    from hermes_agent.hermes_cli import curses_ui, worktree_exit
 
     wt = _tree(repo, "hermes-exit", dirty=True)
     monkeypatch.setattr(curses_ui, "curses_radiolist",

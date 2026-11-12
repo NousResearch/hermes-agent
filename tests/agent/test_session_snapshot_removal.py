@@ -32,7 +32,7 @@ def test_persistence_never_snapshots_but_explicit_save_works(tmp_path, monkeypat
         agent._persist_session(messages)
         assert len(db.get_messages_as_conversation(agent.session_id)) == 2
         assert not list(agent.logs_dir.glob("session_*.json"))
-        from hermes_cli.cli_session_mixin import CLISessionMixin
+        from hermes_agent.hermes_cli.cli_session_mixin import CLISessionMixin
         cli = SimpleNamespace(_session_db=db, session_id=agent.session_id)
         output = tmp_path / "explicit.json"
         CLISessionMixin.save_conversation(cli, f"/save json {output}")

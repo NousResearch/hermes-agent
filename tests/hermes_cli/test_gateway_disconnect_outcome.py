@@ -7,7 +7,7 @@ import json
 import pytest
 from websockets.exceptions import ConnectionClosedError
 
-from hermes_cli.gateway_client import GatewayClient, GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClient, GatewayClientError
 
 
 @pytest.mark.asyncio
@@ -34,7 +34,7 @@ async def test_idle_composer_exits_with_unknown_outcome_when_owner_dies_without_
     unknown-outcome hint; the pending line read is cancelled rather than awaited forever."""
     from websockets.asyncio.server import serve
 
-    from hermes_cli import gateway_chat
+    from hermes_agent.hermes_cli import gateway_chat
 
     snapshot = {"stored_session_id": "stored", "execution_generation": 1, "pending": []}
     attached = asyncio.Event()

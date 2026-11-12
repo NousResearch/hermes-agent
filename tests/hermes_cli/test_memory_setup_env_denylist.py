@@ -1,6 +1,6 @@
 """Tests for the env-write denylist on the memory-setup ``.env`` writer.
 
-``hermes_cli.memory_setup._write_env_vars`` persists provider plugin
+``hermes_agent.hermes_cli.memory_setup._write_env_vars`` persists provider plugin
 credentials to ``~/.hermes/.env``. It previously called ``Path.write_text``
 directly, bypassing the ``_ENV_VAR_NAME_DENYLIST`` / ``_ENV_VAR_NAME_RE`` /
 CR-LF-stripping gates that ``save_env_value`` enforces for every other
@@ -21,8 +21,8 @@ import os
 
 import pytest
 
-from hermes_cli.config import ensure_hermes_home, get_env_path, load_env
-from hermes_cli.memory_setup import _write_env_vars
+from hermes_agent.hermes_cli.config import ensure_hermes_home, get_env_path, load_env
+from hermes_agent.hermes_cli.memory_setup import _write_env_vars
 
 
 def _env_file_keys() -> set[str]:

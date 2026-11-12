@@ -33,7 +33,7 @@ def test_live_catalog_drops_capability_typed_and_name_shaped_generation_models()
         {"id": "unknown-kind", "capabilities": {"type": "future-kind"}},
     ]
 
-    with patch("hermes_cli.urllib_security.open_credentialed_url", return_value=_models_response(items)):
+    with patch("hermes_agent.hermes_cli.urllib_security.open_credentialed_url", return_value=_models_response(items)):
         assert profile.fetch_models(api_key="test-key") == [
             "qwen3.7-plus",
             "qwen-vl-max",
@@ -45,7 +45,7 @@ def test_live_catalog_drops_capability_typed_and_name_shaped_generation_models()
 
 def test_shared_chat_catalog_drops_cached_generation_ids():
     """A warm picker cache is the list model.options serves. Generation ids must not survive it."""
-    from hermes_cli.models import cached_provider_model_ids
+    from hermes_agent.hermes_cli.models import cached_provider_model_ids
 
     entry = {
         "fp": "fp",
@@ -53,15 +53,15 @@ def test_shared_chat_catalog_drops_cached_generation_ids():
         "models": ["qwen3.7-plus", "wan2.7-image-pro", "acme/text-to-video", "qwen-vl-max"],
     }
     with (
-        patch("hermes_cli.models._credential_fingerprint", return_value="fp"),
-        patch("hermes_cli.models._load_provider_models_cache", return_value={"alibaba-token-plan": entry}),
-        patch("hermes_cli.models._spawn_swr_refresh"),
+        patch("hermes_agent.hermes_cli.models._credential_fingerprint", return_value="fp"),
+        patch("hermes_agent.hermes_cli.models._load_provider_models_cache", return_value={"alibaba-token-plan": entry}),
+        patch("hermes_agent.hermes_cli.models._spawn_swr_refresh"),
     ):
         assert cached_provider_model_ids("alibaba-token-plan") == ["qwen3.7-plus", "qwen-vl-max"]
 
 
 def test_direct_switch_rejects_a_generation_model_and_keeps_a_vision_chat_model():
-    from hermes_cli.model_switch import _Switch, _validate_switch
+    from hermes_agent.hermes_cli.model_switch import _Switch, _validate_switch
 
     accepted = {"accepted": True, "persist": True, "recognized": True, "message": ""}
 
@@ -81,7 +81,7 @@ def test_direct_switch_rejects_a_generation_model_and_keeps_a_vision_chat_model(
             provider_label="Alibaba Cloud (Token Plan)",
         )
 
-    with patch("hermes_cli.models_validate.validate_requested_model", return_value=accepted):
+    with patch("hermes_agent.hermes_cli.models_validate.validate_requested_model", return_value=accepted):
         rejected = _validate_switch(_state("vendor/image-pro"))
         kept = _validate_switch(_state("qwen-vl-max"))
 
@@ -92,11 +92,11 @@ def test_direct_switch_rejects_a_generation_model_and_keeps_a_vision_chat_model(
 
 def test_capability_typed_id_is_rejected_once_the_catalog_has_seen_it():
     """An innocuous id is still non-chat when the catalog item says so."""
-    from hermes_cli.model_switch import _Switch, _validate_switch
+    from hermes_agent.hermes_cli.model_switch import _Switch, _validate_switch
 
     profile = ProviderProfile(name="example", base_url="https://catalog.example.test/v1")
     with patch(
-        "hermes_cli.urllib_security.open_credentialed_url",
+        "hermes_agent.hermes_cli.urllib_security.open_credentialed_url",
         return_value=_models_response([{"id": "gen-1", "capabilities": {"type": "image"}}]),
     ):
         assert profile.fetch_models(api_key="test-key") == []
@@ -116,7 +116,7 @@ def test_capability_typed_id_is_rejected_once_the_catalog_has_seen_it():
         provider_label="Example",
     )
     accepted = {"accepted": True, "persist": True, "recognized": True, "message": ""}
-    with patch("hermes_cli.models_validate.validate_requested_model", return_value=accepted):
+    with patch("hermes_agent.hermes_cli.models_validate.validate_requested_model", return_value=accepted):
         rejected = _validate_switch(state)
 
     assert rejected is not None and rejected.success is False

@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from hermes_cli.plugin_install_phase import InstallPhase
+from hermes_agent.hermes_cli.plugin_install_phase import InstallPhase
 from hermes_constants import get_hermes_home, profile_name_for_home
 from hermes_agent.tools.connectors.contract import Actor, SettleReason, TargetState
 from hermes_agent.tools.connectors.mcp import _fail, _move
@@ -79,26 +79,26 @@ class HostInstaller:
     installer."""
 
     def plugin_entry(self, name: str) -> Any:
-        from hermes_cli.plugin_catalog import get_live_catalog_entry
+        from hermes_agent.hermes_cli.plugin_catalog import get_live_catalog_entry
 
         return get_live_catalog_entry(name)
 
     def refuse(self, entry: Any) -> None:
         """Raise with the installer's own text when the catalog would refuse this entry here."""
-        from hermes_cli.plugins_cmd_catalog import raise_if_removed, refuse_incompatible_catalog_entry
+        from hermes_agent.hermes_cli.plugins_cmd_catalog import raise_if_removed, refuse_incompatible_catalog_entry
 
         raise_if_removed(entry.name, entry.repo)
         refuse_incompatible_catalog_entry(entry)
 
     def install_plugin(self, name: str, *, force: bool, enable: bool, ref: Optional[str],
                        on_step: Callable[[InstallPhase], None]) -> dict[str, Any]:
-        from hermes_cli.plugins_cmd import dashboard_install_plugin
+        from hermes_agent.hermes_cli.plugins_cmd import dashboard_install_plugin
 
         return dashboard_install_plugin("", force=force, enable=enable, catalog_name=name, ref=ref, on_step=on_step)
 
     def skill_meta(self, identifier: str) -> Optional[dict[str, Any]]:
         """The first hub source that knows the identifier; metadata only, no bundle download."""
-        from hermes_cli.skills_hub import _sources
+        from hermes_agent.hermes_cli.skills_hub import _sources
         from hermes_agent.tools.skills_hub import skills_hub_http_session
 
         with skills_hub_http_session():
@@ -120,7 +120,7 @@ class HostInstaller:
         hit's bare slug is read back through its ``clawhub/<slug>`` card id."""
         from rich.console import Console
 
-        from hermes_cli.skills_hub import do_install
+        from hermes_agent.hermes_cli.skills_hub import do_install
         from hermes_agent.tools.skills_hub import HubLockFile, installed_entry
 
         def entry() -> Optional[dict[str, Any]]:
@@ -311,7 +311,7 @@ def target_declared_env(fact: Any) -> list[str]:
 
 
 def _plugin_row(entry: Any, label: Optional[str]) -> dict[str, Any]:
-    from hermes_cli.plugin_catalog_presence import presence
+    from hermes_agent.hermes_cli.plugin_catalog_presence import presence
 
     row: dict[str, Any] = {
         "display": getattr(entry, "title", "") or _display(entry.name),
@@ -358,7 +358,7 @@ def _installed_row(target: Target, outcome: dict[str, Any]) -> tuple:
 
 
 def _save_credentials(env: dict[str, str]) -> None:
-    from hermes_cli.config import save_env_value, validate_env_var_name_for_write
+    from hermes_agent.hermes_cli.config import save_env_value, validate_env_var_name_for_write
 
     for key, value in env.items():
         validate_env_var_name_for_write(key)

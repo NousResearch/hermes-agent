@@ -48,7 +48,7 @@ async def test_a_phone_apps_own_label_resumes_writable_and_a_webui_row_stays_rea
     # hermes-mobile installed registers Platform('mobile'): a routeless row with that label still adopts.
     from hermes_agent.gateway.config import Platform
     Platform._add_pseudo_member('mobile')
-    from hermes_cli.sessions_adopt import adoptable_sessions
+    from hermes_agent.hermes_cli.sessions_adopt import adoptable_sessions
     offered = {row['id'] for row in adoptable_sessions(db.db_path)}
     assert {'phone-mobile', 'phone-ios'} <= offered and not offered & {'webui-row', 'teams-row', 'curator-row'}
     for i, sid in enumerate(('phone-mobile', 'phone-ios')):

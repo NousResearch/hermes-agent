@@ -1,7 +1,7 @@
 """Shared device-code / loopback-PKCE / browser / TLS helpers for interactive OAuth logins.
 
-Split out of ``hermes_cli/auth.py`` and re-exported there; origin helpers are imported lazily
-inside each function so ``hermes_cli.auth.<name>`` patches still intercept (and no import cycle).
+Split out of ``hermes_agent/hermes_cli/auth.py`` and re-exported there; origin helpers are imported lazily
+inside each function so ``hermes_agent.hermes_cli.auth.<name>`` patches still intercept (and no import cycle).
 """
 
 from __future__ import annotations
@@ -19,14 +19,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Optional
 from urllib.parse import parse_qs, urlparse
-from hermes_cli.auth_constants import (
+from hermes_agent.hermes_cli.auth_constants import (
     AuthError, DEFAULT_NOUS_PORTAL_URL, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS,
     DEVICE_CODE_GRANT_TYPE, OAUTH_OVER_SSH_DOCS_URL, httpx)
-from hermes_cli.auth_error_copy import DeviceCodeExpired
+from hermes_agent.hermes_cli.auth_error_copy import DeviceCodeExpired
 from utils import is_truthy_value
 
-# Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
-logger = logging.getLogger("hermes_cli.auth")
+# Log-record parity with the origin module (caplog tests pin "hermes_agent.hermes_cli.auth").
+logger = logging.getLogger("hermes_agent.hermes_cli.auth")
 
 # Console/text-mode browsers that ``webbrowser`` will launch INSIDE the terminal, hijacking the
 # user's TTY with an unusable text browser. When the resolved browser is one of these we refuse
@@ -189,7 +189,7 @@ def _print_loopback_ssh_hint(redirect_uri: str, *, docs_url: str | None = None) 
     The auth server redirects the browser to ``127.0.0.1:<port>/callback``; when the browser is
     on another machine (the SSH case) the redirect needs a local port forward to reach us.
     """
-    from hermes_cli.auth import _is_remote_session
+    from hermes_agent.hermes_cli.auth import _is_remote_session
     if not _is_remote_session():
         return
     try:
@@ -235,7 +235,7 @@ def _default_verify() -> bool | ssl.SSLContext:
 def _resolve_verify(
     *, insecure: Optional[bool] = None, ca_bundle: Optional[str] = None,
     auth_state: Optional[dict[str, Any]] = None) -> bool | ssl.SSLContext:
-    from hermes_cli.auth import _default_verify
+    from hermes_agent.hermes_cli.auth import _default_verify
     tls_state = auth_state.get("tls") if isinstance(auth_state, dict) else {}
     tls_state = tls_state if isinstance(tls_state, dict) else {}
     effective_insecure = (
@@ -406,7 +406,7 @@ def _poll_for_token(
 
     def _error(_response, error_payload) -> Exception:
         # Plain copy per OAuth error code; the raw ``code: description`` stays on a Details line.
-        from hermes_cli.auth_error_copy import device_flow_error
+        from hermes_agent.hermes_cli.auth_error_copy import device_flow_error
         return device_flow_error(
             str(error_payload.get("error", "") or ""),
             str(error_payload.get("error_description") or "Unknown authentication error"))
@@ -456,7 +456,7 @@ def _offer_existing_oauth_credentials(
     *resolve* attempts a refresh, so a resolved token should be valid — but double-check the
     expiry before telling the user "Login successful!".
     """
-    from hermes_cli.auth import _update_config_for_provider
+    from hermes_agent.hermes_cli.auth import _update_config_for_provider
     try:
         existing = resolve()
         api_key = existing.get("api_key", "")

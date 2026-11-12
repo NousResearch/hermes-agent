@@ -3,7 +3,7 @@
 A loop stops when the agent ends a wakeup reply with ``LOOP_COMPLETE`` on its own line, when
 ``--times N`` ticks have fired, when the ``--until`` judge rules the condition met, or when the
 ``loops.max_ticks`` backstop pauses it. State lives in SessionDB ``state_meta`` (same contract as
-``hermes_cli/goals.py``); CLI, gateway, and TUI all drive it through :class:`LoopManager`.
+``hermes_agent/hermes_cli/goals.py``); CLI, gateway, and TUI all drive it through :class:`LoopManager`.
 """
 
 from __future__ import annotations
@@ -139,7 +139,7 @@ def format_interval(seconds: float) -> str:
 
 def _loops_config() -> dict[str, Any]:
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         section = (load_config() or {}).get("loops") or {}
         return section if isinstance(section, dict) else {}
@@ -248,7 +248,7 @@ def _get_session_db() -> Optional[Any]:
     write (the /goal bug class, #88965).
     """
     try:
-        from hermes_cli.goals import _get_session_db as _goals_db
+        from hermes_agent.hermes_cli.goals import _get_session_db as _goals_db
     except Exception as exc:  # pragma: no cover
         logger.debug("LoopManager: SessionDB bootstrap failed (%s)", exc)
         return None
@@ -289,7 +289,7 @@ def save_loop(session_id: str, state: LoopState) -> None:
         return
     db = _get_session_db()
     if db is None:
-        from hermes_cli.goals import _warn_dropped_write
+        from hermes_agent.hermes_cli.goals import _warn_dropped_write
 
         _warn_dropped_write("LoopManager", "loop", session_id)
         return
@@ -567,7 +567,7 @@ class LoopManager:
         # 2. Evidence-based --until judge (reuses the /goal judge; fail-open).
         if s.until and (last_response or "").strip():
             try:
-                from hermes_cli.goals import judge_goal
+                from hermes_agent.hermes_cli.goals import judge_goal
 
                 verdict, reason, _pf, _wait, _tf = judge_goal(s.until, last_response)
             except Exception as exc:
@@ -617,7 +617,7 @@ def goal_blocks_loop_tick(session_id: str) -> bool:
     goal's turn budget. Parked (waiting), paused, or done goals do NOT block the loop.
     """
     try:
-        from hermes_cli.goals import GoalManager
+        from hermes_agent.hermes_cli.goals import GoalManager
 
         mgr = GoalManager(session_id=session_id)
         return mgr.is_active() and not mgr.is_waiting()

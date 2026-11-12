@@ -191,7 +191,7 @@ class TestRoutedForeignHomeScope:
         ``bind_home=False`` — no home override, because the passthrough POLICY
         belongs to the dispatcher. The profile_home stamp must still make scoped
         misses fail closed, or the dispatcher's env leaks into B's worker env."""
-        from hermes_cli.kanban_db_dispatch import _worker_profile_scope
+        from hermes_agent.hermes_cli.kanban_db_dispatch import _worker_profile_scope
 
         foreign = tmp_path / "profiles" / "assignee"
         foreign.mkdir(parents=True)
@@ -227,7 +227,7 @@ class TestScopeSetupRecovery:
         assert ss.current_secret_scope() is None
 
     def test_worker_profile_scope_setup_failure_restores_override(self, monkeypatch, tmp_path):
-        from hermes_cli.kanban_db_dispatch import _worker_profile_scope
+        from hermes_agent.hermes_cli.kanban_db_dispatch import _worker_profile_scope
         from hermes_constants import get_hermes_home_override
 
         foreign = tmp_path / "profiles" / "assignee"
@@ -293,7 +293,7 @@ class TestEnvFileParsing:
         '\"' or '\\' worked interactively but were corrupted under scoped
         (cron / multiplex) resolution.
         """
-        from hermes_cli.config import _quote_env_value
+        from hermes_agent.hermes_cli.config import _quote_env_value
 
         original = 'tok"en\\with spaces'
         (tmp_path / ".env").write_text(f"MY_TOKEN={_quote_env_value(original)}\n")
@@ -346,7 +346,7 @@ class TestEnvFileParsing:
     def test_round_trip_writer_value_with_trailing_comment(self, tmp_path):
         """A value quoted by the save_env_value writer survives an appended
         inline comment byte-exactly."""
-        from hermes_cli.config import _quote_env_value
+        from hermes_agent.hermes_cli.config import _quote_env_value
 
         original = 'we#ird "tok\\en" # not a comment'
         quoted = _quote_env_value(original)
@@ -393,7 +393,7 @@ class TestEnvFileParsing:
         self, tmp_path, monkeypatch
     ):
         (tmp_path / ".env").write_text("XIAOMI_API_KEY=placeholder\n")
-        from hermes_cli import env_loader
+        from hermes_agent.hermes_cli import env_loader
 
         home_key = str(tmp_path.resolve())
         monkeypatch.setitem(
@@ -413,7 +413,7 @@ class TestEnvFileParsing:
         other = tmp_path / "other"
         profile.mkdir()
         other.mkdir()
-        from hermes_cli import env_loader
+        from hermes_agent.hermes_cli import env_loader
 
         monkeypatch.setitem(
             env_loader._SECRET_SOURCE_VALUES_BY_HOME,

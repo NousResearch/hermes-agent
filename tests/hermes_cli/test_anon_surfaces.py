@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import (
+from hermes_agent.hermes_cli import (
     anon_auth,
     auth_commands,
     guest_handoff,
@@ -27,7 +27,7 @@ from hermes_cli import (
     portal_cli,
     status_auth,
 )
-from hermes_cli.auth import _load_auth_store
+from hermes_agent.hermes_cli.auth import _load_auth_store
 from hermes_constants import get_hermes_home
 from tests.hermes_cli.anon_portal import as_local_desktop_backend, off_local_desktop
 
@@ -79,7 +79,7 @@ def isolated_store(monkeypatch, tmp_path):
     monkeypatch.setattr(nous_account, "_fetch_nous_account_info",
                         lambda *a, **k: pytest.fail("portal fetch must not happen on a read-only surface"))
     nous_account.reset_nous_portal_account_info_cache()
-    import hermes_cli.auth as auth_mod
+    import hermes_agent.hermes_cli.auth as auth_mod
     auth_mod.invalidate_nous_auth_status_cache()
     yield
     nous_account.reset_nous_portal_account_info_cache()
@@ -166,7 +166,7 @@ def test_keepalive_does_not_start_for_free_tier(isolated_store, monkeypatch):
             pass
     monkeypatch.setattr(nous_auth_keepalive.threading, "Thread", _Thread)
     monkeypatch.setattr(nous_auth_keepalive, "_keepalive_thread", None)
-    from hermes_cli import guest_handoff
+    from hermes_agent.hermes_cli import guest_handoff
     monkeypatch.setattr(guest_handoff, "_worker_thread", None)
 
     _write_auth(_guest_state())

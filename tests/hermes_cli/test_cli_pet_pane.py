@@ -14,7 +14,7 @@ import pytest
 from hermes_agent.agent.pet import store
 from hermes_agent.agent.pet.constants import FRAME_H, FRAME_W
 from hermes_agent.agent.pet.render import PetRenderer
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 @pytest.fixture
@@ -118,7 +118,7 @@ def test_pet_fragments_render_half_blocks(boba_like):
 
 
 def test_pet_resolve_config_enables_and_disables(boba_like):
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     cli_obj = _make_cli()
 
@@ -185,7 +185,7 @@ def test_pet_fragments_render_kitty_placeholders(boba_like):
 
 
 def test_pet_off_clears_pending_kitty_frame(boba_like):
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     cli_obj = _make_cli()
     cli_obj._pet_kitty_pending = "stale-apc"
@@ -203,7 +203,7 @@ def test_pet_off_clears_pending_kitty_frame(boba_like):
 
 
 def test_pet_resolve_wezterm_stays_unicode(boba_like, monkeypatch):
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     monkeypatch.delenv("KITTY_WINDOW_ID", raising=False)
     monkeypatch.setenv("TERM", "xterm-256color")
@@ -222,7 +222,7 @@ def test_pet_resolve_wezterm_stays_unicode(boba_like, monkeypatch):
 
 
 def test_pet_resolve_ghostty_uses_kitty(boba_like, monkeypatch):
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     monkeypatch.delenv("WEZTERM_PANE", raising=False)
     monkeypatch.delenv("KITTY_WINDOW_ID", raising=False)
@@ -259,7 +259,7 @@ def test_force_full_redraw_requeues_kitty_frame(boba_like, monkeypatch):
             self.invalidated = True
 
     cli_obj._app = App()
-    monkeypatch.setattr("cli._replay_output_history", lambda *_: None)
+    monkeypatch.setattr("hermes_agent.cli._replay_output_history", lambda *_: None)
 
     cli_obj._force_full_redraw()
 

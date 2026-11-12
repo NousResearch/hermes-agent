@@ -74,7 +74,7 @@ def _served_profile_scope(target_profile: str):
     for ``target_profile``, so its config and credentials must be read there, never from the
     launch profile's env or whatever home happens to be active (#116900)."""
     from contextlib import nullcontext
-    from hermes_cli.profiles import get_profile_dir, normalize_profile_name, profile_exists, profile_matches_home
+    from hermes_agent.hermes_cli.profiles import get_profile_dir, normalize_profile_name, profile_exists, profile_matches_home
     # "default" is the launch home (a `-p x` multiplexer hosts it too), never a switch to ~/.hermes.
     if normalize_profile_name(target_profile) == "default" or profile_matches_home(target_profile):
         return nullcontext()
@@ -94,8 +94,8 @@ def execution_policy_mapping(*, target_profile: str, config: Mapping[str, Any] |
             return execution_policy_mapping(target_profile=target_profile, config=config)
     if not isinstance(config, Mapping):
         raise RoomExecutionPolicyError("gateway config is invalid")
-    from hermes_cli.config import resolve_turn_limit
-    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_agent.hermes_cli.config import resolve_turn_limit
+    from hermes_agent.hermes_cli.tools_config import _get_platform_tools
     from hermes_agent.tools.approval import _YOLO_MODE_FROZEN
     from hermes_agent.tools.approval_context import _normalize_approval_mode
     toolsets = sorted({*_get_platform_tools(dict(config), "api_server"), "bot_room"})

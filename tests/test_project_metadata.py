@@ -185,7 +185,7 @@ def test_extras_pin_each_package_at_one_version():
 
 
 def test_dingtalk_extra_includes_qrcode_for_qr_auth():
-    """DingTalk's QR-code device-flow auth (hermes_cli/dingtalk_auth.py)
+    """DingTalk's QR-code device-flow auth (hermes_agent/hermes_cli/dingtalk_auth.py)
     needs the qrcode package."""
     optional_dependencies = _load_optional_dependencies()
 

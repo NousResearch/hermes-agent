@@ -614,7 +614,7 @@ SSH 连接详情保存在 `.env`（而非 `config.yaml`）中，以避免随 pro
 
 ## 供应链安全公告检查
 
-Hermes 内置了一个公告扫描器，用于标记活跃 venv 中与已知受损版本目录匹配的 Python 包（例如 2026 年 5 月的 `mistralai 2.4.6` 供应链投毒事件）。实现位于 `hermes_cli/security_advisories.py`。
+Hermes 内置了一个公告扫描器，用于标记活跃 venv 中与已知受损版本目录匹配的 Python 包（例如 2026 年 5 月的 `mistralai 2.4.6` 供应链投毒事件）。实现位于 `hermes_agent/hermes_cli/security_advisories.py`。
 
 运行方式：
 

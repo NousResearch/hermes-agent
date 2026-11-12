@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from hermes_cli.auth import (
+from hermes_agent.hermes_cli.auth import (
     PROVIDER_REGISTRY,
     resolve_provider,
     get_api_key_provider_status,
@@ -41,7 +41,7 @@ class TestArceeAliases:
         assert resolve_provider(alias) == "arcee"
 
     def test_normalize_provider_models_py(self):
-        from hermes_cli.models import normalize_provider
+        from hermes_agent.hermes_cli.models import normalize_provider
         assert normalize_provider("arcee-ai") == "arcee"
         assert normalize_provider("arceeai") == "arcee"
 
@@ -87,7 +87,7 @@ class TestArceeNormalization:
 
 
     def test_bare_name_unchanged(self):
-        from hermes_cli.model_normalize import normalize_model_for_provider
+        from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider
         assert normalize_model_for_provider("trinity-mini", "arcee") == "trinity-mini"
 
 

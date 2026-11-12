@@ -1,4 +1,4 @@
-"""Tests for ``hermes_cli.diagnostics_upload`` — the Nous-S3 upload client.
+"""Tests for ``hermes_agent.hermes_cli.diagnostics_upload`` — the Nous-S3 upload client.
 
 All network I/O is mocked at ``urllib.request.urlopen``; no real requests
 are made.
@@ -29,7 +29,7 @@ def _resp(*, status=200, body=b""):
 
 class TestRequestUploadUrl:
     def test_happy_path_posts_json_and_returns_dict(self):
-        from hermes_cli.diagnostics_upload import request_upload_url
+        from hermes_agent.hermes_cli.diagnostics_upload import request_upload_url
 
         payload = {
             "success": True,
@@ -41,7 +41,7 @@ class TestRequestUploadUrl:
         resp = _resp(status=200, body=json.dumps(payload).encode())
 
         with patch(
-            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
+            "hermes_agent.hermes_cli.diagnostics_upload.urllib.request.urlopen",
             return_value=resp,
         ) as urlopen:
             result = request_upload_url(content_type="application/gzip", size_bytes=512)
@@ -59,11 +59,11 @@ class TestRequestUploadUrl:
         assert req.headers["Content-type"] == "application/json"
 
     def test_non_2xx_raises(self):
-        from hermes_cli.diagnostics_upload import request_upload_url
+        from hermes_agent.hermes_cli.diagnostics_upload import request_upload_url
 
         resp = _resp(status=500, body=b"boom")
         with patch(
-            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
+            "hermes_agent.hermes_cli.diagnostics_upload.urllib.request.urlopen",
             return_value=resp,
         ):
             with pytest.raises(RuntimeError):
@@ -76,7 +76,7 @@ class TestRequestUploadUrl:
         import importlib
 
         monkeypatch.setenv("HERMES_DIAGNOSTICS_BASE_URL", "https://staging.example.com")
-        import hermes_cli.diagnostics_upload as mod
+        import hermes_agent.hermes_cli.diagnostics_upload as mod
 
         mod = importlib.reload(mod)
         try:
@@ -86,7 +86,7 @@ class TestRequestUploadUrl:
                 body=json.dumps({"uploadUrl": "u", "id": "i", "viewUrl": "v"}).encode(),
             )
             with patch(
-                "hermes_cli.diagnostics_upload.urllib.request.urlopen",
+                "hermes_agent.hermes_cli.diagnostics_upload.urllib.request.urlopen",
                 return_value=resp,
             ) as urlopen:
                 mod.request_upload_url()
@@ -103,13 +103,13 @@ class TestRequestUploadUrl:
 
 class TestPutBundle:
     def test_put_sends_exact_body_and_content_type(self):
-        from hermes_cli.diagnostics_upload import put_bundle
+        from hermes_agent.hermes_cli.diagnostics_upload import put_bundle
 
         data = b"\x1f\x8b\x08gzipped-bytes"
         resp = _resp(status=200, body=b"")
 
         with patch(
-            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
+            "hermes_agent.hermes_cli.diagnostics_upload.urllib.request.urlopen",
             return_value=resp,
         ) as urlopen:
             put_bundle("https://bucket.s3.amazonaws.com/uploads/x.json.gz?sig", data)
@@ -123,11 +123,11 @@ class TestPutBundle:
 
 
     def test_http_error_propagates(self):
-        from hermes_cli.diagnostics_upload import put_bundle
+        from hermes_agent.hermes_cli.diagnostics_upload import put_bundle
 
         err = urllib.error.HTTPError("https://u", 500, "err", {}, io.BytesIO(b""))
         with patch(
-            "hermes_cli.diagnostics_upload.urllib.request.urlopen",
+            "hermes_agent.hermes_cli.diagnostics_upload.urllib.request.urlopen",
             side_effect=err,
         ):
             with pytest.raises(urllib.error.HTTPError):
@@ -140,7 +140,7 @@ class TestPutBundle:
 
 class TestShareToNous:
     def test_orchestrates_request_then_put(self):
-        from hermes_cli import diagnostics_upload as mod
+        from hermes_agent.hermes_cli import diagnostics_upload as mod
 
         info = {
             "id": "id-9",
@@ -164,7 +164,7 @@ class TestShareToNous:
         )
 
     def test_put_failure_propagates(self):
-        from hermes_cli import diagnostics_upload as mod
+        from hermes_agent.hermes_cli import diagnostics_upload as mod
 
         info = {"id": "id-9", "uploadUrl": "https://u", "viewUrl": "v"}
         with patch.object(mod, "request_upload_url", return_value=info), \
@@ -173,7 +173,7 @@ class TestShareToNous:
                 mod.share_to_nous(b"data")
 
     def test_share_succeeds_without_id_in_response(self):
-        from hermes_cli import diagnostics_upload as mod
+        from hermes_agent.hermes_cli import diagnostics_upload as mod
 
         # NAS is stateless and there is no confirm step, so the share must
         # succeed regardless of whether the response carries an ``id``.

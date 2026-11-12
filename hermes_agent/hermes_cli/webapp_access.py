@@ -66,7 +66,7 @@ def _public_url(raw: Optional[str]) -> str:
 
 def gateway_home() -> Path:
     """The home whose gateway serves the current one; its config holds the Webapp's settings."""
-    from hermes_cli.webapp_launcher import _gateway_home
+    from hermes_agent.hermes_cli.webapp_launcher import _gateway_home
     from hermes_constants import get_hermes_home
 
     return _gateway_home(get_hermes_home())
@@ -75,7 +75,7 @@ def gateway_home() -> Path:
 def nous_signed_in() -> bool:
     """Whether this home holds a Nous account to register sign-in under (a free-tier guest has none).
     Refresh-free: it reads the auth store and never spends a refresh token."""
-    from hermes_cli.auth_nous import get_nous_auth_status_local
+    from hermes_agent.hermes_cli.auth_nous import get_nous_auth_status_local
 
     status = get_nous_auth_status_local()
     return bool(status.get("logged_in") and not status.get("free_tier"))
@@ -124,8 +124,8 @@ def _register_nous_sign_in(callback_url: str) -> None:
     dashboard's client id and writes nothing to ``.env``: the Portal may replace a client's redirect
     URI on every registration. The same callback for the same client and Portal is never posted
     twice, so a start with nothing changed asks the Portal nothing."""
-    from hermes_cli.auth import resolve_nous_access_token
-    from hermes_cli.dashboard_register import (
+    from hermes_agent.hermes_cli.auth import resolve_nous_access_token
+    from hermes_agent.hermes_cli.dashboard_register import (
         _generate_dashboard_name,
         _register_self_hosted_client,
         _resolve_portal_base_url,
@@ -203,7 +203,7 @@ def _port_to_serve(home: Path, host: str) -> tuple[int, Optional[int]]:
     this keeps the port, which is that profile's from then on, as one a finished Start writes. *home* is
     the home in scope, whose config :func:`save_config` writes (Start runs in its gateway's scope)."""
     from hermes_agent.gateway.webapp_listener import DEFAULT_PORT, webapp_settings
-    from hermes_cli.auth import _file_lock
+    from hermes_agent.hermes_cli.auth import _file_lock
     from hermes_constants import named_profile_home
 
     profile = named_profile_home(home)
@@ -238,7 +238,7 @@ def _create_user_only(lock: Path) -> None:
 
 def _save_port(port: int) -> None:
     """Claim *port* as the ``webapp.port`` of the home in scope, changing nothing else."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     cfg = load_config()
     webapp = cfg.get("webapp")
@@ -251,7 +251,7 @@ def _own_port(home: Path) -> Optional[object]:
     invalid one by name), or None when neither *home*'s ``config.yaml`` nor the managed scope sets one.
     The effective user config, as the gateway loads it (a managed port wins, and ``save_config`` never
     writes over it), but without the defaults: they name a port for everyone."""
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
 
     try:
         document = load_user_config_effective(Path(home) / "config.yaml")
@@ -297,8 +297,8 @@ def _port_free(host: str, port: int) -> bool:
 def build_bundle() -> None:
     """Build the Webapp bundle the gateway serves, with the function ``hermes webapp`` uses (it
     reuses a current bundle), so Start never turns on a Webapp with nothing to serve."""
-    from hermes_cli.config import get_project_root
-    from hermes_cli.webapp import WebappBuildError, prepare_webapp_renderer
+    from hermes_agent.hermes_cli.config import get_project_root
+    from hermes_agent.hermes_cli.webapp import WebappBuildError, prepare_webapp_renderer
 
     try:
         prepare_webapp_renderer(get_project_root())
@@ -330,7 +330,7 @@ def _write_config(*, enabled: bool, host: str = "", public_url: str = "", port: 
     own-URL mode and drops it for LAN, where the callback follows each request; stopping changes
     only ``enabled``, so the next start offers the same address. ``webapp.port`` is the user's; only a
     standalone profile that has none gets the free one :func:`plan` chose, once."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
 
     cfg = load_config()
     webapp = cfg.get("webapp") if isinstance(cfg.get("webapp"), dict) else {}
@@ -347,7 +347,7 @@ def _gateway_state(home: Path) -> dict:
     """What *home*'s gateway serves now (``serving``, ``starting``, ``off``, ``unavailable`` with a
     ``reason``, or ``stopped`` when none answers). It reads the config at start, so it can lag until a
     restart; a gateway older than the Webapp serves none (``off``, with the restart as the reason)."""
-    from hermes_cli.webapp_launcher import OLDER_GATEWAY, GatewayUnreachable, _control, older_gateway
+    from hermes_agent.hermes_cli.webapp_launcher import OLDER_GATEWAY, GatewayUnreachable, _control, older_gateway
 
     try:
         response = _control(home, "webapp-status")
@@ -396,7 +396,7 @@ def gateway_instance() -> Optional[tuple]:
     """The gateway process answering for the home in scope, ``(pid, start_time)``, or None when none
     answers. The Webapp address a gateway reports names only its port, so this is what tells the
     gateway a restart put in place from the one it replaced."""
-    from hermes_cli.webapp_launcher import GatewayUnreachable, _control
+    from hermes_agent.hermes_cli.webapp_launcher import GatewayUnreachable, _control
 
     try:
         response = _control(gateway_home(), "identify")

@@ -8,7 +8,7 @@ import hermes_yaml as yaml
 import pytest
 
 from hermes_agent.agent import i18n, i18n_layers
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 # A bundled key every test can lean on (approval prompts ship in every locale).
 _KEY = "approval.denied"
@@ -30,7 +30,7 @@ def clean_layers():
 @pytest.fixture
 def home(tmp_path, monkeypatch, clean_layers):
     """A temp HERMES_HOME with no plugins and an empty bundled plugin dir."""
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     home = tmp_path / "home"
     (home / "locales").mkdir(parents=True)
@@ -191,8 +191,8 @@ def test_later_pack_wins_over_earlier_pack(home):
 
 
 def test_register_locale_accepts_dicts_and_rejects_bad_ids(home):
-    from hermes_cli.plugins import PluginContext
-    from hermes_cli.plugins_manifest import PluginManifest
+    from hermes_agent.hermes_cli.plugins import PluginContext
+    from hermes_agent.hermes_cli.plugins_manifest import PluginManifest
 
     manager = PluginManager()
     ctx = PluginContext(PluginManifest(name="inline-pack", source="user", path=str(home)), manager)

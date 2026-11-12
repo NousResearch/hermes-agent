@@ -266,7 +266,7 @@ def transcript_target(authority, ref):
 
 # A resume reply's rows reach Ink twice (``messages`` and ``display_messages``). Archived rows are display-only
 # and fill only what the live rows leave of this budget, so they keep the reply well under the gateway clients'
-# 8 MiB WebSocket frame cap (``hermes_cli/gateway_client.py``) and never push a reply main could send past it.
+# 8 MiB WebSocket frame cap (``hermes_agent/hermes_cli/gateway_client.py``) and never push a reply main could send past it.
 # Live rows are never dropped.
 RESUME_HISTORY_BYTES = 3 * 1024 * 1024
 

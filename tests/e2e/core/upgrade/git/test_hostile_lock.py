@@ -1,7 +1,7 @@
 """Hostile-concurrency cells for the update lock, with real ``hermes update`` processes.
 
 A real git checkout (a clone of the commit under test, served by a local bare origin) is updated
-by real ``python -m hermes_cli.main update`` processes inside the bwrap sandbox. A ``git`` shim
+by real ``python -m hermes_agent.hermes_cli.main update`` processes inside the bwrap sandbox. A ``git`` shim
 parks every ``fetch`` while a hold file exists and logs which home reached it, so "an update got
 past the lock" is observed directly: the fetch is the first step after the lock.
 

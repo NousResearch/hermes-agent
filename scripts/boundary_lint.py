@@ -2,7 +2,7 @@
 """Report-only import lint for the core/module boundary, in both directions.
 
 * **module -> core internals**: a bundled module imports a Hermes module or name that is not on the
-  published plugin API (``hermes_cli/data/plugin_api.json``), e.g. ``hermes_agent.gateway.run``. The rule is the one
+  published plugin API (``hermes_agent/hermes_cli/data/plugin_api.json``), e.g. ``hermes_agent.gateway.run``. The rule is the one
   ``hermes plugins validate`` warns with (``plugin_validate_private_imports.private_import_findings``),
   so the lint and the plugin-author warning cannot drift.
 * **core -> module**: core code imports a specific module (``plugins.platforms.discord.adapter``)
@@ -42,7 +42,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from hermes_agent.compat.paths import original_module, original_path, tree_moves
-from hermes_cli.plugin_validate_private_imports import (
+from hermes_agent.hermes_cli.plugin_validate_private_imports import (
     _hermes_packages,
     _imported,
     _type_checking_nodes,

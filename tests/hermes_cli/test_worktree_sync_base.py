@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import worktree_ops
+from hermes_agent.hermes_cli import worktree_ops
 
-import cli
+from hermes_agent import cli
 
 
 def _run(args, cwd):

@@ -35,7 +35,7 @@ def nous_profile():
 @pytest.fixture
 def portal_catalog(monkeypatch):
     """Prime the Portal reasoning-capability cache with known entries."""
-    import hermes_cli.models as models_mod
+    import hermes_agent.hermes_cli.models as models_mod
 
     monkeypatch.setattr(models_mod, "_nous_reasoning_caps_failed_at", None)
     monkeypatch.setattr(models_mod, "_nous_reasoning_caps_cache", {

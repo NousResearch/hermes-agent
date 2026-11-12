@@ -256,7 +256,7 @@ class Python(_BionicDebArm, BinaryPackage, DebPackage):
         super().stage(store, staged, version, target)
         binary = self.binary(staged, target)
         if binary is not None and sys.platform == "darwin":
-            from hermes_cli.macos_signing import sign_managed_python
+            from hermes_agent.hermes_cli.macos_signing import sign_managed_python
 
             sign_managed_python(binary)
         # python-build-standalone ships the x64 VC runtime (vcruntime140_1.dll)
@@ -1222,7 +1222,7 @@ class Chromium(Package):
         # Playwright launches without an executable_path (e.g. the
         # har-derived-api-client skill's `chromium.launch(channel="chromium")`)
         # find this build through the root; Hermes's own launcher asks
-        # hermes_cli.browser_runtime.chromium_executable() instead.
+        # hermes_agent.hermes_cli.browser_runtime.chromium_executable() instead.
         return {"PLAYWRIGHT_BROWSERS_PATH": str(entry.parent)}
 
 

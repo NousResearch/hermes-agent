@@ -9,7 +9,7 @@ so ``_open_external_editor`` chains a done-callback that calls
 
 import queue
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 class _FakeBuf:

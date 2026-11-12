@@ -48,7 +48,7 @@ def _make_cli(tool_progress="all", verbose=_UNSET):
     }
     with patch.dict(sys.modules, prompt_toolkit_stubs), \
          patch.dict("os.environ", clean_env, clear=False):
-        import cli as mod
+        import hermes_agent.cli as mod
         mod = importlib.reload(mod)
         _cli_mod = mod
         with patch.object(mod, "get_tool_definitions", return_value=[]), \
@@ -59,9 +59,9 @@ def _make_cli(tool_progress="all", verbose=_UNSET):
                 inst = mod.HermesCLI(verbose=verbose)
     # patch.dict(sys.modules) above restores the pre-import state on exit, which
     # DROPS ``cli`` when this was the first import. The mixin handlers resolve
-    # ``_cprint`` via a lazy ``from cli import ...``, so ``cli`` must stay
+    # ``_cprint`` via a lazy ``from hermes_agent.cli import ...``, so ``cli`` must stay
     # registered for ``patch.object(_cli_mod, "_cprint")`` to intercept.
-    sys.modules["cli"] = mod
+    sys.modules["hermes_agent.cli"] = mod
     return inst
 
 

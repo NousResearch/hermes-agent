@@ -6,7 +6,7 @@ from .method_ctx import bind_module
 
 
 def handle_request(req: dict) -> dict | None:
-    from hermes_cli.backend_retirement import retirement
+    from hermes_agent.hermes_cli.backend_retirement import retirement
 
     with retirement.work() as admitted:
         if not admitted:
@@ -28,7 +28,7 @@ def _handle_admitted_request(req: dict) -> dict | None:
         params, problem = _contracts.validate_params(contract, params)
         if problem is not None:
             return _err(rid, 4000, problem)
-    from hermes_cli.config_backend import ConfigBackendUnavailable
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
 
     token = _current_rpc_method.set(method)
     try:
@@ -66,7 +66,7 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return normalized
         if normalized[1] not in _LONG_HANDLERS:
             return handle_request(req)
-        from hermes_cli.backend_retirement import retirement
+        from hermes_agent.hermes_cli.backend_retirement import retirement
 
         # Reserve BEFORE enqueueing: a queued handler has accepted work even though no worker runs yet.
         if not retirement.acquire():

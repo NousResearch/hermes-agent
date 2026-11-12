@@ -49,7 +49,7 @@ def aws_env(monkeypatch):
 def config(monkeypatch):
     """Install ``cfg`` as the loaded config (the operator report's offline technique)."""
     def install(cfg):
-        monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", lambda: cfg)
     install({})
     return install
 

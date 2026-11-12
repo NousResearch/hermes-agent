@@ -5,7 +5,7 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from hermes_cli.dashboard_auth.middleware import _path_is_public
+from hermes_agent.hermes_cli.dashboard_auth.middleware import _path_is_public
 
 # Auth exchanges contain credentials and tokens, not files. Leave ample room for
 # those small JSON payloads without allowing anonymous, unbounded buffering.

@@ -193,8 +193,8 @@ class TestSessionOps:
         }
 
         with (
-            patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
-            patch("hermes_cli.inventory.build_models_payload", return_value=payload),
+            patch("hermes_agent.hermes_cli.inventory.load_picker_context", return_value=picker_context),
+            patch("hermes_agent.hermes_cli.inventory.build_models_payload", return_value=payload),
         ):
             resp = await acp_agent.new_session(cwd="/tmp")
 

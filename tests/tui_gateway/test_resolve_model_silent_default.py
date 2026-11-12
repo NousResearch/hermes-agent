@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-import hermes_cli.models as models_mod
-from hermes_cli.models_catalog_static import PREFERRED_SILENT_DEFAULT_MODEL
+import hermes_agent.hermes_cli.models as models_mod
+from hermes_agent.hermes_cli.models_catalog_static import PREFERRED_SILENT_DEFAULT_MODEL
 from hermes_agent.tui_gateway import server
 
 

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
-from hermes_cli.urllib_security import url_origin
+from hermes_agent.hermes_cli.urllib_security import url_origin
 
 
 class ProviderNotSignedIn(RuntimeError):
@@ -46,8 +46,8 @@ def _codex_auth(url: str) -> tuple[dict[str, str], str]:
     """``(auth headers, credential base URL)`` from Hermes's own locked-refresh resolver."""
     from hermes_agent.agent.codex_headers import codex_account_headers
     from hermes_agent.agent.turn_failure_copy import oauth_relogin_command
-    from hermes_cli.auth_codex import resolve_codex_runtime_credentials
-    from hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli.auth_codex import resolve_codex_runtime_credentials
+    from hermes_agent.hermes_cli.auth_constants import AuthError
 
     try:
         creds = resolve_codex_runtime_credentials()
@@ -74,7 +74,7 @@ _PROVIDERS: dict[str, tuple[frozenset, Callable[[str], tuple[dict[str, str], str
 
 def _plugin_roots() -> set[Path]:
     """Every plugins directory an installed plugin can live under, as given and resolved."""
-    from hermes_cli.plugins import get_bundled_plugins_dir
+    from hermes_agent.hermes_cli.plugins import get_bundled_plugins_dir
     from hermes_constants import get_default_hermes_root, get_hermes_home, get_process_hermes_home
 
     bases = (get_hermes_home() / "plugins", get_process_hermes_home() / "plugins",
@@ -116,7 +116,7 @@ def declared_auth_providers(manifest: Mapping[str, Any]) -> list[str]:
 
 def requires_auth_notice(manifest: Mapping[str, Any]) -> str:
     """One line for install/show surfaces; empty when the plugin declares no sign-in use."""
-    from hermes_cli.plugin_oauth import oauth_notice
+    from hermes_agent.hermes_cli.plugin_oauth import oauth_notice
 
     providers = declared_auth_providers(manifest)
     sign_in = (f"Uses your sign-in for: {', '.join(providers)} (Hermes sends the requests; "
@@ -138,13 +138,13 @@ def credentialed_provider_request(
     """Send ``method url`` with the user's *provider* sign-in attached by Hermes.
 
     *provider* is a Hermes sign-in (listed under ``requires_auth``) or an ``id`` the calling plugin
-    declares under ``oauth:`` (:mod:`hermes_cli.plugin_oauth`); the plugin's own entry wins.
+    declares under ``oauth:`` (:mod:`hermes_agent.hermes_cli.plugin_oauth`); the plugin's own entry wins.
     Refuses (``PermissionError``) a caller outside an installed plugin, a plugin whose ``plugin.yaml``
     does not list *provider* under ``requires_auth``, and any origin outside the provider's
     allowlist; raises :class:`ProviderNotSignedIn` when this profile has no sign-in. Redirects are
     returned as-is, never followed. The result carries no credential.
     """
-    from hermes_cli.plugin_oauth import _plugin_oauth_spec
+    from hermes_agent.hermes_cli.plugin_oauth import _plugin_oauth_spec
 
     plugin_dir = _calling_plugin_dir()
     if plugin_dir is None:

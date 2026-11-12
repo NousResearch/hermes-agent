@@ -33,7 +33,7 @@ installers and boot paths read it before the full config machinery loads.
 from __future__ import annotations
 
 from pm.environments import install_key, installs_root
-from hermes_cli.release_channels import validate_name
+from hermes_agent.hermes_cli.release_channels import validate_name
 from contextlib import contextmanager
 import logging
 import os
@@ -110,7 +110,7 @@ def install_id(project_root: Optional[Path] = None) -> str:
 
 def _read_stamp(root: Path) -> dict:
     """The install stamp of ``root``, or ``{}`` (tolerant, like steward.py)."""
-    from hermes_cli.steward import read_install_stamp
+    from hermes_agent.hermes_cli.steward import read_install_stamp
 
     return read_install_stamp(root)
 
@@ -170,8 +170,8 @@ def _tracks_official_origin(root: Path) -> bool:
     Read from the git config file (no git process: the banner and boot paths call this).
     Forks, mirrors and local-path origins publish no official releases.
     """
-    from hermes_cli.source_releases import _GITHUB_ORIGIN, OFFICIAL_REPOSITORY
-    from hermes_cli.update_lock import _git_common_dir
+    from hermes_agent.hermes_cli.source_releases import _GITHUB_ORIGIN, OFFICIAL_REPOSITORY
+    from hermes_agent.hermes_cli.update_lock import _git_common_dir
 
     common = _git_common_dir(root)
     try:
@@ -224,7 +224,7 @@ def set_install_channel(
     including Microsoft Store, rather than this configuration.
     Raises ``ValueError`` for an invalid channel or an OS-owned install.
     """
-    from hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
+    from hermes_agent.hermes_cli.update_contract import COMMIT_BUILD_UPDATE_MESSAGE, is_commit_build
 
     root = Path(project_root) if project_root is not None else install_root()
     if is_commit_build(root):
@@ -267,7 +267,7 @@ def handle_metadata_args(args, project_root: Path) -> bool:
 @contextmanager
 def _channel_write_lock(config_path: Path):
     """Serialize channel selection and retirement across CLI processes."""
-    from hermes_cli.config import _CONFIG_LOCK
+    from hermes_agent.hermes_cli.config import _CONFIG_LOCK
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     with _CONFIG_LOCK, config_path.with_suffix(".channels.lock").open("a+b") as lock:
@@ -303,7 +303,7 @@ def adopt_retired_channel(request: dict) -> bool:
 
 def _write_channel_record(sha16: str, path: str, channel: str, *,
                           expected: dict | None = None, config_path: Path | None = None) -> bool:
-    from hermes_cli.config import get_config_path
+    from hermes_agent.hermes_cli.config import get_config_path
 
     config_path = config_path if config_path is not None else get_config_path()
     with _channel_write_lock(config_path):
@@ -317,14 +317,14 @@ def _write_channel_record_locked(sha16: str, path: str, channel: str,
     Persists through the shared comment-preserving atomic writer
     (:func:`utils.atomic_roundtrip_yaml_update` — the same ruamel round-trip
     path ``hermes config set`` uses), fail-closed via
-    :func:`hermes_cli.config.require_readable_config_before_write`. Malformed
+    :func:`hermes_agent.hermes_cli.config.require_readable_config_before_write`. Malformed
     ``update`` / ``update.installs`` values are refused, never replaced —
     the dotted writer would otherwise turn a scalar into a mapping and
     destroy whatever the user had there.
     """
-    from hermes_cli.config_backend import write_config_key
+    from hermes_agent.hermes_cli.config_backend import write_config_key
 
-    from hermes_cli.config import require_readable_config_before_write
+    from hermes_agent.hermes_cli.config import require_readable_config_before_write
     existing = require_readable_config_before_write(config_path)
     update_cfg = existing.get("update")
     if update_cfg is not None and not isinstance(update_cfg, dict):

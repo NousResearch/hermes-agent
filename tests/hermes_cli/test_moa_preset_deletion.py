@@ -24,8 +24,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
-from hermes_cli.web_routers.models import set_moa_models
+from hermes_agent.hermes_cli.web_models import MoaConfigPayload, MoaModelSlot, MoaPresetPayload
+from hermes_agent.hermes_cli.web_routers.models import set_moa_models
 
 
 def _preset(model: str) -> MoaPresetPayload:
@@ -97,8 +97,8 @@ def test_deletion_survives_autosave_restart_and_backup_with_sparse_yaml(tmp_path
     """The real HTTP save keeps user YAML intact and never revives omitted names."""
     from starlette.testclient import TestClient
 
-    from hermes_cli.config import load_config, read_raw_config
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.config import load_config, read_raw_config
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     moa = _three_presets()
     moa.update(privacy_filter="full", save_traces=True, trace_dir="/custom/traces")
@@ -115,7 +115,7 @@ def test_deletion_survives_autosave_restart_and_backup_with_sparse_yaml(tmp_path
     # Backup filenames have second precision. Model a later edit explicitly so
     # this checks MoA fallback merging, not the upstream same-second collision
     # (which can leave ANY config setting's backup stale).
-    from hermes_cli import config_backups
+    from hermes_agent.hermes_cli import config_backups
 
     with monkeypatch.context() as clock:
         clock.setattr(config_backups.time, "strftime", lambda _fmt: "20000101-000000")
@@ -157,7 +157,7 @@ def test_deletion_survives_autosave_restart_and_backup_with_sparse_yaml(tmp_path
 
     # Fresh imports use the actual saved YAML, then the persisted last-good backup.
     probe = (
-        "import json; from hermes_cli.config import load_config; "
+        "import json; from hermes_agent.hermes_cli.config import load_config; "
         "print(json.dumps(sorted(load_config()['moa']['presets'])))"
     )
     for broken in (False, True):
@@ -205,8 +205,8 @@ def test_moa_save_preserves_a_concurrent_partial_config_write(tmp_path, monkeypa
 
     from starlette.testclient import TestClient
 
-    from hermes_cli import config as config_mod
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     _seed(tmp_path, monkeypatch, _three_presets(), display={"skin": "slate"})
     read_complete, resume_read = threading.Event(), threading.Event()
@@ -263,8 +263,8 @@ def test_moa_save_refuses_transient_read_failure_without_losing_config(tmp_path,
     """A recovered second read must not turn the first read's fallback into a full write."""
     from starlette.testclient import TestClient
 
-    from hermes_cli import config as config_mod
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     _seed(tmp_path, monkeypatch, _three_presets(), operator_settings={"keep": None})
     config_path = tmp_path / "config.yaml"
@@ -332,7 +332,7 @@ def test_named_map_does_not_receive_schema_default_on_load(tmp_path, monkeypatch
     home.mkdir()
     _seed(home, monkeypatch, _three_presets())
 
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     loaded = load_config()
     assert set(loaded["moa"]["presets"]) == {"keep_a", "doomed", "keep_b"}
@@ -344,14 +344,14 @@ def test_named_map_stays_authoritative_in_a_fresh_process_and_backup_fallback(tm
     home.mkdir()
     _seed(home, monkeypatch, _three_presets())
 
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     # The first valid load creates the real ``good`` backup used by a fresh process.
     assert set(load_config()["moa"]["presets"]) == {"keep_a", "doomed", "keep_b"}
     (home / "config.yaml").write_text("moa: [unterminated\n", encoding="utf-8")
 
     probe = (
-        "import json; from hermes_cli.config import load_config; "
+        "import json; from hermes_agent.hermes_cli.config import load_config; "
         "print(json.dumps(sorted(load_config()['moa']['presets'])))"
     )
     result = subprocess.run(
@@ -373,8 +373,8 @@ def test_missing_moa_map_still_receives_schema_defaults(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     (home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
 
-    from hermes_cli.config import DEFAULT_CONFIG, load_config
-    from hermes_cli.moa_config import normalize_moa_config
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, load_config
+    from hermes_agent.hermes_cli.moa_config import normalize_moa_config
 
     actual = normalize_moa_config(load_config()["moa"])
     expected = normalize_moa_config(DEFAULT_CONFIG["moa"])
@@ -446,7 +446,7 @@ def test_legacy_flat_update_preserves_named_presets_and_valid_default(
     }
     # Legacy flat fields represent the saved default preset. Runtime resolution uses
     # default_preset when no preset name is explicitly requested; active_preset is metadata.
-    from hermes_cli.moa_config import resolve_moa_preset
+    from hermes_agent.hermes_cli.moa_config import resolve_moa_preset
 
     assert resolve_moa_preset(moa)["reference_models"] == moa["presets"]["keep_a"]["reference_models"]
     assert moa["presets"]["keep_b"] == seeded["presets"]["keep_b"]

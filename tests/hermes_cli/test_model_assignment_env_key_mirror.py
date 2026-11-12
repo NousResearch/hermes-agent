@@ -14,7 +14,7 @@ import os
 
 import pytest
 import hermes_yaml as yaml
-import hermes_cli.web_server_config as _web_server_config
+import hermes_agent.hermes_cli.web_server_config as _web_server_config
 
 
 @pytest.fixture()
@@ -22,7 +22,7 @@ def _hermes_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     importlib.reload(config_mod)
     yield home
@@ -38,7 +38,7 @@ def _write_config(home, providers):
 
 
 def _apply(provider, model="local/model"):
-    import hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server as ws
 
     return _web_server_config._apply_model_assignment_sync("main", provider, model, "", "")
 

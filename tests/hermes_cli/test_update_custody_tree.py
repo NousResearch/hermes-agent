@@ -78,7 +78,7 @@ def _wait_pid(path: Path) -> int:
 
 @pytest.mark.platforms("posix")
 def test_a_timed_out_fetch_takes_its_helpers_with_it(fetch_rig, tmp_path, monkeypatch):
-    from hermes_cli import update_custody
+    from hermes_agent.hermes_cli import update_custody
 
     repo, helper, helper_pid = fetch_rig
     monkeypatch.setattr(update_custody, "_held", lambda: {"fd": None})
@@ -119,7 +119,7 @@ def test_a_reaped_git_never_signals_the_group_its_pid_now_names():
     """``communicate`` reaps git on a Ctrl-C inside its wait window, and the cleanup then reaches
     ``_kill_tree``. A reaped pid may already lead another session; signalling it as a group would
     SIGKILL that unrelated process. The decoy stands in for the session that reused the id."""
-    from hermes_cli.update_custody import _kill_tree
+    from hermes_agent.hermes_cli.update_custody import _kill_tree
 
     git = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
     git.wait()

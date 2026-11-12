@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db as kb
 from hermes_constants import get_default_hermes_root
 
 
@@ -132,7 +132,7 @@ def test_cli_board_flag_trumps_worker_env_pin_end_to_end(monkeypatch, tmp_path):
     board's database must not also contain the task."""
     import argparse
 
-    from hermes_cli import kanban as kc
+    from hermes_agent.hermes_cli import kanban as kc
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -158,7 +158,7 @@ def test_cli_board_flag_trumps_worker_env_pin_end_to_end(monkeypatch, tmp_path):
     target_db = kb.kanban_db_path(board="target-board")
     assert target_db != worker_pinned_db
 
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
     with kbc.connect(board="target-board") as conn:
         rows = conn.execute("SELECT title FROM tasks").fetchall()
     assert any(r[0] == "cross-board task" for r in rows), (
@@ -248,7 +248,7 @@ def test_notifier_seam_connect_lands_on_pinned_db(monkeypatch, tmp_path):
     pinned, the notifier's per-slug connect(board=slug) inside the machine-flow
     context must open the pinned DB — the writes the worker made via
     connect() (no board) live there."""
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
 
     home = tmp_path / ".hermes"
     home.mkdir()

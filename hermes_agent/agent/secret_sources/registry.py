@@ -6,7 +6,7 @@ Owns everything that must be uniform across backends: registration
 order, else registration order; first claim wins), ``override_existing``
 semantics (may beat .env/shell, never another source, never a protected var),
 cross-source conflict warnings, and provenance. Startup entry point:
-:func:`apply_all` via ``hermes_cli.env_loader``; plugins register through
+:func:`apply_all` via ``hermes_agent.hermes_cli.env_loader``; plugins register through
 ``PluginContext.register_secret_source()`` → :func:`register_source`.
 """
 

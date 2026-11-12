@@ -23,7 +23,7 @@ desktop exited 0 and we captured" from "exited 0 without reaching a
 launch" (a version that errors out earlier must FAIL the leg, loudly).
 
 Launch shapes across sampled desktop-era tags (verified against each
-tag's own hermes_cli/main.py):
+tag's own hermes_agent/hermes_cli/main.py):
 
   v2026.6.5    subprocess.run([npm, "exec", "--", "electron", "."], ...)
   v0.20.0+     the npm-exec form AND subprocess.run(launch_command, ...)

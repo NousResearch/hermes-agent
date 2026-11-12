@@ -8,7 +8,7 @@ cache, lock file, taps and audit log. Install/uninstall/update live in
 ``skills_hub_search``, and the adapters in the other ``tools.skills_hub_*``
 siblings; import each name from its defining module.
 
-Used by hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
+Used by hermes_agent/hermes_cli/skills_hub.py for CLI commands and the /skills slash command.
 """
 
 import json
@@ -303,7 +303,7 @@ class _JsonStateFile:
 
         An unusable lock (no flock on the filesystem, a wedged holder) degrades to an unlocked
         update rather than failing the install that triggered it."""
-        from hermes_cli.auth import _file_lock
+        from hermes_agent.hermes_cli.auth import _file_lock
         with ExitStack() as stack:
             try:
                 stack.enter_context(_file_lock(

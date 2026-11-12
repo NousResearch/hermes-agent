@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_cli import uninstall
+from hermes_agent.hermes_cli import uninstall
 
 
 def test_dry_run_prints_plan_without_mutating(monkeypatch, tmp_path, capsys):
@@ -44,7 +44,7 @@ def test_dry_run_lists_named_profiles_without_desktop_userdata(monkeypatch, tmp_
     monkeypatch.setattr(uninstall, "_is_default_hermes_home", lambda home: True)
     monkeypatch.setattr(uninstall, "_discover_named_profiles", lambda: [profile])
     monkeypatch.setattr(
-        "hermes_cli.gui_uninstall.desktop_userdata_dir", lambda: tmp_path / "absent-userdata"
+        "hermes_agent.hermes_cli.gui_uninstall.desktop_userdata_dir", lambda: tmp_path / "absent-userdata"
     )
 
     uninstall._print_uninstall_dry_run(
@@ -58,7 +58,7 @@ def test_dry_run_lists_named_profiles_without_desktop_userdata(monkeypatch, tmp_
 
 def test_build_uninstall_parser_accepts_dry_run():
     import argparse
-    from hermes_cli.subcommands.uninstall import build_uninstall_parser
+    from hermes_agent.hermes_cli.subcommands.uninstall import build_uninstall_parser
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")

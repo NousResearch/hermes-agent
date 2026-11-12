@@ -7,7 +7,7 @@ when the provider returned one, always cleared on logout/expiry), ``hermes_sessi
 (PKCE state + CSRF nonce + provider hint, 10 min; ``SameSite=None; Secure`` over HTTPS because it
 is set on the /auth/login 302 and must survive the cross-site redirect chain — Chromium drops Lax
 cookies set on such a 302, crbug 40508226), ``hermes_sso_attempt`` (auto-SSO loop guard, 60 s),
-``hermes_webapp_signin`` (the gateway Webapp's sign-in binding, ``hermes_cli.webapp_sign_in``; set only
+``hermes_webapp_signin`` (the gateway Webapp's sign-in binding, ``hermes_agent.hermes_cli.webapp_sign_in``; set only
 by a login on the Webapp, Max-Age as the refresh token's).
 Cookies are not scoped to a port, so on the gateway's Webapp every one of these names is followed by
 ``_<gateway>`` (``hermes_session_at_<gateway>``, ``<gateway>`` from a digest of the gateway's home,
@@ -36,7 +36,7 @@ SESSION_RT_COOKIE = "hermes_session_rt"
 SESSION_PROVIDER_COOKIE = "hermes_session_provider"
 PKCE_COOKIE = "hermes_session_pkce"
 SSO_ATTEMPT_COOKIE = "hermes_sso_attempt"
-#: The Webapp's sign-in binding (``hermes_cli.webapp_sign_in``); set beside the session cookies.
+#: The Webapp's sign-in binding (``hermes_agent.hermes_cli.webapp_sign_in``); set beside the session cookies.
 WEBAPP_SIGNIN_COOKIE = "hermes_webapp_signin"
 
 # Name variants a reader may have to try; most strict first.

@@ -12,8 +12,8 @@ import subprocess
 
 import pytest
 
-from hermes_cli import update_cmd
-from hermes_cli.source_stamp import write_source_stamp
+from hermes_agent.hermes_cli import update_cmd
+from hermes_agent.hermes_cli.source_stamp import write_source_stamp
 
 
 def _write_pyproject(root: Path, version: str) -> None:

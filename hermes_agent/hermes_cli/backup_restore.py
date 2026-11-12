@@ -1,9 +1,9 @@
 """SQLite-safe restore and archive-member publish plumbing for backups.
 
-Owns the restore side of ``hermes_cli.backup``: the page-copy SQLite restore
+Owns the restore side of ``hermes_agent.hermes_cli.backup``: the page-copy SQLite restore
 (``_safe_restore_db`` plus the foreign-holder scan) and the zip-member publish
 helpers used by ``hermes import`` and ``/snapshot restore``.  Backup
-*creation* (``run_backup``, full-zip writing) stays in ``hermes_cli.backup``,
+*creation* (``run_backup``, full-zip writing) stays in ``hermes_agent.hermes_cli.backup``,
 which composes these helpers.
 """
 
@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
 from hermes_agent.hermes_state_holders import read_only_db_uri
-from hermes_cli.backup_sqlite import _safe_copy_db
+from hermes_agent.hermes_cli.backup_sqlite import _safe_copy_db
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
     mkstemp_beside,
@@ -137,8 +137,8 @@ def _restore_auth_json(src: Path, dst: Path) -> bool:
         }
 
     try:
-        from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
-        from hermes_cli.auth_oauth_grants import (
+        from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+        from hermes_agent.hermes_cli.auth_oauth_grants import (
             merge_snapshot_auth_preserving_live_single_use_grants,
         )
 
@@ -165,7 +165,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     ``state.db`` epoch floor cannot be proven.
     """
     from hermes_agent.gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
-    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_agent.hermes_cli.backup import verify_sqlite_integrity
 
     # backup() copies pages without validating their contents; its fallback
     # copies bytes even when SQLite rejected the source. Neither may touch the
@@ -303,7 +303,7 @@ def _restore_db_pages(src: Path, dst: Path) -> bool:
                 logger.debug("Closing %s before the fallback restore failed: %s", dst, close_exc)
         # Fallback: unlink+move (the old approach).  This still works for
         # the common case where no other process holds the DB open.
-        from hermes_cli.sqlite_safe_read import (
+        from hermes_agent.hermes_cli.sqlite_safe_read import (
             LiveConnectionError,
             offline_file_access,
         )
@@ -635,7 +635,7 @@ def _import_db_member_exclusive(
             dst.flush()
             os.fsync(dst.fileno())
         if not _safe_restore_db(Path(tmp_name), target):
-            from hermes_cli.backup import verify_sqlite_integrity
+            from hermes_agent.hermes_cli.backup import verify_sqlite_integrity
 
             # Re-check only on failure so the user gets the real cause; the
             # detailed integrity message was already logged by _safe_restore_db.

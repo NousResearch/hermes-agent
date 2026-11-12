@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from hermes_cli import auth
+from hermes_agent.hermes_cli import auth
 
 
 @pytest.fixture(autouse=True)

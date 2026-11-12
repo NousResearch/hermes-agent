@@ -355,12 +355,12 @@ def role_agent(a: dict, out: Out) -> int:
 
 
 def role_cli(a: dict, out: Out) -> int:
-    """``hermes <argv>``: ``hermes_cli.main`` run as ``__main__``, i.e. ``python -m hermes_cli.main <argv>``."""
+    """``hermes <argv>``: ``hermes_agent.hermes_cli.main`` run as ``__main__``, i.e. ``python -m hermes_agent.hermes_cli.main <argv>``."""
     import runpy
 
     sys.argv = ["hermes", *a["argv"]]
     try:
-        runpy.run_module("hermes_cli.main", run_name="__main__", alter_sys=True)
+        runpy.run_module("hermes_agent.hermes_cli.main", run_name="__main__", alter_sys=True)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 1)
     return 0

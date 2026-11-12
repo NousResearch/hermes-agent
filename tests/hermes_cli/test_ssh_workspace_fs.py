@@ -4,8 +4,8 @@ import threading
 
 import pytest
 
-from hermes_cli import ssh_workspace_fs
-from hermes_cli.ssh_workspace_fs import SshWorkspaceFs, SshWorkspaceFsError
+from hermes_agent.hermes_cli import ssh_workspace_fs
+from hermes_agent.hermes_cli.ssh_workspace_fs import SshWorkspaceFs, SshWorkspaceFsError
 
 
 class FakeEnv:

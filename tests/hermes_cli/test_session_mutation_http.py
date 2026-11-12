@@ -16,8 +16,8 @@ from hermes_agent.hermes_state_runtime import begin_runtime_epoch
 
 @pytest.mark.asyncio
 async def test_http_and_ws_clients_compete_for_one_revision(tmp_path, monkeypatch):
-    from hermes_cli.web_routers.sessions import manage_router
-    from hermes_cli import web_server as web
+    from hermes_agent.hermes_cli.web_routers.sessions import manage_router
+    from hermes_agent.hermes_cli import web_server as web
     monkeypatch.setattr(web, '_SESSION_TOKEN', 'fixture-token')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr('hermes_agent.hermes_state._default_db_path', lambda: tmp_path / 'state.db')
@@ -84,8 +84,8 @@ async def test_http_and_ws_clients_compete_for_one_revision(tmp_path, monkeypatc
 
 @pytest.mark.asyncio
 async def test_http_import_and_delete_keep_atomic_receipts(tmp_path, monkeypatch):
-    from hermes_cli.web_routers.sessions import manage_router
-    from hermes_cli import web_server as web
+    from hermes_agent.hermes_cli.web_routers.sessions import manage_router
+    from hermes_agent.hermes_cli import web_server as web
     monkeypatch.setattr(web, '_SESSION_TOKEN', 'fixture-token')
     monkeypatch.setattr('hermes_agent.hermes_state._default_db_path', lambda: tmp_path / 'state.db')
     app = FastAPI()
@@ -123,9 +123,9 @@ async def test_delete_reports_already_absent_only_for_rows_that_are_gone(tmp_pat
     idempotent success — Desktop would drop the row and it reappears on reload. Only a genuinely
     absent id is ``already_absent``."""
     from hermes_agent.gateway.session_contract import SessionActor
-    from hermes_cli.web_routers.sessions import manage_router
-    from hermes_cli import web_server as web
-    import hermes_cli.web_server_sessions as web_sessions
+    from hermes_agent.hermes_cli.web_routers.sessions import manage_router
+    from hermes_agent.hermes_cli import web_server as web
+    import hermes_agent.hermes_cli.web_server_sessions as web_sessions
     monkeypatch.setattr(web, '_SESSION_TOKEN', 'fixture-token')
     monkeypatch.setattr('hermes_agent.hermes_state._default_db_path', lambda: tmp_path / 'state.db')
     app = FastAPI()

@@ -38,7 +38,7 @@ class _ExplodingScope(dict):
 @pytest.mark.asyncio
 async def test_voices_route_scope_failure_never_borrows_env(tmp_path, monkeypatch):
     from hermes_agent.agent import secret_scope as ss
-    from hermes_cli.web_routers.audio import get_elevenlabs_voices
+    from hermes_agent.hermes_cli.web_routers.audio import get_elevenlabs_voices
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()
@@ -64,8 +64,8 @@ async def test_voices_route_scope_failure_never_borrows_env(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_voices_route_bounds_response_read(monkeypatch, tmp_path):
     """The ElevenLabs voices fetch must read the body with a size cap."""
-    from hermes_cli import web_server_gateway
-    from hermes_cli.web_routers import audio
+    from hermes_agent.hermes_cli import web_server_gateway
+    from hermes_agent.hermes_cli.web_routers import audio
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()
@@ -98,8 +98,8 @@ async def test_voices_route_bounds_response_read(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_voices_route_rejects_oversized_response(monkeypatch, tmp_path):
     """An oversized ElevenLabs voices body must fail as 502, not buffer."""
-    from hermes_cli import web_server_gateway
-    from hermes_cli.web_routers import audio
+    from hermes_agent.hermes_cli import web_server_gateway
+    from hermes_agent.hermes_cli.web_routers import audio
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()

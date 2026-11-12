@@ -10,7 +10,7 @@ import pytest
 @pytest.mark.parametrize("surface", ["serve", "version", "gateway"])
 def test_each_start_checks_pm_once_before_dispatch(surface, tmp_path, monkeypatch, capsys, caplog):
     import pm
-    from hermes_cli import boot_bootstrap
+    from hermes_agent.hermes_cli import boot_bootstrap
 
     home = tmp_path / "home"
     home.mkdir()
@@ -57,7 +57,7 @@ def test_each_start_checks_pm_once_before_dispatch(surface, tmp_path, monkeypatc
         monkeypatch.setattr(sys, "argv", ["gateway"])
         run = gr.main
     else:
-        from hermes_cli import main
+        from hermes_agent.hermes_cli import main
 
         monkeypatch.setattr(main, "cmd_dashboard", lambda args: dispatched.append(len(checked)))
         monkeypatch.setattr(main, "cmd_version", lambda args: dispatched.append(len(checked)))
@@ -87,7 +87,7 @@ def test_concurrent_boots_bound_real_home_migration(tmp_path, monkeypatch, sibli
     import subprocess
     import sqlite3
     import time
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 
     root = tmp_path / "payload"
     root.mkdir()
@@ -176,7 +176,7 @@ print(json.dumps(boot_bootstrap.run_boot_bootstrap(root)))
 
 
 def test_failed_migration_is_restored_and_not_retried(tmp_path, monkeypatch):
-    from hermes_cli import boot_bootstrap, config, post_update
+    from hermes_agent.hermes_cli import boot_bootstrap, config, post_update
 
     home = tmp_path / "home"
     home.mkdir()

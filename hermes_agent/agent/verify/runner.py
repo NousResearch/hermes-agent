@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hermes_agent.agent.verify.recipes import Recipe
-from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 
 DEFAULT_PHASE_TIMEOUT = 600.0
 DEFAULT_READY_TIMEOUT = 60.0

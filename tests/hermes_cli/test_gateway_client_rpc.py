@@ -7,7 +7,7 @@ import pytest
 from websockets.exceptions import ConnectionClosedError
 from websockets.protocol import State
 
-from hermes_cli.gateway_client import NOT_SENT, GatewayClient, GatewayClientError, GatewayRPCError
+from hermes_agent.hermes_cli.gateway_client import NOT_SENT, GatewayClient, GatewayClientError, GatewayRPCError
 
 
 class _Socket:
@@ -57,7 +57,7 @@ async def test_compress_waits_past_the_default_rpc_budget(monkeypatch):
     """A canonical ``/compress`` answers only after its summary + commit (minutes on a long
     session). The viewer must not report failure at the 30 s default while the owner, which
     shields the mutation, still commits it. Time is scaled 1000x: 30 s -> 30 ms."""
-    from hermes_cli.gateway_mutations import PreparedMutations
+    from hermes_agent.hermes_cli.gateway_mutations import PreparedMutations
     real_wait_for = asyncio.wait_for
     monkeypatch.setattr(asyncio, 'wait_for', lambda fut, timeout: real_wait_for(fut, timeout / 1000))
     sent = []

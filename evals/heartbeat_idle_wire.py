@@ -21,7 +21,7 @@ from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource, SessionStore, build_session_key
-from hermes_cli import heartbeat
+from hermes_agent.hermes_cli import heartbeat
 
 
 class WireAdapter(BasePlatformAdapter):

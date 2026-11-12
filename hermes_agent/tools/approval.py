@@ -493,7 +493,7 @@ def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
 
 def _read_permanent_allowlist() -> set:
     """``command_allowlist`` of the active profile's config as a set (empty on malformed input)."""
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
     config = load_config_readonly()
     raw = config.get("command_allowlist")
     legacy = isinstance(raw, str)
@@ -559,7 +559,7 @@ def save_permanent_allowlist(patterns: set):
     entries by editing ``command_allowlist`` in config.yaml.
     """
     try:
-        from hermes_cli.config import load_config, save_config
+        from hermes_agent.hermes_cli.config import load_config, save_config
         config = load_config()
         on_disk = set(config.get("command_allowlist", []) or [])
         with _lock:

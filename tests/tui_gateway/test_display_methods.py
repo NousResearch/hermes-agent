@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from hermes_cli.dashboard_auth import ws_tickets
+from hermes_agent.hermes_cli.dashboard_auth import ws_tickets
 
 
 def test_install_worker_keeps_the_requested_profile_scope(tmp_path, monkeypatch):
@@ -90,7 +90,7 @@ def test_a_viewer_opened_from_a_browser_tab_signs_out_with_that_tab(monkeypatch,
     so /api/display/ws closes the viewer when that browser signs out; a native client's carries none."""
     import asyncio
 
-    from hermes_cli import browser_credential, web_server, web_session_sockets
+    from hermes_agent.hermes_cli import browser_credential, web_server, web_session_sockets
     from hermes_agent.tools.bot_desktop import runtime
     from hermes_agent.tui_gateway import server
 
@@ -321,7 +321,7 @@ def test_switch_sandbox_image_decides_only_a_pending_switch(monkeypatch, tmp_pat
     otherwise the decision is made through the same module the CLI offer uses and the fresh
     status rides back."""
     from hermes_agent.tui_gateway import server
-    from hermes_cli import sandbox_image_switch as sw
+    from hermes_agent.hermes_cli import sandbox_image_switch as sw
     from hermes_agent.tools.bot_desktop import runtime
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

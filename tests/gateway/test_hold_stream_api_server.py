@@ -28,7 +28,7 @@ def _sse(body):
 
 @pytest.mark.asyncio
 async def test_held_api_streams_carry_only_the_rewrite():
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     home = Path(os.environ["HERMES_HOME"])
     with FakeLLMServer(redactor_turn() + redactor_turn()) as srv:

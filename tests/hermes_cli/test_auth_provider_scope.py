@@ -38,7 +38,7 @@ def test_auto_resolution_sees_profile_scoped_key(tmp_path):
     Before the fix: the DEEPSEEK_API_KEY lived only in the scope, bare
     os.getenv found nothing, and auto-resolution reported no provider.
     """
-    from hermes_cli.auth import resolve_provider
+    from hermes_agent.hermes_cli.auth import resolve_provider
 
     home = _install_profile(tmp_path, "auto", "DEEPSEEK_API_KEY=sk-scoped\n")
 
@@ -57,7 +57,7 @@ def test_auto_resolution_sees_profile_scoped_key(tmp_path):
 
 def test_auto_resolution_falls_back_to_os_environ_when_unscoped(monkeypatch):
     """Single-profile / CLI path unchanged: exported env keys still win."""
-    from hermes_cli.auth import resolve_provider
+    from hermes_agent.hermes_cli.auth import resolve_provider
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-env")
     assert resolve_provider("auto") == "openrouter"
@@ -65,7 +65,7 @@ def test_auto_resolution_falls_back_to_os_environ_when_unscoped(monkeypatch):
 
 def test_auto_resolution_honors_explicit_config_provider(tmp_path):
     """An explicit config provider still wins over env-key detection."""
-    from hermes_cli.auth import resolve_provider
+    from hermes_agent.hermes_cli.auth import resolve_provider
 
     home = _install_profile(tmp_path, "opencode-go", "OPENCODE_GO_API_KEY=sk\n")
 

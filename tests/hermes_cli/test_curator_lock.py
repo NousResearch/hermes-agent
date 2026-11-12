@@ -37,7 +37,7 @@ def lock_env(tmp_path, monkeypatch):
     importlib.reload(curator)
     monkeypatch.setattr(curator, "_load_config", dict)
     monkeypatch.setattr(skill_usage, "_prune_builtins_enabled", lambda: False)
-    from hermes_cli import curator as curator_cli
+    from hermes_agent.hermes_cli import curator as curator_cli
     importlib.reload(curator_cli)
     # `lock` resolves the name through skill_manage's finder; pin its search roots to this profile.
     monkeypatch.setattr("hermes_agent.agent.skill_utils.get_all_skills_dirs", lambda: [skills])

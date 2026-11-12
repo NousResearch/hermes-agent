@@ -30,7 +30,7 @@ def test_restart_exit_wait_budget_outlasts_deferral_plus_stop_envelope():
 
 
 def test_cli_restart_wait_covers_configured_cron_drain(tmp_path, monkeypatch):
-    import hermes_cli.gateway as gateway_cli
+    import hermes_agent.hermes_cli.gateway as gateway_cli
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     for key in ("HERMES_RESTART_DRAIN_TIMEOUT", "HERMES_RESTART_AFTER_TURN_TIMEOUT", "HERMES_CRON_DRAIN_TIMEOUT"):

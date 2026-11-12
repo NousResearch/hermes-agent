@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway_tools
-from hermes_cli.gateway_agent import GatewayAgent
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_agent.hermes_cli import gateway_tools
+from hermes_agent.hermes_cli.gateway_agent import GatewayAgent
+from hermes_agent.hermes_cli.gateway_connection import GatewayConnection
 
 SID = "local-abc"
 
@@ -72,7 +72,7 @@ def gateway(monkeypatch):
 
 
 def test_monitor_lists_tails_and_controls_the_gateway_sessions_children(gateway):
-    from hermes_cli import cli_subagent_monitor
+    from hermes_agent.hermes_cli import cli_subagent_monitor
     agent, client = gateway
     monitor = cli_subagent_monitor.SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=True,
                                                                    _invalidate=lambda: None))
@@ -97,7 +97,7 @@ def test_monitor_lists_tails_and_controls_the_gateway_sessions_children(gateway)
 
 
 def test_idle_session_without_children_does_not_poll_the_roster(gateway):
-    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_agent.hermes_cli.cli_subagent_monitor import SubagentMonitor
     agent, client = gateway
     client.children = []
     monitor = SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=False))
@@ -106,8 +106,8 @@ def test_idle_session_without_children_does_not_poll_the_roster(gateway):
 
 
 def test_failing_roster_reads_age_out_the_cached_children(gateway):
-    from hermes_cli.cli_subagent_monitor import SubagentMonitor
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
     agent, client = gateway
     monitor = SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=False))
     view = gateway_tools.process_view()
@@ -132,8 +132,8 @@ def test_detail_view_paints_the_cached_tail_and_only_the_tick_asks_the_gateway(g
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.output import DummyOutput
 
-    from hermes_cli import cli_subagent_monitor
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli import cli_subagent_monitor
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
     agent, client = gateway
     monitor = cli_subagent_monitor.SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=True,
                                                                    _invalidate=lambda: None))
@@ -177,7 +177,7 @@ def test_detail_view_paints_the_cached_tail_and_only_the_tick_asks_the_gateway(g
 def test_a_failing_tick_keeps_the_spinner_thread_alive(gateway, monkeypatch):
     """The spinner thread runs ``tick`` in a bare loop: one raise would end it, and with it the
     spinner and the dock, for the rest of the session. A failed poll skips a beat instead."""
-    from hermes_cli.cli_subagent_monitor import SubagentMonitor
+    from hermes_agent.hermes_cli.cli_subagent_monitor import SubagentMonitor
     agent, _client = gateway
     repaints = []
     monitor = SubagentMonitor(SimpleNamespace(agent=agent, _agent_running=True,

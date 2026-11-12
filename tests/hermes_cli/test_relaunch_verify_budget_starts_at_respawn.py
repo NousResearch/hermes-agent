@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli import update_cmd_windows as ucw
+from hermes_agent.hermes_cli import update_cmd_windows as ucw
 
 # Measured on the reported host: the replacement appears this far into a 30 s budget (restart stage
 # 04:50:30 -> first gateway.start 04:51:03, budget origin ~04:50:40).

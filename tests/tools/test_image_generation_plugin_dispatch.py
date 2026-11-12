@@ -21,7 +21,7 @@ class TestPluginDispatch:
         """Declared controls reach generate(); an undeclared one the model sent anyway is dropped, so a
         plugin whose generate() lacks **kwargs never sees it."""
         from hermes_agent.agent.image_gen_provider import ImageGenProvider
-        from hermes_cli import plugins as plugins_module
+        from hermes_agent.hermes_cli import plugins as plugins_module
         from hermes_agent.tools import image_generation_tool
 
         seen = {}

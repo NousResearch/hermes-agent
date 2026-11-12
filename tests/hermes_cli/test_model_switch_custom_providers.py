@@ -12,16 +12,16 @@ the behavior under test.
 
 import time
 
-import hermes_cli.providers as providers_mod
+import hermes_agent.hermes_cli.providers as providers_mod
 import pytest
 import hermes_yaml as yaml
-from hermes_cli.model_switch import list_authenticated_providers, switch_model
-from hermes_cli.model_switch_providers import (
+from hermes_agent.hermes_cli.model_switch import list_authenticated_providers, switch_model
+from hermes_agent.hermes_cli.model_switch_providers import (
     _fetch_picker_live_models,
     _NativePickerModelList,
     _save_discovered_models_to_config,
 )
-from hermes_cli.providers import resolve_provider_full
+from hermes_agent.hermes_cli.providers import resolve_provider_full
 
 
 _MOCK_VALIDATION = {
@@ -35,30 +35,30 @@ _MOCK_VALIDATION = {
 @pytest.fixture(autouse=True)
 def _disable_live_custom_provider_model_probe(monkeypatch):
     """Keep custom-provider picker fixtures independent of local model servers."""
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
     monkeypatch.setattr(
-        "hermes_cli.models.cached_provider_model_ids", lambda *_a, **_kw: []
+        "hermes_agent.hermes_cli.models.cached_provider_model_ids", lambda *_a, **_kw: []
     )
     monkeypatch.setattr(
-        "hermes_cli.models.provider_model_ids", lambda *_a, **_kw: []
+        "hermes_agent.hermes_cli.models.provider_model_ids", lambda *_a, **_kw: []
     )
     monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_ollama_local_models", lambda *_a, **_kw: None
+        "hermes_agent.hermes_cli.models_local.fetch_ollama_local_models", lambda *_a, **_kw: None
     )
 
 
 def test_picker_native_probe_failure_falls_back_to_openai_catalog(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
+        "hermes_agent.hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
     )
     monkeypatch.setattr(
-        "hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {}
+        "hermes_agent.hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {}
     )
     monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: None
+        "hermes_agent.hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        "hermes_cli.models.fetch_api_models", lambda *a, **k: ["fallback-model"]
+        "hermes_agent.hermes_cli.models.fetch_api_models", lambda *a, **k: ["fallback-model"]
     )
 
     assert _fetch_picker_live_models(
@@ -79,14 +79,14 @@ def test_picker_native_catalog_is_admitted_to_the_shared_model_cache(monkeypatch
     synthesizes from the key — a keyed endpoint otherwise wrote a row nobody could read back.
     """
     monkeypatch.setattr(
-        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
+        "hermes_agent.hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
     )
-    monkeypatch.setattr("hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
     monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: ["qwen3:8b"]
+        "hermes_agent.hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: ["qwen3:8b"]
     )
 
-    from hermes_cli.models import cached_fetch_api_models
+    from hermes_agent.hermes_cli.models import cached_fetch_api_models
 
     url = "http://127.0.0.1:11434/v1"
     assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["qwen3:8b"]
@@ -103,14 +103,14 @@ def test_picker_native_catalog_skips_cache_admission_when_cache_is_off(monkeypat
     minted and persisted outside the cache-entry decision that exists to avoid that.
     """
     monkeypatch.setattr(
-        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
+        "hermes_agent.hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
     )
-    monkeypatch.setattr("hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
     monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: ["qwen3:8b"]
+        "hermes_agent.hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: ["qwen3:8b"]
     )
 
-    from hermes_cli.models import cached_fetch_api_models
+    from hermes_agent.hermes_cli.models import cached_fetch_api_models
 
     url = "http://127.0.0.1:11434/v1"
     assert _fetch_picker_live_models(None, url, "custom", False, cache=False) == ["qwen3:8b"]
@@ -121,17 +121,17 @@ def test_picker_native_catalog_skips_cache_admission_when_cache_is_off(monkeypat
 def _native_picker_probe(monkeypatch, models_by_call):
     """Native Ollama detection on, ``/api/tags`` answering successive ``models_by_call``."""
     monkeypatch.setattr(
-        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
+        "hermes_agent.hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True
     )
-    monkeypatch.setattr("hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.models._get_ollama_native_headers", lambda *a, **k: {})
     answers = iter(models_by_call)
     monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: next(answers)
+        "hermes_agent.hermes_cli.models_local.fetch_ollama_local_models", lambda *a, **k: next(answers)
     )
 
 
 def _age_cached_rows(seconds):
-    from hermes_cli import models as models_mod
+    from hermes_agent.hermes_cli import models as models_mod
 
     cache = models_mod._load_provider_models_cache()
     for row in cache.values():
@@ -147,7 +147,7 @@ def test_picker_native_catalog_uses_the_short_native_ttl(monkeypatch):
     ``cached_provider_model_ids`` clamps the built-in ``ollama`` slug the same way. Past the
     native TTL the row is stale: served once, with a background refresh scheduled.
     """
-    from hermes_cli.models_local import _OLLAMA_LOCAL_MODELS_CACHE_TTL
+    from hermes_agent.hermes_cli.models_local import _OLLAMA_LOCAL_MODELS_CACHE_TTL
 
     _native_picker_probe(monkeypatch, [["qwen3:8b"]])
     url = "http://127.0.0.1:11434/v1"
@@ -155,7 +155,7 @@ def test_picker_native_catalog_uses_the_short_native_ttl(monkeypatch):
 
     refreshes = []
     monkeypatch.setattr(
-        "hermes_cli.models._spawn_swr_refresh", lambda key, fn=None: refreshes.append(key)
+        "hermes_agent.hermes_cli.models._spawn_swr_refresh", lambda key, fn=None: refreshes.append(key)
     )
     _age_cached_rows(_OLLAMA_LOCAL_MODELS_CACHE_TTL + 1)
     assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["qwen3:8b"]
@@ -168,7 +168,7 @@ def test_picker_empty_native_catalog_is_not_stale_served(monkeypatch):
     Beyond it the probe must run again, or an Ollama that was model-less at first open keeps
     an empty picker row for the whole 7-day stale window after models are pulled.
     """
-    from hermes_cli.models import _PROVIDER_MODELS_CACHE_TTL
+    from hermes_agent.hermes_cli.models import _PROVIDER_MODELS_CACHE_TTL
 
     _native_picker_probe(monkeypatch, [[], ["back:latest"]])
     url = "http://127.0.0.1:11434/v1"
@@ -183,7 +183,7 @@ def test_picker_empty_native_catalog_is_not_stale_served(monkeypatch):
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", lambda *a, **k: [])
 
     providers = list_authenticated_providers(
         current_provider="openai-codex",
@@ -212,7 +212,7 @@ def test_list_authenticated_providers_numeric_yaml_provider_dict_key(monkeypatch
     """Unquoted YAML `providers: {2070: ...}` must not 500 the Model tab."""
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", lambda *a, **k: [])
 
     rows = list_authenticated_providers(
         current_provider=2070,
@@ -239,7 +239,7 @@ def test_list_authenticated_providers_numeric_custom_provider_name(monkeypatch):
     """Legacy custom_providers list with name: 2070 (int) must not .strip() crash."""
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", lambda *a, **k: [])
 
     rows = list_authenticated_providers(
         current_provider=2070,
@@ -268,7 +268,7 @@ def test_providers_singular_model_does_not_suppress_ollama_native_discovery(monk
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_ollama_local_models",
+        "hermes_agent.hermes_cli.models_local.fetch_ollama_local_models",
         lambda *a, **k: ["qwen3:latest", "llama3.2:latest"],
     )
 
@@ -326,7 +326,7 @@ def test_list_authenticated_providers_can_skip_custom_provider_live_probe(monkey
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     fetch = lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected probe"))
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         user_providers={},
@@ -470,7 +470,7 @@ def test_list_authenticated_providers_can_probe_active_bare_custom_endpoint(monk
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     monkeypatch.setattr(
-        "hermes_cli.models.fetch_api_models",
+        "hermes_agent.hermes_cli.models.fetch_api_models",
         lambda api_key, api_url, **kwargs: ["gpt-4o", "gpt-4o-mini"],
     )
 
@@ -491,9 +491,9 @@ def test_list_authenticated_providers_can_probe_active_bare_custom_endpoint(monk
 
 def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch):
     """Picker selections for bare custom endpoints should route to current base_url."""
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
 
     result = switch_model(
         raw_input="gpt-4o-mini",
@@ -524,9 +524,9 @@ def test_switch_to_bare_custom_from_another_provider_resolves_the_configured_end
         encoding="utf-8",
     )
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
 
     result = switch_model(
         raw_input="qwen3:8b",
@@ -554,9 +554,9 @@ def test_switch_to_bare_custom_with_no_configured_endpoint_keeps_the_current_one
     (home / "config.yaml").write_text("model:\n  default: m\n  provider: anthropic\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-env")
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
 
     result = switch_model(
         raw_input="m2",
@@ -580,7 +580,7 @@ def test_openrouter_mirror_read_never_raises_without_a_secret_scope(monkeypatch)
     propagating out of ``switch_model``, where the resolver's own read of the same name is
     suppressed."""
     from hermes_agent.agent import secret_scope
-    from hermes_cli.model_switch import _openrouter_mirror_base_url
+    from hermes_agent.hermes_cli.model_switch import _openrouter_mirror_base_url
 
     monkeypatch.setenv("OPENROUTER_BASE_URL", "https://mirror.example.com/v1")
     secret_scope.set_multiplex_active(True)
@@ -600,9 +600,9 @@ def test_switch_to_bare_custom_ignores_an_openrouter_mirror(monkeypatch, tmp_pat
     (home / "config.yaml").write_text("model:\n  default: m\n  provider: custom\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("OPENROUTER_BASE_URL", "https://mirror.example.com/v1")
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
 
     result = switch_model(
         raw_input="m2",
@@ -656,15 +656,15 @@ def test_switch_model_does_not_send_ollama_headers_to_unrelated_custom_endpoint(
         return _MOCK_VALIDATION
 
     monkeypatch.setattr(
-        "hermes_cli.models_local.should_use_ollama_native_catalog",
+        "hermes_agent.hermes_cli.models_local.should_use_ollama_native_catalog",
         fake_native_detection,
     )
     monkeypatch.setattr(
-        "hermes_cli.models_local._get_ollama_request_headers",
+        "hermes_agent.hermes_cli.models_local._get_ollama_request_headers",
         lambda: {"Authorization": "Bearer configured-ollama-secret"},
     )
     monkeypatch.setattr(
-        "hermes_cli.models._get_provider_config_dict",
+        "hermes_agent.hermes_cli.models._get_provider_config_dict",
         lambda provider: (
             {"base_url": "https://trusted-ollama.example:11434"}
             if provider == "ollama"
@@ -672,16 +672,16 @@ def test_switch_model_does_not_send_ollama_headers_to_unrelated_custom_endpoint(
         ),
     )
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **kwargs: {
             "api_key": "custom-key",
             "base_url": "https://attacker.example:11434/v1",
             "api_mode": "chat_completions",
         },
     )
-    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", fake_validation)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_validate.validate_requested_model", fake_validation)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
 
     result = switch_model(
         raw_input="new-model",
@@ -705,7 +705,7 @@ def test_switch_model_does_not_send_ollama_headers_to_unrelated_custom_endpoint(
 def test_picker_selection_resolves_named_custom_provider_model_id(monkeypatch):
     """Picker prefixes must not leak into a named custom provider API model id."""
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda **kwargs: {
             "api_key": "test-key",
             "base_url": "https://token.sensenova.cn/v1",
@@ -713,12 +713,12 @@ def test_picker_selection_resolves_named_custom_provider_model_id(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "hermes_cli.models_validate.validate_requested_model",
+        "hermes_agent.hermes_cli.models_validate.validate_requested_model",
         lambda *a, **k: _MOCK_VALIDATION,
     )
-    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
     monkeypatch.setattr(
-        "hermes_cli.model_switch.get_model_capabilities",
+        "hermes_agent.hermes_cli.model_switch.get_model_capabilities",
         lambda *a, **k: None,
     )
 
@@ -753,7 +753,7 @@ def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     with all models collected, not N duplicate rows."""
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", lambda *a, **k: [])
 
     providers = list_authenticated_providers(
         current_provider="openrouter",
@@ -785,7 +785,7 @@ def test_list_deduplicates_same_model_in_group(monkeypatch):
     duplicate entries in the models list."""
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", lambda *a, **k: [])
 
     providers = list_authenticated_providers(
         current_provider="openrouter",
@@ -820,7 +820,7 @@ def test_custom_provider_no_key_singular_model_still_probes_live_models(monkeypa
         calls.append((api_key, base_url, kwargs))
         return ["llama3", "mistral", "qwen3-coder"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fake_fetch_api_models)
 
     providers = list_authenticated_providers(
         current_provider="openai-codex",
@@ -855,7 +855,7 @@ def test_custom_provider_group_explicit_duplicate_skips_probe(monkeypatch):
         calls.append((args, kwargs))
         return ["unexpected-live-model"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         current_provider="custom:local-ollama",
@@ -889,7 +889,7 @@ def test_custom_provider_current_only_probe_respects_explicit_catalog(monkeypatc
         calls.append((api_key, base_url, kwargs))
         return ["live-a", "live-b"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         current_provider="custom:active",
@@ -934,7 +934,7 @@ def test_custom_provider_current_explicit_catalog_skips_probe(monkeypatch):
         calls.append((args, kwargs))
         return ["unexpected-live-model"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         current_provider="custom:static",
@@ -968,7 +968,7 @@ def test_custom_provider_empty_explicit_list_allows_probe(monkeypatch):
         calls.append((api_key, base_url, kwargs))
         return ["live-a", "live-b"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         current_provider="custom:local",
@@ -1128,7 +1128,7 @@ def test_list_authenticated_providers_current_endpoint_uses_current_slug(monkeyp
 
 
 def test_picker_endpoint_authorization_overrides_inferred_bearer(monkeypatch):
-    from hermes_cli.model_switch_providers import _fetch_picker_live_models
+    from hermes_agent.hermes_cli.model_switch_providers import _fetch_picker_live_models
 
     captured: dict[str, str] = {}
 
@@ -1136,8 +1136,8 @@ def test_picker_endpoint_authorization_overrides_inferred_bearer(monkeypatch):
         captured.update(headers or {})
         return ["model-a"]
 
-    monkeypatch.setattr("hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True)
-    monkeypatch.setattr("hermes_cli.models_local.fetch_ollama_local_models", fake_native)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_local.fetch_ollama_local_models", fake_native)
     result = _fetch_picker_live_models(
         "endpoint-key",
         "http://127.0.0.1:11434/v1",
@@ -1349,7 +1349,7 @@ def test_lmstudio_picker_probes_active_config_base_url(monkeypatch):
         captured["api_key"] = api_key
         return ["qwen/qwen3-coder-30b"]
 
-    monkeypatch.setattr("hermes_cli.models_local.fetch_lmstudio_models", _fake_fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_local.fetch_lmstudio_models", _fake_fetch)
 
     list_authenticated_providers(
         current_provider="lmstudio",
@@ -1376,7 +1376,7 @@ def test_lmstudio_picker_lm_base_url_env_wins_over_active_config(monkeypatch):
         captured["base_url"] = base_url
         return []
 
-    monkeypatch.setattr("hermes_cli.models_local.fetch_lmstudio_models", _fake_fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_local.fetch_lmstudio_models", _fake_fetch)
 
     list_authenticated_providers(
         current_provider="lmstudio",
@@ -1402,7 +1402,7 @@ def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
         captured["base_url"] = base_url
         return []
 
-    monkeypatch.setattr("hermes_cli.models_local.fetch_lmstudio_models", _fake_fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_local.fetch_lmstudio_models", _fake_fetch)
 
     list_authenticated_providers(
         current_provider="openrouter",
@@ -1430,7 +1430,7 @@ def test_lmstudio_bare_providers_block_does_not_hide_live_catalog(monkeypatch):
 
     live_catalog = ["model-a", "model-b", "model-c"]
     monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_lmstudio_models",
+        "hermes_agent.hermes_cli.models_local.fetch_lmstudio_models",
         lambda api_key=None, base_url=None, timeout=5.0: list(live_catalog),
     )
 
@@ -1460,7 +1460,7 @@ def test_lmstudio_providers_block_with_explicit_endpoint_still_uses_section3(mon
     monkeypatch.delenv("LM_API_KEY", raising=False)
 
     monkeypatch.setattr(
-        "hermes_cli.models_local.fetch_lmstudio_models",
+        "hermes_agent.hermes_cli.models_local.fetch_lmstudio_models",
         lambda api_key=None, base_url=None, timeout=5.0: ["should-not-be-used"],
     )
 
@@ -1468,7 +1468,7 @@ def test_lmstudio_providers_block_with_explicit_endpoint_still_uses_section3(mon
         return ["remote-model"], False
 
     monkeypatch.setattr(
-        "hermes_cli.model_switch_providers._discover_endpoint_models", _fake_discover
+        "hermes_agent.hermes_cli.model_switch_providers._discover_endpoint_models", _fake_discover
     )
 
     providers = list_authenticated_providers(
@@ -1507,7 +1507,7 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
     models from the endpoint.
     """
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
-    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.providers.HERMES_OVERLAYS", {})
 
     calls = []
 
@@ -1515,7 +1515,7 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
         calls.append((api_key, base_url, kwargs))
         return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fake_fetch_api_models)
 
     custom_providers = [
         {
@@ -1564,7 +1564,7 @@ def test_same_endpoint_different_extra_headers_not_collapsed(monkeypatch):
     header-authenticated endpoint (e.g. per-tenant routing behind one proxy)
     and must probe /models with its own headers."""
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
-    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.providers.HERMES_OVERLAYS", {})
 
     calls = []
 
@@ -1575,7 +1575,7 @@ def test_same_endpoint_different_extra_headers_not_collapsed(monkeypatch):
         tenant = (kwargs.get("headers") or {}).get("X-Tenant", "none")
         return [f"model-{tenant}"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fake_fetch_api_models)
 
     providers = list_authenticated_providers(
         current_provider="openrouter",
@@ -1622,7 +1622,7 @@ def test_resolve_custom_provider_passes_key_env():
     Regression: previously api_key_env_vars was always (), silently dropping
     the configured env var and causing 401s on every request.
     """
-    from hermes_cli.providers import resolve_custom_provider
+    from hermes_agent.hermes_cli.providers import resolve_custom_provider
 
     resolved = resolve_custom_provider(
         "custom:token-plan",
@@ -1649,16 +1649,16 @@ def test_discovered_models_auto_saved_to_cache(monkeypatch):
     must be called with the provider's base_url and the discovered model list.
     """
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
-    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.providers.HERMES_OVERLAYS", {})
 
     save_calls = []
 
     def fake_fetch_api_models(api_key, base_url, **kwargs):
         return ["discovered-a", "discovered-b", "discovered-c"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fake_fetch_api_models)
     monkeypatch.setattr(
-        "hermes_cli.model_switch_providers._save_discovered_models_to_config",
+        "hermes_agent.hermes_cli.model_switch_providers._save_discovered_models_to_config",
         lambda api_url, model_ids, **kwargs: save_calls.append((api_url, model_ids)),
     )
 
@@ -1701,16 +1701,16 @@ def test_save_discovered_models_preserves_dict_form(monkeypatch):
     """``_save_discovered_models_to_config`` must not replace a dict-form
     ``models`` mapping (per-model metadata like ``context_length``) with
     a flat list of strings (#67841)."""
-    from hermes_cli.model_switch_providers import _save_discovered_models_to_config
+    from hermes_agent.hermes_cli.model_switch_providers import _save_discovered_models_to_config
 
     save_calls = []
 
     def fake_save(config):
         save_calls.append(dict(config))
 
-    monkeypatch.setattr("hermes_cli.config.save_config", fake_save)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.save_config", fake_save)
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {
             "custom_providers": [
                 {
@@ -1747,7 +1747,7 @@ def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
     ``_save_discovered_models_to_config`` does.
     """
     monkeypatch.setattr(
-        "hermes_cli.models.fetch_api_models",
+        "hermes_agent.hermes_cli.models.fetch_api_models",
         lambda api_key, base_url, **kw: [
             "discovered-a",
             "discovered-b",
@@ -1756,27 +1756,27 @@ def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
     )
     # Non-interactive model selection.
     monkeypatch.setattr(
-        "hermes_cli.curses_ui.curses_radiolist", lambda *a, **k: 0
+        "hermes_agent.hermes_cli.curses_ui.curses_radiolist", lambda *a, **k: 0
     )
     # No-op downstream writes so the test never touches a real config.
-    monkeypatch.setattr("hermes_cli.main_provider_setup._save_custom_provider", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main_provider_setup._save_custom_provider", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth._save_model_choice", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.deactivate_provider", lambda *a, **k: None)
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {"model": {}, "providers": {}, "custom_providers": []},
     )
-    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.save_config", lambda cfg: None)
 
     save_calls = []
     monkeypatch.setattr(
-        "hermes_cli.model_switch_providers._save_discovered_models_to_config",
+        "hermes_agent.hermes_cli.model_switch_providers._save_discovered_models_to_config",
         lambda api_url, model_ids, **kwargs: save_calls.append(
             (api_url, model_ids, kwargs)
         ),
     )
 
-    from hermes_cli.model_setup_flows_custom import _model_flow_named_custom
+    from hermes_agent.hermes_cli.model_setup_flows_custom import _model_flow_named_custom
 
     _model_flow_named_custom(
         {},
@@ -1819,7 +1819,7 @@ def test_shared_url_different_display_names_are_separate_rows(monkeypatch):
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     # Stub live discovery so the test is deterministic regardless of network.
     monkeypatch.setattr(
-        "hermes_cli.models.fetch_api_models",
+        "hermes_agent.hermes_cli.models.fetch_api_models",
         lambda api_key, base_url, **kwargs: [],
     )
 
@@ -1896,7 +1896,7 @@ def test_custom_provider_context_length_models_dict_still_probes(monkeypatch):
         calls.append((api_key, base_url, kwargs))
         return ["qwen3.6:35b-mlx", "gemma4:31b", "llama3"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         current_provider="custom:local-ollama",
@@ -1933,7 +1933,7 @@ def test_custom_provider_dict_models_pin_requires_discover_false(monkeypatch):
         calls.append((args, kwargs))
         return ["unexpected-live-model"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         current_provider="custom:local-ollama",
@@ -1971,7 +1971,7 @@ _SHARED_PROXY_URL = "https://proxy.example.com/v1"
 def _seed_custom_model_cache(monkeypatch, models, *, age_seconds=10):
     """Put *models* on disk for ``_LOCAL_ENDPOINT`` under the no-credential
     fingerprint the picker probes local endpoints with."""
-    import hermes_cli.models as models_mod
+    import hermes_agent.hermes_cli.models as models_mod
 
     fp = models_mod._custom_endpoint_fingerprint("", None, None)
     cache = {
@@ -1996,7 +1996,7 @@ def _no_probe_local_row(monkeypatch, *, custom_providers=None, user_providers=No
         fetched.append(base_url)
         return ["should-not-be-reached"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         current_provider=current_provider,
@@ -2066,7 +2066,7 @@ def test_no_probe_open_serves_cached_catalog_for_bare_custom_endpoint(monkeypatc
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     fetched = []
     monkeypatch.setattr(
-        "hermes_cli.models.fetch_api_models",
+        "hermes_agent.hermes_cli.models.fetch_api_models",
         lambda _k, base_url, **_kw: (fetched.append(base_url), None)[1],
     )
 
@@ -2138,7 +2138,7 @@ def test_cached_catalog_is_not_written_back_to_config(monkeypatch):
     _seed_custom_model_cache(monkeypatch, _LOCAL_CATALOG)
     saves = []
     monkeypatch.setattr(
-        "hermes_cli.model_switch_providers._save_discovered_models_to_config",
+        "hermes_agent.hermes_cli.model_switch_providers._save_discovered_models_to_config",
         lambda api_url, model_ids, **kwargs: saves.append((api_url, model_ids)),
     )
 
@@ -2207,7 +2207,7 @@ def test_keyless_endpoint_with_saved_catalog_is_still_not_probed(monkeypatch):
         fetched.append(base_url)
         return ["should-not-be-reached"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fetch)
 
     providers = list_authenticated_providers(
         current_provider="nous",
@@ -2243,7 +2243,7 @@ def test_api_mode_rows_do_not_share_a_cached_catalog(monkeypatch):
     or an ``anthropic_messages`` row renders whatever the OpenAI-mode row
     cached against the same base_url.
     """
-    import hermes_cli.models as models_mod
+    import hermes_agent.hermes_cli.models as models_mod
 
     openai_catalog = ["gpt-oss-a", "gpt-oss-b"]
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
@@ -2255,7 +2255,7 @@ def test_api_mode_rows_do_not_share_a_cached_catalog(monkeypatch):
         fetched.append(base_url)
         return ["should-not-be-reached"]
 
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", fetch)
 
     # Only the OpenAI-mode probe (api_mode=None) is on disk.
     fp = models_mod._custom_endpoint_fingerprint("sk-shared", None, None)
@@ -2319,7 +2319,7 @@ def test_auto_saved_catalog_round_trips_without_pinning(tmp_path, monkeypatch):
     future change makes the saved shape look like an intentional allowlist
     again, this fails even if the gate logic above is refactored away.
     """
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     cfg_path = tmp_path / "config.yaml"
@@ -2364,8 +2364,8 @@ def test_legacy_sentinel_catalog_still_resolves_and_migrates(tmp_path, monkeypat
     and (c) migrate to the clean entry-level ``models_discovered`` shape on
     the next discovery save.
     """
-    import hermes_cli.config as config_mod
-    from hermes_cli.model_switch import (
+    import hermes_agent.hermes_cli.config as config_mod
+    from hermes_agent.hermes_cli.model_switch import (
         _declared_model_ids,
         _entry_models_discovered,
         _models_config_is_allowlist,
@@ -2428,9 +2428,9 @@ def test_same_provider_switch_on_session_only_custom_endpoint_keeps_endpoint(mon
     picked."""
     for var in ("OPENROUTER_API_KEY", "OPENROUTER_BASE_URL", "CUSTOM_BASE_URL", "CUSTOM_API_KEY", "OPENAI_API_KEY"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr("hermes_cli.model_switch.load_config", lambda: {"model": {"provider": "openrouter", "default": "x"}}, raising=False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.load_config", lambda: {"model": {"provider": "openrouter", "default": "x"}}, raising=False)
     monkeypatch.setattr(
-        "hermes_cli.models.probe_api_models",
+        "hermes_agent.hermes_cli.models.probe_api_models",
         lambda api_key, base_url, **kw: {"models": ["m-a", "m-b"], "url": base_url + "/models", "base_url": base_url,
                                           "suggested_base_url": None, "used_fallback": False})
 

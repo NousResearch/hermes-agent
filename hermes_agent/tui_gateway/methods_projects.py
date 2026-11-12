@@ -18,7 +18,7 @@ class _NoProject(Exception):
 
 
 def _projects_payload(conn) -> dict:
-    from hermes_cli import projects_db as pdb
+    from hermes_agent.hermes_cli import projects_db as pdb
     return {
         "projects": [p.to_dict() for p in pdb.list_projects(conn, include_archived=True)],
         "active_id": pdb.get_active_id(conn)}
@@ -32,7 +32,7 @@ def _projects_method(name: str):
         @_registry.profile_scoped
         def handler(rid, params: dict) -> dict:
             try:
-                from hermes_cli import projects_db as pdb
+                from hermes_agent.hermes_cli import projects_db as pdb
                 with pdb.connect_closing() as conn:
                     return fn(rid, params, pdb, conn)
             except _NoProject:
@@ -95,7 +95,7 @@ def _(rid, params, pdb, conn) -> dict:
         **_pick(params, "slug", "primary_path", "description", "icon", "color", "board_slug"))
     if params.get("use"):
         pdb.set_active(conn, pid)
-    from hermes_cli.observability.shared_metrics_signals import record_feature_used
+    from hermes_agent.hermes_cli.observability.shared_metrics_signals import record_feature_used
     record_feature_used("projects")
     proj = pdb.get_project(conn, pid)
     return _ok(rid, {"project": proj.to_dict() if proj else None})
@@ -166,7 +166,7 @@ def _is_session_cwd_junk(cwd: str) -> bool:
 
 def _repo_discovery_policy(raw: dict | None = None) -> dict:
     """Return the effective, profile-local Desktop repository scan policy."""
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
     defaults = DEFAULT_CONFIG["desktop"]
     source = raw if isinstance(raw, dict) else (_load_cfg().get("desktop") or {})
     if not isinstance(source, dict):
@@ -200,7 +200,7 @@ def _repo_discovery_policy_key(policy: dict) -> str:
 
 
 def _repo_discovery_policy_is_default(policy: dict) -> bool:
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
     return _repo_discovery_policy_key(policy) == _repo_discovery_policy_key(
         _repo_discovery_policy(DEFAULT_CONFIG["desktop"]))
 
@@ -217,7 +217,7 @@ def _scan_discovered_repos_remote(conn, policy: dict) -> bool:
     label) pairs into the discovery cache.
     See #81723.
     """
-    from hermes_cli import projects_db as pdb
+    from hermes_agent.hermes_cli import projects_db as pdb
     roots = policy.get("roots") or []
     excludes = policy.get("exclude_paths") or []
     pairs: list[tuple[str, str | None]] = []
@@ -301,7 +301,7 @@ def _discover_repos_payload(
     if include_cached:
         # `last_seen` is scan time, not user activity — never fold it into `last_active`.
         try:
-            from hermes_cli import projects_db as pdb
+            from hermes_agent.hermes_cli import projects_db as pdb
             with (contextlib.nullcontext(conn) if conn is not None else pdb.connect_closing()) as c:
                 for entry in pdb.list_discovered_repos(c):
                     root = str(entry.get("root") or "")
@@ -352,7 +352,7 @@ def _project_tree_inputs(
     sessions = [_project_tree_row(r) for r in rows]
     # Parallel-warm the git cache so build_tree's resolver doesn't cold-probe each cwd in turn.
     git_probe.warm_roots(s["cwd"] for s in sessions if s.get("cwd"))
-    from hermes_cli import projects_db as pdb
+    from hermes_agent.hermes_cli import projects_db as pdb
     policy = _repo_discovery_policy()
     policy_key = _repo_discovery_policy_key(policy)
     with pdb.connect_closing() as conn:

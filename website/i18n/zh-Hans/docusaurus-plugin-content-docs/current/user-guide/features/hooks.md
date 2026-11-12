@@ -370,7 +370,7 @@ def register(ctx):
 - 回调异常会被记录并跳过，后续回调仍会继续。
 - 下表分类仅描述当前行为：**观察者**忽略返回值，**Transform** 接受第一个有效字符串替换，**指令/控制**消费已说明的返回结构。Plugin middleware 是独立的 registry/surface，不属于另一类 hook。
 - `turn_id`、`api_request_id`、`task_id`、`session_id`、`api_call_count` 等关联字段因 hook 而异，可能不存在；应将这些 ID 视为 opaque 值。
-- 运行时事件名以 `hermes_cli.plugins.VALID_HOOKS` 为准。`hermes hooks list` 只列出已配置的 shell/outbound hook，并非可用事件目录；只有 `hermes hooks test <event>` 收到无效事件时才会打印有效集合。
+- 运行时事件名以 `hermes_agent.hermes_cli.plugins.VALID_HOOKS` 为准。`hermes hooks list` 只列出已配置的 shell/outbound hook，并非可用事件目录；只有 `hermes hooks test <event>` 收到无效事件时才会打印有效集合。
 
 ### 已发布的 plugin-hook 目录
 
@@ -1191,7 +1191,7 @@ blocked transition 提交后触发（含 dependency-wait），回调可读写看
 - **向下一个 LLM 轮次注入上下文** — 在用户消息前追加 `git status` 输出、当前星期几或检索到的文档（参见 [`pre_llm_call`](#pre_llm_call)）。
 - **观察生命周期事件** — 在子 agent 完成（`subagent_stop`）或会话开始（`on_session_start`）时写入日志行。
 
-Shell hooks 通过在 CLI 启动（`hermes_cli/main.py`）和 gateway 启动（`hermes_agent/gateway/run.py`）时调用 `hermes_agent.agent.shell_hooks.register_from_config(cfg)` 来注册。它们与 Python 插件 hook 自然组合——两者都流经同一个分发器。
+Shell hooks 通过在 CLI 启动（`hermes_agent/hermes_cli/main.py`）和 gateway 启动（`hermes_agent/gateway/run.py`）时调用 `hermes_agent.agent.shell_hooks.register_from_config(cfg)` 来注册。它们与 Python 插件 hook 自然组合——两者都流经同一个分发器。
 
 ### 对比一览
 
@@ -1386,4 +1386,4 @@ hooks:
       secret_env: HERMES_WEBHOOK_SECRET
 ```
 
-配置中的事件名同样以 `hermes_cli.plugins.VALID_HOOKS` 为准。`hermes hooks list` 会列出这些已配置 target，但不会输出完整的可用事件目录。
+配置中的事件名同样以 `hermes_agent.hermes_cli.plugins.VALID_HOOKS` 为准。`hermes hooks list` 会列出这些已配置 target，但不会输出完整的可用事件目录。

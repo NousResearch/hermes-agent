@@ -99,7 +99,7 @@ config = {
 Path(os.environ["HERMES_HOME"] + "/config.yaml").write_text(
     yaml.safe_dump(config), encoding="utf-8"
 )
-from hermes_cli.runtime_provider import resolve_runtime_provider
+from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 from hermes_agent.agent.auxiliary_client import resolve_provider_client
 
 try:
@@ -149,8 +149,8 @@ config["providers"]["fixture-provider"]["request_timeout_seconds"] = 15
 Path(os.environ["HERMES_HOME"] + "/config.yaml").write_text(
     yaml.safe_dump(config), encoding="utf-8"
 )
-from hermes_cli.config import load_config_readonly
-from hermes_cli.timeouts import get_provider_request_timeout
+from hermes_agent.hermes_cli.config import load_config_readonly
+from hermes_agent.hermes_cli.timeouts import get_provider_request_timeout
 
 out["timeout_resolved"] = get_provider_request_timeout("fixture-provider", "model-b")
 fb2, _ = resolve_provider_client("fixture-provider", model="model-b", raw_codex=True)

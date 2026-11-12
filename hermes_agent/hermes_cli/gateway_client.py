@@ -249,7 +249,7 @@ def private_control_query(home: Path, request: bytes, timeout: float = 5) -> byt
     if os.name == "nt":
         from hermes_agent.gateway.runtime_bootstrap_windows import query_runtime_control
         return query_runtime_control(home, request, timeout)
-    from hermes_cli.gateway_runtime_discovery import connect_private
+    from hermes_agent.hermes_cli.gateway_runtime_discovery import connect_private
     deadline = time.monotonic() + timeout
     with connect_private(home, timeout) as peer:
         peer.sendall(request)
@@ -272,8 +272,8 @@ _UNKNOWN_TICKET_PARAMS = "PermissionError: invalid bootstrap parameters"
 
 def _session_ticket(home: Path, endpoint, *, purpose="interactive", scope=None, subject=None,
                     refuse_restart_wait=False) -> str:
-    from hermes_cli.gateway_runtime import control_home_for
-    from hermes_cli.gateway_runtime_discovery import _identify_response
+    from hermes_agent.hermes_cli.gateway_runtime import control_home_for
+    from hermes_agent.hermes_cli.gateway_runtime_discovery import _identify_response
     # A served secondary's ticket is minted by the multiplexer's socket, bound to the secondary.
     home = control_home_for(home, endpoint)
     # ``subject`` names the principal a same-user caller acts for (the standalone dashboard's
@@ -327,8 +327,8 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
     owner also refuses the socket when the wait opens between discovery and the dial."""
     from websockets.asyncio.client import connect
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime, gateway_profile_home
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError
+    from hermes_agent.hermes_cli.gateway_runtime import attachable, ensure_gateway_runtime, gateway_profile_home
+    from hermes_agent.hermes_cli.gateway_runtime_discovery import DiscoveryError
     from urllib.parse import urlsplit
 
     remote = "" if endpoint is not None else os.environ.get("HERMES_TUI_GATEWAY_URL", "").strip()

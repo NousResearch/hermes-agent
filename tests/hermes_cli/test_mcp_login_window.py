@@ -16,7 +16,7 @@ def test_login_probe_window_follows_oauth_timeout(monkeypatch, tmp_path):
     """Production entry point ``_reauth_oauth_server``: with ``oauth.timeout: 3600`` the probe's
     connect bound is the callback window plus exchange headroom, not the old 315 s floor."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import hermes_cli.mcp_config as mc
+    import hermes_agent.hermes_cli.mcp_config as mc
 
     seen = {}
 
@@ -37,7 +37,7 @@ def test_login_probe_window_follows_oauth_timeout(monkeypatch, tmp_path):
 def test_probe_timeout_names_server_and_knobs(monkeypatch):
     """A probe that outlives its bound raises a TimeoutError whose message names the server and the
     governing settings — never the empty ``str(asyncio.TimeoutError())``."""
-    import hermes_cli.mcp_config as mc
+    import hermes_agent.hermes_cli.mcp_config as mc
 
     async def _hang(name, config):
         await asyncio.sleep(3600)

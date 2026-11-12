@@ -44,7 +44,7 @@ def _chat_args(**overrides):
 
 @pytest.fixture
 def main_mod(monkeypatch):
-    import hermes_cli.main as mod
+    import hermes_agent.hermes_cli.main as mod
 
     monkeypatch.setattr(mod, "_has_any_provider_configured", lambda: True)
     monkeypatch.setattr(mod, "_sync_bundled_skills_for_startup", lambda: None)
@@ -60,14 +60,14 @@ def fake_cli(monkeypatch):
     def fake_cli_main(**kwargs):
         captured.update(kwargs)
 
-    monkeypatch.setitem(sys.modules, "cli", types.SimpleNamespace(main=fake_cli_main))
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", types.SimpleNamespace(main=fake_cli_main))
     return captured
 
 
 @pytest.fixture
 def codex_config(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {
             "model": {
                 "provider": "openai-codex",
@@ -89,7 +89,7 @@ def _set_startup_config(
         config["security"] = {
             "allow_data_training_tiers_noninteractive": ack,
         }
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda: config)
 
 
 def test_cmd_chat_rejects_noninteractive_gpt55_pro_startup_override(
@@ -254,7 +254,7 @@ def test_cmd_chat_rejects_noninteractive_provider_only_override_when_default_is_
 ):
     monkeypatch.setattr(sys, "stdin", _NonInteractiveStdin())
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {"model": {"provider": "openai-codex", "default": "openai/gpt-5.5-pro"}},
     )
 
@@ -271,7 +271,7 @@ def test_cmd_chat_allows_noninteractive_safe_codex_startup_override(
 ):
     monkeypatch.setattr(sys, "stdin", _NonInteractiveStdin())
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {"model": {"provider": "openai-codex", "default": "gpt-5.5"}},
     )
 
@@ -294,7 +294,7 @@ def test_top_level_oneshot_rejects_noninteractive_gpt55_pro_startup_override(
         nonlocal called
         called = True
 
-    monkeypatch.setattr("hermes_cli.gateway_chat.launch_from_args", fake_run_oneshot_from_args)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_chat.launch_from_args", fake_run_oneshot_from_args)
 
     with pytest.raises(SystemExit) as excinfo:
         main_mod.main()

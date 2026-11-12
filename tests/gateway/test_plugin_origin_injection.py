@@ -17,7 +17,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from hermes_agent.gateway.profile_routing import parse_profile_routes
 from hermes_agent.gateway.run import GatewayRunner
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 PLUGIN = "desk"
 
@@ -107,9 +107,9 @@ def gateway(tmp_path, monkeypatch):
 
     runner._run_agent_inner = _fake_turn
     served = list(homes.items())
-    with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
-            patch("hermes_cli.profiles.get_profile_dir", side_effect=lambda n: homes[n]), \
-            patch("hermes_cli.profiles.profile_exists", side_effect=lambda n: n in homes):
+    with patch("hermes_agent.hermes_cli.profiles.profiles_to_serve", return_value=served), \
+            patch("hermes_agent.hermes_cli.profiles.get_profile_dir", side_effect=lambda n: homes[n]), \
+            patch("hermes_agent.hermes_cli.profiles.profile_exists", side_effect=lambda n: n in homes):
         yield SimpleNamespace(runner=runner, homes=homes, adapters=adapters, turns=turns)
 
 
@@ -134,7 +134,7 @@ async def test_origin_creates_session_in_own_profile_and_replies_to_origin(gatew
     runner, alpha, beta = gateway.runner, gateway.adapters["alpha"], gateway.adapters["beta"]
     ctx_alpha, mgr_alpha = _context(gateway.homes["alpha"])
     ctx_beta, mgr_beta = _context(gateway.homes["beta"])
-    with patch("hermes_cli.plugins._known_plugin_managers", return_value=[mgr_alpha, mgr_beta]):
+    with patch("hermes_agent.hermes_cli.plugins._known_plugin_managers", return_value=[mgr_alpha, mgr_beta]):
         await _publish(runner)
         assert ctx_alpha.inject_message("Kick off the review", origin=_origin("100")) is True
         await _settle(runner, alpha)
@@ -176,7 +176,7 @@ async def test_origin_cannot_reach_another_profile(gateway):
     through a chat the gateway routes to ``beta``. Refusal is synchronous and nothing is created."""
     runner, alpha = gateway.runner, gateway.adapters["alpha"]
     ctx_alpha, mgr_alpha = _context(gateway.homes["alpha"])
-    with patch("hermes_cli.plugins._known_plugin_managers", return_value=[mgr_alpha]):
+    with patch("hermes_agent.hermes_cli.plugins._known_plugin_managers", return_value=[mgr_alpha]):
         await _publish(runner)
         assert ctx_alpha.inject_message("x", origin=_origin("100", profile="beta")) is False
         assert ctx_alpha.inject_message("x", origin=_origin("999")) is False  # routed to beta
@@ -192,7 +192,7 @@ async def test_origin_without_connected_adapter_returns_false(gateway):
     runner = gateway.runner
     ctx_alpha, mgr_alpha = _context(gateway.homes["alpha"])
     runner._profile_adapters["alpha"] = {}  # alpha's bot is down; never borrow default's
-    with patch("hermes_cli.plugins._known_plugin_managers", return_value=[mgr_alpha]):
+    with patch("hermes_agent.hermes_cli.plugins._known_plugin_managers", return_value=[mgr_alpha]):
         await _publish(runner)
         assert ctx_alpha.inject_message("x", origin=_origin("100")) is False
         assert ctx_alpha.inject_message("x", origin={**_origin("100"), "platform": "discord"}) is False

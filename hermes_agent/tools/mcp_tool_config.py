@@ -14,7 +14,7 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
-from hermes_cli.stderr_timestamp import stamp_line, timestamp
+from hermes_agent.hermes_cli.stderr_timestamp import stamp_line, timestamp
 from hermes_agent.tools.mcp_tool_common import _env_ref_name, _prepend_path
 
 logger = logging.getLogger("hermes_agent.tools.mcp_tool")
@@ -201,7 +201,7 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
     keys, ``XDG_*``, vars injected by an external secret source (users configured that backend
     precisely so subprocesses can consume them), plus the server config's own ``env``."""
     from hermes_agent.agent.secret_scope import get_secret
-    from hermes_cli.env_loader import secret_source_names
+    from hermes_agent.hermes_cli.env_loader import secret_source_names
     env = {
         key: value for key, value in os.environ.items()
         if key in _SAFE_ENV_KEYS or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE or key.startswith("XDG_")}
@@ -653,7 +653,7 @@ def _malformed_cost_table(name: str, cfg: Any) -> Optional[str]:
 def _filter_suspicious_mcp_servers(servers: dict[str, dict]) -> dict[str, dict]:
     """Drop exfiltration-shaped MCP configs, and servers with a malformed cost table, before any stdio spawn path."""
     try:
-        from hermes_cli.mcp_security import validate_mcp_server_entry
+        from hermes_agent.hermes_cli.mcp_security import validate_mcp_server_entry
     except Exception:
         validate_mcp_server_entry = None
     safe_servers = {}
@@ -677,7 +677,7 @@ def _portable_mcp_servers(safe_servers: dict[str, dict], rejected: frozenset[str
     from hermes_agent.agent.secret_scope import UnscopedSecretError
     from hermes_agent.tools.mcp_tool_costs import CONFIG_KEYS
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_manager
         discover_plugins()
         portable = get_plugin_manager().get_portable_mcp_servers()
         for name, cfg in _filter_suspicious_mcp_servers(portable).items():
@@ -712,13 +712,13 @@ def _load_mcp_config() -> dict[str, dict]:
     if safe_worker_enabled():
         return {}
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         from utils import env_var_enabled as _env_enabled
         if _env_enabled("HERMES_SAFE_MODE"):
             return {}
         servers = load_config().get("mcp_servers")
         try:  # ensure .env vars are available for interpolation
-            from hermes_cli.env_loader import load_hermes_dotenv
+            from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
             load_hermes_dotenv()
         except Exception:
             pass

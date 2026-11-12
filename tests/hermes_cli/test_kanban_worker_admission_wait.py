@@ -13,8 +13,8 @@ import json
 import pytest
 from websockets.protocol import State
 
-from hermes_cli import kanban_worker_client
-from hermes_cli.gateway_client import GatewayClient
+from hermes_agent.hermes_cli import kanban_worker_client
+from hermes_agent.hermes_cli.gateway_client import GatewayClient
 
 
 class _Owner:
@@ -73,7 +73,7 @@ async def test_an_owner_that_stalls_after_admitting_fails_the_wait_within_the_lo
     (``owner_reclaim_paused``), so nothing outside the submitter bounds it: the wait for the
     answer must end once the board's real lock wait (``write_txn``'s retried ``BEGIN IMMEDIATE``
     under the busy timeout) plus a margin has passed. Time is scaled 1000x."""
-    from hermes_cli import kanban_db_connect
+    from hermes_agent.hermes_cli import kanban_db_connect
     monkeypatch.setenv('HERMES_KANBAN_BUSY_TIMEOUT_MS', '1000')
     budget = kanban_worker_client.admission_answer_budget()
     assert budget == (kanban_db_connect._BUSY_MAX_RETRIES + 1) * 1.0 + kanban_worker_client.ADMISSION_ANSWER_MARGIN_S

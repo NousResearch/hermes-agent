@@ -34,7 +34,7 @@ select an agent payload.
 ## Build and packaging entrypoints
 
 Source updates and source UI launches use the same dependency provider and
-product builders. `hermes_cli/source_build.py` selects the workspace union,
+product builders. `hermes_agent/hermes_cli/source_build.py` selects the workspace union,
 prepares it once, then invokes the shared recipes. An update builds TUI and
 web, plus the local desktop app when one was present before the update.
 Desktop packaging still belongs to the local desktop adapter.

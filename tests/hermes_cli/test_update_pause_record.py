@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import update_pause_record as pause_record
+from hermes_agent.hermes_cli import update_pause_record as pause_record
 from datetime import UTC
 
 REPO = Path(__file__).resolve().parents[2]
@@ -795,7 +795,7 @@ def test_a_malformed_retired_list_is_set_aside_only_when_nothing_refers_to_it(tm
 def test_a_host_without_psutil_records_an_identity_the_liveness_rule_can_prove(monkeypatch):
     """Review 5411136378 fix 2: the record's creation time comes from the same probe the reader
     judges with, so a psutil-less host never writes ``ct=None`` (unprovable, so never orphaned)."""
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
     monkeypatch.setitem(sys.modules, "psutil", None)  # `import psutil` raises ImportError
     # Our own creation time is cached per process; one an earlier test read with psutil differs
     # from the stdlib probe by its resolution (macOS `ps -o lstart`: 1 s). Judge with one probe.
@@ -812,7 +812,7 @@ def test_the_tree_gate_finds_pm_git_and_runs_it_in_the_updaters_custody(tmp_path
     from types import SimpleNamespace
 
     import pm
-    from hermes_cli import update_custody
+    from hermes_agent.hermes_cli import update_custody
     root = tmp_path / "checkout"
     root.mkdir()
     _git(root, "init", "-q")
@@ -841,7 +841,7 @@ def test_a_moved_head_holds_gateways_for_dependencies_only_where_a_launch_syncs_
     """Review 5411136378 decision (moved HEAD): stale dependencies defer the resume only where the
     next launch makes them current; an unknown currency never strands a committed update's set."""
     import pm
-    from hermes_cli import steward
+    from hermes_agent.hermes_cli import steward
     root = tmp_path / "checkout"
     root.mkdir()
     _git(root, "init", "-q")

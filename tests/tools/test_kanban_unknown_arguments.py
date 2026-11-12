@@ -11,8 +11,8 @@ def test_review_unknown_argument_rejects_before_handoff(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     for key in ('HERMES_KANBAN_TASK', 'HERMES_KANBAN_DB', 'HERMES_KANBAN_BOARD', 'HERMES_KANBAN_RUN_ID'):
         monkeypatch.delenv(key, raising=False)
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
     from hermes_agent.tools import kanban_tools  # register actual handlers
     from hermes_agent.tools.registry import registry
     kb._INITIALIZED_PATHS.clear()

@@ -51,7 +51,7 @@ def test_local_viewer_turn_prompts_and_saves_the_secret(monkeypatch):
     from hermes_agent.gateway.session_secret_prompt import secret_prompt_scope
     from hermes_agent.tools.skills_tool_setup import _capture_required_environment_variables
     saved = []
-    from hermes_cli import config
+    from hermes_agent.hermes_cli import config
     monkeypatch.setattr(config, 'save_env_value_secure',
                         lambda key, value: saved.append((key, value)) or {'success': True, 'stored_as': key,
                                                                           'validated': False})

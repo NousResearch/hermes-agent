@@ -17,7 +17,7 @@ import logging
 import threading
 import time
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +227,7 @@ class LocalSubagents:
         return entries
 
     def subagent_tail(self, subagent_id, *, fetch=False):
-        from hermes_cli.cli_subagent_monitor import read_tail
+        from hermes_agent.hermes_cli.cli_subagent_monitor import read_tail
         return read_tail(self._paths.get(subagent_id))
 
     def subagent_control(self, action, subagent_id, message=None):
@@ -327,9 +327,9 @@ def handle_skills_slash(cmd, console, cli=None):
     """Main's ``/skills`` (hub search / install / uninstall write the local skills tree), then the
     gateway's rescan so an install reaches the skill map the session's turns use, and ``cli``'s copy of
     the gateway's skill list is read again."""
-    from hermes_cli.skills_hub import handle_skills_slash as local
+    from hermes_agent.hermes_cli.skills_hub import handle_skills_slash as local
     local(cmd, console)
     reload_gateway_skills()
     if cli is not None:
-        from hermes_cli.gateway_plugin_commands import invalidate
+        from hermes_agent.hermes_cli.gateway_plugin_commands import invalidate
         invalidate(cli)

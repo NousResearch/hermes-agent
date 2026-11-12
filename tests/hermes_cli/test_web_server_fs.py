@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import ssh_workspace_fs, web_server
-from hermes_cli.web_routers import files as file_routes
+from hermes_agent.hermes_cli import ssh_workspace_fs, web_server
+from hermes_agent.hermes_cli.web_routers import files as file_routes
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient
@@ -261,7 +261,7 @@ def test_a_browser_download_reads_the_ssh_workspace_file_it_listed(client, monke
     the session header). Both read the file on the SSH machine, as native Desktop's download does,
     never a file at the same path on the gateway's own disk. The ticket allows a few retries of
     that exact URL, then dies with its profile."""
-    from hermes_cli import web_server_file_tickets as file_tickets
+    from hermes_agent.hermes_cli import web_server_file_tickets as file_tickets
     from hermes_constants import mark_named_profile_deleted
 
     # The Webapp: the browser's file routes (download tickets) exist only there.
@@ -393,7 +393,7 @@ def test_fs_media_shell_paths_deliver_files_and_preserve_access_checks(client, t
 
 @pytest.mark.platforms("posix")
 def test_fs_media_posix_paths_are_not_interpreted_as_windows_drives():
-    from hermes_cli.web_server_files import _fs_path
+    from hermes_agent.hermes_cli.web_server_files import _fs_path
 
     for path in ("/c/Users/example/checklist.txt", "/cygdrive/c/checklist.txt", "/mnt/c/checklist.txt"):
         assert _fs_path(path) == Path(path).resolve()
@@ -458,7 +458,7 @@ def test_fs_default_cwd_answers_each_profile_with_its_own_start_folder(client, m
     gateway serving several profiles starts each one's sessions and browser terminals in its own
     folder. A profile without one starts in the home folder: never another profile's folder and
     never the folder the serving process was started from."""
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     default_home = tmp_path / "default-home"
     work_home = default_home / "profiles" / "work"
@@ -1081,7 +1081,7 @@ def test_fs_download_maps_workspace_container_to_its_sandbox(client, monkeypatch
     monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
     monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.web_routers.sessions.get_session_detail",
+        "hermes_agent.hermes_cli.web_routers.sessions.get_session_detail",
         _session_detail({
             "sess-ws": str(project),
             "sess-other": str(other),
@@ -1155,7 +1155,7 @@ def test_fs_download_cwd_mount_wins_then_falls_back_to_workspace_sandbox(
     monkeypatch.setenv("TERMINAL_CWD", str(mounted))
     monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.web_routers.sessions.get_session_detail",
+        "hermes_agent.hermes_cli.web_routers.sessions.get_session_detail",
         _session_detail({"sess-ws": str(project)}),
     )
 
@@ -1178,7 +1178,7 @@ def test_agent_fs_path_translates_before_host_normalization(monkeypatch, tmp_pat
     """On a Windows gateway ``_fs_path("/workspace/x")`` anchors to the current
     drive (``D:\\workspace\\x``) and could serve an unrelated host file; the
     container path must reach the translator verbatim, before normalization."""
-    from hermes_cli import web_server_files
+    from hermes_agent.hermes_cli import web_server_files
 
     mapped = tmp_path / "x.txt"
     seen = []
@@ -1204,7 +1204,7 @@ def test_agent_fs_path_unmapped_container_path_404s_on_windows(monkeypatch):
     """A container path that misses translation must not fall back to the drive."""
     from fastapi import HTTPException
 
-    from hermes_cli import web_server_files
+    from hermes_agent.hermes_cli import web_server_files
 
     monkeypatch.setenv("TERMINAL_ENV", "docker")
     monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
@@ -1260,7 +1260,7 @@ def test_local_backend_ignores_leftover_docker_volumes(client, monkeypatch, tmp_
 def test_fs_download_profile_uses_that_profiles_sandbox(client, monkeypatch, tmp_path):
     """``profile=work`` must resolve /root/... in the work profile's sandbox, not the
     active profile's."""
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     default_home = tmp_path / "default-home"
     work_home = default_home / "profiles" / "work"
@@ -1304,7 +1304,7 @@ def test_fs_reads_accept_profile_current_for_host_files(client, tmp_path):
 
 def _two_profile_homes(monkeypatch, tmp_path, *, active_backend, work_backend):
     """Default + ``work`` homes with their own ``terminal.backend``; returns (default, work)."""
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     default_home = tmp_path / "default-home"
     work_home = default_home / "profiles" / "work"
@@ -1328,7 +1328,7 @@ def test_unmapped_classification_uses_requested_profiles_backend(
 ):
     """The Windows 404-or-drive decision and the sandbox hint read the same profile
     translation used, in both mixed-backend directions."""
-    from hermes_cli import web_server_files
+    from hermes_agent.hermes_cli import web_server_files
 
     _default, work_home = _two_profile_homes(
         monkeypatch, tmp_path, active_backend=active, work_backend=work)
@@ -1341,7 +1341,7 @@ def test_unmapped_classification_uses_requested_profiles_backend(
 def test_native_home_override_translates_with_that_profiles_volumes(monkeypatch, tmp_path):
     """A native ticket binds the profile's home before the route runs; translation must
     install that profile's terminal policy, not read the launch env's volumes."""
-    from hermes_cli import web_server_files
+    from hermes_agent.hermes_cli import web_server_files
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     _default, work_home = _two_profile_homes(
@@ -1379,7 +1379,7 @@ def test_fs_read_plain_host_path_logs_no_docker_media_warning(client, docker_vol
 
 
 def test_agent_fs_path_leaves_host_paths_to_fs_path(monkeypatch, tmp_path):
-    from hermes_cli import web_server_files
+    from hermes_agent.hermes_cli import web_server_files
 
     def translate(*_a, **_k):
         raise AssertionError("relative/UNC/drive paths are not container paths")

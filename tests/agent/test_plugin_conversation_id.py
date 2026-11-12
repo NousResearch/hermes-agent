@@ -40,7 +40,7 @@ _GETS_CONVERSATION_ID = {"handler", "pre_tool_call", "post_tool_call"}  # the na
 
 @pytest.fixture
 def probe(tmp_path, monkeypatch):
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
     from hermes_agent.tools.registry import registry
 
     home = tmp_path / "home"

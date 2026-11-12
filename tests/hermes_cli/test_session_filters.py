@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.session_filters — CLI time/filter parsing for
+"""Tests for hermes_agent.hermes_cli.session_filters — CLI time/filter parsing for
 `hermes sessions prune` / `hermes sessions archive`."""
 
 import time
@@ -6,7 +6,7 @@ from argparse import Namespace
 
 import pytest
 
-from hermes_cli.session_filters import (
+from hermes_agent.hermes_cli.session_filters import (
     build_prune_filters,
     parse_duration_seconds,
     parse_point_in_time,

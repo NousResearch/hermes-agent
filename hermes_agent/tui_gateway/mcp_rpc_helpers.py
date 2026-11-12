@@ -13,7 +13,7 @@ def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[dic
     servers = {name: dict(cfg) for name, cfg in config_servers.items() if isinstance(cfg, dict)}
     plugins: dict[str, str | None] = {name: None for name in servers}
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_manager
         from hermes_agent.tools.mcp_tool_config import _filter_suspicious_mcp_servers
 
         discover_plugins()
@@ -30,7 +30,7 @@ def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[dic
 
 
 def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> dict[str, Any]:
-    from hermes_cli.mcp_config import _oauth_tokens_present
+    from hermes_agent.hermes_cli.mcp_config import _oauth_tokens_present
     from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
 
     cfg = cfg if isinstance(cfg, dict) else {}
@@ -57,7 +57,7 @@ def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> dict[st
 def record_mcp_add(entry: Any, server_config: Mapping[str, Any], saved: bool) -> None:
     """Count an ``mcp.servers.add`` as an MCP extension install. A save fails only on a suspicious
     command/args configuration (``_save_mcp_server`` returns False)."""
-    from hermes_cli.mcp_catalog import record_mcp_install
+    from hermes_agent.hermes_cli.mcp_catalog import record_mcp_install
 
     source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
     record_mcp_install(source, entry.name if entry is not None else None, "success" if saved else "failed",

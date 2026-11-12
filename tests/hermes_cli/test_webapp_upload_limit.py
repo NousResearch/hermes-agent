@@ -1,4 +1,4 @@
-"""Real ASGI regressions for the Webapp's pre-parser upload limit (``hermes_cli/web_upload_limit.py``).
+"""Real ASGI regressions for the Webapp's pre-parser upload limit (``hermes_agent/hermes_cli/web_upload_limit.py``).
 
 The cookie Origin gate on the same uploads is covered in ``test_webapp_upload_security.py``.
 """
@@ -14,11 +14,11 @@ import httpx
 import pytest
 from starlette import formparsers
 
-from hermes_cli import web_server
-from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_agent.hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
-from hermes_cli.web_upload_limit import CHAT_FILE_BODY_MAX_BYTES
+from hermes_agent.hermes_cli.web_upload_limit import CHAT_FILE_BODY_MAX_BYTES
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 
 
@@ -96,7 +96,7 @@ def test_upload_bound_stops_parser_and_closes_spools(upload_app, monkeypatch, de
         pytest.fail("body was consumed after the first over-limit byte")
         yield b"\r\n--" + boundary + b"--\r\n"
 
-    from hermes_cli.web_routers import uploads
+    from hermes_agent.hermes_cli.web_routers import uploads
 
     def handler_must_not_run(*args, **kwargs):
         pytest.fail("upload handler ran after oversized multipart parsing")
@@ -143,7 +143,7 @@ def test_an_oversized_image_paste_is_refused_before_its_body_is_read(upload_app,
     longer than the largest image it may carry is refused with 413 at once when Content-Length
     declares it, and otherwise near the cap while it streams in: never read whole into memory,
     and the handler never runs."""
-    from hermes_cli.web_routers import files
+    from hermes_agent.hermes_cli.web_routers import files
 
     home, _spools = upload_app
     # The base64 length of the largest image the route accepts, plus room for the JSON around it.
@@ -223,7 +223,7 @@ def test_exact_cap_file_survives_multipart_framing(upload_app, chunked):
 
 
 def test_other_upload_routes_keep_their_larger_caps(upload_app, monkeypatch):
-    from hermes_cli.web_routers.files import _CHAT_IMAGE_UPLOAD_MAX_BYTES
+    from hermes_agent.hermes_cli.web_routers.files import _CHAT_IMAGE_UPLOAD_MAX_BYTES
 
     home, spools = upload_app
     root = home / "managed"

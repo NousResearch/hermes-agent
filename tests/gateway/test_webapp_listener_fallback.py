@@ -162,7 +162,7 @@ def test_a_webapp_whose_browser_credential_cannot_be_kept_leaves_native_clients_
 
 
 def test_a_webapp_bound_to_localhost_publishes_a_numeric_loopback_origin_native_clients_accept(tmp_path):
-    from hermes_cli.gateway_runtime import _endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import _endpoint
 
     report = _run(tmp_path, {"webapp": {"enabled": True, "host": "localhost", "port": _free_port()}})
     assert report["start_error"] is None, report.get("start_traceback")

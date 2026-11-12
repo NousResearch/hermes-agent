@@ -276,7 +276,7 @@ def _probe_managed_runtime(provider: str, model: str, cfg: Optional[dict[str, An
     on whether it can see (its /props reports modalities). Cloud catalogs have never
     heard of a local GGUF, so without this every local model reads as text-only and
     screenshots detour to a cloud auxiliary."""
-    from hermes_cli.local_runtime.capabilities import is_managed_provider, managed_model_supports_vision
+    from hermes_agent.hermes_cli.local_runtime.capabilities import is_managed_provider, managed_model_supports_vision
 
     managed = is_managed_provider(provider, _resolve_inference_base_url(cfg, provider) or "")
     return managed_model_supports_vision(model) if managed else None
@@ -489,7 +489,7 @@ def _accepted_mimes() -> frozenset:
     confabulates a description), so its narrower set transcodes those here."""
     try:
         from hermes_agent.agent.auxiliary_client import _runtime_main_value
-        from hermes_cli.local_runtime.capabilities import ACCEPTED_IMAGE_MIMES, is_managed_provider
+        from hermes_agent.hermes_cli.local_runtime.capabilities import ACCEPTED_IMAGE_MIMES, is_managed_provider
 
         if is_managed_provider(str(_runtime_main_value("provider") or ""), str(_runtime_main_value("base_url") or "")):
             return ACCEPTED_IMAGE_MIMES

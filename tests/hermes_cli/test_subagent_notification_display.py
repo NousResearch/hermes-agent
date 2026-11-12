@@ -5,7 +5,7 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 from hermes_agent.tools.process_registry_notifications import format_process_notification
 from hermes_agent.tui_gateway import server
 
@@ -46,7 +46,7 @@ def test_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, 
         cli.agent = SimpleNamespace(run_conversation=Mock(return_value={}))
         cli._flush_credit_notices = lambda: None
         cli._chat_stage_user_message(cli.agent, queued_message)
-        from cli import _ChatTurn
+        from hermes_agent.cli import _ChatTurn
         cli._chat_run_agent(_ChatTurn(), str(queued_message))
         staged = cli.conversation_history[-1]
         assert staged["content"] == payload
@@ -62,7 +62,7 @@ def test_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, 
         from hermes_agent.agent.prompt_caching import build_prompt_cache_plan, strip_anthropic_cache_control
         plan = build_prompt_cache_plan([core_message], tools=None)
         assert strip_anthropic_cache_control(plan.messages)[0]["content"] == payload
-        from hermes_cli.cli_agent_setup_mixin import _collect_resume_entries
+        from hermes_agent.hermes_cli.cli_agent_setup_mixin import _collect_resume_entries
         from hermes_agent.hermes_state import SessionDB
         with SessionDB(tmp_path / f"{status}-{truncated}.db") as db:
             db.create_session(cli.session_id, source="cli")

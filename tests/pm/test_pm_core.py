@@ -685,7 +685,7 @@ def test_python_package_stably_signs_macos_runtime(tmp_path):
 
 @pytest.mark.platforms("not macos")
 def test_python_package_does_not_sign_non_macos_runtime(monkeypatch, tmp_path):
-    import hermes_cli.macos_signing as signing
+    import hermes_agent.hermes_cli.macos_signing as signing
 
     monkeypatch.setattr(
         signing.subprocess,
@@ -795,7 +795,7 @@ def test_python_stage_drops_unloadable_x64_vc_runtime_on_arm64(monkeypatch, tmp_
     (staged / "vcruntime140_1.dll").write_bytes(b"x64")
     (staged / "vcruntime140.dll").write_bytes(b"arm64")
 
-    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.macos_signing.sign_managed_python", lambda p: False)
     get_package("python").stage(None, staged, "3.14.7", "win32-arm64")
 
     assert not (staged / "vcruntime140_1.dll").exists()
@@ -826,7 +826,7 @@ def _stage_arm64_python_with_held_x64_helper(monkeypatch, tmp_path, times: float
         return real_unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(os, "unlink", unlink)
-    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.macos_signing.sign_managed_python", lambda p: False)
     get_package("python").stage(None, staged, "3.14.7", "win32-arm64")
     return staged, refusals
 
@@ -853,7 +853,7 @@ def test_python_stage_keeps_vc_runtimes_on_other_targets(monkeypatch, tmp_path):
     (staged / "python.exe").write_bytes(b"launcher")
     (staged / "vcruntime140_1.dll").write_bytes(b"x64")
 
-    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.macos_signing.sign_managed_python", lambda p: False)
     get_package("python").stage(None, staged, "3.14.7", "win32-x64")
 
     assert (staged / "vcruntime140_1.dll").is_file()
@@ -868,7 +868,7 @@ def test_windows_python_also_answers_to_python3(monkeypatch, tmp_path, target):
     staged = tmp_path / "staged"
     staged.mkdir()
     (staged / "python.exe").write_bytes(b"launcher")
-    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.macos_signing.sign_managed_python", lambda p: False)
     python.stage(None, staged, "3.14.7", target)
     assert (staged / "python3.exe").read_bytes() == b"launcher"
     assert python.verify(staged, target) == ""
@@ -886,7 +886,7 @@ def test_python3_alias_is_windows_only(monkeypatch, tmp_path):
     staged = tmp_path / "staged"
     (staged / "bin").mkdir(parents=True)
     (staged / "bin/python3").write_bytes(b"interpreter")
-    monkeypatch.setattr("hermes_cli.macos_signing.sign_managed_python", lambda p: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.macos_signing.sign_managed_python", lambda p: False)
     python.stage(None, staged, "3.14.7", "linux-x64")
     assert not (staged / "python3.exe").exists()
     assert python.verify(staged, "linux-x64") == ""

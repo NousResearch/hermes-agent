@@ -20,7 +20,7 @@ def _is_windows() -> bool:
 #: Launcher command names install.ps1's Set-PathVariable exposes from the
 #: managed binary dir (the default Hermes root's ``bin``, next to uv.exe)
 #: on the user PATH. Keep in lockstep with WINDOWS_BIN_LAUNCHERS in
-#: hermes_cli/_launchers.py and scripts/install.ps1.
+#: hermes_agent/hermes_cli/_launchers.py and scripts/install.ps1.
 _WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")
 
 
@@ -126,7 +126,7 @@ def ensure_windows_bin_launchers(
 
     # Only the launch producer knows the executable/boot contract. Old venv
     # paths below identify obsolete artifacts; they never select dependencies.
-    from hermes_cli._launchers import (
+    from hermes_agent.hermes_cli._launchers import (
         ensure_install_launchers,
         exe_is_venv_bound,
         stage_launcher,
@@ -149,7 +149,7 @@ def ensure_windows_bin_launchers(
     restored: list[str] = []
 
     # Canonical target — gate on the managed-clone shape. This runs at
-    # every hermes_cli.main process start (right after the profile
+    # every hermes_agent.hermes_cli.main process start (right after the profile
     # override), so the healthy path must stay at a couple of stat calls.
     if _normalize_windows_path(root.parent) == _normalize_windows_path(home):
         canonical = home / "bin"
@@ -217,7 +217,7 @@ def _read_user_path_raw() -> tuple[list[str], int]:
     """Raw (unexpanded) user PATH entries + registry value type.
 
     Raw so a rewrite preserves ``%VARS%`` exactly as the user stored them
-    (same discipline as ``hermes_cli.uninstall``). Only called on Windows.
+    (same discipline as ``hermes_agent.hermes_cli.uninstall``). Only called on Windows.
     """
     import winreg
 
@@ -302,7 +302,7 @@ def migrate_windows_bin_path(
         return False  # staging incomplete — leave the PATH alone
 
     try:
-        from hermes_cli._launchers import owns_user_path
+        from hermes_agent.hermes_cli._launchers import owns_user_path
 
         if not owns_user_path(home):
             return False  # new consoles resolve another home; leave the User PATH to it

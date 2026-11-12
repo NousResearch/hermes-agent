@@ -1,7 +1,7 @@
 """Model-provider plugins as first-class citizens of ``hermes auth`` and the credential pool.
 
 A ``plugins/model-providers/<name>/`` profile (``hermes_agent.providers.base.ProviderProfile``) is mirrored into
-``hermes_cli.auth.PROVIDER_REGISTRY`` with the ``auth_type`` it declares, so ``resolve_provider()``
+``hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY`` with the ``auth_type`` it declares, so ``resolve_provider()``
 accepts it whatever its auth shape. Non-api-key plugins own their login through two optional profile
 callables that core consults BEFORE any built-in, name-keyed path:
 
@@ -12,7 +12,7 @@ callables that core consults BEFORE any built-in, name-keyed path:
   ``expires_at_ms`` …) or raises. A separate hook rather than ``auth_handler("refresh", …)`` because
   the pool has a credential row, not an argparse namespace, and needs tokens back, not a bool.
 
-Every function here late-imports ``hermes_cli.auth`` names: this module is imported by the auth facade
+Every function here late-imports ``hermes_agent.hermes_cli.auth`` names: this module is imported by the auth facade
 right after ``PROVIDER_REGISTRY`` exists, and by ``hermes_agent.agent.credential_pool``.
 """
 from __future__ import annotations
@@ -131,7 +131,7 @@ def _resolver() -> Callable[[str], tuple]:
 
 
 def _builtin_ids() -> frozenset:
-    from hermes_cli.auth import BUILTIN_PROVIDER_IDS
+    from hermes_agent.hermes_cli.auth import BUILTIN_PROVIDER_IDS
     return BUILTIN_PROVIDER_IDS
 
 
@@ -169,7 +169,7 @@ def register_plugin_provider(pp: Any) -> None:
     Registering is what lets an out-of-tree provider pass ``resolve_provider()``'s known-provider
     gate ("Unknown provider"); OAuth-shaped plugins carry their own login via ``auth_handler``.
     """
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
     pconfig = _profile_row(pp)
     if pconfig is None:
@@ -181,7 +181,7 @@ def register_plugin_provider(pp: Any) -> None:
 
 def _profile_row(pp: Any) -> Optional[Any]:
     """The registry row *pp* declares, or None (a skipped name, an api-key profile without env vars)."""
-    from hermes_cli.auth import ProviderConfig, _api_key_provider
+    from hermes_agent.hermes_cli.auth import ProviderConfig, _api_key_provider
 
     if pp.name in _REGISTRY_PLUGIN_SKIP:
         return None
@@ -232,7 +232,7 @@ def mirror_aliases(pconfig: Any, pp: Any) -> None:
     :func:`override_registry_row`, otherwise the alias kept resolving to the built-in row while
     ``providers.get_provider_profile`` followed the user's profile (#116668).
     """
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
     for alias in pp.aliases:
         if alias not in PROVIDER_REGISTRY or _user_owns_alias(pp, alias):
@@ -265,10 +265,10 @@ def sync_plugin_provider_registry() -> int:
     resolution paths. It runs at
     auth import and again whenever a name is missing (:func:`registry_lookup`) or when ``providers``
     finishes discovery, because the import-time pass can observe a *partial* profile list: a plugin
-    whose own imports pull ``hermes_cli.auth`` in mid-``_discover_providers()`` sees only what was
+    whose own imports pull ``hermes_agent.hermes_cli.auth`` in mid-``_discover_providers()`` sees only what was
     registered so far, and every later plugin would otherwise fail with "Unknown provider" (#102123).
     """
-    from hermes_cli.auth import BUILTIN_PROVIDER_IDS, PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.auth import BUILTIN_PROVIDER_IDS, PROVIDER_REGISTRY
 
     try:
         from hermes_agent.providers import list_providers, provider_source
@@ -296,14 +296,14 @@ def sync_plugin_provider_registry() -> int:
 def canonical_registry_rows() -> list[tuple[str, Any]]:
     """``PROVIDER_REGISTRY`` items in order, minus the alias keys :func:`mirror_aliases` points at a
     plugin's row, so a scan or listing sees each provider once, under its own id."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
     return [(pid, pconfig) for pid, pconfig in PROVIDER_REGISTRY.items() if pid == pconfig.id]
 
 
 def registry_lookup(provider_id: str) -> Optional[Any]:
     """``PROVIDER_REGISTRY.get`` that re-syncs plugin profiles on a miss."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if pconfig is None:
@@ -349,9 +349,9 @@ def dispatch_plugin_auth(action: str, args: Any, provider: str) -> bool:
 
     True = the plugin owned the action (core prints nothing more). False = run the built-in path. A
     handler exception becomes a readable ``SystemExit`` naming provider and action.
-    ``<plugin>:<id>`` names an OAuth client a plugin declares under ``oauth:`` (:mod:`hermes_cli.plugin_oauth`).
+    ``<plugin>:<id>`` names an OAuth client a plugin declares under ``oauth:`` (:mod:`hermes_agent.hermes_cli.plugin_oauth`).
     """
-    from hermes_cli.plugin_oauth import handle_auth_action
+    from hermes_agent.hermes_cli.plugin_oauth import handle_auth_action
 
     owned = handle_auth_action(action, args, provider)
     if owned is not None:
@@ -387,7 +387,7 @@ def plugin_missing_auth_handler_error(provider: str, action: str) -> Optional[Sy
 def _pool_entry_expired(entry: Any) -> bool:
     """A pooled OAuth row is expired when its ``expires_at_ms`` / ISO ``expires_at`` is in the past."""
     import time
-    from hermes_cli.auth import _parse_iso_timestamp
+    from hermes_agent.hermes_cli.auth import _parse_iso_timestamp
 
     if entry.expires_at_ms is not None:
         return int(entry.expires_at_ms) <= int(time.time() * 1000)

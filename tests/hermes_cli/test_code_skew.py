@@ -14,9 +14,9 @@ import contextlib
 import pytest
 
 from hermes_agent.gateway import code_skew
-import hermes_cli.web_routers.models as _rt_models
-import hermes_cli.web_server_config as _web_server_config
-import hermes_cli.web_server_profiles as _web_server_profiles
+import hermes_agent.hermes_cli.web_routers.models as _rt_models
+import hermes_agent.hermes_cli.web_server_config as _web_server_config
+import hermes_agent.hermes_cli.web_server_profiles as _web_server_profiles
 
 
 @pytest.fixture(autouse=True)
@@ -107,7 +107,7 @@ class TestModelOptionsSkewGuard:
 
         payload_calls: list = []
         monkeypatch.setattr(
-            "hermes_cli.inventory.build_model_options_payload",
+            "hermes_agent.hermes_cli.inventory.build_model_options_payload",
             lambda *a, **k: payload_calls.append(1) or {"providers": []},
         )
 
@@ -130,12 +130,12 @@ class TestModelOptionsSkewGuard:
         monkeypatch.setattr(
             _web_server_profiles, "_profile_scope", lambda profile: contextlib.nullcontext()
         )
-        monkeypatch.setattr("hermes_cli.inventory.load_picker_context", dict)
+        monkeypatch.setattr("hermes_agent.hermes_cli.inventory.load_picker_context", dict)
 
         payload_calls: list = []
         expected = {"providers": [], "model": {}, "provider": None}
         monkeypatch.setattr(
-            "hermes_cli.inventory.build_model_options_payload",
+            "hermes_agent.hermes_cli.inventory.build_model_options_payload",
             lambda *a, **k: payload_calls.append(1) or expected,
         )
 

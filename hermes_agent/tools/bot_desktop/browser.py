@@ -51,7 +51,7 @@ def executable() -> Optional[str]:
 
 
 def _managed_executable() -> Optional[str]:
-    from hermes_cli.browser_runtime import chromium_executable
+    from hermes_agent.hermes_cli.browser_runtime import chromium_executable
 
     exe = chromium_executable(allow_override=False)
     return exe if exe and os.access(exe, os.X_OK) and not _is_headless_shell(exe) else None

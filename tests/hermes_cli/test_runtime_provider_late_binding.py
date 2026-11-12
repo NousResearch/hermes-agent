@@ -1,9 +1,9 @@
 """Regression: runtime_provider's config helpers must be late-bound.
 
-Test-pollution class found Aug 2026: ``hermes_cli.runtime_provider`` is
+Test-pollution class found Aug 2026: ``hermes_agent.hermes_cli.runtime_provider`` is
 frequently imported lazily (inside functions like ``switch_model``'s
 resolution path), so its first import in a process can happen while a test
-has ``hermes_cli.config.load_config`` patched. With a module-level
+has ``hermes_agent.hermes_cli.config.load_config`` patched. With a module-level
 from-import, that bound the MagicMock into ``runtime_provider.load_config``
 for the life of the process: after the patch exited, every later caller
 (e.g. MoA aggregator context-length resolution reading ``providers:``)
@@ -15,8 +15,8 @@ silently got the long-dead test's config. Live pair that exposed it:
       test_moa_custom_context_configures_compressor_threshold
 
 The fix: runtime_provider exposes late-bound delegates that resolve
-``hermes_cli.config`` attributes at call time. These tests pin exactly
-that property — a patch on ``hermes_cli.config.<fn>`` must be visible
+``hermes_agent.hermes_cli.config`` attributes at call time. These tests pin exactly
+that property — a patch on ``hermes_agent.hermes_cli.config.<fn>`` must be visible
 through ``runtime_provider.<fn>`` while active, and must fully release
 when it exits (no permanent capture). They fail if anyone reverts the
 delegates back to module-level from-imports.
@@ -30,10 +30,10 @@ from unittest.mock import patch
 
 
 def test_load_config_patch_is_visible_and_releases():
-    import hermes_cli.runtime_provider as rp
+    import hermes_agent.hermes_cli.runtime_provider as rp
 
     sentinel = {"providers": {"only-the-mock-has-this": {"api": "http://x/v1"}}}
-    with patch("hermes_cli.config.load_config", return_value=sentinel):
+    with patch("hermes_agent.hermes_cli.config.load_config", return_value=sentinel):
         # While the patch is active, the delegate must see the mock…
         assert rp.load_config() is sentinel
 
@@ -48,16 +48,16 @@ def test_load_config_patch_is_visible_and_releases():
 def test_sibling_delegates_are_late_bound_too():
     """get_compatible_custom_providers / normalize_extra_headers share the
     same import shape and must share the same late-binding behavior."""
-    import hermes_cli.runtime_provider as rp
+    import hermes_agent.hermes_cli.runtime_provider as rp
 
     marker = [{"name": "marker", "base_url": "http://m/v1"}]
     with patch(
-        "hermes_cli.config.get_compatible_custom_providers", return_value=marker
+        "hermes_agent.hermes_cli.config.get_compatible_custom_providers", return_value=marker
     ):
         assert rp.get_compatible_custom_providers({}) is marker
     assert rp.get_compatible_custom_providers({}) is not marker
 
     hdrs = {"X-Marker": "1"}
-    with patch("hermes_cli.config.normalize_extra_headers", return_value=hdrs):
+    with patch("hermes_agent.hermes_cli.config.normalize_extra_headers", return_value=hdrs):
         assert rp.normalize_extra_headers(None) is hdrs
     assert rp.normalize_extra_headers(None) is not hdrs

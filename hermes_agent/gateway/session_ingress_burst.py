@@ -19,7 +19,7 @@ import logging
 import time
 
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
-from hermes_cli.observability.shared_metrics_busy import note_busy_merged, settle_busy_arrival, stamp_busy_arrival
+from hermes_agent.hermes_cli.observability.shared_metrics_busy import note_busy_merged, settle_busy_arrival, stamp_busy_arrival
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ async def burst_gate(adapter, event, session_key):
     if adapter._shared_runtime_owns_input(event):
         return holds_busy_burst(adapter, session_key)
     if (cmd := event.get_command()) and _serial(adapter):
-        from hermes_cli.commands import is_interrupt_then_dispatch
+        from hermes_agent.hermes_cli.commands import is_interrupt_then_dispatch
         if is_interrupt_then_dispatch(cmd):
             discard_busy_burst(adapter, session_key)
         for key, burst in list(adapter.__dict__.get('_shared_bursts', {}).items()):

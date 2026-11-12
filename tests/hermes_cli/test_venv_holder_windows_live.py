@@ -57,7 +57,7 @@ def _spawn(args: list[str], cwd: Path | None = None, python: str | None = None) 
 
 
 def _detect() -> list[tuple[int, str, str]]:
-    from hermes_cli.update_cmd import _detect_venv_python_processes
+    from hermes_agent.hermes_cli.update_cmd import _detect_venv_python_processes
 
     return _detect_venv_python_processes()
 
@@ -73,7 +73,7 @@ def _kill(*procs: subprocess.Popen) -> None:
 
 class TestDetection:
     def test_detects_hermes_argv_process(self):
-        """Baseline: a live process running `-m hermes_cli.main serve` with
+        """Baseline: a live process running `-m hermes_agent.hermes_cli.main serve` with
         cwd under the install root is detected as a venv holder."""
         proc = _spawn(["-m", "hermes_cli.main", "serve"])
         try:
@@ -140,7 +140,7 @@ class TestAncestorExclusion:
         # a child python that runs the REAL detection and reports whether it
         # can see its gateway parent. The child's code lives in a FILE so the
         # parent's cmdline stays realistic (a real gateway's argv is clean
-        # `... -m hermes_cli.main gateway run`, not a multi-line -c blob).
+        # `... -m hermes_agent.hermes_cli.main gateway run`, not a multi-line -c blob).
         child_file = tmp_path / "child_scan.py"
         child_file.write_text(
             "import json, os, sys\n"

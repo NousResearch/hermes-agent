@@ -153,12 +153,12 @@ class TestAlibabaRegionalAndTokenPlanProfiles:
     def test_cn_variants_resolve_in_auth_registry(self, monkeypatch):
         """The reporter's exact failure site: ``auth.resolve_provider()`` only
         consults PROVIDER_REGISTRY (auto-extended from provider profiles,
-        hermes_cli/auth.py:461-490) and raised
-        "Unknown provider 'alibaba-coding-plan-cn'" (hermes_cli/auth.py:1937)
+        hermes_agent/hermes_cli/auth.py:461-490) and raised
+        "Unknown provider 'alibaba-coding-plan-cn'" (hermes_agent/hermes_cli/auth.py:1937)
         even though the models.dev catalog advertised the id — the
         resolve_provider_full() catalog chain covers only the CLI --provider
         path, not the credential/runtime path."""
-        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
         monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-test")
         monkeypatch.setenv("ALIBABA_CODING_PLAN_API_KEY", "sk-test")
         monkeypatch.setenv("ALIBABA_TOKEN_PLAN_API_KEY", "sk-test")

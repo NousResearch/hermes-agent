@@ -44,7 +44,7 @@ def homes(tmp_path, monkeypatch):
     yield launch, profile
     from hermes_agent.agent import outbound_webhooks
     from hermes_agent.agent import shell_hooks
-    from hermes_cli.plugins import _reset_plugin_managers_for_tests
+    from hermes_agent.hermes_cli.plugins import _reset_plugin_managers_for_tests
 
     shell_hooks.reset_for_tests()
     outbound_webhooks.reset_for_tests()

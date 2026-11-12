@@ -7,7 +7,7 @@ import argparse
 from pathlib import Path
 
 from hermes_agent import hermes_state
-from hermes_cli import sessions_cmd
+from hermes_agent.hermes_cli import sessions_cmd
 from hermes_agent.hermes_state import SessionDB
 
 

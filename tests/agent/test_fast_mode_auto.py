@@ -59,7 +59,7 @@ def test_bounded_fast_window_policy(monkeypatch):
     assert fast_mode.effective_request_overrides(anth)["speed"] == "fast"
 
     # unsupported routes never get fast params, in auto or static mode
-    from hermes_cli.models import resolve_fast_mode_overrides
+    from hermes_agent.hermes_cli.models import resolve_fast_mode_overrides
 
     for provider, base_url in (
         ("openrouter", "https://openrouter.ai/api/v1"),
@@ -91,14 +91,14 @@ def test_bounded_fast_window_policy(monkeypatch):
 
 
 def test_fast_auto_and_cold_parse_and_slash_command(monkeypatch):
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     if not hasattr(config_mod, "save_env_value_secure"):
         config_mod.save_env_value_secure = lambda key, value: {"success": True}
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     from hermes_agent.gateway.run import GatewayRunner
-    from hermes_cli.commands import COMMAND_REGISTRY
-    from hermes_cli.config import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.commands import COMMAND_REGISTRY
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 
     # config parsing: CLI, gateway, TUI all accept auto/cold; default stays off
     for raw, expected in (("auto", "auto"), ("COLD", "cold"), ("fast", "priority"), ("", None), ("bogus", None)):

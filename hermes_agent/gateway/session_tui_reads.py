@@ -52,7 +52,7 @@ def _model_history(db, tip) -> list:
 
 def _status(authority, ref, live, policy, agent, arg) -> str:
     """``hermes_agent/tui_gateway/methods_session.py`` ``session.status`` on main, for the owner's session."""
-    from hermes_cli.status_report import build_status_fields, status_lines
+    from hermes_agent.hermes_cli.status_report import build_status_fields, status_lines
     from hermes_agent.tui_gateway import server
     stored = _stored_id(authority, ref)
     row = {}
@@ -66,7 +66,7 @@ def _status(authority, ref, live, policy, agent, arg) -> str:
         agent_running=running, home=authority.profile_id)
     if fields['provider'] == 'custom':  # the adapter's billing class: show the entry the session runs on
         from hermes_agent.gateway.run import _profile_runtime_scope
-        from hermes_cli.runtime_provider_custom import session_provider_identity
+        from hermes_agent.hermes_cli.runtime_provider_custom import session_provider_identity
         with _profile_runtime_scope(Path(authority.profile_id)):
             fields['provider'] = session_provider_identity('custom', getattr(agent, 'requested_provider', None),
                 getattr(agent, 'base_url', None) or policy.base_url, fields['model'])

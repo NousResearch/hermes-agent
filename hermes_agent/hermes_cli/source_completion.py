@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 # The installers run this file directly under an isolated interpreter, which
-# leaves the checkout off sys.path. Same idiom as hermes_cli/_launchers.py.
+# leaves the checkout off sys.path. Same idiom as hermes_agent/hermes_cli/_launchers.py.
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -49,7 +49,7 @@ def complete_source_checkout(
     recorded on the open update receipt and appended to ``followups`` as ``(step, reason)``.
     Returns True only when every step finished and the SQLite runtime is not unsafe.
     """
-    from hermes_cli.update_lock import UpdateLock, describe_holder
+    from hermes_agent.hermes_cli.update_lock import UpdateLock, describe_holder
 
     root = Path(root)
     # This tail is the last mutating step of an install or update, and its product
@@ -95,12 +95,12 @@ def _complete_locked(
     after_dependencies=None,
 ) -> bool:
     """The completion body; callers hold the update lock already."""
-    from hermes_cli.source_build import build_update_products
-    from hermes_cli.update_cmd_maint import _run_post_update_maintenance
-    from hermes_cli.venv_sync import publish_launchers
+    from hermes_agent.hermes_cli.source_build import build_update_products
+    from hermes_agent.hermes_cli.update_cmd_maint import _run_post_update_maintenance
+    from hermes_agent.hermes_cli.venv_sync import publish_launchers
 
     try:
-        from hermes_cli._subprocess_compat import expose_pm_git
+        from hermes_agent.hermes_cli._subprocess_compat import expose_pm_git
 
         # The builds, the release-history refresh and the install stamp all run
         # git; a fresh Windows machine has only PM's.
@@ -115,7 +115,7 @@ def _complete_locked(
         try:
             run()
         except (Exception, SystemExit) as exc:  # health: allow BLE001 -- reported as an owed follow-up
-            from hermes_cli.update_receipt import record_followup
+            from hermes_agent.hermes_cli.update_receipt import record_followup
 
             reason = str(exc) or type(exc).__name__
             record_followup(name, reason)
@@ -137,7 +137,7 @@ def _complete_locked(
     )))
     tail_done = not owed
     if tail_done:
-        from hermes_cli.source_stamp import write_source_stamp
+        from hermes_agent.hermes_cli.source_stamp import write_source_stamp
 
         try:
             write_source_stamp(root)
@@ -211,7 +211,7 @@ def main(argv: list[str] | None = None) -> int:
     passthrough = (["--desktop"] if args.desktop else []) + \
                   (["--finish-update"] if args.finish_update else [])
     command = _bootstrap_command(root, passthrough)
-    from hermes_cli.update_lock import checkout_lock_fds
+    from hermes_agent.hermes_cli.update_lock import checkout_lock_fds
 
     # Called inside an update tree (venv_sync's interrupted-update finish), the prepared child
     # keeps the checkout lock this bootstrap inherited.

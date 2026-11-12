@@ -121,7 +121,7 @@ def _connect() -> sqlite3.Connection:
     from hermes_agent.agent.runtime_session_store import WorkerPersistenceError, is_worker_process
     if is_worker_process():
         raise WorkerPersistenceError('worker_delegation_ledger_unavailable')
-    from hermes_cli.sqlite_util import open_db
+    from hermes_agent.hermes_cli.sqlite_util import open_db
     # Same state.db as hermes_agent.hermes_state.SessionDB -- reuse its owner-only (0600)
     # hardening so this writer doesn't create/leave the file (and its WAL
     # sidecars) at the process umask. See hermes_agent.hermes_state._secure_state_db_files.
@@ -156,7 +156,7 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
 
 
 def _transaction():
-    from hermes_cli.sqlite_util import transaction
+    from hermes_agent.hermes_cli.sqlite_util import transaction
 
     return transaction(_connect())
 
@@ -907,7 +907,7 @@ def _batch_status(combined: dict[str, Any]) -> str:
 
 
 def _dispatch(**kwargs) -> dict[str, Any]:
-    from hermes_cli.backend_retirement import retirement
+    from hermes_agent.hermes_cli.backend_retirement import retirement
 
     with retirement.work() as admitted:
         if not admitted:
@@ -983,7 +983,7 @@ def _dispatch_admitted(
         finally:
             _finalize(delegation_id, result, status)
 
-    from hermes_cli.backend_retirement import retirement
+    from hermes_agent.hermes_cli.backend_retirement import retirement
 
     # The outer dispatch reservation prevents a freeze during this handoff. Retain a worker
     # reservation too: the stall monitor may finalize its registry record before it really exits.

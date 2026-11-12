@@ -20,7 +20,7 @@ async def owner(tmp_path, monkeypatch):
     from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.hermes_state_local import local_receipt
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
@@ -63,7 +63,7 @@ async def test_goal_mutations_land_in_the_owners_row(owner):
 
 @pytest.mark.asyncio
 async def test_the_goal_judge_runs_on_the_owner(owner, monkeypatch):
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
     seen = []
 
     def judge(goal, response, **kw):
@@ -153,7 +153,7 @@ async def test_a_tool_that_moves_the_goal_mid_turn_repaints_the_viewers_once(own
     snapshot once, and a tool that changed nothing publishes nothing."""
     import asyncio
     from hermes_agent.gateway.config import Platform
-    from hermes_cli.goals import GoalManager
+    from hermes_agent.hermes_cli.goals import GoalManager
     from tests.gateway.test_local_viewer_events_turn import _turn
     await owner.call('goal', 'set', 'ship it')
     updates = []

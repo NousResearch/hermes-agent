@@ -9,8 +9,8 @@ wiring and stays a link.
 
 import pytest
 
-from hermes_cli.config import DEFAULT_SOUL_MD, _ensure_default_soul_md
-from hermes_cli.config_home import initialize_home
+from hermes_agent.hermes_cli.config import DEFAULT_SOUL_MD, _ensure_default_soul_md
+from hermes_agent.hermes_cli.config_home import initialize_home
 
 _SUBDIRS = ("cron", "sessions", "logs", "memories")
 

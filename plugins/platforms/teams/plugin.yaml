@@ -9,7 +9,7 @@ description: >
   the Hermes agent. Supports Adaptive Card approval prompts.
 author: Aamir Jawaid
 # ``requires_env`` entries are surfaced in ``hermes config`` UI via the
-# platform-plugin env var injector in ``hermes_cli/config.py``.
+# platform-plugin env var injector in ``hermes_agent/hermes_cli/config.py``.
 requires_env:
   - name: TEAMS_CLIENT_ID
     description: "Azure AD application (Bot Framework) client ID"

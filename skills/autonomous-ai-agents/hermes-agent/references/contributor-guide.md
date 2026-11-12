@@ -64,7 +64,7 @@ never hardcode `~/.hermes`. For custom/local-only tools, write a plugin in
 
 ### Adding a Slash Command
 
-1. Add `CommandDef` to `COMMAND_REGISTRY` in `hermes_cli/commands.py`
+1. Add `CommandDef` to `COMMAND_REGISTRY` in `hermes_agent/hermes_cli/commands.py`
 2. Add handler in `cli.py` → `process_command()`
 3. (Optional) Add gateway handler in `hermes_agent/gateway/run.py`
 

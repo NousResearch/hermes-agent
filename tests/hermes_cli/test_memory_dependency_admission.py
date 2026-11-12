@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli import memory_setup
+from hermes_agent.hermes_cli import memory_setup
 from pm.environments import selected_venv
 from pm import paths
 from tests.pm._fixtures import _wheel
@@ -77,7 +77,7 @@ def test_setup_requires_dependencies_and_keeps_the_existing_union(tmp_path, monk
     monkeypatch.setattr(memory_setup, '_curses_select', lambda *args, **kwargs: 0)
 
     def setup():
-        from hermes_cli.main_agent_cmds import cmd_memory
+        from hermes_agent.hermes_cli.main_agent_cmds import cmd_memory
 
         cmd_memory(SimpleNamespace(memory_command='setup', provider=None if picker else 'candidate'))
 

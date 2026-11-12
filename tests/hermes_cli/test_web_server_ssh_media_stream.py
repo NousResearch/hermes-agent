@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import ssh_workspace_fs, web_server
-from hermes_cli.web_routers import files as file_routes
+from hermes_agent.hermes_cli import ssh_workspace_fs, web_server
+from hermes_agent.hermes_cli.web_routers import files as file_routes
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient
@@ -356,7 +356,7 @@ def sessions(monkeypatch):
             raise HTTPException(status_code=404, detail="Session not found")
         return {"cwd": "/srv", "id": session_id}
 
-    monkeypatch.setattr("hermes_cli.web_routers.sessions.get_session_detail", detail)
+    monkeypatch.setattr("hermes_agent.hermes_cli.web_routers.sessions.get_session_detail", detail)
     return rows
 
 

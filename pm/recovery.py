@@ -52,7 +52,7 @@ def validate_environment(python: Path | list[str], *, env: dict, cwd: Path) -> N
 
 def repair_dependencies(project_root: Path) -> None:
     """Restore this installation's recorded set; never repair a foreign tree."""
-    from hermes_cli.venv_sync import collect_superseded_generations
+    from hermes_agent.hermes_cli.venv_sync import collect_superseded_generations
     from pm.client import sync_venv
     from pm.paths import repo_root
 
@@ -98,7 +98,7 @@ def refresh_dependencies(project_root: Path) -> str:
     them recorded, so the next boot or install rebuilds them. A recorded selection missing
     extras the image ships gets them back. Returns what happened.
     """
-    from hermes_cli.runtime_state import runtime_lock
+    from hermes_agent.hermes_cli.runtime_state import runtime_lock
     from pm.client import sync_venv
     from pm.environments import runtime_facts_path
     from pm.install import venv_is_current

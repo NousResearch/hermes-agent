@@ -10,7 +10,7 @@ from datetime import datetime, timezone, UTC
 from unittest.mock import patch
 
 from hermes_agent.agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
-from hermes_cli import main as hermes_main
+from hermes_agent.hermes_cli import main as hermes_main
 
 _SNAPSHOT = AccountUsageSnapshot(
     provider="openai-codex", source="usage_api", fetched_at=datetime(2026, 9, 19, 12, 0, tzinfo=UTC),

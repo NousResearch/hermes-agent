@@ -221,7 +221,7 @@ def test_gateway_approval_hooks_report_a_cli_sessions_surface(tmp_path, monkeypa
 
     seen = []
     approval_hooks = {"pre_approval_request", "post_approval_response"}
-    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook",
+    monkeypatch.setattr("hermes_agent.hermes_cli.lifecycle.invoke_hook",
                         lambda name, **kw: seen.append((name, kw)) if name in approval_hooks else None)
 
     def boom(_data):

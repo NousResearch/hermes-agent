@@ -14,7 +14,7 @@ from typing import Any, Dict
 
 import hermes_yaml as yaml
 
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ class TestForeignHarnessManifestDirs:
                 json.dumps({"name": "superpowers", "version": "6.3.0"})
             )
 
-        with caplog.at_level("WARNING", logger="hermes_cli.plugins"):
+        with caplog.at_level("WARNING", logger="hermes_agent.hermes_cli.plugins"):
             mgr = PluginManager()
             mgr.discover_and_load()
 
@@ -171,7 +171,7 @@ class TestForeignHarnessManifestDirs:
         broken.mkdir(parents=True)
         (broken / "plugin.json").write_text(json.dumps({"name": "broken"}))
 
-        with caplog.at_level("WARNING", logger="hermes_cli.plugins"):
+        with caplog.at_level("WARNING", logger="hermes_agent.hermes_cli.plugins"):
             mgr = PluginManager()
             mgr.discover_and_load()
 

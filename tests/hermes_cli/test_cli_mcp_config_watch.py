@@ -7,7 +7,7 @@ from utils import file_signature
 
 def _make_cli(tmp_path, mcp_servers=None, extra_config=None):
     """Create a minimal HermesCLI instance with mocked config."""
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     obj = object.__new__(cli_mod.HermesCLI)
     cfg = {"mcp_servers": mcp_servers or {}}
     if extra_config:
@@ -43,7 +43,7 @@ class TestMCPConfigWatch:
         cfg_file.write_text(yaml.safe_dump({"mcp_servers": {"github": {"url": "https://mcp.github.com"}}}))
         obj._config_sig = None  # force stale mtime
 
-        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+        with patch("hermes_agent.hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
 
         obj._reload_mcp.assert_called_once()
@@ -57,7 +57,7 @@ class TestMCPConfigWatch:
         cfg_file.write_text(yaml.safe_dump({"mcp_servers": {}}))
         obj._config_sig = None
 
-        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+        with patch("hermes_agent.hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
 
         obj._reload_mcp.assert_called_once()
@@ -90,7 +90,7 @@ class TestMCPConfigWatch:
         }))
         obj._config_sig = None  # force stale mtime
 
-        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+        with patch("hermes_agent.hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
 
         obj._reload_mcp.assert_not_called()
@@ -111,7 +111,7 @@ class TestMCPConfigWatch:
         }))
         obj._config_sig = None
 
-        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+        with patch("hermes_agent.hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
             # Second pass: same file content, new mtime — no reload, no change.
             obj._last_config_check = 0.0
@@ -140,7 +140,7 @@ class TestMCPConfigWatch:
         }))
         obj._config_sig = None
 
-        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+        with patch("hermes_agent.hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
 
         # Reload happened because the aux-task path is not the toggle.
@@ -185,7 +185,7 @@ class TestMCPConfigWatch:
         }))
         obj._config_sig = None
 
-        with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+        with patch("hermes_agent.hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
 
         obj._reload_mcp.assert_not_called()
@@ -199,8 +199,8 @@ def test_tui_init_run_state_seeds_config_sig_when_config_exists(monkeypatch):
     otherwise). Isolated-home tests without a config file therefore never
     exercised the call, and a missing import crashed every real CLI launch.
     """
-    from hermes_cli.config import get_config_path
-    import cli as cli_mod
+    from hermes_agent.hermes_cli.config import get_config_path
+    import hermes_agent.cli as cli_mod
 
     # Bare object: skip the tool-callback / security wiring at the end of the init.
     monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
@@ -229,7 +229,7 @@ def test_pinned_mtime_same_size_replacement_triggers_reload(tmp_path):
     shutil.copy2(other, cfg_file)
     os.utime(cfg_file, ns=(obj._config_sig[0], obj._config_sig[0]))
 
-    with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+    with patch("hermes_agent.hermes_cli.config.get_config_path", return_value=cfg_file):
         obj._check_config_mcp_changes()
 
     obj._reload_mcp.assert_called_once()

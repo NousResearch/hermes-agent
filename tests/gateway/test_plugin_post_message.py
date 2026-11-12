@@ -11,7 +11,7 @@ from hermes_agent.gateway.platforms.base import BasePlatformAdapter, PlatformCon
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource, SessionStore
 from hermes_agent.gateway.session_context import scoped_session_key
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 
 class _Adapter(BasePlatformAdapter):

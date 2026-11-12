@@ -56,8 +56,8 @@ config = {"model": {"default": "fixture", "provider": "fixture-local", "max_toke
 os.environ["HERMES_MAX_TOKENS"] = "13"
 from hermes_agent.gateway.run import _resolve_runtime_agent_kwargs
 from hermes_agent.gateway.platforms.api_server import _resolve_request_runtime_agent_kwargs
-from hermes_cli.runtime_provider import resolve_runtime_provider
-from hermes_cli.moa_config import _normalize_preset
+from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
+from hermes_agent.hermes_cli.moa_config import _normalize_preset
 from hermes_agent.agent.transports.chat_completions import ChatCompletionsTransport
 from hermes_agent.agent.transports.anthropic import AnthropicTransport
 from hermes_agent.agent.transports.bedrock import BedrockTransport

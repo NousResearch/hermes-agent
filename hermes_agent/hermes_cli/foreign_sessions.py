@@ -249,8 +249,8 @@ def import_foreign_session(source: str, path) -> str:
     first_user = _first_user_line([(t["role"], t["content"]) for t in turns]) or path.stem
     if len(first_user) > _TITLE_MAX:
         first_user = first_user[: _TITLE_MAX - 1] + "…"
-    from hermes_cli.gateway_client import GatewayClientError
-    from hermes_cli.gateway_session_store import session_store
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_session_store import session_store
     store = session_store()
     session_id = new_session_id()
     cwd = parsed.get("cwd")

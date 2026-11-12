@@ -15,7 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv
-from hermes_cli.left_core_migration import profile_env_names
+from hermes_agent.hermes_cli.left_core_migration import profile_env_names
 from utils import atomic_replace, mkstemp_beside
 
 logger = logging.getLogger(__name__)
@@ -235,7 +235,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
     # profile's secret scope, which the Portal/plane resolvers read). Checked before anything of
     # this attempt is recorded: the remote backend refuses the profile (raises, nothing cached, so
     # every retry refuses again until the mapping is removed); the file backend drops the selector.
-    from hermes_cli.config_backend import get_config_backend
+    from hermes_agent.hermes_cli.config_backend import get_config_backend
 
     _refuse_protected_env_from_sources(report, get_config_backend(), env_before, env=local_env, routed_home=home)
 
@@ -399,7 +399,7 @@ def resolve_home_dotenv(home: Path) -> dict[str, str]:
     ``.env`` then the administrator-managed ``.env``, both with override and ``${VAR}`` expanded by the
     same rules against the process's own environment (this process's dotenv output peeled back), each
     layer seeing the one before. External secret sources and the project ``.env`` are not included."""
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
 
     managed_dir = managed_scope.get_managed_dir()
     layers = [home / ".env", *([managed_dir / ".env"] if managed_dir is not None else [])]
@@ -487,7 +487,7 @@ def _bootstrap_env(home: Path | None = None, project_env: Path | None = None) ->
     ``OP_SERVICE_ACCOUNT_TOKEN``), the caller's *project_env* (fills gaps when the home has a
     ``.env``, else overrides) and the managed ``.env`` (override, last); ``${VAR}`` resolved, the
     loader's parser. Read-only: nothing is published and no file is rewritten (sanitizing imports
-    hermes_cli.config, whose import-time config read must not run before the backend is decided)."""
+    hermes_agent.hermes_cli.config, whose import-time config read must not run before the backend is decided)."""
     home = Path(home) if home is not None else _process_hermes_home()
     env = dict(os.environ)
     user_env = home / ".env"
@@ -497,7 +497,7 @@ def _bootstrap_env(home: Path | None = None, project_env: Path | None = None) ->
     if project_env is not None:
         layers.append((Path(project_env), not user_env.exists()))
     try:
-        from hermes_cli import managed_scope
+        from hermes_agent.hermes_cli import managed_scope
 
         managed_dir = managed_scope.get_managed_dir()
     except Exception:  # health: allow BLE001 -- managed scope never blocks startup, as in _apply_managed_env
@@ -520,7 +520,7 @@ def selected_config_backend_name(home: Path | None = None) -> str:
     """The config backend ``load_hermes_dotenv`` selects for *home*, decided without loading or
     booting anything. For a caller that must decide before Hermes starts (Docker stage2 skips the
     config-file migration in remote mode, D12)."""
-    from hermes_cli.config_backend import BACKEND_ENV
+    from hermes_agent.hermes_cli.config_backend import BACKEND_ENV
 
     return (_bootstrap_env(home).get(BACKEND_ENV) or "").strip().lower() or "file"
 
@@ -529,12 +529,12 @@ def apply_config_bootstrap_env(backend_names, home: Path | None = None, project_
     """Publish ``backend_names(kind)`` (the selected backend's deployment and credential, D26/D32) from the
     launch home's ``.env`` and the managed ``.env``, with the values ``load_hermes_dotenv`` gives
     them. Called before the first config read of a process, which can come before
-    ``load_hermes_dotenv`` (``hermes_cli.config`` reads config at import time): the backend is
+    ``load_hermes_dotenv`` (``hermes_agent.hermes_cli.config`` reads config at import time): the backend is
     selected and authenticated from the same deployment either way. A file deployment gets only its
     selector (the file backend needs nothing else before boot); values the process env holds and
     no file defines are left alone; ``load_hermes_dotenv`` later publishes the same values."""
     from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
-    from hermes_cli.config_backend import BACKEND_ENV
+    from hermes_agent.hermes_cli.config_backend import BACKEND_ENV
 
     # A frozen-policy worker reads no profile dotenv (``load_hermes_dotenv`` returns early there):
     # its bootstrap supplied the process env explicitly, so nothing is published from the files.
@@ -556,7 +556,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     if not path.exists():
         return
     try:
-        from hermes_cli.config import _sanitize_env_lines
+        from hermes_agent.hermes_cli.config import _sanitize_env_lines
     except ImportError:
         return  # early bootstrap — config module not available yet
 
@@ -638,7 +638,7 @@ def _load_user_dotenv(path: Path, *, load_pass: int) -> bool:
     try:
         _load_dotenv_with_fallback(path, override=True, load_pass=load_pass)
     except PermissionError:
-        from hermes_cli import managed_scope
+        from hermes_agent.hermes_cli import managed_scope
 
         if managed_scope.pinned_terminal_backend() is None:
             raise
@@ -690,7 +690,7 @@ def load_hermes_dotenv(
             logger.debug("multiplex: skipping process-global dotenv load for routed "
                          "profile home %s (credentials resolve via the profile scope)", home_path)
         if load_external_secrets:
-            from hermes_cli import _early_recovery
+            from hermes_agent.hermes_cli import _early_recovery
 
             if not _early_recovery._should_skip_external_secret_sources():
                 hydrate_profile_secret_sources(home_path)
@@ -701,10 +701,10 @@ def load_hermes_dotenv(
     project_env_path = Path(project_env) if project_env else None
     load_pass = next(_DOTENV_PASSES)  # one pass: later layers below see the earlier layers' output
 
-    # Before anything below imports hermes_cli.config (the .env sanitizer does), whose import-time
+    # Before anything below imports hermes_agent.hermes_cli.config (the .env sanitizer does), whose import-time
     # config read selects and boots the backend: publish the deployment and plane credential from
     # THIS load's layers, the project .env included, with the precedence the loads below give them.
-    from hermes_cli.config_backend import bootstrap_deployment
+    from hermes_agent.hermes_cli.config_backend import bootstrap_deployment
 
     bootstrap_deployment(home_path, project_env_path)
 
@@ -741,7 +741,7 @@ def load_hermes_dotenv(
     # (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
     # process before any reader could fall back to defaults (config-config design §4.4, D11/D32). A
     # remote backend fetches this home's config here, failing closed; the file backend does nothing.
-    from hermes_cli.config_backend import get_config_backend
+    from hermes_agent.hermes_cli.config_backend import get_config_backend
 
     # The administrator-managed .env is part of the deployment the backend boots from (it may be
     # where the selector, plane URL or instance id live). The override=True loads above may have
@@ -755,7 +755,7 @@ def load_hermes_dotenv(
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing
     # that env on Windows, and a fresh retry after a deferred dependency install would otherwise make the
     # self-lock preflight exit 2 again.
-    from hermes_cli import _early_recovery
+    from hermes_agent.hermes_cli import _early_recovery
 
     # External secret sources are skipped in two updater situations: 1. ``load_external_secrets=False`` —
     # the caller is an ``update`` invocation that must not import optional secret-manager libraries
@@ -789,7 +789,7 @@ def _reapply_terminal_config_bridge(home_path: Path) -> None:
     try:
         if Path(home_path).resolve() != _process_hermes_home().resolve():
             return
-        from hermes_cli.config import apply_terminal_config_to_env
+        from hermes_agent.hermes_cli.config import apply_terminal_config_to_env
 
         apply_terminal_config_to_env(env=None)
     except Exception:
@@ -800,7 +800,7 @@ def _apply_managed_env(*, load_pass: int | None = None) -> None:
     """Apply the managed-scope .env last, with override, so it beats user/shell. Does NOT stop the agent
     from later mutating os.environ (v1 relies on filesystem permissions). Fail-open: never blocks startup."""
     try:
-        from hermes_cli import managed_scope
+        from hermes_agent.hermes_cli import managed_scope
 
         managed_dir = managed_scope.get_managed_dir()
     except Exception:
@@ -869,7 +869,7 @@ def _refuse_protected_env_from_sources(report, backend=None, environ_before=None
     concurrent request — the poller reads the plane URL and credential live from ``os.environ``."""
     if env is None:
         env = os.environ
-    from hermes_cli.config_backend import BACKEND_ENV, ConfigBackendUnavailable, get_config_backend
+    from hermes_agent.hermes_cli.config_backend import BACKEND_ENV, ConfigBackendUnavailable, get_config_backend
 
     if backend is None:
         backend = get_config_backend()
@@ -961,7 +961,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         _revoke_secret_source_writes(home_path, keep=lambda _name, source: source in active)
     environ_before = dict(os.environ)
     # Latched before the sources run: a source must not be able to re-select the backend (D32).
-    from hermes_cli.config_backend import get_config_backend
+    from hermes_agent.hermes_cli.config_backend import get_config_backend
 
     backend_before = get_config_backend()
 
@@ -1064,7 +1064,7 @@ def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope:
 
 def _load_secrets_config(home_path: Path) -> dict:
     """Read just the ``secrets:`` section of config.yaml, isolated so a malformed config can't break dotenv."""
-    from hermes_cli.config_backend import config_exists, read_config_doc_readonly
+    from hermes_agent.hermes_cli.config_backend import config_exists, read_config_doc_readonly
 
     config_path = home_path / "config.yaml"
     if not config_exists(config_path):
@@ -1073,7 +1073,7 @@ def _load_secrets_config(home_path: Path) -> dict:
     # populating it lets main.py's early bridge and hermes_logging reuse one parse instead of 3-4.
     if home_path == _process_hermes_home():
         try:
-            from hermes_cli.config import read_raw_config
+            from hermes_agent.hermes_cli.config import read_raw_config
 
             data = read_raw_config() or {}
             return data.get("secrets") or {}

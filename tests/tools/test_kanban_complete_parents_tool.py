@@ -23,8 +23,8 @@ def running_child_with_parent(monkeypatch, tmp_path):
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
 
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     conn = kbc.connect()
@@ -50,8 +50,8 @@ def running_child_with_parent(monkeypatch, tmp_path):
 
 def test_complete_names_unsatisfied_parent(running_child_with_parent):
     """The refusal names the blocking parent instead of crying stale run."""
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
     from hermes_agent.tools import kanban_tools as kt
 
     parent_id, child_id = running_child_with_parent
@@ -76,7 +76,7 @@ def test_cli_complete_names_unsatisfied_parent(running_child_with_parent, monkey
     """`hermes kanban complete` (operator, --force) reports the same blockers."""
     import argparse
 
-    from hermes_cli import kanban as kc
+    from hermes_agent.hermes_cli import kanban as kc
 
     parent_id, child_id = running_child_with_parent
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)

@@ -19,7 +19,7 @@ from unittest import mock
 
 import pytest
 
-from hermes_cli import config as config_mod
+from hermes_agent.hermes_cli import config as config_mod
 
 # Barrier timeout: on the serialized (fixed) path the lock holder waits out this
 # window for a second reader that cannot arrive (blocked on the lock). Short

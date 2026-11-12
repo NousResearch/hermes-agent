@@ -8,18 +8,18 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 PROJECT_ROOT = Path(project_root_str())
 
-from hermes_cli.auth import AuthError, resolve_provider
-from hermes_cli.colors import Colors, color
-from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
-from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, DEFAULT_VERCEL_IMAGE
-from hermes_cli.models import provider_label
-from hermes_cli.runtime_provider import resolve_requested_provider
-from hermes_cli.vercel_auth import describe_vercel_auth
-from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
+from hermes_agent.hermes_cli.auth import AuthError, resolve_provider
+from hermes_agent.hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_agent.hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, DEFAULT_VERCEL_IMAGE
+from hermes_agent.hermes_cli.models import provider_label
+from hermes_agent.hermes_cli.runtime_provider import resolve_requested_provider
+from hermes_agent.hermes_cli.vercel_auth import describe_vercel_auth
+from hermes_agent.hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
     _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
 from hermes_constants import OPENROUTER_MODELS_URL
 
@@ -180,7 +180,7 @@ def _render_terminal(ctx):
         # Plugin-registered terminal backends: show availability via the provider's doctor rows
         # (fail-soft — never break `hermes status`).
         try:
-            from hermes_cli.plugins import discover_plugins
+            from hermes_agent.hermes_cli.plugins import discover_plugins
             discover_plugins()
             from hermes_agent.agent.terminal_env_registry import get_provider
             provider = get_provider(terminal_env)
@@ -198,7 +198,7 @@ def _render_platforms(ctx):
     try:
         from hermes_agent.gateway.config import load_gateway_config
         from hermes_agent.gateway.platform_registry import platform_registry
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()  # labels come from the plugin entries
         cfg = load_gateway_config()
     except Exception:
@@ -215,9 +215,9 @@ def _render_platforms(ctx):
 def _render_gateway(ctx):
     _section("Gateway Service")
     try:
-        from hermes_cli.gateway import (
+        from hermes_agent.hermes_cli.gateway import (
             get_gateway_runtime_snapshot, _format_gateway_pids, named_profile_served_by_running_multiplexer)
-        from hermes_cli.gateway_multiplex_served import multiplexer_served_secondaries
+        from hermes_agent.hermes_cli.gateway_multiplex_served import multiplexer_served_secondaries
         snapshot = get_gateway_runtime_snapshot()
         # A satellite profile has no gateway.pid of its own; the default multiplexer is its live process.
         if not snapshot.running and named_profile_served_by_running_multiplexer():
@@ -230,7 +230,7 @@ def _render_gateway(ctx):
             _kv("PID(s):", _format_gateway_pids(snapshot.gateway_pids))
         if snapshot.running and (served := multiplexer_served_secondaries()):
             _kv("Serves:", ", ".join(served))
-            from hermes_cli.gateway_multiplex_served import served_profile_ingress_urls
+            from hermes_agent.hermes_cli.gateway_multiplex_served import served_profile_ingress_urls
             for name, per_platform in sorted(served_profile_ingress_urls().items()):
                 for platform, url in sorted(per_platform.items()):
                     _kv(f"  {name}/{platform}:", url)
@@ -287,7 +287,7 @@ def _render_sessions(ctx):
         _kv("Active:", f"{len(gateway_rows)} session(s)")
         freshest = max((float(r.get("last_active") or 0) for r in gateway_rows), default=0.0)
         if freshest > 0:
-            from hermes_cli.timefmt import relative_time
+            from hermes_agent.hermes_cli.timefmt import relative_time
             print(f"  Last activity:{relative_time(freshest):>13}")
     elif not (sessions_file := get_hermes_home() / "sessions" / "sessions.json").exists():
         _kv("Active:", 0)
@@ -304,7 +304,7 @@ def _render_sessions(ctx):
     # holding the slots — without this the only way to find out is reading
     # runtime/active_sessions.json by hand.
     try:
-        from hermes_cli.active_sessions import (
+        from hermes_agent.hermes_cli.active_sessions import (
             active_session_registry_snapshot, format_age, resolve_max_concurrent_sessions)
         cap = resolve_max_concurrent_sessions(ctx.config)
     except Exception:
@@ -363,8 +363,8 @@ def _connected_platform_labels() -> list:
 
 def _authenticated_provider_names() -> list:
     """The providers the /model picker offers: cached catalogs only, no endpoint probes."""
-    from hermes_cli.inventory import load_picker_context
-    from hermes_cli.model_switch import list_authenticated_providers
+    from hermes_agent.hermes_cli.inventory import load_picker_context
+    from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
     pick = load_picker_context()
     return [row["name"] for row in list_authenticated_providers(
         user_providers=pick.user_providers, custom_providers=pick.custom_providers,
@@ -373,7 +373,7 @@ def _authenticated_provider_names() -> list:
 
 
 def _gateway_state() -> tuple:
-    from hermes_cli.gateway import get_gateway_runtime_snapshot, named_profile_served_by_running_multiplexer
+    from hermes_agent.hermes_cli.gateway import get_gateway_runtime_snapshot, named_profile_served_by_running_multiplexer
     if get_gateway_runtime_snapshot().running:
         return True, "running"
     if named_profile_served_by_running_multiplexer():  # satellite profile: no gateway.pid of its own

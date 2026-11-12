@@ -1,7 +1,7 @@
 """A frozen managed worker's config write-back never resurrects a branch the operator deleted."""
 import pytest
 
-from hermes_cli.config_worker_save import _three_way
+from hermes_agent.hermes_cli.config_worker_save import _three_way
 
 _SERVER = {'command': 'stale-cmd', 'args': ['--x'], 'enabled': False}
 _ENABLED = {**_SERVER, 'enabled': True}

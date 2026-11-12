@@ -19,14 +19,14 @@ def vendor_profiles(monkeypatch):
 
 
 def test_launch_env_names_cover_every_external_process_override(vendor_profiles):
-    from hermes_cli.auth_external_process import external_process_launch_env_names
+    from hermes_agent.hermes_cli.auth_external_process import external_process_launch_env_names
 
     assert external_process_launch_env_names() == {"VENDOR_ACP_COMMAND", "VENDOR_CLI_PATH", "VENDOR_ACP_ARGS"}
 
 
 @pytest.mark.parametrize("name", ["VENDOR_ACP_COMMAND", "VENDOR_CLI_PATH", "VENDOR_ACP_ARGS"])
 def test_env_writer_refuses_a_provider_executable_override(vendor_profiles, name):
-    from hermes_cli.config import validate_env_var_name_for_write
+    from hermes_agent.hermes_cli.config import validate_env_var_name_for_write
 
     with pytest.raises(ValueError, match="writer denylist"):
         validate_env_var_name_for_write(name)

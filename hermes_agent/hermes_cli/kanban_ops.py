@@ -12,17 +12,17 @@ import sys
 import time
 from pathlib import Path
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
-from hermes_cli import kanban_db_workspace as kbw
-from hermes_cli.kanban_output import _err, _fmt_ts, _print_json
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
+from hermes_agent.hermes_cli import kanban_db_workspace as kbw
+from hermes_agent.hermes_cli.kanban_output import _err, _fmt_ts, _print_json
 
 
 def _kanban_config() -> dict:
     """``config.yaml`` ``kanban:`` section, or ``{}`` when config can't be loaded."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config()
         return (cfg.get("kanban", {}) if isinstance(cfg, dict) else {}) or {}
     except Exception:
@@ -62,7 +62,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     # kanban.max_in_progress_per_profile and kanban.max_spawn with the same
     # semantics as the gateway dispatch path.
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None

@@ -2261,7 +2261,7 @@ async def action(body: dict):
 
 Routes mount under `/api/plugins/<id>/` (`GET /api/plugins/<id>/board`, …).
 Backend code runs inside the gateway process, so it can import from the
-hermes-agent codebase directly (`hermes_state`, `hermes_cli.config`, …). See
+hermes-agent codebase directly (`hermes_state`, `hermes_agent.hermes_cli.config`, …). See
 [Extending the Dashboard → Backend API routes](../user-guide/features/extending-the-dashboard.md#backend-api-routes)
 for the full backend reference — the mount is identical.
 
@@ -2281,7 +2281,7 @@ own desktop half over the app's global event stream — the same stream
 `host.onEvent` subscribes to:
 
 ```python
-from hermes_cli.plugin_events import broadcast_plugin_event
+from hermes_agent.hermes_cli.plugin_events import broadcast_plugin_event
 
 broadcast_plugin_event("rss-reader", "feed.updated", {"count": 3})
 # → event "plugin.rss-reader.feed.updated" reaches every connected desktop client

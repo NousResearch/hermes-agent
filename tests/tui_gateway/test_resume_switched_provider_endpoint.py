@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from hermes_cli.cli_model_switch_mixin import stored_session_route
+from hermes_agent.hermes_cli.cli_model_switch_mixin import stored_session_route
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.tui_gateway.server import _stored_session_runtime_overrides
 

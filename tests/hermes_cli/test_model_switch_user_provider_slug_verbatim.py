@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.model_switch import switch_model
+from hermes_agent.hermes_cli.model_switch import switch_model
 
 LISTING = ["deepseek-v4-flash-0731", "deepseek-v4-flash", "deepseek-v4-pro"]
 
@@ -52,7 +52,7 @@ def endpoint(monkeypatch):
 
 @pytest.mark.parametrize("explicit_provider", ["hyper", "custom:hyper"])
 def test_unlisted_id_on_user_provider_is_kept_verbatim(endpoint, explicit_provider):
-    from hermes_cli.config import get_compatible_custom_providers, load_config
+    from hermes_agent.hermes_cli.config import get_compatible_custom_providers, load_config
 
     cfg = load_config()
     result = switch_model(

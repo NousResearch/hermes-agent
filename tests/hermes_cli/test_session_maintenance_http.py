@@ -4,7 +4,7 @@ import pytest
 from fastapi import FastAPI
 
 from hermes_agent.gateway.runtime_ownership import ProfileOwnership
-from hermes_cli.web_routers.sessions import manage_router
+from hermes_agent.hermes_cli.web_routers.sessions import manage_router
 from hermes_agent.hermes_state import SessionDB
 
 

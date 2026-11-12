@@ -5,8 +5,8 @@ the per-model ``allowed_options`` LM Studio publishes in ``/api/v1/models``. The
 and caches those options and passes them as ``lmstudio_reasoning_options``.
 
 Everything else stays where it lives today: endpoint, ``LM_API_KEY`` / ``LM_BASE_URL`` and the
-no-auth placeholder (``hermes_cli/auth.py`` registry row), the chat-model picker probe
-(``hermes_cli/models_local.py``). Hence ``base_url`` is left empty: a loopback ``base_url``
+no-auth placeholder (``hermes_agent/hermes_cli/auth.py`` registry row), the chat-model picker probe
+(``hermes_agent/hermes_cli/models_local.py``). Hence ``base_url`` is left empty: a loopback ``base_url``
 would map every ``127.0.0.1`` / ``localhost`` endpoint to LM Studio in URL->provider inference
 and disable local-server detection for Ollama, llama.cpp and vLLM.
 """

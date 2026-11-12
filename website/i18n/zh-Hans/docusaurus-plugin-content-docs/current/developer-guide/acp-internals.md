@@ -144,7 +144,7 @@ ACP 不实现自己的认证存储。
 而是复用 Hermes 的运行时解析器：
 
 - `hermes_agent/acp_adapter/auth.py`
-- `hermes_cli/runtime_provider.py`
+- `hermes_agent/hermes_cli/runtime_provider.py`
 
 因此 ACP 通告并使用当前配置的 Hermes provider/凭据。它还始终通告一个终端 setup 认证方法（`hermes-setup`，参数 `--setup`），以便首次运行的 ACP 客户端在启动正常 ACP 会话前可以打开 Hermes 的交互式模型/provider 配置。
 
@@ -177,5 +177,5 @@ ACP 在 prompt 执行期间临时在终端工具上安装审批回调，执行�
 
 - `tests/acp/` — ACP 测试套件
 - `hermes_agent/toolsets.py` — `hermes-acp` toolset 定义
-- `hermes_cli/main.py` — `hermes acp` CLI 子命令
+- `hermes_agent/hermes_cli/main.py` — `hermes acp` CLI 子命令
 - `pyproject.toml` — `[acp]` 可选依赖 + `hermes-acp` 脚本

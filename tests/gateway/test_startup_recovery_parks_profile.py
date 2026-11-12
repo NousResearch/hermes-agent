@@ -111,7 +111,7 @@ def test_a_secondary_whose_retirement_times_out_keeps_its_lock_but_is_never_star
 
         host._start_one_profile_adapters = start_one
         host._restore_secondary_completion_ledgers = lambda profile_homes: None
-        monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", lambda *a, **k: [])
+        monkeypatch.setattr("hermes_agent.hermes_cli.profiles.profiles_to_serve", lambda *a, **k: [])
         monkeypatch.setattr("hermes_agent.gateway.status.publish_runtime_status", lambda **kw: published.update(kw))
         monkeypatch.setattr("hermes_agent.gateway.pairing.PairingStore", lambda profile: SimpleNamespace(profile=profile))
         asyncio.run(host._start_secondary_profile_adapters())

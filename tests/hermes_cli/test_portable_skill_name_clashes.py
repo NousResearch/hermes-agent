@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from hermes_cli import plugins as plugins_mod
-from hermes_cli.plugins_manifest import _portable_data_namespace
+from hermes_agent.hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli.plugins_manifest import _portable_data_namespace
 from hermes_agent.tools.skills_tool import skill_view
 
 
@@ -24,7 +24,7 @@ def _home(tmp_path, monkeypatch, *, enabled, disabled=()):
     bundled.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
-    from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+    from hermes_agent.hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
     for name in ("foo.bar", "foo-bar"):
         skill = home / "plugins" / name / "skills" / "workflow"
         skill.mkdir(parents=True)

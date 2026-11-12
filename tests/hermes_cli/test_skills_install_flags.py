@@ -12,7 +12,7 @@ import sys
 
 def test_cli_skills_install_yes_sets_skip_confirm(monkeypatch):
     """--yes should set skip_confirm=True but NOT force."""
-    from hermes_cli.main import main
+    from hermes_agent.hermes_cli.main import main
 
     captured = {}
 
@@ -21,7 +21,7 @@ def test_cli_skills_install_yes_sets_skip_confirm(monkeypatch):
         captured["force"] = args.force
         captured["yes"] = args.yes
 
-    monkeypatch.setattr("hermes_cli.skills_hub.skills_command", fake_skills_command)
+    monkeypatch.setattr("hermes_agent.hermes_cli.skills_hub.skills_command", fake_skills_command)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -37,7 +37,7 @@ def test_cli_skills_install_yes_sets_skip_confirm(monkeypatch):
 
 def test_cli_skills_install_no_flags(monkeypatch):
     """Without flags, both force and yes should be False."""
-    from hermes_cli.main import main
+    from hermes_agent.hermes_cli.main import main
 
     captured = {}
 
@@ -45,7 +45,7 @@ def test_cli_skills_install_no_flags(monkeypatch):
         captured["force"] = args.force
         captured["yes"] = args.yes
 
-    monkeypatch.setattr("hermes_cli.skills_hub.skills_command", fake_skills_command)
+    monkeypatch.setattr("hermes_agent.hermes_cli.skills_hub.skills_command", fake_skills_command)
     monkeypatch.setattr(
         sys,
         "argv",

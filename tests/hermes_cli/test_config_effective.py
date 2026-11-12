@@ -1,4 +1,4 @@
-"""Invariants for ``hermes_cli.config_effective.load_user_config_effective`` — the one loader every
+"""Invariants for ``hermes_agent.hermes_cli.config_effective.load_user_config_effective`` — the one loader every
 defaults-free config reader (gateway runtime, TUI gateway, cron, ``hermes send`` bridge, doctor,
 bootstrap modules) goes through."""
 import textwrap
@@ -23,8 +23,8 @@ def homes(tmp_path, monkeypatch):
 
 
 def _reset_caches():
-    import hermes_cli.config as cfg
-    from hermes_cli import config_effective, managed_scope
+    import hermes_agent.hermes_cli.config as cfg
+    from hermes_agent.hermes_cli import config_effective, managed_scope
 
     cfg._LOAD_CONFIG_CACHE.clear()
     cfg._RAW_CONFIG_CACHE.clear()
@@ -60,7 +60,7 @@ def test_effective_is_user_plus_managed_plus_env_with_no_defaults(homes):
     root ``provider`` migrated under ``model``, and no DEFAULT_CONFIG key introduced (a missing
     key stays missing). Per-message gateway reads (and the system prompt built from them) are
     pinned by this shape, not by re-running the implementation's primitives."""
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
 
     home, managed = homes
     _write(home / "config.yaml", USER_YAML)
@@ -83,7 +83,7 @@ def test_broken_yaml_serves_last_good_and_fail_closed_raises(homes):
     """A torn mid-edit write must not silently drop user overrides: the fail-open path serves the last
     successfully parsed user file through the same pipeline; ``fail_closed`` surfaces the error to
     callers that keep their own last-good state."""
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
 
     home, _ = homes
     _write(home / "config.yaml", USER_YAML)
@@ -100,7 +100,7 @@ def test_broken_yaml_serves_last_good_and_fail_closed_raises(homes):
 def test_good_backup_is_written_only_for_the_active_home(homes, tmp_path):
     """Reading ANOTHER profile's config (doctor, TUI cwd lookup) is a read: it must not create
     ``backups/config/`` inside that profile. The active home keeps the last-good copy."""
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
 
     home, _ = homes
     other = tmp_path / "other-profile"
@@ -116,8 +116,8 @@ def test_good_backup_is_written_only_for_the_active_home(homes, tmp_path):
 
 
 def _reset_caches_keep_last_good():
-    import hermes_cli.config as cfg
-    from hermes_cli import config_effective
+    import hermes_agent.hermes_cli.config as cfg
+    from hermes_agent.hermes_cli import config_effective
 
     cfg._RAW_CONFIG_CACHE.clear()
     config_effective._EFFECTIVE_CACHE.clear()

@@ -206,7 +206,7 @@ def test_main_writes_catalog_and_meta(mod, tmp_path):
     assert meta["removedCount"] == 1
     assert meta["generatedAt"]
     # The live-refresh document consumed by installed clients: loader-schema entries + the kill list.
-    from hermes_cli.plugin_catalog import entry_from_mapping
+    from hermes_agent.hermes_cli.plugin_catalog import entry_from_mapping
     live = json.loads((out_dir / "plugin-catalog.json").read_text(encoding="utf-8"))
     assert [entry_from_mapping(raw, "live").name for raw in live["entries"]] == ["alpha", "beta", "gamma"]
     assert live["removed"] == [{"name": "gone"}]

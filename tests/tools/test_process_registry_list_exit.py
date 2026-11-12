@@ -108,7 +108,7 @@ def _probe(root):
     module._SYSTEMD_SCOPE_AVAILABLE = False  # Own the test process tree, not a host service.
     # This process is the subreaper whose final wait collects every descendant; an idle owner-death
     # supervisor would hold that wait for its 30 s grace.
-    from hermes_cli import process_identity
+    from hermes_agent.hermes_cli import process_identity
     process_identity._SUPERVISOR_IDLE_EXIT_S = 0.0
     registry = module.ProcessRegistry()
     sessions = []

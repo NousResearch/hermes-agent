@@ -68,7 +68,7 @@ def test_worker_stop_hard_cancels_the_agent_before_and_after_construction(tmp_pa
 
 
 CHILD = """import json, os, sys, psutil
-from hermes_cli.process_identity import worker_birth
+from hermes_agent.hermes_cli.process_identity import worker_birth
 me = psutil.Process()
 out = os.fdopen(os.dup(sys.stdout.fileno()), 'wb', buffering=0)
 send = lambda f: out.write((json.dumps(f) + '\\n').encode())

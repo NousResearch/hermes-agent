@@ -3,7 +3,7 @@ never only logged (#119769): the CLI prints it; other drivers get a warn notice,
 messaging-gateway agent (callbacks wired per turn) replays on its first turn."""
 from hermes_agent.agent.agent_init import _init_memory
 from hermes_agent.agent.status_output import StatusOutputMixin
-from hermes_cli import memory_provider_migration as mig
+from hermes_agent.hermes_cli import memory_provider_migration as mig
 
 
 class StartupAgent(StatusOutputMixin):

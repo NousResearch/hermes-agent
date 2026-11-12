@@ -27,14 +27,14 @@ class CLIProcessNotificationsMixin:
         gateway semantics: events are still drained, claimed and acknowledged — only the
         turn-starting injection is suppressed."""
         try:
-            from cli import CLI_CONFIG
+            from hermes_agent.cli import CLI_CONFIG
             mode = str((CLI_CONFIG.get("display") or {}).get("background_process_notifications") or "").strip().lower()
         except Exception:
             return False
         return mode == "off"
 
     def _drain_process_notifications(self, consumer: str) -> None:
-        from hermes_cli.gateway_tools_notify import gateway_store, queue_admitted_turn
+        from hermes_agent.hermes_cli.gateway_tools_notify import gateway_store, queue_admitted_turn
         store = gateway_store(self)
         if store is not None:
             # The process registry and its delivery claims live in the gateway, which admits the
@@ -75,7 +75,7 @@ class CLIProcessNotificationsMixin:
 
     def _tui_unwrap_input(self, user_input):
         """Unwrap ``_VoiceInputMessage`` / ``_SeededQueryMessage`` -> ``(text_or_tuple, is_voice_input, is_seeded_query)``."""
-        from cli import _VoiceInputMessage, _SeededQueryMessage
+        from hermes_agent.cli import _VoiceInputMessage, _SeededQueryMessage
         from hermes_agent.tools.process_registry import process_registry
         from hermes_agent.tools.process_registry_notifications import (
             PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification)
@@ -90,7 +90,7 @@ class CLIProcessNotificationsMixin:
             user_input = user_input.text
         is_seeded_query = isinstance(user_input, _SeededQueryMessage)
         if is_seeded_query:
-            from hermes_cli.gateway_tools_notify import arm_adopted
+            from hermes_agent.hermes_cli.gateway_tools_notify import arm_adopted
             arm_adopted(self, user_input)
             user_input = (user_input.text, user_input.images) if user_input.images else user_input.text
         return user_input, is_voice_input, is_seeded_query

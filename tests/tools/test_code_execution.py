@@ -761,8 +761,8 @@ class TestLoadConfig(unittest.TestCase):
         from hermes_agent.tools.code_execution_tool import _load_config
         mock_cli = MagicMock()
         mock_cli.CLI_CONFIG = {"code_execution": {"timeout": 999}}
-        with patch.dict("sys.modules", {"cli": mock_cli}), \
-             patch("hermes_cli.config.load_config_readonly", return_value={}):
+        with patch.dict("sys.modules", {"hermes_agent.cli": mock_cli}), \
+             patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={}):
             result = _load_config()
         self.assertEqual(result, {})
 

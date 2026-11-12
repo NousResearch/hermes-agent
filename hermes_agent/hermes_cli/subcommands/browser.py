@@ -25,18 +25,18 @@ def build_browser_parser(subparsers) -> None:
         help="Override detected default browser (chrome/edge/brave/brave-origin/chromium)")
 
     # Desktop-only plumbing (help hidden): Electron main reads the real-profile browser's cookies through it
-    # to sign the in-app browser in (hermes_cli/browser_preview_signins.py).
+    # to sign the in-app browser in (hermes_agent/hermes_cli/browser_preview_signins.py).
     browser_export = browser_subparsers.add_parser("export-signins", help=argparse.SUPPRESS)
     browser_export.add_argument("--json", action="store_true")
 
     def _dispatch_browser(_args):
-        from hermes_cli.browser_connect import (
+        from hermes_agent.hermes_cli.browser_connect import (
             UNSUPPORTED_CHANNEL, close_browser_holding_profile, detect_default_chromium,
             real_profile_data_dir)
 
         action = getattr(_args, "browser_action", None)
         if action == "export-signins":
-            from hermes_cli.browser_preview_signins import run_export_signins
+            from hermes_agent.hermes_cli.browser_preview_signins import run_export_signins
             return run_export_signins(_args)
         if action != "close-profile":
             browser_parser.print_help()

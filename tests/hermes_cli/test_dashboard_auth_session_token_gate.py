@@ -20,10 +20,10 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli import web_server
-import hermes_cli.web_server_chat as _web_server_chat
-from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests
+from hermes_agent.hermes_cli import web_server
+import hermes_agent.hermes_cli.web_server_chat as _web_server_chat
+from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests
 import plugins.dashboard_auth.session_token as session_token_plugin
 
 
@@ -154,7 +154,7 @@ _NATIVE = {
 
 class TestNativeAuthorize:
     def _pending_count(self):
-        from hermes_cli.dashboard_auth import native_flow
+        from hermes_agent.hermes_cli.dashboard_auth import native_flow
         return len(native_flow._pending)
 
     def test_unnamed_request_auto_selects_the_one_interactive_provider(self, gated_token_app):

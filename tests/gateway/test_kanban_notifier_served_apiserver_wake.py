@@ -24,9 +24,9 @@ from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.kanban_watchers_notifier import _adapter_for_subscription
 from hermes_agent.gateway.profile_routing import parse_profile_routes
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_notify as kbn
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_notify as kbn
 from hermes_constants import get_hermes_home
 from hermes_agent.hermes_state import SessionDB
 

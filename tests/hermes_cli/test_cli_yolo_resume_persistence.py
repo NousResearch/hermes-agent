@@ -25,7 +25,7 @@ import pytest
 
 import hermes_agent.tools.approval as approval_module
 from hermes_agent.tools import approval_context
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -156,7 +156,7 @@ class TestToggleYoloPersists:
 
     def test_toggle_survives_missing_session_db(self):
         stand_in = SimpleNamespace(session_id=SESSION_ID, _session_db=None)
-        with patch("cli._cprint"):
+        with patch("hermes_agent.cli._cprint"):
             HermesCLI._toggle_yolo(stand_in)  # must not raise
         assert approval_module.is_session_yolo_enabled(SESSION_ID) is True
 
@@ -170,7 +170,7 @@ class TestEndToEndPersistAndRestore:
 
         # Process 1: user toggles /yolo ON — persisted to the row.
         cli_one = SimpleNamespace(session_id=SESSION_ID, _session_db=db)
-        with patch("cli._cprint"):
+        with patch("hermes_agent.cli._cprint"):
             HermesCLI._toggle_yolo(cli_one)
         assert approval_module.is_session_yolo_enabled(SESSION_ID) is True
 
@@ -204,7 +204,7 @@ class TestEndToEndPersistAndRestore:
         )
         cli_one = SimpleNamespace(session_id=SESSION_ID, _session_db=db)
         approval_module.enable_session_yolo(SESSION_ID)
-        with patch("cli._cprint"):
+        with patch("hermes_agent.cli._cprint"):
             HermesCLI._toggle_yolo(cli_one)  # OFF
         approval_module.clear_session(SESSION_ID)
 

@@ -102,7 +102,7 @@ def raise_if_declared_key_missing(requested_provider: Optional[str], runtime: di
     label, key_env = _declared_custom_key(str(requested_provider or "").strip().lower(), runtime, model_cfg, config)
     if not key_env or get_secret_str(key_env, "").strip():
         return
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.auth import AuthError
     raise AuthError(f"No API key for {label}: it reads {key_env}, which is not set for this profile, so the "
                     f"request was not sent. {where_to_set_key(key_env)}",
                     provider=str(requested_provider or "custom"), code="missing_api_key")

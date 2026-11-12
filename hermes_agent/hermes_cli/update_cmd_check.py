@@ -2,7 +2,7 @@
 
 ``update_cmd._cmd_update_check`` (a frozen updater surface, see ``tests/compat``) orchestrates
 these. Facade helpers are read through ``_uc()`` at call time and origin helpers are imported
-per function, so test patches on ``hermes_cli.update_cmd`` and the origin modules stay effective.
+per function, so test patches on ``hermes_agent.hermes_cli.update_cmd`` and the origin modules stay effective.
 """
 
 from __future__ import annotations
@@ -17,11 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
     # Callers pass **_no_prompt_git_kwargs() which already carries creationflags;
     # OR the hide flag into the shared kwargs instead of passing the keyword twice.
     kwargs["creationflags"] = kwargs.get("creationflags", 0) | windows_hide_flags()
-    from hermes_cli.update_custody import run_git
+    from hermes_agent.hermes_cli.update_custody import run_git
 
     return run_git(
         git_cmd, args, cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -30,7 +30,7 @@ def _git(git_cmd: list[str], root: Path, args: list[str], **kwargs: Any) -> subp
 
 
 def _uc():
-    from hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import update_cmd
 
     return update_cmd
 
@@ -43,7 +43,7 @@ def clear_git_debris(root: Path) -> None:
     ``tmp_pack_*`` debris: unchecked it reached 6 GB and corrupted the pack dir (#93732).
     A partial clone also gets its commit-graph-off keys re-applied (#127711).
     """
-    from hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs, settle_partial_clone_maintenance
+    from hermes_agent.hermes_cli.gitlock import clear_stale_git_locks, clear_stale_tmp_packs, settle_partial_clone_maintenance
 
     for lock_path in clear_stale_git_locks(root):
         print(f"  (removed stale git lock: {lock_path})")
@@ -55,7 +55,7 @@ def clear_git_debris(root: Path) -> None:
 
 def report_pack_tidy(root: Path) -> None:
     """Spend the update's bounded slice on a partial clone's on-demand packs, and say what it did."""
-    from hermes_cli.git_pack_tidy import TIDY_BUDGET_SECONDS, tidy_partial_clone_packs
+    from hermes_agent.hermes_cli.git_pack_tidy import TIDY_BUDGET_SECONDS, tidy_partial_clone_packs
 
     tidy = tidy_partial_clone_packs(root)
     if tidy.erased or tidy.merged:
@@ -67,9 +67,9 @@ def report_pack_tidy(root: Path) -> None:
 
 def _refuses(git_cmd: list[str], root: Path, target: str, repository: str) -> bool:
     """`hermes update` would refuse ``target`` (see update_downgrade_guard), so --check must not offer it."""
-    from hermes_cli.update_downgrade_guard import would_refuse
-    from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
-    from hermes_cli.source_check import _github_predates_runtime
+    from hermes_agent.hermes_cli.update_downgrade_guard import would_refuse
+    from hermes_agent.hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
+    from hermes_agent.hermes_cli.source_check import _github_predates_runtime
     from hermes_constants import get_hermes_home
 
     def git(*args: str) -> int:
@@ -90,9 +90,9 @@ def channel_compare_branch(selected_channel: str, git_cmd: list[str], root: Path
     ``None`` means the verdict is printed (the channel pins a commit); exits 1 when the channel
     cannot be resolved. An install riding its default channel only ever moves forward.
     """
-    from hermes_cli.config import get_config_path, require_readable_config_before_write
-    from hermes_cli.source_releases import resolve_source_target
-    from hermes_cli.update_channel import channel_record, rides_default_channel
+    from hermes_agent.hermes_cli.config import get_config_path, require_readable_config_before_write
+    from hermes_agent.hermes_cli.source_releases import resolve_source_target
+    from hermes_agent.hermes_cli.update_channel import channel_record, rides_default_channel
 
     print(f"→ Update channel: {selected_channel}")
     record = channel_record(require_readable_config_before_write(get_config_path()), root)
@@ -159,7 +159,7 @@ def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args
             fetch_result = _fetch(git_cmd, root, depth_args, "upstream", branch)
             if fetch_result.returncode == 0:
                 return fetch_result, f"upstream/{branch}"
-    from hermes_cli.gitlock import fetch_with_partial_clone_recovery
+    from hermes_agent.hermes_cli.gitlock import fetch_with_partial_clone_recovery
     # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
     print("→ Fetching from origin...")
     return fetch_with_partial_clone_recovery(
@@ -173,7 +173,7 @@ def repair_shallow_grafts(root: Path) -> None:
     Git never removes old grafts; unpruned, the file keeps growing and merge-base / the
     orphan-divergence heuristic stop working (#105951).
     """
-    from hermes_cli.gitlock import prune_stale_shallow_grafts, repair_broken_shallow_boundaries
+    from hermes_agent.hermes_cli.gitlock import prune_stale_shallow_grafts, repair_broken_shallow_boundaries
 
     repaired = repair_broken_shallow_boundaries(root)
     if repaired:
@@ -199,8 +199,8 @@ def report_shallow_verdict(git_cmd: list[str], root: Path, compare_branch: str) 
     if head_sha and target_sha and head_sha == target_sha:
         print("✓ Already up to date.")
         return
-    from hermes_cli.config import recommended_update_command
-    from hermes_cli.source_check import _github_compare_behind
+    from hermes_agent.hermes_cli.config import recommended_update_command
+    from hermes_agent.hermes_cli.source_check import _github_compare_behind
 
     counted = _github_compare_behind(head_sha, target_sha)
     if counted == 0:
@@ -223,7 +223,7 @@ def report_rev_list_verdict(git_cmd: list[str], root: Path, compare_branch: str)
         return
     commits_word = "commit" if behind == 1 else "commits"
     print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
-    from hermes_cli.config import recommended_update_command
+    from hermes_agent.hermes_cli.config import recommended_update_command
 
     print(f"  Run '{recommended_update_command()}' to install.")
 
@@ -237,11 +237,11 @@ def select_apply_target(args, branch: str, request: dict, *, git_cmd, stop) -> t
     """
     from copy import deepcopy
 
-    from hermes_cli.config import require_readable_config_before_write
-    from hermes_cli.release_channels import retrying_reads
-    from hermes_cli.source_releases import resolve_source_target
-    from hermes_cli.update_channel import channel_record, rides_default_channel
-    from hermes_cli.update_cmd_common import _record_stop
+    from hermes_agent.hermes_cli.config import require_readable_config_before_write
+    from hermes_agent.hermes_cli.release_channels import retrying_reads
+    from hermes_agent.hermes_cli.source_releases import resolve_source_target
+    from hermes_agent.hermes_cli.update_channel import channel_record, rides_default_channel
+    from hermes_agent.hermes_cli.update_cmd_common import _record_stop
 
     if getattr(args, "branch", None):
         return f"origin/{branch}", None, False, None
@@ -283,8 +283,8 @@ def fetch_release_tag(git_cmd: list[str], root: Path, request: dict) -> None:
     create-only: a fork or mirror without the tag still updates, and an existing local tag
     never moves (the stable pin contract). Only that one tag: others drag in their histories.
     """
-    from hermes_cli._subprocess_compat import no_prompt_git_kwargs
-    from hermes_cli.update_cmd import NETWORK_GIT_TIMEOUT_SECONDS
+    from hermes_agent.hermes_cli._subprocess_compat import no_prompt_git_kwargs
+    from hermes_agent.hermes_cli.update_cmd import NETWORK_GIT_TIMEOUT_SECONDS
 
     tag = request.get("release_tag")
     if not tag:
@@ -313,7 +313,7 @@ def hold_channel_release_behind_runtime(git_cmd, target_ref: str, channel: str) 
     refused downgrade, so the update stays where it is and says why (#140729). An explicit
     ``--branch`` never reaches here and keeps the refusal in ``update_cmd._refuse_before_commit_point``.
     """
-    from hermes_cli.update_downgrade_guard import downgrade_refusal
+    from hermes_agent.hermes_cli.update_downgrade_guard import downgrade_refusal
     if downgrade_refusal(git_cmd, _uc()._m().PROJECT_ROOT, target_ref) is None:
         return None
     head = _uc()._capture_head_sha(git_cmd, _uc()._m().PROJECT_ROOT)

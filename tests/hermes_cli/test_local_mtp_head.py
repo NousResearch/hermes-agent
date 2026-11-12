@@ -12,10 +12,10 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 
-from hermes_cli.local_runtime import bootstrap, catalog, presets
-from hermes_cli.local_runtime.catalog import AssetFile, CatalogEntry, QuantVariant
-from hermes_cli.local_runtime.estimator import HardwareBudget
-from hermes_cli.web_routers import local_models
+from hermes_agent.hermes_cli.local_runtime import bootstrap, catalog, presets
+from hermes_agent.hermes_cli.local_runtime.catalog import AssetFile, CatalogEntry, QuantVariant
+from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
+from hermes_agent.hermes_cli.web_routers import local_models
 
 GIB = 1 << 30
 UNIFIED_128 = HardwareBudget(usable_vram_bytes=int(128 * GIB * 0.8), total_device_bytes=128 * GIB,

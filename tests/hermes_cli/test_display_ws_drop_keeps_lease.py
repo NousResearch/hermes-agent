@@ -9,7 +9,7 @@ import tempfile
 
 import pytest
 
-from hermes_cli.web_routers import display
+from hermes_agent.hermes_cli.web_routers import display
 from hermes_agent.tools.bot_desktop import lease
 
 

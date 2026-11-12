@@ -1,7 +1,7 @@
 """Doctor's plugin update-provenance check (SPEC-05 warning surface).
 
 Bounded and READ-ONLY: the pure 2x2 plugin provenance reconciliation
-(hermes_cli.plugins_provenance — the actual authority) plus the
+(hermes_agent.hermes_cli.plugins_provenance — the actual authority) plus the
 manifest/sidecar update-url cross-check, surfaced as doctor rows. NO
 network (no fetch, no ls-remote — the cadence owns online checks), no
 mkdir — the plugins dir is computed, never created.
@@ -14,7 +14,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-import hermes_cli.doctor_state as ds
+import hermes_agent.hermes_cli.doctor_state as ds
 
 
 # --- plugin provenance rows ---------------------------------------------
@@ -93,7 +93,7 @@ def test_check_swallows_provenance_read_failure(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(config_mod, "get_hermes_home", lambda: tmp_path, raising=False)
     (tmp_path / "plugins").mkdir()
     with patch(
-        "hermes_cli.plugins_provenance.plugins_provenance",
+        "hermes_agent.hermes_cli.plugins_provenance.plugins_provenance",
         side_effect=RuntimeError("disk gone"),
     ):
         ds._check_update_provenance(False)

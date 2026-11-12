@@ -43,7 +43,7 @@ from urllib.parse import urlparse
 import httpx
 
 from hermes_agent.agent.web_search_provider import WebSearchProvider
-from hermes_cli.version_info import hermes_user_agent
+from hermes_agent.hermes_cli.version_info import hermes_user_agent
 
 logger = logging.getLogger(__name__)
 

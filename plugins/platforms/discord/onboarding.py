@@ -118,7 +118,7 @@ def _discord_token_shape_error(token: str) -> Optional[str]:
 
 def _prompt_discord_bot_token(prompt) -> str:
     """Prompt for the bot token, re-prompting once when the answer is a numeric app ID."""
-    from hermes_cli.cli_output import print_error
+    from hermes_agent.hermes_cli.cli_output import print_error
     token = ""
     for _attempt in range(2):
         token = prompt("Discord bot token", password=True)
@@ -135,8 +135,8 @@ def _prompt_discord_bot_token(prompt) -> str:
 def _prompt_checked_token(prompt) -> tuple[str, Optional[DiscordBotCheck]]:
     """A token Discord accepted (with its check), an unverifiable one (offline: ``None`` check),
     or ``("", None)`` when the user gave up."""
-    from hermes_cli.cli_output import print_error, print_success, print_warning
-    from hermes_cli.config import _check_non_ascii_credential
+    from hermes_agent.hermes_cli.cli_output import print_error, print_success, print_warning
+    from hermes_agent.hermes_cli.config import _check_non_ascii_credential
     from hermes_agent.tools.discord_tool import DiscordAPIError
     for _attempt in range(3):
         # Same stripping save_env_value applies, done first: a non-ASCII paste can't go in an HTTP header.
@@ -165,7 +165,7 @@ def _prompt_checked_token(prompt) -> tuple[str, Optional[DiscordBotCheck]]:
 
 
 def _ensure_message_content_intent(token: str, check: DiscordBotCheck, prompt) -> DiscordBotCheck:
-    from hermes_cli.cli_output import print_info, print_success, print_warning
+    from hermes_agent.hermes_cli.cli_output import print_info, print_success, print_warning
     from hermes_agent.tools.discord_tool import DiscordAPIError
     for _attempt in range(5):
         if check.message_content:
@@ -188,7 +188,7 @@ def _ensure_message_content_intent(token: str, check: DiscordBotCheck, prompt) -
 
 
 def _print_invite(check: DiscordBotCheck) -> None:
-    from hermes_cli.cli_output import print_info
+    from hermes_agent.hermes_cli.cli_output import print_info
     print()
     if check.server_count == 0:
         print_info("📨 The bot isn't in any server yet. Open this link to add it to yours:")
@@ -199,8 +199,8 @@ def _print_invite(check: DiscordBotCheck) -> None:
 
 
 def _prompt_allowlist(check: Optional[DiscordBotCheck], prompt, prompt_yes_no) -> None:
-    from hermes_cli.cli_output import print_info, print_success
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_agent.hermes_cli.cli_output import print_info, print_success
+    from hermes_agent.hermes_cli.config import get_env_value, save_env_value
     print()
     print_info("🔒 Security: only allowlisted Discord users can talk to your bot.")
     # Reconfiguring keeps whoever is already allowed; the wizard only adds.
@@ -244,9 +244,9 @@ def _check_saved_token(token: str) -> Optional[DiscordBotCheck]:
 def interactive_setup() -> None:
     """Guide the user through Discord bot setup: token (checked live), intents, invite link,
     allowlist (defaults to the bot's owner) and home channel. CLI imports are lazy."""
-    from hermes_cli.cli_output import print_header, print_info, print_success, prompt, prompt_yes_no
-    from hermes_cli.config import get_env_value, remove_env_value, save_env_value
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from hermes_agent.hermes_cli.cli_output import print_header, print_info, print_success, prompt, prompt_yes_no
+    from hermes_agent.hermes_cli.config import get_env_value, remove_env_value, save_env_value
+    from hermes_agent.hermes_cli.setup_platforms import declines_reconfigure
 
     print_header("Discord")
     if declines_reconfigure("Discord", "Reconfigure Discord?", "DISCORD_BOT_TOKEN"):

@@ -1,9 +1,9 @@
 """Skills configuration for Hermes Agent. `hermes skills` enters this module."""
 from typing import List, Optional, Set
 
-from hermes_cli.config import cfg_get, load_config, save_config
-from hermes_cli.colors import Colors, color
-from hermes_cli.platforms import PLATFORMS as _PLATFORMS
+from hermes_agent.hermes_cli.config import cfg_get, load_config, save_config
+from hermes_agent.hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.platforms import PLATFORMS as _PLATFORMS
 
 # {key: label} view of the messaging platforms (``PLATFORMS.items()`` / ``.get(key)`` below).
 PLATFORMS = {k: info.label for k, info in _PLATFORMS.items() if k != "api_server"}
@@ -91,7 +91,7 @@ def _select_platform() -> Optional[str]:
 
 def _toggle_by_category(skills: list[dict], disabled: set[str]) -> set[str]:
     """Toggle all skills in a category at once."""
-    from hermes_cli.curses_ui import curses_checklist
+    from hermes_agent.hermes_cli.curses_ui import curses_checklist
     categories = _get_categories(skills)
     cat_skills = [{s["name"] for s in skills if (s["category"] or "uncategorized") == cat}
                   for cat in categories]
@@ -112,7 +112,7 @@ def _toggle_by_category(skills: list[dict], disabled: set[str]) -> set[str]:
 
 def skills_command(args=None):
     """Entry point for `hermes skills`."""
-    from hermes_cli.curses_ui import curses_checklist
+    from hermes_agent.hermes_cli.curses_ui import curses_checklist
     config = load_config()
     skills = _list_all_skills()
     if not skills:

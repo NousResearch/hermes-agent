@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     test_client = TestClient(web_server.app)
     token = getattr(web_server, "_SESSION_TOKEN", "")
@@ -30,16 +30,16 @@ def test_stop_disables_and_tears_down(client, monkeypatch):
     class _FakeSup:
         pass
 
-    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.get_supervisor",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.bootstrap.get_supervisor",
                         lambda: _FakeSup())
-    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.shutdown_local_runtime",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.bootstrap.shutdown_local_runtime",
                         _shutdown)
 
     r = client.post("/api/local-models/server", json={"action": "stop"})
     assert r.status_code == 200
     assert stopped["called"] is True
 
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     assert load_config()["local_runtime"]["enabled"] is False
 
@@ -55,14 +55,14 @@ def test_start_enables_and_boots(client, monkeypatch):
         assert force is True
         return _FakeSup()
 
-    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
                         _ensure)
 
     r = client.post("/api/local-models/server", json={"action": "start"})
     assert r.status_code == 200
     assert booted["called"] is True
 
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     assert load_config()["local_runtime"]["enabled"] is True
 
@@ -105,7 +105,7 @@ def test_status_reports_loaded_models_from_live_router(client, monkeypatch):
         # from-import at module load, so patching the endpoint module's
         # attribute never reaches the name the route actually calls.
         monkeypatch.setattr(
-            "hermes_cli.web_routers.local_models._state_endpoint",
+            "hermes_agent.hermes_cli.web_routers.local_models._state_endpoint",
             lambda: {"base_url": f"http://127.0.0.1:{port}/v1", "api_key": "k"})
         payload = client.get("/api/local-models/status").json()
         assert payload["server_running"] is True
@@ -117,8 +117,8 @@ def test_status_reports_loaded_models_from_live_router(client, monkeypatch):
 @pytest.mark.parametrize("refuse", [False, True])
 def test_stop_forwards_recovery_and_preserves_conflict(client, tmp_path, monkeypatch, refuse):
     from fastapi import HTTPException
-    from hermes_cli.web_routers import local_models
-    from hermes_cli.local_runtime import supervisor
+    from hermes_agent.hermes_cli.web_routers import local_models
+    from hermes_agent.hermes_cli.local_runtime import supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     supervisor.state_path().write_text("{}")

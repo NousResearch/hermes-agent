@@ -70,7 +70,7 @@ def run_sweep(discover: Callable[[], Iterable[str]], *, interval_seconds: float,
         repos = claim_due_worktree_repos(discover() or [], interval_seconds)
         if not repos:
             return
-        from hermes_cli.worktree_ops import _prune_stale_worktrees
+        from hermes_agent.hermes_cli.worktree_ops import _prune_stale_worktrees
 
         for repo in repos:
             try:

@@ -27,8 +27,8 @@ from hermes_agent.gateway.media_repair import repair_explicit_computer_use_media
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 from hermes_agent.gateway.platforms.base_exec_approval import ea_default_reason_text
 from hermes_agent.gateway.turn_context import TurnContext
-from hermes_cli.config import cfg_get
-from hermes_cli.plugins_dispatch import stream_held
+from hermes_agent.hermes_cli.config import cfg_get
+from hermes_agent.hermes_cli.plugins_dispatch import stream_held
 from utils import is_truthy_value
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
@@ -67,7 +67,7 @@ def _clarify_expired_notice() -> str:
 
 
 # run_conversation result keys the gateway projection carries verbatim so a finite viewer's
-# `-z --usage-file` ledger (hermes_cli/oneshot._USAGE_KEYS) reads what the in-process path did.
+# `-z --usage-file` ledger (hermes_agent/hermes_cli/oneshot._USAGE_KEYS) reads what the in-process path did.
 _LEDGER_PASSTHROUGH_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "cache_read_tokens", "cache_write_tokens",
     "reasoning_tokens", "total_tokens", "provider", "turn_exit_reason", "service_tier",
@@ -139,8 +139,8 @@ def _settle_api_runtime_lock(agent, result, captured):
 def _resolution_failure_reply(exc: Exception, platform: Platform) -> tuple[str, str, bool]:
     """``(chat text, failure_reason, retryable)`` for a model/credential resolution failure before the turn."""
     from hermes_agent.agent.error_classifier import FailoverReason
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
-    from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
+    from hermes_agent.hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_agent.hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
     auth_permanent = FailoverReason.auth_permanent.value
     if isinstance(exc, LocalRuntimeUnavailableError):
@@ -1427,7 +1427,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # Most failed results name no provider; the error card's sign-in / update-key action needs it.
             "provider": getattr(agent, "provider", None) if agent else None,
             "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
-            # The rest of the `-z --usage-file` ledger (hermes_cli/oneshot._USAGE_KEYS): a finite
+            # The rest of the `-z --usage-file` ledger (hermes_agent/hermes_cli/oneshot._USAGE_KEYS): a finite
             # viewer reads the committed result over `prompt.receipt`, so the projection must keep
             # what the in-process one-shot took straight from `run_conversation`.
             **{key: result.get(key) for key in _LEDGER_PASSTHROUGH_KEYS if key in result},

@@ -90,7 +90,7 @@ class TestSecureDirChown:
     def test_secure_dir_invokes_chown_when_env_set(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_UID", "1000")
         monkeypatch.setenv("HERMES_GID", "911")
-        from hermes_cli import config as cfg
+        from hermes_agent.hermes_cli import config as cfg
 
         d = tmp_path / "subdir"
         d.mkdir()
@@ -103,7 +103,7 @@ class TestSecureDirChown:
     def test_secure_dir_no_chown_when_env_unset(self, tmp_path, monkeypatch):
         monkeypatch.delenv("HERMES_UID", raising=False)
         monkeypatch.delenv("HERMES_GID", raising=False)
-        from hermes_cli import config as cfg
+        from hermes_agent.hermes_cli import config as cfg
 
         d = tmp_path / "subdir"
         d.mkdir()

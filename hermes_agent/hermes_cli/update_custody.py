@@ -118,7 +118,7 @@ def _refuse(argv: Sequence[str], cause: object, *, receipted: bool = False) -> C
     if not receipted:
         logger.warning("Refused update child: %s", detail)
         with contextlib.suppress(Exception):
-            from hermes_cli.update_receipt import record_step
+            from hermes_agent.hermes_cli.update_receipt import record_step
 
             record_step("update_custody", False, detail)
     if _RUN["refused"] is None:
@@ -131,7 +131,7 @@ def _past_commit() -> bool:
     completion child resumes that receipt). No receipt is open before an update begins, nor in
     the parent after its completion child returned, which starts no update child."""
     try:
-        from hermes_cli.update_receipt import _current
+        from hermes_agent.hermes_cli.update_receipt import _current
 
         current = _current.get()
     except Exception:  # health: allow BLE001 -- fail closed: unknown = past commit, never "nothing changed"
@@ -174,7 +174,7 @@ def git_argv(git_cmd: Sequence[str], args: Sequence[str]) -> list[str]:
 
 def _held() -> dict | None:
     try:
-        from hermes_cli import update_lock
+        from hermes_agent.hermes_cli import update_lock
     except Exception:  # health: allow BLE001 -- a torn tree's half-written module raises anything; no updater runs
         return None
     return update_lock._HELD
@@ -216,7 +216,7 @@ def _custody_kwargs(inherit_lock: bool, kwargs: dict) -> dict:
 def _lock_fds(inherit_lock: bool) -> tuple[int, ...]:
     if not inherit_lock or sys.platform == "win32":
         return ()
-    from hermes_cli.update_lock import custody_spawn_kwargs
+    from hermes_agent.hermes_cli.update_lock import custody_spawn_kwargs
 
     return tuple(custody_spawn_kwargs().get("pass_fds", ()))
 
@@ -227,7 +227,7 @@ def _bind_suspended(proc: subprocess.Popen) -> None:
     Suspended until bound, so nothing it spawns can escape the job. A refused bind kills the
     child before it ran a single instruction and raises :class:`CustodyRefused` (D2: never an
     unfenced writer); a failed resume kills the child."""
-    from hermes_cli.update_lock import _bind_to_kill_on_close_job, resume_suspended_child
+    from hermes_agent.hermes_cli.update_lock import _bind_to_kill_on_close_job, resume_suspended_child
 
     try:
         _bind_to_kill_on_close_job(proc)
@@ -273,7 +273,7 @@ def run(argv: Sequence[str], *, inherit_lock: bool = False, **kwargs) -> subproc
         except subprocess.TimeoutExpired as exc:
             # git.exe's git-remote-https inherits the pipes: kill the tree, not git.exe alone (and
             # never the job: it also holds the update's other children).
-            from hermes_cli._subprocess_compat import kill_and_drain
+            from hermes_agent.hermes_cli._subprocess_compat import kill_and_drain
 
             drained = kill_and_drain(proc, _DRAIN_SECONDS)
             if drained is not None:
@@ -296,7 +296,7 @@ def popen_post_commit(argv: Sequence[str], *, label: str, **kwargs) -> subproces
     receipted) and never unfenced: it joins the checkout lock holding its own lease (R5b)."""
     if not (sys.platform == "win32" and _held() is not None):
         return subprocess.Popen(list(argv), **_custody_kwargs(True, kwargs))
-    from hermes_cli.update_lock import bind_child_to_update_tree, resume_suspended_child
+    from hermes_agent.hermes_cli.update_lock import bind_child_to_update_tree, resume_suspended_child
 
     kwargs["creationflags"] = kwargs.get("creationflags", 0) | _CREATE_SUSPENDED
     proc = subprocess.Popen(list(argv), **kwargs)
@@ -307,7 +307,7 @@ def popen_post_commit(argv: Sequence[str], *, label: str, **kwargs) -> subproces
                       "the job, holding its own checkout lease")
             print(f"  ⚠ {detail}", flush=True)
             with contextlib.suppress(Exception):
-                from hermes_cli.update_receipt import record_step
+                from hermes_agent.hermes_cli.update_receipt import record_step
 
                 record_step("update_custody", False, detail)
         resume_suspended_child(proc)
@@ -436,7 +436,7 @@ def _partial_clone(git_cmd: Sequence[str], kwargs: dict) -> bool:
     """The repository has a promisor remote (``extensions.partialClone``), read from disk."""
     from pathlib import Path
 
-    from hermes_cli.update_lock import _git_common_dir
+    from hermes_agent.hermes_cli.update_lock import _git_common_dir
 
     cwd = kwargs.get("cwd")
     for flag, value in itertools.pairwise(git_cmd):
@@ -597,7 +597,7 @@ def _report_refused_join(report: str, argv: Sequence[str]) -> str | None:
         return None
     logger.warning("%s: %s", note, " ".join(str(arg) for arg in argv[:2]))
     with contextlib.suppress(Exception):
-        from hermes_cli.update_receipt import record_step
+        from hermes_agent.hermes_cli.update_receipt import record_step
 
         record_step("update_custody", False, f"{note}: {' '.join(str(arg) for arg in argv[:2])}")
     return note
@@ -779,7 +779,7 @@ def contained_command(argv: Sequence[str], *, inherit_lock: bool = True, root=No
     :class:`CustodyRefused` is raised (D2)."""
     argv = list(argv)
     if not (sys.platform == "win32" and _held() is not None):
-        from hermes_cli.update_lock import checkout_lock_fds
+        from hermes_agent.hermes_cli.update_lock import checkout_lock_fds
 
         fds = tuple(checkout_lock_fds(root)) if inherit_lock and root is not None else _lock_fds(inherit_lock)
         if fds:
@@ -816,7 +816,7 @@ def _inheritable_job_handle() -> int:
     ``OSError`` when the job cannot be created or duplicated."""
     import ctypes
 
-    from hermes_cli.update_lock import update_tree_job
+    from hermes_agent.hermes_cli.update_lock import update_tree_job
 
     try:
         job = update_tree_job()

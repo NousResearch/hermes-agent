@@ -87,7 +87,7 @@ def cached_pricing(base_url: str = "") -> dict:
     the profile-keyed read: a process serving several profiles holds their catalogs side by side, and a
     usage level (Large / Free) is per plan, so another profile's catalog must never answer."""
     try:
-        from hermes_cli.models_pricing import get_pricing_for_provider
+        from hermes_agent.hermes_cli.models_pricing import get_pricing_for_provider
         return get_pricing_for_provider(PROVIDER, cached_only=True) or {}
     except Exception:
         logger.debug("Cached pricing unavailable", exc_info=True)
@@ -96,7 +96,7 @@ def cached_pricing(base_url: str = "") -> dict:
 
 def _billed_elsewhere(model: str, pricing: Optional[dict]) -> bool:
     try:
-        from hermes_cli.models import _is_subscription_billed
+        from hermes_agent.hermes_cli.models import _is_subscription_billed
         return _is_subscription_billed((pricing or {}).get(model))
     except Exception:
         logger.debug("Subscription billing lookup failed", exc_info=True)
@@ -110,7 +110,7 @@ def is_free(model: str, pricing: Optional[dict]) -> bool:
     if model.endswith(":free"):
         return True
     try:
-        from hermes_cli.models import _is_model_free
+        from hermes_agent.hermes_cli.models import _is_model_free
         return bool(pricing) and _is_model_free(model, pricing)
     except Exception:
         logger.debug("Free-model lookup failed", exc_info=True)
@@ -123,7 +123,7 @@ def is_top_tier(model: str, pricing: Optional[dict]) -> bool:
     if not model:
         return False
     try:
-        from hermes_cli.model_picker_usage import usage_levels
+        from hermes_agent.hermes_cli.model_picker_usage import usage_levels
         return usage_levels([model], pricing).get(model) == "top_tier"
     except Exception:
         logger.debug("Usage level lookup failed", exc_info=True)
@@ -171,7 +171,7 @@ def _plan_usage() -> Any:
     # Plan shape only (featured models), so the last account snapshot at any age answers: the 60s
     # cache has long lapsed by the time a window runs out mid-session.
     try:
-        from hermes_cli.model_picker_usage import nous_picker_usage
+        from hermes_agent.hermes_cli.model_picker_usage import nous_picker_usage
         return nous_picker_usage(any_age=True)
     except Exception:
         logger.debug("Plan usage unavailable", exc_info=True)
@@ -182,7 +182,7 @@ def _portal_free_models() -> list[str]:
     """The Portal's free picks, from what this profile already holds for its own Portal (in-process,
     else its last copy on disk). Never fetches: this runs mid-turn."""
     try:
-        from hermes_cli import models as m
+        from hermes_agent.hermes_cli import models as m
         base = m._resolve_nous_portal_url()
         payload = (m._nous_recommended_cache.get((m._pricing_profile_key(), base)) or (None,))[0]
         if not payload:
@@ -301,7 +301,7 @@ def chat_refusal_wording(text: str, resets_at: Any = None) -> str:
     if isinstance(resets_at, (int, float)) and not isinstance(resets_at, bool) and resets_at > 0:
         try:
             from hermes_agent.agent.credits_tracker import format_window_reset
-            from hermes_cli.model_picker_usage import compact_duration
+            from hermes_agent.hermes_cli.model_picker_usage import compact_duration
             ms = round(resets_at * 1000)  # the epoch seconds came from these ms: round, never truncate
             if left := compact_duration(ms):
                 text = text.replace(f"resets {format_window_reset(ms)}", f"resets in {left}")

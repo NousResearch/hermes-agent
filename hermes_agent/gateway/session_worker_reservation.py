@@ -38,7 +38,7 @@ def verify_worker_identity(process, hello):
         if handle.ppid() != os.getpid() or handle.status() == psutil.STATUS_ZOMBIE:
             raise RuntimeStoreError('permission_denied')
         worker = psutil.Process(pid)
-        from hermes_cli.process_identity import worker_birth
+        from hermes_agent.hermes_cli.process_identity import worker_birth
         birth = worker_birth(worker)  # kernel start: stable across clock steps (#140580) and btime re-anchors
         if birth != hello['birth'] or not worker.is_running() or worker.status() == psutil.STATUS_ZOMBIE:
             raise RuntimeStoreError('permission_denied')

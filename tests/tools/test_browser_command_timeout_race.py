@@ -22,7 +22,7 @@ def _fresh_cache():
 class TestGetCommandTimeoutRace:
     def test_returns_default_when_config_read_raises(self):
         """If config reading blows up, we still return an int (not None), and the memoised value is that int."""
-        with patch("hermes_cli.config_effective.load_user_config_effective", side_effect=OSError("boom")):
+        with patch("hermes_agent.hermes_cli.config_effective.load_user_config_effective", side_effect=OSError("boom")):
             result = browser_session_cloud.command_timeout()
 
         assert isinstance(result, int)

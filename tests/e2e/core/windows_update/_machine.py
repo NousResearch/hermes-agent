@@ -712,7 +712,7 @@ def one_shot_turn(machine: Machine, srv: Any, label: str, *, as_user: bool = Fal
 
 
 # Printed only when a launch detours through source-update completion instead of running
-# the requested command (hermes_cli/venv_sync.py, hermes_cli/source_build.py, update_cmd).
+# the requested command (hermes_agent/hermes_cli/venv_sync.py, hermes_agent/hermes_cli/source_build.py, update_cmd).
 SOURCE_COMPLETION_MARKERS = ("completing source-update", "Preparing Node dependencies", "Update complete")
 
 

@@ -5,7 +5,7 @@ import pytest
 
 @pytest.mark.parametrize("managed,backend", [(True, "firecrawl"), (False, "perplexity"), (False, "exa")])
 def test_web_selection_reports_the_backend_it_writes(monkeypatch, managed, backend):
-    import hermes_cli.tools_config_providers as providers
+    import hermes_agent.hermes_cli.tools_config_providers as providers
 
     monkeypatch.setattr(providers, "_nous_provider_gate", lambda *a, **kw: True)
     messages = []

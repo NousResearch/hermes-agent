@@ -11,7 +11,7 @@ import pytest
 
 import hermes_agent.agent.anthropic_credentials as anth_cred
 import hermes_agent.agent.auxiliary_client as aux
-from hermes_cli.auth import write_credential_pool
+from hermes_agent.hermes_cli.auth import write_credential_pool
 
 MODEL = "claude-sonnet-4-5"
 

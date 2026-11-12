@@ -1,6 +1,6 @@
 """Stdlib-only filesystem primitives PM needs before it can replace the caller's interpreter.
 
-Boot-time dependency selection (``hermes_cli.runtime_state``) imports these, so nothing here
+Boot-time dependency selection (``hermes_agent.hermes_cli.runtime_state``) imports these, so nothing here
 may import a dependency or another PM module.
 """
 from __future__ import annotations

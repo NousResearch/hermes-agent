@@ -11,10 +11,10 @@ Hermes is a large repository, and most contributions touch exactly one subsystem
 |-----------|-------------------|------------------|
 | Agent core (loop, transports, compression) | `agent/`, `hermes_agent/run_agent.py` | [Agent Loop](agent-loop.md), [Context Compression & Caching](context-compression-and-caching.md) |
 | Prompt assembly | `hermes_agent/agent/prompt_builder.py`, `hermes_agent/agent/system_prompt.py` | [Prompt Assembly](prompt-assembly.md) |
-| Model providers & transports | `hermes_agent/agent/transports/`, `plugins/model-providers/`, `hermes_cli/models.py` | [Adding Providers](adding-providers.md), [Model Provider Plugins](model-provider-plugin.md), [Provider Runtime](provider-runtime.md) |
+| Model providers & transports | `hermes_agent/agent/transports/`, `plugins/model-providers/`, `hermes_agent/hermes_cli/models.py` | [Adding Providers](adding-providers.md), [Model Provider Plugins](model-provider-plugin.md), [Provider Runtime](provider-runtime.md) |
 | Built-in tools | `hermes_agent/tools/` | [Adding Tools](adding-tools.md), [Tools Runtime](tools-runtime.md) |
 | Messaging gateway | `gateway/`, `plugins/platforms/` | [Gateway Internals](gateway-internals.md), [Adding Platform Adapters](adding-platform-adapters.md) |
-| CLI | `hermes_cli/` | [Extending the CLI](extending-the-cli.md) |
+| CLI | `hermes_agent/hermes_cli/` | [Extending the CLI](extending-the-cli.md) |
 | Plugins system | `plugins/` | [Build a Hermes Plugin](plugins/index.md) |
 | Skills (bundled & optional) | `skills/`, `optional-skills/` | [Creating Skills](creating-skills.md) |
 | Cron / scheduled jobs | `cron/` | [Cron Internals](cron-internals.md) |

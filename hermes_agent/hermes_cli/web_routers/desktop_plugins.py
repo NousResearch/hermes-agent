@@ -22,13 +22,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from hermes_cli.desktop_plugin_halves import (
+from hermes_agent.hermes_cli.desktop_plugin_halves import (
     INSTALL_ORIGIN,
     PACKAGE_MARKER,
     reconcile_desktop_halves,
     reconcile_desktop_halves_report,
 )
-from hermes_cli.desktop_plugin_install import DESKTOP_PLUGINS_DIR, desktop_plugins_root
+from hermes_agent.hermes_cli.desktop_plugin_install import DESKTOP_PLUGINS_DIR, desktop_plugins_root
 from hermes_constants import get_default_hermes_root
 
 router = APIRouter()
@@ -69,7 +69,7 @@ def _list(raw: str) -> dict:
 
 
 def _read(raw: str) -> dict:
-    from hermes_cli.web_routers.files import _is_sensitive_path
+    from hermes_agent.hermes_cli.web_routers.files import _is_sensitive_path
 
     target, parts = _inside_root(raw)
     not_found = HTTPException(status_code=404, detail="Not a desktop plugin file")

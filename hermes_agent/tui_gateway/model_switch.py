@@ -79,7 +79,7 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
             home = Path(profile_home)
             # External sources first: the requested profile may never have been served in this process.
             if hydrate_secrets:
-                from hermes_cli.env_loader import hydrate_profile_secret_sources
+                from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
                 hydrate_profile_secret_sources(home)
             secrets = build_profile_secret_scope(home)
             overlay = None
@@ -153,7 +153,7 @@ def _session_default_route(session: dict) -> tuple[str, str]:
     first state.db row carried the launch profile's model id. On the Nous free tier the agent build pins
     ``nous/welcome`` (``pin_model_for_route``), so the configured default (often the silent default,
     with no provider) is not what the session runs; report the pinned route instead."""
-    from hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
+    from hermes_agent.hermes_cli.anon_auth import GUEST_MODEL, free_tier_route
     with _session_profile_runtime_scope({"profile_home": session.get("profile_home") or None},
                                         hydrate_secrets=False):
         if not _resolve_startup_runtime()[1] and free_tier_route():
@@ -196,7 +196,7 @@ def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready:
 
 def _switch_request(raw_input: str, parsed_flags, persist_override) -> tuple[str, str, bool, bool, str]:
     """Normalize /model flags → (model_input, explicit_provider, one_turn, persist_global, reasoning_effort)."""
-    from hermes_cli.model_switch import (
+    from hermes_agent.hermes_cli.model_switch import (
         MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL, MODEL_SWITCH_ERROR_TEXT, parse_model_switch_args,
         resolve_persist_behavior)
 
@@ -224,7 +224,7 @@ def _current_model_runtime(agent, explicit_provider: str) -> tuple:
     current_model = _resolve_model()
     if explicit_provider:
         return explicit_provider.strip(), current_model, "", ""
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
     runtime = resolve_runtime_provider(requested=None, target_model=current_model or None)
     # Keep a callable api_key (Azure Entra bearer) unchanged: ``str()`` would
     # yield "<function ...>" and poison switch_model validation.
@@ -252,7 +252,7 @@ def _switch_away_provider(agent, explicit_provider: str, current_provider: str) 
 def _merge_preflight_warning(result, agent, session: dict, cfg, custom_provs) -> None:
     """Fold the context-compression preflight warning into ``result`` (best-effort)."""
     try:
-        from hermes_cli.context_switch_guard import merge_preflight_compression_warning
+        from hermes_agent.hermes_cli.context_switch_guard import merge_preflight_compression_warning
         cfg_ctx = None
         mc = cfg.get("model", {}) if isinstance(cfg, dict) else None
         if isinstance(mc, dict) and mc.get("context_length") is not None:
@@ -268,7 +268,7 @@ def _expensive_model_confirm(result, current_base_url: str, current_api_key, age
     """Deferred-confirm response when the selection guards flag the target model (or, with a live
     ``agent``, the switch itself — large cached context), else None."""
     try:
-        from hermes_cli.model_selection_guards import (
+        from hermes_agent.hermes_cli.model_selection_guards import (
             combined_selection_warning, selection_context_for_agent)
         warning = combined_selection_warning(
             result.new_model, provider=result.target_provider, base_url=result.base_url or current_base_url,
@@ -320,7 +320,7 @@ def _apply_model_switch(
     persist_override: bool | None = None, count_switch: bool = True) -> dict:
     """``count_switch=False``: an internal swap (config adoption, MoA one-shot and its restore), not a
     user's /model pick, so it stays out of the shared-metrics switch count."""
-    from hermes_cli.model_switch import parse_model_switch_args, switch_model
+    from hermes_agent.hermes_cli.model_switch import parse_model_switch_args, switch_model
     if parsed_flags is None:
         parsed_flags = parse_model_switch_args(raw_input)
     if getattr(parsed_flags, "is_reset", False):
@@ -338,7 +338,7 @@ def _apply_model_switch(
     # (e.g. "ollama-launch") and validate against saved model lists.
     user_provs = custom_provs = cfg = None
     with contextlib.suppress(Exception):
-        from hermes_cli.config import get_compatible_custom_providers, load_config
+        from hermes_agent.hermes_cli.config import get_compatible_custom_providers, load_config
         cfg = load_config()
         user_provs = cfg.get("providers")
         custom_provs = get_compatible_custom_providers(cfg)
@@ -386,12 +386,12 @@ def _apply_model_switch(
             "model": result.new_model, "provider": result.target_provider,
             "base_url": result.base_url, "api_key": result.api_key, "api_mode": result.api_mode}
     if persist_global:
-        from hermes_cli.model_switch import persist_model_selection
+        from hermes_agent.hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)
     if reasoning_effort:
         _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
     if count_switch:
-        from hermes_cli.observability.shared_metrics_events import record_model_switch
+        from hermes_agent.hermes_cli.observability.shared_metrics_events import record_model_switch
 
         record_model_switch(
             from_provider=_switch_away_provider(agent, explicit_provider, current_provider),
@@ -556,7 +556,7 @@ def _pending_switch_selection_warning(model: str, provider: str, agent: Any = No
     if not model:
         return None
     try:
-        from hermes_cli.model_selection_guards import (
+        from hermes_agent.hermes_cli.model_selection_guards import (
             combined_selection_warning, selection_context_for_agent)
         warning = combined_selection_warning(
             model, provider=provider or None, selection_context=selection_context_for_agent(agent))

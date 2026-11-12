@@ -60,7 +60,7 @@ def test_auto_detects_openrouter_from_pool(tmp_path, monkeypatch):
     (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
     _seed_openrouter_pool()
 
-    from hermes_cli.auth import resolve_provider
+    from hermes_agent.hermes_cli.auth import resolve_provider
 
     assert resolve_provider("auto") == "openrouter"
 

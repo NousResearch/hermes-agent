@@ -45,8 +45,8 @@ class TestUnhandledAuthTypeDedup:
         ac._LOGGED_UNHANDLED_AUTHTYPE_KEYS.clear()
 
     def test_unhandled_auth_type_logs_debug_once_not_warning(self, caplog, monkeypatch):
-        from hermes_cli import auth
-        from hermes_cli.auth import ProviderConfig
+        from hermes_agent.hermes_cli import auth
+        from hermes_agent.hermes_cli.auth import ProviderConfig
 
         # A registered provider whose auth_type matches no handled branch →
         # the terminal "unhandled auth_type" fall-through.

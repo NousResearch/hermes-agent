@@ -246,7 +246,7 @@ def inference_hosts() -> frozenset[str]:
     """
     from urllib.parse import urlparse
 
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_constants import OPENROUTER_BASE_URL
 
     urls = [getattr(p, "inference_base_url", "") or "" for p in PROVIDER_REGISTRY.values()] + [OPENROUTER_BASE_URL]

@@ -71,7 +71,7 @@ class TestGatewayPrompt:
         thread.start()
 
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
-            from hermes_cli.update_cmd import _gateway_prompt
+            from hermes_agent.hermes_cli.update_cmd import _gateway_prompt
             result = _gateway_prompt("Restore? [Y/n]", "y", timeout=5.0)
 
         thread.join()
@@ -337,7 +337,7 @@ class TestCmdUpdateGatewayMode:
         """With --gateway, stash restore uses _gateway_prompt instead of input()."""
         import subprocess
         from types import SimpleNamespace
-        from hermes_cli import main, update_cmd
+        from hermes_agent.hermes_cli import main, update_cmd
 
         root = tmp_path / "checkout"
         root.mkdir()
@@ -360,7 +360,7 @@ class TestCmdUpdateGatewayMode:
         monkeypatch.setattr(main, "_finalize_update_output", lambda state: None)
         monkeypatch.setattr(main, "_run_pre_update_backup", lambda args: None)
         monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
-        monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", lambda: None)
+        monkeypatch.setattr("hermes_agent.hermes_cli.update_inventory.collect_runtime_inventory", lambda: None)
         monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (False, ["git"], False))
         monkeypatch.setattr(update_cmd, "run_completion", lambda request: {"exit_code": 0, "receipt": None})
         gateway_prompt = MagicMock(return_value="n")

@@ -1,6 +1,6 @@
 """A frozen-policy worker never opens the profile's ``.env`` -- including the skill readiness probe.
 
-``hermes_cli.config.load_env`` already returns ``{}`` under ``worker_config_snapshot()``; the
+``hermes_agent.hermes_cli.config.load_env`` already returns ``{}`` under ``worker_config_snapshot()``; the
 ``skill_view`` readiness snapshot must route through it instead of tokenizing the file itself.
 """
 import json

@@ -22,8 +22,8 @@ def test_a_custom_endpoint_carries_only_its_own_entrys_headers(monkeypatch, base
     def create(**kwargs):
         created.update(kwargs)
         return MagicMock()
-    with patch('hermes_cli.config.load_config', return_value=_CONFIG), \
-         patch('hermes_cli.config.load_config_readonly', return_value=_CONFIG), \
+    with patch('hermes_agent.hermes_cli.config.load_config', return_value=_CONFIG), \
+         patch('hermes_agent.hermes_cli.config.load_config_readonly', return_value=_CONFIG), \
          patch.object(ac, '_create_openai_client', side_effect=create):
         ac.resolve_provider_client('custom', model='m', explicit_base_url=base_url, explicit_api_key='sk-x')
     assert created, 'no client was built'

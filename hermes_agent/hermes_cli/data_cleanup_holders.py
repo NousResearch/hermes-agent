@@ -71,7 +71,7 @@ def _drain_manual_gateway(home: Path) -> None:
 
 def _refuse_backend_writers(home: Path) -> None:
     from hermes_constants import get_default_hermes_root
-    from hermes_cli.process_identity import LEDGER_FILENAME, _read_ledger, entry_still_running
+    from hermes_agent.hermes_cli.process_identity import LEDGER_FILENAME, _read_ledger, entry_still_running
 
     root = get_default_hermes_root(home=home).resolve()
     rows = _read_ledger(root / LEDGER_FILENAME)
@@ -140,8 +140,8 @@ def _refuse_multiplexer(home: Path) -> None:
 def quiescent_home(home: Path):
     """Hold existing writer locks through deletion; do not remove their inodes."""
     from hermes_agent.gateway.status import _release_file_lock, _try_acquire_file_lock
-    from hermes_cli.active_sessions import _FileLock, _prune_dead, _read_entries
-    from hermes_cli.runtime_state import _lock
+    from hermes_agent.hermes_cli.active_sessions import _FileLock, _prune_dead, _read_entries
+    from hermes_agent.hermes_cli.runtime_state import _lock
     from hermes_agent.tools.checkpoint_pruning import store_lock
 
     home = home.resolve()

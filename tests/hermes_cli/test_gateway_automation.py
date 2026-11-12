@@ -23,15 +23,15 @@ class _Conn:
 
 @pytest.fixture
 def cli(tmp_path, monkeypatch):
-    from hermes_cli import goals
-    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from hermes_agent.hermes_cli import goals
+    from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
     from hermes_agent.hermes_state import SessionDB
     db = SessionDB(db_path=tmp_path / 'owner.db')
     monkeypatch.setattr(goals, '_get_session_db', lambda: db)  # the "gateway's" store
     conn = _Conn()
     store = GatewaySessionStore.__new__(GatewaySessionStore)
     store.connection = conn
-    from hermes_cli.cli_loops_mixin import CLILoopsMixin
+    from hermes_agent.hermes_cli.cli_loops_mixin import CLILoopsMixin
     obj = CLILoopsMixin.__new__(CLILoopsMixin)
     obj._session_db, obj._gateway_session_open, obj.session_id = store, True, 'sid-1'
     yield SimpleNamespace(cli=obj, conn=conn, db=db)
@@ -57,7 +57,7 @@ def test_no_manager_before_the_gateway_session_is_open(cli):
 
 
 def test_judge_decision_comes_from_the_gateway(cli, monkeypatch):
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
     monkeypatch.setattr(goals, 'judge_goal', lambda *a, **k: ('done', 'the report is written', False, None, False))
     mgr = cli.cli._get_goal_manager()
     mgr.set('write the report')
@@ -85,9 +85,9 @@ def test_the_watchdog_fires_a_heartbeat_another_viewer_resumed(cli, monkeypatch)
     """The poller stands down for a CLI running its watchdog, so the watchdog must see a resume made elsewhere."""
     import queue
     import time
-    from hermes_cli import cli_loops_mixin
-    from hermes_cli.gateway_automation import GatewayHeartbeatManager
-    from hermes_cli.heartbeat import load_heartbeat, save_heartbeat
+    from hermes_agent.hermes_cli import cli_loops_mixin
+    from hermes_agent.hermes_cli.gateway_automation import GatewayHeartbeatManager
+    from hermes_agent.hermes_cli.heartbeat import load_heartbeat, save_heartbeat
     from tests.waiting import wait_until
     hb = cli.cli._get_heartbeat_manager()
     hb.set('pulse', 60)
@@ -107,8 +107,8 @@ def test_the_watchdog_fires_a_heartbeat_another_viewer_resumed(cli, monkeypatch)
 
 
 def test_goal_draft_drafts_on_the_gateway(cli, monkeypatch):
-    from hermes_cli import goals
-    from hermes_cli.gateway_automation import dispatch_goal_command
+    from hermes_agent.hermes_cli import goals
+    from hermes_agent.hermes_cli.gateway_automation import dispatch_goal_command
     drafted = []
     monkeypatch.setattr(goals, 'draft_contract', lambda objective, **k: drafted.append(objective) or None)
     mgr = cli.cli._get_goal_manager()

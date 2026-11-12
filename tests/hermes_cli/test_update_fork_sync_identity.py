@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.update_cmd_git import UpstreamTargetBroken, _sync_with_upstream_if_needed
+from hermes_agent.hermes_cli.update_cmd_git import UpstreamTargetBroken, _sync_with_upstream_if_needed
 
 
 def _env(home: Path) -> dict:
@@ -52,8 +52,8 @@ def test_a_local_branch_named_upstream_main_never_changes_what_the_sync_counts_o
     _git(clone, "fetch", "-q", "upstream")
     _git(clone, "branch", "upstream/main", commits[1])
 
-    from hermes_cli import update_cmd_commit
-    from hermes_cli.update_cmd_git import _push_synced_fork
+    from hermes_agent.hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli.update_cmd_git import _push_synced_fork
 
     real_arm = update_cmd_commit.arm_tree_move
     armed = []
@@ -99,8 +99,8 @@ def _fork_behind_upstream(tmp_path, monkeypatch):
 
 def test_an_upstream_sync_whose_marker_cannot_be_written_never_moves_the_tree(tmp_path, monkeypatch):
     """The fork fast-forward is a tree move like the pull: no marker, no merge (F24)."""
-    from hermes_cli import update_cmd_commit
-    from hermes_cli._early_recovery import interrupted_pull_marker
+    from hermes_agent.hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli._early_recovery import interrupted_pull_marker
 
     clone, commits = _fork_behind_upstream(tmp_path, monkeypatch)
     update_cmd_commit.begin_update_attempt()
@@ -116,9 +116,9 @@ def test_an_upstream_sync_whose_marker_cannot_be_written_never_moves_the_tree(tm
 def test_a_failed_upstream_sync_after_the_pull_owes_the_restart_for_the_pulled_commit(tmp_path, monkeypatch):
     """The origin pull moved c0 -> c1 and the fork ff to c2 failed back to c1: the obligation must name
     c1 (dischargeable at HEAD), not the c2 the checkout never reached (F23)."""
-    from hermes_cli import update_cmd_commit, update_custody
-    from hermes_cli.update_host_obligation import read_host_obligation
-    from hermes_cli.venv_sync import completion_pending_path
+    from hermes_agent.hermes_cli import update_cmd_commit, update_custody
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli.venv_sync import completion_pending_path
 
     clone, commits = _fork_behind_upstream(tmp_path, monkeypatch)
     update_cmd_commit.begin_update_attempt()
@@ -147,8 +147,8 @@ def test_a_custody_refused_upstream_merge_after_the_pull_still_owes_the_pulled_c
     """A merge refused by custody (CustodyRefused, an OSError) used to escape ``except
     CalledProcessError`` with the obligation naming c2, which the checkout at c1 never holds
     (review C1): it must settle like any failed merge and owe the restart for c1."""
-    from hermes_cli import update_cmd_commit, update_custody
-    from hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli import update_cmd_commit, update_custody
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     clone, commits = _fork_behind_upstream(tmp_path, monkeypatch)
     update_cmd_commit.begin_update_attempt()
@@ -178,8 +178,8 @@ def test_a_failed_upstream_sync_whose_retarget_write_fails_still_owes_the_pulled
     retarget back to c1 hit a writer that now refuses: the debt stayed c2 with HEAD on c1 (review
     O4). The later move owes c1 from the start (every landing of the ff contains it), so a failed
     retarget changes nothing."""
-    from hermes_cli import update_cmd_commit, update_cmd_fleet, update_custody
-    from hermes_cli.update_host_obligation import read_host_obligation
+    from hermes_agent.hermes_cli import update_cmd_commit, update_cmd_fleet, update_custody
+    from hermes_agent.hermes_cli.update_host_obligation import read_host_obligation
 
     clone, commits = _fork_behind_upstream(tmp_path, monkeypatch)
     update_cmd_commit.begin_update_attempt()
@@ -213,8 +213,8 @@ def test_a_broken_upstream_target_is_refused_before_the_second_move(tmp_path, mo
     """The fork ff dropped its marker on git's exit 0 and only the caller's later syntax guard
     judged the result, so a kill in between left a broken c2 with no recovery record (review G1).
     The upstream target is compiled before its move, like the origin target's preflight."""
-    from hermes_cli import update_cmd_commit
-    from hermes_cli._early_recovery import interrupted_pull_marker
+    from hermes_agent.hermes_cli import update_cmd_commit
+    from hermes_agent.hermes_cli._early_recovery import interrupted_pull_marker
 
     clone, commits = _fork_behind_upstream(tmp_path, monkeypatch)
     upstream = tmp_path / "upstream"

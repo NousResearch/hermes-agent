@@ -24,7 +24,7 @@ def isolated_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     importlib.reload(config_mod)
     yield home
@@ -49,7 +49,7 @@ def _model_cfg(home):
 
 
 def test_same_endpoint_model_set_preserves_bare_custom_block(isolated_home):
-    from hermes_cli.web_server_config import _apply_model_assignment_sync
+    from hermes_agent.hermes_cli.web_server_config import _apply_model_assignment_sync
 
     _write_cli_config(isolated_home)
     # Dashboard re-save of the same endpoint (base_url sent along).
@@ -69,7 +69,7 @@ def test_new_endpoint_model_set_still_registers_named_provider(isolated_home):
     dashboard still registers a named ``custom_providers`` row (the picker's ready row)."""
     import hermes_yaml as yaml
 
-    from hermes_cli.web_server_config import _apply_model_assignment_sync
+    from hermes_agent.hermes_cli.web_server_config import _apply_model_assignment_sync
 
     _write_cli_config(isolated_home)
     _apply_model_assignment_sync(

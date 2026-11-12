@@ -9,7 +9,7 @@ import threading
 
 import pytest
 
-from hermes_cli import anon_auth, free_tier_offer
+from hermes_agent.hermes_cli import anon_auth, free_tier_offer
 
 DELAY = free_tier_offer.OFFER_DELAY_S
 BACKOFF = free_tier_offer.REOFFER_AFTER_S

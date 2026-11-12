@@ -19,7 +19,7 @@ def _target_syntax_fn(platform_name: str):
     unknown (idempotent manifest scan; only this platform's adapter is materialized)."""
     from hermes_agent.gateway.platform_registry import platform_registry
     if not platform_registry.is_registered(platform_name):
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()
     entry = platform_registry.get(platform_name)
     return entry.target_ref_syntax_fn if entry is not None else None
@@ -46,7 +46,7 @@ def _parse_target_ref(platform_name: str, target_ref: str):
 
 
 def unknown_platform_error(platform_name: str) -> str:
-    from hermes_cli.left_core_migration import platform_install_hint
+    from hermes_agent.hermes_cli.left_core_migration import platform_install_hint
     return f"Unknown or unregistered plugin platform: {platform_name}{platform_install_hint(platform_name)}"
 
 

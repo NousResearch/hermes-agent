@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.agent_plugins import (
+from hermes_agent.hermes_cli.agent_plugins import (
     MCP_SCHEMA_V1,
     PLUGIN_SCHEMA_V1,
     AgentPluginError,

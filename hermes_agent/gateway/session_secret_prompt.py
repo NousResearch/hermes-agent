@@ -16,7 +16,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-SECRET_TIMEOUT_S = 120  # main's CLI secret panel deadline (hermes_cli/callbacks.py)
+SECRET_TIMEOUT_S = 120  # main's CLI secret panel deadline (hermes_agent/hermes_cli/callbacks.py)
 
 
 def _skipped(var_name, reason, message):
@@ -44,7 +44,7 @@ def secret_prompt_scope(turn, agent):
                            cancelled=lambda: bool(getattr(agent, "_interrupt_requested", False)))
         if not value:
             return _skipped(var_name, "cancelled", "Secret setup was skipped.")
-        from hermes_cli.config import save_env_value_secure
+        from hermes_agent.hermes_cli.config import save_env_value_secure
         return {**save_env_value_secure(var_name, value), "skipped": False,
                 "message": "Secret stored securely. The secret value was not exposed to the model."}
 

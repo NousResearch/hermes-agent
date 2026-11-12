@@ -11,10 +11,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli.proxy.adapters import ADAPTERS, get_adapter
-from hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
-from hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
-from hermes_cli.proxy.adapters.xai import XAIGrokAdapter
+from hermes_agent.hermes_cli.proxy.adapters import ADAPTERS, get_adapter
+from hermes_agent.hermes_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
+from hermes_agent.hermes_cli.proxy.adapters.nous_portal import NousPortalAdapter
+from hermes_agent.hermes_cli.proxy.adapters.xai import XAIGrokAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ def _write_auth_store(hermes_home: Path, nous_state: dict[str, Any]) -> Path:
 def test_nous_adapter_never_waits_on_a_free_tier_challenge_under_its_lock(tmp_path, monkeypatch):
     """Every proxied request queues on the adapter lock, so the credential read inside it is a
     background caller: a browser challenge is announced and raised, never waited on."""
-    from hermes_cli import anon_challenge
+    from hermes_agent.hermes_cli import anon_challenge
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {"access_token": "a", "refresh_token": "r"})
     seen = []
@@ -56,7 +56,7 @@ def test_nous_adapter_never_waits_on_a_free_tier_challenge_under_its_lock(tmp_pa
         return {"api_key": "k", "expires_at": "2099-01-01T00:00:00Z",
                 "base_url": "https://inference-api.nousresearch.com/v1"}
 
-    with patch("hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials", side_effect=resolve):
+    with patch("hermes_agent.hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials", side_effect=resolve):
         NousPortalAdapter().get_credential()
     assert seen == [True]
 
@@ -106,7 +106,7 @@ def test_nous_adapter_concurrent_refresh_serialized(tmp_path, monkeypatch):
             errors.append(exc)
 
     with patch(
-        "hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials",
+        "hermes_agent.hermes_cli.proxy.adapters.nous_portal.resolve_nous_runtime_credentials",
         side_effect=serializing_refresh,
     ):
         threads = [threading.Thread(target=worker) for _ in range(3)]
@@ -219,7 +219,7 @@ def test_xai_adapter_retry_rotates_pool_entry_on_429(tmp_path, monkeypatch):
     def _refresh_must_not_run(*args, **kwargs):
         raise AssertionError("refresh_xai_oauth_pure must not run on 429")
 
-    monkeypatch.setattr("hermes_cli.auth.refresh_xai_oauth_pure", _refresh_must_not_run)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.refresh_xai_oauth_pure", _refresh_must_not_run)
 
     adapter = XAIGrokAdapter()
     failed = adapter.get_credential()
@@ -246,7 +246,7 @@ def test_xai_adapter_retry_rotates_pool_entry_on_429(tmp_path, monkeypatch):
 aiohttp = pytest.importorskip("aiohttp")
 from aiohttp import web
 
-from hermes_cli.proxy.server import create_app
+from hermes_agent.hermes_cli.proxy.server import create_app
 
 
 class FakeAdapter(UpstreamAdapter):

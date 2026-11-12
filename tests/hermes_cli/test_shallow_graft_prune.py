@@ -15,7 +15,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from hermes_cli.gitlock import prune_stale_shallow_grafts
+from hermes_agent.hermes_cli.gitlock import prune_stale_shallow_grafts
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -117,7 +117,7 @@ def test_prune_is_idempotent_and_noop_without_grafts(tmp_path):
 
 def test_update_check_prunes_and_reports_count(tmp_path, monkeypatch, capsys):
     """`hermes update --check` prunes grafts after its depth-1 fetch and reports the prune."""
-    from hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import update_cmd
 
     clone = _mk_shallow_scenario(tmp_path)
     assert len(_shallow_lines(clone)) == 3
@@ -130,11 +130,11 @@ def test_update_check_prunes_and_reports_count(tmp_path, monkeypatch, capsys):
     # The check runs git directly, reading main.PROJECT_ROOT through _m().
     monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", clone)
     monkeypatch.setattr(
-        "hermes_cli.update_contract.evaluate_update_admission", lambda root: None
+        "hermes_agent.hermes_cli.update_contract.evaluate_update_admission", lambda root: None
     )
     # Local fixture commits have no GitHub compare result; keep the check offline.
     monkeypatch.setattr(
-        "hermes_cli.source_check._github_compare_behind", lambda *a, **k: None
+        "hermes_agent.hermes_cli.source_check._github_compare_behind", lambda *a, **k: None
     )
 
     update_cmd._cmd_update_check("main")

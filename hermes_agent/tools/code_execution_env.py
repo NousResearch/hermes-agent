@@ -183,7 +183,7 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     if _runtime_path is not None:
         _pp_parts.append(_runtime_path)
     if _uses_hermes_python_environment(child_python):
-        from hermes_cli._startup_fast import project_root_str
+        from hermes_agent.hermes_cli._startup_fast import project_root_str
         _pp_parts.append(project_root_str())
     elif child_python not in _external_env_logged:
         # Surface once per interpreter so "import hermes_constants fails" is diagnosable.

@@ -82,7 +82,7 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
     ``runner.adapters`` hit — that map holds the default profile's bots, so a secondary profile's turn
     would post/react with the default bot's identity. A profile with no adapter for the platform
     yields ``None`` (fail closed → the caller's scoped standalone sender or an error), never the
-    default bot. Same resolver shape as ``hermes_cli/platform_actions.py::_resolve_adapter``."""
+    default bot. Same resolver shape as ``hermes_agent/hermes_cli/platform_actions.py::_resolve_adapter``."""
     try:
         from hermes_agent.gateway.run import _gateway_runner_ref
         runner = _gateway_runner_ref()
@@ -94,7 +94,7 @@ def _live_adapter(platform, *, lookup_failed_warning=None):
         resolve = getattr(runner, "_authorization_adapter", None)
         if not callable(resolve):  # bare runner stubs without the authz mixin
             return runner, runner.adapters.get(platform)
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         return runner, resolve(platform, get_active_profile_name())
     except Exception:
         if lookup_failed_warning:
@@ -107,7 +107,7 @@ def _plugin_standalone_sender(platform_name, *, label=None, discover=True):
     ``discover`` runs the idempotent plugin scan first."""
     from hermes_agent.gateway.platform_registry import platform_registry
     if discover:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()
     entry = platform_registry.get(platform_name)
     if entry is None or entry.standalone_sender_fn is None:

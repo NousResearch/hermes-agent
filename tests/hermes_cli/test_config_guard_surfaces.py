@@ -110,7 +110,7 @@ class TestServeGuard:
         """The `hermes serve` headless path fails closed before startup."""
         from argparse import Namespace
 
-        from hermes_cli import main as main_mod
+        from hermes_agent.hermes_cli import main as main_mod
 
         _write_corrupt_config(tmp_path)
         args = Namespace(

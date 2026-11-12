@@ -5,7 +5,7 @@ Two real HERMES homes in spirit: the "peer" side is a real
 :class:`APIServerAdapter` bound to a real loopback TCP socket over a real
 SQLite ``state.db`` (its own tmp HERMES_HOME) containing a hidden
 ``Bot Chat`` row — exactly what Bot Mode leaves behind. The "local" side is
-the stock ``hermes peer dm`` client code (``hermes_cli.subcommands.peer``),
+the stock ``hermes peer dm`` client code (``hermes_agent.hermes_cli.subcommands.peer``),
 untouched, talking real HTTP with the real API key auth.
 
 Only the model turn itself is stubbed (``_run_agent``); every HTTP handler,
@@ -22,7 +22,7 @@ from aiohttp import web
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.api_server import APIServerAdapter
-from hermes_cli.subcommands import peer as peer_cmd
+from hermes_agent.hermes_cli.subcommands import peer as peer_cmd
 from hermes_agent.hermes_state import SessionDB
 
 API_KEY = "sk-peer-e2e-key-123456"

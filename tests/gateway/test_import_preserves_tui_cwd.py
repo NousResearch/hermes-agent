@@ -57,7 +57,7 @@ def test_gateway_start_keeps_messaging_cwd_defaults(
 ):
     import asyncio
     from hermes_agent.gateway.run import start_gateway
-    from hermes_cli import resource_limits
+    from hermes_agent.hermes_cli import resource_limits
 
     class StopBeforeStartup(Exception):
         pass

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 def _import_cli():
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     if not hasattr(config_mod, "save_env_value_secure"):
         config_mod.save_env_value_secure = lambda key, value: {
@@ -14,7 +14,7 @@ def _import_cli():
             "validated": False,
         }
 
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     return cli_mod
 
@@ -71,7 +71,7 @@ class TestPriorityProcessingModels(unittest.TestCase):
     """Verify the expanded Priority Processing model registry."""
 
     def test_all_documented_models_supported(self):
-        from hermes_cli.models import model_supports_fast_mode
+        from hermes_agent.hermes_cli.models import model_supports_fast_mode
 
         # All OpenAI flagship models support Priority Processing — including
         # future releases (gpt-5.5, 5.6...) via pattern matching.
@@ -88,13 +88,13 @@ class TestPriorityProcessingModels(unittest.TestCase):
 
     def test_codex_models_excluded(self):
         """Codex models route through Responses API and don't accept service_tier."""
-        from hermes_cli.models import model_supports_fast_mode
+        from hermes_agent.hermes_cli.models import model_supports_fast_mode
 
         for model in ["gpt-5-codex", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.1-codex-max"]:
             assert not model_supports_fast_mode(model), f"{model} is codex — should not expose /fast"
 
     def test_grok_46_supports_priority_processing(self):
-        from hermes_cli.models import (
+        from hermes_agent.hermes_cli.models import (
             model_supports_fast_mode,
             resolve_fast_mode_overrides,
         )
@@ -162,7 +162,7 @@ class TestAnthropicFastMode(unittest.TestCase):
     """Verify Anthropic Fast Mode model support and override resolution."""
 
     def test_anthropic_opus_supported(self):
-        from hermes_cli.models import model_supports_fast_mode
+        from hermes_agent.hermes_cli.models import model_supports_fast_mode
 
         # Per the live fast-mode docs: Opus 4.8, Opus 5 and Opus 5.5, Claude API only.
         # Native Anthropic format (hyphens)
@@ -192,7 +192,7 @@ class TestAnthropicFastMode(unittest.TestCase):
         ids select fast inference via the model field, not the parameter.
         The list is exact: an Opus the docs do not name is unsupported.
         """
-        from hermes_cli.models import model_supports_fast_mode
+        from hermes_agent.hermes_cli.models import model_supports_fast_mode
 
         assert model_supports_fast_mode("claude-sonnet-4-6") is False
         assert model_supports_fast_mode("claude-sonnet-4.6") is False

@@ -37,7 +37,7 @@ class TestBuildOrHeaders:
         """When load_config() fails, build_or_headers still returns base headers."""
         from hermes_agent.agent.auxiliary_client import build_or_headers
 
-        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")), patch("hermes_cli.config.load_config_readonly", side_effect=RuntimeError("boom")):
+        with patch("hermes_agent.hermes_cli.config.load_config", side_effect=RuntimeError("boom")), patch("hermes_agent.hermes_cli.config.load_config_readonly", side_effect=RuntimeError("boom")):
             headers = build_or_headers(or_config=None)
         # Should have base attribution but no cache headers
         assert "HTTP-Referer" in headers

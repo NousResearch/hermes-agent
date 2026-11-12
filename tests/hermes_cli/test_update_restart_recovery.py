@@ -19,8 +19,8 @@ import sys
 import textwrap
 from types import SimpleNamespace
 
-from hermes_cli import update_abort_recovery as abort_recovery
-from hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_abort_recovery as abort_recovery
+from hermes_agent.hermes_cli import update_cmd
 
 
 class _Completed:
@@ -259,7 +259,7 @@ def test_service_matching_is_exact_for_overlapping_profile_names():
 
 
 def test_recovery_child_restarts_each_profile_with_a_fresh_main(monkeypatch):
-    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    recovery = importlib.import_module("hermes_agent.hermes_cli.update_restart_recovery")
     calls = []
 
     def fake_run(argv, **kwargs):
@@ -290,7 +290,7 @@ def test_recovery_child_restarts_each_profile_with_a_fresh_main(monkeypatch):
 
 
 def test_recovery_child_verifies_systemd_profiles_via_is_active(monkeypatch):
-    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    recovery = importlib.import_module("hermes_agent.hermes_cli.update_restart_recovery")
     monkeypatch.setattr(recovery.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
 
@@ -320,7 +320,7 @@ def test_recovery_child_verifies_systemd_profiles_via_is_active(monkeypatch):
 
 
 def test_recovery_child_treats_missing_systemctl_as_unverified(monkeypatch):
-    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    recovery = importlib.import_module("hermes_agent.hermes_cli.update_restart_recovery")
     monkeypatch.setattr(recovery.shutil, "which", lambda name: None)
 
     result = recovery.restart_profiles(
@@ -338,7 +338,7 @@ def test_recovery_child_treats_missing_systemctl_as_unverified(monkeypatch):
 
 
 def test_recovery_child_reports_failed_profile_without_losing_successes():
-    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    recovery = importlib.import_module("hermes_agent.hermes_cli.update_restart_recovery")
     outcomes = iter((_Completed(1), _Completed(0)))
 
     result = recovery.restart_profiles(
@@ -354,7 +354,7 @@ def test_recovery_child_reports_failed_profile_without_losing_successes():
 
 
 def test_recovery_payload_rejects_path_like_profile_ids():
-    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    recovery = importlib.import_module("hermes_agent.hermes_cli.update_restart_recovery")
 
     try:
         recovery._parse_payload(io.StringIO(json.dumps({"profiles": ["../other"]})))
@@ -365,7 +365,7 @@ def test_recovery_payload_rejects_path_like_profile_ids():
 
 
 def test_recovery_payload_rejects_malformed_supervisors_map():
-    recovery = importlib.import_module("hermes_cli.update_restart_recovery")
+    recovery = importlib.import_module("hermes_agent.hermes_cli.update_restart_recovery")
 
     try:
         recovery._parse_payload(
@@ -387,7 +387,7 @@ def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
     """E2E: the whole recovery protocol through a genuinely fresh interpreter.
 
     A ``sitecustomize`` shim in the child's ``PYTHONPATH`` intercepts the
-    grandchild ``hermes_cli.main … gateway restart`` invocations (recording
+    grandchild ``hermes_agent.hermes_cli.main … gateway restart`` invocations (recording
     them and returning rc 0) and answers ``systemctl --user is-active`` with
     ``active`` only for the default profile's unit.  Everything else — stdin
     payload parsing, profile ordering, environment scrubbing, verification
@@ -441,7 +441,7 @@ def test_recovery_module_end_to_end_in_a_real_fresh_process(tmp_path):
     env["_HERMES_GATEWAY"] = "1"  # must be scrubbed before the grandchild runs
 
     result = subprocess.run(
-        [sys.executable, "-m", "hermes_cli.update_restart_recovery", "--stdin"],
+        [sys.executable, "-m", "hermes_agent.hermes_cli.update_restart_recovery", "--stdin"],
         input=json.dumps(
             {
                 "profiles": ["default", "coder"],

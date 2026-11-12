@@ -7,7 +7,7 @@ import sys
 import hermes_yaml as yaml
 import pytest
 
-from hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli import plugins as plugins_mod
 
 SEEDING_PLUGIN = '''
 import os
@@ -66,7 +66,7 @@ def test_hosted_profile_seeds_the_pool_from_a_shell_exported_ambient_token(tmp_p
 @pytest.mark.platforms("any")
 def test_hosted_profile_skips_a_suppressed_source(tmp_path, monkeypatch):
     from hermes_agent.agent.credential_pool import load_pool
-    from hermes_cli.auth import suppress_credential_source
+    from hermes_agent.hermes_cli.auth import suppress_credential_source
 
     _install(tmp_path, monkeypatch)
     suppress_credential_source("seedhost", "env:GH_TOKEN")
@@ -78,8 +78,8 @@ def test_hosted_profile_skips_a_suppressed_source(tmp_path, monkeypatch):
 
 def test_a_routed_home_host_never_inherits_the_launch_shell_token(tmp_path, monkeypatch):
     from hermes_agent import providers
-    from hermes_cli.plugin_host import _hosted_ambient_credentials
-    from hermes_cli.plugin_host_profiles import _profile_proxy
+    from hermes_agent.hermes_cli.plugin_host import _hosted_ambient_credentials
+    from hermes_agent.hermes_cli.plugin_host_profiles import _profile_proxy
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.providers.base import ProviderProfile
 

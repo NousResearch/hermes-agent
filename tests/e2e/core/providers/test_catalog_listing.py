@@ -4,11 +4,11 @@ Each runnable provider is configured at a custom ``model.base_url`` (a loopback 
 provider-unique model ids at the EXACT listing path under that base; anything else 404s). Child
 processes per row call the real product functions:
 
-* listing — ``hermes_cli.models.provider_model_ids`` (the catalog the ``/model`` picker renders)
+* listing — ``hermes_agent.hermes_cli.models.provider_model_ids`` (the catalog the ``/model`` picker renders)
   must query the CONFIGURED endpoint at an exact listing path under it, never the provider's
   canonical host (#120844 class): the relay's key must not be addressed to the vendor; rows that
   already do so must also render the relay's own model ids;
-* switch — ``hermes_cli.model_switch.switch_model(explicit_provider=<row>)`` must resolve to that
+* switch — ``hermes_agent.hermes_cli.model_switch.switch_model(explicit_provider=<row>)`` must resolve to that
   provider at its configured endpoint, not to an alias on another endpoint (#120295 class);
 * listing degradation — for the rows that already list from the configured endpoint, a 404 and a
   hanging listing must still return (bounded) without crashing and without falling back to the

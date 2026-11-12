@@ -12,17 +12,17 @@ from pathlib import Path
 import pytest
 import hermes_yaml as yaml
 import hermes_agent.gateway.status as _gw_status
-import hermes_cli.config as _cfg_mod
-import hermes_cli.web_server_chat as _web_server_chat
-import hermes_cli.web_server_gateway as _web_server_gateway
-import hermes_cli.web_server_messaging as _web_server_messaging
+import hermes_agent.hermes_cli.config as _cfg_mod
+import hermes_agent.hermes_cli.web_server_chat as _web_server_chat
+import hermes_agent.hermes_cli.web_server_gateway as _web_server_gateway
+import hermes_agent.hermes_cli.web_server_messaging as _web_server_messaging
 
 
 @pytest.fixture
 def isolated_profiles(tmp_path, monkeypatch, _isolate_hermes_home):
     """Isolated default home + one named profile, each with config + .env."""
     from hermes_constants import get_hermes_home
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     default_home = get_hermes_home()
     profiles_root = default_home / "profiles"
@@ -46,7 +46,7 @@ def client(monkeypatch, isolated_profiles):
 
     from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     c = TestClient(app)
@@ -140,7 +140,7 @@ class TestProfileScopedMcp:
     ):
         """An `auth: oauth` server that serves tools/list anonymously must not
         false-green: a successful probe with no token on disk reports needs-auth."""
-        from hermes_cli import mcp_config
+        from hermes_agent.hermes_cli import mcp_config
 
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
             "mcp_servers:\n  oauth-srv:\n    url: http://x/sse\n    auth: oauth\n",
@@ -174,7 +174,7 @@ class TestProfileScopedMcp:
         """The probe's per-tool `schema_chars` (details out-param) surfaces as an
         ADDITIVE per-tool field on the wire; tools without a size stay bare so
         older/partial probes degrade to 'no estimate' in the renderer."""
-        from hermes_cli import mcp_config
+        from hermes_agent.hermes_cli import mcp_config
 
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
             "mcp_servers:\n  sized-srv:\n    url: http://x/mcp\n",
@@ -209,8 +209,8 @@ class TestProfileScopedMcp:
         (Bitwarden/1Password) never has it in the shared process env, so the
         probe used to send the literal placeholder — or the default profile's
         value of the same name — and the server answered 400 (#109901)."""
-        from hermes_cli import env_loader
-        from hermes_cli import mcp_config
+        from hermes_agent.hermes_cli import env_loader
+        from hermes_agent.hermes_cli import mcp_config
 
         worker_home = isolated_profiles["worker_beta"]
         (worker_home / "config.yaml").write_text(
@@ -249,7 +249,7 @@ class TestProfileScopedMcp:
     ):
         """Same class for the read endpoint: a ``${VAR}`` in a secondary profile's server
         ``url`` must expand from THAT profile's secret scope, never the dashboard process env."""
-        from hermes_cli import env_loader
+        from hermes_agent.hermes_cli import env_loader
 
         worker_home = isolated_profiles["worker_beta"]
         (worker_home / "config.yaml").write_text(
@@ -273,12 +273,12 @@ class TestProfileScopedModel:
         """These tests pin WHICH profile the write lands in, not catalog validation: the main
         slot now routes through ``switch_model`` (needs credentials + a listed model), so echo the
         request back as an accepted route."""
-        from hermes_cli.model_switch import ModelSwitchResult
+        from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
         def _switch(*, raw_input, explicit_provider, **_kw):
             return ModelSwitchResult(success=True, new_model=raw_input, target_provider=explicit_provider)
 
-        monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+        monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", _switch)
 
     def test_model_set_main_scoped(self, client, isolated_profiles):
         resp = client.post(
@@ -307,7 +307,7 @@ class TestProfileScopedModel:
         (no providers:, no .env), so validating there rejected every non-env provider and
         create silently returned model_set: false. Validation must see the dashboard home's
         config; the write must still land in the new profile only."""
-        import hermes_cli.profiles as profiles_mod
+        import hermes_agent.hermes_cli.profiles as profiles_mod
         from hermes_constants import get_hermes_home
 
         monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
@@ -316,14 +316,14 @@ class TestProfileScopedModel:
         seen: dict = {}
 
         def _switch(*, raw_input, explicit_provider, user_providers, **_kw):
-            from hermes_cli.model_switch import ModelSwitchResult
+            from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
             seen["user_providers"] = user_providers
             seen["home"] = get_hermes_home()
             if explicit_provider not in user_providers:
                 return ModelSwitchResult(success=False, error_message=f"Unknown provider '{explicit_provider}'.")
             return ModelSwitchResult(success=True, new_model=raw_input, target_provider=explicit_provider)
 
-        monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+        monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", _switch)
         resp = client.post("/api/profiles", json={"name": "newbie", "provider": "mybox", "model": "qwen3"})
         assert resp.status_code == 200 and resp.json()["model_set"] is True
         assert "mybox" in seen["user_providers"] and seen["home"] == isolated_profiles["default"]
@@ -363,7 +363,7 @@ class TestProfileScopedPostSetup:
             lambda subcommand, name: calls.append(list(subcommand)) or _FakeProc(),
         )
         monkeypatch.setattr(
-            "hermes_cli.tools_config.valid_post_setup_keys",
+            "hermes_agent.hermes_cli.tools_config.valid_post_setup_keys",
             lambda: {"agent_browser"},
         )
         resp = client.post(
@@ -382,7 +382,7 @@ class TestProfileScopedGateway:
     def test_status_reads_requested_profile_home(
         self, client, isolated_profiles, monkeypatch
     ):
-        from hermes_cli import web_server
+        from hermes_agent.hermes_cli import web_server
         from hermes_constants import get_hermes_home
 
         seen_homes = []
@@ -412,7 +412,7 @@ class TestProfileScopedGateway:
     def test_status_uses_runtime_pid_when_profile_pid_file_is_missing(
         self, client, isolated_profiles, monkeypatch
     ):
-        from hermes_cli import web_server
+        from hermes_agent.hermes_cli import web_server
 
         worker_home = isolated_profiles["worker_beta"]
         (worker_home / ".env").write_text(
@@ -470,7 +470,7 @@ class TestProfileScopedGateway:
         Non-fatal leftovers (e.g. a platform that connected before the crash)
         are still dropped — only fatals survive.
         """
-        from hermes_cli import web_server
+        from hermes_agent.hermes_cli import web_server
 
         runtime = {
             "pid": 4242,
@@ -511,7 +511,7 @@ class TestProfileScopedGateway:
         self, client, isolated_profiles, monkeypatch
     ):
         """A durable stop intent takes precedence over an old startup failure."""
-        from hermes_cli import web_server
+        from hermes_agent.hermes_cli import web_server
 
         runtime = {
             "pid": 4242,
@@ -541,7 +541,7 @@ class TestProfileScopedGateway:
         self, client, isolated_profiles, monkeypatch
     ):
         """A cleanly stopped gateway still reports no platforms (stale-noise rule)."""
-        from hermes_cli import web_server
+        from hermes_agent.hermes_cli import web_server
 
         runtime = {
             "pid": 4242,
@@ -626,7 +626,7 @@ class TestProfileScopedChatPty:
     def test_chat_argv_scopes_hermes_home(self, isolated_profiles, monkeypatch):
 
         monkeypatch.setattr(
-            "hermes_cli.main_tui_launch._make_tui_argv",
+            "hermes_agent.hermes_cli.main_tui_launch._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
@@ -657,7 +657,7 @@ class TestProfileScopedChatPty:
         monkeypatch.setenv("TERMINAL_DOCKER_IMAGE", "launch-profile-image")
         monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
         monkeypatch.setattr(
-            "hermes_cli.main_tui_launch._make_tui_argv",
+            "hermes_agent.hermes_cli.main_tui_launch._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
@@ -683,7 +683,7 @@ class TestProfileScopedChatPty:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
         monkeypatch.setattr(
-            "hermes_cli.main_tui_launch._make_tui_argv",
+            "hermes_agent.hermes_cli.main_tui_launch._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
@@ -710,7 +710,7 @@ class TestProfileScopedChatPty:
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_CWD", "/operator/work")
         monkeypatch.setattr(
-            "hermes_cli.main_tui_launch._make_tui_argv",
+            "hermes_agent.hermes_cli.main_tui_launch._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )
@@ -726,8 +726,8 @@ class TestProfileScopedChatPty:
     ):
         import logging
 
-        import hermes_cli.config as config_mod
-        from hermes_cli import web_server
+        import hermes_agent.hermes_cli.config as config_mod
+        from hermes_agent.hermes_cli import web_server
 
         (isolated_profiles["default"] / "config.yaml").write_text(
             "terminal:\n  backend: docker\n",
@@ -735,7 +735,7 @@ class TestProfileScopedChatPty:
         )
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setattr(
-            "hermes_cli.main_tui_launch._make_tui_argv",
+            "hermes_agent.hermes_cli.main_tui_launch._make_tui_argv",
             lambda root, tui_dev=False: (["cat"], None),
             raising=False,
         )

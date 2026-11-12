@@ -30,7 +30,7 @@ class TestRealProfilePin:
         return root
 
     def test_pin_wins_over_last_used(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import hermes_agent.hermes_cli.browser_connect as bc
 
         src = self._make_profile(tmp_path / "real", last_used="Profile 4")
         home = tmp_path / "hermes-home"
@@ -43,7 +43,7 @@ class TestRealProfilePin:
         assert got == "cookies-Profile 2", "pin must override last_used"
 
     def test_bad_pin_fails_closed(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import hermes_agent.hermes_cli.browser_connect as bc
 
         src = self._make_profile(tmp_path / "real")
         monkeypatch.setattr(bc, "get_hermes_home", lambda: tmp_path / "hh")
@@ -56,7 +56,7 @@ class TestRealProfilePin:
         assert not (tmp_path / "hh" / "browser-profile" / "chrome" / "Default").exists()
 
     def test_no_pin_keeps_native_last_used(self, tmp_path, monkeypatch):
-        import hermes_cli.browser_connect as bc
+        import hermes_agent.hermes_cli.browser_connect as bc
 
         src = self._make_profile(tmp_path / "real", last_used="Profile 4")
         home = tmp_path / "hermes-home"
@@ -71,7 +71,7 @@ class TestRealProfilePin:
     def test_re_sync_respects_pin_when_last_used_flips(self, tmp_path, monkeypatch):
         """The wrong-principal regression: session 2 with different last_used
         must NOT overlay a different profile's auth onto the pinned copy."""
-        import hermes_cli.browser_connect as bc
+        import hermes_agent.hermes_cli.browser_connect as bc
 
         src = self._make_profile(tmp_path / "real", last_used="Profile 2")
         home = tmp_path / "hermes-home"

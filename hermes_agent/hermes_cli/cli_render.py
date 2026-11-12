@@ -1,7 +1,7 @@
 """Classic-CLI rendering helpers: reasoning-tag stripping, ANSI/skin colours, light-mode detection, markdown/final-content rendering, output-history replay, ``_cprint`` and the panel box/wrap helpers.
 
 Split out of ``cli.py``; ``cli`` re-exports every public name and moved bodies late-bind
-cli-level names through ``from cli import ...`` at call time so facade monkeypatch seams hold.
+cli-level names through ``from hermes_agent.cli import ...`` at call time so facade monkeypatch seams hold.
 """
 
 from __future__ import annotations
@@ -18,14 +18,14 @@ import time
 from contextlib import contextmanager, suppress
 from hermes_agent.agent.i18n import t
 from hermes_agent.agent.think_scrubber import THINK_TAG_NAMES
-from hermes_cli.banner import format_banner_version_label
+from hermes_agent.hermes_cli.banner import format_banner_version_label
 from rich.console import Console
 from rich.text import Text as _RichText
 from typing import Any
 
 def _cli():
     """Late import of the ``cli`` facade: mutable CLI module state (and its test seams) lives there."""
-    import cli
+    from hermes_agent import cli
 
     return cli
 
@@ -45,7 +45,7 @@ def _strip_reasoning_tags(text: str) -> str:
     ``<function_calls>``, Gemma-style ``<function name="…">…</function>``). Ported from
     openclaw/openclaw#67318.
     """
-    from cli import _REASONING_TAGS, _TOOL_CALL_TAGS
+    from hermes_agent.cli import _REASONING_TAGS, _TOOL_CALL_TAGS
     cleaned = text
     for tag in _REASONING_TAGS:
         cleaned = re.sub(rf"<{tag}>.*?</{tag}>\s*", "", cleaned, flags=re.DOTALL | re.IGNORECASE)
@@ -80,7 +80,7 @@ def _assistant_content_as_text(content: Any) -> str:
 
 
 def _assistant_copy_text(content: Any) -> str:
-    from cli import _assistant_content_as_text, _strip_reasoning_tags
+    from hermes_agent.cli import _assistant_content_as_text, _strip_reasoning_tags
     return _strip_reasoning_tags(_assistant_content_as_text(content))
 
 
@@ -101,7 +101,7 @@ _STREAM_PARTIAL_PREVIEW_LEN = 60  # tail of an unfinished line mirrored into the
 
 def _hex_to_ansi(hex_color: str, *, bold: bool = False) -> str:
     """Convert '#RRGGBB' to a true-color ANSI escape, remapping dark-tuned colors in light mode."""
-    from cli import _ACCENT_ANSI_DEFAULT, _maybe_remap_for_light_mode
+    from hermes_agent.cli import _ACCENT_ANSI_DEFAULT, _maybe_remap_for_light_mode
     hex_color = _maybe_remap_for_light_mode(hex_color)
     try:
         r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
@@ -147,7 +147,7 @@ def _query_osc11_background() -> str | None:
     After the main read + TCSAFLUSH, a short drain window (50 ms) catches late-arriving bytes that slipped
     past the flush — a race observed on VPS and container terminals under load (#40250).
     """
-    from cli import _DA1_REPLY_RE
+    from hermes_agent.cli import _DA1_REPLY_RE
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         return None
     if any(os.environ.get(v) for v in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY")):
@@ -239,7 +239,7 @@ def _heal_cooked_mode_drift(fd: int) -> bool:
 
 def _detect_light_mode_uncached() -> bool:
     """The detection ladder documented above; may raise (caller maps errors to dark)."""
-    from cli import _FALSE_RE, _LIGHT_DEFAULT_TERM_PROGRAMS, _TRUE_RE, _luminance_from_hex, _query_osc11_background
+    from hermes_agent.cli import _FALSE_RE, _LIGHT_DEFAULT_TERM_PROGRAMS, _TRUE_RE, _luminance_from_hex, _query_osc11_background
     for var in ("HERMES_LIGHT", "HERMES_TUI_LIGHT"):
         v = (os.environ.get(var) or "").strip().lower()
         if _TRUE_RE.match(v):
@@ -280,7 +280,7 @@ _LIGHT_MODE_REMAP_UPPER = {k.upper(): v for k, v in _LIGHT_MODE_REMAP.items()}
 
 def _maybe_remap_for_light_mode(hex_color: str) -> str:
     """In light mode, remap a dark-tuned color to its higher-contrast equivalent."""
-    from cli import _LIGHT_MODE_REMAP_UPPER, _detect_light_mode
+    from hermes_agent.cli import _LIGHT_MODE_REMAP_UPPER, _detect_light_mode
     if not _detect_light_mode():
         return hex_color
     if not hex_color or not hex_color.startswith("#"):
@@ -290,9 +290,9 @@ def _maybe_remap_for_light_mode(hex_color: str) -> str:
 
 def _install_skin_light_mode_hook() -> None:
     """Wrap SkinConfig.get_color so EVERY skin color read goes through the light-mode remap. Idempotent."""
-    from cli import _maybe_remap_for_light_mode
+    from hermes_agent.cli import _maybe_remap_for_light_mode
     try:
-        from hermes_cli.skin_engine import SkinConfig  # type: ignore[import]
+        from hermes_agent.hermes_cli.skin_engine import SkinConfig  # type: ignore[import]
     except Exception:
         return
     if getattr(SkinConfig, "_hermes_light_mode_hook_installed", False):
@@ -320,10 +320,10 @@ class _SkinAwareAnsi:
         self._cached: str | None = None
 
     def __str__(self) -> str:
-        from cli import _hex_to_ansi
+        from hermes_agent.cli import _hex_to_ansi
         if self._cached is None:
             try:
-                from hermes_cli.skin_engine import get_active_skin
+                from hermes_agent.hermes_cli.skin_engine import get_active_skin
                 self._cached = _hex_to_ansi(
                     get_active_skin().get_color(self._skin_key, self._fallback_hex),
                     bold=self._bold,
@@ -367,7 +367,7 @@ _d = functools.partial(_tty_wrap, sgr="\x1b[2;3m")  # dim-italic when stdout is 
 def _accent_hex() -> str:
     """Return the active skin accent color for legacy CLI output lines."""
     try:
-        from hermes_cli.skin_engine import get_active_skin
+        from hermes_agent.hermes_cli.skin_engine import get_active_skin
         return get_active_skin().get_color("ui_accent", "#FFBF00")
     except Exception:
         return "#FFBF00"
@@ -380,7 +380,7 @@ def _rich_text_from_ansi(text: str) -> _RichText:
 
 def _strip_markdown_syntax(text: str) -> str:
     """Best-effort markdown marker removal for plain-text display."""
-    from cli import _rich_text_from_ansi
+    from hermes_agent.cli import _rich_text_from_ansi
     plain = _rich_text_from_ansi(text or "").plain
     # HR markers: "-"/"_" runs of 3+, but "*" only when exactly 3 (cron schedules "* * * * *").
     plain = re.sub(r"^\s{0,3}(?:[-_]\s*){3,}$", "", plain, flags=re.MULTILINE)
@@ -408,7 +408,7 @@ _WINDOWS_PATH_WITH_DOT_SEGMENT_RE = re.compile(r"(?i)(?:\b[a-z]:\\|\\\\)[^\s`]*\
 
 def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
     r"""Double the ``\`` before hidden dirs in Windows paths: CommonMark reads ``\.`` as an escaped dot."""
-    from cli import _WINDOWS_PATH_WITH_DOT_SEGMENT_RE
+    from hermes_agent.cli import _WINDOWS_PATH_WITH_DOT_SEGMENT_RE
     if "\\." not in text:
         return text
 
@@ -427,13 +427,13 @@ def _terminal_columns() -> int:
 
 def _terminal_width_for_streaming() -> int:
     """Display cells inside the streamed response box (small margin for resize races)."""
-    from cli import _STREAM_PAD, _terminal_columns
+    from hermes_agent.cli import _STREAM_PAD, _terminal_columns
     return max(20, _terminal_columns() - len(_STREAM_PAD) - 2)
 
 
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
-    from cli import _preserve_windows_dot_segments_for_markdown, _rich_text_from_ansi, _strip_markdown_syntax, _terminal_columns, realign_markdown_tables
+    from hermes_agent.cli import _preserve_windows_dot_segments_for_markdown, _rich_text_from_ansi, _strip_markdown_syntax, _terminal_columns, realign_markdown_tables
     from rich.markdown import Markdown
 
     # 1 border cell each side + margin so resize races don't push a borderline table into soft-wrap.
@@ -482,7 +482,7 @@ def _output_history_recording() -> bool:
 
 
 def _record_output_history_entry(entry) -> None:
-    from cli import _output_history_recording
+    from hermes_agent.cli import _output_history_recording
     if _output_history_recording():
         _cli()._OUTPUT_HISTORY.append(entry)
 
@@ -508,7 +508,7 @@ def _painted_columns():
 def _record_output_history(text: str, *, force: bool = False) -> None:
     """Record ``text`` as painted now. ``force`` skips the recording check when the caller
     made it at print-request time (the print itself was deferred to the app loop)."""
-    from cli import _output_history_recording
+    from hermes_agent.cli import _output_history_recording
     if force or _output_history_recording():
         width = _painted_columns()
         lines = []
@@ -642,7 +642,7 @@ def _output_history_rows(limit: int, columns: int, painted: bool):
 
 def _ansi_with_raw(text: str, raw: str = ""):
     """``ANSI(text)``, then *raw* as one zero-width fragment prompt_toolkit writes verbatim."""
-    from cli import _PT_ANSI
+    from hermes_agent.cli import _PT_ANSI
     if not raw:
         return _PT_ANSI(text)
     from prompt_toolkit.formatted_text import to_formatted_text
@@ -651,7 +651,7 @@ def _ansi_with_raw(text: str, raw: str = ""):
 
 def _pt_print_ansi(text: str, raw: str = "") -> None:
     """``_pt_print(ANSI(text))``, falling back to ``print`` when stdout is not a real console."""
-    from cli import _pt_print
+    from hermes_agent.cli import _pt_print
     try:
         _pt_print(_ansi_with_raw(text, raw))
     except Exception:
@@ -754,7 +754,7 @@ def _cprint(text: str, *, raw: str = ""):
     transmit): never parsed as ANSI, counted as zero cells, and kept out of the output
     history, so a resize replay repaints *text* alone and never crops or re-sends it.
     """
-    from cli import _output_history_recording, _pt_print, _pt_print_ansi, _record_output_history
+    from hermes_agent.cli import _output_history_recording, _pt_print, _pt_print_ansi, _record_output_history
     recording = _output_history_recording()
     seq = next(_PAINT_SEQ)
 
@@ -886,7 +886,7 @@ def _pt_app_is_running() -> bool:
 
 def _cli_visible_print(text: str = "") -> None:
     """``print`` unless a prompt_toolkit Application owns the terminal (patch_stdout swallows bare prints)."""
-    from cli import _cprint, _pt_app_is_running
+    from hermes_agent.cli import _cprint, _pt_app_is_running
     if _pt_app_is_running():
         _cprint(text)
     else:
@@ -902,7 +902,7 @@ class ChatConsole:
         self._inner = Console(file=self._buffer, force_terminal=True, color_system="truecolor", highlight=False)
 
     def print(self, *args, **kwargs):
-        from cli import _OSC_ESCAPE_RE, _cprint
+        from hermes_agent.cli import _OSC_ESCAPE_RE, _cprint
         self._buffer.seek(0)
         self._buffer.truncate()
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
@@ -919,7 +919,7 @@ class ChatConsole:
 def _build_compact_banner() -> str:
     """Build a compact banner that fits the current terminal width."""
     try:
-        from hermes_cli.skin_engine import get_active_skin
+        from hermes_agent.hermes_cli.skin_engine import get_active_skin
         _skin = get_active_skin()
     except Exception:
         _skin = None
@@ -938,8 +938,8 @@ def _build_compact_banner() -> str:
     line1 = t("cli.render.banner_tagline", name=tiny_line)
 
     if os.environ.get("HERMES_FAST_STARTUP_BANNER") == "1":
-        from hermes_cli import __release_date__ as _release_date
-        from hermes_cli.version_info import get_version_info
+        from hermes_agent.hermes_cli import __release_date__ as _release_date
+        from hermes_agent.hermes_cli.version_info import get_version_info
 
         version_line = t("cli.render.banner_version", version=get_version_info().derived_version, date=_release_date)
     else:

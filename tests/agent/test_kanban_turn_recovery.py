@@ -4,12 +4,12 @@ Unit contracts first (retry authority, the live run/claim proof, the recovery
 loop), then call-site behaviour, then the goal-mode veto as one table.
 
 Under the unified gateway runtime a dispatcher-spawned worker no longer runs the
-agent: ``hermes_cli.kanban_worker_client`` submits the claim to the profile owner,
+agent: ``hermes_agent.hermes_cli.kanban_worker_client`` submits the claim to the profile owner,
 and the owner runs the turns in ``hermes_agent.gateway.session_kanban.run_worker_turns`` against
 the bound frame's db/run/claim carrier. The call-site tests therefore drive that
 real owner seam (real board, real claim, real lease proof) and read the outcome the
 dispatcher books — ``worker_exit_code`` — plus the client's exit/summary half. The
-exit mapping itself is ``hermes_cli.turn_exit.turn_exit_code`` (pinned row by row by
+exit mapping itself is ``hermes_agent.hermes_cli.turn_exit.turn_exit_code`` (pinned row by row by
 ``tests/gateway/test_kanban_result_exit.py``); the in-process one-shot mapper keeps
 its stripped worker predicate pinned here.
 """
@@ -35,7 +35,7 @@ from hermes_agent.agent.kanban_turn_recovery import (
     should_recover_turn,
     worker_claim_is_live,
 )
-from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
+from hermes_agent.hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
 
 KANBAN_ENV = (
     "HERMES_KANBAN_TASK",
@@ -265,8 +265,8 @@ def test_missing_db_pin_never_resolves_an_ambient_board(tmp_path, monkeypatch):
     is ambient NOW. With the pin gone the canonical resolver must not be consulted at all,
     even when it would return a fully live board whose row matches this worker (built with
     the real board API, so this is not a strawman)."""
-    from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -418,7 +418,7 @@ def test_exit_mapping_composes_with_the_stripped_worker_predicate(monkeypatch):
     this PR's contribution is that it asks ``kanban_task_id()`` whether this is a worker.
     Pin exactly that: surrounding whitespace must not decide worker-ness, or a
     bare-whitespace id would hand a quota wall the neutral 75."""
-    from cli import _single_query_exit_code
+    from hermes_agent.cli import _single_query_exit_code
 
     monkeypatch.setenv("HERMES_KANBAN_TASK", "   ")
     assert _single_query_exit_code(_failed(reason="rate_limit")) == 1
@@ -452,8 +452,8 @@ def owner_worker(tmp_path, clear_kanban_env, monkeypatch):
     """
     import hermes_agent.agent.kanban_turn_recovery as rec
     from hermes_agent.gateway import session_kanban
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect_closing
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.kanban_db_connect import connect_closing
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     for key, value in (("HERMES_KANBAN_TASK", "t_foreign"), ("HERMES_KANBAN_DB", str(tmp_path / "nope.db")),
@@ -588,8 +588,8 @@ def test_worker_client_reports_the_owner_exit_and_reply(owner_worker, monkeypatc
     import asyncio
     from contextlib import asynccontextmanager
 
-    from hermes_cli import gateway_client, kanban_worker_client
-    from hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
+    from hermes_agent.hermes_cli import gateway_client, kanban_worker_client
+    from hermes_agent.hermes_cli.quiet_single_query import KANBAN_WORKER_EXIT_TRAILER
 
     run, _entered, context = owner_worker(_failed, recovery=1)
     assert run() == KANBAN_RATE_LIMIT_EXIT_CODE
@@ -630,7 +630,7 @@ async def test_non_worker_one_shot_prints_its_exit_summary(capsys):
     admission — recovery is never a client-side resubmit."""
     import asyncio
 
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
 
     submitted = []
 
@@ -680,7 +680,7 @@ def goal_spy(monkeypatch):
     pre-existing (its status check sees only run identity, not the claim lease); the
     invariant under test is the call-site veto."""
     calls: list = []
-    monkeypatch.setattr("hermes_cli.goals.run_kanban_goal_loop", lambda **kw: calls.append(kw))
+    monkeypatch.setattr("hermes_agent.hermes_cli.goals.run_kanban_goal_loop", lambda **kw: calls.append(kw))
     return calls
 
 

@@ -12,8 +12,8 @@ here (they're stdin-driven curses prompts).
 
 from __future__ import annotations
 
-from hermes_cli.config import load_config
-from hermes_cli.main_provider_setup import _DELEGATION_TASK_KEY, _delegation_cfg_as_task, _format_aux_current, _reset_aux_to_auto, _save_aux_choice
+from hermes_agent.hermes_cli.config import load_config
+from hermes_agent.hermes_cli.main_provider_setup import _DELEGATION_TASK_KEY, _delegation_cfg_as_task, _format_aux_current, _reset_aux_to_auto, _save_aux_choice
 
 # ── Default config ──────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ def test_save_delegation_auto_stores_empty_provider(tmp_path, monkeypatch):
 def test_reset_aux_clears_delegation_routing_preserves_settings(tmp_path, monkeypatch):
     """Reset-all clears delegation provider/model/base_url/api_key but leaves
     non-routing delegation settings (max_concurrent_children, etc.) alone."""
-    from hermes_cli.config import load_config as _lc, save_config
+    from hermes_agent.hermes_cli.config import load_config as _lc, save_config
 
     _isolate_home(tmp_path, monkeypatch)
 

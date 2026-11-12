@@ -31,11 +31,11 @@ def test_base_urls_follow_the_scoped_key_not_default_environ(monkeypatch, second
     import plugins.browser.firecrawl.provider as firecrawl
     import plugins.video_gen.xai as xai_video
     from hermes_agent.gateway.run_turn import GatewayTurnMixin
-    from hermes_cli import auth_nous
+    from hermes_agent.hermes_cli import auth_nous
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_cli.runtime_provider_custom import expand_direct_api_alias
-    monkeypatch.setattr("hermes_cli.runtime_provider._get_named_custom_provider", lambda name: None)
+    from hermes_agent.hermes_cli.runtime_provider_custom import expand_direct_api_alias
+    monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider._get_named_custom_provider", lambda name: None)
 
     _, base = expand_direct_api_alias("openai", None)
     assert "default.example" not in (base or "")
@@ -53,7 +53,7 @@ def test_base_urls_follow_the_scoped_key_not_default_environ(monkeypatch, second
 def test_unscoped_single_profile_reads_keep_environ(monkeypatch):
     """Multiplex OFF (CLI / single gateway): environ IS the profile's own value — behaviour unchanged."""
     from hermes_agent.gateway.run_turn import GatewayTurnMixin
-    from hermes_cli import auth_nous
+    from hermes_agent.hermes_cli import auth_nous
 
     secret_scope.set_multiplex_active(False)
     token = secret_scope.set_secret_scope(None)

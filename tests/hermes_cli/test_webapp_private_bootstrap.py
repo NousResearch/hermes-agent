@@ -13,9 +13,9 @@ from starlette.websockets import WebSocketDisconnect
     ("webapp", False, False), ("webapp", True, False), ("dashboard", False, False), ("serve", False, True),
 ])
 def test_bootstrap_token_visibility(monkeypatch, tmp_path, surface, gated, headless):
-    from hermes_cli import web_server as server
-    from hermes_cli import web_server_profiles
-    from hermes_cli.web_server_dashboard import mount_spa
+    from hermes_agent.hermes_cli import web_server as server
+    from hermes_agent.hermes_cli import web_server_profiles
+    from hermes_agent.hermes_cli.web_server_dashboard import mount_spa
 
     serving_profile = "profile</script>"
     monkeypatch.setattr(web_server_profiles, "serving_profile_name", lambda: serving_profile)
@@ -44,8 +44,8 @@ def test_bootstrap_token_visibility(monkeypatch, tmp_path, surface, gated, headl
 
 @pytest.mark.parametrize("operation", ["shell", "reattach", "close", "rpc", "file"])
 def test_html_cannot_authorize_privileged_sibling_routes(monkeypatch, tmp_path, operation):
-    from hermes_cli import web_server as server
-    from hermes_cli.web_server_dashboard import mount_spa
+    from hermes_agent.hermes_cli import web_server as server
+    from hermes_agent.hermes_cli.web_server_dashboard import mount_spa
 
     (tmp_path / "index.html").write_text("<html><head></head><body>Webapp</body></html>")
     # Real middleware, routers and auth gates; don't start the unrelated lifespan.

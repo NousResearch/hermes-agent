@@ -128,7 +128,7 @@ def _pid_is_sentinel_owner(pid: Any, start_time: Any, create_time: Any) -> bool:
             return False
     except Exception:
         return False
-    from hermes_cli.process_identity import _process_create_time
+    from hermes_agent.hermes_cli.process_identity import _process_create_time
 
     actual = _process_create_time(pid_int)
     if actual is None:
@@ -329,7 +329,7 @@ def record_startup(home: Optional[Path] = None, *, defer_integrity_check: bool =
         claim: dict[str, Any] = {"phase": "running", "pid": os.getpid(), "start_time": time.time(), "started_at": _now_iso()}
         # Process birth (psutil), distinct from ``start_time`` (the ledger claim, seconds later once
         # imports finish): the Windows start attestation binds PIDs to birth time (#110020 review).
-        from hermes_cli.process_identity import _process_create_time
+        from hermes_agent.hermes_cli.process_identity import _process_create_time
 
         create_time = _process_create_time(os.getpid())
         if create_time is not None:

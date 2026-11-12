@@ -106,7 +106,7 @@ def _plugin_entry(plugin_id: str, config: Optional[Mapping[str, Any]] = None) ->
     try:
         cfg: Any = config
         if cfg is None:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
             cfg = load_config() or {}
         entry = ((cfg.get("plugins") or {}).get("entries") or {}).get(plugin_id) or {}
         return entry if isinstance(entry, dict) else {}
@@ -169,7 +169,7 @@ def record_consent(plugin_id: str, granted: Iterable[str], declared: Iterable[st
     """Persist a consent decision: ``granted_capabilities`` (union with prior grants), the consent
     record (hash of the declared set the user saw + UTC timestamp), and the legacy ``allow_*`` key
     for each grant so existing enforcement sites keep working unchanged."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     config = load_config()
     entry = _child_dict(_child_dict(_child_dict(config, "plugins"), "entries"), plugin_id)
     previous = entry.get(GRANTED_KEY)

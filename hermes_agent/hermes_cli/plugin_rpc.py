@@ -1,6 +1,6 @@
 """Plugin JSON-RPC methods: a plugin's frontend calling its own Python half over the gateway socket.
 
-Bound into ``PluginContext`` (``from hermes_cli.plugin_rpc import ...``), so they are ordinary
+Bound into ``PluginContext`` (``from hermes_agent.hermes_cli.plugin_rpc import ...``), so they are ordinary
 ``ctx.*`` methods and ``register_rpc`` gets the abandoned-load guard of every registrar. The session
 authority serves the methods (``hermes_agent/gateway/session_plugin_rpc.py``); unload drops them with the ledger.
 """
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
-from hermes_cli.plugin_events import PLUGIN_EVENT_PREFIX, emit_plugin_session_event, plugin_event_name
-from hermes_cli.plugins_ledger import PluginRegistration
+from hermes_agent.hermes_cli.plugin_events import PLUGIN_EVENT_PREFIX, emit_plugin_session_event, plugin_event_name
+from hermes_agent.hermes_cli.plugins_ledger import PluginRegistration
 
 __all__ = ["emit_to_session", "plugin_rpc_handler", "register_rpc"]
 
@@ -30,7 +30,7 @@ def emit_to_session(self, session_id: str, event: str, payload: Optional[dict[st
 
     Looked up in the plugin's own profile (its manager's home), never the ambient scope: a thread the
     plugin started carries none, and on a multiplexed gateway that would read as the launch profile."""
-    from hermes_cli.plugins_loader import _plugin_home_scope
+    from hermes_agent.hermes_cli.plugins_loader import _plugin_home_scope
     with _plugin_home_scope(self._manager.home_path):
         return emit_plugin_session_event(self.plugin_id, session_id, event, payload)
 
@@ -39,5 +39,5 @@ def plugin_rpc_handler(method: Any) -> Optional[Callable[..., Any]]:
     """The loaded plugin handler serving wire ``method`` for the active profile, else None."""
     if not isinstance(method, str) or not method.startswith(PLUGIN_EVENT_PREFIX):
         return None
-    from hermes_cli.plugins import _ensure_plugins_discovered
+    from hermes_agent.hermes_cli.plugins import _ensure_plugins_discovered
     return _ensure_plugins_discovered()._plugin_rpc_methods.get(method)

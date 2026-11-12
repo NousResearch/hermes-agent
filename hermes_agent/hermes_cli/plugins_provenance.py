@@ -61,7 +61,7 @@ def _git_origin_url(plugin_dir: Path) -> Optional[str]:
     installs where git refuses)."""
     # fast path: real git repo. Same resolver as install/update: PATH may be minimal
     # (gateway service, Windows without Git on PATH); no git → straight to the config parse.
-    from hermes_cli.plugins_cmd import _resolve_git_executable
+    from hermes_agent.hermes_cli.plugins_cmd import _resolve_git_executable
 
     git = _resolve_git_executable()
     if git is not None:

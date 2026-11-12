@@ -13,7 +13,7 @@ def test_legacy_user_caps_do_not_change_runtime(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text(json.dumps(config))
     from hermes_agent.gateway.run import _resolve_runtime_agent_kwargs
     from hermes_agent.gateway.platforms.api_server import _resolve_request_runtime_agent_kwargs
-    from hermes_cli.moa_config import _normalize_preset
+    from hermes_agent.hermes_cli.moa_config import _normalize_preset
     from hermes_agent.agent.models_dev import _override_to_catalog_shape
 
     runtime = _resolve_runtime_agent_kwargs()

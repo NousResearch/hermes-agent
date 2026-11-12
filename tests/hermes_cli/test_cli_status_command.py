@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 from hermes_agent.agent.i18n import t
 
 
@@ -35,7 +35,7 @@ def _make_cli():
 def test_process_command_egress_prints_proxy_status(monkeypatch):
     cli_obj = _make_cli()
     monkeypatch.setattr(
-        "hermes_cli.proxy_cli.format_status_text",
+        "hermes_agent.hermes_cli.proxy_cli.format_status_text",
         lambda: "Egress proxy status\nEnabled: no",
     )
 

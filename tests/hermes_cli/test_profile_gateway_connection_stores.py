@@ -31,7 +31,7 @@ def _seed_root(home: Path) -> Path:
     (root / "config.yaml").write_text("model: test\n", encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith("HERMES_")}
     env.update(HOME=str(home), HERMES_HOME=str(root), PYTHONPATH=str(REPO))
-    script = ("from hermes_cli import gateway_connections as g\n"
+    script = ("from hermes_agent.hermes_cli import gateway_connections as g\n"
               f"g.save_connection({{'kind': 'remote', 'label': 'Box', 'url': 'http://10.0.0.5:9119', 'token': '{SECRET}'}})\n"
               "c, _ = g.save_connection({'kind': 'remote', 'label': 'Gw', 'url': 'https://gw.example', 'authMode': 'oauth'})\n"
               "g.write_tokens(c['id'], {'accessToken': 'AT-123456789012345', 'refreshToken': 'RT-123456789012345'})\n")

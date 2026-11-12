@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 
-from hermes_cli.subcommands.computer_use_screen import build_screen_parser
+from hermes_agent.hermes_cli.subcommands.computer_use_screen import build_screen_parser
 from hermes_agent.tools.bot_desktop import install, runtime
 
 

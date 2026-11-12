@@ -16,12 +16,12 @@ import time
 from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from hermes_cli.dashboard_auth.request_utils import _http_origin
-from hermes_cli.web_server_surface import policy, private_launch
-from hermes_cli.web_session_sockets import (
+from hermes_agent.hermes_cli.dashboard_auth.request_utils import _http_origin
+from hermes_agent.hermes_cli.web_server_surface import policy, private_launch
+from hermes_agent.hermes_cli.web_session_sockets import (
     GATEWAY_SOCKET, HOST_TERMINAL_SOCKET, RELAY_SOCKET, SPEAK_STREAM_SOCKET, TRANSCRIBE_STREAM_SOCKET)
 
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 router = APIRouter()
 WINDOW_TICKET_TTL_SECONDS = 30
 #: A sandboxed (snap/Flatpak) browser's cold start can take several seconds to reach the page.
@@ -40,9 +40,9 @@ def _require_private_webapp(request: Request) -> None:
 
 @router.websocket("/api/host-terminal")
 async def host_terminal_ws(ws: WebSocket) -> None:
-    from hermes_cli import web_host_terminal
-    from hermes_cli.web_host_terminal_sessions import host_terminal
-    from hermes_cli.web_server_chat import _PTY_BRIDGE_AVAILABLE, PtyUnavailableError, _pty_fail, _ws_gate
+    from hermes_agent.hermes_cli import web_host_terminal
+    from hermes_agent.hermes_cli.web_host_terminal_sessions import host_terminal
+    from hermes_agent.hermes_cli.web_server_chat import _PTY_BRIDGE_AVAILABLE, PtyUnavailableError, _pty_fail, _ws_gate
 
     gate = await _ws_gate(ws, HOST_TERMINAL_SOCKET)
     if gate is None:
@@ -63,7 +63,7 @@ async def host_terminal_ws(ws: WebSocket) -> None:
 def _mint_handoff_ticket(state, ttl: float, *, launch: bool) -> str:
     """One-use ticket that ``/webapp/window-session`` exchanges for this start's session token. The
     store keeps ``(expiry, browser credential generation, launch)``, never the credential itself."""
-    from hermes_cli import browser_credential
+    from hermes_agent.hermes_cli import browser_credential
 
     now = time.monotonic()
     with _ticket_lock:
@@ -154,7 +154,7 @@ def _peer_is_server_user(request: Request, platform: str = sys.platform) -> bool
 
 @router.post("/api/webapp/window-ticket")
 async def issue_window_ticket(request: Request):
-    from hermes_cli.web_server import _require_token
+    from hermes_agent.hermes_cli.web_server import _require_token
 
     _require_private_webapp(request)
     _require_token(request)
@@ -171,7 +171,7 @@ def _ticket_principal(request: Request) -> tuple[dict, str | None]:
         return {"user_id": session.user_id, "provider": session.provider,
                 "issuer": getattr(session, "issuer", "") or ""}, None
     if not getattr(request.app.state, "auth_required", False):
-        from hermes_cli.web_server import _SESSION_HEADER_NAME, _has_valid_session_token
+        from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _has_valid_session_token
         presented = (request.headers.get(_SESSION_HEADER_NAME)
                      or request.headers.get("authorization", "").removeprefix("Bearer "))
         if _has_valid_session_token(request):
@@ -184,12 +184,12 @@ def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None
     """A one-use ticket that opens only *socket* (``web_session_sockets.GATEWAY_SOCKET``,
     ``HOST_TERMINAL_SOCKET`` or one of ``AUDIO_SOCKETS``) as *identity*. Minted with
     *session_token*, or by a login whose sign-in binding was checked against the browser credential
-    of generation *sign_in* (``hermes_cli.webapp_sign_in``), it records that credential's generation
-    (``hermes_cli.browser_credential``): it opens nothing once that credential is replaced, and the
+    of generation *sign_in* (``hermes_agent.hermes_cli.webapp_sign_in``), it records that credential's generation
+    (``hermes_agent.hermes_cli.browser_credential``): it opens nothing once that credential is replaced, and the
     socket it opens closes when the browser signs out. With *profile_home* the socket it opens answers
     for that profile (``chat_ws.gateway_ws``)."""
-    from hermes_cli.browser_credential import generation_of
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_agent.hermes_cli.browser_credential import generation_of
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import mint_ticket
 
     extra = {"socket": socket}
     if session_token is not None:
@@ -204,8 +204,8 @@ def mint_socket_ticket(identity: dict, socket: str, *, session_token: str | None
 
 def _socket_ticket_response(request: Request, identity: dict, socket: str, session_token: str | None,
                             profile_home: str | None = None) -> JSONResponse:
-    from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS
-    from hermes_cli.webapp_sign_in import sign_in_of
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS
+    from hermes_agent.hermes_cli.webapp_sign_in import sign_in_of
 
     ticket = mint_socket_ticket(identity, socket, session_token=session_token, sign_in=sign_in_of(request),
                                 profile_home=profile_home)
@@ -235,7 +235,7 @@ async def issue_socket_ticket(request: Request, socket: str = "", profile: str |
     serves this page runs the socket's sessions. A ``gateway`` ticket minted with *profile* names
     it: that socket answers a request that names no profile for *profile*, as a native ticket does
     (``chat_ws.gateway_ws``), never for the gateway's launch profile."""
-    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_agent.hermes_cli.web_server_cron import _cron_profile_home
 
     if socket not in SOCKET_TICKETS:
         raise HTTPException(400, "Unknown socket")
@@ -253,7 +253,7 @@ async def issue_socket_ticket(request: Request, socket: str = "", profile: str |
 
 @router.post("/webapp/window-session")
 async def redeem_window_ticket(request: Request):
-    from hermes_cli import browser_credential
+    from hermes_agent.hermes_cli import browser_credential
 
     _require_private_webapp(request)
     # This endpoint deliberately sits outside /api: the child window or launch
@@ -318,7 +318,7 @@ if (!/^[A-Za-z0-9_-]{43}$/.test(ticket)) {
 
 def _handoff_page(request: Request, title: str, status: str, script: str) -> HTMLResponse:
     """Credential-free, uncached page whose only script is *script* (``__BASE_PATH__`` bound)."""
-    from hermes_cli.web_server_dashboard import _normalise_prefix
+    from hermes_agent.hermes_cli.web_server_dashboard import _normalise_prefix
 
     prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))
     nonce = secrets.token_urlsafe(16)

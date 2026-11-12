@@ -9,7 +9,7 @@ CronScheduler provider interface.
 
 No production code is exercised beyond the two ticker entry points:
   - hermes_agent/gateway/run.py::_start_cron_ticker        (production gateway ticker)
-  - hermes_cli/web_server.py::_start_desktop_cron_ticker  (desktop fallback)
+  - hermes_agent/hermes_cli/web_server.py::_start_desktop_cron_ticker  (desktop fallback)
 
 Both call `hermes_agent.cron.scheduler.tick(...)` on a loop and exit when their stop_event
 is set. We patch `hermes_agent.cron.scheduler.tick` (both tickers import it locally as
@@ -75,7 +75,7 @@ def test_desktop_ticker_calls_tick_then_stops():
     """The desktop dashboard ticker loop calls hermes_agent.cron.scheduler.tick and exits
     once the stop_event is set. Desktop has no live adapters, so it ticks with
     no adapters/loop."""
-    from hermes_cli.web_server import _start_desktop_cron_ticker
+    from hermes_agent.hermes_cli.web_server import _start_desktop_cron_ticker
 
     calls = []
     stop = threading.Event()
@@ -214,7 +214,7 @@ def test_cron_provider_package_does_not_shadow_core_cron_package(monkeypatch):
 
 def test_resolve_defaults_to_builtin(monkeypatch):
     """Empty cron.provider → built-in."""
-    import hermes_cli.config as cfg
+    import hermes_agent.hermes_cli.config as cfg
     from hermes_agent.cron import scheduler_provider as sp
 
     monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": ""}})
@@ -224,7 +224,7 @@ def test_resolve_defaults_to_builtin(monkeypatch):
 
 def test_resolve_no_cron_section_falls_back_to_builtin(monkeypatch):
     """Config with no cron section at all → built-in (cfg_get returns default)."""
-    import hermes_cli.config as cfg
+    import hermes_agent.hermes_cli.config as cfg
     from hermes_agent.cron import scheduler_provider as sp
 
     monkeypatch.setattr(cfg, "load_config", dict)
@@ -234,7 +234,7 @@ def test_resolve_no_cron_section_falls_back_to_builtin(monkeypatch):
 
 def test_resolve_unknown_provider_falls_back_to_builtin(monkeypatch):
     """A named provider that doesn't exist → built-in (cron never dies)."""
-    import hermes_cli.config as cfg
+    import hermes_agent.hermes_cli.config as cfg
     from hermes_agent.cron import scheduler_provider as sp
 
     monkeypatch.setattr(cfg, "load_config", lambda: {"cron": {"provider": "nope-not-real"}})
@@ -244,7 +244,7 @@ def test_resolve_unknown_provider_falls_back_to_builtin(monkeypatch):
 
 def test_resolve_unavailable_provider_falls_back(monkeypatch):
     """A provider that loads but reports is_available()==False → built-in."""
-    import hermes_cli.config as cfg
+    import hermes_agent.hermes_cli.config as cfg
     import plugins.cron_providers as pc
     from hermes_agent.cron import scheduler_provider as sp
     from hermes_agent.cron.scheduler_provider import CronScheduler
@@ -268,7 +268,7 @@ def test_resolve_unavailable_provider_falls_back(monkeypatch):
 
 def test_resolve_available_provider_is_used(monkeypatch):
     """A provider that loads and is available is returned (not the fallback)."""
-    import hermes_cli.config as cfg
+    import hermes_agent.hermes_cli.config as cfg
     import plugins.cron_providers as pc
     from hermes_agent.cron import scheduler_provider as sp
     from hermes_agent.cron.scheduler_provider import CronScheduler

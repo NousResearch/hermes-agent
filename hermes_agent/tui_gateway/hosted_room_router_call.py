@@ -27,7 +27,7 @@ _ROUTER_MAX_TOKENS = 200
 
 
 def _member_roster(room: Mapping[str, Any], homes: Mapping[str, Path]) -> list[dict[str, str]]:
-    from hermes_cli.profiles import read_profile_meta
+    from hermes_agent.hermes_cli.profiles import read_profile_meta
 
     roster = []
     for member in room.get("members") or ():
@@ -103,7 +103,7 @@ class RouterCalls:
         self._inflight: set[tuple[str, str]] = set()
 
     def _transaction(self):
-        from hermes_cli.sqlite_util import open_db, transaction
+        from hermes_agent.hermes_cli.sqlite_util import open_db, transaction
 
         conn = open_db(self._db_path, db_label="shared-state.db (room router claims)", busy_timeout_ms=10_000)
         conn.execute(_CLAIMS_DDL)

@@ -6,12 +6,12 @@ single writer: ``_init_session_store`` builds a ``GatewaySessionStore`` and open
 
 from types import SimpleNamespace
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def test_cli_session_store_is_the_gateway_store_and_opens_no_writer(monkeypatch):
     from hermes_agent import hermes_state_registry
-    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
 
     constructed = []
     monkeypatch.setattr(hermes_state_registry, "_open_session_db", lambda path: constructed.append(path))

@@ -7,7 +7,7 @@ import shlex
 import pytest
 
 from hermes_agent.acp_adapter.server import HermesACPAgent
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 from tests.acp_adapter.test_gateway_sessions import editor, viewer
 from tests.waiting import async_wait_until
 

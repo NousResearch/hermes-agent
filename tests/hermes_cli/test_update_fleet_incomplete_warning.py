@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli.update_cmd_fleet import _warn_incomplete_gateway_fleet_restart
+from hermes_agent.hermes_cli.update_cmd_fleet import _warn_incomplete_gateway_fleet_restart
 
 pytestmark = pytest.mark.platforms("linux")
 

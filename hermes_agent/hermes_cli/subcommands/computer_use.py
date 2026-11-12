@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from hermes_cli.subcommands._shared import add_json_flag
+from hermes_agent.hermes_cli.subcommands._shared import add_json_flag
 
 
 def _exit_if_plugin_backend(*, doctor: bool = False) -> None:
@@ -27,14 +27,14 @@ def _exit_if_plugin_backend(*, doctor: bool = False) -> None:
 
 
 def _cu_install(args) -> int:
-    from hermes_cli.tools_config_cua import install_cua_driver
+    from hermes_agent.hermes_cli.tools_config_cua import install_cua_driver
     return 0 if install_cua_driver(upgrade=bool(getattr(args, "upgrade", False))) else 1
 
 
 def _cu_status(args) -> int:
     _exit_if_plugin_backend()
     import os as _os
-    from hermes_cli.tools_config_cua import _cua_driver_contract_status, _cua_version_summary
+    from hermes_agent.hermes_cli.tools_config_cua import _cua_driver_contract_status, _cua_version_summary
     from hermes_agent.tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
 
     path = resolve_cua_driver_cmd()
@@ -181,7 +181,7 @@ def build_computer_use_parser(subparsers) -> None:
         "grant", help="Request the grants (opens the dialog attributed to CuaDriver)")
     _perms_actions = {"grant": _cu_perms_grant, "status": _cu_perms_status}
 
-    from hermes_cli.subcommands.computer_use_screen import build_screen_parser
+    from hermes_agent.hermes_cli.subcommands.computer_use_screen import build_screen_parser
     build_screen_parser(computer_use_sub, add_json_flag)
 
     def _cu_screen(args):

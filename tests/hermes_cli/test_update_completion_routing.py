@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from hermes_cli import main, main_web_build, update_cmd, update_cmd_zip, update_cmd_maint
+from hermes_agent.hermes_cli import main, main_web_build, update_cmd, update_cmd_zip, update_cmd_maint
 from tests.compat.old_updater_support import fresh_child, no_external_work
 
 
@@ -39,7 +39,7 @@ def test_historical_completion_hook_never_reports_success(hook, args, kwargs, fr
 
 
 def test_incomplete_handoff_requires_explicit_update_retry(tmp_path, monkeypatch, capsys):
-    from hermes_cli import main
+    from hermes_agent.hermes_cli import main
 
     monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
     completion = Mock()

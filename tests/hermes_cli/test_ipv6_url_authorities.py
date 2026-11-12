@@ -12,7 +12,7 @@ import types
 import pytest
 import uvicorn
 
-from hermes_cli import main_dashboard, web_server, web_server_lifecycle
+from hermes_agent.hermes_cli import main_dashboard, web_server, web_server_lifecycle
 
 
 def _stub_uvicorn(monkeypatch):
@@ -74,24 +74,24 @@ def _stub_uvicorn(monkeypatch):
 class TestFormatUrlHost:
 
     def test_brackets_ipv6_literal_with_port_following(self):
-        from hermes_cli.url_utils import format_url_host
+        from hermes_agent.hermes_cli.url_utils import format_url_host
 
         assert format_url_host("::1") == "[::1]"
         assert format_url_host("fe80::1") == "[fe80::1]"
 
     def test_preserves_ipv4_and_names(self):
-        from hermes_cli.url_utils import format_url_host
+        from hermes_agent.hermes_cli.url_utils import format_url_host
 
         assert format_url_host("127.0.0.1") == "127.0.0.1"
         assert format_url_host("localhost") == "localhost"
 
     def test_already_bracketed_stays_bracketed(self):
-        from hermes_cli.url_utils import format_url_host
+        from hermes_agent.hermes_cli.url_utils import format_url_host
 
         assert format_url_host("[::1]") == "[::1]"
 
     def test_escapes_ipv6_zone_identifier(self):
-        from hermes_cli.url_utils import format_url_host
+        from hermes_agent.hermes_cli.url_utils import format_url_host
 
         assert format_url_host("fe80::1%eth0") == "[fe80::1%25eth0]"
         assert format_url_host("[fe80::1%eth0]") == "[fe80::1%25eth0]"
@@ -145,7 +145,7 @@ class TestAttachUrl:
         monkeypatch.setattr(main_dashboard, "_explicit_endpoint_flags", lambda: set())
         monkeypatch.setattr(hr, "probe_owner", lambda _r: {"servesSpa": True, "pid": 4242})
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+            "hermes_agent.hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
 
         args = types.SimpleNamespace(

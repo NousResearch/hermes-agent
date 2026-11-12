@@ -1,6 +1,6 @@
 """``/api/ui-preferences``: the Webapp's door to this machine's UI preferences store (#145213).
 
-Thin HTTP over :mod:`hermes_cli.ui_preferences`. The store belongs to the machine serving the
+Thin HTTP over :mod:`hermes_agent.hermes_cli.ui_preferences`. The store belongs to the machine serving the
 Webapp, so every browser and origin that opens it reads and writes the same document native
 Desktop on this machine uses (through its preload capability, not this route). Mounted only on
 surfaces whose policy names ``ui_preferences`` (404 elsewhere) and, like every ``/api/`` route,
@@ -14,7 +14,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from hermes_cli import ui_preferences
+from hermes_agent.hermes_cli import ui_preferences
 
 router = APIRouter()
 

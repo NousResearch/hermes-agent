@@ -203,7 +203,7 @@ def test_compression_child_continues_the_parents_tool_pin(db):
 
 
 def test_recovery_cleanup_keeps_tool_pins_and_drops_dangling_pin_refs(tmp_path):
-    from hermes_cli.session_recovery import _cleanup_partial_orphans
+    from hermes_agent.hermes_cli.session_recovery import _cleanup_partial_orphans
 
     pin = {"version": "sha", "tools": [{"type": "function", "function": {"name": "read_file"}}]}
     with SessionDB(db_path=tmp_path / "state.db") as db:

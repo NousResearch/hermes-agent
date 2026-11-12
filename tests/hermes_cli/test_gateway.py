@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.gateway."""
+"""Tests for hermes_agent.hermes_cli.gateway."""
 
 import json
 import os
@@ -9,7 +9,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway
+from hermes_agent.hermes_cli import gateway
 
 
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
@@ -86,7 +86,7 @@ def _run_native_windows_gateway_start_diag(
     else:
         env[_BREAKAWAY_MARKER] = breakaway_marker
 
-    from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
+    from hermes_agent.hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
 
     completed = subprocess.run(
         [sys.executable, "-c", script],
@@ -236,8 +236,8 @@ def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
 
     monkeypatch.setattr(gateway, "is_linux", lambda: True)
     monkeypatch.setattr("hermes_constants.is_container", lambda: True)
-    monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "s6")
-    monkeypatch.setattr("hermes_cli.service_manager.get_service_manager", lambda: FakeS6Manager())
+    monkeypatch.setattr("hermes_agent.hermes_cli.service_manager.detect_service_manager", lambda: "s6")
+    monkeypatch.setattr("hermes_agent.hermes_cli.service_manager.get_service_manager", lambda: FakeS6Manager())
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [123])
     monkeypatch.setattr(gateway, "_profile_suffix", lambda: "")
 
@@ -255,15 +255,15 @@ def _run_status_with_snapshot(monkeypatch, snapshot) -> str:
     import io
     from contextlib import redirect_stdout
 
-    monkeypatch.setattr("hermes_cli.gateway_profile_lifecycle.print_parked_status", lambda: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_profile_lifecycle.print_parked_status", lambda: False)
     monkeypatch.setattr(gateway, "get_gateway_runtime_snapshot", lambda system=False: snapshot)
     monkeypatch.setattr(gateway, "_installed_service_kind_for", lambda probe: None)
     monkeypatch.setattr(gateway, "named_profile_served_by_running_multiplexer", lambda: False)
     for name in ("_print_runtime_health", "_print_multiplex_standalone_reason", "_print_served_ingress_urls",
                  "_print_duplicate_credential_warnings", "_print_other_profiles_gateway_status"):
         monkeypatch.setattr(gateway, name, lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.gateway_status_notes.print_standalone_by_config", lambda: None)
-    monkeypatch.setattr("hermes_cli.gateway_status_notes._incompatible_owner_verdict", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_status_notes.print_standalone_by_config", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_status_notes._incompatible_owner_verdict", lambda: None)
     buf = io.StringIO()
     with redirect_stdout(buf):
         gateway._cmd_status(SimpleNamespace(deep=False, full=False, system=False))
@@ -559,13 +559,13 @@ class TestStopProfileGateway:
         # These signal/reaping tests simulate an independently owned process.
         # Ambiguous/shared ownership is exercised by the lifecycle regressions.
         from hermes_agent.gateway import host_attach
-        from hermes_cli import dashboard_procs
+        from hermes_agent.hermes_cli import dashboard_procs
         monkeypatch.setattr(host_attach, '_probe_host_gateway', lambda wait: None)
         monkeypatch.setattr(dashboard_procs, '_hermes_home_for_pid', lambda pid, **kw: str(gateway.get_hermes_home()))
     @pytest.mark.platforms("windows")
     def test_windows_stop_drains_marker_before_force_termination(self, monkeypatch):
         """Windows must let the marker watcher run before escalating (#112750)."""
-        from hermes_cli import gateway_windows
+        from hermes_agent.hermes_cli import gateway_windows
 
         pid = 12345
         calls = []
@@ -592,7 +592,7 @@ class TestStopProfileGateway:
     @pytest.mark.platforms("windows")
     def test_windows_stop_force_terminates_only_after_drain_timeout(self, monkeypatch):
         """A wedged Windows gateway still has a bounded force-stop fallback (#112750)."""
-        from hermes_cli import gateway_windows
+        from hermes_agent.hermes_cli import gateway_windows
 
         pid = 12345
         calls = []
@@ -624,7 +624,7 @@ class TestStopProfileGateway:
         refusal fires instead of killing an unrelated process. Reading it at kill time is a vacuous
         self-comparison."""
         from hermes_agent.gateway import status
-        from hermes_cli import gateway_windows
+        from hermes_agent.hermes_cli import gateway_windows
 
         pid = 4242
         calls = []
@@ -912,7 +912,7 @@ class TestReaperStartupGrace:
             gateway, "find_gateway_pids",
             lambda exclude_pids=None: [p for p in (booting, unknown, stale) if p not in (exclude_pids or set())],
         )
-        monkeypatch.setattr("hermes_cli.dashboard_procs._process_age_seconds", _age)
+        monkeypatch.setattr("hermes_agent.hermes_cli.dashboard_procs._process_age_seconds", _age)
         monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: None)
         monkeypatch.setattr("hermes_agent.gateway.status._pid_exists", lambda pid: False)
         monkeypatch.setattr("time.sleep", lambda _: None)
@@ -996,7 +996,7 @@ def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypat
     gateway's supervisor, so a task-launched gateway is a plain process (#97208); the same tree under a
     Hermes-owned service (by binary path) stays SCM-supervised."""
     import psutil
-    from hermes_cli import gateway_windows
+    from hermes_agent.hermes_cli import gateway_windows
 
     monkeypatch.setattr(gateway_windows, "hermes_service_roots", lambda: (r"C:\hermes\hermes-agent",))
     profile = SimpleNamespace(profile="default", pid=18480, create_time=18480.0)
@@ -1060,7 +1060,7 @@ def test_find_windows_gateway_services_ignores_task_scheduler_ancestor(monkeypat
 def test_find_profile_gateway_processes_strict_propagates_profile_listing_failure(
     monkeypatch,
 ):
-    import hermes_cli.profiles as profiles_mod
+    import hermes_agent.hermes_cli.profiles as profiles_mod
 
     monkeypatch.setattr(
         profiles_mod,

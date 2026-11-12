@@ -78,7 +78,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional[CronScheduler]:
     name = provider_dir.name
     is_bundled = _CRON_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _CRON_PLUGINS_DIR
     module_name = f"{__package__}.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
-    from hermes_cli.plugin_isolation import user_plugin_host
+    from hermes_agent.hermes_cli.plugin_isolation import user_plugin_host
     host = None if is_bundled else user_plugin_host()
     if host is not None:
         return host.load_instance(provider_dir, module_name=module_name, capture="register_cron_scheduler",

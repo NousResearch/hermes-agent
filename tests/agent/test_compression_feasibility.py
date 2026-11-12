@@ -295,7 +295,7 @@ def test_a_moved_providers_entry_reprobes_a_warm_agent():
     entries = [{"base_url": "http://old.invalid/v1"}, {"base_url": "http://new.invalid/v1"}]
     with patch("hermes_agent.agent.auxiliary_client.get_text_auxiliary_client", return_value=(client, "aux")) as aux_client, \
          patch("hermes_agent.agent.model_metadata.get_model_context_length", side_effect=[80_000, 900_000]), \
-         patch("hermes_cli.runtime_provider_custom._get_named_custom_provider", side_effect=lambda *a, **k: entries[0]):
+         patch("hermes_agent.hermes_cli.runtime_provider_custom._get_named_custom_provider", side_effect=lambda *a, **k: entries[0]):
         with session_auxiliary_scope(task):
             ensure_compression_feasibility_checked(agent, 200_000)
             entries.pop(0)

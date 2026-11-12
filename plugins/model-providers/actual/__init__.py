@@ -68,7 +68,7 @@ class ActualProfile(ProviderProfile):
         timeout: float = 8.0,
     ) -> list[str] | None:
         """Use the selected route, then config.yaml, then the legacy environment override."""
-        from hermes_cli.auth import (
+        from hermes_agent.hermes_cli.auth import (
             normalize_actual_base_url,
             resolve_api_key_provider_credentials,
         )

@@ -9,8 +9,8 @@ from urllib.parse import urlsplit
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from hermes_cli.dashboard_auth import list_session_providers
-from hermes_cli.dashboard_auth.base import DashboardAuthProvider, ProviderError
+from hermes_agent.hermes_cli.dashboard_auth import list_session_providers
+from hermes_agent.hermes_cli.dashboard_auth.base import DashboardAuthProvider, ProviderError
 
 # Paths a post-login redirect must never land on: the auth flow itself (would loop) and any
 # ``/api/*`` target (raw JSON in the address bar, indistinguishable from a weaponised redirect).
@@ -69,8 +69,8 @@ def cookie_origin_is_allowed(request: Request) -> bool:
     Host and ASGI scheme (uvicorn applies *trusted* proxy headers). Never trust
     raw forwarded headers here or reuse WS's opaque/non-HTTP Origin exemption.
     """
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
-    from hermes_cli.web_server import _is_accepted_host
+    from hermes_agent.hermes_cli.dashboard_auth.prefix import resolve_public_url
+    from hermes_agent.hermes_cli.web_server import _is_accepted_host
 
     bound_host = getattr(request.app.state, "bound_host", None)
     if bound_host and not _is_accepted_host(

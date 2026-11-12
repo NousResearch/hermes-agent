@@ -29,7 +29,7 @@ import json
 import os
 from pathlib import Path
 from hermes_constants import get_hermes_home, get_process_hermes_home, get_default_hermes_root
-from hermes_cli.profiles import _get_profiles_root, _get_active_profile_path, resolve_profile_env
+from hermes_agent.hermes_cli.profiles import _get_profiles_root, _get_active_profile_path, resolve_profile_env
 root = get_default_hermes_root()
 profile = root / 'profiles' / 'coder'
 profile.mkdir(parents=True)
@@ -62,8 +62,8 @@ print(json.dumps(result))
 @pytest.mark.platforms("linux", "macos", "windows")
 def test_startup_readers_use_the_suffixed_home(tmp_path, monkeypatch):
     from hermes_constants import get_process_hermes_home
-    from hermes_cli.dashboard_procs import _hermes_home_dir
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli.dashboard_procs import _hermes_home_dir
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     from hermes_agent.hermes_startup_watchdog import get_startup_watchdog_dump_path
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

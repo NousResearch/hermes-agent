@@ -280,7 +280,7 @@ window manager to exercise actual iconification rather than hiding the window.
 
 ## Nous free tier: state is pulled, never latched in the renderer
 
-The free tier (a Nous identity with no account, `hermes_cli/anon_auth.py`) reaches the renderer
+The free tier (a Nous identity with no account, `hermes_agent/hermes_cli/anon_auth.py`) reaches the renderer
 through one JSON-RPC pair: `free_tier.status` (has_guest, enabled, available,
 notice_pending, model, label) read from local auth state with zero network, and
 `free_tier.ack_notice`, which persists the one-time notice flag on the identity itself. The

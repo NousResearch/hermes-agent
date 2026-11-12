@@ -1,6 +1,6 @@
 """Read-only presentation: ``hermes plugins list``, ``show`` and ``compat``.
 
-Sibling of :mod:`hermes_cli.plugins_cmd` (the facade re-exports the names other modules use and is
+Sibling of :mod:`hermes_agent.hermes_cli.plugins_cmd` (the facade re-exports the names other modules use and is
 imported late here, never at module level).
 """
 
@@ -13,7 +13,7 @@ from typing import Any
 
 def _pc():
     """The facade, read at call time: tests patch ``plugins_cmd.<name>`` and sibling calls must see it."""
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     return plugins_cmd
 
 
@@ -49,7 +49,7 @@ def cmd_list(args: Any | None = None) -> None:
     enabled = _pc()._get_enabled_set()
     disabled = _pc()._get_disabled_set()
     entries = _filter_plugin_entries(entries, args, enabled, disabled)
-    from hermes_cli import plugins_cmd_catalog as catalog
+    from hermes_agent.hermes_cli import plugins_cmd_catalog as catalog
     # Source shows catalog provenance (``catalog:<tier>@<sha8>``) or a ``--ref`` pin
     # (``git pinned@<sha8>``) so a team can eyeball that everyone runs the same commit.
     pins = _pc()._read_install_metadata()
@@ -83,7 +83,7 @@ def cmd_list(args: Any | None = None) -> None:
         (("Name", "bold"), ("Status", None), ("Version", "dim"), ("Description", None), ("Source", "dim")),
         title="Plugins", show_lines=False)
     # provenance class per user-installed dir (bundled entries show '-')
-    from hermes_cli.plugins_provenance import plugins_provenance
+    from hermes_agent.hermes_cli.plugins_provenance import plugins_provenance
 
     prov_classes = {
         p.name: p.klass.value for p in plugins_provenance(_pc()._plugins_dir())
@@ -135,14 +135,14 @@ def cmd_show(name: str) -> None:
     console.print(f"[dim]Source:[/dim] {source}")
     console.print(f"[dim]Key:[/dim] {key}")
     if dir_path and source != "bundled":
-        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
-        from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+        from hermes_agent.hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        from hermes_agent.hermes_cli.plugin_isolation_audit import audit_plugin_dir
         audit = audit_plugin_dir(Path(dir_path), manifest)
         runs_in = ("plugin host" if isolation_mode() == ISOLATION_HOST and audit.host_ready
                    else "refused (plugins.isolation: host)" if isolation_mode() == ISOLATION_HOST
                    else "Hermes process")
         console.print(f"[dim]Runs in:[/dim] {runs_in} [dim]— {audit.summary()}[/dim]")
-    from hermes_cli.plugin_provider_requests import requires_auth_notice
+    from hermes_agent.hermes_cli.plugin_provider_requests import requires_auth_notice
     if notice := requires_auth_notice(manifest):
         console.print(f"[dim]Sign-in:[/dim] {notice}")
     console.print("[dim]Emits:[/dim] " + (", ".join(emits) if emits else "[dim](none)[/dim]"))

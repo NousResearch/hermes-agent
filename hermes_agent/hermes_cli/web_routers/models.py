@@ -1,6 +1,6 @@
 """Model assignment dashboard routes: model info/options/recommended default, auxiliary + MoA slots, /api/model/set.
 
-Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch on
+Extracted from ``hermes_agent.hermes_cli.web_server``; helpers/state that tests monkeypatch on
 ``web_server`` stay there and are resolved late at call time (cycle-safe).
 """
 
@@ -11,26 +11,26 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
-from hermes_cli.web_deps import LateState, late
-from hermes_cli.web_server_config import (
+from hermes_agent.hermes_cli.web_deps import LateState, late
+from hermes_agent.hermes_cli.web_server_config import (
     _AUX_TASK_SLOTS, _UNSET, _apply_model_assignment_sync, _dashboard_code_skew_guard,
     _plugin_aux_tasks, _prepare_main_assignment,
 )
 from hermes_agent.agent.model_metadata import is_local_endpoint
 from starlette.concurrency import run_in_threadpool
-from hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
-from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-from hermes_cli.web_routers._common import config_write_scope, http_failure
+from hermes_agent.hermes_cli.web_models import ModelAssignment, MoaConfigPayload, MoaModelSlot
+from hermes_agent.hermes_cli.config_backend import CONFIG_MUTATION_LOCK
+from hermes_agent.hermes_cli.web_routers._common import config_write_scope, http_failure
 
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
-_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
-_profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
-load_config = late("load_config", "hermes_cli.config")
-save_config = late("save_config", "hermes_cli.config")
-require_readable_config_before_write = late("require_readable_config_before_write", "hermes_cli.config")
+_config_profile_scope = late("_config_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
+_profile_scope = late("_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
+load_config = late("load_config", "hermes_agent.hermes_cli.config")
+save_config = late("save_config", "hermes_agent.hermes_cli.config")
+require_readable_config_before_write = late("require_readable_config_before_write", "hermes_agent.hermes_cli.config")
 
 
 _EMPTY_MODEL_INFO: dict = {
@@ -154,7 +154,7 @@ async def get_model_options(
             _log.warning("GET /api/model/options refused: %s", skew_msg)
             raise HTTPException(status_code=503, detail=f"Restart required: {skew_msg}")
 
-        from hermes_cli.inventory import build_model_options_payload, load_picker_context
+        from hermes_agent.hermes_cli.inventory import build_model_options_payload, load_picker_context
 
         def _build_payload_scoped() -> dict:
             # Full sync picker build off the event loop under the requested profile.
@@ -170,7 +170,7 @@ async def get_model_options(
 
 
 def _nous_recommended_default() -> dict:
-    from hermes_cli.models import recommended_nous_default_model
+    from hermes_agent.hermes_cli.models import recommended_nous_default_model
     return recommended_nous_default_model()
 
 
@@ -198,8 +198,8 @@ def get_recommended_default_model(provider: str = "", profile: Optional[str] = N
             return {"provider": "nous", "model": "", "free_tier": None}
 
     try:
-        from hermes_cli.inventory import build_models_payload, load_picker_context
-        from hermes_cli.models import pick_silent_default_model
+        from hermes_agent.hermes_cli.inventory import build_models_payload, load_picker_context
+        from hermes_agent.hermes_cli.models import pick_silent_default_model
 
         # build_models_payload -> list_authenticated_providers -> _save_discovered_models_to_config:
         # this GET lazily PERSISTS discovered custom-provider models, so it needs the scope too.
@@ -274,7 +274,7 @@ def get_auxiliary_models(profile: Optional[str] = None):
 def get_moa_models(profile: Optional[str] = None):
     """Return the configured Mixture-of-Agents provider/model slots."""
     with http_failure("GET /api/model/moa failed", 500, detail="Failed to read MoA config"):
-        from hermes_cli.moa_config import normalize_moa_config
+        from hermes_agent.hermes_cli.moa_config import normalize_moa_config
 
         with _profile_scope(profile):
             cfg = load_config()
@@ -305,8 +305,8 @@ def _preset_dict(preset) -> dict:
 def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
     """Persist the Mixture-of-Agents provider/model slots."""
     with http_failure("PUT /api/model/moa failed", 500, detail="Failed to save MoA config"):
-        from hermes_cli import config as config_mod
-        from hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
+        from hermes_agent.hermes_cli import config as config_mod
+        from hermes_agent.hermes_cli.moa_config import normalize_moa_config, validate_moa_payload
 
         # Serialize the full RMW with dashboard autosaves and with non-HTTP
         # save_config callers, which only hold the config module's reentrant lock.
@@ -400,7 +400,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         # coroutine interleaving on the event-loop thread could cross-restore module globals).
         if model and not body.confirm_expensive_model:
             try:
-                from hermes_cli.model_selection_guards import combined_selection_warning
+                from hermes_agent.hermes_cli.model_selection_guards import combined_selection_warning
 
                 # Pricing lookup can hit models.dev / a /models endpoint on a cache miss — off the loop.
                 warning = await asyncio.to_thread(combined_selection_warning, model, provider=provider, base_url=base_url)

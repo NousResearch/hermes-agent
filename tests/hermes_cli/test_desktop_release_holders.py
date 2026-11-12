@@ -15,8 +15,8 @@ import time
 import psutil
 import pytest
 
-from hermes_cli import desktop_release_holders, main_desktop
-from hermes_cli.desktop_release_holders import CONSENT_FILE_NAME, release_after_refused_rename, take_consent
+from hermes_agent.hermes_cli import desktop_release_holders, main_desktop
+from hermes_agent.hermes_cli.desktop_release_holders import CONSENT_FILE_NAME, release_after_refused_rename, take_consent
 
 _HELPER = "import time\nprint('ready', flush=True)\ntime.sleep(300)\n"
 

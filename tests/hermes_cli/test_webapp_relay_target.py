@@ -22,9 +22,9 @@ _WORKERS = 4
 def unanswered(tmp_path, monkeypatch):
     """The loopback Webapp. Every SSH master it opens waits for ``answer``, then times out the way
     ``ssh`` does; ``dials`` lists the hosts dialed and ``asked`` counts the relay's resolutions."""
-    from hermes_cli import gateway_connections_ssh as ssh
-    from hermes_cli import webapp_relay_target as reach
-    from hermes_cli.gateway_connections_ssh_transport import SshReachError
+    from hermes_agent.hermes_cli import gateway_connections_ssh as ssh
+    from hermes_agent.hermes_cli import webapp_relay_target as reach
+    from hermes_agent.hermes_cli.gateway_connections_ssh_transport import SshReachError
 
     served = serve_webapp(tmp_path, monkeypatch)
     served.dials, served.asked, served.answer = [], [], threading.Event()
@@ -52,7 +52,7 @@ def unanswered(tmp_path, monkeypatch):
 
 
 def _save_ssh(host: str) -> str:
-    from hermes_cli import gateway_connections as store
+    from hermes_agent.hermes_cli import gateway_connections as store
 
     saved, _registry = store.save_connection({"kind": "ssh", "label": f"Gone {host}", "host": host, "user": "operator"})
     return saved["id"]
@@ -86,7 +86,7 @@ def test_unanswered_saved_gateways_leave_the_default_executor_to_this_gateways_o
 
 
 def test_requests_waiting_on_one_dial_never_dial_a_removed_gateway_again(unanswered):
-    from hermes_cli import gateway_connections as store
+    from hermes_agent.hermes_cli import gateway_connections as store
 
     cid = _save_ssh("192.0.2.1")
 
@@ -109,7 +109,7 @@ def test_requests_waiting_on_one_dial_never_dial_a_removed_gateway_again(unanswe
 
 
 def test_a_caller_that_gives_up_leaves_the_shared_resolution_to_the_others(unanswered, monkeypatch):
-    from hermes_cli import webapp_relay_target as reach
+    from hermes_agent.hermes_cli import webapp_relay_target as reach
 
     busy, cid = _save_ssh("192.0.2.1"), _save_ssh("192.0.2.2")
     monkeypatch.setattr(reach, "_POOL", ThreadPoolExecutor(1))

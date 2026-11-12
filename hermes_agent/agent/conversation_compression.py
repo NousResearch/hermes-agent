@@ -1988,7 +1988,7 @@ def _lower_threshold_to_aux_context(
 
 def _aux_inherits_main_route(agent: Any, aux_model: str, aux_base_url: str) -> bool:
     """True when the auxiliary compression client is the main model on the main endpoint."""
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
     if str(aux_model or "").strip().lower() != str(getattr(agent, "model", "") or "").strip().lower():
         return False
     main_base = normalize_route_base_url(str(getattr(agent, "base_url", "") or ""))
@@ -2018,7 +2018,7 @@ def _configured_custom_providers(agent: Any) -> Optional[list]:
     if _SESSION_AUXILIARY.get() is not None:
         return getattr(agent, "_custom_providers", None)
     try:
-        from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+        from hermes_agent.hermes_cli.config import get_compatible_custom_providers, load_config_readonly
         return get_compatible_custom_providers(load_config_readonly())
     except Exception:
         logger.debug("Provider entries unreadable; using the ones from agent start", exc_info=True)
@@ -2438,7 +2438,7 @@ _PENDING_CONTEXT_ENGINE_NOTIFICATION = "_pending_context_engine_compression_noti
 def _hand_off_metrics_segment(old_session_id: str, new_session_id: str) -> None:
     """Shared metrics count one conversation across the rotation (a no-op when collection is off)."""
     with _swallow('shared-metrics segment hand-off failed', exc_info=True):
-        from hermes_cli.observability.relay_shared_metrics import rotate_segment
+        from hermes_agent.hermes_cli.observability.relay_shared_metrics import rotate_segment
         rotate_segment(old_session_id, new_session_id)
 
 
@@ -3249,7 +3249,7 @@ def _publish_rotated_compaction(
     # parent's profile ("default" persists as NULL) and keeps a live /yolo; publish COALESCEs from the parent row.
     _profile_for_child = None
     with contextlib.suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         _profile_for_child = get_active_profile_name()
     _profile_for_child = None if _profile_for_child == "default" else _profile_for_child
     old_title = agent._session_db.get_session_title(agent.session_id)
@@ -3581,7 +3581,7 @@ def _commit_compaction(
             with _hold_attempt_telemetry(agent.context_compressor):
                 agent.commit_memory_session(original_messages)
             from hermes_agent.agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, stamp_db_persisted_markers
-            from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
+            from hermes_agent.hermes_cli.partial_compress import rejoin_compressed_head_and_tail
             if in_place:
                 # In-place compaction: same session_id; soft-archive old turns (active=0, still
                 # searchable) + insert `compressed` atomically; no pre-flush (tail already in).
@@ -3898,7 +3898,7 @@ def _begin_compression_attempt(
     }
     with contextlib.suppress(Exception):
         agent._compression_attempt_id = attempt_id
-        from hermes_cli.observability.shared_metrics_events import begin_compression_attempt
+        from hermes_agent.hermes_cli.observability.shared_metrics_events import begin_compression_attempt
 
         begin_compression_attempt(trigger, approx_tokens or getattr(agent.context_compressor, "last_prompt_tokens", None))
     return _Attempt(snapshot, generation, started_at, seed)

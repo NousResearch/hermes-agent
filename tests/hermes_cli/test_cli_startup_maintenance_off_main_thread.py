@@ -12,7 +12,7 @@ import hermes_agent.agent.curator as curator_mod
 
 
 def test_startup_maintenance_returns_while_curator_still_running(monkeypatch):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     release, entered = threading.Event(), threading.Event()
     seen = {}

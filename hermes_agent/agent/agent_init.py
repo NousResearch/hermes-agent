@@ -43,9 +43,9 @@ from hermes_agent.agent.think_scrubber import StreamingThinkScrubber
 from hermes_agent.agent.tool_guardrails import (
     ToolCallGuardrailConfig, ToolCallGuardrailController
 )
-from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-from hermes_cli.route_identity import normalize_route_base_url
-from hermes_cli.timeouts import get_provider_request_timeout
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
+from hermes_agent.hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
 from hermes_agent.hermes_state_ids import new_session_id
 from utils import base_url_host_matches, is_truthy_value
@@ -64,7 +64,7 @@ def _provider_default_routes(provider: str) -> set[str]:
             routes.add(route)
 
     with suppress(Exception):
-        from hermes_cli.providers import HERMES_OVERLAYS, get_provider
+        from hermes_agent.hermes_cli.providers import HERMES_OVERLAYS, get_provider
         overlay = HERMES_OVERLAYS.get(provider)
         provider_def = get_provider(provider, allow_network=False)
         add(getattr(overlay, "base_url_override", ""))
@@ -75,9 +75,9 @@ def _provider_default_routes(provider: str) -> set[str]:
         add(getattr(get_provider_profile(provider), "base_url", ""))
 
     with suppress(Exception):
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        from hermes_cli.models import normalize_provider as normalize_model_provider
-        from hermes_cli.providers import normalize_provider as normalize_registry_provider
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_agent.hermes_cli.models import normalize_provider as normalize_model_provider
+        from hermes_agent.hermes_cli.providers import normalize_provider as normalize_registry_provider
         for provider_id, config in PROVIDER_REGISTRY.items():
             if normalize_registry_provider(normalize_model_provider(provider_id)) == provider:
                 add(getattr(config, "inference_base_url", ""))
@@ -102,14 +102,14 @@ def _context_route_mismatch(
     if not configured_provider:
         return False
     try:
-        from hermes_cli.models import normalize_provider as normalize_model_provider
+        from hermes_agent.hermes_cli.models import normalize_provider as normalize_model_provider
         configured_provider = normalize_model_provider(configured_provider)
         active_provider = normalize_model_provider(active_provider)
     except Exception:
         configured_provider = configured_provider.lower()
         active_provider = active_provider.lower()
     with suppress(Exception):
-        from hermes_cli.providers import normalize_provider as normalize_registry_provider
+        from hermes_agent.hermes_cli.providers import normalize_provider as normalize_registry_provider
         configured_provider = normalize_registry_provider(configured_provider)
         active_provider = normalize_registry_provider(active_provider)
 
@@ -276,7 +276,7 @@ _EXPLICIT_API_MODES = {
 
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
-    from hermes_cli.providers import is_actual_route
+    from hermes_agent.hermes_cli.providers import is_actual_route
     from hermes_agent.agent.transports import registered_api_modes
     host, url = agent._base_url_hostname, agent._base_url_lower
     if is_actual_route(agent.provider, base_url):
@@ -306,7 +306,7 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     elif agent.provider in {"nous", "nous-portal", "nousresearch"}:
         # Portal is dual-wire (anthropic/* → Messages, else chat_completions); covers direct
         # AIAgent construction without a resolved runtime.
-        from hermes_cli.providers import nous_api_mode
+        from hermes_agent.hermes_cli.providers import nous_api_mode
         agent.api_mode = nous_api_mode(agent.model)
     else:
         # Host-mandated wire check — LAST, so the provider-slug rewrites above always win.
@@ -318,7 +318,7 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
             # BY DESIGN, not provider-name-driven, because user config `providers.meta` may point at any
             # OpenAI-compatible endpoint, and forcing `codex_responses` on the provider name alone would
             # break custom endpoints named "meta" that do not host the Responses API. See #63425.
-            from hermes_cli.providers import host_mandated_api_mode as _host_mandated_api_mode
+            from hermes_agent.hermes_cli.providers import host_mandated_api_mode as _host_mandated_api_mode
             _mandated = _host_mandated_api_mode(base_url or "")
         except Exception:
             _mandated = None
@@ -326,7 +326,7 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
 
 
 def _finalize_routing(agent, api_mode, credential_pool):
-    from hermes_cli.providers import is_actual_route
+    from hermes_agent.hermes_cli.providers import is_actual_route
     # Credential-pool validation runs AFTER provider auto-detection so a pool scoped to
     # "anthropic" isn't rejected for provider=None + anthropic.com URL.
     # Regression from #63048 which placed this check before the URL-based auto-detection block above (fixed
@@ -353,11 +353,11 @@ def _finalize_routing(agent, api_mode, credential_pool):
     # process-wide, daemon.
     if agent.provider == "nous":
         with suppress(Exception):
-            from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+            from hermes_agent.hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
             start_nous_auth_keepalive()
 
     with suppress(Exception):
-        from hermes_cli.model_normalize import (
+        from hermes_agent.hermes_cli.model_normalize import (
             _AGGREGATOR_PROVIDERS, normalize_model_for_provider
         )
 
@@ -366,14 +366,14 @@ def _finalize_routing(agent, api_mode, credential_pool):
 
     # Nous model policy follows the ROUTE (the welcome host serves one model); a credential-pool
     # swap can change the route later, so ``_swap_credential`` applies the same helper again.
-    from hermes_cli.anon_auth import pin_model_for_route
+    from hermes_agent.hermes_cli.anon_auth import pin_model_for_route
     agent.model = pin_model_for_route(agent.provider, agent.base_url, agent.model)
 
     # Auto-upgrade to Responses for GPT-5.x-style models and direct OpenAI URLs, unless
     # api_mode was explicit, the runtime is ACP (`acp://` clients route themselves, no
     # Responses surface) or Azure OpenAI (gpt-5.x on /chat/completions only). Provider
     # exceptions live in _provider_model_requires_responses_api.
-    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+    from hermes_agent.hermes_cli.runtime_provider_backends import _is_external_process_provider
 
     _base_lower = str(agent.base_url or "").lower()
     if (
@@ -572,7 +572,7 @@ def _init_prompt_cache_config(agent):
     # inject their own cache_control markers (#13477).
     agent._cache_ttl = "5m"
     try:
-        from hermes_cli.config import load_config_readonly as _load_pc_cfg
+        from hermes_agent.hermes_cli.config import load_config_readonly as _load_pc_cfg
         from hermes_agent.agent.agent_runtime_helpers import cache_ttl_means_disabled
         from hermes_agent.agent.prompt_caching import AUTO_CACHE_TTL, auto_cache_ttl_for_source
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
@@ -663,7 +663,7 @@ def _init_anthropic_client(agent, api_key, base_url, _provider_timeout):
     # auth.json, so other processes' refreshes are seen).
     if agent.provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
         try:
-            from hermes_cli.auth import build_minimax_oauth_token_provider
+            from hermes_agent.hermes_cli.auth import build_minimax_oauth_token_provider
             effective_key = build_minimax_oauth_token_provider()
         except Exception as _mm_exc:
             logging.getLogger(__name__).warning(
@@ -724,7 +724,7 @@ def _explicit_client_kwargs(agent, api_key, base_url, _provider_timeout) -> dict
         client_kwargs["timeout"] = _provider_timeout
     # ACP/subprocess providers take launch kwargs instead of HTTP credentials. Keyed on the profile's
     # auth_type, not a vendor slug: every external_process plugin gets this launch path (#102421).
-    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+    from hermes_agent.hermes_cli.runtime_provider_backends import _is_external_process_provider
 
     if _is_external_process_provider(agent.provider):
         client_kwargs["command"] = agent.acp_command
@@ -757,7 +757,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     _routed_client, _ = resolve_provider_client(
         agent.provider or "auto", model=agent.model, raw_codex=True)
     if _routed_client is not None:
-        from hermes_cli.providers import is_actual_route, normalize_provider
+        from hermes_agent.hermes_cli.providers import is_actual_route, normalize_provider
         effective_provider = getattr(_routed_client, "_hermes_aux_effective_provider", "")
         if is_actual_route(effective_provider):
             agent.provider = normalize_provider(effective_provider)
@@ -773,7 +773,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     for _fb in _fallback_entries(fallback_model):
         _fb_provider = str(_fb["provider"])
         try:
-            from hermes_cli.fallback_config import resolve_entry_api_key
+            from hermes_agent.hermes_cli.fallback_config import resolve_entry_api_key
             _fb_explicit_key = resolve_entry_api_key(_fb)
             _fb_client, _fb_model = resolve_provider_client(
                 _fb["provider"], model=_fb["model"], raw_codex=True,
@@ -872,7 +872,7 @@ def _apply_openai_header_policy(agent, client_kwargs: dict[str, Any]) -> None:
     # model.default_headers override provider/SDK defaults (WAFs rejecting SDK headers).
     agent._apply_user_default_headers()
     try:
-        from hermes_cli.config import (
+        from hermes_agent.hermes_cli.config import (
             apply_custom_provider_extra_headers_to_client_kwargs,
             apply_custom_provider_tls_to_client_kwargs, get_compatible_custom_providers,
             load_config,
@@ -897,7 +897,7 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
             if not agent.quiet_mode:
                 print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
             return
-    from hermes_cli.providers import is_actual_route
+    from hermes_agent.hermes_cli.providers import is_actual_route
     if is_actual_route(agent.provider, client_kwargs.get("base_url", "")):
         agent.api_mode = "chat_completions"
         if hasattr(agent, "_transport_cache"):
@@ -994,12 +994,12 @@ def _client_kwargs_from_routed(client, timeout) -> dict[str, Any]:
 def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     # A feature that left core (Home Assistant) is installed once per process before discovery, so its tools
     # are in this snapshot; outcomes wait for a turn someone sees (deliver_kept_startup_notices), maybe not ours.
-    from hermes_cli.left_core_migration import recover_at_startup
+    from hermes_agent.hermes_cli.left_core_migration import recover_at_startup
     recover_at_startup()
     # A multiplexed gateway may have switched HERMES_HOME since model_tools was imported;
     # make sure this profile's plugins are discovered before the tool snapshot.
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()
     except Exception:
         logger.warning("Plugin discovery failed during agent setup", exc_info=True)
@@ -1485,7 +1485,7 @@ def _custom_provider_configured_base_url(
     _user_providers = _agent_cfg.get("providers")
     _disabled_ids: set[str] = set()
     if isinstance(_user_providers, dict):
-        from hermes_cli.config import is_provider_enabled
+        from hermes_agent.hermes_cli.config import is_provider_enabled
         for _key, _entry in _user_providers.items():
             if not isinstance(_entry, dict):
                 continue
@@ -1529,7 +1529,7 @@ def _configured_default_base_url(_agent_cfg, _model_cfg, _custom_providers) -> s
         _custom_provider_candidate = False
     elif _custom_provider_candidate and _norm != "custom" and not _norm.startswith("custom:"):
         with suppress(Exception):
-            from hermes_cli.auth import resolve_provider as resolve_auth_provider
+            from hermes_agent.hermes_cli.auth import resolve_provider as resolve_auth_provider
             _custom_provider_candidate = (
                 str(resolve_auth_provider(_norm) or "").strip().lower() != _norm
             )
@@ -1563,14 +1563,14 @@ def _scope_context_length_to_default_runtime(
     """
     _default = _model_cfg.get("default")
     if isinstance(_default, dict):
-        from hermes_cli.config import split_model_config_default
+        from hermes_agent.hermes_cli.config import split_model_config_default
         _default, _ = split_model_config_default(_default)
     _configured_default_model = str(_default or "").strip()
     _configured_default_runtime_model = _configured_default_model
     _active_runtime_model = agent.model
     if _configured_default_model:
         with suppress(Exception):
-            from hermes_cli.model_normalize import normalize_model_for_provider
+            from hermes_agent.hermes_cli.model_normalize import normalize_model_for_provider
             _configured_default_runtime_model = normalize_model_for_provider(
                 _configured_default_model, agent.provider
             )
@@ -1626,7 +1626,7 @@ def config_context_length_for_runtime(agent, config=None) -> Optional[int]:
     the configured default route, so an unrelated runtime never inherits it.
     """
     try:
-        from hermes_cli.config import get_compatible_custom_providers, load_config
+        from hermes_agent.hermes_cli.config import get_compatible_custom_providers, load_config
         _agent_cfg = config if isinstance(config, dict) else load_config()
         if not isinstance(_agent_cfg, dict):
             return None
@@ -1702,7 +1702,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
 
     # Resolve custom_providers before route-scoping: a named provider may keep its URL here.
     try:
-        from hermes_cli.config import get_compatible_custom_providers
+        from hermes_agent.hermes_cli.config import get_compatible_custom_providers
         _custom_providers = get_compatible_custom_providers(_agent_cfg)
     except Exception:
         _custom_providers = _agent_cfg.get("custom_providers")
@@ -1722,7 +1722,7 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
 
     if _config_context_length is None and _custom_providers:
         with suppress(Exception):
-            from hermes_cli.config import get_custom_provider_context_length
+            from hermes_agent.hermes_cli.config import get_custom_provider_context_length
             _cp_ctx_resolved = get_custom_provider_context_length(
                 model=agent.model, base_url=agent.base_url, custom_providers=_custom_providers
             )
@@ -1772,7 +1772,7 @@ def _select_context_engine(_agent_cfg):
 
     if _selected_engine is None:
         try:
-            from hermes_cli.plugins import get_plugin_context_engine
+            from hermes_agent.hermes_cli.plugins import get_plugin_context_engine
             _candidate = get_plugin_context_engine()
         except Exception:
             _candidate = None
@@ -1949,7 +1949,7 @@ def _warn_nonagentic_hermes_model(agent):
     if agent.quiet_mode or (agent.platform or "cli") == "cli":
         return
     with suppress(Exception):
-        from hermes_cli.model_switch import _check_hermes_model_warning
+        from hermes_agent.hermes_cli.model_switch import _check_hermes_model_warning
         _hermes_warn = _check_hermes_model_warning(agent.model or "")
         if _hermes_warn:
             _user_msg = (
@@ -2119,9 +2119,9 @@ def init_agent(
     agent.skip_background_review = bool(skip_background_review)
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
     # Effective base URL for feature detection (prompt caching, reasoning, etc.)
-    from hermes_cli.providers import is_actual_route
+    from hermes_agent.hermes_cli.providers import is_actual_route
     if is_actual_route(provider, base_url):
-        from hermes_cli.auth import normalize_actual_base_url
+        from hermes_agent.hermes_cli.auth import normalize_actual_base_url
         base_url = normalize_actual_base_url(base_url)
     agent.base_url = base_url or ""
     provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
@@ -2176,7 +2176,7 @@ def init_agent(
 
     # Load config once for memory, skills, and compression sections
     try:
-        from hermes_cli.config import load_config_readonly as _load_agent_config
+        from hermes_agent.hermes_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
     except Exception as exc:  # health: allow BLE001 -- init must survive any config failure; the class is logged
         # Config exceptions may contain secrets; omit their message and traceback

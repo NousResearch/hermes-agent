@@ -28,7 +28,7 @@ def _wait_for(predicate, timeout=10):
     "legacy-key", "legacy-models", "busy", "state-replaced", "wrong-parent",
 ])
 def test_startup_preserves_trees_and_explicit_stop_checks_owner(tmp_path, monkeypatch, case):
-    from hermes_cli.local_runtime import bootstrap, supervisor
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, supervisor
 
     root = tmp_path / "managed runtime"
     root.mkdir()
@@ -102,8 +102,8 @@ def test_startup_preserves_trees_and_explicit_stop_checks_owner(tmp_path, monkey
             monkeypatch.setattr(bootstrap, "models_dir", lambda: tmp_path / "other models")
         supervisor.state_path().write_text(json.dumps(state), encoding="utf-8")
         from fastapi import HTTPException
-        from hermes_cli.local_runtime import endpoint
-        from hermes_cli.web_routers import local_models
+        from hermes_agent.hermes_cli.local_runtime import endpoint
+        from hermes_agent.hermes_cli.web_routers import local_models
         if case == "wrong-parent":
             state["owner_pid"] = os.getpid()
             supervisor.state_path().write_text(json.dumps(state))
@@ -152,7 +152,7 @@ def test_startup_preserves_trees_and_explicit_stop_checks_owner(tmp_path, monkey
 @pytest.mark.parametrize("failure", ["arrival", "truncated"])
 def test_startup_reuses_without_activity_probe(tmp_path, monkeypatch, failure):
     import http.client
-    from hermes_cli.local_runtime import bootstrap, endpoint, recovery
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, endpoint, recovery
 
     monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
     monkeypatch.setattr(bootstrap, "staged_models", lambda: [tmp_path / "model.gguf"])
@@ -178,7 +178,7 @@ def test_startup_reuses_without_activity_probe(tmp_path, monkeypatch, failure):
 
 def test_shutdown_during_backoff_cannot_restart_or_remove_another_server(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from hermes_cli.local_runtime import supervisor
+    from hermes_agent.hermes_cli.local_runtime import supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59998)
@@ -201,7 +201,7 @@ def test_shutdown_during_backoff_cannot_restart_or_remove_another_server(tmp_pat
 @pytest.mark.platforms("windows")
 def test_supervisor_reaps_owned_job_even_after_router_exit(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from hermes_cli.local_runtime import supervisor
+    from hermes_agent.hermes_cli.local_runtime import supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59998)
@@ -219,7 +219,7 @@ def test_supervisor_reaps_owned_job_even_after_router_exit(tmp_path, monkeypatch
 
 def test_spawn_state_records_process_incarnations(tmp_path, monkeypatch):
     import os
-    from hermes_cli.local_runtime import supervisor
+    from hermes_agent.hermes_cli.local_runtime import supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59998)
@@ -239,7 +239,7 @@ def test_spawn_state_records_process_incarnations(tmp_path, monkeypatch):
 
 def test_stopped_state_is_retained_without_unlink_race(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from hermes_cli.local_runtime import supervisor
+    from hermes_agent.hermes_cli.local_runtime import supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59998)
@@ -266,7 +266,7 @@ def test_stopped_state_is_retained_without_unlink_race(tmp_path, monkeypatch):
 def test_terminate_tree_escalates_and_always_cleans_children(monkeypatch, kind):
     from types import SimpleNamespace
     from unittest.mock import Mock
-    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+    from hermes_agent.hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
     child = Mock()
     child.is_running.return_value = True
@@ -293,7 +293,7 @@ def test_terminate_tree_escalates_and_always_cleans_children(monkeypatch, kind):
 @pytest.mark.parametrize("reuse_at", ["before-walk", "during-walk", "never"])
 def test_explicit_stop_preserves_verified_root_incarnation(tmp_path, monkeypatch, reuse_at):
     from unittest.mock import Mock
-    from hermes_cli.local_runtime import recovery, supervisor
+    from hermes_agent.hermes_cli.local_runtime import recovery, supervisor
 
     state = {"pid": 123, "create_time": 1.0}
     path = tmp_path / "server.json"
@@ -361,7 +361,7 @@ def test_explicit_stop_preserves_verified_root_incarnation(tmp_path, monkeypatch
 
 @pytest.mark.platforms("linux")
 def test_reparented_router_keeps_its_endpoint(tmp_path, monkeypatch):
-    from hermes_cli.local_runtime import endpoint, supervisor
+    from hermes_agent.hermes_cli.local_runtime import endpoint, supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     read_fd, write_fd = os.pipe()
@@ -397,7 +397,7 @@ def test_clock_step_keeps_the_recorded_router(tmp_path, monkeypatch):
     """psutil's create_time moves with /proc/stat's boot time when the clock is stepped (WSL
     re-syncs within minutes); the live router must still resolve, and a reused PID must not."""
     import psutil._pslinux
-    from hermes_cli.local_runtime import endpoint, supervisor
+    from hermes_agent.hermes_cli.local_runtime import endpoint, supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     sup = supervisor.LlamaServerSupervisor(tmp_path, tmp_path, port=59998)
@@ -424,7 +424,7 @@ def test_replacement_stops_only_an_orphaned_router(tmp_path, monkeypatch, owner)
     is gone; a live owner's router keeps running (its watchdog would respawn it anyway). POSIX: a
     Windows router dies with its owner's job object, so no orphan exists to stop."""
     from hermes_agent.gateway.status import get_process_start_time
-    from hermes_cli.local_runtime import bootstrap, endpoint, supervisor
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, endpoint, supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
@@ -461,7 +461,7 @@ def test_a_stepped_clock_never_buries_a_live_owner_of_an_older_record(monkeypatc
     (WSL). Only a newer incarnation proves the owner exited; a live owner must never read as
     dead, or a newer process would stop the server an older one is still using."""
     import psutil._pslinux
-    from hermes_cli.local_runtime import recovery
+    from hermes_agent.hermes_cli.local_runtime import recovery
 
     me = psutil.Process()
     state = {"owner_pid": me.pid, "owner_create_time": me.create_time()}
@@ -479,7 +479,7 @@ def test_the_process_that_boots_the_server_stops_it_on_a_clean_exit(tmp_path):
     marker = tmp_path / "stopped"
     code = (
         "import sys\n"
-        "from hermes_cli.local_runtime import bootstrap\n"
+        "from hermes_agent.hermes_cli.local_runtime import bootstrap\n"
         "class Sup:\n"
         f"    def stop(self): open({str(marker)!r}, 'w').close()\n"
         "bootstrap._SUPERVISOR = Sup()\n"
@@ -493,7 +493,7 @@ def test_the_process_that_boots_the_server_stops_it_on_a_clean_exit(tmp_path):
 @pytest.mark.platforms("windows")
 @pytest.mark.parametrize("damage", ["valid", "birth", "exe", "bool-pid", "bool-birth", "nan", "inf", "owner-bool", "owner-nan", "parent", "partial", "list", "invalid", "unreadable"])
 def test_retained_endpoint_validates_identity(tmp_path, monkeypatch, damage):
-    from hermes_cli.local_runtime import endpoint, recovery, supervisor
+    from hermes_agent.hermes_cli.local_runtime import endpoint, recovery, supervisor
 
     monkeypatch.setattr(supervisor, "runtimes_root", lambda: tmp_path)
     proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])

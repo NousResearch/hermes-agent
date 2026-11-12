@@ -309,7 +309,7 @@ class SessionKernel:
             from hermes_agent.tools.code_execution_tool import _kill_process_group
             _kill_process_group(self.proc, escalate=True)
         if self.proc is not None and not _IS_WINDOWS:
-            from hermes_cli.process_identity import release_process_group_once_empty
+            from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty
             release_process_group_once_empty(self.proc.pid, proc=self.proc)
         sock, self.server_sock = self.server_sock, None
         try:
@@ -595,7 +595,7 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     # POSIX: spawn_owned makes the kernel lead its own group, which everything a cell spawns joins,
     # and hands that group to the owner-death supervisor: the whole group dies the moment this
     # process dies, by any cause. A kernel-only death pipe let a cell's subprocesses outlive the host.
-    from hermes_cli.process_identity import spawn_owned
+    from hermes_agent.hermes_cli.process_identity import spawn_owned
     try:
         kernel.proc = spawn_owned(
             [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")], purpose="code-kernel",

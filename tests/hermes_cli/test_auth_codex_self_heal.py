@@ -16,9 +16,9 @@ import time
 
 import pytest
 
-from hermes_cli import auth
-from hermes_cli import auth_codex
-from hermes_cli.auth import AuthError, _refresh_codex_auth_tokens, resolve_codex_runtime_credentials
+from hermes_agent.hermes_cli import auth
+from hermes_agent.hermes_cli import auth_codex
+from hermes_agent.hermes_cli.auth import AuthError, _refresh_codex_auth_tokens, resolve_codex_runtime_credentials
 
 STALE = {"access_token": "stale-access", "refresh_token": "stale-refresh"}
 
@@ -124,7 +124,7 @@ def test_opt_out_never_adopts_codex_cli_login(tmp_path, monkeypatch):
     def _rejected(*_a, **_k):
         raise AuthError("bad", provider="openai-codex", code="invalid_grant", relogin_required=True)
 
-    # _refresh_codex_auth_tokens imports it from the hermes_cli.auth facade at call time: patch both, or
+    # _refresh_codex_auth_tokens imports it from the hermes_agent.hermes_cli.auth facade at call time: patch both, or
     # the test reaches the real token endpoint and asserts on whatever it answers.
     monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _rejected)
     monkeypatch.setattr(auth_codex, "refresh_codex_oauth_pure", _rejected)
@@ -162,7 +162,7 @@ def test_recovery_refuses_codex_cli_login_from_another_workspace(tmp_path, monke
                             {"access_token": team, "refresh_token": "rt-team"})
     before = auth_file.read_bytes()
 
-    with caplog.at_level("WARNING", logger="hermes_cli.auth"), pytest.raises(AuthError) as info:
+    with caplog.at_level("WARNING", logger="hermes_agent.hermes_cli.auth"), pytest.raises(AuthError) as info:
         resolve_codex_runtime_credentials(refresh_if_expiring=False)
 
     assert info.value.code == "codex_auth_missing_refresh_token"

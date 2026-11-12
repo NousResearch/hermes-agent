@@ -13,9 +13,9 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_constants
-from hermes_cli import gateway, gateway_windows
-from hermes_cli import gateway_runtime_service as service
-from hermes_cli.gateway_runtime_service_identity import _vbs_identity, launcher_text
+from hermes_agent.hermes_cli import gateway, gateway_windows
+from hermes_agent.hermes_cli import gateway_runtime_service as service
+from hermes_agent.hermes_cli.gateway_runtime_service_identity import _vbs_identity, launcher_text
 
 # Host-independent: run on every lane, including native Windows, where the launchers actually live.
 pytestmark = pytest.mark.platforms("any")

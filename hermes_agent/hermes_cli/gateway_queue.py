@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def submit_queued(cli, store, text: str) -> str:
     admission it already holds (``admit_session_input`` keys it by principal, session and request id),
     so the prompt is queued exactly once. Still no answer: :class:`QueueOutcomeUnknown`.
     """
-    from hermes_cli.gateway_client import NOT_SENT, GatewayRPCError
+    from hermes_agent.hermes_cli.gateway_client import NOT_SENT, GatewayRPCError
     submission = uuid.uuid4().hex
     for attempt in (1, 2):
         try:
@@ -157,8 +157,8 @@ class OwnQueueHold:
 
     @classmethod
     def begin(cls, cli, item):
-        from cli import _SeededQueryMessage
-        from hermes_cli.gateway_tools_notify import gateway_store
+        from hermes_agent.cli import _SeededQueryMessage
+        from hermes_agent.hermes_cli.gateway_tools_notify import gateway_store
         from hermes_agent.tools.process_registry_notifications import TimelineNotification
         if getattr(cli, "_agent_running", False) or isinstance(item, (_SeededQueryMessage, TimelineNotification)):
             return None  # a turn the owner already runs (or a seeded prompt) is never held

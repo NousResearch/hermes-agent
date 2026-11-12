@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server
 
 pytest.importorskip("starlette.testclient")
 from starlette.testclient import TestClient

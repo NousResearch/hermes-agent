@@ -295,7 +295,7 @@ class PeerRunsHTTPClient:
     def _request(
         self, path: str, *, method: str = "GET", body: Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None, room_grant: str | None = None) -> dict[str, Any]:
-        from hermes_cli.urllib_security import open_credentialed_url
+        from hermes_agent.hermes_cli.urllib_security import open_credentialed_url
         if self.total_deadline:
             from hermes_agent.tui_gateway.hosted_room_peer_deadline import open_peer_url as open_credentialed_url
         deadline, ambiguous = time.monotonic() + self.timeout_seconds, method == "POST"

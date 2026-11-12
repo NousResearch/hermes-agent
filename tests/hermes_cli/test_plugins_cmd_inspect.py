@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import plugins_cmd, plugins_cmd_catalog, plugins_cmd_inspect
-from hermes_cli.plugins_cmd import PluginOperationError
-from hermes_cli.plugins_cmd_inspect import detect_components, inspect_plugin_source
+from hermes_agent.hermes_cli import plugins_cmd, plugins_cmd_catalog, plugins_cmd_inspect
+from hermes_agent.hermes_cli.plugins_cmd import PluginOperationError
+from hermes_agent.hermes_cli.plugins_cmd_inspect import detect_components, inspect_plugin_source
 
 # Shared with native Desktop's detector (apps/desktop/electron/desktop-plugin-install.test.ts).
 _DETECTION_CASES = json.loads((Path(__file__).resolve().parents[1] / "fixtures/plugin_component_detection.json")
@@ -149,7 +149,7 @@ def test_kill_listed_source_is_refused_before_cloning(tmp_path, sentinel, monkey
         seen.append(candidates)
         raise PluginOperationError("removed from the catalog")
     monkeypatch.setattr(plugins_cmd_catalog, "raise_if_removed", refuse)
-    monkeypatch.setattr("hermes_cli.plugins_cmd._clone_plugin_repo", lambda *a, **k: pytest.fail("cloned"))
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins_cmd._clone_plugin_repo", lambda *a, **k: pytest.fail("cloned"))
 
     result = inspect_plugin_source(repo.as_uri())
 

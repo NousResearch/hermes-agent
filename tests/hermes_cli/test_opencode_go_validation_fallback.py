@@ -14,7 +14,7 @@ These tests cover the catalog-fallback path: when ``fetch_api_models`` returns
 
 from unittest.mock import patch
 
-from hermes_cli.models_validate import validate_requested_model
+from hermes_agent.hermes_cli.models_validate import validate_requested_model
 
 
 _UNREACHABLE_PROBE = {
@@ -30,8 +30,8 @@ def _patched(func):
     """Decorator: force fetch_api_models / probe_api_models to simulate an
     unreachable /models endpoint, proving the catalog path is used."""
     def wrapper(*args, **kwargs):
-        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
-             patch("hermes_cli.models.probe_api_models", return_value=_UNREACHABLE_PROBE):
+        with patch("hermes_agent.hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_agent.hermes_cli.models.probe_api_models", return_value=_UNREACHABLE_PROBE):
             return func(*args, **kwargs)
     wrapper.__name__ = func.__name__
     return wrapper
@@ -46,7 +46,7 @@ def _patched(func):
 def test_opencode_go_known_model_accepted():
     """A model present in the opencode-go curated catalog must be accepted
     even when /models is unreachable."""
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_agent.hermes_cli.models import _PROVIDER_MODELS
 
     result = validate_requested_model(_PROVIDER_MODELS["opencode-go"][0], "opencode-go")
     assert result["accepted"] is True

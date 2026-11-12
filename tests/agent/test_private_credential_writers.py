@@ -47,8 +47,8 @@ def _writers(home: Path, monkeypatch):
     from hermes_agent.agent.proxy_sources import iron_proxy
     from hermes_agent.agent.vault_store import VaultStore
     from hermes_agent.gateway import pairing
-    from hermes_cli import auth as auth_mod
-    from hermes_cli import process_identity
+    from hermes_agent.hermes_cli import auth as auth_mod
+    from hermes_agent.hermes_cli import process_identity
     from hermes_agent.tools import mcp_oauth
     from plugins.google_meet.node.server import NodeServer
     from plugins.platforms.photon import adapter as photon_adapter

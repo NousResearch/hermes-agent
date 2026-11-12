@@ -10,7 +10,7 @@ picker resolved another profile's key from the process environment.
 import os
 
 from hermes_agent.agent import secret_scope
-from hermes_cli.model_switch import _scoped_key_env
+from hermes_agent.hermes_cli.model_switch import _scoped_key_env
 
 
 class TestPickerKeyEnvScope:
@@ -52,7 +52,7 @@ class TestSwitchModelKeyEnvScope:
     not just the picker listing."""
 
     def _run_switch(self, monkeypatch, user_cfg):
-        import hermes_cli.model_switch as ms
+        import hermes_agent.hermes_cli.model_switch as ms
 
         captured = {}
 
@@ -62,7 +62,7 @@ class TestSwitchModelKeyEnvScope:
             return {"api_key": explicit_api_key or "", "base_url": explicit_base_url, "api_mode": ""}
 
         monkeypatch.setattr(
-            "hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime
+            "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime
         )
         monkeypatch.setattr(ms, "resolve_alias", lambda *a, **k: None)
         result = ms.switch_model(
@@ -107,14 +107,14 @@ class TestPickerKeyEnvDotenv:
     def _dotenv(self, monkeypatch, tmp_path, value):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / ".env").write_text(f"ACME_RELAY_KEY={value}\n", encoding="utf-8")
-        from hermes_cli.config import invalidate_env_cache
+        from hermes_agent.hermes_cli.config import invalidate_env_cache
         invalidate_env_cache()
 
     def test_switch_probe_uses_dotenv_key_over_stale_process_env(self, monkeypatch, tmp_path):
         self._dotenv(monkeypatch, tmp_path, "fresh-dotenv")
         monkeypatch.setenv("ACME_RELAY_KEY", "stale-process")
-        import hermes_cli.model_switch as ms
-        import hermes_cli.models_validate as mv
+        import hermes_agent.hermes_cli.model_switch as ms
+        import hermes_agent.hermes_cli.models_validate as mv
 
         captured = {}
 
@@ -125,7 +125,7 @@ class TestPickerKeyEnvDotenv:
             captured["api_key"] = api_key
             return {"accepted": True, "persist": True, "recognized": True, "message": ""}
 
-        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime)
+        monkeypatch.setattr("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime)
         monkeypatch.setattr(ms, "resolve_alias", lambda *a, **k: None)
         monkeypatch.setattr(mv, "validate_requested_model", _fake_validate)
 

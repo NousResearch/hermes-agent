@@ -3,7 +3,7 @@ gateway no longer counts the slash.exec / command.dispatch hops a command may or
 
 from __future__ import annotations
 
-import hermes_cli.observability.shared_metrics_events as events
+import hermes_agent.hermes_cli.observability.shared_metrics_events as events
 from hermes_agent.tui_gateway import server
 
 

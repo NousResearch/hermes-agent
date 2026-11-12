@@ -617,7 +617,7 @@ class TestBlueBubblesPluginRegistration:
         import hermes_agent.tools.send_message_senders as senders
         import hermes_agent.tools.send_message_tool as smt
         from hermes_agent.gateway.run import _BUILTIN_ADAPTERS
-        from hermes_cli import gateway_setup_wizard as wiz
+        from hermes_agent.hermes_cli import gateway_setup_wizard as wiz
 
         assert Platform.BLUEBUBBLES not in _BUILTIN_ADAPTERS
         # Text is not routed straight to a standalone sender (was: not a _TEXT_SENDERS row).

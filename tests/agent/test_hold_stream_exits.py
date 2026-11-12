@@ -34,7 +34,7 @@ def held(tmp_path):
     """``run(script, plugin_body=None, server_cls=FakeLLMServer, **agent_kwargs)
     -> (result, shown, displayed history, server, db)`` for one held turn."""
     from hermes_agent.gateway.session_controls import display_projection
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
     from hermes_agent.hermes_state import SessionDB
 
     home = Path(os.environ["HERMES_HOME"])

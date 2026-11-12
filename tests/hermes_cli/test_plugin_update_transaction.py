@@ -20,7 +20,7 @@ def _commit(repo, message):
 
 
 def _version(repo, version, *, broken=False, minimum="", libraries=("shared-library",)):
-    from hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION
+    from hermes_agent.hermes_cli.plugins_manifest import SUPPORTED_MANIFEST_VERSION
 
     (repo / "plugin.yaml").write_text(
         f"name: transactional\nversion: {version}\nmanifest_version: {SUPPORTED_MANIFEST_VERSION}\n"
@@ -46,7 +46,7 @@ def _version(repo, version, *, broken=False, minimum="", libraries=("shared-libr
 
 @pytest.fixture
 def installed(admission_env, monkeypatch, request):
-    from hermes_cli import plugin_catalog, plugins_cmd, plugins_cmd_catalog
+    from hermes_agent.hermes_cli import plugin_catalog, plugins_cmd, plugins_cmd_catalog
 
     root, home = admission_env
     repo = root / "plugin-origin"
@@ -85,7 +85,7 @@ def test_unattended_update_refuses_newly_declared_python_dependencies(installed)
     slip them into the shared environment without one. With nobody to ask (dashboard, gateway
     ``plugins.auto_apply``) the update is refused and nothing — code, env, metadata — moves."""
     import shutil
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     from pm.environments import selected_venv
 
     root, _home, repo, target, state = installed
@@ -109,8 +109,8 @@ def test_interactive_update_asks_before_installing_new_python_dependencies(
     dependency together, no leaves both untouched."""
     import shutil
     from types import SimpleNamespace
-    from hermes_cli import plugins_cmd
-    from hermes_cli.plugins_transaction import update_plugin
+    from hermes_agent.hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli.plugins_transaction import update_plugin
     from pm.environments import selected_venv
 
     root, _home, repo, target, state = installed
@@ -139,7 +139,7 @@ def test_update_rebuilds_an_accepted_node_sidecar_when_its_manifest_moves(instal
     """Publication swaps the whole tree, so a node_modules the user accepted at install would
     come back stale (custom pull copies it) or missing (catalog re-clone). When package.json
     changes, the sidecar is rebuilt in the staged copy and published with the code."""
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     from pm import workspace
 
     _root, _home, repo, target, state = installed
@@ -169,7 +169,7 @@ def test_update_rebuilds_an_accepted_node_sidecar_when_its_manifest_moves(instal
 @pytest.mark.parametrize("installed", ["catalog", "custom"], indirect=True)
 @pytest.mark.parametrize("failure", ["dependencies", "version", "publication", "manifest"])
 def test_failed_update_keeps_code_metadata_config_and_environment(installed, monkeypatch, failure):
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     from pm.environments import selected_venv
     from pm import paths
     from pm.lock import Facts
@@ -186,7 +186,7 @@ def test_failed_update_keeps_code_metadata_config_and_environment(installed, mon
     if failure == "version":
         # A checkout without a vX.Y.Z tag (CI's depth-1 clone) runs an unparseable version,
         # which the gate deliberately treats as permissive; pin a real one so it can refuse.
-        from hermes_cli import plugins_manifest
+        from hermes_agent.hermes_cli import plugins_manifest
         monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.0.0")
     if failure == "manifest":
         (repo / "plugin.yaml").write_text("name: [broken", encoding="utf-8")
@@ -206,7 +206,7 @@ def test_failed_update_keeps_code_metadata_config_and_environment(installed, mon
 @pytest.mark.parametrize("installed", ["catalog", "custom"], indirect=True)
 def test_successful_update_publishes_matching_code_and_durable_workspace(installed):
     import tomllib
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     from pm.environments import selected_venv
     from pm import paths
     from pm.lock import Facts
@@ -244,7 +244,7 @@ def test_successful_update_publishes_matching_code_and_durable_workspace(install
     record = json.loads((home / "plugins/.install-metadata.json").read_text(encoding="utf-8"))["transactional"]
     assert Facts(paths.runtime_facts_path()).get("venv")["stamp"] != previous_stamp
 
-    from hermes_cli.plugins_updates import run_checks
+    from hermes_agent.hermes_cli.plugins_updates import run_checks
 
     def no_network(*args):
         raise AssertionError("catalog pin must not consult a custom update source")

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli.config import (
+from hermes_agent.hermes_cli.config import (
     get_container_exec_info,
 )
 
@@ -51,7 +51,7 @@ def test_get_container_exec_info_returns_metadata(container_env):
 
 
 # =============================================================================
-# exec_in_container (hermes_cli/main_container.py)
+# exec_in_container (hermes_agent/hermes_cli/main_container.py)
 # =============================================================================
 
 
@@ -68,7 +68,7 @@ def docker_container_info():
 def test_exec_in_container_calls_execvp(docker_container_info):
     """Verifies os.execvp is called with correct args: runtime, tty flags,
     user, env vars, container name, binary, and CLI args."""
-    from hermes_cli.main_container import exec_in_container
+    from hermes_agent.hermes_cli.main_container import exec_in_container
 
     with patch("shutil.which", return_value="/usr/bin/docker"), \
          patch("subprocess.run") as mock_run, \

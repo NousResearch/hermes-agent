@@ -11,7 +11,7 @@ import pytest
 
 @pytest.fixture
 def resolve_git():
-    from hermes_cli import plugins_cmd as pc
+    from hermes_agent.hermes_cli import plugins_cmd as pc
 
     return pc._resolve_git_executable
 
@@ -70,7 +70,7 @@ def test_git_url_plugin_clone_runs_pm_pinned_git(resolve_git, tmp_path, monkeypa
     """A git-url install clones with PM's git even when PATH leads with a different git."""
     import subprocess as sp
 
-    from hermes_cli.plugins_cmd import _clone_plugin_repo
+    from hermes_agent.hermes_cli.plugins_cmd import _clone_plugin_repo
 
     real_git = shutil.which("git")
     assert real_git, "the clone test needs a real git"
@@ -96,8 +96,8 @@ def test_update_check_never_runs_the_ambient_credential_helper(tmp_path, monkeyp
     import http.server
     import threading
 
-    from hermes_cli import plugins_cmd
-    from hermes_cli.plugins_updates import default_ls_remote
+    from hermes_agent.hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli.plugins_updates import default_ls_remote
 
     class AsksForCredentials(http.server.BaseHTTPRequestHandler):
         def do_GET(self):

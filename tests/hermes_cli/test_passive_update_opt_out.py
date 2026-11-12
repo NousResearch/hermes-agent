@@ -5,8 +5,8 @@ from hermes_constants import get_hermes_home
 
 
 def test_explicit_check_fetches_local_origin_despite_passive_opt_out(tmp_path, monkeypatch, capsys):
-    from hermes_cli import main
-    from hermes_cli.update_cmd import _cmd_update_check
+    from hermes_agent.hermes_cli import main
+    from hermes_agent.hermes_cli.update_cmd import _cmd_update_check
 
     remote = tmp_path / "remote"
     local = tmp_path / "checkout"

@@ -1,4 +1,4 @@
-"""Cross-process update mutual exclusion (``hermes_cli.update_lock``).
+"""Cross-process update mutual exclusion (``hermes_agent.hermes_cli.update_lock``).
 
 Three surfaces can start an update of one install tree: a terminal ``hermes
 update``, the dashboard's Update button (which spawns that same command
@@ -25,8 +25,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import update_lock
-from hermes_cli.update_lock import (
+from hermes_agent.hermes_cli import update_lock
+from hermes_agent.hermes_cli.update_lock import (
     HANDOFF_PID_ENV,
     UPDATE_MARKER_MAX_AGE_SECONDS,
     UpdateLock,
@@ -149,7 +149,7 @@ def test_marker_owned_by_a_zombie_self_heals(marker):
 
     # Keep the child unreaped (a zombie) and wait until the state probe
     # actually reports 'Z' so the assertion can't race the exit.
-    from hermes_cli._early_recovery import _process_state
+    from hermes_agent.hermes_cli._early_recovery import _process_state
 
     became_zombie = False
     for _ in range(40):
@@ -207,7 +207,7 @@ def test_one_incarnation_rule_when_our_own_creation_time_is_unreadable(marker, m
     """Degraded (our creation time unreadable): we write no-ct claims, so a no-ct claim naming our
     pid is ours and a ct one is a previous incarnation. The marker reader said so while the
     holder-record reader answered "unprovable" and named the dead incarnation as the holder."""
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     monkeypatch.setattr(update_lock, "_OWN_CT", {"pid": os.getpid(), "ct": None})
     now = int(time.time())
@@ -434,7 +434,7 @@ def test_withdrawing_a_torn_claim_never_deletes_a_replacement(marker, monkeypatc
 def test_unreadable_creation_time_gets_the_v1_ceiling(marker, other_pid, monkeypatch):
     """Contract A1: a live pid whose creation time cannot be read (Windows denies it for
     elevated/other-user pids) is live only within the legacy ceiling: it may be a reused pid."""
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     _claim_v2(marker, other_pid)
     fresh = marker.read_text(encoding="utf-8")
@@ -511,7 +511,7 @@ def test_an_unwritable_marker_location_says_why_the_update_needs_it_and_how_to_f
 _HOLD_CHECKOUT = """
 import sys, time
 sys.path.insert(0, sys.argv[1])
-from hermes_cli.update_lock import UpdateLock
+from hermes_agent.hermes_cli.update_lock import UpdateLock
 lock = UpdateLock(path=__import__("pathlib").Path(sys.argv[3]), install_root=sys.argv[2])
 assert lock.acquire()
 print("held", flush=True)
@@ -549,7 +549,7 @@ def test_an_unjudgeable_marker_never_admits_a_contender_past_a_held_checkout_loc
     """L5: read_live_update never raises, so a marker it cannot judge (any exception) reads as
     "no live update". That fails open on the marker only: the checkout kernel lock stays the
     guard, so update_in_progress still answers True and a contender's acquire is refused."""
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     install = tmp_path / "checkout"
     install.mkdir()
@@ -714,7 +714,7 @@ class TestAncestryHandoff:
 
     @pytest.fixture(autouse=True)
     def _liveness_pinned_true(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.update_lock._pid_alive", lambda pid: True)
+        monkeypatch.setattr("hermes_agent.hermes_cli.update_lock._pid_alive", lambda pid: True)
 
     def test_marker_owned_by_our_parent_process_is_our_orchestrator(self, marker):
         marker.write_text(f"{os.getppid()}\n{int(time.time())}\n", encoding="utf-8")
@@ -883,7 +883,7 @@ class TestAncestryUnderUnreadableProcesses:
     """
 
     def test_ancestor_below_an_unreadable_process_is_still_found(self, monkeypatch):
-        from hermes_cli.update_lock import _is_ancestor_pid
+        from hermes_agent.hermes_cli.update_lock import _is_ancestor_pid
 
         _pin_ancestry(monkeypatch, _chain(2000, blocked_above=True))
 
@@ -893,7 +893,7 @@ class TestAncestryUnderUnreadableProcesses:
         )
 
     def test_deeper_ancestor_below_an_unreadable_process_is_found(self, monkeypatch):
-        from hermes_cli.update_lock import _is_ancestor_pid
+        from hermes_agent.hermes_cli.update_lock import _is_ancestor_pid
 
         _pin_ancestry(monkeypatch, _chain(2000, 3000, blocked_above=True))
 
@@ -901,21 +901,21 @@ class TestAncestryUnderUnreadableProcesses:
 
     def test_unreadable_process_below_the_match_still_refuses(self, monkeypatch):
         """Failing before a match keeps the conservative refusal."""
-        from hermes_cli.update_lock import _is_ancestor_pid
+        from hermes_agent.hermes_cli.update_lock import _is_ancestor_pid
 
         _pin_ancestry(monkeypatch, _chain(blocked_above=True))
 
         assert _is_ancestor_pid(2000) is False
 
     def test_unrelated_pid_is_refused_on_a_fully_readable_chain(self, monkeypatch):
-        from hermes_cli.update_lock import _is_ancestor_pid
+        from hermes_agent.hermes_cli.update_lock import _is_ancestor_pid
 
         _pin_ancestry(monkeypatch, _chain(2000, 3000))
 
         assert _is_ancestor_pid(DEAD_PID) is False
 
     def test_our_own_pid_is_never_an_ancestor(self, monkeypatch):
-        from hermes_cli.update_lock import _is_ancestor_pid
+        from hermes_agent.hermes_cli.update_lock import _is_ancestor_pid
 
         _pin_ancestry(monkeypatch, _chain(2000))
 
@@ -923,7 +923,7 @@ class TestAncestryUnderUnreadableProcesses:
 
     def test_walk_is_bounded(self, monkeypatch):
         """A pathological chain terminates instead of spinning."""
-        from hermes_cli.update_lock import _MAX_ANCESTRY_DEPTH, _is_ancestor_pid
+        from hermes_agent.hermes_cli.update_lock import _MAX_ANCESTRY_DEPTH, _is_ancestor_pid
 
         _pin_ancestry(monkeypatch, _chain(*range(2000, 2000 + _MAX_ANCESTRY_DEPTH * 2)))
 
@@ -933,7 +933,7 @@ class TestAncestryUnderUnreadableProcesses:
         self, marker, monkeypatch
     ):
         """The reporter's end-to-end symptom: exit 2 on every GUI update."""
-        monkeypatch.setattr("hermes_cli.update_lock._pid_alive", lambda pid: True)
+        monkeypatch.setattr("hermes_agent.hermes_cli.update_lock._pid_alive", lambda pid: True)
         _pin_ancestry(monkeypatch, _chain(2000, blocked_above=True))
         marker.write_text(f"2000\n{int(time.time())}\n", encoding="utf-8")
 
@@ -960,7 +960,7 @@ def test_unwritable_lock_file_still_locks_the_checkout(tmp_path):
     assert first.acquire() is True, first.holder
     second = subprocess.run(
         [sys.executable, "-c",
-         "import sys; from hermes_cli.update_lock import UpdateLock; "
+         "import sys; from hermes_agent.hermes_cli.update_lock import UpdateLock; "
          "sys.exit(0 if UpdateLock(path=__import__('pathlib').Path(sys.argv[1]), install_root=sys.argv[2]).acquire() else 3)",
          str(tmp_path / "b" / ".hermes-update-in-progress"), str(root)],
         cwd=REPO_ROOT, env={**os.environ, "PYTHONPATH": str(REPO_ROOT)}, stdin=subprocess.DEVNULL, timeout=60,

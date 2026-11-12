@@ -1,6 +1,6 @@
 """Regression tests: ``/api/profiles`` handlers must not block the event loop.
 
-``hermes_cli/web_routers/profiles.py`` holds handler bodies that were extracted
+``hermes_agent/hermes_cli/web_routers/profiles.py`` holds handler bodies that were extracted
 verbatim from ``web_server.py``, so the blocking library calls they inherited
 run inline on the ASGI event loop. The worst of them are unbounded from the
 dashboard's point of view: deleting a profile whose gateway is up sleeps up to
@@ -39,7 +39,7 @@ CONCURRENT_BUDGET = BLOCK_SECONDS / 2
 def profile_dir(tmp_path, monkeypatch) -> Path:
     """A real profile directory under a throwaway HERMES_HOME."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
 
     d = profiles_mod.get_profile_dir("demo")
     d.mkdir(parents=True, exist_ok=True)
@@ -55,7 +55,7 @@ def client(profile_dir):
     concurrent request below. A bare ``TestClient(app)`` spins up a fresh loop
     per request and would pass these tests even unfixed.
     """
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     with TestClient(web_server.app, raise_server_exceptions=False) as c:
         # web_server resolves _SESSION_TOKEN once, at import, so read it back
@@ -111,7 +111,7 @@ def test_delete_profile_does_not_block_the_dashboard(client, monkeypatch, tmp_pa
     That is longer than the desktop's WebSocket ready-probe tolerates, so it
     must not hold the loop.
     """
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
 
     blocker = _Blocker(result=tmp_path / "profiles" / "demo")
     monkeypatch.setattr(profiles_mod, "delete_profile", blocker)
@@ -123,14 +123,14 @@ def test_delete_profile_does_not_block_the_dashboard(client, monkeypatch, tmp_pa
 # ── POST /api/profiles/{name}/describe-auto — the 60 s LLM round-trip ────────
 
 def _outcome(ok=True, reason="described", description="a demo profile"):
-    from hermes_cli.profile_describer import DescribeOutcome
+    from hermes_agent.hermes_cli.profile_describer import DescribeOutcome
 
     return DescribeOutcome("demo", ok, reason, description=description)
 
 def test_describe_auto_does_not_block_the_dashboard(client, monkeypatch):
     """The auxiliary provider call has a 60 s ceiling — six times the
     desktop's disconnect threshold."""
-    from hermes_cli import profile_describer
+    from hermes_agent.hermes_cli import profile_describer
 
     blocker = _Blocker(result=_outcome())
     monkeypatch.setattr(profile_describer, "describe_profile", blocker)
@@ -146,7 +146,7 @@ def test_describe_auto_does_not_block_the_dashboard(client, monkeypatch):
 # ── PATCH /api/profiles/{name} — rename walks and rewrites the profile tree ──
 
 def test_rename_profile_does_not_block_the_dashboard(client, monkeypatch, tmp_path):
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
 
     blocker = _Blocker(result=tmp_path / "profiles" / "renamed")
     monkeypatch.setattr(profiles_mod, "rename_profile", blocker)
@@ -191,7 +191,7 @@ def test_desktop_overlay_unreadable_document_is_a_500(client, profile_dir):
 # ── Status-code mapping must survive the move into a worker thread ───────────
 
 def test_delete_missing_profile_is_still_404(client, monkeypatch):
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
 
     def fake_delete(name, yes=False):
         raise FileNotFoundError(f"Profile '{name}' does not exist.")
@@ -201,7 +201,7 @@ def test_delete_missing_profile_is_still_404(client, monkeypatch):
     assert client.delete("/api/profiles/demo").status_code == 404
 
 def test_rename_to_existing_profile_is_still_400(client, monkeypatch):
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
 
     def fake_rename(old, new):
         raise FileExistsError(f"Profile '{new}' already exists.")
@@ -212,7 +212,7 @@ def test_rename_to_existing_profile_is_still_400(client, monkeypatch):
     assert resp.status_code == 400, resp.text
 
 def test_set_active_missing_profile_is_still_404(client, monkeypatch):
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
 
     def fake_set_active(name):
         raise FileNotFoundError(f"Profile '{name}' does not exist.")

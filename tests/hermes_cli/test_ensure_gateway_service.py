@@ -1,7 +1,7 @@
 """Service setup failure reporting; consent integration lives in test_gateway_service_choice."""
 
-import hermes_cli.gateway as gateway_mod
-from hermes_cli.gateway_setup_service import ensure_gateway_service
+import hermes_agent.hermes_cli.gateway as gateway_mod
+from hermes_agent.hermes_cli.gateway_setup_service import ensure_gateway_service
 
 
 def _patch_host(monkeypatch, *, container=False, systemd=True, macos=False, windows=False):

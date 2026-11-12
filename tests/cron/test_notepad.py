@@ -244,7 +244,7 @@ class TestNotepadCli:
         return argparse.Namespace(**base)
 
     def test_cli_set_get_list_delete(self, notepad, capsys):
-        from hermes_cli.cron import cron_notepad
+        from hermes_agent.hermes_cli.cron import cron_notepad
 
         assert cron_notepad(self._ns(job_id="job-1", notepad_action="set", key="cursor", value="42")) == 0
         assert notepad.get_note("job-1", "cursor") == "42"
@@ -259,25 +259,25 @@ class TestNotepadCli:
         assert notepad.get_note("job-1", "cursor") is None
 
     def test_cli_get_missing_key_exits_nonzero(self, notepad, capsys):
-        from hermes_cli.cron import cron_notepad
+        from hermes_agent.hermes_cli.cron import cron_notepad
 
         assert cron_notepad(self._ns(job_id="job-1", notepad_action="get", key="ghost")) == 1
 
     def test_cli_set_requires_key_and_value(self, notepad, capsys):
-        from hermes_cli.cron import cron_notepad
+        from hermes_agent.hermes_cli.cron import cron_notepad
 
         assert cron_notepad(self._ns(job_id="job-1", notepad_action="set", key="k")) == 1
         assert cron_notepad(self._ns(job_id="job-1", notepad_action="set")) == 1
 
     def test_cli_set_oversized_value_reports_error(self, notepad, capsys):
-        from hermes_cli.cron import cron_notepad
+        from hermes_agent.hermes_cli.cron import cron_notepad
 
         big = "x" * (notepad.MAX_VALUE_BYTES + 1)
         assert cron_notepad(self._ns(job_id="job-1", notepad_action="set", key="k", value=big)) == 1
         assert notepad.get_note("job-1", "k") is None
 
     def test_cron_command_dispatches_notepad(self, notepad):
-        from hermes_cli.cron import cron_command
+        from hermes_agent.hermes_cli.cron import cron_command
 
         ns = self._ns(job_id="job-9", notepad_action="set", key="k", value="v")
         ns.cron_command = "notepad"

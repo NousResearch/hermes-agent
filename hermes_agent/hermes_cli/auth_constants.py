@@ -1,6 +1,6 @@
 """Shared constants, the lazy ``httpx`` proxy and :class:`AuthError` for the auth package.
 
-Pure leaf: imports nothing from ``hermes_cli.auth`` so the per-provider modules
+Pure leaf: imports nothing from ``hermes_agent.hermes_cli.auth`` so the per-provider modules
 (``auth_nous``, ``auth_codex``, ...) can import it at module scope without cycles."""
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import json
 from typing import Any, Callable, Dict, Optional
 
 
-# httpx is imported lazily (~30ms) because hermes_cli.auth is on the interactive-CLI startup path
+# httpx is imported lazily (~30ms) because hermes_agent.hermes_cli.auth is on the interactive-CLI startup path
 # (credential_pool -> auxiliary_client -> cli_commands_mixin). The proxy resolves on first attribute
 # access; ``from __future__ import annotations`` keeps ``httpx.Client`` annotations unevaluated.
 import importlib as _importlib
@@ -35,7 +35,7 @@ else:
         def __getattr__(self, name):
             return getattr(self._resolve(), name)
 
-        # set/del forward to the real module so monkeypatch.setattr("hermes_cli.auth.httpx.Client")
+        # set/del forward to the real module so monkeypatch.setattr("hermes_agent.hermes_cli.auth.httpx.Client")
         # keeps working in tests.
         def __setattr__(self, name, value):
             setattr(self._resolve(), name, value)
@@ -59,7 +59,7 @@ DEFAULT_NOUS_INFERENCE_URL = "https://inference-api.nousresearch.com/v1"
 DEFAULT_NOUS_WELCOME_URL = "https://welcome-api.nousresearch.com/v1"
 DEFAULT_NOUS_CLIENT_ID = "hermes-cli"
 # On every guest minted since the welcome trial: True when the desktop's first install claimed it
-# (``hermes_cli.welcome_trial``), False for a connector mint. Absent = minted before the trial existed.
+# (``hermes_agent.hermes_cli.welcome_trial``), False for a connector mint. Absent = minted before the trial existed.
 WELCOME_CLAIM_FLAG = "welcome_claim"
 NOUS_INFERENCE_INVOKE_SCOPE = "inference:invoke"
 NOUS_BILLING_MANAGE_SCOPE = "billing:manage"

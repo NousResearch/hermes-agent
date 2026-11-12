@@ -5,7 +5,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from hermes_agent.agent.reasoning_effort import KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, thinking_toggle_extras
-from hermes_cli.version_info import hermes_user_agent
+from hermes_agent.hermes_cli.version_info import hermes_user_agent
 from hermes_agent.providers import register_provider
 from hermes_agent.providers.base import OMIT_TEMPERATURE, LazyHeaders, ProviderProfile
 

@@ -9,9 +9,9 @@ from urllib.parse import urlsplit
 
 import pytest
 
-from hermes_cli import main, update_cmd
-from hermes_cli.source_releases import resolve_source_release
-from hermes_cli.update_channel import set_install_channel
+from hermes_agent.hermes_cli import main, update_cmd
+from hermes_agent.hermes_cli.source_releases import resolve_source_release
+from hermes_agent.hermes_cli.update_channel import set_install_channel
 
 # The fixture serves release metadata over loopback; stable's real GitHub path is the subject.
 pytestmark = pytest.mark.real_release_channels
@@ -98,7 +98,7 @@ def releases(tmp_path, monkeypatch, request):
     monkeypatch.setattr(urllib.request, "urlopen", local_urlopen)
     # Legacy pointer tests below retain their HTTP/tag boundary. New CLI callers
     # consume the protocol reader, whose complete schema is tested independently.
-    from hermes_cli import source_releases
+    from hermes_agent.hermes_cli import source_releases
     def resolve_channel(name, repository):
         record = {"name": name, "repository": repository, "state": "active",
                   "policy": "source-branch" if name == "main" else "preview"}
@@ -194,7 +194,7 @@ def test_fork_origin_uses_its_own_published_release_not_the_official_pointer(rel
 
 
 def test_zip_fallback_keeps_selected_repository_and_commit(releases, monkeypatch):
-    from hermes_cli import update_cmd_zip
+    from hermes_agent.hermes_cli import update_cmd_zip
 
     seen = []
     monkeypatch.setattr(update_cmd_zip, "_abort_zip_update_if_dirty_tree", lambda: None)
@@ -261,7 +261,7 @@ def _track_official_origin(releases):
 
 def test_stable_is_the_latest_published_github_release_without_r2(releases):
     """Publishing a GitHub release is the only promotion stable needs: no R2 record or pointer."""
-    from hermes_cli import source_releases
+    from hermes_agent.hermes_cli import source_releases
 
     def no_r2(name, repository):
         raise AssertionError("stable must not read an R2 channel record")
@@ -278,7 +278,7 @@ def test_stable_is_the_latest_published_github_release_without_r2(releases):
 @pytest.mark.parametrize("start,expected", [(0, 1), (3, 3)], ids=["behind-release", "newer-than-release"])
 def test_default_stable_only_moves_forward_until_the_channel_is_chosen(releases, monkeypatch, capsys,
                                                                        start, expected):
-    from hermes_cli.update_channel import default_channel
+    from hermes_agent.hermes_cli.update_channel import default_channel
 
     _track_official_origin(releases)
     git(releases.root, "checkout", "--detach", releases.commits[start])

@@ -1,8 +1,8 @@
 """Per-provider model-selection wizard flows for ``hermes setup`` / ``hermes model``.
 
 main / config / auth / models helpers are imported lazily inside bodies: avoids the main.py import
-cycle and lets tests patch ``hermes_cli.config.load_config`` etc. at call time. The shared skeleton
-lives in :mod:`hermes_cli.model_setup_flows_common`; the custom / Azure / Bedrock flows live in their
+cycle and lets tests patch ``hermes_agent.hermes_cli.config.load_config`` etc. at call time. The shared skeleton
+lives in :mod:`hermes_agent.hermes_cli.model_setup_flows_common`; the custom / Azure / Bedrock flows live in their
 own ``model_setup_flows_*`` modules.
 """
 
@@ -12,21 +12,21 @@ import contextlib
 import argparse
 import os
 
-from hermes_cli.config import clear_model_endpoint_credentials
-from hermes_cli.model_setup_flows_common import (
+from hermes_agent.hermes_cli.config import clear_model_endpoint_credentials
+from hermes_agent.hermes_cli.model_setup_flows_common import (
     _HTTP, _activate_provider_model, _ask, _commit_model_config, _curses_choice,
     _ensure_dict_section, _ensure_flow_api_key, _finish_model,
     _load_config_model_section, _models_dev_merged, _oauth_gate, _persist_model, _pick_model_or_prompt,
     _print_numbered, _prompt_auth_credentials_choice,
     _note_setup_failure, _run_login, _say, _show_curated)
-from hermes_cli.model_setup_flows_custom import _model_flow_custom, _model_flow_named_custom
-from hermes_cli.model_setup_flows_azure import _model_flow_azure_foundry
-from hermes_cli.model_setup_flows_bedrock import _model_flow_bedrock
+from hermes_agent.hermes_cli.model_setup_flows_custom import _model_flow_custom, _model_flow_named_custom
+from hermes_agent.hermes_cli.model_setup_flows_azure import _model_flow_azure_foundry
+from hermes_agent.hermes_cli.model_setup_flows_bedrock import _model_flow_bedrock
 
 
 def _env_base_url(base_url_env: str) -> str:
     """Base-URL override from ``.env`` then the process environment ('' when unset)."""
-    from hermes_cli.config import get_env_value
+    from hermes_agent.hermes_cli.config import get_env_value
     if not base_url_env:
         return ""
     return get_env_value(base_url_env) or os.getenv(base_url_env, "")
@@ -34,7 +34,7 @@ def _env_base_url(base_url_env: str) -> str:
 
 def _prompt_base_url_override(effective_base: str, base_url_env: str, *, persist_env: bool = True) -> str:
     """Optional ``Base URL [...]`` prompt; a valid override is saved to *base_url_env*."""
-    from hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli.config import save_env_value
     override = _ask(f"Base URL [{effective_base}]: ", cancel_msg="", on_cancel="")
     if override and base_url_env:
         if not override.startswith(_HTTP):
@@ -54,7 +54,7 @@ def _report_live_models(model_list, source: str) -> None:
 def _model_flow_openrouter(config, current_model=""):
     """OpenRouter provider: ensure API key, then pick model."""
     from hermes_constants import OPENROUTER_BASE_URL
-    from hermes_cli.auth import ProviderConfig, _prompt_model_selection
+    from hermes_agent.hermes_cli.auth import ProviderConfig, _prompt_model_selection
 
     # OpenRouter isn't in PROVIDER_REGISTRY so we synthesize a minimal pconfig.
     pconfig = ProviderConfig(id="openrouter", name="OpenRouter", auth_type="api_key", api_key_env_vars=("OPENROUTER_API_KEY",))
@@ -63,8 +63,8 @@ def _model_flow_openrouter(config, current_model=""):
     if abort:
         return
 
-    from hermes_cli.models import model_ids
-    from hermes_cli.models_pricing import get_pricing_for_provider
+    from hermes_agent.hermes_cli.models import model_ids
+    from hermes_agent.hermes_cli.models_pricing import get_pricing_for_provider
     openrouter_models = model_ids(force_refresh=True)
     # Live pricing is non-blocking — empty dict on failure.
     pricing = get_pricing_for_provider("openrouter", force_refresh=True)
@@ -78,9 +78,9 @@ def _model_flow_openrouter(config, current_model=""):
 def _model_flow_ai_gateway(config, current_model=""):
     """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
     from hermes_constants import AI_GATEWAY_BASE_URL
-    from hermes_cli.main_provider_setup import _prompt_api_key
-    from hermes_cli.auth import PROVIDER_REGISTRY, _prompt_model_selection
-    from hermes_cli.config import get_env_value
+    from hermes_agent.hermes_cli.main_provider_setup import _prompt_api_key
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, _prompt_model_selection
+    from hermes_agent.hermes_cli.config import get_env_value
     pconfig = PROVIDER_REGISTRY["ai-gateway"]
     existing_key = get_env_value("AI_GATEWAY_API_KEY") or ""
     if not existing_key:
@@ -90,8 +90,8 @@ def _model_flow_ai_gateway(config, current_model=""):
     if abort:
         return
 
-    from hermes_cli.models import ai_gateway_model_ids
-    from hermes_cli.models_pricing import get_pricing_for_provider
+    from hermes_agent.hermes_cli.models import ai_gateway_model_ids
+    from hermes_agent.hermes_cli.models_pricing import get_pricing_for_provider
     models_list = ai_gateway_model_ids(force_refresh=True)
     pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
     selected = _prompt_model_selection(models_list, current_model=current_model, pricing=pricing)
@@ -103,8 +103,8 @@ def _model_flow_ai_gateway(config, current_model=""):
 def _model_flow_moa(config, current_model=""):
     """Mixture of Agents virtual provider: pick a preset (list always shown, even with one entry),
     persist it, print the breakdown. No credential step — presets reference configured providers."""
-    from hermes_cli.auth import _save_model_choice
-    from hermes_cli.moa_config import normalize_moa_config
+    from hermes_agent.hermes_cli.auth import _save_model_choice
+    from hermes_agent.hermes_cli.moa_config import normalize_moa_config
     moa = normalize_moa_config(config.get("moa") if isinstance(config, dict) else {})
     presets = moa.get("presets") or {}
     if not presets:
@@ -176,8 +176,8 @@ def _nous_login_args(args) -> argparse.Namespace:
 def _nous_model_catalog(free_tier: bool, portal_url: str, model_ids: list, pricing: dict):
     """Free/paid-tier catalog for the Nous picker: ``(model_ids, pricing, unavailable_models,
     unavailable_message, policy_narrowed)`` or None (message already printed) when nothing is selectable."""
-    from hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
-    from hermes_cli.models import (
+    from hermes_agent.hermes_cli.models_pricing import nous_policy_allowed_ids, restrict_to_nous_policy
+    from hermes_agent.hermes_cli.models import (
         partition_nous_models_by_tier,
         union_with_nous_on_sale_models,
         union_with_portal_free_recommendations,
@@ -193,7 +193,7 @@ def _nous_model_catalog(free_tier: bool, portal_url: str, model_ids: list, prici
     _policy_allowed = nous_policy_allowed_ids()
     if free_tier:
         try:
-            from hermes_cli.nous_account import format_nous_portal_entitlement_message, get_nous_portal_account_info
+            from hermes_agent.hermes_cli.nous_account import format_nous_portal_entitlement_message, get_nous_portal_account_info
             _account_info = get_nous_portal_account_info(force_fresh=True)
             unavailable_message = format_nous_portal_entitlement_message(_account_info, capability="paid Nous models") or ""
         except Exception:
@@ -215,7 +215,7 @@ def _nous_model_catalog(free_tier: bool, portal_url: str, model_ids: list, prici
     if free_tier and not model_ids:
         print("No free models currently available.")
         if unavailable_models:
-            from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL
+            from hermes_agent.hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL
             _url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
             print(unavailable_message or f"Upgrade at {_url} to access paid models.")
         return None
@@ -225,7 +225,7 @@ def _nous_model_catalog(free_tier: bool, portal_url: str, model_ids: list, prici
 def _nous_verified_credentials(creds_or_none=None):
     """Resolve Nous runtime credentials; on failure print the diagnosis (re-login when the
     session expired) and return None."""
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         AuthError, PROVIDER_REGISTRY, _login_nous, format_auth_error, resolve_nous_runtime_credentials)
 
     try:
@@ -250,8 +250,8 @@ def _nous_persist_selection(selected: str, creds: dict) -> dict:
     """Nous persist step: model choice + provider state, then rewrite ``model`` on a fresh
     config (the caller's may carry stale custom-provider fields) and clear a conflicting
     OPENAI_BASE_URL / OPENAI_API_KEY. Returns the saved config."""
-    from hermes_cli.auth import _save_model_choice, _update_config_for_provider
-    from hermes_cli.config import get_env_value, load_config, save_config, save_env_value
+    from hermes_agent.hermes_cli.auth import _save_model_choice, _update_config_for_provider
+    from hermes_agent.hermes_cli.config import get_env_value, load_config, save_config, save_env_value
     _save_model_choice(selected)
     inference_url = creds.get("base_url", "")
     _update_config_for_provider("nous", inference_url)
@@ -280,11 +280,11 @@ def _nous_persist_selection(selected: str, creds: dict) -> dict:
 
 def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
-    from hermes_cli.auth import get_provider_auth_state, _prompt_model_selection, _login_nous, PROVIDER_REGISTRY
-    from hermes_cli.config import load_config
-    from hermes_cli.nous_subscription import prompt_enable_tool_gateway
+    from hermes_agent.hermes_cli.auth import get_provider_auth_state, _prompt_model_selection, _login_nous, PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.nous_subscription import prompt_enable_tool_gateway
     state = get_provider_auth_state("nous")
-    from hermes_cli import anon_auth
+    from hermes_agent.hermes_cli import anon_auth
     # A free tier with no inference here signs in like no account; its apps move to the account after.
     if not state or not state.get("access_token") or anon_auth.guest_without_free_tier(state):
         _say("Not logged into Nous Portal. Starting login...", "")
@@ -301,8 +301,8 @@ def _model_flow_nous(config, current_model="", args=None):
 
     # Already logged in — the curated list (agentic models users know from OpenRouter)
     # instead of the hundreds returned by the live /models endpoint.
-    from hermes_cli.models import check_nous_free_tier, get_curated_nous_model_ids
-    from hermes_cli.models_pricing import get_pricing_for_provider
+    from hermes_agent.hermes_cli.models import check_nous_free_tier, get_curated_nous_model_ids
+    from hermes_agent.hermes_cli.models_pricing import get_pricing_for_provider
     model_ids = get_curated_nous_model_ids()
     if not model_ids:
         print("No curated models available for Nous Portal.")
@@ -317,7 +317,7 @@ def _model_flow_nous(config, current_model="", args=None):
     # Force fresh account data so recent credit purchases are reflected immediately.
     free_tier = check_nous_free_tier(force_fresh=True)
     if not free_tier:
-        from hermes_cli.auth import resolve_nous_runtime_credentials
+        from hermes_agent.hermes_cli.auth import resolve_nous_runtime_credentials
         try:
             creds = resolve_nous_runtime_credentials(force_refresh=True) or creds
         except Exception:
@@ -334,11 +334,11 @@ def _model_flow_nous(config, current_model="", args=None):
         return
     model_ids, pricing, unavailable_models, unavailable_message, _policy_narrowed = catalog
 
-    from hermes_cli.nous_account import nous_policy_notice
+    from hermes_agent.hermes_cli.nous_account import nous_policy_notice
     _policy_notice = nous_policy_notice(removed=_policy_narrowed)
     if _policy_notice:
         print(_policy_notice)
-    from hermes_cli.model_picker_usage import featured_first, nous_picker_usage
+    from hermes_agent.hermes_cli.model_picker_usage import featured_first, nous_picker_usage
     _usage = nous_picker_usage(warm=True)
     # Window plans: every model is usable; the plan's featured picks lead the list.
     if _usage is not None:
@@ -356,7 +356,7 @@ def _model_flow_nous(config, current_model="", args=None):
     config = _nous_persist_selection(selected, creds)
     print(f"Default model set to: {selected} (via Nous Portal)")
     if _usage is not None:
-        from hermes_cli.model_picker_usage import large_model_notice
+        from hermes_agent.hermes_cli.model_picker_usage import large_model_notice
         if _notice := large_model_notice(selected, "nous"):
             print(f"⚠ {_notice}")
     # Offer Tool Gateway enablement for paid subscribers
@@ -365,10 +365,10 @@ def _model_flow_nous(config, current_model="", args=None):
 
 def _model_flow_openai_codex(config, current_model=""):
     """OpenAI Codex provider: ensure logged in, then pick model."""
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         get_codex_auth_status, _prompt_model_selection, _login_openai_codex, PROVIDER_REGISTRY, DEFAULT_CODEX_BASE_URL,
     )
-    from hermes_cli.codex_models import get_codex_model_ids
+    from hermes_agent.hermes_cli.codex_models import get_codex_model_ids
     if not _oauth_gate(
         bool(get_codex_auth_status().get("logged_in")), "OpenAI Codex", _login_openai_codex, argparse.Namespace(),
         PROVIDER_REGISTRY["openai-codex"], recheck=lambda: get_codex_auth_status().get("logged_in")):
@@ -385,7 +385,7 @@ def _model_flow_openai_codex(config, current_model=""):
             _codex_token, _codex_base = _codex_status.get("api_key"), _codex_status.get("base_url")
     if not _codex_token:
         with contextlib.suppress(Exception):
-            from hermes_cli.auth import resolve_codex_runtime_credentials
+            from hermes_agent.hermes_cli.auth import resolve_codex_runtime_credentials
             _creds = resolve_codex_runtime_credentials()
             _codex_token, _codex_base = _creds.get("api_key"), _creds.get("base_url")
 
@@ -399,10 +399,10 @@ def _model_flow_openai_codex(config, current_model=""):
 
 def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     """xAI Grok OAuth (SuperGrok / Premium+) provider: ensure logged in, then pick model."""
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         get_xai_oauth_auth_status, _prompt_model_selection, resolve_xai_oauth_runtime_credentials, _login_xai_oauth,
         DEFAULT_XAI_OAUTH_BASE_URL, PROVIDER_REGISTRY)
-    from hermes_cli.models import provider_model_ids
+    from hermes_agent.hermes_cli.models import provider_model_ids
     login_args = argparse.Namespace(no_browser=bool(getattr(args, "no_browser", False)), timeout=getattr(args, "timeout", None))
     if not _oauth_gate(
         bool(get_xai_oauth_auth_status().get("logged_in")), "xAI Grok OAuth (SuperGrok / Premium+)", _login_xai_oauth,
@@ -425,10 +425,10 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
 
 def _model_flow_qwen_oauth(_config, current_model=""):
     """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
-    from hermes_cli.main_provider_setup import _DEFAULT_QWEN_PORTAL_MODELS
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.main_provider_setup import _DEFAULT_QWEN_PORTAL_MODELS
+    from hermes_agent.hermes_cli.auth import (
         get_qwen_auth_status, resolve_qwen_runtime_credentials, _prompt_model_selection, DEFAULT_QWEN_BASE_URL)
-    from hermes_cli.models import fetch_api_models
+    from hermes_agent.hermes_cli.models import fetch_api_models
     status = get_qwen_auth_status()
     if not status.get("logged_in"):
         _say("Not logged into Qwen CLI OAuth.", "Run: qwen auth qwen-oauth",
@@ -451,7 +451,7 @@ def _model_flow_qwen_oauth(_config, current_model=""):
 
 def _model_flow_minimax_oauth(config, current_model="", args=None):
     """MiniMax OAuth provider: ensure logged in, then pick model."""
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         get_provider_auth_state, _prompt_model_selection, resolve_minimax_oauth_runtime_credentials, AuthError,
         format_auth_error, _login_minimax_oauth, PROVIDER_REGISTRY)
 
@@ -471,7 +471,7 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
         _note_setup_failure("auth")
         return
 
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_agent.hermes_cli.models import _PROVIDER_MODELS
     model_ids = _PROVIDER_MODELS.get("minimax-oauth", [])
     selected = _prompt_model_selection(model_ids, current_model, confirm_provider="minimax-oauth", confirm_base_url=creds["base_url"])
     _activate_provider_model(selected, "minimax-oauth", creds["base_url"], f"\u2713 Using MiniMax model: {selected}", no_change=None)
@@ -480,9 +480,9 @@ def _model_flow_minimax_oauth(config, current_model="", args=None):
 def _model_flow_kimi(config, current_model=""):
     """Kimi / Moonshot model selection; the endpoint is chosen by key prefix (no URL prompt):
     ``sk-kimi-*`` → api.kimi.com/coding/v1 (Kimi Coding Plan), other keys → Moonshot."""
-    from hermes_cli.auth import PROVIDER_REGISTRY, KIMI_CODE_BASE_URL
-    from hermes_cli.config import get_env_value, save_env_value
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, KIMI_CODE_BASE_URL
+    from hermes_agent.hermes_cli.config import get_env_value, save_env_value
+    from hermes_agent.hermes_cli.models import _PROVIDER_MODELS
     provider_id = "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
     base_url_env = pconfig.base_url_env_var or ""
@@ -514,10 +514,10 @@ def _model_flow_kimi(config, current_model=""):
 
 def _model_flow_stepfun(config, current_model=""):
     """StepFun Step Plan flow with region-specific endpoints."""
-    from hermes_cli.main_provider_setup import _infer_stepfun_region, _prompt_provider_choice, _stepfun_base_url_for_region
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.config import save_env_value
-    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, provider_model_ids
+    from hermes_agent.hermes_cli.main_provider_setup import _infer_stepfun_region, _prompt_provider_choice, _stepfun_base_url_for_region
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli.models import _PROVIDER_MODELS, fetch_api_models, provider_model_ids
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
     base_url_env = pconfig.base_url_env_var or ""
@@ -573,9 +573,9 @@ def _model_flow_vertex(config, current_model=""):
     """Google Vertex AI (Gemini via the OpenAI-compatible endpoint). Auth is OAuth2 (service-account
     JSON or ADC): the credential *path* lives in .env (VERTEX_CREDENTIALS_PATH /
     GOOGLE_APPLICATION_CREDENTIALS); project ID and region are non-secret, saved under ``vertex:``."""
-    from hermes_cli.auth import _prompt_model_selection
-    from hermes_cli.config import load_config, get_env_value
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_agent.hermes_cli.auth import _prompt_model_selection
+    from hermes_agent.hermes_cli.config import load_config, get_env_value
+    from hermes_agent.hermes_cli.models import _PROVIDER_MODELS
 
     # 1. Credential source detection (fast, no network / no google-auth import).
     sa_path = (get_env_value("VERTEX_CREDENTIALS_PATH") or get_env_value("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
@@ -624,11 +624,11 @@ def _model_flow_vertex(config, current_model=""):
 
 
 def _select_zai_endpoint(current_base: str) -> str:
-    """Picker for the official Z.AI endpoints (``ZAI_ENDPOINTS`` in ``hermes_cli.auth``, kept in
+    """Picker for the official Z.AI endpoints (``ZAI_ENDPOINTS`` in ``hermes_agent.hermes_cli.auth``, kept in
     sync with the probe list) plus a custom-proxy option. Returns the selected base URL;
     *current_base* on cancel/error."""
-    from hermes_cli.main_provider_setup import _prompt_provider_choice
-    from hermes_cli.auth import ZAI_ENDPOINTS
+    from hermes_agent.hermes_cli.main_provider_setup import _prompt_provider_choice
+    from hermes_agent.hermes_cli.auth import ZAI_ENDPOINTS
     options = [(label, url) for _, url, _, label in ZAI_ENDPOINTS]
     normalized_current = (current_base or "").strip().rstrip("/")
 
@@ -682,8 +682,8 @@ def _gemini_tier_ok(existing_key: str, pconfig, base_url_env: str) -> bool:
 
 def _lmstudio_models(pconfig, curated, api_key, base_url):
     """LM Studio: live /api/v1/models probe only."""
-    from hermes_cli.auth import AuthError
-    from hermes_cli.models_local import fetch_lmstudio_models
+    from hermes_agent.hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.models_local import fetch_lmstudio_models
     try:
         model_list = fetch_lmstudio_models(api_key=api_key, base_url=base_url)
     except AuthError as exc:
@@ -696,7 +696,7 @@ def _lmstudio_models(pconfig, curated, api_key, base_url):
 def _ollama_cloud_models(pconfig, curated, api_key, base_url):
     """Ollama Cloud: forced live refresh so newly released models appear the moment the user
     enters their key, not when the disk cache TTL expires."""
-    from hermes_cli.models import fetch_ollama_cloud_models
+    from hermes_agent.hermes_cli.models import fetch_ollama_cloud_models
     model_list = fetch_ollama_cloud_models(api_key=api_key, base_url=base_url, force_refresh=True)
     _report_live_models(model_list, "Ollama Cloud")
     return model_list
@@ -704,7 +704,7 @@ def _ollama_cloud_models(pconfig, curated, api_key, base_url):
 
 def _novita_models(pconfig, curated, api_key, base_url):
     """Novita: live first, then models.dev, then curated."""
-    from hermes_cli.models import fetch_api_models
+    from hermes_agent.hermes_cli.models import fetch_api_models
     live_models = fetch_api_models(api_key, base_url)
     if live_models:
         _report_live_models(live_models, f"{pconfig.name} API")
@@ -730,8 +730,8 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
     merged with ``fallback_models`` exactly like the ``/model`` picker's
     ``models._profile_live_catalog``; generic /models probe for unregistered providers).
     Providers in ``_SPECIAL_MODEL_LISTS`` have their own resolution."""
-    from hermes_cli.config import get_env_value
-    from hermes_cli.models import fetch_api_models, probe_profile_catalog, static_catalog
+    from hermes_agent.hermes_cli.config import get_env_value
+    from hermes_agent.hermes_cli.models import fetch_api_models, probe_profile_catalog, static_catalog
     curated = static_catalog(provider_id)
     api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
 
@@ -770,9 +770,9 @@ def _api_key_provider_model_list(provider_id: str, pconfig, existing_key: str, k
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.config import save_env_value, load_config
-    from hermes_cli.models import opencode_model_api_mode, normalize_opencode_model_id
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.config import save_env_value, load_config
+    from hermes_agent.hermes_cli.models import opencode_model_api_mode, normalize_opencode_model_id
     pconfig = PROVIDER_REGISTRY[provider_id]
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
@@ -796,7 +796,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     effective_base = current_base or pconfig.inference_base_url
 
     if provider_id == "actual":
-        from hermes_cli.providers import normalize_provider
+        from hermes_agent.hermes_cli.providers import normalize_provider
         model_cfg = config.get("model") or {}
         if isinstance(model_cfg, dict) and normalize_provider(str(model_cfg.get("provider") or "")) == provider_id:
             effective_base = str(model_cfg.get("base_url") or "").strip() or effective_base
@@ -822,7 +822,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     pricing: dict = {}
     if model_list:
         try:
-            from hermes_cli.models_pricing import get_pricing_for_provider
+            from hermes_agent.hermes_cli.models_pricing import get_pricing_for_provider
             pricing = get_pricing_for_provider(provider_id) or {}
         except Exception:
             pricing = {}
@@ -840,8 +840,8 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
 def _anthropic_authenticate() -> bool:
     """Interactive Anthropic auth (OAuth subscription or API key). False = flow must stop."""
-    from hermes_cli.main_provider_setup import _run_anthropic_oauth_flow
-    from hermes_cli.config import save_env_value, save_anthropic_api_key
+    from hermes_agent.hermes_cli.main_provider_setup import _run_anthropic_oauth_flow
+    from hermes_agent.hermes_cli.config import save_env_value, save_anthropic_api_key
     _say("", "  Choose authentication method:", "", "    1. Claude Pro/Max subscription (OAuth login)",
          "    2. Anthropic API key (pay-per-token)", "    3. Cancel", "")
     choice = _ask("  Choice [1/2/3]: ", raw=True, cancel_msg="")
@@ -866,8 +866,8 @@ def _anthropic_authenticate() -> bool:
 
 def _model_flow_anthropic(config, current_model=""):
     """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
-    from hermes_cli.auth import get_anthropic_key
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_agent.hermes_cli.auth import get_anthropic_key
+    from hermes_agent.hermes_cli.models import _PROVIDER_MODELS
 
     # Check ALL credential sources
     existing_key = get_anthropic_key()
@@ -886,8 +886,8 @@ def _model_flow_anthropic(config, current_model=""):
 
     if has_creds:
         if existing_key:
-            from hermes_cli.env_loader import format_secret_source_suffix
-            from hermes_cli.auth import PROVIDER_REGISTRY
+            from hermes_agent.hermes_cli.env_loader import format_secret_source_suffix
+            from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
             # Surface which env var supplied the key so Bitwarden users see "(from Bitwarden)".
             source_suffix = ""
@@ -922,7 +922,7 @@ def _model_flow_anthropic(config, current_model=""):
 # ── Generic flow for plugin providers without a bespoke `_model_flow_*` ────────────────────────────
 # The credential step is keyed by the profile's auth_type: each returns ``(base_url, api_key)`` or
 # None when the picker must stop (the helper already printed why). ``api_key`` providers keep
-# ``_model_flow_api_key_provider``; ``hermes_cli.main`` routes every registered profile missing
+# ``_model_flow_api_key_provider``; ``hermes_agent.hermes_cli.main`` routes every registered profile missing
 # from ``_PROVIDER_MODEL_FLOWS`` here, so an admitted plugin is never a silent no-op.
 
 def _external_process_login_gate(profile, status) -> bool:
@@ -955,7 +955,7 @@ def _external_process_login_gate(profile, status) -> bool:
 
 
 def _plugin_flow_external_process(provider_id: str, profile) -> tuple[str, str] | None:
-    from hermes_cli.auth import get_external_process_provider_status, resolve_external_process_provider_credentials
+    from hermes_agent.hermes_cli.auth import get_external_process_provider_status, resolve_external_process_provider_credentials
     status = get_external_process_provider_status(provider_id)
     _say(f"  {profile.display_name or provider_id} delegates Hermes turns to a local `{status.get('command') or profile.process_command}` process.",
          f"  Command: {status.get('resolved_command') or status.get('command') or '(not found)'}",
@@ -977,8 +977,8 @@ def _plugin_flow_external_process(provider_id: str, profile) -> tuple[str, str] 
 
 
 def _plugin_flow_oauth(provider_id: str, profile) -> tuple[str, str] | None:
-    from hermes_cli.auth import get_auth_status
-    from hermes_cli.auth_plugin_providers import plugin_missing_auth_handler_error
+    from hermes_agent.hermes_cli.auth import get_auth_status
+    from hermes_agent.hermes_cli.auth_plugin_providers import plugin_missing_auth_handler_error
     status = get_auth_status(provider_id)
     if not status.get("logged_in"):
         missing = plugin_missing_auth_handler_error(provider_id, "add")
@@ -1008,7 +1008,7 @@ def _profile_model_setup_flow(provider_id: str):
 
 def _is_profile_plugin_flow_provider(provider_id: str) -> bool:
     """True when *provider_id* is a registered profile whose auth_type the generic plugin flow handles."""
-    from hermes_cli.auth_plugin_providers import plugin_profile
+    from hermes_agent.hermes_cli.auth_plugin_providers import plugin_profile
     profile = plugin_profile(provider_id)
     return profile is not None and profile.auth_type in _PLUGIN_FLOW_CREDENTIALS
 
@@ -1030,8 +1030,8 @@ def _plugin_flow_live_rows(profile, api_key: str, base_url: str) -> tuple[list[s
 def _model_flow_plugin_provider(config, provider_id, current_model=""):
     """Generic ``hermes model`` flow for a registered plugin profile: credential step by auth_type,
     catalog via ``merge_profile_catalog`` (live ``fetch_models()`` ⊕ ``fallback_models``), persist."""
-    from hermes_cli.auth_plugin_providers import plugin_profile
-    from hermes_cli.models import merge_profile_catalog
+    from hermes_agent.hermes_cli.auth_plugin_providers import plugin_profile
+    from hermes_agent.hermes_cli.models import merge_profile_catalog
     del config
     profile = plugin_profile(provider_id)
     creds = _PLUGIN_FLOW_CREDENTIALS[profile.auth_type](provider_id, profile)

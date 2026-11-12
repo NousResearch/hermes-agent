@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import plugin_provider_requests as ppr
+from hermes_agent.hermes_cli import plugin_provider_requests as ppr
 
 
 def _seg(d: dict) -> str:

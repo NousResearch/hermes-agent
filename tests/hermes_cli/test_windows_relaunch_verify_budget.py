@@ -2,7 +2,7 @@
 
 Two invariants, both host-independent (the platform enters as DATA, never by faking ``sys.platform``):
 
-1. The detached restart watcher ``hermes_cli.gateway._spawn_gateway_restart_watcher`` actually
+1. The detached restart watcher ``hermes_agent.hermes_cli.gateway._spawn_gateway_restart_watcher`` actually
    spawns must not be classified as a running gateway. Its argv carries the gateway command it
    will spawn LATER, so an argv-substring identity read vouches for the watcher itself.
 2. ``hermes update``'s post-relaunch liveness poll must not expire before the watchers it is
@@ -16,9 +16,9 @@ import pytest
 from hermes_agent.gateway.status import (
     _gateway_command_subcommand, looks_like_gateway_command_line, looks_like_gateway_runtime_command_line,
 )
-from hermes_cli import gateway as gateway_mod
-from hermes_cli.gateway import GATEWAY_RESTART_WATCHER_TIMEOUT_S
-from hermes_cli.update_cmd_windows import (
+from hermes_agent.hermes_cli import gateway as gateway_mod
+from hermes_agent.hermes_cli.gateway import GATEWAY_RESTART_WATCHER_TIMEOUT_S
+from hermes_agent.hermes_cli.update_cmd_windows import (
     _hermes_holder_subcommand, _pending_relaunch_pids, _relaunch_verify_timeout_s,
 )
 

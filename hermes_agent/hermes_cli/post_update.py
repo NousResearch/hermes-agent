@@ -3,7 +3,7 @@
 Config migration owns backup/rollback; skills sync owns content merging; the
 SQLite guard detects damage without repairing it. Boot bounds these home
 steps per revision. The explicit scope CLI also provisions runtimes through
-PM. Launcher publication belongs to hermes_cli._launchers.
+PM. Launcher publication belongs to hermes_agent.hermes_cli._launchers.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import Iterable
 
-from hermes_cli._launchers import expose_cli
+from hermes_agent.hermes_cli._launchers import expose_cli
 from pm.paths import install_root
 
 logger = logging.getLogger(__name__)
@@ -65,18 +65,18 @@ def step_migrate_config() -> dict:
     migrate, verify the version advanced, restore the backups on failure.
     No-op when the on-disk version is current (the 99% case).
     """
-    from hermes_cli.config import (
+    from hermes_agent.hermes_cli.config import (
         check_config_version,
         get_config_path,
         get_env_path,
         migrate_config,
     )
-    from hermes_cli.config_migrations import (
+    from hermes_agent.hermes_cli.config_migrations import (
         SUPPORT_FLOOR_VERSION,
         support_floor_message,
     )
-    from hermes_cli.config_migrations_browser import agent_browser_env_pending
-    from hermes_cli.config_version_stamp import read_config_version_stamp, stamp_missing_config
+    from hermes_agent.hermes_cli.config_migrations_browser import agent_browser_env_pending
+    from hermes_agent.hermes_cli.config_version_stamp import read_config_version_stamp, stamp_missing_config
 
     stamp_missing_config()  # a missing config.yaml reads as current below
     stamp, latest_ver = read_config_version_stamp()
@@ -107,7 +107,7 @@ def step_migrate_config() -> dict:
             + (", ".join(str(p) for p in restored) if restored else "none")
         )
     # `hermes update` prints what a quiet migration changed; boot has no terminal to print it to.
-    from hermes_cli.left_core_migration import defer_startup_notice
+    from hermes_agent.hermes_cli.left_core_migration import defer_startup_notice
     for notice in results.get("notices") or ():
         defer_startup_notice(notice)
     return {"ok": True, "migrated": f"{current_ver}->{latest_ver}"}
@@ -143,7 +143,7 @@ def step_state_db_guard() -> dict:
     search. Read-only, idempotent.
     """
     from hermes_constants import get_hermes_home
-    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_agent.hermes_cli.backup import verify_sqlite_integrity
 
     state_path = get_hermes_home() / "state.db"
     if not state_path.exists():
@@ -168,7 +168,7 @@ def step_drop_live_plugin_catalog() -> dict:
     for the rest of its TTL (#119340). Per home, like the boot record.
     """
     from hermes_constants import get_hermes_home
-    from hermes_cli.plugin_catalog import invalidate_live_cache_for_home
+    from hermes_agent.hermes_cli.plugin_catalog import invalidate_live_cache_for_home
 
     invalidate_live_cache_for_home(get_hermes_home())
     return {"ok": True}
@@ -186,7 +186,7 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
 
     The blessed-root table lives HERE and only here — it is a one-time
     birth certificate for shipped installs, not a classification rung
-    (hermes_cli.steward never path-matches). Once pre-stamp installs
+    (hermes_agent.hermes_cli.steward never path-matches). Once pre-stamp installs
     are extinct this step and the table can be deleted.
 
     * ``.git`` anywhere else → never adopted.
@@ -232,7 +232,7 @@ def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
     if not is_blessed:
         return {"ok": True, "skipped": "not-a-blessed-root"}
 
-    from hermes_cli.source_stamp import write_source_stamp
+    from hermes_agent.hermes_cli.source_stamp import write_source_stamp
 
     try:
         # Full checkout identity when git can answer; the birth-certificate

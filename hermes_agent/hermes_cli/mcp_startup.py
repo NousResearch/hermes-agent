@@ -54,12 +54,12 @@ def get_mcp_server_filter() -> Optional[list[str]]:
 def _has_configured_mcp_servers() -> bool:
     """Cheap config probe so non-MCP users avoid importing the MCP stack."""
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_agent.hermes_cli.config import read_raw_config
 
         raw_config = read_raw_config() or {}
         if isinstance(raw_config.get("mcp_servers"), dict) and raw_config["mcp_servers"]:
             return True
-        from hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp
+        from hermes_agent.hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp
 
         return has_enabled_agent_plugin_mcp(raw_config)
     except Exception:
@@ -162,7 +162,7 @@ def _resolve_discovery_timeout(explicit: float | None, *, single_query: bool = F
     key = "mcp_single_query_discovery_timeout" if single_query else "mcp_discovery_timeout"
     fallback = 15.0 if single_query else 1.5
     try:
-        from hermes_cli.config import load_config, DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config import load_config, DEFAULT_CONFIG
 
         default = float(DEFAULT_CONFIG.get(key, fallback))
     except Exception:

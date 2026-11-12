@@ -16,8 +16,8 @@ class _Stop(Exception):
 
 @pytest.mark.asyncio
 async def test_status_config_stamp_read_runs_off_the_event_loop(monkeypatch):
-    import hermes_cli.config as config_mod
-    from hermes_cli.web_routers import status as status_router
+    import hermes_agent.hermes_cli.config as config_mod
+    from hermes_agent.hermes_cli.web_routers import status as status_router
 
     loop_thread = threading.get_ident()
     seen = []

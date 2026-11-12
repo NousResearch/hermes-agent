@@ -23,9 +23,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import hermes_yaml as yaml
 
 from hermes_agent.agent.skill_utils import DIST_SWAP_DIR
-from hermes_cli._subprocess_compat import noninteractive_git_env
-from hermes_cli.archive_safe import normalize_archive_parts
-from hermes_cli.profiles import (
+from hermes_agent.hermes_cli._subprocess_compat import noninteractive_git_env
+from hermes_agent.hermes_cli.archive_safe import normalize_archive_parts
+from hermes_agent.hermes_cli.profiles import (
     DEFAULT_EXPORT_EXCLUDE_ROOT, profile_path_contains_private_store,
     profile_path_is_private,
 )
@@ -242,7 +242,7 @@ def _looks_like_git_url(s: str) -> bool:
 def _git_clone(url: str, dest: Path) -> None:
     if _GITHUB_SHORTHAND_RE.match(url):
         url = f"https://{url.rstrip('/')}"
-    from hermes_cli.git_credentials import run_git_with_credential_fallback
+    from hermes_agent.hermes_cli.git_credentials import run_git_with_credential_fallback
     try:
         result = run_git_with_credential_fallback(
             ["git", "clone", "--depth", "1", url, str(dest)], url, env=noninteractive_git_env(),
@@ -317,8 +317,8 @@ def _has_cron_jobs(staged: Path) -> bool:
 
 def plan_install(source: str, workdir: Path, override_name: Optional[str] = None) -> InstallPlan:
     """Stage *source* and produce a plan describing what install would do."""
-    from hermes_cli.profiles import _canon_valid, get_profile_dir
-    from hermes_cli.version_info import get_version_info
+    from hermes_agent.hermes_cli.profiles import _canon_valid, get_profile_dir
+    from hermes_agent.hermes_cli.version_info import get_version_info
     staged, provenance = _stage_source(source, workdir)
     _reject_distribution_symlinks(staged)
     manifest = read_manifest(staged)
@@ -567,7 +567,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     A top-level owned directory, and an owned container (``_is_container``), is merged per
     authored root. ``cron/jobs.json`` is special: it is one multi-record runtime store, so
     shipped definitions merge by job id instead of replacing the file."""
-    from hermes_cli.config_backend import require_file_tooling
+    from hermes_agent.hermes_cli.config_backend import require_file_tooling
     require_file_tooling("Profile distribution install")
     target.mkdir(parents=True, exist_ok=True)
     entries = list(_owned_entries(staged, manifest))
@@ -606,7 +606,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
 
 def _bootstrap_user_dirs(target: Path) -> None:
     """Create the bootstrap dirs a fresh profile expects (same set as ``create_profile``)."""
-    from hermes_cli.profiles import _PROFILE_DIRS
+    from hermes_agent.hermes_cli.profiles import _PROFILE_DIRS
     for d in _PROFILE_DIRS:
         (target / d).mkdir(parents=True, exist_ok=True)
 
@@ -616,7 +616,7 @@ def install_distribution(
 ) -> InstallPlan:
     """Install a distribution from *source* into a new profile; returns the resolved plan.
     Use :func:`plan_install` first to preview + prompt."""
-    from hermes_cli.profiles import check_alias_collision, create_wrapper_script
+    from hermes_agent.hermes_cli.profiles import check_alias_collision, create_wrapper_script
     with tempfile.TemporaryDirectory(prefix="hermes_dist_install_") as tmp:
         plan = plan_install(source, Path(tmp), override_name=name)
         if plan.existing and not force:
@@ -637,7 +637,7 @@ def install_distribution(
 
 def _existing_profile(profile_name: str) -> tuple[str, Path]:
     """Return ``(canonical_name, profile_dir)`` or raise if the profile doesn't exist."""
-    from hermes_cli.profiles import _existing_profile_dir
+    from hermes_agent.hermes_cli.profiles import _existing_profile_dir
 
     try:
         return _existing_profile_dir(profile_name)

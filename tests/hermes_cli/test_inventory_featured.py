@@ -1,4 +1,4 @@
-"""Regression tests for the ``featured_models`` shortlist in hermes_cli.inventory.
+"""Regression tests for the ``featured_models`` shortlist in hermes_agent.hermes_cli.inventory.
 
 The shortlist exists to keep multi-lab *routing aggregators* (OpenRouter) from
 flooding the desktop picker's default-visible set. A user-defined provider's
@@ -8,7 +8,7 @@ empty ``featured_models`` and the frontend falls back to top-N behaviour
 (#120217).
 """
 
-from hermes_cli.inventory import _apply_featured
+from hermes_agent.hermes_cli.inventory import _apply_featured
 
 # The exact mixed-prefix allow-list from #120217's config.yaml reproduction.
 _MODELScope_MODELS = [

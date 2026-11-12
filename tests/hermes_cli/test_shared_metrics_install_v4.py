@@ -9,11 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_cli.observability.relay_shared_metrics as relay
-import hermes_cli.observability.shared_metrics_install as install
-import hermes_cli.observability.shared_metrics_startup as startup
+import hermes_agent.hermes_cli.observability.relay_shared_metrics as relay
+import hermes_agent.hermes_cli.observability.shared_metrics_install as install
+import hermes_agent.hermes_cli.observability.shared_metrics_startup as startup
 from hermes_agent.tui_gateway import server
-from hermes_cli.observability import shared_metrics_contract as contract
+from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
 from hermes_platform.host import facts
 
 
@@ -127,7 +127,7 @@ def test_rpc_counts_each_client_launch_once_per_backend_process(marks):
 
 def test_in_place_relaunch_is_not_a_startup_but_its_children_are(marks, monkeypatch):
     """``sessions browse`` -> resume execs in place: same PID, so process start covers the picker."""
-    from hermes_cli import relaunch as relaunch_mod
+    from hermes_agent.hermes_cli import relaunch as relaunch_mod
 
     monkeypatch.setenv(startup.RELAUNCHED_PID_ENV, "")  # restored after relaunch() stamps it
     monkeypatch.setattr(relaunch_mod.sys, "platform", "linux")
@@ -246,7 +246,7 @@ def test_version_age_unknown_without_a_commit_date(monkeypatch):
 
 
 def _write_update_cache(home, root, *, behind, head, ts):
-    from hermes_cli.update_channel import install_id
+    from hermes_agent.hermes_cli.update_channel import install_id
 
     path = home / "source-checks" / f"{install_id(root)}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -296,7 +296,7 @@ def test_source_checkout_channel_follows_its_branch_never_its_remote(tmp_path, m
 
 @pytest.mark.parametrize(("tag", "channel"), [("v0.13.0", "stable"), ("v0.13.0+canary.20260927T120000Z", "main")])
 def test_packaged_build_channel_is_its_baked_channel_not_its_branch(tmp_path, monkeypatch, tag, channel):
-    from hermes_cli.update_channel import is_canary_tag
+    from hermes_agent.hermes_cli.update_channel import is_canary_tag
 
     if channel == "main":
         assert is_canary_tag(tag)
@@ -332,7 +332,7 @@ def test_local_model_use_sees_a_bare_auxiliary_endpoint(aux, used):
 
 @pytest.mark.parametrize(("base_url", "used"), [("http://127.0.0.1:8080/v1", "yes"), ("https://llm.example.com/v1", "no")])
 def test_local_model_use_resolves_a_named_provider_used_by_bare_name(monkeypatch, base_url, used):
-    import hermes_cli.runtime_provider as rp
+    import hermes_agent.hermes_cli.runtime_provider as rp
 
     config = {"model": {"provider": "home-llama", "default": "q"},
               "providers": {"home-llama": {"base_url": base_url, "api_key": "k"}}}

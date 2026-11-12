@@ -12,9 +12,9 @@ from contextlib import asynccontextmanager
 import pytest
 from websockets.protocol import State
 
-from hermes_cli import gateway_client
-from hermes_cli.gateway_client import GatewayClient, GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection
+from hermes_agent.hermes_cli import gateway_client
+from hermes_agent.hermes_cli.gateway_client import GatewayClient, GatewayClientError
+from hermes_agent.hermes_cli.gateway_connection import GatewayConnection
 
 SID = "local-backlog"
 
@@ -103,7 +103,7 @@ class CardOwner:
 @pytest.mark.asyncio
 async def test_kanban_worker_settles_a_card_whose_turn_outstreams_the_client_queue(monkeypatch, tmp_path):
     from hermes_agent.gateway import session_kanban
-    from hermes_cli import kanban_worker_client
+    from hermes_agent.hermes_cli import kanban_worker_client
 
     @asynccontextmanager
     async def connect():

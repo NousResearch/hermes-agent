@@ -21,14 +21,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import main as hermes_main
-from hermes_cli import main_web_build
-from hermes_cli import main_install_repair
-from hermes_cli import update_cmd
-from hermes_cli import update_cmd_fleet
-from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
+from hermes_agent.hermes_cli import main as hermes_main
+from hermes_agent.hermes_cli import main_web_build
+from hermes_agent.hermes_cli import main_install_repair
+from hermes_agent.hermes_cli import update_cmd
+from hermes_agent.hermes_cli import update_cmd_fleet
+from hermes_agent.hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
-import hermes_cli.update_host_obligation as host_obligation
+import hermes_agent.hermes_cli.update_host_obligation as host_obligation
 from hermes_agent.gateway import host_rendezvous
 
 pytestmark = pytest.mark.usefixtures("isolated_source_completion")
@@ -94,7 +94,7 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     # The update's git (the commit point's target resolve, the move itself) goes through the custody
     # runner; off Windows it calls subprocess.run, on Windows a job-bound Popen the fake above
     # would miss. Fake the runner itself so the seam holds on every OS.
-    from hermes_cli import update_custody
+    from hermes_agent.hermes_cli import update_custody
 
     monkeypatch.setattr(update_custody, "run",
                         lambda argv, *, inherit_lock=False, **kw: run_side_effect(list(argv), **kw))
@@ -145,29 +145,29 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     )
     monkeypatch.setattr(hermes_main, "_finalize_update_output", lambda *a, **k: None)
     # _check_and_apply_config_migration → _run_migrate_config_fresh →
-    # _reload_config_modules() force-reloads hermes_cli.config via
+    # _reload_config_modules() force-reloads hermes_agent.hermes_cli.config via
     # importlib, replacing the module object pytest's capsys + the config
     # tests' patches target. No-op the reload so the config module stays
     # stable for later tests in the same process.
     monkeypatch.setattr(
-        "hermes_cli.update_cmd._reload_config_modules",
+        "hermes_agent.hermes_cli.update_cmd._reload_config_modules",
         lambda *a, **k: None,
     )
     monkeypatch.setattr(
-        "hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: None,
+        "hermes_agent.hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: None,
     )
     # The startup version-info probe runs git rev-parse HEAD (and the
     # result is cached per-process, so whether it runs depends on test
     # order). Mock it so the head-moved mock's call counting only sees the
     # update flow's own pre/post captures.
     monkeypatch.setattr(
-        "hermes_cli.version_info.get_version_info",
+        "hermes_agent.hermes_cli.version_info.get_version_info",
         lambda *a, **k: SimpleNamespace(),
     )
     monkeypatch.setattr(update_cmd, "_purge_stale_hermes_modules", lambda: None)
     monkeypatch.setattr(hermes_main, "_purge_stale_hermes_modules", lambda: None)
 
-    import hermes_cli.gateway as hermes_gateway
+    import hermes_agent.hermes_cli.gateway as hermes_gateway
 
     monkeypatch.setattr(
         hermes_gateway, "find_gateway_pids", lambda **_kwargs: []
@@ -177,11 +177,11 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **k: [],
     )
     monkeypatch.setattr(
-        "hermes_cli.update_inventory.collect_runtime_inventory",
+        "hermes_agent.hermes_cli.update_inventory.collect_runtime_inventory",
         lambda: SimpleNamespace(runtimes=[], to_dict=dict),
     )
     # The restart phase imports discovery fns fresh after
@@ -429,10 +429,10 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     borrowing the gateway's restart, and (3) under contract C3 (the code is
     committed) end ``success`` with an owed ``gateway_restart`` follow-up and
     the restart obligation still armed — never a silent clean success."""
-    from hermes_cli.update_inventory import (
+    from hermes_agent.hermes_cli.update_inventory import (
         RuntimeRecord, UpdatePlan, _restart_mechanism,
     )
-    import hermes_cli.update_inventory as ui
+    import hermes_agent.hermes_cli.update_inventory as ui
 
     args = _update_args()
     _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
@@ -462,13 +462,13 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     # The gateway leg answers the fleet probe on the new code (otherwise the
     # verifier polls its full no-rows window, ~2 min of wall clock).
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": POST_SHA,
                        "code_version": "0.21.0", "state": "current"}],
     )
     # Real survivor probe semantics against a fake ledger: pid 5555 is still
     # the same incarnation the plan recorded.
-    import hermes_cli.process_identity as pi
+    import hermes_agent.hermes_cli.process_identity as pi
 
     monkeypatch.setattr(
         pi, "ledger_entries",
@@ -490,7 +490,7 @@ def test_clean_update_escalates_surviving_serve_as_unaccounted(
     # (3) was "partial": a success that names the owed restart.
     assert receipt["outcome"] == "success"
     assert [f["step"] for f in receipt["followups"]] == ["gateway_restart"]
-    from hermes_cli import update_cmd_fleet
+    from hermes_agent.hermes_cli import update_cmd_fleet
     assert update_cmd_fleet._fleet_restart_obligation_armed()
     # (2) the reconciliation verdict is unchanged.
     by_pid = {o["pid"]: o["outcome"] for o in receipt["runtime_outcomes"]}
@@ -506,11 +506,11 @@ def test_clean_update_defers_desktop_owned_serve_and_clears_marker(
     Desktop open ends ``partial``/exit 1 and re-arms ``fleet_restart_pending``
     with nothing that could ever discharge it. It is surfaced (``deferred``,
     relaunch hint) rather than dropped."""
-    from hermes_cli.update_inventory import (
+    from hermes_agent.hermes_cli.update_inventory import (
         RuntimeRecord, UpdatePlan, _restart_mechanism,
     )
-    import hermes_cli.update_inventory as ui
-    import hermes_cli.process_identity as pi
+    import hermes_agent.hermes_cli.update_inventory as ui
+    import hermes_agent.hermes_cli.process_identity as pi
 
     args = _update_args()
     _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
@@ -537,7 +537,7 @@ def test_clean_update_defers_desktop_owned_serve_and_clears_marker(
     monkeypatch.setattr(ui, "match_runtime_outcomes", _match)
     # The gateway leg is healthy on the new code; only the Desktop serve is left.
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **_k: [{"profile": "default", "pid": 4444, "code_sha": POST_SHA,
                        "code_version": "0.21.0", "state": "current"}],
     )
@@ -616,7 +616,7 @@ def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
     update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha, runtimes=[{"kind": "gateway", "profile": "default"}])
     _patch_marker_sha(monkeypatch, disk_sha)
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
             {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
         ],
@@ -656,7 +656,7 @@ def test_startup_warn_discharged_when_multiplexer_covers_owed_profiles(monkeypat
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
             {
                 "profile": "default",
@@ -700,7 +700,7 @@ def test_startup_warn_discharged_when_inventory_holds_supervised_serve(monkeypat
     )
     _patch_marker_sha(monkeypatch, disk_sha)
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
             {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
         ],
@@ -724,7 +724,7 @@ def test_startup_warn_kept_when_inventory_holds_unclassified_serve(monkeypatch, 
     )
     _patch_marker_sha(monkeypatch, disk_sha)
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
             {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
         ],
@@ -751,7 +751,7 @@ def test_startup_warn_kept_when_inventory_holds_unclassified_serve(monkeypatch, 
 def test_startup_warn_kept_without_positive_evidence(monkeypatch, capsys, disk_sha, fleet):
     update_cmd._write_fleet_restart_pending_marker(expected_sha="e" * 40, runtimes=[{"kind": "gateway", "profile": "default"}])
     _patch_marker_sha(monkeypatch, disk_sha)
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **kwargs: fleet)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_receipt.collect_fleet_versions", lambda **kwargs: fleet)
 
     update_cmd._warn_pending_fleet_restart_on_startup()
 
@@ -796,7 +796,7 @@ def test_obligation_discharges_when_gateway_serves_descendant_of_expected_sha(mo
     expected, head = _checkout_with_carried_commit(monkeypatch, tmp_path)
     update_cmd._write_fleet_restart_pending_marker(expected_sha=expected, runtimes=[{"kind": "gateway", "profile": "default"}])
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [{"profile": "default", "pid": 42, "code_sha": head, "code_version": "0.21.4", "state": "current"}],
     )
     assert update_cmd._pending_fleet_restart_needed() is False
@@ -810,7 +810,7 @@ def test_obligation_kept_when_gateway_serves_stale_code_on_carried_checkout(monk
     expected, _head = _checkout_with_carried_commit(monkeypatch, tmp_path)
     update_cmd._write_fleet_restart_pending_marker(expected_sha=expected, runtimes=[{"kind": "gateway", "profile": "default"}])
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [{"profile": "default", "pid": 42, "code_sha": "0" * 40, "code_version": "0.21.3", "state": "stale"}],
     )
 
@@ -842,7 +842,7 @@ def test_startup_warn_kept_when_receipt_owed_gateway_is_down(monkeypatch, capsys
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
             {"profile": "alpha", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
         ],
@@ -881,7 +881,7 @@ def test_startup_warn_silent_when_failed_receipt_already_restarted_fleet(monkeyp
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
             {"profile": "default", "pid": 42, "code_sha": pulled, "code_version": "0.21.3", "state": "stale"}
         ],
@@ -918,7 +918,7 @@ def test_startup_warn_silent_when_completed_update_fleet_restarted_onto_moved_ch
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
             {"profile": "default", "pid": 42, "code_sha": checkout, "code_version": "0.21.3", "state": "current"}
         ],
@@ -944,7 +944,7 @@ def test_startup_warn_discharged_when_inventory_less_marker_fleet_current(monkey
     assert "inventory" not in host_obligation.read_host_obligation()
     _patch_marker_sha(monkeypatch, disk_sha)
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
             {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
         ],
@@ -961,7 +961,7 @@ def test_startup_warn_kept_when_inventory_less_marker_fleet_stale(monkeypatch, c
     update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
     _patch_marker_sha(monkeypatch, disk_sha)
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
             {"profile": "default", "pid": 42, "code_sha": "7" * 40, "code_version": "0.20.0", "state": "stale"}
         ],
@@ -1015,7 +1015,7 @@ def _current_row(sha):
 
 def _plan_with_current_gateway(monkeypatch, sha):
     """Pre-update inventory: one gateway already stamped with the checkout code."""
-    import hermes_cli.update_inventory as ui
+    import hermes_agent.hermes_cli.update_inventory as ui
 
     plan = ui.UpdatePlan()
     plan.runtimes = [ui.RuntimeRecord(kind="gateway", profile="default", pid=42, supervisor="systemd",
@@ -1043,7 +1043,7 @@ def test_up_to_date_update_leaves_current_fleet_alone(monkeypatch, tmp_path, cap
     _patch_update_deps(monkeypatch, tmp_path, _make_up_to_date_side_effect("abc123"))
     _patch_marker_sha(monkeypatch, "abc123")
     _plan_with_current_gateway(monkeypatch, "abc123")
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **k: _current_row("abc123"))
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_receipt.collect_fleet_versions", lambda **k: _current_row("abc123"))
     restarts = _spy_fleet_restart(monkeypatch)
 
     hermes_main.cmd_update(args)
@@ -1051,7 +1051,7 @@ def test_up_to_date_update_leaves_current_fleet_alone(monkeypatch, tmp_path, cap
     assert restarts == []
     assert not update_cmd_fleet._fleet_restart_obligation_armed()
     assert "Gateway restart skipped" in capsys.readouterr().out
-    from hermes_cli.update_receipt import read_latest_receipt
+    from hermes_agent.hermes_cli.update_receipt import read_latest_receipt
     receipt = read_latest_receipt()
     assert receipt["outcome"] == "success"
     assert any(skip.get("name") == "gateway_restart" for skip in receipt.get("skips", []))
@@ -1064,7 +1064,7 @@ def test_up_to_date_update_still_restarts_a_stale_gateway(monkeypatch, tmp_path)
     _patch_marker_sha(monkeypatch, "abc123")
     _plan_with_current_gateway(monkeypatch, "abc123")
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **k: _current_row("abc123") + [
             {"profile": "work", "pid": 43, "code_sha": "0" * 40, "code_version": "0.20.0", "state": "stale"}],
     )
@@ -1081,7 +1081,7 @@ def test_second_profile_attaches_to_completed_host_restart(monkeypatch):
     """One host process serves every profile: once its restart is stamped for this checkout,
     another profile's completion skips the restart instead of killing the multiplexer again."""
     _patch_marker_sha(monkeypatch, "abc123")
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **k: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_receipt.collect_fleet_versions", lambda **k: [])
     update_cmd._write_fleet_restart_pending_marker(expected_sha="abc123")
     assert update_cmd_fleet._fleet_restart_skip_reason(None) is None
 
@@ -1109,7 +1109,7 @@ def test_startup_warn_discharged_when_sha_less_marker_fleet_current(monkeypatch,
     }), encoding="utf-8")
     _patch_marker_sha(monkeypatch, checkout)
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
             {"profile": "default", "pid": 42, "code_sha": checkout, "code_version": "0.21.5", "state": "current"}
         ],
@@ -1132,7 +1132,7 @@ def test_startup_warn_kept_when_sha_less_marker_fleet_is_all_external(monkeypatc
     }), encoding="utf-8")
     _patch_marker_sha(monkeypatch, checkout)
     monkeypatch.setattr(
-        "hermes_cli.update_receipt.collect_fleet_versions",
+        "hermes_agent.hermes_cli.update_receipt.collect_fleet_versions",
         lambda **kwargs: [
             {"profile": "other", "pid": 43, "code_sha": "f" * 40, "code_version": "0.21.5", "state": "external",
              "code_root": "/elsewhere/hermes-agent"}

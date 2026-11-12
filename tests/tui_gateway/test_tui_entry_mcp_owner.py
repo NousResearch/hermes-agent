@@ -2,7 +2,7 @@
 
 The stdio ``hermes --tui`` path used to spawn its own discovery thread and
 ``wait_for_mcp_discovery`` only ever joined that local handle. Now the spawn
-goes through ``hermes_cli.mcp_startup.start_background_mcp_discovery`` (single
+goes through ``hermes_agent.hermes_cli.mcp_startup.start_background_mcp_discovery`` (single
 owner, restart-after-zero-connected semantics), so the entry-side wait must
 fall through to the shared owner when no local thread exists.
 """
@@ -10,7 +10,7 @@ fall through to the shared owner when no local thread exists.
 import threading
 import time
 
-from hermes_cli import mcp_startup
+from hermes_agent.hermes_cli import mcp_startup
 from hermes_constants import hermes_home_key
 from hermes_agent.tui_gateway import entry
 

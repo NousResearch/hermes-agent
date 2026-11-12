@@ -11,9 +11,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import hermes_cli.models as models_mod
-from hermes_cli import models_pricing
-from hermes_cli.models_pricing import fetch_models_with_pricing, peek_cached_pricing
+import hermes_agent.hermes_cli.models as models_mod
+from hermes_agent.hermes_cli import models_pricing
+from hermes_agent.hermes_cli.models_pricing import fetch_models_with_pricing, peek_cached_pricing
 
 BASE = "https://inference-api.example.com"
 
@@ -160,7 +160,7 @@ class TestNousCatalogExpiry:
     a long-lived process holds the entry."""
 
     def test_entry_expires_so_a_policy_change_is_picked_up(self, catalog, monkeypatch):
-        from hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
+        from hermes_agent.hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
 
         fetch_models_with_pricing(
             api_key="sk-test", base_url=BASE,
@@ -197,7 +197,7 @@ class TestNousCatalogExpiry:
 
     def test_peek_skips_an_expired_entry(self, catalog, monkeypatch):
         """Reading _pricing_cache directly walked straight past the TTL."""
-        from hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
+        from hermes_agent.hermes_cli.models_pricing import _NOUS_CATALOG_TTL_SECONDS
 
         fetch_models_with_pricing(
             api_key="sk-test", base_url=BASE,

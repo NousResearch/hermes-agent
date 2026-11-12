@@ -60,7 +60,7 @@ class TestPluginPickerInjection:
 
 
     def test_visible_providers_includes_plugins_for_image_gen(self, monkeypatch):
-        from hermes_cli import tools_config
+        from hermes_agent.hermes_cli import tools_config
 
         image_gen_registry.register_provider(_FakeProvider("someimg"))
 
@@ -74,7 +74,7 @@ class TestPluginPickerInjection:
 
 class TestPluginCatalog:
     def test_plugin_catalog_returns_models(self):
-        from hermes_cli import tools_config
+        from hermes_agent.hermes_cli import tools_config
 
         image_gen_registry.register_provider(_FakeProvider("catimg"))
 
@@ -87,7 +87,7 @@ class TestConfigPrompt:
     def test_image_gen_satisfied_by_plugin_provider(self, monkeypatch, tmp_path):
         """When a plugin provider reports is_available(), the picker should
         not force a setup prompt on the user."""
-        from hermes_cli import tools_config
+        from hermes_agent.hermes_cli import tools_config
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("FAL_KEY", raising=False)
@@ -102,7 +102,7 @@ class TestConfigWriting:
         """When a user picks a plugin-backed image_gen provider with no
         env vars needed, ``_configure_provider`` should write both
         ``image_gen.provider`` and ``image_gen.model``."""
-        from hermes_cli import tools_config
+        from hermes_agent.hermes_cli import tools_config
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         image_gen_registry.register_provider(_FakeProvider("noenv", schema={
@@ -128,7 +128,7 @@ class TestConfigWriting:
 
 
     def test_plugin_provider_active_overrides_managed_nous_active_label(self, monkeypatch):
-        from hermes_cli import tools_config
+        from hermes_agent.hermes_cli import tools_config
 
         monkeypatch.setattr(
             tools_config,
@@ -161,10 +161,10 @@ class TestCodexOAuthBootstrapHook:
 
     @pytest.mark.parametrize("logged_in", [False, True])
     def test_hook_starts_codex_oauth_only_when_credentials_missing(self, monkeypatch, logged_in):
-        from hermes_cli import auth, tools_config_post_setup
+        from hermes_agent.hermes_cli import auth, tools_config_post_setup
 
         monkeypatch.setattr(auth, "get_codex_auth_status", lambda: {"logged_in": logged_in})
-        monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *a, **kw: 0)
+        monkeypatch.setattr("hermes_agent.hermes_cli.setup.prompt_choice", lambda *a, **kw: 0)
         started, saved = [], []
         monkeypatch.setattr(auth, "_codex_device_code_login",
                             lambda: started.append(1) or {"tokens": {"access_token": "t"}, "last_refresh": "x"})
@@ -180,11 +180,11 @@ class TestCodexOAuthBootstrapHook:
         """Desktop's PostSetupRunner spawns `hermes tools post-setup openai_codex` with stdin=DEVNULL and
         HERMES_NONINTERACTIVE=1: nobody can complete a device-code login there, so the hook must name
         the real command and return instead of starting one."""
-        from hermes_cli import auth, tools_config_post_setup
+        from hermes_agent.hermes_cli import auth, tools_config_post_setup
 
         monkeypatch.setenv("HERMES_NONINTERACTIVE", "1")
         monkeypatch.setattr(auth, "get_codex_auth_status", lambda: {"logged_in": False})
-        monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda *a, **kw: 0)
+        monkeypatch.setattr("hermes_agent.hermes_cli.setup.prompt_choice", lambda *a, **kw: 0)
         monkeypatch.setattr(auth, "_codex_device_code_login",
                             lambda: pytest.fail("device-code login must not start without a human"))
 
@@ -193,7 +193,7 @@ class TestCodexOAuthBootstrapHook:
         assert "hermes auth add openai-codex" in capsys.readouterr().out
 
     def test_readiness_reports_codex_row_from_auth_store(self, monkeypatch):
-        from hermes_cli import auth, tools_config
+        from hermes_agent.hermes_cli import auth, tools_config
 
         row = {"name": "OpenAI (Codex auth)", "env_vars": [], "image_gen_plugin_name": "openai-codex",
                "post_setup": "openai_codex"}

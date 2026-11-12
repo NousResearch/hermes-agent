@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from hermes_cli.plugins import PluginContext, PluginManifest
+from hermes_agent.hermes_cli.plugins import PluginContext, PluginManifest
 
 
 def _make_ctx(plugin_key: str = "my-plugin") -> PluginContext:
@@ -22,7 +22,7 @@ def _make_ctx(plugin_key: str = "my-plugin") -> PluginContext:
 
 
 def _patch_config(monkeypatch, entries: dict) -> None:
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     monkeypatch.setattr(
         config_mod, "load_config",
@@ -73,7 +73,7 @@ def test_default_deny_when_plugin_has_no_entry(monkeypatch):
 
 
 def test_default_deny_when_config_unreadable(monkeypatch):
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     def _boom(*a, **k):
         raise OSError("config torn mid-edit")

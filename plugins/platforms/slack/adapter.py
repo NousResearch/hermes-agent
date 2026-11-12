@@ -79,7 +79,7 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 logger = logging.getLogger(__name__)
 
 # User-Agent prefix (``HermesAgent/<version>``) for platform-partner attribution of API calls.
-from hermes_cli.version_info import hermes_user_agent
+from hermes_agent.hermes_cli.version_info import hermes_user_agent
 
 _SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 _BOOL_WORDS = frozenset({"1", "0", "true", "false", "yes", "no", "on", "off"})
@@ -416,7 +416,7 @@ def _rewrite_known_bang_command(text: str) -> str:
     if not text.startswith("!"):
         return text
     try:
-        from hermes_cli.commands import is_gateway_known_command
+        from hermes_agent.hermes_cli.commands import is_gateway_known_command
         first_token = text[1:].split(maxsplit=1)[0]
         cmd_name = first_token.split("@", 1)[0].lower()
         if cmd_name and "/" not in cmd_name and is_gateway_known_command(cmd_name):
@@ -1645,7 +1645,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # Every COMMAND_REGISTRY command is a native slash via one regex matcher. Commands must
         # ALSO be declared in the app manifest (`hermes slack manifest`): Socket Mode won't
         # deliver undeclared commands at all.
-        from hermes_cli.commands_platforms import slack_native_slashes
+        from hermes_agent.hermes_cli.commands_platforms import slack_native_slashes
         _slash_names = [name for name, _d, _h in slack_native_slashes()]
         if _slash_names:
             _slash_pattern = re.compile(
@@ -1680,7 +1680,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         a ``(action_id, plugin)`` already registered on the live app is skipped, so the late
         re-wire (#87770) never stacks a second listener that would run the callback twice."""
         try:
-            from hermes_cli.plugins import get_plugin_manager
+            from hermes_agent.hermes_cli.plugins import get_plugin_manager
             _plugin_handlers = get_plugin_manager().get_slack_action_handlers()
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("[Slack] Could not load plugin action handlers: %s", e)
@@ -5020,7 +5020,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         provider = next((p for p in providers if p["slug"] == provider_slug), None)
         pname = provider.get("name", provider_slug) if provider else provider_slug
         models = (provider or {}).get("models", [])[:100]
-        from hermes_cli.model_picker_usage import picker_row_suffix
+        from hermes_agent.hermes_cli.model_picker_usage import picker_row_suffix
         options = []
         for idx, model_id in enumerate(models):
             short = model_id.split("/")[-1] if "/" in model_id else model_id
@@ -5093,7 +5093,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             thread_ts = self._resolve_thread_ts(None, metadata)
 
             try:
-                from hermes_cli.providers import get_label
+                from hermes_agent.hermes_cli.providers import get_label
                 provider_label = get_label(current_provider)
             except Exception:
                 provider_label = current_provider
@@ -5266,7 +5266,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             state["stage"] = "provider"
             state["selected_provider_slug"] = ""
             try:
-                from hermes_cli.providers import get_label
+                from hermes_agent.hermes_cli.providers import get_label
                 provider_label = get_label(
                     state.get("current_provider", "")
                 )
@@ -6066,7 +6066,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # must carry the same names as a message here or the next message flips them. A command
         # that interrupts, unblocks or pauses work starts no turn of its own, and a slow
         # users.info must not hold /stop or /pause back while the worker keeps running.
-        from hermes_cli.commands import resolve_command
+        from hermes_agent.hermes_cli.commands import resolve_command
         cmd = resolve_command(event.get_command() or "")
         controls_running_turn = cmd is not None and (
             cmd.busy_policy == "interrupt_then_dispatch" or cmd.name in ("approve", "deny", "pause"))
@@ -6779,9 +6779,9 @@ _SETUP_HOME_CHANNEL_HELP = (
 
 def _write_slack_manifest_and_instruct() -> None:
     """Write the manifest under HERMES_HOME and print paste instructions; non-fatal."""
-    from hermes_cli.cli_output import print_info, print_success, print_warning
+    from hermes_agent.hermes_cli.cli_output import print_info, print_success, print_warning
     try:
-        from hermes_cli.slack_cli import _build_full_manifest
+        from hermes_agent.hermes_cli.slack_cli import _build_full_manifest
         from hermes_constants import get_hermes_home
         manifest = _build_full_manifest(
             bot_name="Hermes", bot_description="Your Hermes agent on Slack")
@@ -6804,10 +6804,10 @@ def _write_slack_manifest_and_instruct() -> None:
 def interactive_setup() -> None:
     """Guide the user through Slack bot setup (manifest, tokens, allowlist, home channel).
     CLI helpers are lazy-imported to keep the plugin's import surface small."""
-    from hermes_cli.config import remove_env_value, save_env_value
-    from hermes_cli.cli_output import (
+    from hermes_agent.hermes_cli.config import remove_env_value, save_env_value
+    from hermes_agent.hermes_cli.cli_output import (
         prompt, prompt_yes_no, print_header, print_info, print_success, print_warning)
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from hermes_agent.hermes_cli.setup_platforms import declines_reconfigure
 
     print_header("Slack")
     if declines_reconfigure("Slack", "Reconfigure Slack?", "SLACK_BOT_TOKEN"):

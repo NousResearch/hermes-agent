@@ -56,7 +56,7 @@ def _route_target(agent: Any, cfg: dict[str, Any]) -> Optional[dict[str, Any]]:
     if not base_url and provider == str(agent.provider or "").lower() and model == agent.model:
         return None
     # ``provider: openai`` means the user's OpenAI endpoint, as on every other auxiliary task.
-    from hermes_cli.runtime_provider_custom import expand_direct_api_alias
+    from hermes_agent.hermes_cli.runtime_provider_custom import expand_direct_api_alias
     provider, base_url = expand_direct_api_alias(provider, base_url or None)
     return {**cfg, "provider": provider, "model": model, "base_url": base_url or ""}
 

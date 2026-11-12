@@ -4,10 +4,10 @@ import argparse
 
 import pytest
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_ops
-from hermes_cli.kanban import kanban_command
-from hermes_cli.kanban_parser import build_parser
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_ops
+from hermes_agent.hermes_cli.kanban import kanban_command
+from hermes_agent.hermes_cli.kanban_parser import build_parser
 
 
 @pytest.mark.parametrize(

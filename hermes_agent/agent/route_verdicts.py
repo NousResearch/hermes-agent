@@ -40,7 +40,7 @@ def reset_route_verdicts_if_moved(agent: Any, prior_base_url: Any) -> None:
     """``reset_route_verdicts`` when ``agent.base_url`` now names another endpoint than
     ``prior_base_url``: for code that assigns a refreshed ``base_url`` directly. A refresh that
     keeps the endpoint keeps its verdicts."""
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
     if normalize_route_base_url(prior_base_url or "") != route_endpoint(agent):
         reset_route_verdicts(agent)
 
@@ -63,7 +63,7 @@ def apply_route_verdicts(agent: Any, values: dict[str, Any]) -> None:
 
 def route_endpoint(agent: Any) -> str:
     """``agent.base_url`` normalized: the key a route verdict and a one-shot repair are bound to."""
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
     return normalize_route_base_url(getattr(agent, "base_url", "") or "")
 
 

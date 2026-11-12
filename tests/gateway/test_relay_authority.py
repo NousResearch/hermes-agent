@@ -33,7 +33,7 @@ async def probe(peer):
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.gateway.session_envelope import prepare_native, restore_native
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, list_session_admissions
     from tests.waiting import async_wait_until
 

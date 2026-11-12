@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import source_completion, venv_sync
+from hermes_agent.hermes_cli import source_completion, venv_sync
 
 
 def test_pre_pm_version_reads_checkout_stamp_without_importing_pm():
@@ -21,7 +21,7 @@ def test_pre_pm_version_reads_checkout_stamp_without_importing_pm():
         "        raise ModuleNotFoundError(\"No module named 'pm'\", name='pm')\n"
         "    return original(name, *args, **kwargs)\n"
         "builtins.__import__ = restricted\n"
-        "from hermes_cli import __version__\n"
+        "from hermes_agent.hermes_cli import __version__\n"
         "print(__version__)\n"
     )
     result = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True,
@@ -55,7 +55,7 @@ def test_foreign_owned_venv_file_refused_before_sync(tmp_path, monkeypatch):
 
 
 def test_completed_maintenance_survives_stamp_io_error(tmp_path, monkeypatch, capsys):
-    from hermes_cli import source_build, source_stamp, update_cmd_maint
+    from hermes_agent.hermes_cli import source_build, source_stamp, update_cmd_maint
 
     monkeypatch.setattr(venv_sync, "publish_launchers", lambda root: None)
     monkeypatch.setattr(source_build, "build_update_products", lambda root, *, desktop, after_dependencies=None: None)

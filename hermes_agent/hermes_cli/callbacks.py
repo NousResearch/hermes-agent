@@ -3,9 +3,9 @@
 import queue
 import time as _time
 
-from hermes_cli.banner import cprint, _DIM, _RST
-from hermes_cli.config import save_env_value_secure
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_agent.hermes_cli.banner import cprint, _DIM, _RST
+from hermes_agent.hermes_cli.config import save_env_value_secure
+from hermes_agent.hermes_cli.secret_prompt import masked_secret_prompt
 from hermes_constants import display_hermes_home
 
 

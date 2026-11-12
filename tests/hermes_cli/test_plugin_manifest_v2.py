@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.plugins import (
+from hermes_agent.hermes_cli.plugins import (
     PluginManager,
     PluginManifest,
     SUPPORTED_MANIFEST_VERSION,
@@ -62,7 +62,7 @@ class TestV1Regression:
             manifest_extra={"mystery_field": True},
         )
         _enable(hermes_home, ["oldie"])
-        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.plugins"):
             mgr = PluginManager()
             mgr.discover_and_load()
         assert mgr._plugins["oldie"].enabled
@@ -398,9 +398,9 @@ class TestCtxHasPlugin:
 class TestRequiresHermes:
     def test_gate_reads_the_running_code_version_not_dist_metadata(self, monkeypatch):
         """Compatibility gates use the running code's base release version."""
-        from hermes_cli import plugins_manifest
+        from hermes_agent.hermes_cli import plugins_manifest
         monkeypatch.setattr(
-            "hermes_cli.version_info.get_version_info",
+            "hermes_agent.hermes_cli.version_info.get_version_info",
             lambda: SimpleNamespace(base_version="0.21.4"),
         )
         assert plugins_manifest.running_hermes_version() == "0.21.4"
@@ -414,13 +414,13 @@ class TestRequiresHermes:
         ("banana", "0.21.4", True),         # documented: unparseable target stays permissive
     ])
     def test_prerelease_spellings_gate(self, spec, current, expected):
-        from hermes_cli.plugins_manifest import version_satisfies
+        from hermes_agent.hermes_cli.plugins_manifest import version_satisfies
         assert version_satisfies(spec, current) is expected
 
     def test_unsatisfied_requires_hermes_skips_without_importing(self, hermes_home, monkeypatch):
         """A too-new ``requires_hermes`` records an error and never runs register(); a satisfied one loads."""
         import sys
-        from hermes_cli import plugins_manifest
+        from hermes_agent.hermes_cli import plugins_manifest
         monkeypatch.setattr(plugins_manifest, "running_hermes_version", lambda: "1.2.3")
         _write_plugin(hermes_home / "plugins", "future", manifest_extra={"requires_hermes": ">=99.0"},
                       register_body="import sys; sys._rh_future = True")
@@ -449,7 +449,7 @@ class TestLoadIsolation:
         _write_plugin(hermes_home / "plugins", "c_after")
         _enable(hermes_home, ["b_exit", "c_after"])
         mgr = PluginManager()
-        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.plugins"):
             mgr.discover_and_load()  # must not raise
         assert mgr._discovered is True
         assert mgr._plugins["c_after"].enabled
@@ -480,7 +480,7 @@ class TestLoadIsolation:
             {"plugins": {"enabled": ["b_slow", "c_after"], "load_timeout_seconds": 0.3}}))
         mgr = PluginManager()
         try:
-            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.plugins"):
                 mgr.discover_and_load()
                 assert mgr._plugins["c_after"].enabled
                 assert not mgr._plugins["b_slow"].enabled
@@ -531,7 +531,7 @@ class TestBundledKeyShadowing:
         _enable(home, ["genuine", "overridable"])
         import sys
         try:
-            with caplog.at_level(logging.INFO, logger="hermes_cli.plugins"):
+            with caplog.at_level(logging.INFO, logger="hermes_agent.hermes_cli.plugins"):
                 mgr = PluginManager()
                 mgr.discover_and_load()
             assert mgr._plugins["genuine"].manifest.source == "bundled"
@@ -550,12 +550,12 @@ class TestManifestParsingRobustness:
     def test_list_manifest_is_rejected_with_a_clear_reason_and_hooks_alias(self, hermes_home, caplog):
         """A list-typed plugin.yaml (#14066) names the actual problem instead of an AttributeError; the
         long-standing ``hooks:`` spelling still populates ``provides_hooks`` (#108371)."""
-        from hermes_cli.plugins_discovery import scan_directory
+        from hermes_agent.hermes_cli.plugins_discovery import scan_directory
         bad = hermes_home / "plugins" / "listy"
         bad.mkdir()
         (bad / "plugin.yaml").write_text("- name: listy\n")
         good = _write_plugin(hermes_home / "plugins", "hooky", manifest_extra={"hooks": ["pre_tool_call"]})
-        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.plugins"):
             manifests = {m.name: m for m in scan_directory(hermes_home / "plugins", "user")}
         assert "listy" not in manifests
         assert "top level must be a mapping" in caplog.text
@@ -569,20 +569,20 @@ class TestDirectoryPluginKeepsIdentityOverEntryPoint:
     carries catalog provenance and is what update/remove act on); the entry point must not displace it."""
 
     def test_loader_and_listing_prefer_the_installed_directory(self, hermes_home, monkeypatch):
-        from hermes_cli.plugins_manifest import PluginManifest
+        from hermes_agent.hermes_cli.plugins_manifest import PluginManifest
         _write_plugin(hermes_home / "plugins", "twin")
         _enable(hermes_home, ["twin"])
         twin_ep = PluginManifest(name="twin", version="9.9.9", description="pip twin",
                                  source="entrypoint", path="twin_pkg:register", key="twin")
         monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda self: [twin_ep])
-        monkeypatch.setattr("hermes_cli.plugins_cmd.discover_entrypoint_manifests", lambda: [twin_ep], raising=False)
-        monkeypatch.setattr("hermes_cli.plugins.discover_entrypoint_manifests", lambda: [twin_ep])
+        monkeypatch.setattr("hermes_agent.hermes_cli.plugins_cmd.discover_entrypoint_manifests", lambda: [twin_ep], raising=False)
+        monkeypatch.setattr("hermes_agent.hermes_cli.plugins.discover_entrypoint_manifests", lambda: [twin_ep])
 
         mgr = PluginManager()
         mgr.discover_and_load()
         assert mgr._plugins["twin"].manifest.source == "user"
 
-        from hermes_cli.plugins_cmd import _discover_all_plugins
+        from hermes_agent.hermes_cli.plugins_cmd import _discover_all_plugins
         rows = [r for r in _discover_all_plugins() if r[0] == "twin"]
         assert [r[3] for r in rows] == ["user"]
         assert str(rows[0][4]).endswith("plugins/twin")

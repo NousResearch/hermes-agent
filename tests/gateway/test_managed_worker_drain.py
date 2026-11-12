@@ -50,8 +50,8 @@ async def test_reserved_worker_persists_while_runtime_drains(tmp_path):
 async def test_draining_ws_redeems_only_worker_ticket(tmp_path, monkeypatch, purpose, state):
     from hermes_agent.gateway.run_api import GatewayRuntimeAPI
     from hermes_agent.gateway.runtime_bootstrap import TicketStore
-    from hermes_cli import web_server as web
-    from hermes_cli import web_server_chat
+    from hermes_agent.hermes_cli import web_server as web
+    from hermes_agent.hermes_cli import web_server_chat
     tickets = TicketStore('owner', [str(tmp_path)])
     ticket = tickets.mint(profile_id=str(tmp_path), subject='human', purpose=purpose)
     authority = SimpleNamespace(db=SimpleNamespace(db_path=tmp_path / 'state.db'), profile_id=str(tmp_path), runner=None)

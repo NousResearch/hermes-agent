@@ -3,9 +3,9 @@
 from dataclasses import replace
 from types import SimpleNamespace
 
-from hermes_cli.auth_model_picker import _ModelPickerRows
+from hermes_agent.hermes_cli.auth_model_picker import _ModelPickerRows
 from tests.usage_window_fixtures import FAR, usage_window
-from hermes_cli.model_picker_usage import (
+from hermes_agent.hermes_cli.model_picker_usage import (
     GAUGE_MONTH,
     GAUGE_TODAY,
     GAUGE_WEEK,
@@ -235,7 +235,7 @@ def test_large_model_limit_blocks_only_large_rows():
 
 
 def test_credits_pay_reads_keep_going_and_the_top_up_balance():
-    from hermes_cli.model_picker_usage import _credits_pay
+    from hermes_agent.hermes_cli.model_picker_usage import _credits_pay
     window = SimpleNamespace(keep_going_on_credits=True)
     with_balance = SimpleNamespace(paid_service_access_info=SimpleNamespace(purchased_credits_remaining=12.5))
     empty = SimpleNamespace(paid_service_access_info=SimpleNamespace(purchased_credits_remaining=0.0))
@@ -326,7 +326,7 @@ def test_no_marks_means_nothing_is_top_tier():
 
 
 def test_featured_first_puts_plan_picks_first_and_keeps_the_rest_in_order():
-    from hermes_cli.model_picker_usage import featured_first, split_recommended
+    from hermes_agent.hermes_cli.model_picker_usage import featured_first, split_recommended
     listed = ["a/x", "example/model-b", "b/y", "example/model-a"]
     featured = ("example/model-a", "example/model-b", "not/listed")
     assert featured_first(listed, featured) == [
@@ -348,7 +348,7 @@ def test_cli_rows_mark_top_tier_from_the_gateway_word():
 
 
 def test_catalog_parse_keeps_the_gateway_usage_level_for_nous_only(monkeypatch):
-    from hermes_cli import models_pricing as mp
+    from hermes_agent.hermes_cli import models_pricing as mp
     payload = {"data": [
         {"id": "a/m", "pricing": {"prompt": "0.000001", "completion": "0.000002"}, "usage_level": "medium"},
         {"id": "b/m", "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
@@ -363,7 +363,7 @@ def test_catalog_parse_keeps_the_gateway_usage_level_for_nous_only(monkeypatch):
 
 
 def test_catalog_parse_keeps_the_top_tier_mark_for_nous_only(monkeypatch):
-    from hermes_cli import models_pricing as mp
+    from hermes_agent.hermes_cli import models_pricing as mp
     payload = {"data": [
         {"id": "a/m", "pricing": {"prompt": "0.000001", "completion": "0.000002"}, "top_tier": True},
         {"id": "b/m", "pricing": {"prompt": "0.000001", "completion": "0.000002"}},
@@ -378,14 +378,14 @@ def test_catalog_parse_keeps_the_top_tier_mark_for_nous_only(monkeypatch):
 
 
 def test_account_payload_parses_featured_ids():
-    from hermes_cli import nous_account as na
+    from hermes_agent.hermes_cli import nous_account as na
     info = na._coerced_dataclass(na.NousUsageWindowInfo, usage_window(featured_model_ids=["a/b", "c/d"]))
     assert info.featured_model_ids == ("a/b", "c/d")
 
 
 def _stub_account_cache(monkeypatch, stale, fetched):
     """Fresh cache empty, last snapshot ``stale``; a fetch records its force_fresh and fills the cache."""
-    from hermes_cli import nous_account as na
+    from hermes_agent.hermes_cli import nous_account as na
     calls, fresh = [], {}
 
     def cached(*, any_age=False):
@@ -403,7 +403,7 @@ def _stub_account_cache(monkeypatch, stale, fetched):
 
 
 def test_warm_picker_refetches_a_known_window_plan_past_the_cache_ttl(monkeypatch):
-    from hermes_cli.model_picker_usage import nous_picker_usage
+    from hermes_agent.hermes_cli.model_picker_usage import nous_picker_usage
     window = SimpleNamespace(logged_in=True, subscription=SimpleNamespace(plan="Window Plan"),
                              usage_window=SimpleNamespace(**usage_window(day_used_bp=100, week_used_bp=200)))
     calls = _stub_account_cache(monkeypatch, stale=window, fetched=window)
@@ -413,7 +413,7 @@ def test_warm_picker_refetches_a_known_window_plan_past_the_cache_ttl(monkeypatc
 
 
 def test_warm_picker_never_forces_a_fetch_for_a_non_window_account(monkeypatch):
-    from hermes_cli.model_picker_usage import nous_picker_usage
+    from hermes_agent.hermes_cli.model_picker_usage import nous_picker_usage
     credit = SimpleNamespace(logged_in=True, subscription=SimpleNamespace(plan="Credit Plan"), usage_window=None)
     for stale in (credit, None):
         calls = _stub_account_cache(monkeypatch, stale=stale, fetched=credit)
@@ -424,7 +424,7 @@ def test_warm_picker_never_forces_a_fetch_for_a_non_window_account(monkeypatch):
 # ── where the "used up" note reaches outside the pickers above ───────────────────
 
 def test_the_in_chat_cli_picker_says_the_limit_once_on_nous_only(monkeypatch):
-    from hermes_cli import model_picker_usage as mpu
+    from hermes_agent.hermes_cli import model_picker_usage as mpu
 
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: _window_usage(day_used_bp=10_000))
     rows, line = mpu.annotate_window_plan_rows({"slug": "nous"}, ["paid/m", "gift/m:free"])
@@ -437,7 +437,7 @@ def test_the_in_chat_cli_picker_says_the_limit_once_on_nous_only(monkeypatch):
 
 
 def test_the_in_chat_cli_picker_tags_large_and_free_rows_on_window_plans_only(monkeypatch):
-    from hermes_cli import model_picker_usage as mpu
+    from hermes_agent.hermes_cli import model_picker_usage as mpu
 
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
     window = {"slug": "nous", "plan_usage": {"kind": "usage_window"},
@@ -454,8 +454,8 @@ _LEVELS = {"example/model-b": {"usage_level": "top_tier", "top_tier": True},
 
 
 def test_messaging_pickers_get_large_free_labels_and_the_limit_line(monkeypatch):
-    from hermes_cli import model_picker_usage as mpu
-    from hermes_cli import model_switch_providers as msp
+    from hermes_agent.hermes_cli import model_picker_usage as mpu
+    from hermes_agent.hermes_cli import model_switch_providers as msp
     from hermes_agent.agent import plan_limits as pl
 
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: _window_usage(top_tier_used_bp=10_000))
@@ -486,7 +486,7 @@ def test_messaging_pickers_get_large_free_labels_and_the_limit_line(monkeypatch)
 
 def test_large_model_notice_window_plans_only(monkeypatch):
     from dataclasses import replace as _replace
-    from hermes_cli import model_picker_usage as mpu
+    from hermes_agent.hermes_cli import model_picker_usage as mpu
     monkeypatch.setattr(mpu, "_nous_catalog", lambda fetch=False: dict(_LEVELS))
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: _window_usage())
     note = mpu.large_model_notice("example/model-b", "nous")
@@ -511,9 +511,9 @@ def test_large_model_notice_window_plans_only(monkeypatch):
 def test_catalog_reads_never_answer_from_another_profiles_cache(monkeypatch):
     """One process, several profiles: tags and the Large notice read only this profile's catalog, never the
     newest catalog cached for any credential (another plan can mark different models Large)."""
-    import hermes_cli.models_pricing as mp
+    import hermes_agent.hermes_cli.models_pricing as mp
     from hermes_agent.agent import plan_limits as pl
-    from hermes_cli import model_picker_usage as mpu
+    from hermes_agent.hermes_cli import model_picker_usage as mpu
     monkeypatch.setattr(mp, "peek_cached_pricing", lambda base_url: dict(_LEVELS))  # another profile's catalog
     monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider, **kw: {})  # this profile: cold
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)  # this profile: no window plan
@@ -523,7 +523,7 @@ def test_catalog_reads_never_answer_from_another_profiles_cache(monkeypatch):
 
 def test_picker_words_follow_the_display_language(monkeypatch):
     """Pickers main translates read the catalog: English stays byte-identical, other languages translate."""
-    from hermes_cli import model_picker_usage as mpu
+    from hermes_agent.hermes_cli import model_picker_usage as mpu
     monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
     assert mpu.usage_level_label("top_tier") == "Large"
     assert mpu.usage_level_label("bogus") == ""
@@ -546,8 +546,8 @@ def _replace_credits(usage, credits_pay):
 def test_window_plan_feeds_the_existing_usage_chip(monkeypatch):
     """A window plan fills main's ``usage.windows`` (the existing usage chip) from the same snapshot; a
     paused plan or any other account adds nothing, and a provider usage row is never overwritten."""
-    from hermes_cli import inventory
-    from hermes_cli import model_picker_usage as mpu
+    from hermes_agent.hermes_cli import inventory
+    from hermes_agent.hermes_cli import model_picker_usage as mpu
     usage = _window_usage(day_used_bp=8_500)
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: usage)
     row: dict = {"slug": "nous"}
@@ -608,7 +608,7 @@ def test_window_picker_rows_leave_subscription_billed_rows_untagged():
 
 
 def test_the_in_chat_cli_picker_leaves_subscription_billed_rows_untagged(monkeypatch):
-    from hermes_cli import model_picker_usage as mpu
+    from hermes_agent.hermes_cli import model_picker_usage as mpu
 
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: None)
     row = {"slug": "nous",
@@ -623,8 +623,8 @@ def test_the_in_chat_cli_picker_leaves_subscription_billed_rows_untagged(monkeyp
 
 
 def test_messaging_pickers_leave_subscription_billed_rows_untagged(monkeypatch):
-    from hermes_cli import model_picker_usage as mpu
-    from hermes_cli import model_switch_providers as msp
+    from hermes_agent.hermes_cli import model_picker_usage as mpu
+    from hermes_agent.hermes_cli import model_switch_providers as msp
     from hermes_agent.agent import plan_limits as pl
 
     monkeypatch.setattr(mpu, "nous_picker_usage", lambda **kw: _window_usage())

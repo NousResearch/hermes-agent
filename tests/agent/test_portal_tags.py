@@ -10,7 +10,7 @@ from __future__ import annotations
 def test_nous_portal_tags_contains_product_and_client():
     """Every Nous Portal request gets BOTH the product tag and the base-version tag."""
     from hermes_agent.agent.portal_tags import nous_portal_tags
-    from hermes_cli.version_info import get_version_info
+    from hermes_agent.hermes_cli.version_info import get_version_info
 
     tags = nous_portal_tags()
     assert "product=hermes-agent" in tags

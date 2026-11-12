@@ -26,7 +26,7 @@ import pytest
 
 import hermes_agent.agent.auxiliary_client as aux
 import hermes_agent.agent.auxiliary_managed_local as managed_local
-from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+from hermes_agent.hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
 
 MANAGED_URL = "http://127.0.0.1:18434/v1"
@@ -38,7 +38,7 @@ def managed_state(tmp_path, monkeypatch):
     state = tmp_path / "server.json"
     state.write_text(json.dumps({"base_url": MANAGED_URL, "api_key": "k",
                                  "pid": 4242}), encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.state_path",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.supervisor.state_path",
                         lambda: state)
     monkeypatch.setattr(managed_local, "_managed_local_cache", (0.0, ""))
     return state
@@ -57,7 +57,7 @@ def test_managed_detection_matches_netloc_not_substring(managed_state):
 
 
 def test_no_state_file_means_no_managed_endpoint(tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_cli.local_runtime.supervisor.state_path",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.supervisor.state_path",
                         lambda: tmp_path / "absent.json")
     monkeypatch.setattr(managed_local, "_managed_local_cache", (0.0, ""))
     assert aux._is_managed_local_endpoint(MANAGED_URL) is False

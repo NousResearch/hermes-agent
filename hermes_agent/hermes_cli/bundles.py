@@ -8,7 +8,7 @@ from typing import List
 from rich.console import Console
 from rich.table import Table
 
-from hermes_cli.cli_output import line_input
+from hermes_agent.hermes_cli.cli_output import line_input
 
 from hermes_agent.agent.skill_bundles import (
     _bundles_dir, delete_bundle, get_bundle, list_bundles, reload_bundles, save_bundle, scan_bundles
@@ -130,7 +130,7 @@ def _cmd_reload(args) -> None:
 
 
 def register_cli(subparser) -> None:
-    """Build the ``hermes bundles`` argparse tree (called from hermes_cli/main.py, which owns the
+    """Build the ``hermes bundles`` argparse tree (called from hermes_agent/hermes_cli/main.py, which owns the
     top-level subparser)."""
     subs = subparser.add_subparsers(dest="bundles_action")
 

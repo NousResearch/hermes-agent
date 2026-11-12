@@ -750,7 +750,7 @@ def _rule_stale_running(task, events, runs, now, cfg) -> list[Diagnostic]:
     grace_seconds = float(cfg.get("stale_running_grace_seconds", 60 * 60))
     if _task_field(task, "status") != "running":
         return []
-    from hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db as kb
     expires = kb._to_epoch(_task_field(task, "claim_expires", None))
     if expires is None or (now - expires) < grace_seconds:
         return []
@@ -761,7 +761,7 @@ def _rule_stale_running(task, events, runs, now, cfg) -> list[Diagnostic]:
     if hb is not None and (now - hb) <= kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS:
         return []
 
-    from hermes_cli.kanban_db_dispatch import _worker_alive
+    from hermes_agent.hermes_cli.kanban_db_dispatch import _worker_alive
     recorded = [(_task_field(task, "worker_pid", None),
                  _task_field(task, "worker_started_at", None))]
     # Only this attempt's pids speak for it: an earlier run's worker that is still alive

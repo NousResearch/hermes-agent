@@ -1,7 +1,7 @@
 """Gateway launchd (macOS LaunchAgent) backend: plist generation/refresh, bootstrap, start/stop/restart/status.
 
-Extracted from ``hermes_cli/gateway.py``. Bodies read facade helpers through ``_gw()`` (late
-binding on ``hermes_cli.gateway``) so the seams tests and callers patch on the facade keep
+Extracted from ``hermes_agent/hermes_cli/gateway.py``. Bodies read facade helpers through ``_gw()`` (late
+binding on ``hermes_agent.hermes_cli.gateway``) so the seams tests and callers patch on the facade keep
 intercepting the moved code.
 """
 from __future__ import annotations
@@ -17,13 +17,13 @@ import time
 from xml.sax.saxutils import escape
 from datetime import UTC
 
-from hermes_cli import gateway_service_owner
+from hermes_agent.hermes_cli import gateway_service_owner
 
 from hermes_agent.agent.deadline import poll_until
 
 
 def _gw():
-    from hermes_cli import gateway  # late: the facade imports this module
+    from hermes_agent.hermes_cli import gateway  # late: the facade imports this module
     return gateway
 
 
@@ -64,7 +64,7 @@ def _launchd_domain() -> str:
 
     See #40831, #23387.
     """
-    # The cache lives on the facade: tests and callers reset ``hermes_cli.gateway._resolved_launchd_domain``.
+    # The cache lives on the facade: tests and callers reset ``hermes_agent.hermes_cli.gateway._resolved_launchd_domain``.
     gw = _gw()
     if gw._resolved_launchd_domain is None:
         gw._resolved_launchd_domain = _probe_launchd_domain_for_label(gw.get_launchd_label())
@@ -213,7 +213,7 @@ def _launchd_unsupported_marker_exists() -> bool:
 
 
 def _gateway_run_command() -> list[str]:
-    from hermes_cli._launchers import runtime_command
+    from hermes_agent.hermes_cli._launchers import runtime_command
     from hermes_constants import get_default_hermes_root
     # Every caller spawns an UNSUPERVISED child, which follows the sticky active_profile unless a
     # selector pins it (main._apply_profile_override): the root's replacement booted that profile.
@@ -272,7 +272,7 @@ def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor:
     bootout+bootstrap in install/refresh), which run before supervision resumes. Mirrors
     ``generate_systemd_unit``, whose ExecStart also runs ``gateway run`` without ``--replace``.
     """
-    from hermes_cli._launchers import installation_command, runtime_command
+    from hermes_agent.hermes_cli._launchers import installation_command, runtime_command
     inner = _gw()._gateway_run_command()
     if external_supervisor:
         inner = installation_command(_gw().PROJECT_ROOT, [*shlex.split(_gw()._profile_arg()), "gateway", "run"],
@@ -294,7 +294,7 @@ def _spawn_detached_gateway() -> bool:
     gateway.log, stderr is timestamped into gateway.error.log, and the PID is tracked via the gateway.pid
     file that `run_gateway` writes, so stop/status/restart keep working.
     """
-    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+    from hermes_agent.hermes_cli._subprocess_compat import windows_detach_popen_kwargs
     from hermes_constants import get_hermes_home
     from hermes_agent.tools.environments.local import served_profile_child_env
     log_dir = _gw().get_hermes_home() / "logs"
@@ -386,7 +386,7 @@ def generate_launchd_plist() -> str:
     # rewrite would otherwise strip a manual limit and reintroduce EMFILE crashes.
     nofile_block = ""
     try:
-        from hermes_cli.resource_limits import configured_nofile_soft_limit
+        from hermes_agent.hermes_cli.resource_limits import configured_nofile_soft_limit
         nofile_target = configured_nofile_soft_limit()
     except Exception:
         nofile_target = None
@@ -571,7 +571,7 @@ def _rewrite_stale_launchd_plist() -> bool:
     if not plist_path.exists() or _gw().launchd_plist_is_current():
         return False
     # Runs on every gateway start/restart: a plist pinning another home is another install's gateway.
-    from hermes_cli.gateway_service_owner import definition_belongs_to_home
+    from hermes_agent.hermes_cli.gateway_service_owner import definition_belongs_to_home
     if not definition_belongs_to_home(plist_path, _gw().get_hermes_home(), "rewrite"):
         return False
 
@@ -649,7 +649,7 @@ def launchd_install(force: bool = False, *, start_now: bool = True, force_unit_p
     plist_path = _gw().get_launchd_plist_path()
     label = _gw().get_launchd_label()
     # A plist pinning another home is another install's gateway, --force included; --force-unit-path repoints.
-    from hermes_cli.gateway_service_owner import definition_belongs_to_home
+    from hermes_agent.hermes_cli.gateway_service_owner import definition_belongs_to_home
     if not force_unit_path and not definition_belongs_to_home(plist_path, _gw().get_hermes_home(), "overwrite"):
         sys.exit(1)
     # Loading the plist starts the gateway (RunAtLoad), so a no-start install writes it without
@@ -868,7 +868,7 @@ def launchd_restart():
             # surfaces with no other feedback (desktop updater) read silence as "update stuck".
             wait_budget = _gw()._get_restart_exit_wait_budget()
             print(f"→ Stopping gateway (PID {pid}) — draining in-flight runs (up to {wait_budget:.0f}s)...")
-            from hermes_cli.update_cmd_drain_report import drain_progress_reporter
+            from hermes_agent.hermes_cli.update_cmd_drain_report import drain_progress_reporter
             if _gw()._graceful_restart_via_sigusr1(pid, wait_budget, on_progress=drain_progress_reporter(budget_s=wait_budget)):
                 # KeepAlive revives a planned exit, so do NOT kickstart (-k would kill the replacement) —
                 # but a clean exit doesn't prove supervision, so verify a replacement PID appears first.

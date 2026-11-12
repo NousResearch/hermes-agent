@@ -15,7 +15,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from hermes_cli.main import cmd_dashboard
+from hermes_agent.hermes_cli.main import cmd_dashboard
 
 def _ns(**kw):
     """Build an argparse.Namespace with dashboard defaults plus overrides."""
@@ -28,7 +28,7 @@ def _ns(**kw):
 
 class TestDashboardStatus:
     def test_status_no_processes(self, capsys):
-        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
+        with patch("hermes_agent.hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
@@ -44,9 +44,9 @@ class TestDashboardStatus:
             (12346, "python -m hermes_cli.main dashboard --host 0.0.0.0 --port 9120"),
             (12347, "hermes serve --host 100.94.65.93 --port 9119"),
         ]
-        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=processes), \
+        with patch("hermes_agent.hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=processes), \
              patch("hermes_agent.gateway.status._pid_exists", return_value=True), \
-             patch("hermes_cli.main_dashboard._dashboard_listening", return_value=True), \
+             patch("hermes_agent.hermes_cli.main_dashboard._dashboard_listening", return_value=True), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         # Status is informational — always exits 0.
@@ -61,8 +61,8 @@ class TestDashboardStatus:
         so ``--status`` shows every backend ``--stop`` would kill (#81564)."""
         import socket
 
-        from hermes_cli import dashboard_procs, process_identity
-        from hermes_cli.main_dashboard import _find_stale_dashboard_pids
+        from hermes_agent.hermes_cli import dashboard_procs, process_identity
+        from hermes_agent.hermes_cli.main_dashboard import _find_stale_dashboard_pids
 
         pid = 424242
         with socket.socket() as listener:
@@ -91,7 +91,7 @@ class TestDashboardStatus:
                 raise ImportError("fastapi missing")
             return orig_import(name, *a, **kw)
 
-        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
+        with patch("hermes_agent.hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
              patch("builtins.__import__", side_effect=fake_import), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
@@ -104,9 +104,9 @@ class TestDashboardStop:
         process again: a launchd KeepAlive job respawns its backend on a fresh PID, and that
         respawn is not a failed stop (the kill path already warns about it)."""
         scans = iter([[12345, 12346], [12347]])
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch("hermes_agent.hermes_cli.main._find_stale_dashboard_pids",
                    side_effect=lambda **_: next(scans)), \
-             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
+             patch("hermes_agent.hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
                    return_value={"matched": [12345, 12346], "killed": [12345, 12346],
                                  "failed": [], "unrecovered": [12345, 12346]}) as mock_kill, \
              pytest.raises(SystemExit) as exc:
@@ -125,16 +125,16 @@ class TestDashboardStop:
         kill run with ``scope_home`` = the invoking home, and an empty scan says so."""
         own_home = tmp_path / "profiles" / "work"
         monkeypatch.setenv("HERMES_HOME", str(own_home))
-        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[12345]) as scan, \
-             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
+        with patch("hermes_agent.hermes_cli.main._find_stale_dashboard_pids", return_value=[12345]) as scan, \
+             patch("hermes_agent.hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
                    return_value={"matched": [12345], "killed": [12345], "failed": [], "unrecovered": []}) as kill, \
              pytest.raises(SystemExit):
             cmd_dashboard(_ns(stop=True))
         assert scan.call_args.kwargs["scope_home"] == str(own_home)
         assert kill.call_args.kwargs["scope_home"] == str(own_home)
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]), \
-             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes") as kill, \
+        with patch("hermes_agent.hermes_cli.main._find_stale_dashboard_pids", return_value=[]), \
+             patch("hermes_agent.hermes_cli.dashboard_procs._kill_stale_dashboard_processes") as kill, \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(stop=True))
         kill.assert_not_called()
@@ -144,8 +144,8 @@ class TestDashboardStop:
     def test_stop_exits_nonzero_if_kill_leaves_survivors(self):
         """A pid the kill path could not stop (e.g. permission denied) -> exit 1 so
         scripts can detect that the stop didn't succeed."""
-        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[12345]), \
-             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
+        with patch("hermes_agent.hermes_cli.main._find_stale_dashboard_pids", return_value=[12345]), \
+             patch("hermes_agent.hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
                    return_value={"matched": [12345], "killed": [],
                                  "failed": [(12345, "Operation not permitted")], "unrecovered": []}), \
              pytest.raises(SystemExit) as exc:
@@ -160,7 +160,7 @@ class TestDashboardStop:
                 raise ImportError("fastapi missing")
             return orig_import(name, *a, **kw)
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch("hermes_agent.hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[]), \
              patch("builtins.__import__", side_effect=fake_import), \
              pytest.raises(SystemExit) as exc:
@@ -185,9 +185,9 @@ class TestLifecycleFlagsTakePrecedence:
         fake_ws = MagicMock()
         fake_ws.start_server = fake_start_server
 
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
+        with patch("hermes_agent.hermes_cli.main._find_stale_dashboard_pids",
                    return_value=[]), \
-             patch.dict(sys.modules, {"hermes_cli.web_server": fake_ws}), \
+             patch.dict(sys.modules, {"hermes_agent.hermes_cli.web_server": fake_ws}), \
              pytest.raises(SystemExit):
             cmd_dashboard(_ns(stop=True))
         assert called["start"] is False

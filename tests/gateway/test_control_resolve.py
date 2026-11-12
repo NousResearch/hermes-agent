@@ -15,8 +15,8 @@ import pytest
 from hermes_agent.gateway.control_resolve import resolve_profile_handler
 from hermes_agent.gateway.control_socket import GatewayControlServer
 from hermes_agent.gateway.runtime_bootstrap import TicketStore
-from hermes_cli.gateway_client import private_control_query
-from hermes_cli.gateway_runtime import discover_gateway_endpoint, ensure_gateway_runtime
+from hermes_agent.hermes_cli.gateway_client import private_control_query
+from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint, ensure_gateway_runtime
 
 pytestmark = pytest.mark.platforms("linux", "macos")
 
@@ -371,7 +371,7 @@ def test_the_gateway_bootstrap_installs_the_verb_over_its_identify_descriptor(tm
 def test_install_code_sha_leaves_the_gateways_boot_identity_alone(layout, monkeypatch):
     """``identify``'s ``code_sha`` is the code this gateway booted from: reading the installed commit
     for ``install_code_sha`` must not drop the cached identity it is answered from."""
-    from hermes_cli import version_info
+    from hermes_agent.hermes_cli import version_info
     solo, _root, _secondary = layout
     boot = version_info.VersionInfo("1.0.0", "1.0.0", None, "b" * 40, None, "git")
     monkeypatch.setattr(version_info, "_cached_version_info", boot)
@@ -392,7 +392,7 @@ def test_install_code_sha_and_read_checkout_sha_share_one_lookup(monkeypatch, st
     """The gateway's ``install_code_sha`` and the CLI's ``read_checkout_sha`` come from one reader,
     so they cannot drift apart on which commit is installed."""
     from hermes_agent.gateway import control_resolve
-    from hermes_cli import version_info
+    from hermes_agent.hermes_cli import version_info
     monkeypatch.setattr(version_info, "_stamp_or_none",
                         lambda: version_info.VersionInfo("1.0.0", "1.0.0", None, stamp, None, "stamp") if stamp else None)
     monkeypatch.setattr(version_info, "_resolve_repo_dir", lambda: repo)

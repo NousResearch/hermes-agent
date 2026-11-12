@@ -13,7 +13,7 @@ load-bearing assertion — that the raw refresh token never appears in that outp
 import hashlib
 import logging
 
-from hermes_cli.auth import AuthError, _quarantine_nous_oauth_state
+from hermes_agent.hermes_cli.auth import AuthError, _quarantine_nous_oauth_state
 
 
 # A distinctive, obviously-fake refresh token so the redaction assertion is
@@ -53,7 +53,7 @@ def _error():
 def test_raw_refresh_token_never_logged(caplog):
     """Load-bearing redaction-safety test: the raw secret must never appear."""
     state = _make_state()
-    with caplog.at_level(logging.DEBUG, logger="hermes_cli.auth"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.hermes_cli.auth"):
         _quarantine_nous_oauth_state(state, _error(), reason="unit_test_quarantine")
 
     text = caplog.text

@@ -18,10 +18,10 @@ def _write(path, port):
 
 
 def _readers():
-    from hermes_cli.config import load_config, load_config_readonly, read_raw_config
-    from hermes_cli.config_backend import read_config_doc_readonly
-    from hermes_cli.config_effective import load_user_config_effective
-    from hermes_cli.config import get_config_path
+    from hermes_agent.hermes_cli.config import load_config, load_config_readonly, read_raw_config
+    from hermes_agent.hermes_cli.config_backend import read_config_doc_readonly
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config import get_config_path
     path = get_config_path()
     return {
         'load_config': lambda: load_config(),
@@ -79,7 +79,7 @@ def frozen_now(monkeypatch):
     monkeypatch.setattr(utils, 'time', _Clock(time.time_ns()))
 
 def test_same_size_rewrite_in_one_tick_reaches_every_config_reader(coarse_clock):
-    from hermes_cli.config import get_config_path
+    from hermes_agent.hermes_cli.config import get_config_path
     path = get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     readers = _readers()
@@ -93,7 +93,7 @@ def test_same_size_rewrite_in_one_tick_reaches_every_config_reader(coarse_clock)
 
 def test_an_unchanged_file_stays_one_parse_while_fresh_and_once_settled(coarse_clock, digest_opens):
     import utils
-    from hermes_cli.config import get_config_path
+    from hermes_agent.hermes_cli.config import get_config_path
     path = get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     readonly = {k: v for k, v in _readers().items() if k in ('load_config_readonly', 'read_config_doc_readonly')}
@@ -119,9 +119,9 @@ def test_an_unchanged_file_stays_one_parse_while_fresh_and_once_settled(coarse_c
 def test_a_fresh_config_turned_unreadable_keeps_the_last_good_settings(frozen_now, monkeypatch, tmp_path, caplog):
     """A fresh file that stats but cannot be read reaches each loader's read-error recovery: the
     content digest in the cache key must not raise where the stat-only key never opened the file."""
-    from hermes_cli.config import get_config_path, load_config
-    from hermes_cli.config_effective import load_user_config_effective
-    from hermes_cli.managed_scope import invalidate_managed_cache, load_managed_config
+    from hermes_agent.hermes_cli.config import get_config_path, load_config
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.managed_scope import invalidate_managed_cache, load_managed_config
     path = get_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     managed = tmp_path / 'managed'

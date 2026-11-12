@@ -10,7 +10,7 @@ whose only lit vars are shared with a lit non-CN sibling row.
 import os
 from unittest.mock import patch
 
-from hermes_cli.model_switch import list_authenticated_providers
+from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
 
 _CLEAR = {k: "" for k in ("ALIBABA_CODING_PLAN_API_KEY", "ALIBABA_CODING_PLAN_CN_API_KEY", "DASHSCOPE_API_KEY")}
 

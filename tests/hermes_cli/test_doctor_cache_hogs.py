@@ -1,6 +1,6 @@
 """``hermes doctor`` names cache-root dirs that no pruner covers once they are big enough."""
 
-from hermes_cli.doctor_state import unpruned_cache_hogs
+from hermes_agent.hermes_cli.doctor_state import unpruned_cache_hogs
 
 
 def test_unpruned_cache_hogs_skips_pruned_dirs_and_small_entries(tmp_path):

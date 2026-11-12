@@ -29,13 +29,13 @@ from pathlib import Path
 import psutil
 import pytest
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
-from hermes_cli import kanban_diagnostics as kd
-from hermes_cli import kanban_owner_recovery
-from hermes_cli.process_identity import worker_birth
-from hermes_cli.kanban_owner_recovery import (
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
+from hermes_agent.hermes_cli import kanban_diagnostics as kd
+from hermes_agent.hermes_cli import kanban_owner_recovery
+from hermes_agent.hermes_cli.process_identity import worker_birth
+from hermes_agent.hermes_cli.kanban_owner_recovery import (
     bound_interpreter_gone,
     owner_attempt_provably_over,
     owner_reclaim_blocked,

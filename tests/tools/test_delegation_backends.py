@@ -12,8 +12,8 @@ import pytest
 
 from pathlib import Path
 
-from hermes_cli import plugins as plugins_mod
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 REPO_PLUGINS = Path(__file__).resolve().parents[2] / "plugins"
 
@@ -343,7 +343,7 @@ def test_route_task_always_sees_the_core_task_position(tmp_path, monkeypatch):
 def test_backend_key_reads_through_the_real_loader(tmp_path, monkeypatch):
     """``delegation.backend`` defaults to ``default`` and a configured value reaches the registry."""
     from hermes_agent.agent.delegation_registry import configured_backend
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     from hermes_agent.tools.delegate_tool_config import _load_config
 
     _, manager = _home(tmp_path / "unset", monkeypatch, {}, plugins=())

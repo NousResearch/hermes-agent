@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def homes(tmp_path, monkeypatch):
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     root = tmp_path / '.hermes'
     secondary = root / 'profiles' / 'worker'
     secondary.mkdir(parents=True)
@@ -21,7 +21,7 @@ def homes(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('include_parked', [False, True])
 def test_parked_is_not_served_but_remains_installed(homes, include_parked):
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     root, secondary = homes
     (secondary / 'gateway.parked').write_text('provisioned offline\n')
     if include_parked:
@@ -35,7 +35,7 @@ def test_parked_is_not_served_but_remains_installed(homes, include_parked):
 
 @pytest.mark.parametrize('multiplex', [False, True])
 def test_default_marker_is_ignored_with_one_warning(homes, caplog, multiplex):
-    from hermes_cli.profiles import profiles_to_serve
+    from hermes_agent.hermes_cli.profiles import profiles_to_serve
     root, _ = homes
     (root / 'gateway.parked').touch()
     for _ in range(2):
@@ -47,7 +47,7 @@ def test_default_marker_is_ignored_with_one_warning(homes, caplog, multiplex):
 
 @pytest.mark.parametrize('verb', ['stop', 'start', 'restart'])
 def test_cli_lifecycle_orders_marker_before_socket(homes, monkeypatch, capsys, verb):
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     from hermes_agent.gateway import control_socket
     root, secondary = homes
     marker = secondary / 'gateway.parked'
@@ -79,7 +79,7 @@ def test_cli_lifecycle_orders_marker_before_socket(homes, monkeypatch, capsys, v
     if verb == 'start':
         marker.touch()
     # Precedence: a standalone profile is never parked, even while a stale host record lists it.
-    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    from hermes_agent.hermes_cli.gateway_profile_lifecycle import profile_lifecycle
     (secondary / 'config.yaml').write_text('gateway: {standalone: true}\n')
     assert profile_lifecycle(verb, SimpleNamespace()) is False and calls == []
     assert marker.exists() is (verb == 'start')
@@ -93,7 +93,7 @@ def test_cli_lifecycle_orders_marker_before_socket(homes, monkeypatch, capsys, v
 
 
 def test_restart_after_stop_unparks_and_serves_the_profile(homes, monkeypatch, capsys):
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     from hermes_agent.gateway import control_socket
     root, secondary = homes
     marker = secondary / 'gateway.parked'
@@ -126,7 +126,7 @@ def test_restart_after_stop_unparks_and_serves_the_profile(homes, monkeypatch, c
 
 
 def test_force_restart_keeps_parked_profile_gateway_ownership(homes, monkeypatch):
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     _, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setenv('HERMES_HOME', str(secondary))
@@ -139,13 +139,13 @@ def test_force_restart_keeps_parked_profile_gateway_ownership(homes, monkeypatch
     monkeypatch.setattr(gw, 'named_profile_served_by_running_multiplexer', lambda: False)
     monkeypatch.setattr(gw, '_host_multiplexer_for_all_verb', host_restart)
     monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kwargs: [4242])
-    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    from hermes_agent.hermes_cli.gateway_profile_lifecycle import profile_lifecycle
     assert profile_lifecycle('restart', SimpleNamespace()) is False
 
 
 def test_stop_parks_a_served_profile_instead_of_stopping_the_host(homes, monkeypatch, capsys):
     """The host publishes its own pid into a served profile's runtime record (#141133)."""
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     from hermes_agent.gateway import control_socket
     root, secondary = homes
     marker = secondary / 'gateway.parked'
@@ -183,8 +183,8 @@ def test_stop_parks_a_served_profile_instead_of_stopping_the_host(homes, monkeyp
 
 
 def test_separate_gateway_beside_the_host_keeps_its_own_lifecycle(homes, monkeypatch):
-    from hermes_cli import gateway as gw
-    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    from hermes_agent.hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli.gateway_profile_lifecycle import profile_lifecycle
     root, secondary = homes
     host_pid = 4242
     owner = SimpleNamespace(home=root, pid=host_pid, profile_label='default',
@@ -197,8 +197,8 @@ def test_separate_gateway_beside_the_host_keeps_its_own_lifecycle(homes, monkeyp
 
 
 def test_parked_status_and_topology_keep_roster(homes, monkeypatch, capsys):
-    from hermes_cli import gateway as gw, profiles
-    from hermes_cli.web_server_gateway import _collect_profile_gateway_topology
+    from hermes_agent.hermes_cli import gateway as gw, profiles
+    from hermes_agent.hermes_cli.web_server_gateway import _collect_profile_gateway_topology
     _root, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setenv('HERMES_HOME', str(secondary))
@@ -214,8 +214,8 @@ def test_parked_status_and_topology_keep_roster(homes, monkeypatch, capsys):
 
 def test_parked_profile_keeps_implicit_host_multiplexed(homes, monkeypatch):
     from hermes_agent.gateway.config import GatewayConfig
-    from hermes_cli import gateway_migrate
-    from hermes_cli.gateway_multiplex_mode import resolve_multiplex_mode
+    from hermes_agent.hermes_cli import gateway_migrate
+    from hermes_agent.hermes_cli.gateway_multiplex_mode import resolve_multiplex_mode
     _, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setattr(gateway_migrate, '_host_supports_migration', lambda: None)
@@ -229,8 +229,8 @@ def test_dashboard_exposes_parked_profile_and_start_unparks_it(homes, monkeypatc
     from types import SimpleNamespace
     from fastapi.testclient import TestClient
     from hermes_agent.gateway import host_attach
-    from hermes_cli import web_server, profiles
-    from hermes_cli.web_server_gateway import multiplexed_profile_refusal
+    from hermes_agent.hermes_cli import web_server, profiles
+    from hermes_agent.hermes_cli.web_server_gateway import multiplexed_profile_refusal
     root, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setattr(profiles, '_check_gateway_running', lambda home: False)
@@ -248,7 +248,7 @@ def test_dashboard_exposes_parked_profile_and_start_unparks_it(homes, monkeypatc
 
 @pytest.mark.parametrize('host_running', [False, True])
 def test_start_unparks_without_host_rendezvous(homes, monkeypatch, capsys, host_running):
-    from hermes_cli import gateway as gw, gateway_multiplex_served as served
+    from hermes_agent.hermes_cli import gateway as gw, gateway_multiplex_served as served
     from hermes_agent.gateway import control_socket
     root, secondary = homes
     marker = secondary / 'gateway.parked'
@@ -277,8 +277,8 @@ def test_start_unparks_without_host_rendezvous(homes, monkeypatch, capsys, host_
 
 
 def test_default_status_distinguishes_served_and_parked(homes, monkeypatch, capsys):
-    from hermes_cli import gateway as gw
-    from hermes_cli.gateway_profile_lifecycle import print_parked_status
+    from hermes_agent.hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli.gateway_profile_lifecycle import print_parked_status
     root, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setattr(gw, '_current_profile_name', lambda: 'default')
@@ -291,7 +291,7 @@ def test_default_status_distinguishes_served_and_parked(homes, monkeypatch, caps
 
 
 def test_parked_status_still_reports_a_forced_gateway(homes, monkeypatch, capsys):
-    from hermes_cli import gateway as gw, profiles
+    from hermes_agent.hermes_cli import gateway as gw, profiles
     _root, secondary = homes
     (secondary / 'gateway.parked').touch()
     monkeypatch.setenv('HERMES_HOME', str(secondary))
@@ -313,7 +313,7 @@ def test_parked_status_still_reports_a_forced_gateway(homes, monkeypatch, capsys
 ])
 def test_status_flags_a_gateway_this_hermes_cannot_attach(homes, monkeypatch, capsys, verdict, healthy):
     """Upgrade with the old daemon up: every client refuses it, so status must not say ✓."""
-    from hermes_cli import gateway as gw, gateway_runtime, profiles
+    from hermes_agent.hermes_cli import gateway as gw, gateway_runtime, profiles
     root, _secondary = homes
     monkeypatch.setenv('HERMES_HOME', str(root))
     monkeypatch.setattr(gw, '_current_profile_name', lambda: 'default')
@@ -334,7 +334,7 @@ def test_status_flags_a_gateway_this_hermes_cannot_attach(homes, monkeypatch, ca
 @pytest.mark.parametrize('served', [True, False])
 def test_process_discovery_excludes_host_even_after_unserve(homes, monkeypatch, served):
     from hermes_agent.gateway import status, host_attach
-    from hermes_cli import gateway as gw, dashboard_procs
+    from hermes_agent.hermes_cli import gateway as gw, dashboard_procs
     root, secondary = homes
     owner = SimpleNamespace(pid=4242, home=root, served_known=True, profiles=('default', 'worker') if served else ('default',))
     monkeypatch.setenv('HERMES_HOME', str(secondary))
@@ -358,7 +358,7 @@ def test_process_discovery_excludes_host_even_after_unserve(homes, monkeypatch, 
 def test_stop_never_owns_shared_pid_from_an_absent_or_old_probe(homes, monkeypatch, probe):
     import time
     from hermes_agent.gateway import host_attach, status
-    from hermes_cli import gateway as gw, dashboard_procs
+    from hermes_agent.hermes_cli import gateway as gw, dashboard_procs
     root, secondary = homes
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     monkeypatch.setattr(status, 'get_running_pid', lambda **kw: 4242)
@@ -383,7 +383,7 @@ def test_stop_never_owns_shared_pid_from_an_absent_or_old_probe(homes, monkeypat
 @pytest.mark.parametrize('process_home', [None, 'foreign', 'error'])
 def test_absent_host_requires_positive_process_ownership(homes, monkeypatch, process_home):
     from hermes_agent.gateway import host_attach, status
-    from hermes_cli import gateway as gw, dashboard_procs
+    from hermes_agent.hermes_cli import gateway as gw, dashboard_procs
     root, secondary = homes
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     monkeypatch.setattr(status, 'get_running_pid', lambda **kw: 4242)
@@ -402,7 +402,7 @@ def test_absent_host_requires_positive_process_ownership(homes, monkeypatch, pro
 
 def test_owner_switch_during_probe_is_rejected(homes, monkeypatch):
     from hermes_agent.gateway import host_attach, status
-    from hermes_cli import gateway as gw, dashboard_procs
+    from hermes_agent.hermes_cli import gateway as gw, dashboard_procs
     _, secondary = homes
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     pids = iter([4343, 4242])
@@ -415,7 +415,7 @@ def test_owner_switch_during_probe_is_rejected(homes, monkeypatch):
 @pytest.mark.parametrize('rendezvous', ['absent', 'unreadable'])
 def test_sticky_profile_cannot_reassign_running_host(homes, monkeypatch, rendezvous):
     from hermes_agent.gateway import host_attach, status
-    from hermes_cli import dashboard_procs, gateway as gw, main_dashboard
+    from hermes_agent.hermes_cli import dashboard_procs, gateway as gw, main_dashboard
     root, secondary = homes
     monkeypatch.setenv('HERMES_HOME', str(secondary))
     # The process started at the root, before the user's later sticky switch.
@@ -439,7 +439,7 @@ def test_sticky_profile_cannot_reassign_running_host(homes, monkeypatch, rendezv
 @pytest.mark.parametrize('identity', ['explicit', 'profile_home', 'supervised', 'ambiguous'])
 def test_launch_identity_does_not_follow_sticky_selection(homes, monkeypatch, identity):
     from hermes_agent.gateway import host_attach, status
-    from hermes_cli import dashboard_procs, gateway as gw, main_dashboard
+    from hermes_agent.hermes_cli import dashboard_procs, gateway as gw, main_dashboard
     root, secondary = homes
     (root / 'active_profile').write_text('other\n')
     env = {'HERMES_HOME': str(root)}
@@ -463,7 +463,7 @@ def test_launch_identity_does_not_follow_sticky_selection(homes, monkeypatch, id
 @pytest.mark.parametrize('runtime', ['present', 'absent', 'unknown'])
 def test_cli_stop_reports_unconfirmed_separately_from_absent(homes, monkeypatch, capsys, runtime):
     from hermes_agent.gateway import status
-    from hermes_cli import gateway as gw, gateway_profile_lifecycle as lifecycle
+    from hermes_agent.hermes_cli import gateway as gw, gateway_profile_lifecycle as lifecycle
     monkeypatch.setattr(lifecycle, 'profile_lifecycle', lambda *a: False)
     monkeypatch.setattr(gw, '_refuse_from_inside_gateway', lambda *a: None)
     monkeypatch.setattr(gw, 'find_gateway_pids', lambda **kw: [])
@@ -494,7 +494,7 @@ def test_cli_stop_reports_unconfirmed_separately_from_absent(homes, monkeypatch,
 @pytest.mark.parametrize('verified,changed', [(True, False), (True, True), (False, False)])
 def test_same_home_record_requires_identity_and_stable_pid(homes, monkeypatch, verified, changed):
     from hermes_agent.gateway import host_attach, status
-    from hermes_cli import gateway as gw, dashboard_procs
+    from hermes_agent.hermes_cli import gateway as gw, dashboard_procs
     root, _ = homes
     monkeypatch.setenv('HERMES_HOME', str(root))
     from hermes_agent.gateway import host_rendezvous as hr

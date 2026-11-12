@@ -1,4 +1,4 @@
-"""Every entry on the published plugin API (``hermes_cli/data/plugin_api.json``) exists on this tree.
+"""Every entry on the published plugin API (``hermes_agent/hermes_cli/data/plugin_api.json``) exists on this tree.
 
 ``hermes plugins validate`` and ``scripts/boundary_lint.py`` tell plugin authors these are the core
 imports they may use, and ``public-api.md`` is generated from the same file. Both checks are static:

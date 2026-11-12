@@ -76,14 +76,14 @@ class TestEssentialSkillsUndisableable:
         assert "some-other-skill" in disabled
 
     def test_cli_side_reader_strips_essential(self):
-        from hermes_cli.skills_config import get_disabled_skills
+        from hermes_agent.hermes_cli.skills_config import get_disabled_skills
         cfg = {"skills": {"disabled": ["hermes-agent", "other"]}}
         disabled = get_disabled_skills(cfg)
         assert "hermes-agent" not in disabled
         assert "other" in disabled
 
     def test_cli_side_writer_strips_essential(self, monkeypatch):
-        import hermes_cli.skills_config as sc
+        import hermes_agent.hermes_cli.skills_config as sc
         saved = {}
         monkeypatch.setattr(sc, "save_config", lambda cfg: saved.update(cfg))
         cfg = {}

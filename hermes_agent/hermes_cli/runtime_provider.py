@@ -1,9 +1,9 @@
 """Shared runtime provider resolution for CLI, gateway, cron, and helpers: the resolution ORDER
 (:func:`resolve_runtime_provider`), api_mode / base_url helpers and the pool / OAuth / explicit paths.
-Custom-provider lookup lives in :mod:`hermes_cli.runtime_provider_custom`; Azure Foundry,
+Custom-provider lookup lives in :mod:`hermes_agent.hermes_cli.runtime_provider_custom`; Azure Foundry,
 OpenRouter/bare-custom, Bedrock and external-process builders in
-:mod:`hermes_cli.runtime_provider_backends` — both re-exported here so
-``hermes_cli.runtime_provider.<name>`` imports and test patches keep working."""
+:mod:`hermes_agent.hermes_cli.runtime_provider_backends` — both re-exported here so
+``hermes_agent.hermes_cli.runtime_provider.<name>`` imports and test patches keep working."""
 
 from __future__ import annotations
 
@@ -17,13 +17,13 @@ from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-from hermes_cli import auth as auth_mod
+from hermes_agent.hermes_cli import auth as auth_mod
 from hermes_agent.agent.credential_pool import (  # custom_provider_pool_key_candidates is read via origin by runtime_provider_custom
     CredentialPool, PooledCredential, credential_pool_matches_provider, custom_provider_pool_key_candidates,
     load_pool,
 )
 from hermes_agent.agent.secret_scope import get_secret_str
-from hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
+from hermes_agent.hermes_cli.auth import (  # resolve_external_process_provider_credentials is read via origin by runtime_provider_backends
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, AuthError, DEFAULT_CODEX_BASE_URL, DEFAULT_QWEN_BASE_URL, DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY, _agent_key_is_usable, _nous_inference_env_override, _qwen_base_url, format_auth_error, resolve_provider,
     resolve_nous_runtime_credentials, resolve_codex_runtime_credentials, resolve_xai_oauth_runtime_credentials,
@@ -31,10 +31,10 @@ from hermes_cli.auth import (  # resolve_external_process_provider_credentials i
     resolve_external_process_provider_credentials,
     has_usable_secret, is_actual_local_base_url, looks_like_openrouter_key, normalize_actual_base_url,
 )
-from hermes_cli import config as _config_mod
-from hermes_cli import models as _models  # attribute access keeps ``hermes_cli.models.<name>`` patches effective
+from hermes_agent.hermes_cli import config as _config_mod
+from hermes_agent.hermes_cli import models as _models  # attribute access keeps ``hermes_agent.hermes_cli.models.<name>`` patches effective
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host, nous_api_mode
+from hermes_agent.hermes_cli.providers import determine_api_mode, get_provider, is_actual_route, is_official_openai_host, nous_api_mode
 from utils import base_url_host_matches, base_url_hostname, base_url_path, env_int
 
 
@@ -74,7 +74,7 @@ def deferred_token_mint():
 
 
 # Late-bound delegates, deliberately NOT module-level from-imports: this module is often imported
-# lazily, so its first import can happen while a test has ``hermes_cli.config.load_config`` patched
+# lazily, so its first import can happen while a test has ``hermes_agent.hermes_cli.config.load_config`` patched
 # — a from-import would bind the MagicMock permanently and poison every later caller.
 def load_config():
     frozen = _FROZEN_RUNTIME_CONFIG.get()
@@ -122,7 +122,7 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
 
 # ── api_mode detection ─────────────────────────────────────────────────────────────────────
 
-# Hosts that only speak one wire protocol. Mirrors host_mandated_api_mode in hermes_cli/providers.py
+# Hosts that only speak one wire protocol. Mirrors host_mandated_api_mode in hermes_agent/hermes_cli/providers.py
 # so the runtime resolver stays in lockstep: api.meta.ai — prompt caching only on Responses;
 # api.router.com — /v1/chat/completions is a minimal shim; api.anthropic.com — native Messages.
 _HOST_MANDATED_API_MODES = {
@@ -329,7 +329,7 @@ def _api_key_provider_api_mode(provider: str, model_cfg: dict[str, Any], api_key
     if provider == "xai":
         # Ramp Router: Responses-native host — /v1/chat/completions is only a minimal compatibility shim,
         # while reasoning and caching support live on /v1/responses (docs.router.com/api/endpoint). Mirrors
-        # the host_mandated_api_mode clause in hermes_cli/providers.py so the runtime resolver stays in
+        # the host_mandated_api_mode clause in hermes_agent/hermes_cli/providers.py so the runtime resolver stays in
         # lockstep. Exact hostname per #32243.
         return "codex_responses"
     return _configured_or_fallback_api_mode(provider, model_cfg, base_url, effective_model, opencode_by_model=opencode_by_model)
@@ -553,7 +553,7 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
 
 # ── extracted collaborators (re-exported; see module docstring) ────────────────────────────
 
-from hermes_cli.runtime_provider_custom import (
+from hermes_agent.hermes_cli.runtime_provider_custom import (
     _LLAMACPP_ALIASES, _apply_custom_provider_extras, _custom_provider_request_overrides, _filter_capabilities, _find_custom_identity,
     _get_named_custom_provider, _lift_common_custom_fields, _lift_extra_headers,
     _lift_model_capabilities, _normalize_base_url_for_match, _normalize_custom_provider_name, _resolve_named_custom_runtime,
@@ -561,7 +561,7 @@ from hermes_cli.runtime_provider_custom import (
     find_custom_provider_identity,
     find_custom_provider_identity_by_model, has_named_custom_provider, is_routable_provider,
 )
-from hermes_cli.runtime_provider_backends import (
+from hermes_agent.hermes_cli.runtime_provider_backends import (
     _is_external_process_provider, _resolve_azure_foundry_runtime, _resolve_bedrock_runtime,
     _resolve_external_process_runtime, _resolve_openrouter_runtime,
 )
@@ -646,7 +646,7 @@ def _resolve_runtime_from_pool_entry(*, provider: str, entry: PooledCredential, 
 def _owned_url_credential(base_url: str, model_cfg: dict[str, Any], provider: str) -> tuple[bool, Any]:
     """``(declared, key)`` when ``base_url`` came from ``model.base_url`` and a ``providers:`` entry
     that owns it declares its own credential: a built-in env or pool key never goes to that URL."""
-    from hermes_cli.runtime_provider_custom import owned_config_url_credential
+    from hermes_agent.hermes_cli.runtime_provider_custom import owned_config_url_credential
     return owned_config_url_credential(base_url, model_cfg, provider)
 
 
@@ -919,8 +919,8 @@ def _api_key_provider_runtime(provider, pconfig, requested_provider, model_cfg, 
     # An explicitly selected API-key provider is authoritative: an empty key would defer failure
     # to the first request and make a later fallback look like a silent provider switch.
     if not has_usable_secret(creds.get("api_key")) and not (declared and entry_key):
-        from hermes_cli.runtime_readiness import missing_credentials_suffix
-        from hermes_cli.runtime_provider_missing_key import named_profile_key_hint
+        from hermes_agent.hermes_cli.runtime_readiness import missing_credentials_suffix
+        from hermes_agent.hermes_cli.runtime_provider_missing_key import named_profile_key_hint
         hint = (f" Set {', '.join(pconfig.api_key_env_vars)}." if pconfig.api_key_env_vars else "") + missing_credentials_suffix(provider)
         hint += named_profile_key_hint(pconfig.api_key_env_vars)
         raise AuthError(f"No usable credentials found for provider '{provider}'.{hint}", provider=provider, code="missing_api_key")
@@ -1077,7 +1077,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
     target_model overrides model_cfg["default"] when computing provider-specific api_mode (e.g.
     OpenCode Zen/Go where different models route through different API surfaces)."""
     requested_provider = resolve_requested_provider(requested)
-    from hermes_cli.left_core_migration import recover_for_provider
+    from hermes_agent.hermes_cli.left_core_migration import recover_for_provider
     recover_for_provider(requested_provider)  # a provider whose plugin left core: install it before resolving
     _raise_if_provider_disabled(requested_provider)
     # Same alias expansion the auxiliary client applies, so ``provider: openai`` means one thing on
@@ -1099,7 +1099,7 @@ def resolve_runtime_provider(*, requested: Optional[str] = None, explicit_api_ke
         logger.info("model.openai_runtime=codex_app_server overrides the %s runtime (source=%s); its credential/endpoint "
                     "is not used — the app-server authenticates with its own login", runtime.get("provider"), runtime.get("source"))
     runtime["api_mode"] = api_mode
-    from hermes_cli.runtime_provider_missing_key import raise_if_declared_key_missing
+    from hermes_agent.hermes_cli.runtime_provider_missing_key import raise_if_declared_key_missing
     raise_if_declared_key_missing(requested_provider, runtime, _get_model_config(), _FROZEN_RUNTIME_CONFIG.get(),
                                   explicit_api_key=explicit_api_key)
     return runtime
@@ -1188,12 +1188,12 @@ def resolve_runtime_with_fallback(config: Optional[dict[str, Any]], *, requested
     re-raised: a fallback entry's failure is not what the operator configured first (#81209). The entry's
     ``model`` is the model the caller must send.
     """
-    from hermes_cli.auth import AuthError, primary_failure_wording
+    from hermes_agent.hermes_cli.auth import AuthError, primary_failure_wording
     try:
         return resolve_runtime_provider(requested=requested, target_model=target_model,
                                         explicit_base_url=explicit_base_url, explicit_api_key=explicit_api_key), None
     except AuthError as primary_exc:
-        from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs, get_fallback_chain
+        from hermes_agent.hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs, get_fallback_chain
         for entry in get_fallback_chain(config):
             provider = (entry.get("provider") or "").strip().lower()
             model = (entry.get("model") or "").strip()

@@ -18,8 +18,8 @@ import time
 import uuid
 from contextlib import suppress
 
-from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
-from hermes_cli.gateway_connection import DISCONNECTED, NOT_SENT, CallStopped, lost_before
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+from hermes_agent.hermes_cli.gateway_connection import DISCONNECTED, NOT_SENT, CallStopped, lost_before
 
 logger = logging.getLogger(__name__)
 
@@ -323,7 +323,7 @@ class GatewayAgent:
             if self._route_off_session(new_model, new_provider) is None:
                 self._turn_route = None
                 return True
-        from hermes_cli.gateway_mutations import model_refusal_text
+        from hermes_agent.hermes_cli.gateway_mutations import model_refusal_text
         payload = {"model": new_model, **({"provider": new_provider} if new_provider else {})}
         snapshot = self.connection.call("session.resume", session_id=self.session_id)
         fence = dict(session_id=self.session_id, operation="model", expected_revision=snapshot["revision"],
@@ -630,7 +630,7 @@ class GatewayAgent:
         the tail and the compression count stay as they were."""
         from hermes_agent.agent.context_compressor import _DB_PERSISTED_MARKER
         from hermes_agent.agent.conversation_compression import COMPACTION_STATUS
-        from hermes_cli.gateway_client import COMPRESS_RPC_TIMEOUT
+        from hermes_agent.hermes_cli.gateway_client import COMPRESS_RPC_TIMEOUT
         payload = {}
         if focus_topic:
             payload["focus"] = focus_topic
@@ -757,7 +757,7 @@ class GatewayAgent:
         self._usage_stale = True
         self._interrupt_requested = False
         self._interrupt_sent_at = None
-        from hermes_cli.gateway_tools_notify import take_admitted_turn
+        from hermes_agent.hermes_cli.gateway_tools_notify import take_admitted_turn
         adopted = take_admitted_turn(self, persist_user_message if isinstance(persist_user_message, str)
                                      else user_message)
         if adopted is not None:
@@ -820,7 +820,7 @@ class GatewayAgent:
     def _drain_stale(self):
         """Frames left from an earlier turn of this viewer (a late settlement) are not this turn's. A
         ``/queue`` admission's start among them is remembered: that turn is painted after this one."""
-        from hermes_cli.gateway_tools_notify import missed_start
+        from hermes_agent.hermes_cli.gateway_tools_notify import missed_start
         while True:
             try:
                 frame = self.connection.events.get_nowait()
@@ -866,7 +866,7 @@ class GatewayAgent:
         return f"Your message was not sent.\n{notice}" if notice else ""
 
     def _lost_turn_notice(self):
-        from hermes_cli.gateway_chat_view import pending_lines
+        from hermes_agent.hermes_cli.gateway_chat_view import pending_lines
         pending = self._state().pending
         return "\n".join(pending_lines(pending)) if any(row["status"] == "unknown" for row in pending) else ""
 
@@ -898,7 +898,7 @@ class GatewayAgent:
             kind, payload = params.get("type"), params.get("payload") or {}
             admission = params.get("admission_id") or (payload.get("admission_id") if isinstance(payload, dict) else None)
             if self._admission and admission and admission != self._admission:
-                from hermes_cli.gateway_tools_notify import missed_start
+                from hermes_agent.hermes_cli.gateway_tools_notify import missed_start
                 missed_start(self._state(), params)  # a /queue turn run ahead of this one: painted after it
                 continue
             if params.get("execution_generation") is not None:
@@ -920,7 +920,7 @@ class GatewayAgent:
     def _recover(self, turn):
         """``gateway_replay_gap``: re-attach, answer the controls the hole hid, stop painting live text. A
         turn the snapshot no longer lists settles from its receipt; None waits for the live completion."""
-        from hermes_cli.gateway_replay_gap import settled
+        from hermes_agent.hermes_cli.gateway_replay_gap import settled
         lost, stop = GatewayClientError("session_replay_gap: " + DISCONNECTED), self._stop(turn)
         try:
             snapshot = self.connection.reattach(turn.session_id, abandon=stop)
@@ -1024,14 +1024,14 @@ class GatewayAgent:
             self.tool_progress_callback("tool.completed", name, None, None, duration=duration,
                                         is_error=bool(payload.get("is_error")), result=result)
         self._usage_stale = True
-        from hermes_cli.gateway_tools import mark_dirty
+        from hermes_agent.hermes_cli.gateway_tools import mark_dirty
         mark_dirty()  # a terminal/process call may have started or stopped a background process
         if name == "todo":
             self._todo_from_result(result)
         diff = payload.get("inline_diff")
         if isinstance(diff, str) and diff:
-            from cli import _cprint
-            from hermes_cli.cli_modern_layout import diff_printer
+            from hermes_agent.cli import _cprint
+            from hermes_agent.hermes_cli.cli_modern_layout import diff_printer
             emit = diff_printer(_cprint)
             for line in diff.rstrip("\n").splitlines():
                 emit(line)
@@ -1206,13 +1206,13 @@ class GatewayAgent:
 
     def _ask_secret(self, params):
         """Main's masked "Skill Setup Required" panel (the CLI's registered secret-capture callback,
-        ``hermes_cli.callbacks.prompt_for_secret``) collects the value and prints main's lines; the
+        ``hermes_agent.hermes_cli.callbacks.prompt_for_secret``) collects the value and prints main's lines; the
         gateway, not this process, saves it in the profile ``.env``, so the panel's save is captured."""
         from hermes_agent.tools import skills_tool
         callback = skills_tool._secret_capture_callback
         if callback is None:
             return ""
-        from hermes_cli import callbacks
+        from hermes_agent.hermes_cli import callbacks
         captured = []
 
         def capture(key, value):
@@ -1333,7 +1333,7 @@ class GatewayAgent:
     def _paint_owed(self, turn, out, complete, stream_callback):
         """After a replay gap, the reply once (``owed_reply``): a reuse this terminal showed whole stays
         the only copy; otherwise main's panel shows what streaming did not."""
-        from hermes_cli.gateway_replay_gap import owed_reply
+        from hermes_agent.hermes_cli.gateway_replay_gap import owed_reply
         reply = out.get("pre_transform_response") if out.get("response_transformed") else None
         reply = reply if isinstance(reply, str) else out.get("final_response")
         if out.get("failed") or not isinstance(reply, str) or not reply.strip():

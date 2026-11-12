@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-logger = logging.getLogger("hermes_cli.gateway")
+logger = logging.getLogger("hermes_agent.hermes_cli.gateway")
 
 
 def _discard_dead_host_record() -> bool:

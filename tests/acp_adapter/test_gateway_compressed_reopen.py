@@ -17,7 +17,7 @@ class _Bridge:
         self.connection, self.events = connection, asyncio.Queue()
 
     async def rpc(self, method, _timeout=None, **params):  # the client budget is never on the wire
-        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_agent.hermes_cli.gateway_client import GatewayClientError
         reply = await self.connection.dispatch({'id': 1, 'method': method, 'params': params})
         if 'error' in reply:
             raise GatewayClientError(reply['error']['message'])

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from typing import Iterable
-from hermes_cli.config import cfg_get, read_raw_config
+from hermes_agent.hermes_cli.config import cfg_get, read_raw_config
 
 logger = logging.getLogger(__name__)
 

@@ -20,9 +20,9 @@ else:
     # Stop a ``utils/``/``proxy/``/``ui/`` package in the launch cwd from shadowing Hermes modules.
     hermes_bootstrap.harden_import_path()
 
-# `hermes-acp` runs without hermes_cli.main: repair a `hermes update` killed mid-pull here, before
+# `hermes-acp` runs without hermes_agent.hermes_cli.main: repair a `hermes update` killed mid-pull here, before
 # importing anything else from the checkout (a no-op under `hermes acp`, which already did).
-from hermes_cli import _early_recovery
+from hermes_agent.hermes_cli import _early_recovery
 
 if _early_recovery.restore_interrupted_pull():
     _early_recovery.relaunch_after_restore()
@@ -33,7 +33,7 @@ import logging
 import os
 import sys
 from hermes_constants import get_hermes_home
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 # Liveness-probe methods outside the ACP schema. The router correctly answers JSON-RPC -32601
@@ -80,7 +80,7 @@ def _setup_logging() -> None:
 
 def _load_env() -> None:
     """Load .env from HERMES_HOME (default ``~/.hermes``)."""
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
 
     hermes_home = get_hermes_home()
     loaded = load_hermes_dotenv(hermes_home=hermes_home)
@@ -105,7 +105,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _print_version() -> None:
-    from hermes_cli.version_info import get_version_info
+    from hermes_agent.hermes_cli.version_info import get_version_info
 
     print(get_version_info().derived_version)
 
@@ -118,7 +118,7 @@ def _run_check() -> None:
 
 
 def _run_setup() -> None:
-    from hermes_cli.main import main as hermes_main
+    from hermes_agent.hermes_cli.main import main as hermes_main
 
     old_argv = sys.argv[:]
     try:
@@ -162,9 +162,9 @@ def _warm_memory_provider_import(logger: logging.Logger) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
-    if argv is None and "hermes_cli.main" not in sys.modules:
+    if argv is None and "hermes_agent.hermes_cli.main" not in sys.modules:
         sys.argv = [sys.argv[0] if sys.argv else "hermes-acp", "acp", *sys.argv[1:]]
-        from hermes_cli.main import main as hermes_main
+        from hermes_agent.hermes_cli.main import main as hermes_main
 
         return hermes_main()
     args = _parse_args(argv)
@@ -189,7 +189,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # One TLS authority: trust the OS store before any outbound call (bare
     # requests/urllib included) resolves a CA bundle — see hermes_agent/agent/ssl_verify.py.
-    # This console script bypasses hermes_cli.main, which does the same.
+    # This console script bypasses hermes_agent.hermes_cli.main, which does the same.
     from hermes_agent.agent.ssl_verify import install_truststore
 
     install_truststore()

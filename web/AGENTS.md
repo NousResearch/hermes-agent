@@ -1,12 +1,12 @@
-# web/ + hermes_cli/web_routers/ — the dashboard (`hermes dashboard` → `/chat`)
+# web/ + hermes_agent/hermes_cli/web_routers/ — the dashboard (`hermes dashboard` → `/chat`)
 
-Applies on top of the root `AGENTS.md`. Backend routers: `hermes_cli/web_routers/*.py`, one file per
-dashboard surface, mounted by `hermes_cli/web_server.py` (+ `web_server_*.py` siblings). Frontend:
+Applies on top of the root `AGENTS.md`. Backend routers: `hermes_agent/hermes_cli/web_routers/*.py`, one file per
+dashboard surface, mounted by `hermes_agent/hermes_cli/web_server.py` (+ `web_server_*.py` siblings). Frontend:
 `web/src/`. Shared JSON-RPC/WS client: `apps/shared` (`@hermes/shared`), also used by the desktop.
 
 ## The dashboard embeds the REAL `hermes --tui` — not a rewrite
 
-`hermes_cli/pty_bridge.py` + the `@app.websocket("/api/pty")` endpoint in `web_server.py`:
+`hermes_agent/hermes_cli/pty_bridge.py` + the `@app.websocket("/api/pty")` endpoint in `web_server.py`:
 
 - `web/src/pages/ChatPage.tsx` mounts xterm.js `Terminal` with the WebGL renderer, `@xterm/addon-fit`
   (container-driven resize) and `@xterm/addon-unicode11` (wide-character widths).
@@ -35,7 +35,7 @@ launches the other. `serve` is the headless backend the desktop app spawns (`hea
 disables the SPA even if a stray `web_dist/` exists — only JSON-RPC/WS/API is reachable). The
 desktop has no build/runtime dependency on this frontend. Details: `apps/desktop/src/AGENTS.md`.
 What each surface (`serve`, `dashboard`, `webapp`) may do is one table,
-`hermes_cli/web_server_surface.py`; read it instead of comparing `ui_surface` strings.
+`hermes_agent/hermes_cli/web_server_surface.py`; read it instead of comparing `ui_surface` strings.
 
 ## Rules
 

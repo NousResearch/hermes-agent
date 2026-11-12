@@ -121,7 +121,7 @@ class GatewayTurnHygieneMixin:
 
             if hs.config_context_length is not None:
                 try:
-                    from hermes_cli.route_identity import should_clear_context_pin_async
+                    from hermes_agent.hermes_cli.route_identity import should_clear_context_pin_async
 
                     if await should_clear_context_pin_async(
                         configured_model, hs.model, configured_base_url, hs.base_url,
@@ -135,7 +135,7 @@ class GatewayTurnHygieneMixin:
             if hs.config_context_length is None and hs.base_url:
                 with suppress(TypeError, ValueError):
                     try:
-                        from hermes_cli.config import (
+                        from hermes_agent.hermes_cli.config import (
                             get_compatible_custom_providers as _gw_gcp,
                             get_custom_provider_context_length as _gw_gccl,
                         )
@@ -679,7 +679,7 @@ class GatewayTurnHygieneMixin:
         _hyg_session_db = getattr(self._session_db, "_db", self._session_db)
         # With compression.checkpoint_required on, load the memory provider so the checkpoint exists
         # before any mutation; otherwise keep the fast path (no provider init).
-        from hermes_cli.config import load_config as _load_cfg
+        from hermes_agent.hermes_cli.config import load_config as _load_cfg
         from utils import is_truthy_value as _is_truthy
 
         _hyg_checkpoint_required = _is_truthy(

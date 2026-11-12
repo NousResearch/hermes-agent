@@ -11,7 +11,7 @@ sessions, tool subprocesses and httpx clients:
   per comment run in a long-lived gateway process.
 * ``hermes_agent/tui_gateway/methods_prompt`` ``prompt.background`` — one side agent per
   background turn in the gateway process.
-* ``hermes_cli/cli_commands_mixin._handle_background_command`` — one agent
+* ``hermes_agent/hermes_cli/cli_commands_mixin._handle_background_command`` — one agent
   per ``/bg`` task in a long-lived CLI process.
 
 The tests drive each real call path with a recording fake ``AIAgent`` and
@@ -224,7 +224,7 @@ class TestPromptBackgroundClosesAgent:
 
 
 def _make_cli():
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     cli = HermesCLI.__new__(HermesCLI)
     cli._background_task_counter = 0
@@ -253,8 +253,8 @@ class TestCliBackgroundCommandClosesAgent:
         cli = _make_cli()
         agent_cls.reset()
         monkeypatch.setattr("hermes_agent.run_agent.AIAgent", agent_cls)
-        for target in ("cli.set_sudo_password_callback", "cli.set_approval_callback",
-                       "cli.set_secret_capture_callback",
+        for target in ("hermes_agent.cli.set_sudo_password_callback", "hermes_agent.cli.set_approval_callback",
+                       "hermes_agent.cli.set_secret_capture_callback",
                        "hermes_agent.agent.vault_backends.unlock.set_code_prompt_callback",
                        "hermes_agent.agent.vault_backends.unlock.set_save_login_prompt_callback",
                        "hermes_agent.agent.vault_backends.unlock.set_unlock_prompt_callback"):

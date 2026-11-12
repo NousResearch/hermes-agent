@@ -20,7 +20,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
-from hermes_cli.config import cfg_get
+from hermes_agent.hermes_cli.config import cfg_get
 from plugins import plugin_loader as _loader
 
 if TYPE_CHECKING:
@@ -53,7 +53,7 @@ def _get_project_plugins_dir() -> Optional[Path]:
     """``./.hermes/plugins/`` or None. Gated on HERMES_ENABLE_PROJECT_PLUGINS like the
     PluginManager scan: a repo you merely ``cd`` into must not offer a memory backend."""
     try:
-        from hermes_cli.plugins import _env_enabled
+        from hermes_agent.hermes_cli.plugins import _env_enabled
 
         if not _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
             return None
@@ -168,7 +168,7 @@ def _entry_point_package_dir(entry_point) -> Optional[Path]:
     if entry_point is None:
         return None
     try:
-        from hermes_cli.plugins import resolve_module_origin
+        from hermes_agent.hermes_cli.plugins import resolve_module_origin
 
         module_name = (entry_point.value or "").split(":")[0].strip()
         origin = resolve_module_origin(module_name)
@@ -235,7 +235,7 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
     def _load(_dir):
         if provider_dir:
             return _load_provider_from_dir(provider_dir, register_skills=register_skills)
-        from hermes_cli.plugin_isolation import in_process_import_refusal
+        from hermes_agent.hermes_cli.plugin_isolation import in_process_import_refusal
         refusal = in_process_import_refusal(f"pip-installed memory provider {name!r}")
         if refusal:
             logger.warning("%s", refusal)
@@ -256,7 +256,7 @@ def import_memory_provider_module(name: Optional[str] = None) -> bool:
     name = name or _get_active_memory_provider()
     if not name:
         return False
-    from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+    from hermes_agent.hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
     if isolation_mode() == ISOLATION_HOST and not _is_bundled(find_provider_dir(name) or Path("/")):
         return False  # third-party code runs in the plugin host; nothing to warm in this process
     imported = False
@@ -363,7 +363,7 @@ def _load_provider_from_entry_point(entry_point, *, register_skills: bool = True
 def _load_provider_from_dir(provider_dir: Path, *, register_skills: bool = True) -> Optional[MemoryProvider]:
     """Import a provider module; ``register(ctx)`` first, else a top-level subclass."""
     name = provider_dir.name
-    from hermes_cli.plugin_isolation import user_plugin_host
+    from hermes_agent.hermes_cli.plugin_isolation import user_plugin_host
     host = None if _is_bundled(provider_dir) else user_plugin_host()
     if host is not None:
         return _ProviderCollector(name, register_skills=register_skills).collect_in_host(
@@ -409,7 +409,7 @@ class _ProviderCollector:
     def collect(self, register, *, source=None):
         """Run ``register`` with this collector; hooks it registers form the fallback group that
         general discovery of the same source replaces (see ``PluginLedgerMixin``)."""
-        from hermes_cli.plugins_ledger import _hook_source_of
+        from hermes_agent.hermes_cli.plugins_ledger import _hook_source_of
 
         module = sys.modules.get(getattr(register, "__module__", ""))
         self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=source) if source else module)
@@ -422,7 +422,7 @@ class _ProviderCollector:
         """``collect`` for a provider whose code runs in the plugin host: the host captures the
         provider and forwards every other registration here. The discovery lock is NOT held across
         the host call — its registrations arrive on another thread and take the lock themselves."""
-        from hermes_cli.plugins_ledger import _hook_source_of
+        from hermes_agent.hermes_cli.plugins_ledger import _hook_source_of
 
         self._hook_source = _hook_source_of(self.name, SimpleNamespace(__file__=str(provider_dir / "__init__.py")))
         manager = self._plugin_context()._manager
@@ -456,7 +456,7 @@ class _ProviderCollector:
             self._plugin_context().register_skill(*args, **kwargs)
             qualified_name = f"{self.name}:{args[0] if args else kwargs.get('name')}"
 
-            from hermes_cli.plugins import get_plugin_manager
+            from hermes_agent.hermes_cli.plugins import get_plugin_manager
 
             registered_path = get_plugin_manager().find_plugin_skill(qualified_name)
             if registered_path is not None:
@@ -488,7 +488,7 @@ class _ProviderCollector:
         """A real ``PluginContext``, built once on demand: the common provider that only
         calls ``register_memory_provider`` must not pay for importing the plugin manager."""
         if self._context is None:
-            from hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
+            from hermes_agent.hermes_cli.plugins import PluginContext, PluginManifest, get_plugin_manager
 
             manifest = PluginManifest(name=self.name, key=self.name)
             self._context = PluginContext(manifest, get_plugin_manager())
@@ -504,7 +504,7 @@ def provider_registration_scope(name: str) -> Iterator[Callable[[], None]]:
     provider's next real load registers them again. A real load of the same provider on the same
     profile inside the block loses its registrations too, until it next loads (they would
     proxy into the stopped host anyway, unless it loaded in-process)."""
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
 
     provider_dir = find_provider_dir(name)
     key = provider_dir.name if provider_dir else name  # the collector's key (_load_provider_from_dir)
@@ -523,7 +523,7 @@ def provider_registration_scope(name: str) -> Iterator[Callable[[], None]]:
 def _get_active_memory_provider() -> Optional[str]:
     """Active provider name from config.yaml (``memory.provider``), or None. Reads config only."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         config = load_config()
         return cfg_get(config, "memory", "provider") or None
     except Exception:
@@ -545,7 +545,7 @@ def parked_provider_notice(name: str) -> Optional[str]:
     provider_dir = find_provider_dir(name)
     if provider_dir is None or not _explicitly_disabled(name, provider_dir):
         return None
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     from pm.plugins_state import RECORD
     record = cfg_get(load_config(), "plugins", RECORD)
     recorded = record.get(name) if isinstance(record, dict) else None
@@ -561,7 +561,7 @@ def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
     if _MEMORY_PLUGINS_DIR in provider_dir.parents:
         return False
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         disabled = cfg_get(load_config(), "plugins", "disabled")
     except Exception:
         return False
@@ -577,7 +577,7 @@ def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None
     if active_provider is None:
         active_provider = _get_active_memory_provider()
 
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
 
     manager = get_plugin_manager()
     registered = _registered_skills_for_active_home()
@@ -600,7 +600,7 @@ def discover_plugin_cli_commands() -> list[dict]:
 
     module_name = _module_name(plugin_dir, active_provider) + ".cli"
     if not _is_bundled(plugin_dir):
-        from hermes_cli.plugin_isolation import in_process_import_refusal
+        from hermes_agent.hermes_cli.plugin_isolation import in_process_import_refusal
         if in_process_import_refusal(f"memory provider {active_provider!r} CLI commands"):
             return []
     try:

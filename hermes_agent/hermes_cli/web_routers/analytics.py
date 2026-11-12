@@ -1,7 +1,7 @@
 """Raw-YAML config and token/cost analytics dashboard routes.
 
-Extracted from ``hermes_cli.web_server``; app state and helpers are late-bound through
-:mod:`hermes_cli.web_deps` (cycle-safe, monkeypatch-friendly).
+Extracted from ``hermes_agent.hermes_cli.web_server``; app state and helpers are late-bound through
+:mod:`hermes_agent.hermes_cli.web_deps` (cycle-safe, monkeypatch-friendly).
 """
 
 import asyncio
@@ -12,21 +12,21 @@ from typing import Any, Dict, List, Optional
 import hermes_yaml as yaml
 from fastapi import APIRouter, HTTPException, Query
 
-from hermes_cli.config import get_config_path, read_raw_config
-from hermes_cli.web_deps import late
-from hermes_cli.web_routers._common import corrupt_store_as_status
-from hermes_cli.web_server_profiles import (
+from hermes_agent.hermes_cli.config import get_config_path, read_raw_config
+from hermes_agent.hermes_cli.web_deps import late
+from hermes_agent.hermes_cli.web_routers._common import corrupt_store_as_status
+from hermes_agent.hermes_cli.web_server_profiles import (
     _approval_mode_of, _aux_task_summary, _aux_usage_rows, _broadcast_gateway_session_info, _is_other_profile, _merge_aux_into_by_model,
 )
-from hermes_cli.web_models import RawConfigUpdate
+from hermes_agent.hermes_cli.web_models import RawConfigUpdate
 
 router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
-_open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
-_session_db_path_for_profile = late("_session_db_path_for_profile", "hermes_cli.web_server_sessions")
-_profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
-save_config = late("save_config", "hermes_cli.config")
+_open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_agent.hermes_cli.web_server_sessions")
+_session_db_path_for_profile = late("_session_db_path_for_profile", "hermes_agent.hermes_cli.web_server_sessions")
+_profile_scope = late("_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
+save_config = late("save_config", "hermes_agent.hermes_cli.config")
 
 # ── Raw YAML config ──────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ async def get_config_raw(profile: Optional[str] = None):
     process's own profile, which is wrong under the global profile switcher.
     """
     def _run():
-        from hermes_cli.config_backend import supports_file_tooling
+        from hermes_agent.hermes_cli.config_backend import supports_file_tooling
         if not supports_file_tooling():
             # The raw editor shows the file's bytes; a non-file backend has no file.
             raise HTTPException(status_code=409, detail="This config backend has no raw config file")

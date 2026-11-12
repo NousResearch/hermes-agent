@@ -204,7 +204,7 @@ class TestAnchorHeal:
 class TestUpdateInvokeFallback:
     def test_dead_alias_no_marker_falls_back_to_module_invocation(self, tmp_path):
         """No marker to heal from, but the venv python itself boots (the
-        launchd-gateway shape): drive the update as python -m hermes_cli.main."""
+        launchd-gateway shape): drive the update as python -m hermes_agent.hermes_cli.main."""
         root = make_venv(tmp_path, python=GOOD_STUB, python3=BAD_STUB,
                          marker=None)
         out = run_selftest(root)

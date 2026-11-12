@@ -32,7 +32,7 @@ _inspections_lock = threading.Lock()
 
 def _pc():
     """The facade, read at call time: tests patch ``plugins_cmd.<name>`` and sibling calls must see it."""
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     return plugins_cmd
 
 
@@ -161,7 +161,7 @@ def _inspect(identifier: str, catalog_name: Optional[str]) -> dict[str, Any]:
     revision = None
     names: tuple[str, ...] = ()
     if catalog_name:
-        from hermes_cli import plugins_cmd_catalog as catalog
+        from hermes_agent.hermes_cli import plugins_cmd_catalog as catalog
         entry = catalog.get_live_catalog_entry(catalog_name)
         if entry is None:
             return _failure(f"'{catalog_name}' is not in the Hermes plugin catalog.", [], False)
@@ -174,7 +174,7 @@ def _inspect(identifier: str, catalog_name: Optional[str]) -> dict[str, Any]:
     warnings = ["This URL uses an insecure or local scheme. Prefer https:// or git@ for production installs."] \
         if insecure else []
     try:
-        from hermes_cli.plugins_cmd_catalog import raise_if_removed
+        from hermes_agent.hermes_cli.plugins_cmd_catalog import raise_if_removed
         raise_if_removed(identifier, git_url, *names)
         with tempfile.TemporaryDirectory(prefix="hermes-plugin-inspect-") as tmp:
             clone = Path(tmp) / "plugin"

@@ -467,7 +467,7 @@ class ProfileCreate(BaseModel):
     # Profile-builder additions, applied best-effort AFTER the profile dir exists (a hiccup never 500s).
     mcp_servers: list[MCPServerCreate] = []
     keep_skills: list[str] = []  # skills to KEEP: non-empty = replace semantics (unlisted seeded ones disabled)
-    # The Desktop bot page's "Share keys & accounts" defaults (hermes_cli.profile_provision).
+    # The Desktop bot page's "Share keys & accounts" defaults (hermes_agent.hermes_cli.profile_provision).
     mirror_credentials: bool = True
     share_auth: bool = True
     # Installed async via `hermes -p <name> skills install` (skills_hub.SKILLS_DIR is import-time-bound,

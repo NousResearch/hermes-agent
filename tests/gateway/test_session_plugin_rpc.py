@@ -69,7 +69,7 @@ def _live(platform, chat_id, **source):
 async def test_plugin_method_is_gated_like_a_session_verb_and_leaves_with_its_plugin(tmp_path, monkeypatch):
     from hermes_agent.gateway.config import Platform
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     authority = await _authority(tmp_path, monkeypatch, _answer)
     plugin = tmp_path / 'plugins' / 'pane-demo'
@@ -142,7 +142,7 @@ async def test_plugin_method_is_gated_like_a_session_verb_and_leaves_with_its_pl
 async def test_plugin_session_event_reaches_only_that_sessions_viewers(tmp_path, monkeypatch):
     from hermes_agent.gateway import run_api
     from hermes_agent.gateway.config import Platform
-    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     authority = await _authority(tmp_path, monkeypatch, _answer)
     authority.sessions['t'] = _live(Platform.TELEGRAM, 't')
@@ -216,7 +216,7 @@ def test_emit_from_a_plugin_thread_reaches_its_own_profile_on_a_multiplexed_gate
     """A thread the plugin started carries no profile scope; ``ctx.emit_to_session`` still looks the
     session up in the plugin's own profile, never the launch profile's."""
     from hermes_agent.gateway import run_api
-    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
     from hermes_constants import get_hermes_home_override
 
     launch, secondary = tmp_path / 'launch', tmp_path / 'secondary'
@@ -257,7 +257,7 @@ async def test_plugin_frontend_gets_schema_checked_json_from_its_own_task_with_i
     import sys
     from hermes_agent.gateway import run_api
     from hermes_agent.gateway.session_controls import AuthorityConnection
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     model = ThreadingHTTPServer(('127.0.0.1', 0), _ChartModel)
     model.requests, model.release = [], threading.Event()

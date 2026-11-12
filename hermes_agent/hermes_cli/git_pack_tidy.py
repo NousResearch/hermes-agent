@@ -31,7 +31,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional
 
-from hermes_cli._subprocess_compat import (
+from hermes_agent.hermes_cli._subprocess_compat import (
     NO_LAZY_FETCH_ENV,
     noninteractive_git_env,
     windows_hide_flags,
@@ -272,7 +272,7 @@ def _merge_git(repo_root: Path, staging: Path, batch: list[Path], timeout: float
 
     ``None`` when it ran out of time or could not start; a custody refusal propagates, so an update
     stops the way it does for any updater git Windows will not bind."""
-    from hermes_cli.update_custody import CustodyRefused, run_git
+    from hermes_agent.hermes_cli.update_custody import CustodyRefused, run_git
 
     try:
         return run_git(
@@ -358,7 +358,7 @@ def _take_lock(git_dir: Path) -> Optional[int]:
 
 def tidy_partial_clone_packs(repo_root: Path, *, budget_seconds: float = TIDY_BUDGET_SECONDS) -> TidyResult:
     """Spend at most ``budget_seconds`` erasing redundant and merging small promisor packs. Never raises."""
-    from hermes_cli.gitlock import _partial_clone_filter
+    from hermes_agent.hermes_cli.gitlock import _partial_clone_filter
 
     result = TidyResult()
     pack_dir = Path(repo_root) / ".git" / "objects" / "pack"

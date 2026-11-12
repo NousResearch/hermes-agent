@@ -1,6 +1,6 @@
 """``/api/gateway-connections``: the Webapp's door to this machine's saved gateways list.
 
-Thin HTTP over :mod:`hermes_cli.gateway_connections`, answering in the shapes native Desktop's
+Thin HTTP over :mod:`hermes_agent.hermes_cli.gateway_connections`, answering in the shapes native Desktop's
 ``hermesDesktop.connections`` IPC answers (``{ok, registry}``, plus ``connection`` on save), so the
 browser bridge is a transport swap. Mounted only where the surface policy names
 ``gateway_connections`` (the Webapp) and, like every ``/api/`` route, only past the sign-in gate.
@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, Body, HTTPException
 
-from hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli import gateway_connections as store
 
 router = APIRouter()
 
@@ -50,7 +50,7 @@ def _dial(registry: dict, connection_id: object) -> object:
 
 @router.post("/api/gateway-connections")
 def save_connection(payload: dict = Body(...)) -> dict:
-    from hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets
+    from hermes_agent.hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets
 
     before = _dial(_call(store.read_registry), payload.get("id")) if payload.get("id") else None
     connection, registry = _call(lambda: store.save_connection(payload))
@@ -62,9 +62,9 @@ def save_connection(payload: dict = Body(...)) -> dict:
 
 @router.delete("/api/gateway-connections/{connection_id}")
 def remove_connection(connection_id: str) -> dict:
-    from hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets
+    from hermes_agent.hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets
 
-    from hermes_cli.gateway_connections_reach import forget
+    from hermes_agent.hermes_cli.gateway_connections_reach import forget
 
     registry = _call(lambda: store.remove_connection(connection_id))
     close_gateway_sockets(connection_id)
@@ -89,8 +89,8 @@ def set_primary(connection_id: str) -> dict:
 
 @router.post("/api/gateway-connections/{connection_id}/test")
 async def test_connection(connection_id: str) -> dict:
-    from hermes_cli.gateway_connections_probe import probe_connection
-    from hermes_cli.web_routers.gateway_connections_reach import http_error
+    from hermes_agent.hermes_cli.gateway_connections_probe import probe_connection
+    from hermes_agent.hermes_cli.web_routers.gateway_connections_reach import http_error
 
     try:
         return await probe_connection(connection_id)

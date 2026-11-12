@@ -114,7 +114,7 @@ class TestEarlyStopStaysNeutral:
     ):
         """Only the user's stop counts ``skipped``; a host timeout that cancels the fence (gateway hygiene
         budget, total ceiling) without the stop event is a real failure even before the stall window."""
-        from hermes_cli.observability import shared_metrics_events
+        from hermes_agent.hermes_cli.observability import shared_metrics_events
 
         recorded = []
         monkeypatch.setattr(shared_metrics_events, "record_compression", lambda **kw: recorded.append(kw["outcome"]))

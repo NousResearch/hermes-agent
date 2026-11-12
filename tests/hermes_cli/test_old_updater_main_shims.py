@@ -11,14 +11,14 @@ from tests.compat.old_updater_support import (
 
 @pytest.fixture
 def historical_main(no_external_work):
-    from hermes_cli import main
+    from hermes_agent.hermes_cli import main
 
     return main
 
 
 def test_historical_main_data_and_skipped_probes_preserve_caller_shapes(historical_main, tmp_path):
     main = historical_main
-    from hermes_cli import main_web_build
+    from hermes_agent.hermes_cli import main_web_build
 
     # Old recorders compose this name with PROJECT_ROOT. It remains data only.
     assert tmp_path / main._BYTECODE_FINGERPRINT_FILE == (

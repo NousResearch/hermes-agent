@@ -9,8 +9,8 @@ import pytest
 from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from hermes_agent.gateway.session import SessionStore, SessionSource
-from hermes_cli import goals
-from hermes_cli.heartbeat import HeartbeatManager, HeartbeatState
+from hermes_agent.hermes_cli import goals
+from hermes_agent.hermes_cli.heartbeat import HeartbeatManager, HeartbeatState
 from hermes_agent.hermes_state import SessionDB
 
 
@@ -65,7 +65,7 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
         expected = {e.session_key: (e.origin, e.session_id) for e in entries[:2]}
         assert runner._heartbeat_watch == expected
         with monkeypatch.context() as patch:
-            patch.setattr('hermes_cli.heartbeat.load_heartbeat', lambda sid: None)
+            patch.setattr('hermes_agent.hermes_cli.heartbeat.load_heartbeat', lambda sid: None)
             await restore_heartbeat_watches(runner)
         assert runner._heartbeat_watch == expected
         runner._heartbeat_watch.clear()

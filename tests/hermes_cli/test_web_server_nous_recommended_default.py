@@ -14,11 +14,11 @@ class TestNousRecommendedDefaultCostSafePolicy:
         With no preferred catalog label present in the curated list and no
         Anthropic frontier entries, the first curated entry is selected.
         """
-        import hermes_cli.models as models_mod
-        from hermes_cli.web_routers.models import get_recommended_default_model
+        import hermes_agent.hermes_cli.models as models_mod
+        from hermes_agent.hermes_cli.web_routers.models import get_recommended_default_model
 
         monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: ["top/model", "other/model"])
-        import hermes_cli.models_pricing as mp
+        import hermes_agent.hermes_cli.models_pricing as mp
         monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider: {})
         monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
         monkeypatch.setattr(
@@ -83,13 +83,13 @@ class TestNousRecommendedDefaultCostSafePolicy:
         else first non-frontier (Opus / Fable) entry. Covers both the
         current Fable-first catalog and a future Opus-first catalog.
         """
-        import hermes_cli.models as models_mod
-        from hermes_cli.web_routers.models import get_recommended_default_model
+        import hermes_agent.hermes_cli.models as models_mod
+        from hermes_agent.hermes_cli.web_routers.models import get_recommended_default_model
 
         monkeypatch.setattr(
             models_mod, "get_curated_nous_model_ids", lambda: list(model_ordering),
         )
-        import hermes_cli.models_pricing as mp
+        import hermes_agent.hermes_cli.models_pricing as mp
         monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider: {})
         monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
         monkeypatch.setattr(
@@ -109,14 +109,14 @@ class TestNousRecommendedDefaultCostSafePolicy:
     def test_recommended_default_nous_paid_falls_back_when_all_frontier(self, monkeypatch):
         """If every curated entry is a frontier tier (Opus / Fable), fall
         back to the head of the list so the picker is never empty."""
-        import hermes_cli.models as models_mod
-        from hermes_cli.web_routers.models import get_recommended_default_model
+        import hermes_agent.hermes_cli.models as models_mod
+        from hermes_agent.hermes_cli.web_routers.models import get_recommended_default_model
 
         monkeypatch.setattr(
             models_mod, "get_curated_nous_model_ids",
             lambda: ["anthropic/claude-fable-5", "anthropic/claude-opus-4.8"],
         )
-        import hermes_cli.models_pricing as mp
+        import hermes_agent.hermes_cli.models_pricing as mp
         monkeypatch.setattr(mp, "get_pricing_for_provider", lambda provider: {})
         monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
         monkeypatch.setattr(

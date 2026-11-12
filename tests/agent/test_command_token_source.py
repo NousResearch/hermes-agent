@@ -161,7 +161,7 @@ class TestResolutionYieldsACallable:
     """The integration contract: a callable reaches the wire client."""
 
     def test_key_cmd_entry_resolves_to_a_callable(self, monkeypatch):
-        from hermes_cli import runtime_provider as rp
+        from hermes_agent.hermes_cli import runtime_provider as rp
 
         config = {
             "providers": {
@@ -174,7 +174,7 @@ class TestResolutionYieldsACallable:
             }
         }
         monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda *a, **k: config)
 
         runtime = rp.resolve_runtime_provider(requested="custom:dbx")
         api_key = runtime["api_key"]
@@ -183,7 +183,7 @@ class TestResolutionYieldsACallable:
 
     def test_explicit_api_key_still_wins(self, monkeypatch):
         """``--api-key`` stays the one-off recovery escape hatch."""
-        from hermes_cli import runtime_provider as rp
+        from hermes_agent.hermes_cli import runtime_provider as rp
 
         config = {
             "providers": {
@@ -196,7 +196,7 @@ class TestResolutionYieldsACallable:
             }
         }
         monkeypatch.setattr(rp, "load_config", lambda *a, **k: config)
-        monkeypatch.setattr("hermes_cli.config.load_config", lambda *a, **k: config)
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda *a, **k: config)
 
         runtime = rp.resolve_runtime_provider(
             requested="custom:dbx", explicit_api_key="sk-explicit-override"
@@ -311,7 +311,7 @@ class TestAuxiliaryResolverHonoursKeyCmd:
     def _resolve(monkeypatch, entry):
         """Resolve *entry* as a named custom provider; return the api_key seen."""
         import hermes_agent.agent.auxiliary_client as ac
-        from hermes_cli import runtime_provider as rp
+        from hermes_agent.hermes_cli import runtime_provider as rp
 
         monkeypatch.setattr(
             rp, "_get_named_custom_provider",
@@ -378,8 +378,8 @@ class TestExplicitCallableSurvivesCustomResolution:
 
     def _resolve(self, monkeypatch, shape, key):
         import hermes_agent.agent.auxiliary_client as ac
-        from hermes_cli import auth as hauth
-        from hermes_cli import runtime_provider as rp
+        from hermes_agent.hermes_cli import auth as hauth
+        from hermes_agent.hermes_cli import runtime_provider as rp
 
         seen = self._spy_client(monkeypatch)
         if shape == "bare_custom":

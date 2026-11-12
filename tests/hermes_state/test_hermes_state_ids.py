@@ -15,7 +15,7 @@ from hermes_agent.hermes_state_ids import new_session_id
 @pytest.mark.parametrize("hex_len,expected_re", [(6, r"^\d{8}_\d{6}_[0-9a-f]{6}$"), (8, r"^\d{8}_\d{6}_[0-9a-f]{8}$"),
                                                  (12, r"^\d{8}_\d{6}_[0-9a-f]{12}$")])
 def test_minted_ids_are_what_salvage_classifies_as_session_ids(hex_len, expected_re):
-    from hermes_cli.session_lost_and_found import _is_session_id
+    from hermes_agent.hermes_cli.session_lost_and_found import _is_session_id
     sid = new_session_id(datetime(2026, 1, 2, 3, 4, 5), hex_len=hex_len)
     assert re.fullmatch(expected_re, sid) and sid.startswith("20260102_030405_")
     assert _is_session_id(sid)

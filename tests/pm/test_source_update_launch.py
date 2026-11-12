@@ -18,7 +18,7 @@ import sys
 import pytest
 
 import pm
-from hermes_cli import venv_sync
+from hermes_agent.hermes_cli import venv_sync
 from pm.environments import install_state_dir, runtime_facts_path, selected_venv, site_packages
 from pm import paths
 from pm.lock import Facts
@@ -62,7 +62,7 @@ def source_launch(tmp_path, monkeypatch, isolated_python):
         json.dumps({"updateMechanism": "self"}), encoding="utf-8",
     )
     # The startup heal hands the shared completion tail (launchers, products,
-    # maintenance) to the checkout's own hermes_cli/source_completion.py. This
+    # maintenance) to the checkout's own hermes_agent/hermes_cli/source_completion.py. This
     # source slice has no products; record the hand-off instead of running it.
     (root / "hermes_cli").mkdir()
     (root / "hermes_cli" / "source_completion.py").write_text(
@@ -97,7 +97,7 @@ def source_launch(tmp_path, monkeypatch, isolated_python):
 @pytest.mark.platforms("posix")
 @pytest.mark.parametrize("update", ["launch", "sync", "pm-update"])
 def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monkeypatch, update):
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
     from pm.cli import cmd_gc
     from pm.lock import Lockfile
     from pm.store import current_target, tree_digest
@@ -182,7 +182,7 @@ def test_source_python_pin_update_survives_real_gc(source_launch, tmp_path, monk
 
 @pytest.mark.platforms("posix")
 def test_launcher_publication_failure_retries_without_rebuilding_dependencies(source_launch, monkeypatch):
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root, store_python, _ = source_launch
     with monkeypatch.context() as failed_publication:
@@ -274,7 +274,7 @@ def test_process_spawned_by_the_update_commits_dependencies_but_not_the_tail(sou
     """A process an update spawns before its dependencies are current (its restarted gateway)
     must not boot on a tree built for another interpreter; it syncs, but leaves the tail alone."""
     import time
-    from hermes_cli.update_lock import update_marker_path
+    from hermes_agent.hermes_cli.update_lock import update_marker_path
     from pm.environments import committed_venv
 
     root, store_python, _ = source_launch
@@ -507,7 +507,7 @@ def test_failed_launch_completion_degrades_to_a_warning(source_launch, tmp_path,
 def test_completion_retry_backoff_and_cap(tmp_path, monkeypatch):
     """Consecutive completion-tail failures back off and finally stop self-starting (#122206:
     an environment where every launch re-runs a doomed ~4-minute tail)."""
-    from hermes_cli import venv_sync
+    from hermes_agent.hermes_cli import venv_sync
 
     monkeypatch.setattr(venv_sync, "completion_pending_path",
                         lambda root: tmp_path / "source-completion-pending")
@@ -547,7 +547,7 @@ def test_capped_completion_attempts_leave_marker_for_explicit_update(source_laun
     """Past the retry cap a launch must NOT re-run the tail; it keeps the pending marker
     and points the operator at `hermes update` instead of burning another doomed attempt."""
     root, store_python, _ = source_launch
-    from hermes_cli.venv_sync import (
+    from hermes_agent.hermes_cli.venv_sync import (
         _completion_attempts_path,
         arm_completion,
         completion_pending_path,
@@ -574,7 +574,7 @@ def test_capped_completion_attempts_leave_marker_for_explicit_update(source_laun
 def test_failed_tail_attempt_is_counted_and_success_clears_it(source_launch, tmp_path, monkeypatch, capsys):
     """A failing completion tail records the attempt; the successful retry clears the record."""
     root, store_python, _ = source_launch
-    from hermes_cli.venv_sync import _completion_attempts_path, arm_completion, completion_pending_path
+    from hermes_agent.hermes_cli.venv_sync import _completion_attempts_path, arm_completion, completion_pending_path
 
     pm.sync_venv(["all"], explicit=True, project_root=root)
     arm_completion(root)

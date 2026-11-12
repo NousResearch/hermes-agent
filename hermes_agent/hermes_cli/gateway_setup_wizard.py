@@ -1,7 +1,7 @@
 """Gateway platform setup wizard (hermes gateway setup): platform registry/status table, per-platform setup prompts, service offer.
 
-Extracted from ``hermes_cli/gateway.py``. Bodies read facade helpers through ``_gw()`` (late
-binding on ``hermes_cli.gateway``) so the seams tests and callers patch on the facade keep
+Extracted from ``hermes_agent/hermes_cli/gateway.py``. Bodies read facade helpers through ``_gw()`` (late
+binding on ``hermes_agent.hermes_cli.gateway``) so the seams tests and callers patch on the facade keep
 intercepting the moved code.
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ import sys
 
 
 def _gw():
-    from hermes_cli import gateway  # late: the facade imports this module
+    from hermes_agent.hermes_cli import gateway  # late: the facade imports this module
     return gateway
 
 
@@ -60,7 +60,7 @@ def _all_platforms() -> list[dict]:
     running gateway; user-installed ones still need ``plugins.enabled`` (untrusted code). Matrix is
     hidden on Windows: python-olm has no wheel or native build (use WSL)."""
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()
     except Exception as e:
         _gw().logger.debug("plugin discovery failed during platform enumeration: %s", e)
@@ -191,7 +191,7 @@ def _telegram_auto_setup(token_var: str) -> tuple[bool, object]:
     if _gw().prompt("  Choice [1/2]", default="1").strip() != "1":
         return False, None
     try:
-        from hermes_cli.telegram_managed_bot import (
+        from hermes_agent.hermes_cli.telegram_managed_bot import (
             auto_setup_telegram_bot_result, is_valid_telegram_bot_token,
         )
     except ImportError:
@@ -258,7 +258,7 @@ def _prompt_allowlist_var(var: dict, platform_key: str, auto_owner_user_id) -> s
 
 def _setup_standard_platform(platform: dict):
     """Interactive setup for Telegram, Discord, or Slack."""
-    from hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
+    from hermes_agent.hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
     emoji, label, token_var = platform["emoji"], platform["label"], platform["token_var"]
     print_setup_header(f"{emoji} {label}")
 
@@ -322,8 +322,8 @@ def _setup_standard_platform(platform: dict):
 
 
 def _builtin_setup_fn(key: str):
-    """Resolve a built-in platform's setup function; late-bound to dodge the hermes_cli.setup cycle."""
-    from hermes_cli import setup as _s
+    """Resolve a built-in platform's setup function; late-bound to dodge the hermes_agent.hermes_cli.setup cycle."""
+    from hermes_agent.hermes_cli import setup as _s
     return {
         # telegram/discord/slack/whatsapp/dingtalk/feishu/wecom setup_fns come from their plugins.
         "webhooks": _gw().setup_platforms._setup_webhooks,

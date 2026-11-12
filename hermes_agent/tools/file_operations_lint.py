@@ -199,7 +199,7 @@ class LintMixin:
         import shutil
         import subprocess
 
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
         from hermes_constants import with_hermes_node_path
         from hermes_agent.tools.environments.local import _IS_WINDOWS, _msys_to_windows_path, hermes_subprocess_env
 
@@ -257,7 +257,7 @@ class LintMixin:
             return False
         from hermes_agent.agent.lsp.manager import parse_trusted_workspaces
         from hermes_agent.agent.lsp.workspace import is_trusted_workspace, operator_workspace_roots
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         lsp_cfg = load_config_readonly().get("lsp")
         trusted = parse_trusted_workspaces(lsp_cfg.get("trusted_workspaces") if isinstance(lsp_cfg, dict) else None)
         return not is_trusted_workspace(getattr(self.env, "cwd", None) or self.cwd, trusted, operator_workspace_roots())

@@ -1,4 +1,4 @@
-"""The ``register_<category>_provider`` table behind :class:`hermes_cli.plugins.PluginContext`.
+"""The ``register_<category>_provider`` table behind :class:`hermes_agent.hermes_cli.plugins.PluginContext`.
 
 Every ``register_<category>_provider`` shares one body (:meth:`PluginContext._register_scoped_provider`):
 type-check, register in the scope-keyed process-global registry, lease the slot so unload restores
@@ -20,7 +20,7 @@ import importlib
 import logging
 from typing import Any, Callable, Optional
 
-from hermes_cli.plugins_loader import _plugin_home_scope, _serialized_replacement
+from hermes_agent.hermes_cli.plugins_loader import _plugin_home_scope, _serialized_replacement
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ def make_scoped_provider_registrar(method_name, kind, registry_mod, base_ref, la
     """Build one ``register_<category>_provider`` method from a ``_SCOPED_PROVIDER_REGISTRARS`` row.
 
     ``PluginContext`` now spells its registrars out; this stays importable (and from
-    ``hermes_cli.plugins``) for callers that build one from a row, as on main.
+    ``hermes_agent.hermes_cli.plugins``) for callers that build one from a row, as on main.
     """
     normalize_fn = _NAME_NORMALIZERS[options.get("normalize", "strip")]
 

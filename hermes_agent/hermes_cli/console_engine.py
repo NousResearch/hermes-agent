@@ -111,7 +111,7 @@ def _split_line(line: str) -> list[str]:
     # Windows-safe splitter: plain shlex posix=True eats backslashes in paths.
     # See #78293.
     # See #83934.
-    from hermes_cli._subprocess_compat import split_command_line
+    from hermes_agent.hermes_cli._subprocess_compat import split_command_line
     try:
         return split_command_line(line)
     except ValueError as exc:
@@ -189,9 +189,9 @@ def _noop_console_command(_args: argparse.Namespace) -> None:
 @dataclass(frozen=True)
 class _CliSurface:
     """How a CLI subcommand module hangs its argparse tree off a root subparsers action.
-    ``extracted``: ``builder(subparsers, <handler>=fn)``, fn from hermes_cli.main.
+    ``extracted``: ``builder(subparsers, <handler>=fn)``, fn from hermes_agent.hermes_cli.main.
     ``registered``: ``register(subparsers.add_parser(root))``, optional module ``handler``.
-    ``builder``: ``top = builder(subparsers)``, func from hermes_cli.main.
+    ``builder``: ``top = builder(subparsers)``, func from hermes_agent.hermes_cli.main.
     ``adder``: self-wiring."""
     kind: Literal["extracted", "registered", "builder", "adder"]
     module: str
@@ -205,7 +205,7 @@ class _CliSurface:
         module = importlib.import_module(self.module)
         entry = getattr(module, self.builder)
         main_handler = (
-            (lambda: getattr(importlib.import_module("hermes_cli.main"), self.handler))
+            (lambda: getattr(importlib.import_module("hermes_agent.hermes_cli.main"), self.handler))
             if live else (lambda: _noop_console_command))
         if self.kind == "extracted":
             entry(subparsers, **{self.handler: main_handler()})
@@ -548,20 +548,20 @@ def _apply_confirmed_defaults(args: argparse.Namespace) -> None:
 
 
 _version = _simple_command(
-    "version", "hermes_cli._startup_fast", "print_fast_version_info", check_updates=True)
+    "version", "hermes_agent.hermes_cli._startup_fast", "print_fast_version_info", check_updates=True)
 
 
 def _status(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "status")
-    from hermes_cli.status import show_status
+    from hermes_agent.hermes_cli.status import show_status
     output = _capture_output(lambda: show_status(SimpleNamespace(full=True, deep=False)))
     return _strip_console_status_footer(output)
 
 
 _doctor = _simple_command(
-    "doctor", "hermes_cli.doctor", "run_doctor", lambda: (SimpleNamespace(fix=False, ack=None),))
-_config_show = _simple_command("config show", "hermes_cli.config_show", "show_config")
-_cron_status = _simple_command("cron status", "hermes_cli.cron", "cron_status")
+    "doctor", "hermes_agent.hermes_cli.doctor", "run_doctor", lambda: (SimpleNamespace(fix=False, ack=None),))
+_config_show = _simple_command("config show", "hermes_agent.hermes_cli.config_show", "show_config")
+_cron_status = _simple_command("cron status", "hermes_agent.hermes_cli.cron", "cron_status")
 
 
 def _logs(_engine: HermesConsoleEngine, args: list[str]) -> str:
@@ -573,7 +573,7 @@ def _logs(_engine: HermesConsoleEngine, args: list[str]) -> str:
         "--level", "--session", "--since", "--component")
     if ns.lines < 1 or ns.lines > 500:
         raise ConsoleCommandError("logs --lines must be between 1 and 500")
-    from hermes_cli.logs import list_logs, tail_log
+    from hermes_agent.hermes_cli.logs import list_logs, tail_log
     if ns.log_name == "list":
         return _capture_output(list_logs)
     return _capture_output(
@@ -623,21 +623,21 @@ def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 def _config_path(_engine: HermesConsoleEngine, args: list[str]) -> str:
     _expect_no_args(args, "config path")
-    from hermes_cli.config import get_config_path
+    from hermes_agent.hermes_cli.config import get_config_path
     return str(get_config_path())
 
 
 def _config_set(_engine: HermesConsoleEngine, args: list[str]) -> str:
     if len(args) < 2:
         raise ConsoleCommandError("Usage: config set <key> <value>")
-    from hermes_cli.config import set_config_value
+    from hermes_agent.hermes_cli.config import set_config_value
     return _capture_output(lambda: set_config_value(args[0], " ".join(args[1:])))
 
 
 @_captured
 def _config_migrate(_engine: HermesConsoleEngine, args: list[str]) -> None:
     _expect_no_args(args, "config migrate")
-    from hermes_cli.config import migrate_config
+    from hermes_agent.hermes_cli.config import migrate_config
     results = migrate_config(interactive=False, quiet=False)
     if results.get("env_added") or results.get("config_added"):
         print("Configuration updated.")
@@ -658,7 +658,7 @@ def _guard_exports(db, session_ids: list[str]) -> None:
 
 @_captured
 def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> None:
-    from hermes_cli.session_export import export_projection
+    from hermes_agent.hermes_cli.session_export import export_projection
 
     ns = _parse("sessions export", args, "output", "--source", "--session-id")
     with _session_db() as db:
@@ -745,7 +745,7 @@ def _profile_status(_engine: HermesConsoleEngine, args: list[str]) -> str:
 
 def _cron_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
     ns = _parse("cron list", args, (("--all",), dict(action="store_true")))
-    from hermes_cli.cron import cron_list
+    from hermes_agent.hermes_cli.cron import cron_list
     return _capture_output(lambda: cron_list(show_all=ns.all))
 
 

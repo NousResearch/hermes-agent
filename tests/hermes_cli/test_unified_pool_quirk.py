@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.local_runtime.hardware as hw
+import hermes_agent.hermes_cli.local_runtime.hardware as hw
 from hermes_platform.host import gpu_adapters
 
 GIB = 1 << 30
@@ -189,8 +189,8 @@ def test_vulkan_device_type_decides_discrete_vs_unified(monkeypatch, tmp_path, d
     """A discrete AMD/Intel card behind a Vulkan engine budgets its own memory with RAM as spill;
     an integrated one (ggml IGPU) keeps the RAM-as-unified budget, never both pools. The engine is
     the one config.yaml names, read through the real config loader."""
-    from hermes_cli.local_runtime import binaries
-    from hermes_cli.local_runtime import devices
+    from hermes_agent.hermes_cli.local_runtime import binaries
+    from hermes_agent.hermes_cli.local_runtime import devices
 
     total = 16304 << 20
     home = tmp_path / ".hermes"

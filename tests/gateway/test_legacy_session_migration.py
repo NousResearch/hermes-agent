@@ -100,7 +100,7 @@ async def test_legacy_adoption_refuses_live_owner_and_foreign_profile_without_wr
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.gateway.session_local_title import resolve_titled_session
-    from hermes_cli.active_sessions import try_acquire_active_session, release_active_session
+    from hermes_agent.hermes_cli.active_sessions import try_acquire_active_session, release_active_session
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -115,7 +115,7 @@ async def test_legacy_adoption_refuses_live_owner_and_foreign_profile_without_wr
     authority._native_legacy_transports = {native.transport_id: native}
     lease, refusal = try_acquire_active_session(session_id='old-live', surface='cli', registry_home=Path(db.db_path).parent, config={})
     assert lease is not None, refusal
-    from hermes_cli.active_sessions import active_session_liveness_guard
+    from hermes_agent.hermes_cli.active_sessions import active_session_liveness_guard
     with active_session_liveness_guard('old-live', registry_home=Path(db.db_path).parent) as active:
         assert active
     try:

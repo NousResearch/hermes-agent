@@ -22,7 +22,7 @@ from prompt_toolkit.input.vt100_parser import Vt100Parser
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 
-from hermes_cli.pt_input_extras import install_modify_other_keys_aliases
+from hermes_agent.hermes_cli.pt_input_extras import install_modify_other_keys_aliases
 
 
 @pytest.fixture(autouse=True)
@@ -232,7 +232,7 @@ def test_modify_other_keys_super_printable_produces_char(seq, ch):
 def test_shift_symbol_data_normalized_in_buffer():
     """End-to-end: Vt100Parser with install_keypress_data_normalization
     must deliver the character in KeyPress.data, not the raw escape."""
-    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+    from hermes_agent.hermes_cli.pt_input_extras import install_keypress_data_normalization
     install_keypress_data_normalization()
 
     out = []
@@ -249,7 +249,7 @@ def test_shift_symbol_data_normalized_in_buffer():
 def test_does_not_clobber_shift_enter_alias():
     """install_modify_other_keys_aliases must not overwrite mappings
     installed by install_shift_enter_alias (modifier=2, not 5)."""
-    from hermes_cli.pt_input_extras import install_shift_enter_alias
+    from hermes_agent.hermes_cli.pt_input_extras import install_shift_enter_alias
     install_shift_enter_alias()
     assert ANSI_SEQUENCES["\x1b[27;2;13~"] == (Keys.Escape, Keys.ControlM)
     assert ANSI_SEQUENCES["\x1b[13;2u"] == (Keys.Escape, Keys.ControlM)
@@ -259,7 +259,7 @@ def test_ctrl_enter_still_works_under_modify_other_keys():
     """Ctrl+Enter must produce the Alt+Enter newline tuple, not plain Ctrl+M.
     This is the install_ctrl_enter_alias behavior — our new function must
     not clobber it."""
-    from hermes_cli.pt_input_extras import install_ctrl_enter_alias
+    from hermes_agent.hermes_cli.pt_input_extras import install_ctrl_enter_alias
     install_ctrl_enter_alias()
     install_modify_other_keys_aliases()
 
@@ -351,7 +351,7 @@ def test_shift_space_keypress_data_is_plain_space(seq):
     """The KeyPress data for Shift+Space must be ' ', not the raw CSI
     sequence — self-insert inserts event.data, so raw bytes would leak
     into the buffer even though the key is correctly mapped (#88071)."""
-    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+    from hermes_agent.hermes_cli.pt_input_extras import install_keypress_data_normalization
 
     install_keypress_data_normalization()
     presses = _parse_presses(seq)
@@ -365,7 +365,7 @@ def test_shift_space_keypress_data_is_plain_space(seq):
 def test_shift_letter_keypress_data_is_uppercase(seq):
     """Shift+letter (modifier 2) maps to the uppercase letter; its KeyPress
     data must be that letter, not the raw escape text (#88071)."""
-    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+    from hermes_agent.hermes_cli.pt_input_extras import install_keypress_data_normalization
 
     install_keypress_data_normalization()
     presses = _parse_presses(seq)
@@ -378,7 +378,7 @@ def test_shift_letter_keypress_data_is_uppercase(seq):
 def test_keypad_digit_keypress_data_is_digit():
     """Keypad digits (Kitty PUA) map to plain digits; their KeyPress data
     must be the digit, not the raw escape text (#88071)."""
-    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+    from hermes_agent.hermes_cli.pt_input_extras import install_keypress_data_normalization
 
     install_keypress_data_normalization()
     presses = _parse_presses("\x1b[57404u")
@@ -403,7 +403,7 @@ def test_buffer_level_shift_space_no_raw_csi():
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.layout import HSplit, Layout, Window, BufferControl
 
-    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+    from hermes_agent.hermes_cli.pt_input_extras import install_keypress_data_normalization
 
     install_keypress_data_normalization()
 
@@ -455,7 +455,7 @@ def test_buffer_level_shift_letter_no_raw_csi():
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.layout import HSplit, Layout, Window, BufferControl
 
-    from hermes_cli.pt_input_extras import install_keypress_data_normalization
+    from hermes_agent.hermes_cli.pt_input_extras import install_keypress_data_normalization
 
     install_keypress_data_normalization()
 
@@ -555,7 +555,7 @@ def test_lock_media_modifier_events_are_consumed(code):
 
 def test_cmd_backspace_alias_not_clobbered():
     """install_cmd_backspace_alias's super-modifier mappings must survive."""
-    from hermes_cli.pt_input_extras import install_cmd_backspace_alias
+    from hermes_agent.hermes_cli.pt_input_extras import install_cmd_backspace_alias
     install_cmd_backspace_alias()
     install_modify_other_keys_aliases()
     assert _parse("\x1b[127;9u") == [Keys.ControlU]
@@ -668,7 +668,7 @@ def test_lock_bits_on_pua_functional_keys():
 
 
 def test_lock_bits_on_shift_enter_and_ctrl_enter_aliases():
-    from hermes_cli.pt_input_extras import (
+    from hermes_agent.hermes_cli.pt_input_extras import (
         install_ctrl_enter_alias,
         install_shift_enter_alias,
     )
@@ -681,7 +681,7 @@ def test_lock_bits_on_shift_enter_and_ctrl_enter_aliases():
 
 
 def test_lock_bits_on_cmd_backspace_alias():
-    from hermes_cli.pt_input_extras import install_cmd_backspace_alias
+    from hermes_agent.hermes_cli.pt_input_extras import install_cmd_backspace_alias
     install_cmd_backspace_alias()
     assert _parse("\x1b[127;137u") == [Keys.ControlU]  # Cmd+Backspace + NumLock
     assert _parse("\x1b[127;73u") == [Keys.ControlU]   # Cmd+Backspace + Caps

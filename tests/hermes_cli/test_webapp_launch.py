@@ -14,8 +14,8 @@ def test_launch_ticket_is_spent_only_over_the_server_users_own_connection(monkey
     out of the browser launcher before the browser spends it. That user's connection is
     refused, and the refusal does not burn the ticket for the operator's browser."""
     from fastapi.testclient import TestClient
-    from hermes_cli import web_server as server
-    from hermes_cli.web_routers import webapp
+    from hermes_agent.hermes_cli import web_server as server
+    from hermes_agent.hermes_cli.web_routers import webapp
 
     monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
     monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
@@ -42,8 +42,8 @@ def test_macos_launch_handoff_fails_closed_without_consuming_child_window_author
     Authenticated child-window tickets never pass through a launcher and still work.
     """
     from fastapi.testclient import TestClient
-    from hermes_cli import web_server as server
-    from hermes_cli.web_routers import webapp
+    from hermes_agent.hermes_cli import web_server as server
+    from hermes_agent.hermes_cli.web_routers import webapp
 
     monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
     monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
@@ -78,8 +78,8 @@ def test_a_link_for_the_user_to_open_by_hand_spends_once_without_a_peer_check(mo
     from types import SimpleNamespace
 
     from fastapi.testclient import TestClient
-    from hermes_cli import web_server as server
-    from hermes_cli.web_routers import webapp
+    from hermes_agent.hermes_cli import web_server as server
+    from hermes_agent.hermes_cli.web_routers import webapp
 
     monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
     monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
@@ -120,7 +120,7 @@ def test_where_no_peer_check_exists_a_launch_ticket_is_never_spent(platform):
     open by hand rather than passing a launch ticket to a browser launcher, and a launch ticket is
     never spent. The platform is passed in as data; the marked tests below run each host's own path."""
     from hermes_agent.gateway import webapp_listener
-    from hermes_cli.web_routers import webapp
+    from hermes_agent.hermes_cli.web_routers import webapp
 
     assert webapp._peer_is_server_user(_loopback_request(), platform=platform) is False
     assert webapp_listener._one_use_links_work(platform=platform) is False
@@ -132,7 +132,7 @@ def test_windows_spends_a_launch_ticket_without_a_peer_check():
     ticket in the browser launcher's argv stays the user's own, as the stored credential does. The
     platform is passed in as data; the platforms("windows") test below runs the real path."""
     from hermes_agent.gateway import webapp_listener
-    from hermes_cli.web_routers import webapp
+    from hermes_agent.hermes_cli.web_routers import webapp
 
     assert webapp._peer_is_server_user(_loopback_request(), platform="win32") is True
     assert webapp_listener._one_use_links_work(platform="win32") is True
@@ -164,7 +164,7 @@ def test_on_linux_the_peer_check_names_the_owner_of_a_real_loopback_connection()
     import socket
     from types import SimpleNamespace
 
-    from hermes_cli.web_routers import webapp
+    from hermes_agent.hermes_cli.web_routers import webapp
 
     with socket.create_server(("127.0.0.1", 0)) as listener, \
             socket.create_connection(listener.getsockname()) as browser:
@@ -186,7 +186,7 @@ def test_a_handoff_page_keeps_the_credential_out_of_every_url(monkeypatch, page)
     and then replace themselves with the Webapp's own address: no URL they navigate to carries it.
     Each page is uncached and sends no Referer."""
     from fastapi.testclient import TestClient
-    from hermes_cli import web_server as server
+    from hermes_agent.hermes_cli import web_server as server
 
     monkeypatch.setattr(server.app.state, "ui_surface", "webapp", raising=False)
     monkeypatch.setattr(server.app.state, "auth_required", False, raising=False)
@@ -212,7 +212,7 @@ def _launch_link(tmp_path, monkeypatch):
 
     from hermes_agent.gateway.control_socket import GatewayControlServer
     from hermes_agent.gateway.webapp_listener import register_control_verbs
-    from hermes_cli import web_server as server
+    from hermes_agent.hermes_cli import web_server as server
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -245,7 +245,7 @@ def test_under_wsl_the_launch_link_is_printed_and_the_windows_browser_spends_it(
     reach that port. Nothing identifies the user's own browser, so, as on macOS, ``hermes webapp`` gets
     a link marked private, to print for the user to open by hand, and that link spends without the
     peer check instead of being refused every time."""
-    from hermes_cli.web_routers import webapp
+    from hermes_agent.hermes_cli.web_routers import webapp
 
     monkeypatch.setattr("hermes_constants.is_wsl", lambda: True)
     monkeypatch.setattr(webapp, "_loopback_peer_uid", lambda client, server: 0)  # WSL's localhost relay
@@ -261,7 +261,7 @@ def test_native_linux_keeps_the_peer_check_on_the_launch_link(tmp_path, monkeypa
     the link itself, and a connection another user owns cannot spend it."""
     import os
 
-    from hermes_cli.web_routers import webapp
+    from hermes_agent.hermes_cli.web_routers import webapp
 
     monkeypatch.setattr("hermes_constants.is_wsl", lambda: False)
     monkeypatch.setattr(webapp, "_loopback_peer_uid", lambda client, server: os.getuid() + 1)  # windows-footgun: ok — platforms("linux") test

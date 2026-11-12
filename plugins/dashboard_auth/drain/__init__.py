@@ -16,7 +16,7 @@ import os
 from collections import Counter
 from typing import Optional
 
-from hermes_cli.dashboard_auth import DashboardAuthProvider, Session, TokenPrincipal
+from hermes_agent.hermes_cli.dashboard_auth import DashboardAuthProvider, Session, TokenPrincipal
 from plugins.dashboard_auth._shared import NonInteractiveMixin, SkipRegistration, load_config_section, register_provider
 
 logger = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ def register(ctx) -> None:
     # Opt the drain endpoint into the token-auth seam so the interactive cookie gate
     # doesn't bounce NAS's bearer call.
     try:
-        from hermes_cli.dashboard_auth.token_auth import register_token_route
+        from hermes_agent.hermes_cli.dashboard_auth.token_auth import register_token_route
 
         register_token_route(DRAIN_ROUTE_PATH)
     except Exception as exc:

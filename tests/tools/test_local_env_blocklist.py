@@ -68,8 +68,8 @@ def _running_site():
 
 
 def test_terminal_child_observes_declared_policy(child_env, monkeypatch):
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.config import OPTIONAL_ENV_VARS
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.config import OPTIONAL_ENV_VARS
     blocked = set(STATIC_BLOCKED)
     for config in PROVIDER_REGISTRY.values():
         blocked.update(config.api_key_env_vars)
@@ -268,7 +268,7 @@ def test_a_symlinked_home_alias_shares_its_profiles_plugin_declarations(child_en
 def test_unreadable_platform_manifest_fails_closed(tmp_path):
     """A manifest that cannot be read might declare secrets, so the policy scan raises rather than
     returning a set without them. A malformed one declares nothing and is skipped."""
-    from hermes_cli.config import platform_manifest_secret_envs
+    from hermes_agent.hermes_cli.config import platform_manifest_secret_envs
     _user_platform_plugin(tmp_path, "chatx", "CHATX_SIGNING_SECRET")
     broken = tmp_path / "plugins" / "platforms" / "broken"
     broken.mkdir()
@@ -307,7 +307,7 @@ def test_unreadable_platform_manifest_fails_closed(tmp_path):
 def test_manifest_scan_follows_plugin_discovery_and_sees_mtime_preserving_edits(tmp_path):
     """A __dunder__ dir is never a plugin, so it declares nothing; a rewrite that keeps the
     manifest's size and mtime (cp -p, rsync -t) still changes the stamp."""
-    from hermes_cli.config import platform_manifest_secret_envs, platform_manifest_stamp
+    from hermes_agent.hermes_cli.config import platform_manifest_secret_envs, platform_manifest_stamp
     _user_platform_plugin(tmp_path, "__cache__", "CACHED_SIGNING_SECRET")
     _user_platform_plugin(tmp_path, "chatx", "CHATX_SIGNING_SECRET")
     assert platform_manifest_secret_envs(tmp_path) == {"CHATX_SIGNING_SECRET"}
@@ -324,7 +324,7 @@ def test_unreadable_bundled_manifest_fails_the_policy_instead_of_dropping_it(mon
     """The import-time read keeps the bundled secret set only when every bundled manifest was
     read; otherwise the policy's strict re-read raises rather than building without them."""
     import builtins
-    import hermes_cli.config as cfg
+    import hermes_agent.hermes_cli.config as cfg
     target = next(path for _name, path, _kind, _st in cfg._platform_manifest_paths(source="bundled") if path)
     real_open = builtins.open
 
@@ -588,8 +588,8 @@ def test_pythonpath_descendants_are_not_owned():
 @pytest.mark.parametrize("link_at", ["home", "repo", "unrelated"])
 @pytest.mark.parametrize("profile", [False, True])
 def test_launcher_alias_provenance(child_env, monkeypatch, link_at, profile):
-    from hermes_cli.gateway_windows import _preserve_hermes_home_path
-    from hermes_cli.profiles import resolve_profile_env
+    from hermes_agent.hermes_cli.gateway_windows import _preserve_hermes_home_path
+    from hermes_agent.hermes_cli.profiles import resolve_profile_env
     physical_home = child_env / "physical-home"
     physical_root = physical_home / "hermes-agent"
     physical_root.mkdir(parents=True)
@@ -1072,7 +1072,7 @@ class TestNativeEnvironmentContracts:
         """The real producer spelling is derived and consumed end to end."""
         from hermes_agent.tools.environments import local
         from hermes_agent.tools.environments import local_pythonpath
-        from hermes_cli.gateway_windows import _preserve_hermes_home_path
+        from hermes_agent.hermes_cli.gateway_windows import _preserve_hermes_home_path
 
         physical_home = tmp_path / "physical-home"
         physical_root = _physical_repo_root(tmp_path)
@@ -1121,7 +1121,7 @@ class TestNativeEnvironmentContracts:
         """
         from hermes_agent.tools.environments import local
         from hermes_agent.tools.environments import local_pythonpath
-        from hermes_cli.profiles import resolve_profile_env
+        from hermes_agent.hermes_cli.profiles import resolve_profile_env
 
         physical_home = tmp_path / "physical-home"
         physical_root = physical_home / "hermes-agent"
@@ -1412,7 +1412,7 @@ class TestBlocklistCoverage:
         CLAUDE_CODE_OAUTH_TOKEN is the one deliberate exemption: it is owned
         by the user's Claude Code install, not Hermes (#55878).
         """
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
         exempt = {"CLAUDE_CODE_OAUTH_TOKEN"}
         for pconfig in PROVIDER_REGISTRY.values():
@@ -1479,7 +1479,7 @@ class TestBlocklistCoverage:
 
     def test_optional_tool_and_messaging_vars_are_in_blocklist(self):
         """Tool/messaging vars from OPTIONAL_ENV_VARS should stay covered."""
-        from hermes_cli.config import OPTIONAL_ENV_VARS
+        from hermes_agent.hermes_cli.config import OPTIONAL_ENV_VARS
 
         for name, metadata in OPTIONAL_ENV_VARS.items():
             category = metadata.get("category")

@@ -28,7 +28,7 @@ async def restore_heartbeat_watches(runner) -> None:
     """
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_agent.gateway.run_idle_gates import profile_has_active_heartbeat
-    from hermes_cli.heartbeat import HeartbeatManager
+    from hermes_agent.hermes_cli.heartbeat import HeartbeatManager
     from hermes_constants import get_hermes_home
 
     store = runner.session_store

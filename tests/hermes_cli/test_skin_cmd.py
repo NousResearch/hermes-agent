@@ -9,7 +9,7 @@ import os
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli import skin_cmd
+from hermes_agent.hermes_cli import skin_cmd
 from hermes_constants import get_hermes_home
 
 

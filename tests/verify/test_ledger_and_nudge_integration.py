@@ -21,7 +21,7 @@ from hermes_agent.agent.verification_evidence import (
     verification_status,
 )
 from hermes_agent.agent.verification_stop import build_verify_on_stop_nudge
-from hermes_cli.verify_cmd import run_verify_command
+from hermes_agent.hermes_cli.verify_cmd import run_verify_command
 
 @pytest.fixture(autouse=True)
 def _ledger_on(monkeypatch):

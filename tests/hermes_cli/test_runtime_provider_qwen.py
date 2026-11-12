@@ -1,4 +1,4 @@
-from hermes_cli import runtime_provider as rp
+from hermes_agent.hermes_cli import runtime_provider as rp
 
 
 def test_qwen_oauth_supplied_token_keeps_the_base_url_override(monkeypatch):

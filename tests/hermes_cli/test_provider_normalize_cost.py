@@ -33,14 +33,14 @@ def counted_profiles(monkeypatch):
     ("nous", "nous"), ("claude", "anthropic"), ("kimi-coding", "kimi-for-coding"),
 ])
 def test_builtin_names_skip_the_profile_scan(counted_profiles, name, expected):
-    from hermes_cli.providers import normalize_provider
+    from hermes_agent.hermes_cli.providers import normalize_provider
 
     assert normalize_provider(name) == expected
     assert counted_profiles == []
 
 
 def test_overlay_names_still_resolve_through_profiles(counted_profiles):
-    from hermes_cli.providers import normalize_provider
+    from hermes_agent.hermes_cli.providers import normalize_provider
 
     assert normalize_provider("zz-alias") == "zz-catalog"
     assert normalize_provider("zz-overlaid") == "zz-catalog"
@@ -49,8 +49,8 @@ def test_overlay_names_still_resolve_through_profiles(counted_profiles):
 
 
 def test_registry_wide_alias_check_reads_profiles_once(counted_profiles):
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.providers import _lossy_alias_registry_pdef
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.providers import _lossy_alias_registry_pdef
 
     PROVIDER_REGISTRY.get("kimi-coding")  # a home's first registry read mirrors its plugin scan, once
     counted_profiles.clear()

@@ -74,7 +74,7 @@ class TestSharedPromptPath:
         cfg = {"skills": {"auto_load": ["stable-skill"]}}
         agent = _bare_agent()
         with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path), \
-             patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+             patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg):
             first = agent._build_system_prompt()
             assert "ORIGINAL SKILL BYTES" in first and agent._auto_load_skills_result[1] == ["stable-skill"]
             skill_file.write_text("---\nname: stable-skill\ndescription: Test.\n---\n\nMUTATED BYTES\n")
@@ -90,7 +90,7 @@ class TestSharedPromptPath:
         _write_skill(tmp_path, "stable-skill", "ORIGINAL SKILL BYTES")
         cfg = {"skills": {"auto_load": ["stable-skill"]}}
         with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path), \
-             patch("hermes_cli.config.load_config_readonly", return_value=cfg):
+             patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg):
             monkeypatch.setenv("HERMES_IGNORE_RULES", "true")
             agent = _bare_agent()
             assert "ORIGINAL SKILL BYTES" not in agent._build_system_prompt()

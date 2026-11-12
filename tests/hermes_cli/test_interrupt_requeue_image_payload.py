@@ -6,7 +6,7 @@ import queue
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
+from hermes_agent.hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
 
 
 class _Stub(CLIChatTurnMixin):

@@ -124,7 +124,7 @@ def _web_config_selects(name: str) -> bool:
 def provider_tier(name: str) -> str:
     """``web.provider_tier.<name>`` (``hermes tools`` Free/Paid rows): ``free``, ``paid``, or ``auto`` (anything else/unset)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         tiers = (load_config().get("web") or {}).get("provider_tier") or {}
         value = str(tiers.get(name, "") or "").lower().strip()
         return value if value in ("free", "paid") else "auto"

@@ -43,7 +43,7 @@ class ProcessCheckpointMixin:
                     tracked_ids = {item.get("session_id") for item in entries}
                     entries.extend(item for item in extra_entries if item.get("session_id") not in tracked_ids)
                 known = {*self._running, *self._finished}
-            from hermes_cli.active_sessions import _FileLock
+            from hermes_agent.hermes_cli.active_sessions import _FileLock
             from utils import atomic_json_write
             path = _checkpoint_path()
             # Every interpreter of the profile (owner, each managed worker) rewrites this file from

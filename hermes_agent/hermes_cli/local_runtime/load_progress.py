@@ -48,7 +48,7 @@ def _composite_percent(stages: list[str], current: str, value: float) -> int:
 
 def _endpoint() -> tuple[str, str] | None:
     """(base_root, api_key) of the managed router via the ownership-guarded reader, or None."""
-    from hermes_cli.local_runtime.endpoint import managed_root
+    from hermes_agent.hermes_cli.local_runtime.endpoint import managed_root
 
     return managed_root()
 
@@ -143,7 +143,7 @@ def get_prefill_progress(model: str) -> dict | None:
     if ep is None:
         return None
     try:
-        from hermes_cli.local_runtime.endpoint import child_query, managed_get_json
+        from hermes_agent.hermes_cli.local_runtime.endpoint import child_query, managed_get_json
 
         slots = managed_get_json(*ep, f"/slots?{child_query(model)}", timeout_s=2)
     except Exception:

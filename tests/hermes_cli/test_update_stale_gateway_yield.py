@@ -25,7 +25,7 @@ def cron_home(tmp_path, monkeypatch):
 
 
 def _status_block(pids):
-    from hermes_cli.cron import _print_ticker_health
+    from hermes_agent.hermes_cli.cron import _print_ticker_health
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -66,8 +66,8 @@ def test_cron_status_still_green_after_a_clean_tick(cron_home):
 @pytest.mark.skipif(not hasattr(signal, "SIGUSR1"), reason="POSIX drain-first restart signal")
 def test_update_signals_proven_stale_gateway_survivor(cron_home, tmp_path):
     """A `stale` fleet-matrix row gets SIGUSR1 (request_restart); a `current` row is untouched."""
-    from hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
-    from hermes_cli.update_cmd_stale_survivors import signal_stale_fleet_survivors
+    from hermes_agent.hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
+    from hermes_agent.hermes_cli.update_cmd_stale_survivors import signal_stale_fleet_survivors
 
     marker = tmp_path / "got_sigusr1"
     child = subprocess.Popen(
@@ -104,18 +104,18 @@ def test_update_signals_proven_stale_gateway_survivor(cron_home, tmp_path):
 
 def test_verify_fleet_hands_stale_rows_to_survivor_signalling(monkeypatch):
     """The wiring: a stale fleet matrix reaches signal_stale_fleet_survivors; the restart stays owed."""
-    import hermes_cli.update_cmd_fleet as fleet_mod
-    import hermes_cli.update_cmd_fleet_verify as fleet_verify
-    import hermes_cli.update_cmd_stale_survivors as surv
-    from hermes_cli import update_cmd
-    from hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
+    import hermes_agent.hermes_cli.update_cmd_fleet as fleet_mod
+    import hermes_agent.hermes_cli.update_cmd_fleet_verify as fleet_verify
+    import hermes_agent.hermes_cli.update_cmd_stale_survivors as surv
+    from hermes_agent.hermes_cli import update_cmd
+    from hermes_agent.hermes_cli.update_cmd_fleet import _GatewayRestartOutcome
 
     stale_fleet = [{"profile": "default", "pid": 4242, "state": "stale", "code_sha": "a" * 40}]
     seen = {}
     monkeypatch.setattr(fleet_verify, "_print_legacy_units_warning", lambda: None)
     monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
     # The live post-update dashboard pass restarts a managed hermes-dashboard unit.
-    monkeypatch.setattr("hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: set())
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_maint._refresh_dashboard_after_update", lambda **k: set())
     monkeypatch.setattr(update_cmd, "_surviving_pre_update_serve_runtimes", lambda plan: [])
     monkeypatch.setattr(fleet_verify, "_collect_fleet_snapshot", lambda restart, expected: stale_fleet)
     monkeypatch.setattr(surv, "signal_stale_fleet_survivors",

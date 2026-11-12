@@ -2,7 +2,7 @@
 
 STRUCTURED envelopes (result.ok / result.error) rather than JSON-RPC errors, so
 rpc() always resolves and the client branches on the typed billing code.
-Data-building lives in hermes_agent/agent/billing_view.py + hermes_cli/nous_billing.py.
+Data-building lives in hermes_agent/agent/billing_view.py + hermes_agent/hermes_cli/nous_billing.py.
 Bodies are rebound onto server.py's globals at install time (method_ctx.bind_module),
 so tests may still monkeypatch e.g. ``server._usage_payload``.
 """
@@ -27,7 +27,7 @@ def _billing_pick(result: dict, **fields) -> dict:
 
 def _serialize_billing_error(exc) -> dict:
     """Map a BillingError into the result.error envelope the TUI branches on."""
-    from hermes_cli.nous_billing import (
+    from hermes_agent.hermes_cli.nous_billing import (
         BillingRemoteSpendingRevoked, BillingScopeRequired, BillingSessionRevoked, BillingTransient)
     typed = {BillingRemoteSpendingRevoked: "remote_spending_revoked",
              BillingSessionRevoked: "session_revoked", BillingScopeRequired: "insufficient_scope"}
@@ -82,7 +82,7 @@ def _serialize_billing_state(state, *, free_tier_account: bool = False) -> dict:
     Nous free tier: no account, no balance, nothing to pay; the renderer branches on it before
     ``logged_in``."""
     from hermes_agent.agent.billing_view import format_money
-    from hermes_cli.anon_auth import GUEST_MODEL
+    from hermes_agent.hermes_cli.anon_auth import GUEST_MODEL
 
     card = mc = None
     if state.card is not None:
@@ -128,11 +128,11 @@ def _plan_usage_payload(state) -> Optional[dict]:
         return None
     try:
         from hermes_agent.agent.credits_tracker import _window_seed_fields
-        from hermes_cli.nous_account import cached_nous_portal_account_info
+        from hermes_agent.hermes_cli.nous_account import cached_nous_portal_account_info
         snapshot = cached_nous_portal_account_info(any_age=True)
         if snapshot is None or _window_seed_fields(getattr(snapshot, "usage_window", None)) is None:
             return None
-        from hermes_cli.model_picker_usage import nous_picker_usage
+        from hermes_agent.hermes_cli.model_picker_usage import nous_picker_usage
         usage = nous_picker_usage(warm=True)
         return usage.to_payload() if usage is not None else None
     except Exception:

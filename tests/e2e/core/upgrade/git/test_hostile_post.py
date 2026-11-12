@@ -11,7 +11,7 @@ release and breaks something that runs AFTER the checkout moved, for real:
     (``_config_version`` lowered by one): one failed step must not skip later independent ones.
 (b) a gateway that refuses to restart: a credential-free, platform-less (cron-only) ``hermes
     gateway run`` lives in the same PID namespace as the updater (``handoff._nshost``). The release
-    makes ``hermes_cli.gateway.run_gateway`` exit 1 before booting while
+    makes ``hermes_agent.hermes_cli.gateway.run_gateway`` exit 1 before booting while
     ``$HOME/.e2e-break-gateway-boot`` exists. The updater drains the OLD gateway (pre-update code,
     no fault) and its relaunch boots the NEW code, which refuses to start: the restart fails for real,
     no gateway serves the new commit. Removing the toggle and updating again must retry the owed
@@ -351,7 +351,7 @@ def test_failed_web_build_after_commit_is_a_followup_not_a_failed_update(w):
     _clear_toggles(w)
     latest = _config_version(w)
     if latest is None:
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 
         latest = int(DEFAULT_CONFIG["_config_version"])
     owed = latest - 1

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable, List, Optional
 
 from hermes_agent.agent.model_metadata import MINIMUM_CONTEXT_LENGTH
-from hermes_cli.model_switch import ModelSwitchResult, resolve_display_context_length
+from hermes_agent.hermes_cli.model_switch import ModelSwitchResult, resolve_display_context_length
 
 
 def _append_warning(result: ModelSwitchResult, text: str) -> None:

@@ -271,7 +271,7 @@ async def test_the_prefill_file_is_read_by_the_off_loop_commit_not_while_staging
     from functools import partial
     from hermes_agent.gateway.session_local_recovery import restore_local_session
     from hermes_agent.gateway.session_runtime_workers import tracked_write
-    from hermes_cli import cli_config_load
+    from hermes_agent.hermes_cli import cli_config_load
     from hermes_agent.hermes_state_local import commit_local_session
     home, owner, connection = await _prefill_owner(tmp_path, monkeypatch)
     readers, real = [], cli_config_load._load_prefill_messages

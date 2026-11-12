@@ -74,7 +74,7 @@ def sleeper():
 
 
 def _write_ledger(entries: list[dict]) -> None:
-    from hermes_cli import process_identity as pid_mod
+    from hermes_agent.hermes_cli import process_identity as pid_mod
 
     path = pid_mod._ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,7 +84,7 @@ def _write_ledger(entries: list[dict]) -> None:
 def _entry(proc: subprocess.Popen, purpose: str = "serve") -> dict:
     import psutil
 
-    from hermes_cli import process_identity as pid_mod
+    from hermes_agent.hermes_cli import process_identity as pid_mod
 
     return {
         "install": pid_mod.install_id(None),
@@ -97,9 +97,9 @@ def _entry(proc: subprocess.Popen, purpose: str = "serve") -> dict:
 
 
 def test_live_supervised_serve_suppresses_cold_start(sleeper, monkeypatch, tmp_path):
-    from hermes_cli import gateway as hermes_gateway
-    from hermes_cli import gateway_windows
-    from hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import gateway as hermes_gateway
+    from hermes_agent.hermes_cli import gateway_windows
+    from hermes_agent.hermes_cli import update_cmd
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()
@@ -124,7 +124,7 @@ def test_live_supervised_serve_suppresses_cold_start(sleeper, monkeypatch, tmp_p
 
 
 def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tmp_path):
-    from hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import update_cmd
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / ".hermes").mkdir()
@@ -148,7 +148,7 @@ def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tm
     assert "--preserve-cache" in kanban_row[2]
 
     monkeypatch.setattr(
-        "hermes_cli.main._detect_venv_python_processes", lambda: [serve_row, kanban_row]
+        "hermes_agent.hermes_cli.main._detect_venv_python_processes", lambda: [serve_row, kanban_row]
     )
     # serve-shaped holder with a live parent (us) → owns
     assert update_cmd._desktop_owns_gateway_lifecycle() is True
@@ -158,6 +158,6 @@ def test_holder_scan_fallback_respects_token_classifier(sleeper, monkeypatch, tm
     serve_like.wait()
     assert kanban_like.poll() is None
     monkeypatch.setattr(
-        "hermes_cli.main._detect_venv_python_processes", lambda: [kanban_row]
+        "hermes_agent.hermes_cli.main._detect_venv_python_processes", lambda: [kanban_row]
     )
     assert update_cmd._desktop_owns_gateway_lifecycle() is False

@@ -156,7 +156,7 @@ class TestFallbackIsLabelledOnSurfaces:
 
     def _cli_with_bedrock_agent(self, model="acme.unknown-model-v1", context_length=128_000):
         from datetime import datetime, timedelta
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         cli_obj = HermesCLI.__new__(HermesCLI)
         cli_obj.model = model
         cli_obj.session_start = datetime.now() - timedelta(minutes=3)
@@ -190,7 +190,7 @@ class TestFallbackIsLabelledOnSurfaces:
         assert "/128K fallback" in text
 
     def test_banner_marks_the_fallback_window(self):
-        from hermes_cli.banner import _banner_left_lines
+        from hermes_agent.hermes_cli.banner import _banner_left_lines
         lines = _banner_left_lines("acme.unknown-model-v1", "/tmp", None, 128_000, "bedrock", accent="#fff",
                                    dim="#888", context_marker="fallback")
         assert any("128K context (fallback)" in str(x) for x in lines)
@@ -209,8 +209,8 @@ class TestFallbackIsLabelledOnSurfaces:
         assert "(fallback)" in line
 
     def test_cli_model_switch_marks_the_fallback_window(self, monkeypatch):
-        import cli as cli_mod
-        from hermes_cli.model_switch import ModelSwitchResult
+        import hermes_agent.cli as cli_mod
+        from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
         captured: list[str] = []
         monkeypatch.setattr(cli_mod, "_cprint", lambda s, *a, **k: captured.append(str(s)))
         stub = SimpleNamespace(agent=None, base_url="", api_key="", config={}, _pending_model_switch_note="")
@@ -220,7 +220,7 @@ class TestFallbackIsLabelledOnSurfaces:
             provider_label="AWS Bedrock", resolved_via_alias=False, capabilities=None, model_info=None,
             is_global=False,
         )
-        from hermes_cli.cli_model_switch_mixin import _print_switch_summary
+        from hermes_agent.hermes_cli.cli_model_switch_mixin import _print_switch_summary
         _print_switch_summary(stub, result, "us.openai.gpt-6-sol", one_turn=False, strict_context=True)
         line = next(x for x in captured if "128,000" in x)
         assert "(fallback)" in line

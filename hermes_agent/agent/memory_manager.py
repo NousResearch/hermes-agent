@@ -21,7 +21,7 @@ from hermes_agent.agent.redact import redact_for_egress
 
 from hermes_agent.agent.memory_caller_scope import bound_scope, caller_scope, claim_instance, in_owner_home, refused_tool_message
 # Moved to hermes_agent.agent.memory_context / hermes_agent.agent.memory_manager_tools; still importable here because hermes_agent.agent.memory_manager is a public
-# module for plugins (hermes_cli/data/plugin_api.json).
+# module for plugins (hermes_agent/hermes_cli/data/plugin_api.json).
 from hermes_agent.agent.memory_context import StreamingContextScrubber, build_memory_context_block, sanitize_context
 from hermes_agent.agent.memory_manager_tools import (inject_memory_provider_tools, memory_provider_tools_enabled,
                                         memory_provider_tools_exposed, normalize_tool_schema)
@@ -298,7 +298,7 @@ class MemoryManager:
         schemas = list(provider.get_tool_schemas())
 
         if provider.name != "builtin":
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
 
             # Recall is provider-ranked: keep it whole unless this profile opts in.
             # Snapshot both gates at registration, never re-read them mid-conversation.
@@ -620,7 +620,7 @@ class MemoryManager:
         if accepted is not None:
             kwargs = {k: v for k, v in kwargs.items() if k in accepted}
         args = _redact_for_provider(args)
-        from hermes_cli.observability.shared_metrics_loop import record_provider_memory_call
+        from hermes_agent.hermes_cli.observability.shared_metrics_loop import record_provider_memory_call
         try:
             result = provider.handle_tool_call(tool_name, args, **kwargs)
         except Exception as e:

@@ -10,7 +10,7 @@ import sys
 import time
 from typing import Any
 
-from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
+from hermes_agent.hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from hermes_agent.hermes_state_keys import CRON_PRINCIPAL_ID
 from hermes_agent.hermes_state_pidns import persistent_record_pidns_checkable, pid_namespace_id
 from hermes_agent.agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
@@ -45,7 +45,7 @@ def routed_sessions_setting(key: str, env_var: str) -> Any:
 
     if get_hermes_home_override():
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
             return (load_config_readonly().get("sessions") or {}).get(key)
         except Exception:
             return None
@@ -184,7 +184,7 @@ _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = 
 _RESET_END_REASONS = ("session_reset", "session_switch", "idle", "daily", "suspended", "resume_pending_expired")
 _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASONS)
 # Deliberate conversation boundaries: the reset set plus CLI /new, which ends the predecessor as
-# 'new_session' (hermes_cli/cli_session_mixin.py) without a reset child row.  A compression rotation must
+# 'new_session' (hermes_agent/hermes_cli/cli_session_mixin.py) without a reset child row.  A compression rotation must
 # never heal one of these (#106459); hermes_agent/tools/session_search_tool.py derives its fresh-reset set from it.
 _BOUNDARY_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
 
@@ -428,7 +428,7 @@ def emit_session_deleted(db, deleted_ids, *, reason, primary=None, sessions_dir=
     if not ids:
         return
     try:
-        from hermes_cli.lifecycle import invoke_hook
+        from hermes_agent.hermes_cli.lifecycle import invoke_hook
         from hermes_constants import (
             get_hermes_home, profile_name_for_home, reset_hermes_home_override, set_hermes_home_override,
         )

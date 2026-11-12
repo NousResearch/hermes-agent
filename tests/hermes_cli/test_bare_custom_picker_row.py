@@ -7,8 +7,8 @@ provider was active, and the unconfigured-canonical fallback substituted a
 misleading 0-model placeholder in its place.
 """
 
-import hermes_cli.providers as providers_mod
-from hermes_cli.model_switch import list_authenticated_providers
+import hermes_agent.hermes_cli.providers as providers_mod
+from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
 
 
 def test_bare_custom_row_survives_switching_away_from_it(monkeypatch):
@@ -18,15 +18,15 @@ def test_bare_custom_row_survives_switching_away_from_it(monkeypatch):
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {
             "model": {"default": "gpt-4o", "provider": "custom", "base_url": "https://www.ccsub.net/v1"}
         },
     )
     # The config-sourced branch serves the warm cache / falls back to the
     # config default; keep the test hermetic — no live probe.
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: [])
-    monkeypatch.setattr("hermes_cli.models.cached_fetch_api_models", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", lambda *_a, **_kw: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.cached_fetch_api_models", lambda *_a, **_kw: None)
 
     providers = list_authenticated_providers(
         current_provider="xai",
@@ -52,7 +52,7 @@ def test_bare_custom_row_config_fallback_defers_to_matching_named_entry(monkeypa
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "hermes_agent.hermes_cli.config.load_config",
         lambda: {
             "model": {"default": "gpt-4o", "provider": "custom", "base_url": "https://www.ccsub.net/v1"}
         },
@@ -76,7 +76,7 @@ def test_bare_custom_row_config_fallback_tolerates_legacy_scalar_model(monkeypat
     (the ConfigContext loader already tolerates it)."""
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"model": "gpt-4o"})
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config", lambda: {"model": "gpt-4o"})
 
     providers = list_authenticated_providers(
         current_provider="xai",

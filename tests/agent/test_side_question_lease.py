@@ -17,10 +17,10 @@ from unittest.mock import MagicMock, patch
 import hermes_yaml as yaml
 import pytest
 
-import hermes_cli.plugins as plugins_mod
+import hermes_agent.hermes_cli.plugins as plugins_mod
 from hermes_agent.agent import side_question_lease
 from hermes_agent.agent.side_question_lease import issue_side_question_token, redeem_side_question
-from hermes_cli.plugins import PluginContext
+from hermes_agent.hermes_cli.plugins import PluginContext
 
 CAP = "llm.side_question"
 

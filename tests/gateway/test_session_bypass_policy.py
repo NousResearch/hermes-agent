@@ -36,11 +36,11 @@ def test_bypass_session_freezes_code_defaults_without_reading_profile(tmp_path, 
     (possibly malformed) config.yaml, .env and plugin toolsets are never consulted."""
     from types import SimpleNamespace
     from hermes_agent.gateway.session_local import _bypass_policy
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-    import hermes_agent.gateway.session_policy, hermes_cli.tools_config
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
+    import hermes_agent.gateway.session_policy, hermes_agent.hermes_cli.tools_config
     from hermes_agent import toolsets
     import hermes_agent.tools.terminal_scope
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
 
     home = tmp_path / 'home'
     home.mkdir()
@@ -72,7 +72,7 @@ def test_bypass_session_freezes_code_defaults_without_reading_profile(tmp_path, 
     config = policy.config()
     assert config['model']['provider'] == 'custom' and config['model']['base_url'] == params['base_url']
     assert config.get('plugins', {}).get('enabled', DEFAULT_CONFIG.get('plugins', {}).get('enabled')) in (None, [])
-    from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+    from hermes_agent.hermes_cli.plugins import get_plugin_toolset_keys_nowait
     assert 'terminal' in policy.toolsets and not set(policy.toolsets) & get_plugin_toolset_keys_nowait()
     terminal = json.loads(policy.terminal_json)
     assert terminal['TERMINAL_ENV'] == 'local' and terminal['TERMINAL_CWD'] == str(cwd)

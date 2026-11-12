@@ -1,6 +1,6 @@
 """``hermes profile`` command — one handler per action, dispatched by ``PROFILE_ACTIONS``.
 
-Imports from ``hermes_cli.profiles`` stay lazy (inside each handler) so tests can monkeypatch
+Imports from ``hermes_agent.hermes_cli.profiles`` stay lazy (inside each handler) so tests can monkeypatch
 the module attributes.
 """
 
@@ -39,7 +39,7 @@ def _env_file_has_key(env_path: Path, key: str) -> bool:
 
 def _render_distribution_plan(plan) -> None:
     """Print a human-readable summary of a pending distribution install."""
-    from hermes_cli.profile_distribution import MANIFEST_FILENAME
+    from hermes_agent.hermes_cli.profile_distribution import MANIFEST_FILENAME
     mf = plan.manifest
     print(f"\nDistribution: {mf.name} v{mf.version}")
     if mf.description:
@@ -87,7 +87,7 @@ def _render_distribution_plan(plan) -> None:
 def _profile_status(args):
     """Bare ``hermes profile`` — show current profile status."""
     from hermes_constants import display_hermes_home
-    from hermes_cli.profiles import format_profile_label, get_active_profile_name, list_profiles
+    from hermes_agent.hermes_cli.profiles import format_profile_label, get_active_profile_name, list_profiles
     profile_name = get_active_profile_name()
     dhh = display_hermes_home()
     current = next((p for p in list_profiles() if _is_active(p, profile_name)), None)
@@ -106,7 +106,7 @@ def _profile_status(args):
 
 
 def _profile_list(args):
-    from hermes_cli.profiles import format_profile_label, get_active_profile_name, list_profiles
+    from hermes_agent.hermes_cli.profiles import format_profile_label, get_active_profile_name, list_profiles
     profiles = list_profiles()
     active = get_active_profile_name()
     if not profiles:
@@ -131,7 +131,7 @@ def _shared_credential_warnings(profiles) -> list:
     """One warning per named profile whose bot credential is byte-identical to the default's
     (typically an old ``--clone`` that copied .env): the collision that parks a multiplexed
     adapter or makes two standalone gateways fight over one bot."""
-    from hermes_cli.profile_channels import shared_channel_credentials, shared_credential_warning
+    from hermes_agent.hermes_cli.profile_channels import shared_channel_credentials, shared_credential_warning
     default = next((p for p in profiles if p.is_default), None)
     if default is None:
         return []
@@ -149,7 +149,7 @@ def _shared_credential_warnings(profiles) -> list:
 
 
 def _profile_use(args):
-    from hermes_cli.profiles import set_active_profile
+    from hermes_agent.hermes_cli.profiles import set_active_profile
     name = args.profile_name
     try:
         set_active_profile(name)
@@ -159,7 +159,7 @@ def _profile_use(args):
 
 
 def _source_profile_dir(source_label: str) -> Path:
-    from hermes_cli.profiles import get_profile_dir
+    from hermes_agent.hermes_cli.profiles import get_profile_dir
     source_dir = get_profile_dir(source_label)
     if not source_dir.is_dir():
         raise FileNotFoundError(source_dir)
@@ -167,11 +167,11 @@ def _source_profile_dir(source_label: str) -> Path:
 
 
 def _print_channel_clone_notice(name: str, source_label: str, clone_channels: bool, clone_flag: str) -> None:
-    from hermes_cli.profile_channels import (
+    from hermes_agent.hermes_cli.profile_channels import (
         channel_platforms_configured, format_stripped_notice, shared_channel_credentials,
         shared_credential_warning,
     )
-    from hermes_cli.profiles import get_profile_dir
+    from hermes_agent.hermes_cli.profiles import get_profile_dir
     try:
         source_dir = _source_profile_dir(source_label)
     except FileNotFoundError:
@@ -199,8 +199,8 @@ def _print_mirrored(mirrored: dict, launch: str, *, isolate_hint: bool) -> None:
 
 
 def _profile_create(args):
-    from hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
-    from hermes_cli.profiles import _get_wrapper_dir, _is_wrapper_dir_in_path, get_active_profile_name
+    from hermes_agent.hermes_cli.profile_provision import ProfileCreateRequest, provision_profile
+    from hermes_agent.hermes_cli.profiles import _get_wrapper_dir, _is_wrapper_dir_in_path, get_active_profile_name
     name = args.profile_name
     clone = getattr(args, "clone", False)
     clone_all = getattr(args, "clone_all", False)
@@ -234,11 +234,11 @@ def _profile_create(args):
             print(f"Full copy from {source_label} (excluding session history, cron jobs, backups, and snapshots).")
         else:
             print(f"Cloned config, .env, SOUL.md, and skills from {source_label}.")
-            from hermes_cli.profiles import cloned_plugin_names
+            from hermes_agent.hermes_cli.profiles import cloned_plugin_names
             plugin_names = cloned_plugin_names(profile_dir)
             if plugin_names:
                 print(f"Cloned installed plugins too: {', '.join(plugin_names)}.")
-            from hermes_cli.profile_memory_config import cloned_memory_provider
+            from hermes_agent.hermes_cli.profile_memory_config import cloned_memory_provider
             memory_provider = cloned_memory_provider(profile_dir)
             if memory_provider:
                 print(f"Cloned memory provider config ({memory_provider}) too.")
@@ -277,8 +277,8 @@ def _profile_create(args):
     print("\nNext steps:")
     print(f"  {name} setup              Configure API keys and model")
     print(f"  {name} chat               Start chatting")
-    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
-    from hermes_cli.profiles import normalize_profile_name
+    from hermes_agent.hermes_cli.gateway_multiplex_served import live_default_gateway_pid, recorded_served_profiles
+    from hermes_agent.hermes_cli.profiles import normalize_profile_name
     served = recorded_served_profiles() if live_default_gateway_pid() is not None else None
     if served is not None and normalize_profile_name(name) in {normalize_profile_name(p) for p in served}:
         print("  (served now by the running multiplexed gateway — add its bot token and it connects)")
@@ -298,7 +298,7 @@ def _profile_create(args):
 
 
 def _profile_delete(args):
-    from hermes_cli.profiles import delete_profile
+    from hermes_agent.hermes_cli.profiles import delete_profile
     try:
         delete_profile(args.profile_name, yes=getattr(args, "yes", False))
     except (ValueError, FileNotFoundError, RuntimeError) as e:
@@ -308,7 +308,7 @@ def _profile_delete(args):
 def _describe_target_dir(name: str) -> Path:
     """Profile dir for ``describe``: ``default`` maps to the CURRENT home (get_hermes_home),
     everything else to its named directory."""
-    from hermes_cli import profiles as _profiles_mod
+    from hermes_agent.hermes_cli import profiles as _profiles_mod
     if _profiles_mod.normalize_profile_name(name) == "default":
         from hermes_constants import get_hermes_home as _hh
         return Path(_hh())
@@ -316,7 +316,7 @@ def _describe_target_dir(name: str) -> Path:
 
 
 def _profile_describe(args):
-    from hermes_cli import profiles as _profiles_mod
+    from hermes_agent.hermes_cli import profiles as _profiles_mod
     all_flag = bool(getattr(args, "all_missing", False))
     auto_flag = bool(getattr(args, "auto", False))
     overwrite_flag = bool(getattr(args, "overwrite", False))
@@ -358,7 +358,7 @@ def _profile_describe(args):
         sys.exit(0)
 
     # --auto path: invoke the LLM describer.
-    from hermes_cli import profile_describer as _pd
+    from hermes_agent.hermes_cli import profile_describer as _pd
     if all_flag:
         targets = _pd.list_describable_profiles(missing_only=True)
         if not targets:
@@ -378,7 +378,7 @@ def _profile_describe(args):
 
 def _profile_show(args):
     name = args.profile_name
-    from hermes_cli.profiles import (
+    from hermes_agent.hermes_cli.profiles import (
         get_profile_dir, profile_exists, _read_config_model, _check_gateway_running,
         _served_by_running_multiplexer, _count_skills, _read_distribution_meta, _wrapper_path,
         find_alias_for_profile, format_profile_label, read_profile_meta,
@@ -410,7 +410,7 @@ def _profile_show(args):
 
 
 def _profile_alias(args):
-    from hermes_cli.profiles import (
+    from hermes_agent.hermes_cli.profiles import (
         _get_wrapper_dir, _is_wrapper_dir_in_path, check_alias_collision, create_wrapper_script,
         profile_exists, remove_wrapper_script, validate_alias_name,
     )
@@ -446,7 +446,7 @@ def _profile_alias(args):
 
 
 def _profile_rename(args):
-    from hermes_cli.profiles import normalize_profile_name, rename_profile
+    from hermes_agent.hermes_cli.profiles import normalize_profile_name, rename_profile
     try:
         new_dir = rename_profile(args.old_name, args.new_name)
         if normalize_profile_name(args.old_name) != "default":
@@ -460,7 +460,7 @@ def _profile_migrate_identity(args):
     """Retry the identity migration of a rename that already completed. Exits non-zero when a
     live gateway would not migrate (it still owns the routing index in memory), or when a
     database rejected the rewrite (collision, lock, partial failure)."""
-    from hermes_cli.profile_identity import migrate_profile_identity
+    from hermes_agent.hermes_cli.profile_identity import migrate_profile_identity
     try:
         migrated = migrate_profile_identity(args.old_name, args.new_name)
     except (ValueError, FileNotFoundError) as e:
@@ -475,7 +475,7 @@ def _profile_purge_identity(args):
     """Retry the identity purge of a delete that already completed. Exits non-zero when a live
     gateway would not purge (it still owns the routing index in memory), or when a database rejected
     the delete (lock, partial failure)."""
-    from hermes_cli.profile_identity import purge_profile_identity
+    from hermes_agent.hermes_cli.profile_identity import purge_profile_identity
     try:
         purged = purge_profile_identity(args.profile_name)
     except ValueError as e:
@@ -487,7 +487,7 @@ def _profile_purge_identity(args):
 
 
 def _profile_export(args):
-    from hermes_cli.profiles import export_profile, get_profile_export_path
+    from hermes_agent.hermes_cli.profiles import export_profile, get_profile_export_path
     name = args.profile_name
     try:
         output = args.output or str(get_profile_export_path(name))
@@ -498,7 +498,7 @@ def _profile_export(args):
 
 
 def _profile_import(args):
-    from hermes_cli.profiles import check_alias_collision, create_wrapper_script, import_profile
+    from hermes_agent.hermes_cli.profiles import check_alias_collision, create_wrapper_script, import_profile
     try:
         profile_dir = import_profile(args.archive, name=getattr(args, "import_name", None))
         name = profile_dir.name
@@ -514,7 +514,7 @@ def _profile_import(args):
 
 def _profile_install(args):
     import tempfile
-    from hermes_cli.profile_distribution import DistributionError, install_distribution, plan_install
+    from hermes_agent.hermes_cli.profile_distribution import DistributionError, install_distribution, plan_install
     try:
         # Preview: stage into a scratch dir, show the manifest, then do the real install.
         # The double-stage avoids any side-effects if the user declines.
@@ -546,8 +546,8 @@ def _profile_install(args):
 
 
 def _profile_update(args):
-    from hermes_cli.profile_distribution import DistributionError, read_manifest, update_distribution
-    from hermes_cli.profiles import get_profile_dir, normalize_profile_name
+    from hermes_agent.hermes_cli.profile_distribution import DistributionError, read_manifest, update_distribution
+    from hermes_agent.hermes_cli.profiles import get_profile_dir, normalize_profile_name
     try:
         canon = normalize_profile_name(args.profile_name)
         current = read_manifest(get_profile_dir(canon))
@@ -587,7 +587,7 @@ _INFO_FIELDS = (
 
 
 def _profile_info(args):
-    from hermes_cli.profile_distribution import describe_distribution, DistributionError
+    from hermes_agent.hermes_cli.profile_distribution import describe_distribution, DistributionError
     try:
         data = describe_distribution(args.profile_name)
     except (DistributionError, ValueError) as e:

@@ -50,7 +50,7 @@ class CLIBacktrackMixin:
         from hermes_agent.agent.context_compressor import user_originated_turn_view
         from hermes_agent.agent.image_routing import split_image_notes
         from hermes_agent.agent.message_metadata import typed_prompt_content
-        from hermes_cli.cli_session_mixin import _user_turn_indices
+        from hermes_agent.hermes_cli.cli_session_mixin import _user_turn_indices
         history = self.conversation_history or []
         prompts = []
         for index in _user_turn_indices(history):
@@ -84,7 +84,7 @@ class CLIBacktrackMixin:
         self._invalidate(min_interval=0.0)
 
     def _backtrack_second_escape(self) -> None:
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         if self._backtrack_edit is not None:
             self._backtrack_cancel_edit()
         elif not self._backtrack_blocked():
@@ -118,8 +118,8 @@ class CLIBacktrackMixin:
 
     # ---- browse --------------------------------------------------------------------------
     def _open_backtrack_picker(self) -> bool:
-        from cli import _cprint
-        from hermes_cli.cli_backtrack_browse import transcript_turns
+        from hermes_agent.cli import _cprint
+        from hermes_agent.hermes_cli.cli_backtrack_browse import transcript_turns
         self._backtrack_primed = None
         if self._backtrack_state or self._backtrack_blocked():
             return False
@@ -144,8 +144,8 @@ class CLIBacktrackMixin:
         return entries[selected] if 0 <= selected < len(entries) else None
 
     def _get_backtrack_display_fragments(self):
-        from hermes_cli.cli_backtrack_browse import render_pager
-        from hermes_cli.cli_tui_mixin import _PANEL_RESERVED_BELOW
+        from hermes_agent.hermes_cli.cli_backtrack_browse import render_pager
+        from hermes_agent.hermes_cli.cli_tui_mixin import _PANEL_RESERVED_BELOW
         state = self._backtrack_state
         if not state:
             return []
@@ -195,7 +195,7 @@ class CLIBacktrackMixin:
         self._prefill_input_buffer(text)
 
     def _backtrack_cancel_edit(self) -> bool:
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         if self._backtrack_edit is None:
             return False
         self._backtrack_edit = None
@@ -204,7 +204,7 @@ class CLIBacktrackMixin:
 
     def _backtrack_apply_resend(self, item: BacktrackResend):
         """Rewind to the picked turn, then return the edited text to send (None: nothing sent)."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         prompts = self._backtrack_prompts()
         if (item.session_id != self.session_id or item.ordinal >= len(prompts)
                 or prompts[item.ordinal] != item.expected or self._agent_running):
@@ -221,7 +221,7 @@ class CLIBacktrackMixin:
     # ---- fork ----------------------------------------------------------------------------
     def _backtrack_fork(self, ordinal: int) -> None:
         """/branch, then rewind the CHILD to just before ``ordinal`` and prefill that prompt."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         parent_session_id = self.session_id
         self._handle_branch_command("/branch")
         if self.session_id == parent_session_id:
@@ -235,7 +235,7 @@ class CLIBacktrackMixin:
     # ---- /rewind -------------------------------------------------------------------------
     def _handle_rewind_command(self, cmd_original: str) -> None:
         """/rewind opens the picker; ``/rewind N`` edits prompt N; ``/rewind fork N`` forks before it."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         if self._agent_running:
             return _cprint(f"  {t('cli.commands.shared.agent_busy', command='/rewind')}")
         args = cmd_original.split()[1:]
@@ -270,7 +270,7 @@ class CLIBacktrackMixin:
         return super()._tui_handle_double_escape(event)
 
     def _tui_submit_buffer(self, event, buf):
-        from cli import _looks_like_slash_command
+        from hermes_agent.cli import _looks_like_slash_command
         edit = self._backtrack_edit
         if edit is None:
             return super()._tui_submit_buffer(event, buf)
@@ -347,7 +347,7 @@ class CLIBacktrackMixin:
         from prompt_toolkit.filters import Condition, vi_insert_mode
         from prompt_toolkit.keys import Keys
 
-        from hermes_cli.cli_subagent_monitor import modal_prompt_active
+        from hermes_agent.hermes_cli.cli_subagent_monitor import modal_prompt_active
         kb = super()._tui_build_key_bindings()
         picker = Condition(lambda: bool(self._backtrack_state))
         primable = Condition(lambda: not self._backtrack_state and not modal_prompt_active(self)

@@ -54,7 +54,7 @@ class TurnFacadeMixin:
         from hermes_agent.agent.subagent_lifecycle import bind_subagent_parent
         from hermes_agent.agent.interrupt_scope import track_in_interrupt_scope
         from hermes_agent.agent.turn_facade_lease import admit_durable_turn_lease, carry_unadmitted_user_message
-        from hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
+        from hermes_agent.hermes_cli.observability.relay_shared_metrics import finish_task_run, start_task_run
 
         effective_task_id = task_id or str(uuid.uuid4())
         session_id = str(getattr(self, "session_id", None) or "")

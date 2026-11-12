@@ -10,8 +10,8 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from hermes_cli import web_server
-import hermes_cli.web_server_gateway as _web_server_gateway
+from hermes_agent.hermes_cli import web_server
+import hermes_agent.hermes_cli.web_server_gateway as _web_server_gateway
 
 
 @pytest.fixture

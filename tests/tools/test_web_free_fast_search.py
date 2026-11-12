@@ -29,7 +29,7 @@ def _nous_state(claims: dict, auth_method: str) -> dict:
     if claims.get("account_tier"):
         state["account_tier"] = claims["account_tier"]
     if auth_method == "anonymous":
-        from hermes_cli.anon_auth import WELCOME_CLAIM_FLAG
+        from hermes_agent.hermes_cli.anon_auth import WELCOME_CLAIM_FLAG
         state[WELCOME_CLAIM_FLAG] = True
     return state
 
@@ -74,8 +74,8 @@ def gateway_server(monkeypatch):
 
 
 def _write_home(home, monkeypatch, *, nous_state=None, config=None):
-    from hermes_cli.config import atomic_config_write
-    from hermes_cli.nous_account import reset_nous_portal_account_info_cache
+    from hermes_agent.hermes_cli.config import atomic_config_write
+    from hermes_agent.hermes_cli.nous_account import reset_nous_portal_account_info_cache
 
     home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -104,7 +104,7 @@ def _calls(log):
 def test_unentitled_nous_identity_autodetects_free_fast_search(monkeypatch, tmp_path, gateway_server, state):
     """Guests are the users this route exists for: an anonymous identity and a zero-credit account
     both reach the gateway, while the paid gate stays closed for extract and every other vendor."""
-    from hermes_cli.nous_account import get_nous_portal_account_info
+    from hermes_agent.hermes_cli.nous_account import get_nous_portal_account_info
     from hermes_agent.tools import web_tools
     from hermes_agent.tools.tool_backend_helpers import managed_nous_tools_enabled
 
@@ -161,7 +161,7 @@ def test_direct_perplexity_key_beats_free_fast_search(monkeypatch, tmp_path, gat
 
 def test_free_fast_search_eligibility_follows_the_served_profile(monkeypatch, tmp_path, gateway_server):
     """Multiplex A→B→A: profile A holds a zero-credit Portal identity, B none; each answers from its own store."""
-    from hermes_cli.nous_account import reset_nous_portal_account_info_cache
+    from hermes_agent.hermes_cli.nous_account import reset_nous_portal_account_info_cache
     from hermes_agent.agent.secret_scope import set_multiplex_active
     from hermes_agent.gateway.run import _profile_runtime_scope
     from hermes_agent.tools import web_tools

@@ -11,7 +11,7 @@ description: >
   HTTP client.
 author: Nous Research
 # ``requires_env`` entries are surfaced in ``hermes config`` UI via the
-# platform-plugin env var injector in ``hermes_cli/config.py``.
+# platform-plugin env var injector in ``hermes_agent/hermes_cli/config.py``.
 requires_env:
   - name: BUZZ_RELAY_URL
     description: "Base URL of the Buzz community relay (e.g. https://mycommunity.communities.buzz.xyz)"

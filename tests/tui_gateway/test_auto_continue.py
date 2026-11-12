@@ -139,7 +139,7 @@ def test_marker_survives_corrupt_sidecar(tmp_path):
 def test_sibling_backend_record_does_not_resurrect_a_cleared_marker(tmp_path, monkeypatch):
     """Two backends on one HERMES_HOME: B loads the marker file to start S2, A clears its concluded
     S1, then B stores — B's stale snapshot must not bring S1 back (resume would re-run a finished turn)."""
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
     from tests.tui_gateway._turn_marker_backend import record_after_parent_moves
 
     record_turn_start(tmp_path, "S1", "first prompt")

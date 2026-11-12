@@ -25,7 +25,7 @@ def main(destination: Path) -> bool:
         # No generation / unreadable install state: no image, not a traceback (Ink reads stdout).
         print(f"clipboard helper: dependency environment unavailable: {exc}", file=sys.stderr)
         return False
-    from hermes_cli.clipboard import save_clipboard_image
+    from hermes_agent.hermes_cli.clipboard import save_clipboard_image
 
     return bool(save_clipboard_image(destination))
 

@@ -4,8 +4,8 @@ import ast
 from functools import cache
 from typing import Callable, List, Optional
 
-from hermes_cli.platforms import PLATFORMS
-from hermes_cli.toolset_scope import toolset_allowed_for_platform
+from hermes_agent.hermes_cli.platforms import PLATFORMS
+from hermes_agent.hermes_cli.toolset_scope import toolset_allowed_for_platform
 
 _NO_TOOLS = "the agent will have no tools on this platform. Run `hermes tools` to reconfigure."
 
@@ -38,7 +38,7 @@ def _platform_default_toolset(platform: object) -> str:
 
 @cache
 def _bundled_platform_names() -> frozenset:
-    from hermes_cli.config import _platform_manifest_paths
+    from hermes_agent.hermes_cli.config import _platform_manifest_paths
 
     return frozenset(name for name, path, _kind, _st in _platform_manifest_paths(source="bundled") if path)
 
@@ -54,7 +54,7 @@ def is_known_platform_bundle(platform: object, name: str) -> bool:
     key = str(platform)
     if key in PLATFORMS or key in _bundled_platform_names():
         return True
-    from hermes_cli.left_core_migration import LEFT_CORE
+    from hermes_agent.hermes_cli.left_core_migration import LEFT_CORE
 
     if any(feature.platform == key for feature in LEFT_CORE):
         return True
@@ -95,13 +95,13 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
 
     @cache
     def platform_bundles() -> frozenset:
-        from hermes_cli.config import _platform_plugin_manifests
+        from hermes_agent.hermes_cli.config import _platform_plugin_manifests
 
         return frozenset(f"hermes-{name}" for name, _manifest in _platform_plugin_manifests())
 
     @cache
     def plugin_names() -> frozenset:
-        from hermes_cli.plugins import get_plugin_toolset_keys_nowait, get_portable_mcp_server_names_nowait
+        from hermes_agent.hermes_cli.plugins import get_plugin_toolset_keys_nowait, get_portable_mcp_server_names_nowait
 
         portable = get_portable_mcp_server_names_nowait()
         return frozenset(get_plugin_toolset_keys_nowait() | portable | {f"mcp-{name}" for name in portable})

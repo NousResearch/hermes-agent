@@ -34,7 +34,7 @@ async def test_a_platform_installed_by_this_start_is_in_the_runners_config(tmp_p
 
     monkeypatch.setattr("hermes_agent.gateway.run.load_gateway_config_for_runner", load_config)
     monkeypatch.setattr("hermes_agent.gateway.config.load_gateway_config", load_config)
-    monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
+    monkeypatch.setattr("hermes_agent.hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
     monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", lambda replace, force: _none())
     monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda: None)
     monkeypatch.setattr("hermes_agent.gateway.status.acquire_gateway_runtime_lock", lambda: True)
@@ -69,7 +69,7 @@ async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monke
     seen = {}
     decisions = []
 
-    import hermes_cli.gateway_multiplex_mode as mux
+    import hermes_agent.hermes_cli.gateway_multiplex_mode as mux
     monkeypatch.setattr(mux, "log_multiplex_decision", decisions.append)
 
     class Runner(gateway_run.GatewayRunner):  # the multiplex preflight reads its class attributes
@@ -89,7 +89,7 @@ async def test_a_named_launch_stays_standalone_across_the_reload(tmp_path, monke
         seen["multiplex_active_at_migration"] = is_multiplex_active()
         return installed
 
-    monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
+    monkeypatch.setattr("hermes_agent.hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
     monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", lambda replace, force: _none())
     monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **kw: None)
     monkeypatch.setattr("hermes_agent.gateway.status.acquire_gateway_runtime_lock", lambda: True)
@@ -135,7 +135,7 @@ async def test_a_default_launch_keeps_its_reserved_homes_across_the_reload(tmp_p
     from hermes_agent.agent.secret_scope import set_multiplex_active
     monkeypatch.setattr("hermes_agent.agent.secret_scope._MULTIPLEX_ACTIVE", False)
     monkeypatch.setattr("hermes_agent.agent.secret_scope._AUTO_PINNED_HOME", None)
-    monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup",
+    monkeypatch.setattr("hermes_agent.hermes_cli.left_core_migration.recover_at_startup",
                         lambda *, say=None, gateway_start=False: ["yuanbao"])
     monkeypatch.setattr("hermes_agent.gateway.run._host_attach_or_none", lambda replace, force: _none())
     monkeypatch.setattr("hermes_agent.gateway.status.get_running_pid", lambda *a, **kw: None)
@@ -179,7 +179,7 @@ def test_the_launch_homes_migration_reads_its_own_secrets_on_a_multiplexing_star
         read.append((str(hermes_constants.get_hermes_home()), get_secret("YUANBAO_APP_ID")))
         return []
 
-    monkeypatch.setattr("hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
+    monkeypatch.setattr("hermes_agent.hermes_cli.left_core_migration.recover_at_startup", recover_at_startup)
     from hermes_agent.gateway.run_startup import recover_left_core_at_gateway_start
     previous = is_multiplex_active()
     set_multiplex_active(True)

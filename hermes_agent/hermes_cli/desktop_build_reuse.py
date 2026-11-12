@@ -49,7 +49,7 @@ def packaged_desktop_reusable(desktop_dir: Path, project_root: Path, env: dict) 
     stamp a build at HEAD would bake that differs only in commit provenance. Anything unreadable
     means build.
     """
-    from hermes_cli.main_desktop import _desktop_build_needed, _packaged_resources_dir
+    from hermes_agent.hermes_cli.main_desktop import _desktop_build_needed, _packaged_resources_dir
 
     resources = _packaged_resources_dir(desktop_dir)
     if resources is None:

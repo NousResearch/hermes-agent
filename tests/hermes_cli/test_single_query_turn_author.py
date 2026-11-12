@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import cli
+from hermes_agent import cli
 from hermes_agent.agent.turn_author import TURN_AUTHOR_ENV
 
 

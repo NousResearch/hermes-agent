@@ -21,9 +21,9 @@ import os
 import sys
 import threading
 from hermes_agent.cron import scheduler
-from hermes_cli import worktree_ops
+from hermes_agent.hermes_cli import worktree_ops
 
-assert 'cli' not in sys.modules, 'requires a cold CLI import'
+assert 'hermes_agent.cli' not in sys.modules, 'requires a cold CLI import'
 before = os.environ['TERMINAL_CWD']
 finished = threading.Event()
 errors = []

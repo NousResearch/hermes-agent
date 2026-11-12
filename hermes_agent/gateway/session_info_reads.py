@@ -2,7 +2,7 @@
 
 Main's classic CLI and its TUI slash worker printed `/toolsets` and `/platforms` from the process
 that held the agent. On the shared gateway that process is the owner, so ``slash.exec`` runs the
-classic CLI's own line builders (hermes_cli/cli_info_lines.py) here, inside the owning profile, for
+classic CLI's own line builders (hermes_agent/hermes_cli/cli_info_lines.py) here, inside the owning profile, for
 this session's toolsets: the same text on the classic CLI, Ink and every other local client.
 """
 from __future__ import annotations
@@ -11,12 +11,12 @@ import asyncio
 
 
 def _toolsets(authority, policy):
-    from hermes_cli.cli_info_lines import toolsets_lines
+    from hermes_agent.hermes_cli.cli_info_lines import toolsets_lines
     return toolsets_lines(list(policy.current_toolsets(policy.config(authority, secrets=False))) if policy else [])
 
 
 def _platforms(authority, policy):
-    from hermes_cli.cli_info_lines import platforms_lines
+    from hermes_agent.hermes_cli.cli_info_lines import platforms_lines
     return platforms_lines()
 
 

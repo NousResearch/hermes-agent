@@ -249,7 +249,7 @@ def resolve_pack_plugins(pack: PluginPack) -> list[ResolvedPackPlugin]:
             continue
         try:
             if catalog_entries is None:
-                from hermes_cli.plugin_catalog import load_catalog_live
+                from hermes_agent.hermes_cli.plugin_catalog import load_catalog_live
                 catalog_entries = load_catalog_live()
         except Exception as exc:  # catalog load must not crash pack handling
             resolved.append(ResolvedPackPlugin(
@@ -317,7 +317,7 @@ class PackInstallResult:
 
 def _seed_plugin_config(plugin_id: str, seed: dict[str, Any], console) -> None:
     """Seed plugins.entries.<plugin_id> keys that are not already set (user values always win)."""
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     seed = validate_config_seed(plugin_id, seed)
     config = load_config()
     entry = config.setdefault("plugins", {}).setdefault("entries", {}).setdefault(plugin_id, {})
@@ -351,7 +351,7 @@ def install_pack_plugins(
     consent flow as a single install (a pack never bulk-grants). Successful installs are enabled
     (the user consented via the review screen) and their config seed applied.
     """
-    from hermes_cli.plugins_cmd import (
+    from hermes_agent.hermes_cli.plugins_cmd import (
         PluginOperationError,
         _declared_capabilities_from_manifest,
         _install_plugin_core,
@@ -359,9 +359,9 @@ def install_pack_plugins(
         _run_capability_consent,
         _set_plugin_enabled,
     )
-    from hermes_cli.plugins_admission import AdmissionRefused
-    from hermes_cli.plugins_cmd_catalog import raise_if_removed
-    from hermes_cli.plugins_cmd_install import recorded_install
+    from hermes_agent.hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import raise_if_removed
+    from hermes_agent.hermes_cli.plugins_cmd_install import recorded_install
     results: list[PackInstallResult] = []
 
     def _fail(display: str, error: str) -> None:
@@ -442,7 +442,7 @@ def _sanitized_entry_config(plugin_id: str) -> dict[str, Any]:
     """Exportable plugins.entries.<id> keys: YAML scalars/containers only, reserved and
     secret-shaped keys stripped at every depth."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         config = load_config() or {}
     except Exception:
@@ -457,7 +457,7 @@ def export_pack(*, enabled_only: bool = False, pack_name: str = "my-hermes-pack"
     """Build pack YAML from the current install; returns ``(yaml_text, warnings)``. Plugins with
     unknown Git provenance (no install metadata) become warnings + YAML comments, never entries."""
     import hermes_yaml as yaml
-    from hermes_cli.plugins_cmd import _get_enabled_set, _plugins_dir, _read_install_metadata
+    from hermes_agent.hermes_cli.plugins_cmd import _get_enabled_set, _plugins_dir, _read_install_metadata
     metadata = _read_install_metadata()
     enabled = _get_enabled_set()
     installed = sorted(d.name for d in _plugins_dir().iterdir() if d.is_dir() and not d.name.startswith("."))
@@ -504,7 +504,7 @@ def export_pack(*, enabled_only: bool = False, pack_name: str = "my-hermes-pack"
 
 def _load_and_review(console, source: str):
     """Load *source* (exit 1 on PackError), resolve it, print the review screen."""
-    from hermes_cli.plugins_cmd import _fail
+    from hermes_agent.hermes_cli.plugins_cmd import _fail
     try:
         pack = load_pack(source)
     except PackError as exc:
@@ -516,7 +516,7 @@ def _load_and_review(console, source: str):
 
 def cmd_pack_show(source: str) -> None:
     """``hermes plugins pack show <path-or-url>`` — dry-run review."""
-    from hermes_cli.plugins_cmd import _console
+    from hermes_agent.hermes_cli.plugins_cmd import _console
     console = _console()
     _pack, resolved = _load_and_review(console, source)
     unresolved = [rp for rp in resolved if rp.identifier is None]
@@ -530,7 +530,7 @@ def cmd_pack_show(source: str) -> None:
 def cmd_pack_install(source: str, *, force: bool = False) -> None:
     """``hermes plugins pack install <path-or-url>``: mandatory review screen -> one pack-level
     consent -> pinned fan-out installs -> per-plugin capability consent. Exit 1 if any failed."""
-    from hermes_cli.plugins_cmd import _ask_yes, _console, _fail, _is_tty
+    from hermes_agent.hermes_cli.plugins_cmd import _ask_yes, _console, _fail, _is_tty
     console = _console()
     pack, resolved = _load_and_review(console, source)
 
@@ -573,7 +573,7 @@ def pack_command(args) -> None:
     """Dispatch ``hermes plugins pack <action>``."""
     handler = _PACK_ACTIONS.get(getattr(args, "pack_action", None))
     if handler is None:
-        from hermes_cli.plugins_cmd import _console, _fail
+        from hermes_agent.hermes_cli.plugins_cmd import _console, _fail
         _fail(_console(), "[red]Error:[/red] Usage: hermes plugins pack {install|export|show}")
     handler(args)
 

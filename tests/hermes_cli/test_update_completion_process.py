@@ -10,7 +10,7 @@ import venv
 
 import pytest
 
-from hermes_cli import update_completion
+from hermes_agent.hermes_cli import update_completion
 
 
 @pytest.fixture
@@ -210,7 +210,7 @@ def transition(tmp_path):
 
 @pytest.mark.parametrize("bom_boundary", [None, "request", "receipt"])
 def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path, bom_boundary):
-    from hermes_cli import update_completion
+    from hermes_agent.hermes_cli import update_completion
 
     root, git, old, new, request = transition
     request["pre_update_version"] = "日本 café"
@@ -266,7 +266,7 @@ def test_old_process_new_git_tree_completes_in_fresh_python(transition, tmp_path
 def _run_cmd_update(monkeypatch, request, capsys):
     """``hermes update --gateway`` whose impl hands this request to the real post-commit completion."""
     from types import SimpleNamespace
-    from hermes_cli import main, update_cmd, update_receipt
+    from hermes_agent.hermes_cli import main, update_cmd, update_receipt
 
     monkeypatch.setenv("HERMES_HOME", request["home"])
     monkeypatch.setattr(main, "_update_preflight_handled", lambda args: False)
@@ -295,7 +295,7 @@ def test_missing_child_result_is_an_owed_completion_and_releases_lock(transition
     Was exit ``code or 1``, receipt ``failed``, ``.update_exit_code`` 1 and the paused gateways left
     paused: that pinned the failure invariant 3 forbids.
     """
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     root, _git, _old, _new, request = transition
     die = f"os._exit({code})" if code >= 0 else "os.kill(os.getpid(), 9)"
@@ -338,7 +338,7 @@ def test_completion_spawn_failure_after_commit_is_owed(transition, monkeypatch, 
 
 def test_lost_completion_with_parked_local_changes_stays_partial(transition, monkeypatch, capsys):
     """The one documented exception survives the owed path: parked user changes still exit 1."""
-    from hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import update_cmd
 
     root, _git, _old, _new, request = transition
     (root / "hermes_cli/update_completion.py").write_text("import os\nos._exit(0)\n", encoding="utf-8")
@@ -387,7 +387,7 @@ def test_desktop_build_that_never_ran_is_named_for_the_handoff(transition, capsy
 def test_unwritable_gateway_status_never_fails_a_settled_commit(tmp_path, monkeypatch):
     """Review P1: the bootstrap's gateway status write is best effort, like
     ``_write_gateway_update_exit_code``; the committed run still answers its result with exit 0."""
-    from hermes_cli import venv_sync
+    from hermes_agent.hermes_cli import venv_sync
 
     monkeypatch.setattr(venv_sync, "arm_completion", lambda root: None)
     receipt = {"update_id": "u1", "outcome": "success", "finished_at": "now"}
@@ -406,7 +406,7 @@ def test_unwritable_gateway_status_never_fails_a_settled_commit(tmp_path, monkey
 def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transition, monkeypatch, cleanup_failure):
     import io
     from types import SimpleNamespace
-    from hermes_cli import main, update_cmd, update_lock, update_receipt
+    from hermes_agent.hermes_cli import main, update_cmd, update_lock, update_receipt
 
     root, _git, _old, _new, request = transition
     marker = Path(request["home"]) / ".update_exit_code"
@@ -499,7 +499,7 @@ def test_interrupt_after_child_success_demotes_gateway_marker_at_boundary(transi
 
 @pytest.mark.platforms("posix")
 def test_killed_selected_python_returns_signal_exit_status(transition):
-    from hermes_cli import update_completion
+    from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
@@ -519,7 +519,7 @@ def test_killed_selected_python_returns_signal_exit_status(transition):
 
 def test_failed_build_after_commit_is_a_followup_and_later_steps_still_run(transition):
     """Contract C3: the code is committed, so a failed product build cannot fail the update."""
-    from hermes_cli import update_completion
+    from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
@@ -549,7 +549,7 @@ def test_failed_build_after_commit_is_a_followup_and_later_steps_still_run(trans
 
 
 def test_prepare_failure_preserves_correlated_pm_receipt(transition):
-    from hermes_cli import update_completion
+    from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
@@ -572,7 +572,7 @@ def test_prepare_failure_preserves_correlated_pm_receipt(transition):
 
 
 def test_bootstrap_does_not_initialize_old_site_packages(transition, tmp_path, monkeypatch):
-    from hermes_cli import update_completion
+    from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
@@ -592,7 +592,7 @@ def test_bootstrap_does_not_initialize_old_site_packages(transition, tmp_path, m
 def test_progress_is_forwarded_before_held_stage_is_released(transition, monkeypatch, stage):
     import io
     import threading
-    from hermes_cli import update_completion
+    from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
@@ -651,7 +651,7 @@ def test_interactive_configuration_keeps_terminal_input(transition):
     import select
     import signal
     import time
-    from hermes_cli import update_completion
+    from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
     shutil.copy2(update_completion.__file__, root / "hermes_cli/update_completion.py")
@@ -691,7 +691,7 @@ def test_interrupt_reaps_completion_descendants_before_return(transition, monkey
     import io
     import psutil
     import time
-    from hermes_cli import update_completion
+    from hermes_agent.hermes_cli import update_completion
 
     root, _git, _old, _new, request = transition
     (root / "hermes_cli/update_completion.py").write_text(
@@ -732,7 +732,7 @@ def test_interrupt_reaps_completion_descendants_before_return(transition, monkey
 def test_taskkill_failure_still_reaps_child_and_preserves_interrupt(tmp_path, monkeypatch, failure):
     """Only native Windows exercises taskkill dispatch and retained-handle kill."""
     import io
-    from hermes_cli import update_completion
+    from hermes_agent.hermes_cli import update_completion
 
     package = tmp_path / "hermes_cli"
     package.mkdir()
@@ -801,7 +801,7 @@ def test_taskkill_failure_still_reaps_child_and_preserves_interrupt(tmp_path, mo
 @pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
 @pytest.mark.parametrize("correlated", [False, True])
 def test_only_correlated_terminal_receipt_can_acknowledge_success(transition, encoding, correlated):
-    from hermes_cli.update_completion import run_completion
+    from hermes_agent.hermes_cli.update_completion import run_completion
 
     root, _git, _old, _new, request = transition
     receipt = {"update_id": request["receipt"]["update_id"] if correlated else "wrong",

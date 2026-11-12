@@ -1,6 +1,6 @@
 """Plugin-registered TTS providers for ``hermes_agent.tools.tts_tool``: routes ``tts.provider: <name>`` values
 that are neither built-in nor ``type: command`` to a plugin :class:`hermes_agent.agent.tts_provider.TTSProvider`.
-Discovery goes through ``hermes_cli.plugins._ensure_plugins_discovered`` (imported lazily so the
+Discovery goes through ``hermes_agent.hermes_cli.plugins._ensure_plugins_discovered`` (imported lazily so the
 tool module stays importable without the plugin machinery).
 """
 
@@ -24,7 +24,7 @@ def _lookup_plugin_provider(key: str, *, discover: bool = True, retry: bool = Fa
     plugin's install). Raises on registry/discovery failure — callers decide if fatal."""
     from hermes_agent.agent.tts_registry import get_provider
     if discover:
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from hermes_agent.hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
     plugin_provider = get_provider(key)
     if plugin_provider is None and retry:

@@ -12,9 +12,9 @@ META_PREFIX = "\0HERMES_TERMINAL_META:"
 
 def request_allowed() -> bool:
     """Allow host shells only for Webapp on loopback or behind authentication."""
-    from hermes_cli.web_server import app
-    from hermes_cli.web_server_chat import _LOOPBACK_HOSTS
-    from hermes_cli.web_server_surface import policy
+    from hermes_agent.hermes_cli.web_server import app
+    from hermes_agent.hermes_cli.web_server_chat import _LOOPBACK_HOSTS
+    from hermes_agent.hermes_cli.web_server_surface import policy
 
     if not policy(app.state).host_terminal:
         return False
@@ -102,8 +102,8 @@ def resolve_argv(
 ) -> tuple[list[str], str, dict[str, str], str]:
     """Return argv/cwd/env/name for Webapp's authenticated host terminal in ``home``."""
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from hermes_cli import __version__
-    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    from hermes_agent.hermes_cli import __version__
+    from hermes_agent.hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
     from hermes_constants import (
         get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override,
     )

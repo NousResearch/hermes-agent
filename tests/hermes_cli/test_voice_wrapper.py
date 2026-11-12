@@ -1,4 +1,4 @@
-"""Tests for ``hermes_cli.voice`` — the TUI gateway's voice wrapper.
+"""Tests for ``hermes_agent.hermes_cli.voice`` — the TUI gateway's voice wrapper.
 
 The module is imported *lazily* by ``hermes_agent/tui_gateway/server.py`` so that a
 box with missing audio deps fails at call time (returning a clean RPC
@@ -30,7 +30,7 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
 
 
     def test_non_string_falls_back_to_default(self):
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+        from hermes_agent.hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
 
         assert normalize_voice_record_key_for_prompt_toolkit(None) == "c-b"
         assert normalize_voice_record_key_for_prompt_toolkit(1) == "c-b"
@@ -44,7 +44,7 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
         back to the documented default; the CLI binding site is
         expected to warn so users know the shortcut is TUI-only
         (Copilot round-11 on #19835)."""
-        from hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
+        from hermes_agent.hermes_cli.voice import normalize_voice_record_key_for_prompt_toolkit
 
         assert normalize_voice_record_key_for_prompt_toolkit("super+b") == "c-b"
         assert normalize_voice_record_key_for_prompt_toolkit("win+o") == "c-b"
@@ -62,7 +62,7 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
     # TUI falls back to Ctrl+B.
 
     def test_pt_key_to_sequence(self):
-        from hermes_cli.voice import pt_key_to_sequence
+        from hermes_agent.hermes_cli.voice import pt_key_to_sequence
 
         assert pt_key_to_sequence("c-b") == ("c-b",)
         assert pt_key_to_sequence("a-v") == ("escape", "v")
@@ -84,7 +84,7 @@ class TestVoiceRecordKeyFromConfig:
 
 
     def test_missing_record_key_returns_none(self):
-        from hermes_cli.voice import voice_record_key_from_config
+        from hermes_agent.hermes_cli.voice import voice_record_key_from_config
 
         assert voice_record_key_from_config({"voice": {"beep_enabled": True}}) is None
         assert voice_record_key_from_config({}) is None
@@ -92,7 +92,7 @@ class TestVoiceRecordKeyFromConfig:
     def test_normalizer_accepts_extractor_output_directly(self):
         """voice_record_key_from_config + normalize_… must compose —
         None / non-string scalars all fall back to c-b."""
-        from hermes_cli.voice import (
+        from hermes_agent.hermes_cli.voice import (
             normalize_voice_record_key_for_prompt_toolkit,
             voice_record_key_from_config,
         )
@@ -112,7 +112,7 @@ class TestFormatVoiceRecordKeyForStatus:
     """
 
     def test_ctrl_and_alt_letter_keys_render_canonically(self):
-        from hermes_cli.voice import format_voice_record_key_for_status
+        from hermes_agent.hermes_cli.voice import format_voice_record_key_for_status
 
         assert format_voice_record_key_for_status("ctrl+b") == "Ctrl+B"
         assert format_voice_record_key_for_status("ctrl+o") == "Ctrl+O"
@@ -121,7 +121,7 @@ class TestFormatVoiceRecordKeyForStatus:
 
 
     def test_non_string_scalar_falls_back_to_ctrl_b_label(self):
-        from hermes_cli.voice import format_voice_record_key_for_status
+        from hermes_agent.hermes_cli.voice import format_voice_record_key_for_status
 
         # Copilot round-10 regression: previously /voice status printed
         # the raw scalar ("True" / "1") even though the actual binding
@@ -132,7 +132,7 @@ class TestFormatVoiceRecordKeyForStatus:
         assert format_voice_record_key_for_status({}) == "Ctrl+B"
 
     def test_malformed_configs_fall_back_to_ctrl_b(self):
-        from hermes_cli.voice import format_voice_record_key_for_status
+        from hermes_agent.hermes_cli.voice import format_voice_record_key_for_status
 
         assert format_voice_record_key_for_status("ctrl+spcae") == "Ctrl+B"
         assert format_voice_record_key_for_status("ctrl+alt+r") == "Ctrl+B"
@@ -143,7 +143,7 @@ class TestFormatVoiceRecordKeyForStatus:
 class TestStopWithoutStart:
     def test_returns_none_when_no_recording_active(self, monkeypatch):
         """Idempotent no-op: stop before start must not raise or touch state."""
-        from hermes_cli import voice
+        from hermes_agent.hermes_cli import voice
 
         monkeypatch.setattr(voice, "_recorder", None)
 
@@ -157,13 +157,13 @@ class TestSpeakTextGuards:
         """Empty / whitespace-only text must return without importing tts_tool
         (the gateway spawns a thread per call, so a no-op on empty input
         keeps the thread pool from churning on trivial inputs)."""
-        from hermes_cli.voice import speak_text
+        from hermes_agent.hermes_cli.voice import speak_text
 
         # Should simply return None without raising.
         assert speak_text(text) is None
 
     def test_speak_text_uses_returned_tts_file_path(self, monkeypatch):
-        from hermes_cli import voice
+        from hermes_agent.hermes_cli import voice
         from hermes_agent.tools import tts_tool
 
         played = []
@@ -184,7 +184,7 @@ class TestSpeakTextGuards:
         assert played == [returned_path]
 
     def test_speak_text_plays_returned_file_paths(self, monkeypatch):
-        from hermes_cli import voice
+        from hermes_agent.hermes_cli import voice
         from hermes_agent.tools import tts_tool
 
         played = []
@@ -221,7 +221,7 @@ class TestContinuousAPI:
     def test_stop_continuous_idempotent_when_inactive(self, monkeypatch):
         """stop_continuous must not raise when no loop is active — the
         gateway's voice.toggle off path calls it unconditionally."""
-        from hermes_cli import voice
+        from hermes_agent.hermes_cli import voice
 
         monkeypatch.setattr(voice, "_continuous_active", False)
         monkeypatch.setattr(voice, "_continuous_recorder", None)
@@ -234,7 +234,7 @@ class TestContinuousAPI:
         """A second start_continuous while already active is a no-op — prevents
         two overlapping capture threads fighting over the microphone when the
         UI double-fires (e.g. both /voice on and Ctrl+B within the same tick)."""
-        from hermes_cli import voice
+        from hermes_agent.hermes_cli import voice
 
         monkeypatch.setattr(voice, "_continuous_active", True)
         called = {"n": 0}
@@ -266,7 +266,7 @@ class TestContinuousLoopSimulation:
 
     @pytest.fixture
     def fake_recorder(self, monkeypatch):
-        from hermes_cli import voice
+        from hermes_agent.hermes_cli import voice
 
         # Reset module state between tests.
         monkeypatch.setattr(voice, "_continuous_active", False)
@@ -318,7 +318,7 @@ class TestContinuousLoopSimulation:
         return rec
 
     def test_loop_auto_restarts_after_transcript(self, fake_recorder, monkeypatch):
-        from hermes_cli import voice
+        from hermes_agent.hermes_cli import voice
 
         monkeypatch.setattr(
             voice,
@@ -355,7 +355,7 @@ class TestContinuousLoopSimulation:
 
 
     def test_silent_limit_halts_loop_after_three_strikes(self, fake_recorder, monkeypatch):
-        from hermes_cli import voice
+        from hermes_agent.hermes_cli import voice
 
         # Transcription returns no speech — fake_recorder.stop() returns the
         # path, but transcribe returns empty text, counting as silence.
@@ -386,7 +386,7 @@ class TestContinuousLoopSimulation:
 
     def test_silent_cycles_do_not_count_while_tts_playing(self, fake_recorder, monkeypatch):
         """TTS speaking: the user is listening, not ignoring the mic."""
-        from hermes_cli import voice
+        from hermes_agent.hermes_cli import voice
 
         monkeypatch.setattr(
             voice,
@@ -429,10 +429,10 @@ class TestBeepsEnabledTruthyStrings:
     bool("false") is True, so the gate must use utils.is_truthy_value (#49883)."""
 
     def _enabled_with(self, monkeypatch, value):
-        from hermes_cli import voice
+        from hermes_agent.hermes_cli import voice
 
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "hermes_agent.hermes_cli.config.load_config",
             lambda: {"voice": {"beep_enabled": value}},
         )
         return voice._beeps_enabled()
@@ -453,7 +453,7 @@ class TestSpeakTextStreamingDispatch:
     parallel streaming implementations."""
 
     def test_streaming_provider_routes_through_dispatcher(self, monkeypatch):
-        from hermes_cli import voice
+        from hermes_agent.hermes_cli import voice
         import hermes_agent.tools.tts_streaming as ts
         from hermes_agent.tools import tts_tool, tts_tool_speaker
 

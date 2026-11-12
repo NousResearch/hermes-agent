@@ -68,7 +68,7 @@ _SYNC_BACK_STALE_SECONDS = 30 * 60
 def _sync_back_max_bytes() -> int:
     """Extraction cap; config.yaml ``terminal.sync_back_max_bytes`` overrides it for trees that
     legitimately exceed 2 GiB (a skipped extraction silently discards the whole download)."""
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     raw = ((load_config() or {}).get("terminal") or {}).get(_SYNC_BACK_MAX_BYTES_KEY)
     if raw is not None:

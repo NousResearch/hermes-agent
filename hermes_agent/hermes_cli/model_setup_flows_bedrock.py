@@ -1,13 +1,13 @@
 """AWS Bedrock wizards: native Converse API (IAM chain, region-scoped model discovery)
 and the Bedrock API Key mode on the OpenAI-compatible bedrock-mantle endpoint.
 
-Imports of hermes_cli.auth / config / models stay lazy (tests patch them at call time).
+Imports of hermes_agent.hermes_cli.auth / config / models stay lazy (tests patch them at call time).
 Prompt strings and config write order are behavior.
 """
 
 from __future__ import annotations
 
-from hermes_cli.model_setup_flows_common import (
+from hermes_agent.hermes_cli.model_setup_flows_common import (
     _ask, _ensure_dict_section, _finish_model, _note_setup_failure, _pick_model_or_prompt, _say)
 
 
@@ -47,16 +47,16 @@ def bedrock_model_routable_from_region(model_id: str, region_name: str) -> bool:
 def _model_flow_bedrock_api_key(config, region, current_model=""):
     """Bedrock API Key mode on the OpenAI-compatible bedrock-mantle endpoint — for developers
     without an AWS account who received a Bedrock API Key from their AWS admin."""
-    from hermes_cli.auth import _resolve_api_key_provider_secret, ProviderConfig
-    from hermes_cli.config import save_env_value
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_agent.hermes_cli.auth import _resolve_api_key_provider_secret, ProviderConfig
+    from hermes_agent.hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli.models import _PROVIDER_MODELS
     mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
 
     # Check env var and credential pool (keys added via `hermes auth`)
     bedrock_pconfig = ProviderConfig(id="bedrock", name="Bedrock", auth_type="api_key", api_key_env_vars=("AWS_BEARER_TOKEN_BEDROCK",))
     existing_key, existing_source = _resolve_api_key_provider_secret("bedrock", bedrock_pconfig)
     if existing_key:
-        from hermes_cli.env_loader import format_secret_source_suffix
+        from hermes_agent.hermes_cli.env_loader import format_secret_source_suffix
         source_suffix = format_secret_source_suffix(existing_source or "AWS_BEARER_TOKEN_BEDROCK")
         print(f"  Bedrock API Key: {existing_key[:12]}... ✓{source_suffix}")
     else:
@@ -148,7 +148,7 @@ def _bedrock_text_model_ids(live_models: list, region: str) -> list[str]:
 def _model_flow_bedrock(config, current_model=""):
     """AWS Bedrock (native Converse API via boto3): verify credentials, pick region, discover models.
     Auth is the AWS SDK default credential chain, so no API key prompt is needed."""
-    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_agent.hermes_cli.models import _PROVIDER_MODELS
 
     # 1. Check for AWS credentials
     try:

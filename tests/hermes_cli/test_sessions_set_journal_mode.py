@@ -11,8 +11,8 @@ import sys
 
 import pytest
 
-from hermes_cli.sessions_cmd import cmd_sessions
-from hermes_cli.sessions_cmd_journal_mode import _refusal
+from hermes_agent.hermes_cli.sessions_cmd import cmd_sessions
+from hermes_agent.hermes_cli.sessions_cmd_journal_mode import _refusal
 
 
 def _wal_store(path):

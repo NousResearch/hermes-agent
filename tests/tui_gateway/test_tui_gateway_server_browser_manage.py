@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.browser_connect import ChromeDebugLaunch
+from hermes_agent.hermes_cli.browser_connect import ChromeDebugLaunch
 from hermes_agent.tui_gateway import server
 
 
@@ -79,7 +79,7 @@ def test_browser_manage_status_falls_back_to_config_cdp_url(monkeypatch):
     config.yaml so users see what the next tool call will read."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
 
-    with patch("hermes_cli.config_effective.load_user_config_effective",
+    with patch("hermes_agent.hermes_cli.config_effective.load_user_config_effective",
                lambda: {"browser": {"cdp_url": "http://lan:9222"}}):
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
@@ -179,13 +179,13 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
         _stub_urlopen(monkeypatch, ok=False)
         with (
             patch(
-                "hermes_cli.browser_connect.launch_chrome_debug",
+                "hermes_agent.hermes_cli.browser_connect.launch_chrome_debug",
                 return_value=ChromeDebugLaunch(),
             ),
-            patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
-            patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
+            patch("hermes_agent.hermes_cli.browser_connect.local_port_in_use", return_value=False),
+            patch("hermes_agent.hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
             patch(
-                "hermes_cli.browser_connect.get_chrome_debug_candidates",
+                "hermes_agent.hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
             ),
         ):
@@ -228,12 +228,12 @@ def test_browser_manage_connect_no_session_skips_progress_events(monkeypatch):
         _stub_urlopen(monkeypatch, ok=False)
         with (
             patch(
-                "hermes_cli.browser_connect.launch_chrome_debug",
+                "hermes_agent.hermes_cli.browser_connect.launch_chrome_debug",
                 return_value=ChromeDebugLaunch(),
             ),
-            patch("hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
+            patch("hermes_agent.hermes_cli.browser_connect.manual_chrome_debug_command", return_value=None),
             patch(
-                "hermes_cli.browser_connect.get_chrome_debug_candidates",
+                "hermes_agent.hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
             ),
         ):
@@ -323,10 +323,10 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     with patch.dict(sys.modules, {"hermes_agent.tools.browser_session_lifecycle": fake}):
         with (
             patch(
-                "hermes_cli.browser_connect.launch_chrome_debug",
+                "hermes_agent.hermes_cli.browser_connect.launch_chrome_debug",
                 return_value=launched,
             ),
-            patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
+            patch("hermes_agent.hermes_cli.browser_connect.local_port_in_use", return_value=False),
         ):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
@@ -410,9 +410,9 @@ def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch)
 
     with patch.dict(sys.modules, {"hermes_agent.tools.browser_session_lifecycle": fake}):
         with (
-            patch("hermes_cli.browser_connect.launch_chrome_debug", side_effect=_launch),
-            patch("hermes_cli.browser_connect.local_port_in_use", return_value=True),
-            patch("hermes_cli.browser_connect.find_free_debug_port", return_value=9223),
+            patch("hermes_agent.hermes_cli.browser_connect.launch_chrome_debug", side_effect=_launch),
+            patch("hermes_agent.hermes_cli.browser_connect.local_port_in_use", return_value=True),
+            patch("hermes_agent.hermes_cli.browser_connect.find_free_debug_port", return_value=9223),
         ):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}

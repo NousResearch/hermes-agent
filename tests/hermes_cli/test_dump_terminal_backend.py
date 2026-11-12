@@ -33,8 +33,8 @@ def test_dump_surfaces_terminal_env_override(monkeypatch, capsys, tmp_path):
     values set AFTER load (in-process mutation, config-bridge failure), so
     pin it with a config.yaml that has no explicit backend key.
     """
-    from hermes_cli import dump
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli import dump
+    from hermes_agent.hermes_cli.config import get_hermes_home
 
     monkeypatch.setenv("TERMINAL_ENV", "docker")
     # Keep run_dump's project-.env fallback from touching the real repo.
@@ -60,8 +60,8 @@ def test_dump_reports_config_backend_winning_over_stale_env(monkeypatch, capsys,
     beats config.yaml terminal.backend=local — load_hermes_dotenv re-applies
     the explicit config keys, so the dump reports local with no override
     warning."""
-    from hermes_cli import dump
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli import dump
+    from hermes_agent.hermes_cli.config import get_hermes_home
 
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
     monkeypatch.setattr(dump, "get_project_root", lambda: tmp_path / "noproject")
@@ -77,8 +77,8 @@ def test_dump_reports_config_backend_winning_over_stale_env(monkeypatch, capsys,
 
 
 def test_dump_reports_config_backend_when_no_override(monkeypatch, capsys, tmp_path):
-    from hermes_cli import dump
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli import dump
+    from hermes_agent.hermes_cli.config import get_hermes_home
 
     monkeypatch.delenv("TERMINAL_ENV", raising=False)
     monkeypatch.setattr(dump, "get_project_root", lambda: tmp_path / "noproject")

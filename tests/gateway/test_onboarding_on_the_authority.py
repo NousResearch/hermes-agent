@@ -218,7 +218,7 @@ async def test_start_from_a_secondary_profile_claims_in_the_default_home(tmp_pat
 
     def claim(*, assume_fresh):
         claims.append(Path(get_hermes_home()))
-    monkeypatch.setattr("hermes_cli.welcome_trial.claim_desktop_free_tier", claim)
+    monkeypatch.setattr("hermes_agent.hermes_cli.welcome_trial.claim_desktop_free_tier", claim)
     runner = desktop.authority.runner
     runner.config = SimpleNamespace(multiplex_profiles=True)
     work_db = SessionDB(db_path=work / "state.db")
@@ -231,7 +231,7 @@ async def test_start_from_a_secondary_profile_claims_in_the_default_home(tmp_pat
         "user_id": "uid:1", "provider": "local", "profile_id": str(work), "instance_id": "owner",
         "profile_scope": "host"})
     try:
-        from hermes_cli.process_identity import serving_local_desktop
+        from hermes_agent.hermes_cli.process_identity import serving_local_desktop
         with serving_local_desktop(True):  # what ws._dispatch_request binds for the declared Desktop socket
             started = await connection.dispatch({"jsonrpc": "2.0", "id": 1, "method": "onboarding.start", "params": {}})
         assert "result" in started, started
@@ -257,8 +257,8 @@ async def test_skip_accepts_the_profile_the_desktop_names(tmp_path, monkeypatch)
 @pytest.mark.asyncio
 async def test_deleting_the_onboarding_chat_from_the_sidebar_ends_the_run(tmp_path, monkeypatch):
     from hermes_agent.agent import onboarding_record
-    from hermes_cli.onboarding_run import _root_config
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.onboarding_run import _root_config
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     turns, ended = [], []
     desktop = await _desktop(tmp_path, monkeypatch, turns)
     onboarding_record.on_ended(ended.append)
@@ -318,7 +318,7 @@ async def test_a_fresh_launch_deletes_the_chat_the_last_launch_left_with_no_view
 async def test_onboarding_start_from_a_client_that_is_not_the_local_desktop_changes_nothing(tmp_path, monkeypatch):
     """A CLI or TUI holds a native ticket too. Its ``onboarding.start`` is refused before the install
     flag is written, so it never schedules first-run onboarding for the Desktop."""
-    from hermes_cli.onboarding_run import _explicit_run
+    from hermes_agent.hermes_cli.onboarding_run import _explicit_run
     desktop = await _desktop(tmp_path, monkeypatch, [])
     desktop.transport.desktop_local = False
     try:

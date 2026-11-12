@@ -1,14 +1,14 @@
 """``hermes config`` / ``hermes config show``: the read-only configuration summary.
 
-Split out of ``hermes_cli.config``; config names are read through the module at call time
-(``_cfg.<name>``) so ``hermes_cli.config.<name>`` patch seams hold.
+Split out of ``hermes_agent.hermes_cli.config``; config names are read through the module at call time
+(``_cfg.<name>``) so ``hermes_agent.hermes_cli.config.<name>`` patch seams hold.
 """
 
 from typing import Any, Dict
 
-from hermes_cli import config as _cfg
-from hermes_cli import managed_scope
-from hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli import config as _cfg
+from hermes_agent.hermes_cli import managed_scope
+from hermes_agent.hermes_cli.colors import Colors, color
 
 
 def _section(title: str) -> None:
@@ -65,7 +65,7 @@ def _show_display_section(config: dict[str, Any]) -> None:
     _section("Display")
     display = config.get('display', {})
     try:
-        from hermes_cli.personality import active_personality_name
+        from hermes_agent.hermes_cli.personality import active_personality_name
         active_personality = active_personality_name(config) or 'none'
     except Exception:
         active_personality = display.get('personality') or 'none'
@@ -88,7 +88,7 @@ def _show_terminal_section(config: dict[str, Any]) -> None:
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
 
     configured = lambda *names: 'configured' if all(_cfg.get_env_value(n) for n in names) else '(not set)'
-    from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_img, DEFAULT_VERCEL_IMAGE as _DEFAULT_VERCEL_IMAGE
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as default_img, DEFAULT_VERCEL_IMAGE as _DEFAULT_VERCEL_IMAGE
     backend_lines = {
         'docker': lambda: [f"  Docker image: {terminal.get('docker_image', default_img)}"],
         'modal': lambda: [
@@ -181,7 +181,7 @@ def show_config():
     _section("API Keys")
     for env_key, name in _SHOW_CONFIG_API_KEYS:
         print(f"  {name:<14} {_cfg.redact_key(_cfg.get_env_value(env_key))}")
-    from hermes_cli.auth import get_anthropic_key
+    from hermes_agent.hermes_cli.auth import get_anthropic_key
     print(f"  {'Anthropic':<14} {_cfg.redact_key(get_anthropic_key())}")
 
     _show_model_section(config)

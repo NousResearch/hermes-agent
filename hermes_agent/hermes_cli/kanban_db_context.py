@@ -2,7 +2,7 @@
 worker reads about its task (header, attachments, prior attempts, parent handoffs, role
 history, comments).
 
-Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached late-bound via
+Split out of ``hermes_agent.hermes_cli.kanban_db``; origin-resident helpers are reached late-bound via
 ``_kb`` so monkeypatching ``kanban_db.<name>`` keeps working.
 """
 
@@ -14,10 +14,10 @@ import sqlite3
 import time
 from typing import TYPE_CHECKING, Any, Optional
 
-import hermes_cli.kanban_db as _kb
+import hermes_agent.hermes_cli.kanban_db as _kb
 
 if TYPE_CHECKING:
-    from hermes_cli.kanban_db import Attachment, Comment, Task
+    from hermes_agent.hermes_cli.kanban_db import Attachment, Comment, Task
 
 # build_worker_context() caps, sized for a ~100k-char prompt with headroom.
 _CTX_MAX_PRIOR_ATTEMPTS = 10      # most recent N prior runs shown in full

@@ -27,12 +27,12 @@ def acp_env(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("hermes_agent.run_agent.AIAgent", _CapturingAgent)
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None, **_kwargs: {"provider": requested or "openai-api", "api_mode": "codex_responses",
                                            "base_url": "https://example.invalid/v1", "api_key": "test-key"},
     )
     monkeypatch.setattr("hermes_agent.acp_adapter.session._register_task_cwd", lambda task_id, cwd: None)
-    monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kwargs: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kwargs: None)
 
     def _write_config(cfg: dict) -> None:
         (Path(os.environ["HERMES_HOME"]) / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
@@ -58,7 +58,7 @@ def test_acp_agent_receives_custom_provider_request_body(acp_env, monkeypatch):
     """#103738: the resolver's ``request_overrides`` (a custom entry's ``extra_body``) reach the ACP agent, as
     on the CLI; an explicit base_url naming a different endpoint does not inherit them."""
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None, **_kwargs: {"provider": "custom", "api_mode": "chat_completions",
                                            "base_url": "https://proxy.example/v1", "api_key": "k",
                                            "request_overrides": {"extra_body": {"user": "proxy-user"}}},

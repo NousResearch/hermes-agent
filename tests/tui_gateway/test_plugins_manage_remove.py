@@ -1,6 +1,6 @@
 """Gateway ``plugins.manage remove`` — the Desktop Plugins hub's Uninstall door.
 
-Drives the real ``hermes_cli.plugins_cmd`` removal core against a temp HERMES_HOME so the RPC is
+Drives the real ``hermes_agent.hermes_cli.plugins_cmd`` removal core against a temp HERMES_HOME so the RPC is
 proven to delete the plugin tree AND its install metadata, and to refuse anything that is not a user
 install under ``<HERMES_HOME>/plugins/``.
 """

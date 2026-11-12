@@ -688,7 +688,7 @@ class TestTerminatePid:
 
         # taskkill is spawned with the no-window flag so the windowless
         # pythonw.exe backend doesn't flash a conhost window on force-kill.
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 
         assert calls == [
             (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
@@ -1517,7 +1517,7 @@ class TestRespawnStormBreaker:
 class TestLaunchdPlistRespawnGovernance:
     def test_plist_has_throttle_interval(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from hermes_cli.gateway import generate_launchd_plist
+        from hermes_agent.hermes_cli.gateway import generate_launchd_plist
 
         plist = generate_launchd_plist()
         assert "<key>ThrottleInterval</key>" in plist
@@ -1533,7 +1533,7 @@ class TestLaunchdPlistRespawnGovernance:
         import re
 
         from hermes_agent.gateway.restart import LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S, LAUNCHD_STOP_CLEANUP_RESERVE_S
-        from hermes_cli.gateway import generate_launchd_plist
+        from hermes_agent.hermes_cli.gateway import generate_launchd_plist
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         plist = generate_launchd_plist()
@@ -1813,7 +1813,7 @@ def test_pid_record_names_the_entry_point_under_an_inline_launcher(tmp_path, mon
     import types
 
     entry = types.SimpleNamespace(__file__="/opt/Hermes Agent/hermes-agent/hermes_cli/main.py")
-    monkeypatch.setitem(status.sys.modules, "hermes_cli.main", entry)
+    monkeypatch.setitem(status.sys.modules, "hermes_agent.hermes_cli.main", entry)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(status.sys, "argv", ["-c", "gateway", "run"])
     record = status._build_pid_record()

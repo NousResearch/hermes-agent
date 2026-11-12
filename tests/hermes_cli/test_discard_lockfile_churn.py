@@ -9,7 +9,7 @@ a change there is the user's and survives the cleanup.
 import os
 import subprocess
 
-from hermes_cli.update_cmd_git import _discard_lockfile_churn
+from hermes_agent.hermes_cli.update_cmd_git import _discard_lockfile_churn
 
 _GIT_ENV = {
     **os.environ,

@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 
 @pytest.fixture
 def client(_isolate_hermes_home):
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     c = TestClient(app, raise_server_exceptions=False)
     c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN

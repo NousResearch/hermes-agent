@@ -6,10 +6,10 @@ from pathlib import Path
 import subprocess
 import sys
 
-from hermes_cli._subprocess_compat import windows_detach_popen_kwargs, _WINDOWS_GATEWAY_BREAKAWAY_ENV
-from hermes_cli.gateway_launchd_runtime import GatewayJob, start_gateway_job
-from hermes_cli.gateway_runtime_service import RuntimeStartError, remaining
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._subprocess_compat import windows_detach_popen_kwargs, _WINDOWS_GATEWAY_BREAKAWAY_ENV
+from hermes_agent.hermes_cli.gateway_launchd_runtime import GatewayJob, start_gateway_job
+from hermes_agent.hermes_cli.gateway_runtime_service import RuntimeStartError, remaining
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 # One launch's policy and pins, never the shared daemon's: hook consent would become daemon-lifetime
@@ -71,14 +71,14 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     # _apply_profile_override follows the sticky active_profile and boots the wrong
     # profile's daemon. A <root>/profiles/<name> home is already trusted as-is.
     selector = [] if home.parent.name == "profiles" else ["--profile", "default"]
-    command = [sys.executable, "-m", "hermes_cli.main", *selector, "gateway", "run", "--quiet",
+    command = [sys.executable, "-m", "hermes_agent.hermes_cli.main", *selector, "gateway", "run", "--quiet",
                *(["--idle-exit"] if idle_exit else []), *(["--force"] if force else [])]
     # The target profile's own secrets, never the launching client's: a `hermes -p work` client's
     # dotenv would otherwise become the default daemon's frozen launch env (host_gateway_child_env).
     from hermes_agent.tools.environments.local import served_profile_child_env
     env = served_profile_child_env(base=dict(os.environ), target_home=home, inherit_credentials=True)
     if sys.platform == "win32":
-        from hermes_cli.gateway_windows import windowless_gateway_restart_spec
+        from hermes_agent.hermes_cli.gateway_windows import windowless_gateway_restart_spec
         command, _, overlay = windowless_gateway_restart_spec(command)
         if not overlay:
             raise RuntimeStartError("windows_interpreter_unavailable")

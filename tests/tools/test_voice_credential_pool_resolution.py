@@ -40,7 +40,7 @@ def _clean_env(monkeypatch):
 @pytest.fixture(autouse=True)
 def _no_dotenv(monkeypatch):
     """Keep the developer's real ~/.hermes/.env out of these tests."""
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     monkeypatch.setattr(config_mod, "load_env", dict)
     yield

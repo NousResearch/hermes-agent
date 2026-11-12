@@ -134,7 +134,7 @@ def _delegation_model_not_found_notice(results) -> list[str] | None:
         "Every task in this batch failed for this reason before doing any work.",
         "Check Settings → Advanced → Subagent Model (or: hermes config get delegation.model)."]
     with suppress(Exception):
-        from hermes_cli.fallback_config import get_fallback_chain
+        from hermes_agent.hermes_cli.fallback_config import get_fallback_chain
         if not get_fallback_chain(config):
             lines.append("No fallback chain is configured, so no failover was attempted.")
     return lines

@@ -1,7 +1,7 @@
 """Prepared native controls retain their identity across ambiguous RPC replies."""
 import json
 import uuid
-from hermes_cli.gateway_client import COMPRESS_RPC_TIMEOUT, GatewayClientError
+from hermes_agent.hermes_cli.gateway_client import COMPRESS_RPC_TIMEOUT, GatewayClientError
 
 
 class PreparedMutations:
@@ -103,7 +103,7 @@ def confirmation_title(refusal):
 def confirm_choice(raw, choices):
     """``once`` / ``cancel`` (or None) for a typed answer: the choice's number or the classic
     CLI's confirm aliases (y/yes/once, n/no/cancel)."""
-    from hermes_cli.cli_modal_mixin import _CONFIRM_ALIASES
+    from hermes_agent.hermes_cli.cli_modal_mixin import _CONFIRM_ALIASES
     answer = (raw or '').strip().lower()
     if answer.isdigit() and 0 < int(answer) <= len(choices):
         return choices[int(answer) - 1][0]
@@ -136,7 +136,7 @@ def compress_payload(arg):
 def slash_mutation(command, arg):
     name = command.lstrip('/')
     if name == 'model':
-        from hermes_cli.model_switch import parse_model_flags_detailed
+        from hermes_agent.hermes_cli.model_switch import parse_model_flags_detailed
         parsed = parse_model_flags_detailed(arg)
         if parsed.is_global or parsed.is_once or parsed.force_refresh or not parsed.model_input:
             raise GatewayClientError('unsupported_model_options')

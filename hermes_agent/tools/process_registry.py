@@ -26,11 +26,11 @@ _IS_WINDOWS = platform.system() == "Windows"
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
 from hermes_agent.tools.environments.local import _append_dropped_path_entries, _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _terminal_env
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_agent.hermes_cli.config import get_hermes_home
 
 from hermes_agent.tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
@@ -1065,7 +1065,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         """``config.yaml`` value for ``section.key``, else the DEFAULT_CONFIG value.
         Raises if config is unreadable; callers wrap with their own hard fallback so
         registry code paths never crash on a broken config file."""
-        from hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config
+        from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, cfg_get, read_raw_config
 
         val = cfg_get(read_raw_config(), section, key)
         return DEFAULT_CONFIG[section][key] if val is None else val
@@ -1648,7 +1648,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         return session_id in self._completion_consumed
 
     def is_session_waiting(self, session_id: str) -> bool:
-        """Whether a goal loop (``hermes_cli.goals`` wait barrier) should stay parked on
+        """Whether a goal loop (``hermes_agent.hermes_cli.goals`` wait barrier) should stay parked on
         this session: still running AND, with ``watch_patterns``, none matched yet (a
         long-lived watcher unblocks on its trigger, not on exit). Unknown/exited/
         already-fired sessions return False so a stale barrier can never wedge the loop."""

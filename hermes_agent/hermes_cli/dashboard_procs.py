@@ -1,6 +1,6 @@
-"""Dashboard process-hygiene helpers — extracted from ``hermes_cli/main.py``.
+"""Dashboard process-hygiene helpers — extracted from ``hermes_agent/hermes_cli/main.py``.
 
-Helpers defined in ``hermes_cli.main_dashboard`` / ``hermes_cli.main_install_repair`` are imported at
+Helpers defined in ``hermes_agent.hermes_cli.main_dashboard`` / ``hermes_agent.hermes_cli.main_install_repair`` are imported at
 call time so imports stay one-way (both of those modules import this one lazily).
 """
 
@@ -10,7 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+from hermes_agent.hermes_cli._startup_fast import is_desktop_ssh_backend_argv
 
 _PS_RUN_KWARGS = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
@@ -42,7 +42,7 @@ def _iter_process_table() -> list[tuple[int, str]]:
         # join indefinitely (#87134). It also passes CREATE_NO_WINDOW: this scan can run from the windowless
         # pythonw.exe desktop/gateway backend during an update, where a bare wmic spawn would pop a console
         # window.
-        from hermes_cli._subprocess_compat import bounded_probe_run
+        from hermes_agent.hermes_cli._subprocess_compat import bounded_probe_run
         result = bounded_probe_run(
             ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
             timeout=10, errors="ignore")
@@ -83,7 +83,7 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
     # Canonical token matcher, never argv substrings: ``hermes serve`` is a prefix of ``hermes
     # server`` and this list decides a SIGTERM — ``herdr --session hermes server`` (a terminal
     # multiplexer) was killed and its unit restarted by ``hermes update`` (#121156).
-    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    from hermes_agent.hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     try:
         found = [(pid, cmd) for pid, cmd in _iter_process_table()
                  if pid not in skip and _hermes_holder_subcommand(cmd) in ("dashboard", "serve")]
@@ -96,7 +96,7 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
         # (pid, create_time), so ledger rows are positive identity, not argv guessing. Add any live ledger
         # serve/dashboard the scan missed; prefer the ledger's recorded argv (full launch args) over the
         # scan's truncated view. See #81564.
-        from hermes_cli.process_identity import ledger_entries
+        from hermes_agent.hermes_cli.process_identity import ledger_entries
         seen = {pid for pid, _ in found} | skip
         for entry in ledger_entries():
             pid = entry.get("pid")
@@ -114,7 +114,7 @@ def _ledger_serve_binds() -> dict[int, tuple[str, int]]:
     """
     binds: dict[int, tuple[str, int]] = {}
     with contextlib.suppress(Exception):
-        from hermes_cli.process_identity import ledger_entries
+        from hermes_agent.hermes_cli.process_identity import ledger_entries
         for entry in ledger_entries():
             pid, port = entry.get("pid"), entry.get("port")
             if (entry.get("purpose") in ("serve", "dashboard") and isinstance(pid, int)
@@ -183,8 +183,8 @@ def _hermes_home_for_pid(pid: int, *, require_launch_identity: bool = False) -> 
     env = _pid_environ(pid)
     if env is None:
         return None
-    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
-    from hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
+    from hermes_agent.hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
+    from hermes_agent.hermes_cli.profiles import get_active_profile, normalize_profile_name, profile_root_for_env_home
     argv = _dashboard_cmdline_for_pid(pid)
     if require_launch_identity and argv is None:
         # The dashboard argv reader has no Windows implementation; psutil does.
@@ -446,7 +446,7 @@ def _is_caller_wrapper_shell(pid: int, ancestors: set[int]) -> bool:
 def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[int, str]]) -> None:
     """``taskkill /F`` each PID after re-verifying its identity."""
     from hermes_agent.gateway.status import get_process_start_time
-    from hermes_cli._subprocess_compat import pid_is_hermes, windows_hide_flags
+    from hermes_agent.hermes_cli._subprocess_compat import pid_is_hermes, windows_hide_flags
     # Identity captured right after discovery: a PID reused before the kill fails the check.
     pid_start_times = {pid: get_process_start_time(pid) for pid in pids}
     for pid in pids:
@@ -470,7 +470,7 @@ def _kill_pids_windows(pids: list[int], killed: list[int], failed: list[tuple[in
 
 
 # SIGTERM → SIGKILL grace for the dashboard/serve backend. Must outlast the lifespan teardown in
-# hermes_cli/web_server.py::_lifespan: stop_hosted_room_service(timeout=5.0) + the startup-thread
+# hermes_agent/hermes_cli/web_server.py::_lifespan: stop_hosted_room_service(timeout=5.0) + the startup-thread
 # join(1.0) + PTY_REGISTRY.close_all() (concurrent; ≤ ~4s per PTY, see pty_bridge._MAX_HELPER_SHUTDOWN_GRACE_S). A SIGKILL inside
 # that window skips close_all(), so the ui-tui / hermes_agent.tui_gateway.entry children outlive the backend
 # and keep the deleted state.db-wal inode open — the next hermes start refuses with a FATAL
@@ -630,7 +630,7 @@ def _kill_stale_dashboard_processes(
     a Serve-only install's freshly restarted process is found again here and restarted a second time for
     no benefit (review on #83595), and a declined system unit is retried into a polkit prompt (#141021).
     """
-    from hermes_cli import main_dashboard as _dash
+    from hermes_agent.hermes_cli import main_dashboard as _dash
 
     _dash_unit = str(getattr(_dash, "_DASHBOARD_SYSTEMD_UNIT", "hermes-dashboard.service")).removesuffix(".service")
     # The update's fleet loop already handled the dashboard unit (restarted it, or declined for lack
@@ -725,7 +725,7 @@ def _restart_killed_backends(
     # back after our clean SIGTERM, and the Desktop can't reconnect (#68934). Filtered so Desktop
     # ``serve|dashboard --port 0`` backends are not resurrected and duplicates collapse to one per profile
     # (#78821).
-    from hermes_cli import main_dashboard as _dash
+    from hermes_agent.hermes_cli import main_dashboard as _dash
     unrecovered: list[int] = []
     failed_restarts: list[tuple[str, str]] = []
     seen_services: set[str] = set()
@@ -790,7 +790,7 @@ def _detect_concurrent_hermes_instances(
     PM stages a fresh generation instead of replacing a mapped hermes.exe.
     Returning an empty list would let old callers continue into that mutation.
     """
-    from hermes_cli._old_updater import stop_for_relaunch
+    from hermes_agent.hermes_cli._old_updater import stop_for_relaunch
     stop_for_relaunch()
 
 
@@ -800,7 +800,7 @@ def _is_desktop_local_serve_cmdline(command: str) -> bool:
     Long-lived headless serves (``--host <tailscale-ip> --port 9119``) must never match —
     those are operator-managed remote backends that legitimately run with ppid 1.
     """
-    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    from hermes_agent.hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     # Canonical token matcher, never argv substrings: ``kanban --preserve-cache`` contains "serve" and
     # ``vim notes about hermes serve`` contains both markers — this predicate decides a kill.
     if _hermes_holder_subcommand(command) != "serve":

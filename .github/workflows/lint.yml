@@ -90,19 +90,19 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only detached-spawns
 
-      # The install root has one owner, hermes_cli._startup_fast.project_root_str(); sys.path
+      # The install root has one owner, hermes_agent.hermes_cli._startup_fast.project_root_str(); sys.path
       # belongs to entry points. New __file__ climbs or import-time sys.path edits fail here.
       - name: Forbid new install-root math and import-time sys.path edits
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only install-root
 
       # config.yaml is hand-edited and commented; a PyYAML dump of it destroys every comment
-      # (#92554, regressed repeatedly). All writers go through the hermes_cli.config writer seam.
+      # (#92554, regressed repeatedly). All writers go through the hermes_agent.hermes_cli.config writer seam.
       - name: Forbid config.yaml writers that bypass the comment-preserving writer
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
         run: just check --only config-writers
 
-      # Every read of a user config.yaml goes through hermes_cli.config_backend, so a non-file
+      # Every read of a user config.yaml goes through hermes_agent.hermes_cli.config_backend, so a non-file
       # config backend (config-config design §4.1) sees every reader.
       - name: Forbid config.yaml readers that bypass the config backend
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}

@@ -11,12 +11,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli.gateway_agent import GatewayAgent
+from hermes_agent.hermes_cli.gateway_agent import GatewayAgent
 
 
 @pytest.fixture
 def cli_mod():
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
     cli_mod._cleanup_done = False
     cli_mod._single_query_finalize_attempted_session_ids.clear()
     cli_mod._handed_off_session_ids.clear()
@@ -29,15 +29,15 @@ def _gateway_agent(session_id):
     return GatewayAgent(connection=MagicMock(), session_id=session_id)
 
 
-@patch("hermes_cli.lifecycle.finalize_session")
+@patch("hermes_agent.hermes_cli.lifecycle.finalize_session")
 def test_exit_cleanup_does_not_finalize_a_gateway_session(mock_finalize, cli_mod):
     cli_mod._active_agent_ref = _gateway_agent("gw-session")
     cli_mod._run_cleanup()
     mock_finalize.assert_not_called()
 
 
-@patch("hermes_cli.lifecycle.invoke_hook")
-@patch("hermes_cli.lifecycle.finalize_session")
+@patch("hermes_agent.hermes_cli.lifecycle.invoke_hook")
+@patch("hermes_agent.hermes_cli.lifecycle.finalize_session")
 def test_new_does_not_finalize_a_gateway_session_in_the_cli(mock_finalize, mock_invoke_hook, cli_mod):
     cli = cli_mod.HermesCLI()
     cli.agent = _gateway_agent("gw-session")
@@ -45,8 +45,8 @@ def test_new_does_not_finalize_a_gateway_session_in_the_cli(mock_finalize, mock_
     mock_finalize.assert_not_called()
 
 
-@patch("hermes_cli.lifecycle.invoke_hook")
-@patch("hermes_cli.lifecycle.finalize_session")
+@patch("hermes_agent.hermes_cli.lifecycle.invoke_hook")
+@patch("hermes_agent.hermes_cli.lifecycle.finalize_session")
 def test_new_leaves_on_session_reset_to_the_gateway(mock_finalize, mock_invoke_hook, cli_mod):
     cli = cli_mod.HermesCLI()
     cli.agent = _gateway_agent("gw-session")
@@ -55,7 +55,7 @@ def test_new_leaves_on_session_reset_to_the_gateway(mock_finalize, mock_invoke_h
     assert not [c for c in mock_invoke_hook.call_args_list if c.args == ("on_session_reset",)]
 
 
-@patch("hermes_cli.lifecycle.invoke_hook")
+@patch("hermes_agent.hermes_cli.lifecycle.invoke_hook")
 def test_exit_mid_turn_leaves_on_session_end_to_the_gateway_turn(mock_invoke_hook, cli_mod):
     cli = cli_mod.HermesCLI()
     cli.agent = _gateway_agent("gw-session")
@@ -66,7 +66,7 @@ def test_exit_mid_turn_leaves_on_session_end_to_the_gateway_turn(mock_invoke_hoo
     assert not [c for c in mock_invoke_hook.call_args_list if c.args == ("on_session_end",)]
 
 
-@patch("hermes_cli.lifecycle.finalize_session")
+@patch("hermes_agent.hermes_cli.lifecycle.finalize_session")
 def test_one_shot_ends_a_gateway_session_through_the_gateway_only(mock_finalize, cli_mod, monkeypatch):
     store = MagicMock()
     agent = GatewayAgent(connection=MagicMock(), session_db=store, session_id="gw-session")
@@ -84,7 +84,7 @@ def test_one_shot_ends_a_gateway_session_through_the_gateway_only(mock_finalize,
     assert released == [True]
 
 
-@patch("hermes_cli.lifecycle.invoke_hook")
+@patch("hermes_agent.hermes_cli.lifecycle.invoke_hook")
 def test_interrupted_one_shot_leaves_on_session_end_to_the_gateway_turn(mock_invoke_hook, cli_mod):
     one_shot = SimpleNamespace(agent=_gateway_agent("gw-session"), session_id="gw-session")
     cli_mod._emit_interrupted_session_end(one_shot)
@@ -105,7 +105,7 @@ def _shutdown_mid_turn(cli_mod, cli):
         cli._tui_shutdown()
 
 
-@patch("hermes_cli.lifecycle.invoke_hook")
+@patch("hermes_agent.hermes_cli.lifecycle.invoke_hook")
 def test_ctrl_d_mid_turn_detaches_without_interrupting_the_gateway_turn(_hook, cli_mod):
     """#134889 LC-6b: EOF while a gateway turn runs leaves it running; the detach closes the row later."""
     cli = cli_mod.HermesCLI()
@@ -119,7 +119,7 @@ def test_ctrl_d_mid_turn_detaches_without_interrupting_the_gateway_turn(_hook, c
     cli._session_db.end_session.assert_called_once_with("gw-session", "cli_close")
 
 
-@patch("hermes_cli.lifecycle.invoke_hook")
+@patch("hermes_agent.hermes_cli.lifecycle.invoke_hook")
 def test_ctrl_c_force_exit_mid_turn_still_interrupts_the_gateway_turn(_hook, cli_mod):
     cli = cli_mod.HermesCLI()
     cli.agent = _gateway_agent("gw-session")
@@ -157,13 +157,13 @@ def test_ctrl_d_with_text_deletes_and_pending_images_block_exit(cli_mod):
     assert cli._should_exit is False and cli._detach_on_exit is False
 
 
-@patch("hermes_cli.lifecycle.invoke_hook")
+@patch("hermes_agent.hermes_cli.lifecycle.invoke_hook")
 def test_ctrl_d_mid_turn_in_cli_local_mode_still_interrupts(_hook, cli_mod):
     """Only a gateway agent's turn survives Ctrl+D: a CLI-local agent has nobody else to finish it."""
     cli = cli_mod.HermesCLI()
     cli.agent = MagicMock(session_id="local-session")
     cli._agent_running, cli._attached_images = True, []
     _ctrl_d(cli)
-    with patch("hermes_cli.cli_tui_runtime_mixin.request_hard_interrupt") as interrupt:
+    with patch("hermes_agent.hermes_cli.cli_tui_runtime_mixin.request_hard_interrupt") as interrupt:
         _shutdown_mid_turn(cli_mod, cli)
     interrupt.assert_called_once_with(cli.agent)

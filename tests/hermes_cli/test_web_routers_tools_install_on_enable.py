@@ -10,7 +10,7 @@ the binary.
 """
 
 import pytest
-import hermes_cli.web_server_gateway as _web_server_gateway
+import hermes_agent.hermes_cli.web_server_gateway as _web_server_gateway
 
 
 class TestToggleToolsetInstallOnEnable:
@@ -23,7 +23,7 @@ class TestToggleToolsetInstallOnEnable:
 
         from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(
             hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
@@ -32,7 +32,7 @@ class TestToggleToolsetInstallOnEnable:
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
     def _spawn_recorder(self, monkeypatch):
-        from hermes_cli import web_server
+        from hermes_agent.hermes_cli import web_server
 
         calls = []
 
@@ -49,9 +49,9 @@ class TestToggleToolsetInstallOnEnable:
     def test_enable_computer_use_spawns_cua_install_when_binary_missing(
         self, monkeypatch
     ):
-        from hermes_cli import tools_config
-        from hermes_cli import tools_config_cua
-        from hermes_cli import tools_config_post_setup
+        from hermes_agent.hermes_cli import tools_config
+        from hermes_agent.hermes_cli import tools_config_cua
+        from hermes_agent.hermes_cli import tools_config_post_setup
 
         calls = self._spawn_recorder(monkeypatch)
         # Binary missing → the cua_driver predicate reports unsatisfied.
@@ -77,9 +77,9 @@ class TestToggleToolsetInstallOnEnable:
     def test_enable_computer_use_skips_install_when_binary_present(
         self, monkeypatch
     ):
-        from hermes_cli import tools_config
-        from hermes_cli import tools_config_cua
-        from hermes_cli import tools_config_post_setup
+        from hermes_agent.hermes_cli import tools_config
+        from hermes_agent.hermes_cli import tools_config_cua
+        from hermes_agent.hermes_cli import tools_config_post_setup
 
         calls = self._spawn_recorder(monkeypatch)
         monkeypatch.setattr(
@@ -97,9 +97,9 @@ class TestToggleToolsetInstallOnEnable:
         assert calls == []
 
     def test_disable_never_spawns_install(self, monkeypatch):
-        from hermes_cli import tools_config
-        from hermes_cli import tools_config_cua
-        from hermes_cli import tools_config_post_setup
+        from hermes_agent.hermes_cli import tools_config
+        from hermes_agent.hermes_cli import tools_config_cua
+        from hermes_agent.hermes_cli import tools_config_post_setup
 
         calls = self._spawn_recorder(monkeypatch)
         monkeypatch.setattr(
@@ -117,10 +117,10 @@ class TestToggleToolsetInstallOnEnable:
         assert calls == []
 
     def test_spawn_failure_does_not_fail_the_toggle(self, monkeypatch):
-        from hermes_cli import tools_config
-        from hermes_cli import tools_config_cua
-        from hermes_cli import tools_config_post_setup
-        from hermes_cli import web_server
+        from hermes_agent.hermes_cli import tools_config
+        from hermes_agent.hermes_cli import tools_config_cua
+        from hermes_agent.hermes_cli import tools_config_post_setup
+        from hermes_agent.hermes_cli import web_server
 
         monkeypatch.setattr(
             tools_config_cua, "_resolved_cua_driver_cmd", lambda: None

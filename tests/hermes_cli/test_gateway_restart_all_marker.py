@@ -23,7 +23,7 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 def test_restart_all_stamps_the_marker_after_the_host_is_stopped(hermes_home, monkeypatch):
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
 
     marker = hermes_home / ".restart_pending.json"
     seen: dict[str, bool] = {}

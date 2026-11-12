@@ -7,7 +7,7 @@ import sys
 import hermes_yaml as yaml
 import pytest
 
-from hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli import plugins as plugins_mod
 
 TWO_PROFILE_PLUGIN = '''
 import os

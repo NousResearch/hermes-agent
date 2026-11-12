@@ -27,8 +27,8 @@ class TestConfigSchemaOffLoop:
 
     def test_schema_build_runs_off_the_loop_and_keeps_it_responsive(self, monkeypatch):
         httpx = pytest.importorskip("httpx")
-        from hermes_cli import web_server
-        from hermes_cli.web_routers import config_env
+        from hermes_agent.hermes_cli import web_server
+        from hermes_agent.hermes_cli.web_routers import config_env
 
         observed = {}
 

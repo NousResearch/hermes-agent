@@ -117,7 +117,7 @@ class TestTierInvariants:
     def test_left_core_secrets_stripped_without_their_plugin(self):
         """A feature that left core for a catalog plugin keeps its credentials out of children even
         when the plugin is not installed (no manifest declares them then)."""
-        from hermes_cli.left_core_migration import LEFT_CORE
+        from hermes_agent.hermes_cli.left_core_migration import LEFT_CORE
         names = {"HASS_TOKEN"} | {n for feature in LEFT_CORE for n in feature.secret_env}
         for inherit in (False, True):
             assert not names & set(_build({n: "secret" for n in names}, inherit_credentials=inherit))

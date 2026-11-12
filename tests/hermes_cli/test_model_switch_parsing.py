@@ -1,7 +1,7 @@
-"""Single-owner /model argument parsing (hermes_cli.model_switch.parse_model_switch_args)."""
+"""Single-owner /model argument parsing (hermes_agent.hermes_cli.model_switch.parse_model_switch_args)."""
 
 
-from hermes_cli.model_switch import (
+from hermes_agent.hermes_cli.model_switch import (
     MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL,
     MODEL_SWITCH_ERR_RESET_WITH_FLAGS,
     MODEL_SWITCH_ERROR_TEXT,

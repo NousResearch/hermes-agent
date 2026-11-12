@@ -13280,7 +13280,7 @@
       },
       "ConfigProviderRef": {
         "additionalProperties": true,
-        "description": "``hermes_cli/models.py::list_available_providers`` row.",
+        "description": "``hermes_agent/hermes_cli/models.py::list_available_providers`` row.",
         "properties": {
           "id": {
             "title": "Id",
@@ -18770,7 +18770,7 @@
       },
       "ForeignSessionRow": {
         "additionalProperties": false,
-        "description": "``hermes_cli/foreign_sessions_browser.py::list_foreign_sessions`` \u2014 ``id`` is an opaque\nhandle, never a path.",
+        "description": "``hermes_agent/hermes_cli/foreign_sessions_browser.py::list_foreign_sessions`` \u2014 ``id`` is an opaque\nhandle, never a path.",
         "properties": {
           "id": {
             "title": "Id",
@@ -18867,7 +18867,7 @@
       },
       "FreeTierChallengePayload": {
         "additionalProperties": true,
-        "description": "``hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge``\nevent, and ``free_tier.status``'s ``challenge`` field for a client that connected after it.",
+        "description": "``hermes_agent/hermes_cli/anon_challenge.py::BrowserChallenge.as_payload``: the ``free_tier.challenge``\nevent, and ``free_tier.status``'s ``challenge`` field for a client that connected after it.",
         "properties": {
           "type": {
             "const": "browser",
@@ -19261,7 +19261,7 @@
       },
       "GoalContractSnapshot": {
         "additionalProperties": false,
-        "description": "``hermes_cli/goals.py::GoalContract.to_dict``.",
+        "description": "``hermes_agent/hermes_cli/goals.py::GoalContract.to_dict``.",
         "properties": {
           "outcome": {
             "default": "",
@@ -25003,7 +25003,7 @@
       },
       "ModelCapabilities": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_capabilities``.",
+        "description": "``hermes_agent/hermes_cli/inventory.py::_apply_capabilities``.",
         "properties": {
           "fast": {
             "title": "Fast",
@@ -25095,7 +25095,7 @@
       },
       "ModelOptionProvider": {
         "additionalProperties": true,
-        "description": "One ``hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field\nthe builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path).",
+        "description": "One ``hermes_agent/hermes_cli/inventory.py::build_models_payload`` provider row (the union of every field\nthe builder sets; ``pricing_pending`` / ``free_tier_pending`` mark the cached-only path).",
         "properties": {
           "slug": {
             "title": "Slug",
@@ -25474,7 +25474,7 @@
       },
       "ModelPricing": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_pricing`` \u2014 formatted $/Mtok strings (``\"\"`` unknown,\n``\"free\"``); the sale fields are Nous Portal-only.",
+        "description": "``hermes_agent/hermes_cli/inventory.py::_apply_pricing`` \u2014 formatted $/Mtok strings (``\"\"`` unknown,\n``\"free\"``); the sale fields are Nous Portal-only.",
         "properties": {
           "input": {
             "title": "Input",
@@ -28135,7 +28135,7 @@
       },
       "PlanUsage": {
         "additionalProperties": false,
-        "description": "``hermes_cli/model_picker_usage.py::PickerUsage.to_payload`` \u2014 usage-window plan chrome.",
+        "description": "``hermes_agent/hermes_cli/model_picker_usage.py::PickerUsage.to_payload`` \u2014 usage-window plan chrome.",
         "properties": {
           "kind": {
             "title": "Kind",
@@ -28261,7 +28261,7 @@
       },
       "PluginActivation": {
         "additionalProperties": false,
-        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a\nrunning process cannot import (installed after it booted, or never); ``missing_in`` names which\nprocesses (``gateway``, ``backend`` = the Desktop / dashboard process) \u2014 only restarting them loads them.",
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_agent.hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``locales`` (``<lang>.<surface>``\nlanguage-pack layers), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session. ``missing_dependencies``: the plugin's declared Python requirements a\nrunning process cannot import (installed after it booted, or never); ``missing_in`` names which\nprocesses (``gateway``, ``backend`` = the Desktop / dashboard process) \u2014 only restarting them loads them.",
         "properties": {
           "name": {
             "title": "Name",
@@ -28608,7 +28608,7 @@
       },
       "PluginSettingField": {
         "additionalProperties": false,
-        "description": "One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub\n(``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``\nnames the ``.env`` variable and ``has_value`` whether it is set.",
+        "description": "One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub\n(``hermes_agent.hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``\nnames the ``.env`` variable and ``has_value`` whether it is set.",
         "properties": {
           "key": {
             "title": "Key",
@@ -29034,7 +29034,7 @@
       },
       "PluginsManageResult": {
         "additionalProperties": false,
-        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``inspect`` \u2192 ``ok``/``agent``/``desktop``/``agent_name``/``desktop_name``/``sha`` (the commit\nread)/``warnings``/``insecure`` or ``ok=false`` + ``error``; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` \u2014 the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered or the running\ngateway/backend cannot import the plugin's Python dependencies (``activation.missing_dependencies``); ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities`` \u2014 or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` /\n``scan_findings`` (retry a caution verdict with ``force``); ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
+        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_agent.hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``inspect`` \u2192 ``ok``/``agent``/``desktop``/``agent_name``/``desktop_name``/``sha`` (the commit\nread)/``warnings``/``insecure`` or ``ok=false`` + ``error``; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` \u2014 the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered or the running\ngateway/backend cannot import the plugin's Python dependencies (``activation.missing_dependencies``); ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities`` \u2014 or ``ok=false`` + ``scan_blocked`` with ``scan_verdict`` /\n``scan_findings`` (retry a caution verdict with ``force``); ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
         "properties": {
           "plugins": {
             "anyOf": [
@@ -31723,7 +31723,7 @@
       },
       "ProjectFolder": {
         "additionalProperties": false,
-        "description": "``hermes_cli/projects_db.py::ProjectFolder.to_dict``.",
+        "description": "``hermes_agent/hermes_cli/projects_db.py::ProjectFolder.to_dict``.",
         "properties": {
           "path": {
             "title": "Path",
@@ -31825,7 +31825,7 @@
       },
       "ProjectInfo": {
         "additionalProperties": false,
-        "description": "``hermes_cli/projects_db.py::Project.to_dict`` \u2014 one stored project with its folders.",
+        "description": "``hermes_agent/hermes_cli/projects_db.py::Project.to_dict`` \u2014 one stored project with its folders.",
         "properties": {
           "id": {
             "title": "Id",
@@ -33690,7 +33690,7 @@
       },
       "ProviderLimit": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_limits`` \u2014 ``account``: the whole login is rate-limited until\n``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time.",
+        "description": "``hermes_agent/hermes_cli/inventory.py::_apply_limits`` \u2014 ``account``: the whole login is rate-limited until\n``resets_at`` (ISO, absent when unknown); ``models``: only these models are, each until its time.",
         "properties": {
           "scope": {
             "enum": [
@@ -33736,7 +33736,7 @@
       },
       "ProviderUsage": {
         "additionalProperties": false,
-        "description": "``hermes_cli/inventory.py::_apply_usage`` \u2014 the provider's subscription usage, from cache.\n\nMulti-entry credential pools carry ``accounts`` (one row per account; the legacy ``windows``\nstays EMPTY there \u2014 a provider-wide percentage across different logins would be fabricated).\nSingle-account providers keep the legacy ``windows`` gauge.",
+        "description": "``hermes_agent/hermes_cli/inventory.py::_apply_usage`` \u2014 the provider's subscription usage, from cache.\n\nMulti-entry credential pools carry ``accounts`` (one row per account; the legacy ``windows``\nstays EMPTY there \u2014 a provider-wide percentage across different logins would be fabricated).\nSingle-account providers keep the legacy ``windows`` gauge.",
         "properties": {
           "windows": {
             "items": {
@@ -33766,7 +33766,7 @@
       },
       "ProviderUsageAccount": {
         "additionalProperties": false,
-        "description": "One account of a provider's credential pool (``hermes_cli/inventory.py::_pool_usage_accounts``).\n``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI\nfalls back to a localized \"Account N\"). ``windows`` is empty while the account's usage is not\nyet known \u2014 state carries the meaning, never a fabricated gauge.\n\n``state``: ``ready`` \u2014 live quota below the cap (numeric windows present); ``limited`` \u2014 a live\ncredential-wide cooldown or exhausted account-scoped quota windows; ``unknown`` \u2014 no live\nnumeric windows (failed/empty fetch, stale snapshot, provider without a usage API);\n``unavailable`` \u2014 DEAD auth row (kept visible, never a quota row).\n\n``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a\nlive cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g.\nthe earliest limited sibling).",
+        "description": "One account of a provider's credential pool (``hermes_agent/hermes_cli/inventory.py::_pool_usage_accounts``).\n``id`` is a stable non-secret account identity (never a key or URL); ``label`` may be empty (UI\nfalls back to a localized \"Account N\"). ``windows`` is empty while the account's usage is not\nyet known \u2014 state carries the meaning, never a fabricated gauge.\n\n``state``: ``ready`` \u2014 live quota below the cap (numeric windows present); ``limited`` \u2014 a live\ncredential-wide cooldown or exhausted account-scoped quota windows; ``unknown`` \u2014 no live\nnumeric windows (failed/empty fetch, stale snapshot, provider without a usage API);\n``unavailable`` \u2014 DEAD auth row (kept visible, never a quota row).\n\n``resets_at``: for a limited account, the LATEST of its exhausted account-scoped windows (or a\nlive cooldown when later); ``None`` when unknown (the frontend renders its own advisory, e.g.\nthe earliest limited sibling).",
         "properties": {
           "id": {
             "title": "Id",
@@ -41419,7 +41419,7 @@
       },
       "SetupReadyPayload": {
         "additionalProperties": true,
-        "description": "``hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``.",
+        "description": "``hermes_agent/hermes_cli/free_tier_bootstrap.py::SetupRecord.as_payload``.",
         "properties": {
           "provider_configured": {
             "title": "Provider Configured",
@@ -42502,7 +42502,7 @@
       },
       "SkillBrowseItem": {
         "additionalProperties": true,
-        "description": "``hermes_cli.skills_hub.browse_skills`` row.",
+        "description": "``hermes_agent.hermes_cli.skills_hub.browse_skills`` row.",
         "properties": {
           "name": {
             "default": "",
@@ -42604,7 +42604,7 @@
       },
       "SkillInspectInfo": {
         "additionalProperties": true,
-        "description": "``hermes_cli.skills_hub.inspect_skill``; ``{}`` when the identifier resolves nowhere.",
+        "description": "``hermes_agent.hermes_cli.skills_hub.inspect_skill``; ``{}`` when the identifier resolves nowhere.",
         "properties": {
           "name": {
             "anyOf": [

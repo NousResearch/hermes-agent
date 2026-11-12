@@ -8,7 +8,7 @@ mode (readiness is a touch generation, never health-200 alone); ``detect``
 finds an already-running llama-server (external or ours).
 
 The package-level names resolve on first access. Shipped updaters import
-``hermes_cli.local_runtime.processes`` from the NEW checkout after the pull,
+``hermes_agent.hermes_cli.local_runtime.processes`` from the NEW checkout after the pull,
 while their process still holds the OLD ``hermes_platform`` and other
 first-party modules. An eager re-export here would run every submodule
 against those stale modules and crash the update on any name added since.

@@ -3,7 +3,7 @@ from contextlib import nullcontext
 from hermes_agent.agent.conversation_compression import (
     _queue_context_engine_compression_notification,
 )
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 class DummyAgent:

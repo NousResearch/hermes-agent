@@ -1,7 +1,7 @@
 """Picker search aliases for brand-less wire model ids."""
 
-from hermes_cli.curses_ui import _filter_indices
-from hermes_cli.model_search import model_search_text
+from hermes_agent.hermes_cli.curses_ui import _filter_indices
+from hermes_agent.hermes_cli.model_search import model_search_text
 
 
 def test_model_search_text_keeps_ordinary_ids():

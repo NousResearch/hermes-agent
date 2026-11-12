@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli.config import (
+from hermes_agent.hermes_cli.config import (
     get_custom_provider_context_length,
     get_custom_provider_model_capability,
 )

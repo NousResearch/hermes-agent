@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from hermes_cli import left_core_migration as lcm
-from hermes_cli import managed_scope
+from hermes_agent.hermes_cli import left_core_migration as lcm
+from hermes_agent.hermes_cli import managed_scope
 
 
 @pytest.mark.parametrize("shape", [

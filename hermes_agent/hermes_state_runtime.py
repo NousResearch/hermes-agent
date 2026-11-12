@@ -619,7 +619,7 @@ def import_legacy_session_admissions(db, *, epoch: int, source_path, principal_i
     from pathlib import Path
     import hashlib
     import sqlite3
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
     if writers_drained is not True:
         raise RuntimeStoreError('invalid_params')
     _text(principal_id)

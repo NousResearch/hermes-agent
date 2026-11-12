@@ -8,7 +8,7 @@ from argparse import Namespace
 
 import pytest
 
-from hermes_cli import sessions_cmd
+from hermes_agent.hermes_cli import sessions_cmd
 
 
 @pytest.fixture

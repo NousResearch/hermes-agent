@@ -6,7 +6,7 @@ from functools import partial
 import psutil
 import pytest
 
-from hermes_cli.process_identity import worker_birth
+from hermes_agent.hermes_cli.process_identity import worker_birth
 from hermes_agent.gateway.session_worker_child import reserve_child_execution
 from hermes_agent.hermes_state import SessionDB
 import hermes_agent.hermes_state_runtime as rt

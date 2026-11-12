@@ -18,7 +18,7 @@ import zipfile
 import hermes_yaml
 import pytest
 
-from hermes_cli.release_channels import ChannelReader
+from hermes_agent.hermes_cli.release_channels import ChannelReader
 from scripts.releases import channel_releases, desktop_targets, handoff
 from tests.ci.desktop_release_roles import canary_publisher, native_builds, stage_step
 from tests.ci.test_desktop_release_tag_admission import _git, _seed_repo
@@ -252,7 +252,7 @@ def test_published_canary_workflow_advances_only_after_every_gate(canary, r2_ser
     # rather than asking canary for a stable-only candidate manifest.
     from scripts.bundles.release_artifacts import write_appinstaller
     from scripts.releases import stable
-    from hermes_cli.release_channels import canonical_json
+    from hermes_agent.hermes_cli.release_channels import canonical_json
     mac = resolved.manifest["packages"][0]
     mac_feed = json.loads(r2_server.store[mac["feed"]["key"]][0])
     for entry in mac_feed["files"]:

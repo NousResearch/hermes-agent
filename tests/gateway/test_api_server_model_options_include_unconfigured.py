@@ -27,8 +27,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
 
 async def _captured_include_unconfigured(adapter, query: str) -> tuple[int, bool]:
     app = _create_app(adapter)
-    with patch("hermes_cli.inventory.load_picker_context", return_value=object()), \
-         patch("hermes_cli.inventory.build_model_options_payload",
+    with patch("hermes_agent.hermes_cli.inventory.load_picker_context", return_value=object()), \
+         patch("hermes_agent.hermes_cli.inventory.build_model_options_payload",
                return_value={"providers": []}) as build:
         async with TestClient(TestServer(app)) as cli:
             response = await cli.get(f"/api/model/options{query}")

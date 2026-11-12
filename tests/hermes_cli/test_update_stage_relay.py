@@ -13,9 +13,9 @@ class _StopBeforeAnyGateway(BaseException):
 def test_restart_after_a_failed_build_names_the_restart(tmp_path, monkeypatch):
     """A failed build does not end the update (the code is committed): the fleet restart still
     runs, and the window must say so instead of the build message it last showed."""
-    from hermes_cli import update_cmd, update_cmd_fleet
-    from hermes_cli.update_finish import finish_update
-    from hermes_cli.update_stage import publish_stage
+    from hermes_agent.hermes_cli import update_cmd, update_cmd_fleet
+    from hermes_agent.hermes_cli.update_finish import finish_update
+    from hermes_agent.hermes_cli.update_stage import publish_stage
 
     status = tmp_path / "hermes-update-status.1"
     monkeypatch.setenv("HERMES_UPDATE_STATUS_FILE", str(status))

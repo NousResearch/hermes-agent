@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-import hermes_cli
+from hermes_agent import hermes_cli
 
 
 class _MissingPaths:

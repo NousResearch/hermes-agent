@@ -2,7 +2,7 @@
 
 ``display.status`` reports runtime + lease; ``display.start`` / ``display.stop`` manage the Xvnc/Xfce
 process; ``display.observe`` mints a single-use ticket the renderer redeems on ``/api/display/ws``
-(``hermes_cli.web_routers.display``) to stream raw RFB; ``display.lease.acquire`` / ``release`` are
+(``hermes_agent.hermes_cli.web_routers.display``) to stream raw RFB; ``display.lease.acquire`` / ``release`` are
 Take over / Hand back. ``display.install`` runs the distro package install on the gateway host: sudo
 privilege is asked for through the masked ``display.install.sudo`` server→client request (same ``_ask``
 bridge as the terminal tool's sudo prompt), stdout streams as ``display.install.log`` and the run ends with
@@ -153,8 +153,8 @@ def _(rid, params: dict) -> dict:
     the bridge dials THIS profile's RFB socket, and a server-minted viewer id (returned to the caller,
     who passes it to ``display.lease.acquire`` / ``release``) so the lease can name the holder."""
     from hermes_constants import get_hermes_home
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
-    from hermes_cli.web_session_sockets import admission_of
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_agent.hermes_cli.web_session_sockets import admission_of
     from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
     try:
         # The bridge dials either the host RFB socket or the sandbox relay; neither exists before start.
@@ -179,7 +179,7 @@ def _(rid, params: dict) -> dict:
     """The Screen pane's answer to the pending default-image switch: ``approve`` true pins the new
     image (the container is recreated on the next terminal call), false pins the current one. Both
     end the offer. Refused when nothing is pending, so a stale pane cannot rewrite the config."""
-    from hermes_cli.sandbox_image_switch import decide, pending
+    from hermes_agent.hermes_cli.sandbox_image_switch import decide, pending
     sw = pending()
     if sw is None:
         return _err(rid, _DISPLAY_ERR, "no sandbox image switch is pending for this profile")

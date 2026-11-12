@@ -69,7 +69,7 @@ def _rank_slash_completions(items: list[dict], usage, origin_of, *, browsing: bo
         *(() if score_of is None else (score_of(item),)), -usage(name_of(item)), name_of(item)))
     if browsing:
         if registry_command_names is None:
-            from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+            from hermes_agent.hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
             registry_command_names = GATEWAY_KNOWN_COMMANDS
         fixed = [c for c in commands if name_of(c) in registry_command_names]
         other = [c for c in commands if name_of(c) not in registry_command_names]
@@ -215,7 +215,7 @@ def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> d
     lists the launch profile's quick/plugin commands. A scope that cannot bind (unknown profile)
     raises out of here — the caller maps it to 4064 like ``complete.slash`` (#124651)."""
     if load_cfg is None:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         load_cfg = load_config_readonly
     cat = _Catalog()
     _catalog_registry(cat, module_loader)
@@ -256,7 +256,7 @@ def slash_completions(text: str = "", scope=None) -> dict:
     for that session (#114359)."""
     if not text.startswith("/"):
         return {"items": []}
-    from hermes_cli.commands_completion import SlashCommandCompleter
+    from hermes_agent.hermes_cli.commands_completion import SlashCommandCompleter
     from prompt_toolkit.document import Document
     from prompt_toolkit.formatted_text import to_plain_text
     from hermes_agent.agent.skill_commands import get_interactive_skill_commands

@@ -174,9 +174,9 @@ async def test_native_http_preserves_gated_auth_and_actual_socket_boundary(tmp_p
     from hermes_agent.gateway.run_api import start_gateway_api
     from hermes_agent.gateway.run_runtime import initialize_gateway_runtime, publish_gateway_runtime_ready
     from hermes_agent.gateway.runtime_ownership import process_ownership
-    from hermes_cli import web_server as web
-    from hermes_cli.dashboard_auth import register_provider, clear_providers
-    from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
+    from hermes_agent.hermes_cli import web_server as web
+    from hermes_agent.hermes_cli.dashboard_auth import register_provider, clear_providers
+    from hermes_agent.hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
     from hermes_constants import get_hermes_home
     from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider
 

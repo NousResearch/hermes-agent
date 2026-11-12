@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-from hermes_cli.version_info import (
+from hermes_agent.hermes_cli.version_info import (
     VersionInfo,
     _derived_version,
     _git_version_info,
@@ -46,7 +46,7 @@ def test_display_version_keeps_tagless_stamp_identity(tmp_path, monkeypatch):
     }
     stamp_file = tmp_path / "install-stamp.json"
     stamp_file.write_text(json.dumps(stamp), encoding="utf-8")
-    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
 
     info = get_version_info()
 
@@ -75,7 +75,7 @@ def test_stamp_version_info_reads_nix_stamp(tmp_path, monkeypatch):
     }
     stamp_file = tmp_path / "install-stamp.json"
     stamp_file.write_text(json.dumps(stamp))
-    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
 
     info = get_version_info()
 
@@ -86,7 +86,7 @@ def test_stamp_version_info_preserves_ci_provenance_and_docker_distribution(tmp_
     stamp = {"commit": "d" * 40, "source": "ci", "distribution": "docker", "updateMechanism": "external"}
     stamp_file = tmp_path / "install-stamp.json"
     stamp_file.write_text(json.dumps(stamp))
-    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
 
     info = get_version_info()
 
@@ -108,7 +108,7 @@ def test_stamp_version_info_preserves_missing_branch(tmp_path, monkeypatch):
     }
     stamp_file = tmp_path / "install-stamp.json"
     stamp_file.write_text(json.dumps(stamp))
-    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
 
     info = get_version_info()
 
@@ -126,8 +126,8 @@ def test_stamp_version_info_ignores_fallback_commit(tmp_path, monkeypatch):
     }
     stamp_file = tmp_path / "install-stamp.json"
     stamp_file.write_text(json.dumps(stamp))
-    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
-    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_repo_dir", lambda: None)
 
     info = get_version_info()
 
@@ -136,13 +136,13 @@ def test_stamp_version_info_ignores_fallback_commit(tmp_path, monkeypatch):
 
 
 def test_stamp_version_info_returns_none_when_file_missing(tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_stamp_file", lambda: None)
     assert _stamp_version_info() is None
 
 
 def test_get_version_info_unknown_when_no_stamp_and_no_git(monkeypatch):
-    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
-    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_repo_dir", lambda: None)
 
     info = get_version_info()
 
@@ -175,8 +175,8 @@ def test_get_version_info_derives_identity_from_reachable_release_tag(tmp_path, 
     (repo / "tracked").write_text("next\n", encoding="utf-8")
     git("commit", "-qam", "next")
 
-    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
-    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_repo_dir", lambda: repo)
 
     info = get_version_info()
 
@@ -209,8 +209,8 @@ def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_pa
     (repo / "pyproject.toml").write_text('[project]\nname = "hermes-agent"\nversion = "0.0.0"\n', encoding="utf-8")
     git("commit", "-qam", "next")
 
-    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
-    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.version_info._resolve_repo_dir", lambda: repo)
 
     info = get_version_info()
 
@@ -248,7 +248,7 @@ def test_resolve_stamp_file_falls_back_to_code_root_when_env_unset(tmp_path, mon
 
 
 def test_old_updater_version_stub_reads_the_same_stamp_as_version_info(tmp_path):
-    """``hermes_cli.__version__`` exists only for shipped updaters that import it after the
+    """``hermes_agent.hermes_cli.__version__`` exists only for shipped updaters that import it after the
     checkout swap (tests/compat/old_updater_surface.json). It must report the stamp's base
     version exactly as get_version_info() does, and the pre-stamp placeholder without one.
     A fresh interpreter, since the stub is evaluated when the package is imported."""
@@ -257,8 +257,8 @@ def test_old_updater_version_stub_reads_the_same_stamp_as_version_info(tmp_path)
 
     repo = Path(__file__).resolve().parents[2]
     probe = (
-        f"import sys; sys.path.insert(0, {str(repo)!r}); import hermes_cli; "
-        "from hermes_cli.version_info import get_version_info; "
+        f"import sys; sys.path.insert(0, {str(repo)!r}); from hermes_agent import hermes_cli; "
+        "from hermes_agent.hermes_cli.version_info import get_version_info; "
         "print(hermes_cli.__version__, get_version_info().base_version)"
     )
 

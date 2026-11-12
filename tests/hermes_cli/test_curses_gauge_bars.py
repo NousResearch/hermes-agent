@@ -1,7 +1,7 @@
 """Gauge colouring in curses/ANSI descriptions only touches real ``render_bar`` gauges."""
 
-from hermes_cli.curses_ui import _gauge_bar_segments
-from hermes_cli.model_picker_usage import render_bar
+from hermes_agent.hermes_cli.curses_ui import _gauge_bar_segments
+from hermes_agent.hermes_cli.model_picker_usage import render_bar
 
 
 def test_real_gauges_are_styled():

@@ -1260,7 +1260,7 @@ async def send_weixin_direct(
 
 # ---------------------------------------------------------------------------
 # Plugin wiring (formerly core: hermes_agent/gateway/run.py _BUILTIN_ADAPTERS row, hermes_agent/tools/send_message_senders.py
-# ``_send_weixin``, hermes_cli/gateway_setup_wizard.py ``_setup_weixin``).
+# ``_send_weixin``, hermes_agent/hermes_cli/gateway_setup_wizard.py ``_setup_weixin``).
 # ---------------------------------------------------------------------------
 
 _INSTALL_HINT = "Weixin: aiohttp/cryptography not installed"
@@ -1318,10 +1318,10 @@ _WEIXIN_GROUP_NOTE = (
 
 def interactive_setup() -> None:
     """``hermes gateway setup`` flow for Weixin / WeChat personal accounts (QR login via :func:`qr_login`).
-    Helpers resolve through the ``hermes_cli.gateway`` facade so the prompts/output match every other
+    Helpers resolve through the ``hermes_agent.hermes_cli.gateway`` facade so the prompts/output match every other
     wizard and the facade seams tests patch keep intercepting."""
-    from hermes_cli import gateway as gw
-    from hermes_cli.gateway_setup_wizard import (
+    from hermes_agent.hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli.gateway_setup_wizard import (
         confirm_reconfigure, offer_home_channel, print_setup_header, prompt_csv, save_env_values)
 
     print_setup_header("💬 Weixin / WeChat")

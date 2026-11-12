@@ -31,8 +31,8 @@ import pytest
 # Real launcher serialization is host-dependent, despite injectable registry I/O.
 pytestmark = pytest.mark.platforms("windows")
 
-from hermes_cli import _launchers
-from hermes_cli._install_repair import (
+from hermes_agent.hermes_cli import _launchers
+from hermes_agent.hermes_cli._install_repair import (
     _WINDOWS_BIN_LAUNCHERS,
     _normalize_windows_path,
     ensure_windows_bin_launchers,

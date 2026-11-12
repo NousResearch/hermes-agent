@@ -192,7 +192,7 @@ def _send_imap_id(imap: imaplib.IMAP4) -> None:
         return
     try:
         try:
-            from hermes_cli.version_info import get_version_info
+            from hermes_agent.hermes_cli.version_info import get_version_info
             version = get_version_info().base_version
         except Exception:
             version = "0"
@@ -994,7 +994,7 @@ def _is_connected(config) -> bool:
     """Connected when an address is configured (PlatformConfig.extra or EMAIL_ADDRESS)."""
     if (getattr(config, "extra", {}) or {}).get("address"):
         return True
-    import hermes_cli.gateway as gateway_mod
+    import hermes_agent.hermes_cli.gateway as gateway_mod
     return bool((gateway_mod.get_env_value("EMAIL_ADDRESS") or "").strip())
 
 

@@ -629,7 +629,7 @@ class TestVaultHardening:
         assert fs.get_read_block_error(str(f)) is None
 
     def test_backup_secret_names_include_vault_files(self):
-        from hermes_cli.backup import _SECRET_FILE_NAMES
+        from hermes_agent.hermes_cli.backup import _SECRET_FILE_NAMES
 
         assert "vault.key" in _SECRET_FILE_NAMES
         assert "vault.json.enc" in _SECRET_FILE_NAMES

@@ -4,8 +4,8 @@ from unittest.mock import patch
 import pytest
 from rich.console import Console
 
-from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_agent.cli import ChatConsole
+from hermes_agent.hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -83,7 +83,7 @@ def _capture_check(monkeypatch, results, name=None) -> str:
 def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, bool]]]:
     import hermes_agent.tools.skills_hub as hub
     import hermes_agent.tools.skills_hub_install as hub_install
-    import hermes_cli.skills_hub as cli_hub
+    import hermes_agent.hermes_cli.skills_hub as cli_hub
 
     sink = StringIO()
     console = Console(file=sink, force_terminal=False, color_system=None)
@@ -198,7 +198,7 @@ def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
     SKILL.md. The header then showed the requested identifier and the preview
     showed the wrong skill.
     """
-    from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+    from hermes_agent.hermes_cli.skills_hub import _resolve_source_meta_and_bundle
     from hermes_agent.tools.skills_hub_models import SkillBundle, SkillMeta
 
     class CatalogSource:
@@ -249,7 +249,7 @@ def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
 
 
 def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
-    from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
+    from hermes_agent.hermes_cli.skills_hub import _resolve_source_meta_and_bundle
     from hermes_agent.tools.skills_hub_models import SkillMeta
 
     class CatalogSource:
@@ -287,7 +287,7 @@ def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
 
 def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch, tmp_path):
     """A preview's (and an install's) sequential resolver calls must share one guarded connection pool."""
-    import hermes_cli.skills_hub as cli_hub
+    import hermes_agent.hermes_cli.skills_hub as cli_hub
     import hermes_agent.tools.skills_hub as hub
     import hermes_agent.tools.skills_hub_search as search
     import hermes_agent.tools.skills_hub_clawhub as clawhub
@@ -465,7 +465,7 @@ _LONG_RESULT = type("R", (), {
 
 def test_do_search_json_flag_emits_full_identifiers(capsys):
     """`--json` must print a parseable array with full identifiers and skip the table."""
-    from hermes_cli.skills_hub import do_search
+    from hermes_agent.hermes_cli.skills_hub import do_search
 
     sink = StringIO()
     console = Console(file=sink, force_terminal=False, color_system=None, width=40)
@@ -498,7 +498,7 @@ def _update_env(monkeypatch, tmp_path, *, edit_after_install: bool):
 
     Returns (console_sink, installs_list).
     """
-    import hermes_cli.skills_hub as cli_hub
+    import hermes_agent.hermes_cli.skills_hub as cli_hub
     import hermes_agent.tools.skills_hub as hub
     import hermes_agent.tools.skills_hub_install as hub_install
     from hermes_agent.tools.skills_guard import content_hash
@@ -577,7 +577,7 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 
 def _stale_env(monkeypatch):
     """do_install where the index has metadata but the files are gone (404)."""
-    import hermes_cli.skills_hub as cli_hub
+    import hermes_agent.hermes_cli.skills_hub as cli_hub
     import hermes_agent.tools.skills_hub as hub
 
     class StaleSource:
@@ -597,7 +597,7 @@ def _stale_env(monkeypatch):
 
 def test_do_install_stale_index_names_the_problem(monkeypatch):
     """Index hit + missing files reads as a stale entry, not a typo (#3259)."""
-    from hermes_cli.skills_hub import do_install
+    from hermes_agent.hermes_cli.skills_hub import do_install
 
     console, sink = _stale_env(monkeypatch)
     do_install("skills-sh/org/gone-skill", console=console, skip_confirm=True)
@@ -611,7 +611,7 @@ def test_do_install_stale_index_names_the_problem(monkeypatch):
 def test_fetch_failure_names_rejected_github_credential():
     """A credential GitHub refused is named, never reported as a stale index entry (#98725)."""
     from types import SimpleNamespace
-    from hermes_cli.skills_hub import _print_fetch_failure
+    from hermes_agent.hermes_cli.skills_hub import _print_fetch_failure
 
     src = SimpleNamespace(is_rate_limited=False, auth=SimpleNamespace(rejected=["GITHUB_TOKEN/GH_TOKEN"]),
                           source_id=lambda: "hermes-index")
@@ -628,9 +628,9 @@ def test_fetch_failure_names_rejected_github_credential():
 def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_hit):
     """No index hit — or a throttled fetch that only *looks* like a stale entry — keeps the
     generic message (plus the rate-limit hint), never the stale-entry verdict."""
-    import hermes_cli.skills_hub as cli_hub
+    import hermes_agent.hermes_cli.skills_hub as cli_hub
     import hermes_agent.tools.skills_hub as hub
-    from hermes_cli.skills_hub import do_install
+    from hermes_agent.hermes_cli.skills_hub import do_install
 
     class ThrottledSource:
         is_rate_limited = meta_hit
@@ -688,7 +688,7 @@ def test_install_by_name_resolves_to_the_skill_it_names(monkeypatch, tmp_path, i
     content and refused. It now makes the shipped skill active and fetches nothing. A hub slug behind
     a prettified catalog title ("Blender Bpy Enhanced") resolves too, where it answered "No exact match"
     while printing that very slug as the suggestion."""
-    import hermes_cli.skills_hub as cli_hub
+    import hermes_agent.hermes_cli.skills_hub as cli_hub
 
     if identifier == "blender-bpy-enhanced":
         _stub_search(monkeypatch, [_meta("Blender Bpy Enhanced", "@emergencescience/blender-bpy-enhanced")])
@@ -751,7 +751,7 @@ def test_built_in_restore_survives_leftovers_and_records_every_outcome_as_bundle
     restore copied with copytree onto a dest dir left behind without its SKILL.md (EEXIST on every
     retry), refused a skill already present behind a symlinked category the loader follows, and a
     failed restore was labelled a hub install."""
-    import hermes_cli.skills_hub as cli_hub
+    import hermes_agent.hermes_cli.skills_hub as cli_hub
     import hermes_agent.tools.skills_hub as hub
     from hermes_agent.tools import skill_usage, skills_sync
 
@@ -759,7 +759,7 @@ def test_built_in_restore_survives_leftovers_and_records_every_outcome_as_bundle
         monkeypatch.delitem(vars(hub), stale)
     monkeypatch.setattr(cli_hub, "_sources", lambda: pytest.fail("a bundled skill must not hit the hub"))
     rows = []
-    monkeypatch.setattr("hermes_cli.observability.shared_metrics_events.record_extension_install",
+    monkeypatch.setattr("hermes_agent.hermes_cli.observability.shared_metrics_events.record_extension_install",
                         lambda **row: rows.append((row["source"], row["outcome"])))
     src = dict(skills_sync._discover_bundled_skills(skills_sync._get_bundled_dir()))["obsidian"]
     dest = skill_usage._skills_dir() / src.parent.name / "obsidian"

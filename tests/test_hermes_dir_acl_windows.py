@@ -214,7 +214,7 @@ def test_elevated_update_step_makes_a_stranded_home_usable(reporters_parent, mon
     step runs from this elevated runner over a home whose nested dirs and files carry the reporters'
     Administrators-only DACL, with real grants; the filtered token must use every one afterwards.
     (The full elevated ``hermes update`` run stays a workflow_dispatch / live retest.)"""
-    from hermes_cli import update_windows_acl
+    from hermes_agent.hermes_cli import update_windows_acl
 
     nested = reporters_parent / "sessions" / "2026"
     nested.mkdir(parents=True)
@@ -318,7 +318,7 @@ def _dacls(paths):
 
 def test_elevated_grants_never_reach_a_junction_target_outside_the_home(home_with_junction_out):
     import hermes_dir_acl
-    from hermes_cli import update_windows_acl
+    from hermes_agent.hermes_cli import update_windows_acl
 
     home, outside, junction = home_with_junction_out
     assert hermes_dir_acl.is_reparse_point(junction)

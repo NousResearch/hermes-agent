@@ -1,6 +1,6 @@
 """``hermes verify`` subcommand parser.
 
-Follows the pattern of ``hermes_cli/subcommands/doctor.py``: parser built
+Follows the pattern of ``hermes_agent/hermes_cli/subcommands/doctor.py``: parser built
 here, handler injected to avoid importing ``main``.
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from hermes_cli.subcommands._shared import add_json_flag
+from hermes_agent.hermes_cli.subcommands._shared import add_json_flag
 
 # Keep in sync with hermes_agent/agent/verify/runner.py defaults; not imported here to
 # avoid paying an extra module import on every `hermes` invocation.

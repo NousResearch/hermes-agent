@@ -7,14 +7,14 @@ Root cause: there are two independent background MCP discovery thread owners
 by surface:
 
   * ``hermes_agent.tui_gateway.entry`` — the stdio ``hermes --tui`` path.
-  * ``hermes_cli.mcp_startup`` — the desktop app + dashboard WebSocket sidecar
+  * ``hermes_agent.hermes_cli.mcp_startup`` — the desktop app + dashboard WebSocket sidecar
     (``hermes_agent/tui_gateway/ws.py``) and ``hermes dashboard``.
 
 The late-refresh scheduler (``hermes_agent.tui_gateway.server._schedule_mcp_late_refresh``)
 gates on ``hermes_agent.tui_gateway.entry.mcp_discovery_in_flight()``. Before the fix that
 function read ONLY ``hermes_agent.tui_gateway.entry._mcp_discovery_thread``. On the
 desktop/dashboard surfaces that thread is ``None`` (the thread lives on
-``hermes_cli.mcp_startup``), so the scheduler bailed immediately and a slow MCP
+``hermes_agent.hermes_cli.mcp_startup``), so the scheduler bailed immediately and a slow MCP
 server's tools never surfaced for the whole session — even after a container
 restart. The fix makes ``mcp_discovery_in_flight`` / ``join_mcp_discovery``
 consult BOTH thread owners.
@@ -24,7 +24,7 @@ import threading
 
 import pytest
 
-import hermes_cli.mcp_startup as startup
+import hermes_agent.hermes_cli.mcp_startup as startup
 from hermes_constants import hermes_home_key
 from hermes_agent.tui_gateway import entry
 
@@ -50,7 +50,7 @@ def _alive_thread(stop: threading.Event) -> threading.Thread:
 
 
 def test_entry_in_flight_sees_startup_thread(clean_discovery_globals):
-    """Desktop/dashboard surface: discovery thread lives on hermes_cli.mcp_startup.
+    """Desktop/dashboard surface: discovery thread lives on hermes_agent.hermes_cli.mcp_startup.
 
     The entry-level in-flight check must report True so the late-refresh
     scheduler does not bail (the #51587 bug).
@@ -72,7 +72,7 @@ def test_entry_in_flight_sees_startup_thread(clean_discovery_globals):
 
 
 def test_startup_module_exposes_in_flight_helpers(clean_discovery_globals):
-    """hermes_cli.mcp_startup gains the in-flight/join helpers entry delegates to."""
+    """hermes_agent.hermes_cli.mcp_startup gains the in-flight/join helpers entry delegates to."""
     assert startup.mcp_discovery_in_flight() is False
     assert startup.join_mcp_discovery(timeout=0.1) is True
 

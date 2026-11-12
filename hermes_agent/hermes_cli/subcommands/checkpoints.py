@@ -11,5 +11,5 @@ def build_checkpoints_parser(subparsers) -> None:
         "repo hermes uses to snapshot working directories before "
         "write_file/patch/terminal calls. Lets you see how much "
         "space checkpoints occupy, force a prune, or wipe the base.")
-    from hermes_cli.checkpoints import register_cli as _register_checkpoints_cli
+    from hermes_agent.hermes_cli.checkpoints import register_cli as _register_checkpoints_cli
     _register_checkpoints_cli(checkpoints_parser)

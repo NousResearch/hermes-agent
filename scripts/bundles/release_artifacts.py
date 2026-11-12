@@ -332,7 +332,7 @@ def publish_canary_appinstaller(root: Path, *, tag: str, variant: str, bundle: P
                                identity: str, publisher: str, version: str, public_base: str) -> None:
     """Native SDK work is complete; verify its identity before writing a feed."""
     from scripts.releases.r2 import put
-    from hermes_cli.update_channel import is_canary_tag
+    from hermes_agent.hermes_cli.update_channel import is_canary_tag
 
     if not is_canary_tag(tag):
         raise ValueError("Only canary feeds publish directly; stable requires accepted candidates")

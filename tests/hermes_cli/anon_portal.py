@@ -40,7 +40,7 @@ class FakePortal:
         self.create_response: httpx.Response | None = None
         self.token_response: httpx.Response | None = None
         self.raise_transport: Exception | None = None
-        # Browser challenge (``hermes_cli.anon_challenge``). ``challenge_required`` makes the exchange
+        # Browser challenge (``hermes_agent.hermes_cli.anon_challenge``). ``challenge_required`` makes the exchange
         # answer 428 until the ticket settles; each status poll consumes one entry of
         # ``challenge_statuses`` (then "none": a passed challenge detaches its ticket), and the
         # exchange goes through once the list is drained unless ``challenge_never_clears``.
@@ -117,8 +117,8 @@ def install_portal(monkeypatch, tmp_path, fake: FakePortal | None = None) -> Fak
 
     One transport seam: ``httpx.Client`` itself, which ``auth_nous._nous_http_client`` and
     ``resolve_nous_access_token`` both construct."""
-    from hermes_cli import anon_auth, free_tier_bootstrap
-    from hermes_cli import auth as auth_mod
+    from hermes_agent.hermes_cli import anon_auth, free_tier_bootstrap
+    from hermes_agent.hermes_cli import auth as auth_mod
 
     fake = fake or FakePortal()
     monkeypatch.setenv("HERMES_PORTAL_BASE_URL", PORTAL)
@@ -137,7 +137,7 @@ def install_portal(monkeypatch, tmp_path, fake: FakePortal | None = None) -> Fak
     monkeypatch.setattr("hermes_agent.agent.bedrock_adapter.has_aws_credentials", lambda *_a, **_kw: False)
     anon_auth.reset_mint_memo_for_tests()
     free_tier_bootstrap.reset_for_tests()
-    from hermes_cli import anon_challenge
+    from hermes_agent.hermes_cli import anon_challenge
     anon_challenge.reset_for_tests()
     monkeypatch.setattr(anon_challenge, "_sleep", lambda _seconds: None)
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
@@ -151,21 +151,21 @@ def as_local_desktop_backend(monkeypatch) -> None:
     """Every activity in this test is work for the local Desktop (``process_identity.serving_local_desktop``),
     threads included."""
     from contextvars import ContextVar
-    from hermes_cli import process_identity
+    from hermes_agent.hermes_cli import process_identity
     monkeypatch.setattr(process_identity, "_SERVING_LOCAL_DESKTOP", ContextVar("serving_local_desktop_test", default=True))
 
 
 def off_local_desktop(monkeypatch) -> None:
     """From here on the activity is not the local Desktop's: a CLI shell beside it, another client."""
     from contextvars import ContextVar
-    from hermes_cli import process_identity
+    from hermes_agent.hermes_cli import process_identity
     monkeypatch.setattr(process_identity, "_SERVING_LOCAL_DESKTOP", ContextVar("serving_local_desktop_test", default=False))
 
 
 def claimed_trial(monkeypatch) -> dict:
     """A guest that claimed the welcome trial, read on the desktop's local backend: the state every
     free-model surface needs. Mints through the fake portal installed by ``install_portal``."""
-    from hermes_cli import welcome_trial
+    from hermes_agent.hermes_cli import welcome_trial
 
     as_local_desktop_backend(monkeypatch)
     state = welcome_trial.claim_desktop_free_tier()

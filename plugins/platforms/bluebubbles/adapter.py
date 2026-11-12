@@ -623,7 +623,7 @@ def _is_connected(config) -> bool:
     extra = getattr(config, "extra", None) or {}
     if extra.get("server_url") and extra.get("password"):
         return True
-    import hermes_cli.gateway as gateway_mod
+    import hermes_agent.hermes_cli.gateway as gateway_mod
     return all((gateway_mod.get_env_value(n) or "").strip() for n in ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD"))
 
 
@@ -653,8 +653,8 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
 
 def interactive_setup() -> None:
     """Configure BlueBubbles iMessage gateway (``hermes setup`` / ``hermes gateway setup``)."""
-    from hermes_cli.setup import _info, print_header, print_success, prompt, prompt_yes_no
-    from hermes_cli.setup_platforms import _prompt_allowlist, _save_port, declines_reconfigure, save_prompted
+    from hermes_agent.hermes_cli.setup import _info, print_header, print_success, prompt, prompt_yes_no
+    from hermes_agent.hermes_cli.setup_platforms import _prompt_allowlist, _save_port, declines_reconfigure, save_prompted
     print_header("BlueBubbles (iMessage)")
     if declines_reconfigure("BlueBubbles", "Reconfigure BlueBubbles?", "BLUEBUBBLES_SERVER_URL"):
         return

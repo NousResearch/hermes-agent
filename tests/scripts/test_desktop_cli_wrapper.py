@@ -209,7 +209,7 @@ def _render(tmp_path: Path) -> Path:
 def test_rendered_wrapper_dispatches_to_the_entry_module(tmp_path):
     """The full wrapper contract without distlib: a rendered copy placed in
     bin/ next to a stub repo + venv resolves its own dir from sys.argv[0],
-    imports hermes_cli.main off the payload paths, and returns main()'s
+    imports hermes_agent.hermes_cli.main off the payload paths, and returns main()'s
     exit code."""
     bin_dir = tmp_path / "bin"
     (bin_dir / ".." / "repo" / "hermes_cli").mkdir(parents=True, exist_ok=True)

@@ -7,8 +7,8 @@ from hermes_agent.gateway.platform_registry import PlatformEntry, platform_regis
 
 
 def test_plugin_entry_declares_card_metadata_and_env_value_rules():
-    from hermes_cli.web_routers.messaging import _env_value_rules, _validate_messaging_env_value
-    from hermes_cli.web_server_messaging import _build_catalog_entry
+    from hermes_agent.hermes_cli.web_routers.messaging import _env_value_rules, _validate_messaging_env_value
+    from hermes_agent.hermes_cli.web_server_messaging import _build_catalog_entry
 
     entry = PlatformEntry(
         name="cardtest", label="Card Test", adapter_factory=lambda cfg: None, check_fn=lambda: True,

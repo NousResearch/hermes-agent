@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import process_identity
+from hermes_agent.hermes_cli import process_identity
 from hermes_constants import hermes_home_key
 
 
@@ -31,7 +31,7 @@ def running_install(home: Path, install: Path):
     script = """
 import sys
 from pathlib import Path
-from hermes_cli.process_identity import register_self
+from hermes_agent.hermes_cli.process_identity import register_self
 assert register_self('serve', project_root=Path(sys.argv[1]))
 print('ready', flush=True)
 sys.stdin.readline()
@@ -50,7 +50,7 @@ sys.stdin.readline()
 
 
 def test_warning_tracks_live_other_install_in_same_home(homes, tmp_path):
-    from hermes_cli.shared_profile_warning import shared_profile_warning
+    from hermes_agent.hermes_cli.shared_profile_warning import shared_profile_warning
 
     current = tmp_path / "stable"
     other = tmp_path / "canary"
@@ -82,10 +82,10 @@ def running_cli(home: Path, install: Path):
     script = """
 import sys
 from pathlib import Path
-from hermes_cli import _startup_fast
+from hermes_agent.hermes_cli import _startup_fast
 # Model two installed runtime roots without copying the source tree.
 _startup_fast.project_root_str = lambda: sys.argv[1]
-import cli
+from hermes_agent import cli
 
 def terminal_boundary(self):
     print('cli-ready', flush=True)
@@ -116,7 +116,7 @@ cli.main(model='test-model', provider='openai', api_key='test-only',
 
 @pytest.mark.parametrize("other_surface", ["serve", "cli"])
 def test_cli_entrypoint_registers_and_warns_once_for_live_shared_home(homes, tmp_path, monkeypatch, other_surface):
-    from hermes_cli.shared_profile_warning import shared_profile_warning
+    from hermes_agent.hermes_cli.shared_profile_warning import shared_profile_warning
 
     stable = tmp_path / "stable"
     canary = tmp_path / "canary"
@@ -130,8 +130,8 @@ def test_cli_entrypoint_registers_and_warns_once_for_live_shared_home(homes, tmp
             assert own[0]["hermes_home"] == hermes_home_key(homes)
             assert shared_profile_warning(project_root=stable)
             # A CLI record must not make a terminal process an update-owned backend.
-            from hermes_cli import _startup_fast
-            from hermes_cli.update_inventory import UpdatePlan, _collect_ledger_runtimes
+            from hermes_agent.hermes_cli import _startup_fast
+            from hermes_agent.hermes_cli.update_inventory import UpdatePlan, _collect_ledger_runtimes
 
             with monkeypatch.context() as patcher:
                 patcher.setattr(_startup_fast, "project_root_str", lambda: str(canary))
@@ -165,7 +165,7 @@ def test_cli_startup_quarantines_corrupt_ledger(homes, tmp_path, corrupt):
 
 def test_status_surfaces_live_warning_without_host_details(homes, tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     monkeypatch.setattr(web_server.app.state, "auth_required", True, raising=False)
     client = TestClient(web_server.app)
@@ -186,7 +186,7 @@ def test_status_surfaces_live_warning_without_host_details(homes, tmp_path, monk
 
 
 def test_warning_rejects_reused_or_unverifiable_process_identity(homes, tmp_path):
-    from hermes_cli.shared_profile_warning import shared_profile_warning
+    from hermes_agent.hermes_cli.shared_profile_warning import shared_profile_warning
 
     current = tmp_path / "stable"
     with running_install(homes, tmp_path / "canary"):

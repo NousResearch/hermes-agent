@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import List, Set
 
-from hermes_cli.cli_output import (
+from hermes_agent.hermes_cli.cli_output import (
     print_error as _print_error, print_info as _print_info, print_success as _print_success,
     print_warning as _print_warning)
-from hermes_cli.colors import Colors, color
-from hermes_cli.toolset_scope import (
+from hermes_agent.hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
 
 
@@ -75,8 +75,8 @@ def _apply_mcp_checklist(server_name: str, tools_cfg: dict, tool_names: list[str
 def _configure_mcp_tools_interactive(config: dict):
     """Probe each MCP server for its tools, show a per-server curses checklist, and write the result
     back as ``tools.exclude`` / ``tools.include`` entries in config.yaml."""
-    from hermes_cli.curses_ui import curses_checklist
-    from hermes_cli.tools_config import save_config
+    from hermes_agent.hermes_cli.curses_ui import curses_checklist
+    from hermes_agent.hermes_cli.tools_config import save_config
 
     mcp_servers = config.get("mcp_servers") or {}
     if not mcp_servers:
@@ -156,7 +156,7 @@ def _configure_mcp_tools_interactive(config: dict):
 
 def _apply_toolset_change(config: dict, platform: str, toolset_names: list[str], action: str):
     """Add or remove built-in toolsets for a platform."""
-    from hermes_cli.tools_config import _get_platform_tools, _save_platform_tools
+    from hermes_agent.hermes_cli.tools_config import _get_platform_tools, _save_platform_tools
 
     enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
     updated = enabled - set(toolset_names) if action == "disable" else enabled | set(toolset_names)
@@ -187,7 +187,7 @@ def _apply_mcp_change(config: dict, targets: list[str], action: str) -> set[str]
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli", stripped: dict | None = None):
     """Print a summary of enabled/disabled toolsets and MCP tool filters. ``stripped`` is
     ``tools_config.toolsets_partially_stripped`` output: enabled rows that agent.disabled_toolsets cuts down."""
-    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_effective_configurable_toolsets
+    from hermes_agent.hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_effective_configurable_toolsets
 
     effective_all = _get_effective_configurable_toolsets()
     effective = [(k, l, d) for (k, l, d) in effective_all if _toolset_allowed_for_platform(k, platform)]
@@ -229,11 +229,11 @@ def _known_tool_platforms() -> set[str]:
     """Return built-in plus discovered plugin platform names. Plugin platforms register at runtime, not
     in the static CLI display registry, and must be recognized so an active plugin platform can audit
     its authority."""
-    from hermes_cli.tools_config import PLATFORMS
+    from hermes_agent.hermes_cli.tools_config import PLATFORMS
 
     known = set(PLATFORMS)
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         from hermes_agent.gateway.platform_registry import platform_registry
         discover_plugins()  # idempotent
         known.update(platform_registry.registered_names())
@@ -245,20 +245,20 @@ def _known_tool_platforms() -> set[str]:
 
 def tools_disable_enable_command(args):
     """Enable, disable, or list tools for a platform."""
-    from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_platform_tools, _get_plugin_toolset_keys, load_config, save_config
+    from hermes_agent.hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_platform_tools, _get_plugin_toolset_keys, load_config, save_config
 
     action = args.tools_action
     platform = getattr(args, "platform", "cli")
     config = load_config()
 
-    from hermes_cli.tools_config import PLATFORMS
+    from hermes_agent.hermes_cli.tools_config import PLATFORMS
     valid_platforms = PLATFORMS if platform in PLATFORMS else _known_tool_platforms()  # built-ins load no plugin
     if platform not in valid_platforms:
         _print_error(f"Unknown platform '{platform}'. Valid: {', '.join(sorted(valid_platforms))}")
         return
 
     if action == "list":
-        from hermes_cli.tools_config import toolsets_partially_stripped
+        from hermes_agent.hermes_cli.tools_config import toolsets_partially_stripped
         enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
         _print_tools_list(enabled, config.get("mcp_servers") or {}, platform, toolsets_partially_stripped(config, enabled))
         return

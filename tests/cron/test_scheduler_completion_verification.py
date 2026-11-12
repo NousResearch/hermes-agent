@@ -92,7 +92,7 @@ def _run_booked_job(monkeypatch, tmp_path):
         }
 
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime
+        "hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime
     )
     monkeypatch.setattr("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", list)
     monkeypatch.setattr(cron_scheduler, "_get_hermes_home", lambda: tmp_path)

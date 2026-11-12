@@ -1,9 +1,9 @@
 """The provider-profile entries of ``OPTIONAL_ENV_VARS``: descriptive metadata that reads no config.
 
-They used to come from ``list_providers()`` while ``hermes_cli.config`` imported, and provider
+They used to come from ``list_providers()`` while ``hermes_agent.hermes_cli.config`` imported, and provider
 discovery reads config (``plugins.enabled``, ``plugins.isolation``): the launch profile's config in
 a process serving several profiles, and a deadlock with a config backend whose own load imports
-``hermes_cli.auth``. Now the bundled providers' entries are built from :func:`providers.bundled_profiles`
+``hermes_agent.hermes_cli.auth``. Now the bundled providers' entries are built from :func:`providers.bundled_profiles`
 (no config, no discovery) on the table's first read, and discovery's completion hook adds the
 process-wide plugin providers it registered.
 """
@@ -14,7 +14,7 @@ _PROVIDER_NAMES: set[str] = set()            # added from provider profiles by t
 
 
 def arm(table, static_names) -> None:
-    """Called once by ``hermes_cli.config`` at the end of its import."""
+    """Called once by ``hermes_agent.hermes_cli.config`` at the end of its import."""
     global _STATIC_NAMES
     _STATIC_NAMES = frozenset(static_names)
     table.arm(_provider_entries, _PROVIDER_NAMES.update)
@@ -68,7 +68,7 @@ def sync_registered_providers() -> None:
     profile-aware and scans the bound home's plugin dirs, whose isolation check reads config.
     ``$HERMES_HOME`` plugins (per profile) are not process-wide and are left out."""
     from hermes_agent import providers
-    from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+    from hermes_agent.hermes_cli.config_defaults import OPTIONAL_ENV_VARS
     sources = dict(providers._SOURCES)
     profiles = [p for name, p in list(providers._REGISTRY.items()) if sources.get(name) != "bundled"]
     entries = _entries_for(profiles, _STATIC_NAMES | _PROVIDER_NAMES | set(_CATALOG or ()))
@@ -80,6 +80,6 @@ def sync_registered_providers() -> None:
 def core_declared_env_names() -> frozenset[str]:
     """Names declared in core: config_defaults' plus the provider profiles'. A platform manifest
     never reclassifies one."""
-    from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+    from hermes_agent.hermes_cli.config_defaults import OPTIONAL_ENV_VARS
     OPTIONAL_ENV_VARS.get("")  # runs the fill once
     return _STATIC_NAMES | frozenset(_PROVIDER_NAMES)

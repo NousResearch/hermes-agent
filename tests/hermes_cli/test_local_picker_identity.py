@@ -22,11 +22,11 @@ STAGED = {"Qwen-A-UD-Q4_K_M", "Qwen-B-UD-Q4_K_M"}
 @pytest.fixture
 def ctx(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    import hermes_cli.inventory as inv
+    import hermes_agent.hermes_cli.inventory as inv
 
-    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.staged_model_ids",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.bootstrap.staged_model_ids",
                         lambda: set(STAGED))
-    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint",
+    monkeypatch.setattr("hermes_agent.hermes_cli.local_runtime.endpoint._state_endpoint",
                         lambda: dict(MANAGED))
     context = inv.load_picker_context()
     return inv, context

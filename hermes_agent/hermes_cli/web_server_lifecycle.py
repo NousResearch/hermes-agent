@@ -18,7 +18,7 @@ if TYPE_CHECKING:  # pragma: no cover - annotation only
     import uvicorn
 
 # Same logger the code used before extraction (record parity).
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 
 
 def _process_start_marker(pid: int) -> str:
@@ -147,13 +147,13 @@ def _warm_gateway_module() -> None:
     thread (#60800). Warm them all off-loop while the socket is already open.
     """
     for mod in (
-        "hermes_cli.gateway",
-        "hermes_cli.auth",  # provider auth state
+        "hermes_agent.hermes_cli.gateway",
+        "hermes_agent.hermes_cli.auth",  # provider auth state
         "hermes_agent.providers",  # provider plugin discovery (below) imports every profile's module chain
-        "hermes_cli.runtime_provider",
-        "hermes_cli.skin_engine",  # resolve_skin() config + skin engine init
-        "hermes_cli.inventory",  # provider catalogs + models.dev cache
-        "hermes_cli.model_switch",
+        "hermes_agent.hermes_cli.runtime_provider",
+        "hermes_agent.hermes_cli.skin_engine",  # resolve_skin() config + skin engine init
+        "hermes_agent.hermes_cli.inventory",  # provider catalogs + models.dev cache
+        "hermes_agent.hermes_cli.model_switch",
     ):
         try:
             __import__(mod)
@@ -169,7 +169,7 @@ def _warm_gateway_module() -> None:
 
 def _resolve_restart_drain_timeout() -> float:
     try:
-        from hermes_cli.gateway import _get_restart_drain_timeout
+        from hermes_agent.hermes_cli.gateway import _get_restart_drain_timeout
         return _get_restart_drain_timeout()
     except ImportError:
         from hermes_agent.gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
@@ -185,11 +185,11 @@ def _eager_reconcile_own_session_db() -> None:
     two-writer corruption vector, #107688 / #100896). Access-mode semantics
     (no bootstrap of a missing store; one additive catch-up of a store that lags
     SCHEMA_SQL, only while no gateway owns it, #79531 / #140315) live in the routers' own-store opener,
-    :func:`hermes_cli.web_server_sessions._open_session_db_at_path`. Never
+    :func:`hermes_agent.hermes_cli.web_server_sessions._open_session_db_at_path`. Never
     raises: an unfixable store still gets the per-poll read-probe heal.
     """
     try:
-        from hermes_cli.web_server_sessions import _open_session_db_for_profile
+        from hermes_agent.hermes_cli.web_server_sessions import _open_session_db_for_profile
         from hermes_agent.hermes_state_registry import release_or_close
 
         release_or_close(_open_session_db_for_profile(None, read_only=True))
@@ -242,7 +242,7 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
         )
         return
 
-    from hermes_cli.url_utils import format_url_host
+    from hermes_agent.hermes_cli.url_utils import format_url_host
 
     _display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
     _open_url = f"http://{format_url_host(_display_host)}:{actual_port}"
@@ -567,8 +567,8 @@ def build_listener_server(served_app, host: str, port: int, *, auth_required: bo
     both (SSH-isolated Desktop backends).
     """
     import uvicorn
-    from hermes_cli.config import load_config
-    from hermes_cli.web_server_boundary import _DESKTOP_ATTACHMENT_WS_MAX_BYTES, _LOOPBACK_HOST_VALUES
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.web_server_boundary import _DESKTOP_ATTACHMENT_WS_MAX_BYTES, _LOOPBACK_HOST_VALUES
 
     try:
         dash_cfg = load_config().get("dashboard") or {}

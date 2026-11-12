@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_cli import desktop_plugin_halves as halves
+from hermes_agent.hermes_cli import desktop_plugin_halves as halves
 from hermes_constants import get_default_hermes_root
 from utils import rmtree_readonly
 
@@ -41,7 +41,7 @@ def desktop_plugins_root() -> Path:
 
 def _pc():
     """The facade, read at call time: tests patch ``plugins_cmd.<name>`` and sibling calls must see it."""
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     return plugins_cmd
 
 
@@ -74,7 +74,7 @@ def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple[str, 
     pc = _pc()
     revision = None
     if catalog_name:
-        from hermes_cli import plugins_cmd_catalog as catalog
+        from hermes_agent.hermes_cli import plugins_cmd_catalog as catalog
         entry = catalog.get_live_catalog_entry(catalog_name)
         if entry is None:
             raise pc.PluginOperationError(f"'{catalog_name}' is not in the Hermes plugin catalog.")
@@ -83,7 +83,7 @@ def _resolve_source(identifier: str, catalog_name: Optional[str]) -> tuple[str, 
         git_url, subdir = pc._resolve_git_url(identifier)
     except ValueError as exc:
         raise pc.PluginOperationError(str(exc)) from exc
-    from hermes_cli.plugins_cmd_catalog import raise_if_removed
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import raise_if_removed
     raise_if_removed(identifier, git_url, *((catalog_name,) if catalog_name else ()))
     return git_url, subdir, revision
 
@@ -99,7 +99,7 @@ def install_desktop_plugin(identifier: str, *, ref: Optional[str], catalog_name:
     name with the package marker Electron writes, so the Plugins page pairs the two rows; a desktop-only
     repository keeps its Git-derived folder name and carries no marker.
     """
-    from hermes_cli.plugins_cmd_inspect import _desktop_folder_name, detect_components
+    from hermes_agent.hermes_cli.plugins_cmd_inspect import _desktop_folder_name, detect_components
 
     pc = _pc()
     sha = (ref or "").strip().lower()

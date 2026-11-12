@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from hermes_cli.models import _fetch_anthropic_models
+from hermes_agent.hermes_cli.models import _fetch_anthropic_models
 
 MODELS = [f"claude-fake-{i:03d}" for i in range(55)]
 

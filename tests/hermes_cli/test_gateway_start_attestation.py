@@ -18,7 +18,7 @@ import json
 
 import pytest
 
-from hermes_cli import gateway_windows
+from hermes_agent.hermes_cli import gateway_windows
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +35,7 @@ def _install_pid_sequence(monkeypatch, snapshots):
         calls["n"] += 1
         return list(snapshots[idx])
 
-    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", _fake)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway.find_gateway_pids", _fake)
     return calls
 
 
@@ -83,7 +83,7 @@ def test_report_gateway_start_failure_is_loud_not_checkmark(monkeypatch, tmp_pat
         gateway_windows, "_wait_for_gateway_ready", lambda *a, **k: []
     )
     monkeypatch.setattr(
-        "hermes_cli.config.get_hermes_home", lambda: str(tmp_path)
+        "hermes_agent.hermes_cli.config.get_hermes_home", lambda: str(tmp_path)
     )
     monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: True)
     monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway_x")
@@ -102,7 +102,7 @@ def test_report_gateway_start_failure_is_loud_not_checkmark(monkeypatch, tmp_pat
 
 @pytest.fixture
 def attest_home(monkeypatch, tmp_path):
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
     monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
     return tmp_path
 
@@ -257,7 +257,7 @@ def test_attestation_bound_to_create_time_is_no_authority_once_the_sentinel_move
     the sentinel. A marker bound to 111's process birth fails closed: another PID or another birth
     time reads as undecidable, never as dead. (Birth, not the ledger's ``start_time``: that is stamped
     seconds later, once imports finish.)"""
-    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 1000.0)
+    monkeypatch.setattr("hermes_agent.hermes_cli.process_identity._process_create_time", lambda pid=None: 1000.0)
     gateway_windows._write_start_attestation([111], "direct spawn (PID 111)")
     marker = json.loads((attest_home / "state" / "gateway.start-attestation.json").read_text(encoding="utf-8"))
     assert marker["create_times"] == {"111": 1000.0}
@@ -277,7 +277,7 @@ def test_attestation_bound_to_create_time_keeps_authority_for_its_own_incarnatio
     incarnation: gone with no clean exit → dead. Its own clean exit (create_time carried by
     ``mark_exited``) → planned stop. A sentinel from a gateway older than the identity stamp, and
     older markers without ``create_times``, keep PID-only matching."""
-    monkeypatch.setattr("hermes_cli.process_identity._process_create_time", lambda pid=None: 1000.0)
+    monkeypatch.setattr("hermes_agent.hermes_cli.process_identity._process_create_time", lambda pid=None: 1000.0)
     gateway_windows._write_start_attestation([111], "direct spawn (PID 111)")
     _sentinel(attest_home, phase="running", pid=111, create_time=1001.5)
     assert gateway_windows.attested_death_generation(current_pids=[]) is not None

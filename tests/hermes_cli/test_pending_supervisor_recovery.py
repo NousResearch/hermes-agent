@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway, main, update_cmd_fleet as fleet, update_receipt
+from hermes_agent.hermes_cli import gateway, main, update_cmd_fleet as fleet, update_receipt
 
 
 @pytest.mark.parametrize("failure", ["listing", "restart", "inactive", "unloaded", None])

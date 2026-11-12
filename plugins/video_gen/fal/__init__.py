@@ -168,7 +168,7 @@ def _resolve_family(explicit: Optional[str]) -> tuple[str, dict[str, Any]]:
     """Decide which FAL family to use. Returns ``(family_id, meta)``."""
     import os
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config()
     except Exception as exc:
         logger.debug("Could not load video_gen config: %s", exc)

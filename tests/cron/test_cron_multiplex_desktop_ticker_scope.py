@@ -110,17 +110,17 @@ def test_multiplex_ticker_profile_gate_skips_rejected_profile(tmp_path):
 @pytest.mark.parametrize("profile_count", [1, 2])
 def test_desktop_ticker_gates_on_profile_gateway_running(tmp_path, monkeypatch, profile_count):
     """Desktop yields to each live gateway, including a single-profile install."""
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     homes = [("default", tmp_path / "default"), ("ops", tmp_path / "ops")][:profile_count]
     running = {homes[-1][1]}
     monkeypatch.setattr(
-        "hermes_cli.profiles.profiles_to_serve", lambda multiplex=False: list(homes)
+        "hermes_agent.hermes_cli.profiles.profiles_to_serve", lambda multiplex=False: list(homes)
     )
     monkeypatch.setattr(
-        "hermes_cli.profiles._check_gateway_running", lambda home: home in running
+        "hermes_agent.hermes_cli.profiles._check_gateway_running", lambda home: home in running
     )
-    monkeypatch.setattr("hermes_cli.profiles._served_by_running_multiplexer", lambda name: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles._served_by_running_multiplexer", lambda name: False)
     captured = {}
 
     class _Provider:
@@ -167,7 +167,7 @@ def test_a_routed_profile_fire_runs_under_multiplex_semantics_for_exactly_its_sc
     from hermes_agent.cron import scheduler
     from hermes_agent.agent import secret_scope
     from hermes_agent.cron.scheduler_provider import _profile_cron_scope, routed_profile_fire
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
 
     launch, routed = tmp_path / "launch", tmp_path / "launch" / "profiles" / "ops"
     for home in (launch, routed):
@@ -218,7 +218,7 @@ def test_routed_fire_scope_carries_managed_env_authority(tmp_path, monkeypatch, 
     from hermes_agent.cron import scheduler
     from hermes_agent.agent import secret_scope
     from hermes_agent.cron.scheduler_provider import _profile_cron_scope
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
 
     launch, routed = tmp_path / "launch", tmp_path / "launch" / "profiles" / "ops"
     managed = tmp_path / "managed"
@@ -250,11 +250,11 @@ def test_dashboard_run_now_isolates_a_sibling_profile_fire_like_the_ticker(tmp_p
     import os
 
     from hermes_agent.cron import scheduler
-    from hermes_cli import web_server_cron
+    from hermes_agent.hermes_cli import web_server_cron
     from hermes_agent.agent import secret_scope
     from hermes_agent.cron.jobs import create_job
     from hermes_agent.cron.scheduler_provider import InProcessCronScheduler
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     launch = tmp_path / ".hermes"

@@ -21,13 +21,13 @@ uses `/answer ID TEXT`. The client uses the displayed prompt ID and its captured
 generation, not a locally reconstructed waiter. `/discard ID` acknowledges an
 admission lost across an owner restart (`prompt.resolve_unknown`). `/branch [title]`,
 `/model <model> [--provider name]` and `/compress [here [N] | <focus>] [--preview]`
-are revision-fenced `session.mutate` operations (`hermes_cli/gateway_mutations.py`);
+are revision-fenced `session.mutate` operations (`hermes_agent/hermes_cli/gateway_mutations.py`);
 `/yolo [on|off]` toggles this session's approval bypass on the owner (`config.set`
 key `yolo`). `/title [name]` (`session.mutate rename`), `/undo [N]` and `/retry`
 (`session.mutate rewind`; `/undo` puts the removed message back in the composer),
 `/new [title]` / `/reset` (`session.create` with this session's frozen launch
 request), `/usage` (the owner's report plus the last committed turn) and `/tools`
-(launch toolsets) run in the view (`hermes_cli/gateway_chat_commands.py`). Every
+(launch toolsets) run in the view (`hermes_agent/hermes_cli/gateway_chat_commands.py`). Every
 other command goes to the owner as `slash.exec`: the reviewed reads run there and the
 rest print `/x is not available on the shared gateway yet` with a link to the
 [command parity table](gateway-command-parity.md), which lists what every local
@@ -56,7 +56,7 @@ rejects. A resume may repeat the exact creation flags the session was frozen wit
 rejects.
 
 **Accepted and frozen into the session at creation** (`_POLICY` in
-`hermes_cli/gateway_chat.py`): `--model`, `--provider`, `--base-url`, `--api-key`
+`hermes_agent/hermes_cli/gateway_chat.py`): `--model`, `--provider`, `--base-url`, `--api-key`
 (memory-only, never persisted), `--reasoning`, `--toolsets`, `--max-turns`,
 `--skills` (rendered once into the frozen prompt), `--checkpoints`, `--yolo`,
 `--accept-hooks` (also `HERMES_ACCEPT_HOOKS=1`), `--pass-session-id`,

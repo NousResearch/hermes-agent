@@ -237,7 +237,7 @@ def bedrock_claude_agent(monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIATESTTESTTESTTEST")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
-    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins.discover_plugins", lambda: None)
     monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda **kwargs: [{
         "type": "function",
         "function": {"name": "t", "description": "t", "parameters": {"type": "object", "properties": {}}},

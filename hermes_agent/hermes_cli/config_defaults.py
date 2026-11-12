@@ -1,10 +1,10 @@
 """Default configuration data for Hermes Agent: DEFAULT_CONFIG and OPTIONAL_ENV_VARS.
 
-Pure-data leaf module — must not import from hermes_cli.config. Comments are the user-facing
+Pure-data leaf module — must not import from hermes_agent.hermes_cli.config. Comments are the user-facing
 docs of config.yaml.
 """
 
-from hermes_cli.config_defaults_auxiliary import _aux
+from hermes_agent.hermes_cli.config_defaults_auxiliary import _aux
 
 #: Image every container terminal backend (docker/modal/daytona, the singularity plugin) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -1767,7 +1767,7 @@ DEFAULT_CONFIG = {
         "website_blocklist": {"enabled": False, "domains": [], "shared_files": []},
         # IDs of supply-chain advisories the user has read and acted on; acked ones stop the startup
         # banner. Add via `hermes doctor --ack <id>`; remove by editing the list. Catalog:
-        # hermes_cli/security_advisories.py.
+        # hermes_agent/hermes_cli/security_advisories.py.
         "acked_advisories": [],
         # Lazy-install opt-in backend packages from PyPI when a backend that needs them is first
         # enabled (e.g. `elevenlabs`). False = require explicit pip install for everything beyond
@@ -2255,7 +2255,7 @@ DEFAULT_CONFIG = {
         # process died are *closed*, then get a full retention window before removal.
         # Off by default (deleting history is opt-in). While the user's config.yaml has no
         # auto_prune key, every surface asks once the disk holding state.db runs low
-        # (hermes_cli/prune_advisor.py); either answer writes the key and ends the question.
+        # (hermes_agent/hermes_cli/prune_advisor.py); either answer writes the key and ends the question.
         "auto_prune": False,
         # Inactive days of ended-session history to keep (= `hermes sessions prune`).
         "retention_days": 90,
@@ -2700,7 +2700,7 @@ DEFAULT_CONFIG = {
 }
 
 
-from hermes_cli.config_defaults_env import OptionalEnvVars, _base_url, _env, _msg, _prov, _setting, _skill, _tool
+from hermes_agent.hermes_cli.config_defaults_env import OptionalEnvVars, _base_url, _env, _msg, _prov, _setting, _skill, _tool
 
 
 # Optional environment variables that enhance functionality. Feeds the dashboard keys page and setup

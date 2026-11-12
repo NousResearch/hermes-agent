@@ -1,4 +1,4 @@
-"""Tests for `_can_open_graphical_browser()` in hermes_cli.auth.
+"""Tests for `_can_open_graphical_browser()` in hermes_agent.hermes_cli.auth.
 
 Guards the fix for the May 2026 report where `hermes auth add xai-oauth`
 launched a text-mode browser (w3m) INSIDE the terminal on a headless Linux
@@ -17,7 +17,7 @@ import webbrowser
 
 import pytest
 
-from hermes_cli.auth import _can_open_graphical_browser
+from hermes_agent.hermes_cli.auth import _can_open_graphical_browser
 
 
 class _FakeController:

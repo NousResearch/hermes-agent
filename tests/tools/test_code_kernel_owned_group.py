@@ -93,7 +93,7 @@ def test_owner_sigkill_reaps_the_kernel_group_not_a_live_owners(tmp_path):
 
 def _kernel_with_cell_child(monkeypatch, tmp_path, child_argv):
     """A real kernel (spawn registration captured) running a cell that spawned *child_argv*."""
-    from hermes_cli import process_identity
+    from hermes_agent.hermes_cli import process_identity
     from hermes_agent.tools.code_kernel import SessionKernel, _spawn
 
     calls = []

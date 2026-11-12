@@ -156,7 +156,7 @@ async def test_legacy_migration_skips_structurally_corrupt_neighbor(monkeypatch,
             yield False
 
         monkeypatch.setattr(
-            "hermes_cli.active_sessions.active_session_liveness_guard",
+            "hermes_agent.hermes_cli.active_sessions.active_session_liveness_guard",
             inactive_session,
         )
 

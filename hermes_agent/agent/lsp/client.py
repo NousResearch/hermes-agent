@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
-from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.process_identity import own_process_groups, register_child, release_process_group_once_empty
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli.process_identity import own_process_groups, register_child, release_process_group_once_empty
 
 from hermes_agent.agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED, ERROR_METHOD_NOT_FOUND, LSPProtocolError, LSPRequestError, classify_message,

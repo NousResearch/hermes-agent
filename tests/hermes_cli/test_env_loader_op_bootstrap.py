@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from hermes_cli import env_loader
+from hermes_agent.hermes_cli import env_loader
 from hermes_agent.agent import credential_pool
 
 
@@ -97,7 +97,7 @@ def _seed_openrouter_token(monkeypatch, dotenv_value, environ_value):
         monkeypatch.setenv("OPENROUTER_API_KEY", environ_value)
     # Never treat the synthetic source as suppressed.
     monkeypatch.setattr(
-        "hermes_cli.auth.is_source_suppressed", lambda _p, _s: False
+        "hermes_agent.hermes_cli.auth.is_source_suppressed", lambda _p, _s: False
     )
 
     entries: list = []

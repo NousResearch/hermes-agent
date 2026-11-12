@@ -1,6 +1,6 @@
 """Agent-facing subcommand handlers: memory, acp, tools, insights, monitoring, skills (+trust).
 
-Split out of ``hermes_cli/main.py``. Names that still live in main (``PROJECT_ROOT``, ...)
+Split out of ``hermes_agent/hermes_cli/main.py``. Names that still live in main (``PROJECT_ROOT``, ...)
 are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
@@ -9,7 +9,7 @@ import sys
 
 
 def _cmd_memory_off():
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     config = load_config()
     if not isinstance(config.get("memory"), dict):
         config["memory"] = {}
@@ -64,7 +64,7 @@ def cmd_memory(args):
     elif sub == "reset":
         _cmd_memory_reset(args)
     else:
-        from hermes_cli.memory_setup import memory_command
+        from hermes_agent.hermes_cli.memory_setup import memory_command
         memory_command(args)
 
 
@@ -103,17 +103,17 @@ def cmd_acp(args):
 
 
 def cmd_tools(args):
-    from hermes_cli.main import _require_tty
+    from hermes_agent.hermes_cli.main import _require_tty
     action = getattr(args, "tools_action", None)
     if action in {"list", "disable", "enable"}:
-        from hermes_cli.tools_config import tools_disable_enable_command
+        from hermes_agent.hermes_cli.tools_config import tools_disable_enable_command
         tools_disable_enable_command(args)
     elif action == "post-setup":
-        from hermes_cli.tools_config import run_post_setup_command
+        from hermes_agent.hermes_cli.tools_config import run_post_setup_command
         sys.exit(run_post_setup_command(args))
     else:
         _require_tty("tools")
-        from hermes_cli.tools_config import tools_command
+        from hermes_agent.hermes_cli.tools_config import tools_command
         tools_command(args)
 
 
@@ -122,7 +122,7 @@ def cmd_insights(args):
     try:
         from hermes_agent.hermes_state import SessionDB
         from hermes_agent.agent.insights import InsightsEngine
-        from hermes_cli.config import get_hermes_home
+        from hermes_agent.hermes_cli.config import get_hermes_home
         path = get_hermes_home() / "state.db"
         if not path.exists():
             from hermes_agent.agent.i18n import t
@@ -150,7 +150,7 @@ def _dict_or_empty(value) -> dict:
 
 def cmd_monitoring(args):
     """Gateway monitoring status: health & diagnostics export posture."""
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     action = getattr(args, "monitoring_action", None) or "status"
     mon = _dict_or_empty(load_config().get("monitoring"))
 
@@ -186,16 +186,16 @@ def cmd_monitoring(args):
 
 
 def cmd_skills(args):
-    from hermes_cli.main import _require_tty
+    from hermes_agent.hermes_cli.main import _require_tty
     action = getattr(args, "skills_action", None)
     if action == "config":
         _require_tty("skills config")
-        from hermes_cli.skills_config import skills_command as skills_config_command
+        from hermes_agent.hermes_cli.skills_config import skills_command as skills_config_command
         skills_config_command(args)
     elif action in ("trust", "untrust"):
         _cmd_skills_trust(args)
     else:
-        from hermes_cli.skills_hub import skills_command
+        from hermes_agent.hermes_cli.skills_hub import skills_command
         return skills_command(args)
 
 
@@ -211,7 +211,7 @@ def _cmd_skills_trust(args):
         _candidate_project_skills_dirs,
         find_project_root,
         iter_skill_index_files)
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     action = args.skills_action
     raw_path = getattr(args, "path", None)
     if raw_path:

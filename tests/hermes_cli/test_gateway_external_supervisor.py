@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway
+from hermes_agent.hermes_cli import gateway
 
 
 def _clear_native_supervisor_markers(monkeypatch):
@@ -95,7 +95,7 @@ def test_update_hands_generated_launchd_inner_argv_back_without_watcher(monkeypa
 
 def test_update_follows_wrapper_upgrade_of_stale_plist_argv(monkeypatch):
     """stderr_timestamp upgrades stale inner argv so update sees the flag."""
-    from hermes_cli.stderr_timestamp import _prepare_child_command
+    from hermes_agent.hermes_cli.stderr_timestamp import _prepare_child_command
 
     stale = [
         "/usr/bin/python3",

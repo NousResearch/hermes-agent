@@ -186,7 +186,7 @@ def _read_hub_installed_names() -> set[str]:
 def _prune_builtins_enabled() -> bool:
     """``curator.prune_builtins`` (default False); lazy config import keeps this module importable during update/sync."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cur = load_config().get("curator")
         return bool(cur.get("prune_builtins", False)) if isinstance(cur, dict) else False
     except Exception as e:  # pragma: no cover — best-effort config read
@@ -456,7 +456,7 @@ def telemetry_provenance(skill_name: str, record: Optional[dict[str, Any]] = Non
         return "installed"
     if ":" in skill_name:
         with suppress(Exception):
-            from hermes_cli.plugins import get_plugin_manager
+            from hermes_agent.hermes_cli.plugins import get_plugin_manager
             if get_plugin_manager().find_plugin_skill(skill_name) is not None:
                 return "installed"
     if label := {"installed": "installed", "agent": "agent_created"}.get(
@@ -472,7 +472,7 @@ def _emit_skill_lifecycle(skill_name: str, action: str, *, record: Optional[dict
     """Best-effort lifecycle hook after an authoritative state change; facts absent from *record* go as None."""
     facts = record or {}
     try:
-        from hermes_cli.lifecycle import has_hook, invoke_hook
+        from hermes_agent.hermes_cli.lifecycle import has_hook, invoke_hook
         if has_hook("on_skill_lifecycle"):
             invoke_hook("on_skill_lifecycle", action=action, skill_name=skill_name,
                         provenance=telemetry_provenance(skill_name, record), task_id=task_id or "",
@@ -773,7 +773,7 @@ def usage_report() -> list[dict[str, Any]]:
     rows = [_report_row(n, data.get(n), provenance=provenance(n), _persisted=n in data) for n in names]
     # Plugin skills live in the plugin's own directory and are counted under their qualified name
     # ("meshy:meshy-3d"), so a walk of the skills directory never sees them.
-    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_manager
     discover_plugins()
     rows += [_report_row(n, data.get(n), provenance="plugin", _persisted=n in data)
              for n in (meta["name"] for meta in get_plugin_manager().list_plugin_skill_metadata()) if n not in names]

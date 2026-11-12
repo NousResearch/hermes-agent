@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli.providers import is_official_openai_host
+from hermes_agent.hermes_cli.providers import is_official_openai_host
 
 
 class TestOfficialHosts:

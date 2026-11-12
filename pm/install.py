@@ -183,7 +183,7 @@ def lazy_installs_allowed() -> bool:
     ):
         return False
     try:
-        from hermes_cli.config import cfg_get, load_config_readonly, require_readable_config_before_write
+        from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly, require_readable_config_before_write
     except ModuleNotFoundError as exc:
         return exc.name == "hermes_cli.config" or "hermes_cli.config".startswith(f"{exc.name}.")
     except ImportError:
@@ -766,7 +766,7 @@ def _feature_policy(extras: Optional[list[str]], *, repair: bool) -> tuple[list[
 def _venv_install_lock(*, patient: bool):
     """Hold the dependency lock, or refuse when an impatient caller would queue."""
     from pm import receipt
-    from hermes_cli.runtime_state import INSTALL_LOCK_TIMEOUT_SECONDS, runtime_lock
+    from hermes_agent.hermes_cli.runtime_state import INSTALL_LOCK_TIMEOUT_SECONDS, runtime_lock
 
     # Holding this lock means rebuilding the whole dependency environment, which takes tens of
     # seconds on a bundle. Only an install the user asked for may queue for it; an opportunistic
@@ -798,7 +798,7 @@ def _publication(plugins: PluginInput | None):
 def _publish_inactive(change) -> None:
     """A disabled plugin's code changes without touching the dependency environment."""
     from pm import receipt
-    from hermes_cli.runtime_state import finish_publication, recover_publication
+    from hermes_agent.hermes_cli.runtime_state import finish_publication, recover_publication
 
     try:
         change.publish(paths.repo_root())
@@ -835,7 +835,7 @@ def _commit_selection(package, facts: Facts, change, *, enabled: list[str], stam
                       current: bool, repair: bool, explicit: bool, skip_invalid_secondary: bool = False) -> None:
     """Build (unless current), publish the plugin change, then record the selection."""
     from pm import receipt
-    from hermes_cli.runtime_state import finish_publication, recover_publication
+    from hermes_agent.hermes_cli.runtime_state import finish_publication, recover_publication
 
     try:
         result = {} if current else (package.apply(enabled, explicit=explicit,
@@ -976,7 +976,7 @@ def sync_venv(extras: Optional[list[str]] = None, *, explicit: bool = False,
             raise ValueError("carried extras belong to a feature sync of the discovered selection")
         shipped, frozen = _feature_policy(extras, repair=repair)
         package = get_package("venv")
-        from hermes_cli.runtime_state import recover_publication
+        from hermes_agent.hermes_cli.runtime_state import recover_publication
         from functools import partial
         sync = partial(_sync_locked, package=package, plugins=plugins, repair=repair, explicit=explicit,
                        shipped=shipped, frozen=frozen, evict_incompatible_plugins=evict_incompatible_plugins)

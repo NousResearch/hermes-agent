@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.nous_account import NousPortalAccountInfo
+from hermes_agent.hermes_cli.nous_account import NousPortalAccountInfo
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -70,10 +70,10 @@ def _enable_managed_nous_tools(monkeypatch):
     The _install_fake_tools_package() helper resets and reimports tool modules,
     so a simple monkeypatch on tool_backend_helpers doesn't survive.  We patch
     the *source* modules that the reimported modules will import from — both
-    hermes_cli.nous_account — so the function body returns True.
+    hermes_agent.hermes_cli.nous_account — so the function body returns True.
     """
     monkeypatch.setattr(
-        "hermes_cli.nous_account.get_nous_portal_account_info",
+        "hermes_agent.hermes_cli.nous_account.get_nous_portal_account_info",
         lambda: NousPortalAccountInfo(
             logged_in=True,
             source="jwt",
@@ -102,7 +102,7 @@ def _install_fake_tools_package():
     )
     # Keep unrelated imports real; only replace the collaborators this fixture
     # isolates. hermes_agent.tools.browser_tool imports redact_cdp_url;
-    # hermes_cli.auth (imported transitively by nous_account /
+    # hermes_agent.hermes_cli.auth (imported transitively by nous_account /
     # tool_backend_helpers) imports sanitize_borrowed_credential_payload.
     sys.modules["hermes_agent.agent.redact"] = types.SimpleNamespace(
         redact_cdp_url=lambda value: str(value),

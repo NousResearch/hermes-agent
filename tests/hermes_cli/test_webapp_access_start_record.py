@@ -29,7 +29,7 @@ RESTART_PID = 4242
 @pytest.fixture(autouse=True)
 def starts(monkeypatch):
     """This backend's Start records, fresh for each test: a followed restart outlives its request."""
-    from hermes_cli.web_routers import webapp_access as routes
+    from hermes_agent.hermes_cli.web_routers import webapp_access as routes
 
     records: dict = {}
     monkeypatch.setattr(routes, "_STARTS", records)
@@ -43,7 +43,7 @@ def client(monkeypatch):
 
 @pytest.fixture()
 def nous(monkeypatch):
-    from hermes_cli import webapp_access
+    from hermes_agent.hermes_cli import webapp_access
 
     monkeypatch.setattr(webapp_access, "nous_signed_in", lambda: True)
     monkeypatch.setattr(webapp_access, "_register_nous_sign_in", lambda _callback: None)
@@ -55,8 +55,8 @@ def gateway(monkeypatch):
     """The gateway as its control socket answers: the old one, serving no Webapp, until a test puts
     its replacement in place (another ``instance``). A restart is recorded and answers with its
     child's pid."""
-    import hermes_cli.web_server_gateway as gw
-    from hermes_cli import webapp_access
+    import hermes_agent.hermes_cli.web_server_gateway as gw
+    from hermes_agent.hermes_cli import webapp_access
 
     state = {"now": {"state": "off", "url": None, "reason": None}, "instance": (1000, 1), "restarts": [],
              "failure": None,
@@ -79,7 +79,7 @@ def _serving(port: int) -> dict:
 
 @pytest.fixture()
 def instant_build(monkeypatch):
-    from hermes_cli import webapp
+    from hermes_agent.hermes_cli import webapp
 
     monkeypatch.setattr(webapp, "prepare_webapp_renderer", lambda project_root, **_options: webapp.webapp_dist_dir(project_root))
 
@@ -89,7 +89,7 @@ class _Builds:
     Teardown lets every held build go, so a failed test leaves no Start holding the change lock."""
 
     def __init__(self, monkeypatch):
-        from hermes_cli import webapp
+        from hermes_agent.hermes_cli import webapp
 
         self._started = threading.Semaphore(0)
         self._allowed = threading.Semaphore(0)
@@ -253,7 +253,7 @@ def test_a_later_starts_restart_replaces_the_one_an_earlier_start_is_followed_by
 @pytest.mark.parametrize("ending", ["restart failed", "followed as long as the pane waits", "stop", "restart"])
 def test_a_followed_restart_is_no_longer_reported_once_it_cannot_serve_the_start(
         client, nous, gateway, instant_build, monkeypatch, ending):
-    from hermes_cli.web_routers import webapp_access as routes
+    from hermes_agent.hermes_cli.web_routers import webapp_access as routes
 
     if ending == "followed as long as the pane waits":
         monkeypatch.setattr(routes, "_RESTART_FOLLOW_SECONDS", 0.0)
@@ -286,7 +286,7 @@ def test_the_gateway_instance_is_the_process_its_control_socket_answers_from(mon
 
     from hermes_agent.gateway.control_socket import GatewayControlServer
     from hermes_agent.gateway.status import get_process_start_time
-    from hermes_cli import webapp_access, webapp_launcher
+    from hermes_agent.hermes_cli import webapp_access, webapp_launcher
 
     server = GatewayControlServer(tmp_path)
     monkeypatch.setattr(webapp_launcher, "_control", lambda _home, verb, params=None: json.loads(

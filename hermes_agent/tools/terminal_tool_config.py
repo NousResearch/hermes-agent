@@ -58,7 +58,7 @@ def home_profile_name() -> str:
     Memoized per (home, root) path pair: the lookup resolves three paths and runs on every
     container-key resolution, several times per tool call."""
     try:
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         from hermes_constants import get_default_hermes_root, get_hermes_home
 
         home = get_hermes_home()
@@ -208,7 +208,7 @@ def _launch_dirs(home: str, native_home: str) -> frozenset[str]:
     """The lexical launch set for one Hermes home. The root depends on that home and the platform default home
     (``native_home``, which keys the cache too); the install root is fixed per process. Cached: the shared root
     memo holds a single entry and thrashed when called once per command."""
-    from hermes_cli._startup_fast import project_root_str
+    from hermes_agent.hermes_cli._startup_fast import project_root_str
     from hermes_constants import get_default_hermes_root
 
     root = posixpath.normpath(str(get_default_hermes_root(home=home)))

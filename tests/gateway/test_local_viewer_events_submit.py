@@ -120,14 +120,14 @@ def _run_turn(runner, admission_id="adm-1"):
 
 def test_the_turn_sends_api_text_persists_the_clean_text_and_runs_the_one_turn_model():
     from hermes_agent.gateway.session_cli_turn import cli_turn_scope
-    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
     switched = ModelSwitchResult(success=True, new_model="gpt-x", target_provider="openrouter",
                                  api_key="k2", base_url="http://or", api_mode="chat_completions")
     _RecordingAgent.built = []
     runner = _gateway_runner()
     committed = {"api_text": "[voice] clean text", "model_override": {"model": "gpt-x", "provider": "openrouter"}}
-    with patch("hermes_cli.model_switch.switch_model", return_value=switched) as switch, \
+    with patch("hermes_agent.hermes_cli.model_switch.switch_model", return_value=switched) as switch, \
             cli_turn_scope("adm-1", committed):
         result, agent = _run_turn(runner)
     assert result["final_response"] == "ok"
@@ -141,7 +141,7 @@ def test_the_turn_sends_api_text_persists_the_clean_text_and_runs_the_one_turn_m
         "gpt-x", "openrouter", "k2", "http://or")
 
     # The next turn (and any turn whose event is not that admission) runs the session's own route.
-    with patch("hermes_cli.model_switch.switch_model") as switch, cli_turn_scope("adm-1", committed):
+    with patch("hermes_agent.hermes_cli.model_switch.switch_model") as switch, cli_turn_scope("adm-1", committed):
         _result, agent = _run_turn(runner, admission_id="adm-2")
     switch.assert_not_called()
     [(message, kwargs)] = agent.calls
@@ -151,11 +151,11 @@ def test_the_turn_sends_api_text_persists_the_clean_text_and_runs_the_one_turn_m
 
 def test_an_unresolvable_one_turn_model_fails_the_turn_without_running_it():
     from hermes_agent.gateway.session_cli_turn import cli_turn_scope
-    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
     _RecordingAgent.built = []
     failed = ModelSwitchResult(success=False, error_message="Unknown model 'nope'")
-    with patch("hermes_cli.model_switch.switch_model", return_value=failed), \
+    with patch("hermes_agent.hermes_cli.model_switch.switch_model", return_value=failed), \
             cli_turn_scope("adm-1", {"model_override": {"model": "nope"}}):
         result, agent = _run_turn(_gateway_runner())
     assert result["failed"] is True and "Unknown model 'nope'" in result["final_response"]
@@ -228,7 +228,7 @@ def test_a_finite_turn_answers_clarify_headless_at_once():
         reply = turn._clarify_callback_sync(questions)
     assert reply == {"answers": {}, "outcome": "undelivered", "notice": FINITE_CLARIFY_NOTICE}
     # main's -q text, verbatim
-    from hermes_cli.cli_agent_setup_mixin import _single_query_clarify_callback
+    from hermes_agent.hermes_cli.cli_agent_setup_mixin import _single_query_clarify_callback
     assert reply == _single_query_clarify_callback(questions)
 
 
@@ -247,7 +247,7 @@ def test_a_one_turn_model_never_becomes_the_sessions_stored_model():
     right after restored onto the preset. Only a turn on the session's own route records its model."""
     from hermes_agent.gateway.run_turn_prepare import GatewayTurnPrepareMixin
     from hermes_agent.gateway.session_cli_turn import cli_turn_scope
-    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
     written = []
     db = SimpleNamespace(get_session=lambda sid: {"model": "session-model", "model_config": "{}"},
@@ -259,7 +259,7 @@ def test_a_one_turn_model_never_becomes_the_sessions_stored_model():
     moa = ModelSwitchResult(success=True, new_model="default", target_provider="moa", api_key="",
                             base_url="", api_mode="chat_completions")
     committed = {"model_override": {"model": "default", "provider": "moa"}}
-    with patch("hermes_cli.model_switch.switch_model", return_value=moa), cli_turn_scope("adm-1", committed):
+    with patch("hermes_agent.hermes_cli.model_switch.switch_model", return_value=moa), cli_turn_scope("adm-1", committed):
         _result, agent = _run_turn(runner)
     assert agent.model == "default" and written == []
     with cli_turn_scope("adm-1", committed):

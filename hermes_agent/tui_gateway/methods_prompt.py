@@ -819,7 +819,7 @@ from hermes_agent.gateway.session_surface import SURFACES as _CLIENT_SURFACES
 
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
-    from hermes_cli.input_sanitize import sanitize_user_prompt_text
+    from hermes_agent.hermes_cli.input_sanitize import sanitize_user_prompt_text
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
@@ -979,7 +979,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
+        from hermes_agent.hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
     session["image_counter"] = session.get("image_counter", 0) + 1
@@ -1006,7 +1006,7 @@ def _(rid, params: dict) -> dict:
     if not raw:
         return _err(rid, 4015, "path required")
     try:
-        from cli import (
+        from hermes_agent.cli import (
             _IMAGE_EXTENSIONS, _detect_file_drop, _resolve_attachment_path, _split_path_input)
         if dropped := _detect_file_drop(raw):
             image_path, remainder = dropped["path"], dropped["remainder"]
@@ -1083,7 +1083,7 @@ def _(rid, params: dict) -> dict:
         argv = [
             "pdftoppm", "-png", "-r", "150", "-f", str(first_page), "-l", str(last_page),
             str(pdf_path), str(td_path / "page")]
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
         try:
             # UTF-8 + lossy decode: non-UTF-8 child output must not crash the gateway
             # thread on locale-mismatched Windows.
@@ -1158,7 +1158,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
-        from cli import _detect_file_drop
+        from hermes_agent.cli import _detect_file_drop
         dropped = _detect_file_drop(str(params.get("text", "") or ""))
         if not dropped:
             return _ok(rid, {"matched": False})
@@ -1369,7 +1369,7 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
         pdf_path.write_bytes(pdf_bytes)
         return pdf_path, str(params.get("filename", "") or "uploaded.pdf"), None
     try:
-        from cli import _resolve_attachment_path
+        from hermes_agent.cli import _resolve_attachment_path
         resolved = _resolve_attachment_path(raw_path)
     except Exception:
         resolved = None

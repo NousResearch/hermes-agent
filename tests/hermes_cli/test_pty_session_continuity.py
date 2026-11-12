@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from hermes_cli.pty_session import PtySession, PtySessionRegistry, RegistryFull
+from hermes_agent.hermes_cli.pty_session import PtySession, PtySessionRegistry, RegistryFull
 from tests.waiting import async_wait_until
 
 
@@ -299,7 +299,7 @@ async def test_superseded_input_cancellation_wins_completed_readiness(monkeypatc
     import pty
     import select
     import tty
-    from hermes_cli.pty_bridge import PtyBridge
+    from hermes_agent.hermes_cli.pty_bridge import PtyBridge
 
     master, slave = pty.openpty()
     tty.setraw(slave)

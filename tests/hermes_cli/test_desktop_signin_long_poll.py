@@ -12,8 +12,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli import anon_auth, guest_handoff
-from hermes_cli.web_server import _SESSION_TOKEN, app
+from hermes_agent.hermes_cli import anon_auth, guest_handoff
+from hermes_agent.hermes_cli.web_server import _SESSION_TOKEN, app
 from tests.hermes_cli.test_anon_upgrade import EMAIL, free_account, portal
 
 client = TestClient(app)

@@ -284,7 +284,7 @@ class TestGlobalAllowPrivateUrls:
     def test_default_is_false(self, monkeypatch):
         """Toggle defaults to False when no env var or config is set."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
-        with patch("hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
+        with patch("hermes_agent.hermes_cli.config.read_raw_config", side_effect=Exception("no config")):
             assert _global_allow_private_urls() is False
 
 
@@ -292,7 +292,7 @@ class TestGlobalAllowPrivateUrls:
         """Quoted false must not opt out of SSRF protection."""
         monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
         cfg = {"security": {"allow_private_urls": "false"}}
-        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+        with patch("hermes_agent.hermes_cli.config.read_raw_config", return_value=cfg):
             assert _global_allow_private_urls() is False
 
 
@@ -465,7 +465,7 @@ class TestIPv4TranslatedIPv6SSRF:
     @pytest.fixture
     def declared(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
+            "hermes_agent.hermes_cli.config.read_raw_config",
             lambda: {"security": {"fake_ip_ranges": ["198.18.0.0/15"]}},
         )
         _reset_allow_private_cache()
@@ -553,7 +553,7 @@ class TestDeclaredFakeIpSentinelRanges:
     @pytest.fixture
     def declared(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
+            "hermes_agent.hermes_cli.config.read_raw_config",
             lambda: {"security": {"fake_ip_ranges": ["198.18.0.0/15"]}},
         )
         _reset_allow_private_cache()
@@ -574,7 +574,7 @@ class TestDeclaredFakeIpSentinelRanges:
             assert is_safe_url("http://example.com/") is False
         # ...and the sentinel block itself is blocked again once the declaration is gone.
         _reset_allow_private_cache()
-        with patch("hermes_cli.config.read_raw_config", dict), _resolves_to("198.18.0.23"):
+        with patch("hermes_agent.hermes_cli.config.read_raw_config", dict), _resolves_to("198.18.0.23"):
             assert is_safe_url("https://example.com/file.jpg") is False
 
     @pytest.mark.parametrize(
@@ -593,7 +593,7 @@ class TestDeclaredFakeIpSentinelRanges:
         # loopback/RFC 1918/CGNAT/ULA/unspecified space — those classes stay blocked no matter
         # what the config says; the overlapping entry is dropped, it does not widen the guard.
         monkeypatch.setattr(
-            "hermes_cli.config.read_raw_config",
+            "hermes_agent.hermes_cli.config.read_raw_config",
             lambda: {"security": {"fake_ip_ranges": declared + ["198.18.0.0/15"]}},
         )
         _reset_allow_private_cache()

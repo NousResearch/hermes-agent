@@ -16,7 +16,7 @@ def client(monkeypatch, _isolate_hermes_home):
     starlette = pytest.importorskip("starlette.testclient")
     from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
     test_client = starlette.TestClient(app)
@@ -27,7 +27,7 @@ def client(monkeypatch, _isolate_hermes_home):
 def test_web_capability_picks_choose_own_key_or_nous_gateway(client, monkeypatch):
     import plugins.web.firecrawl.provider as fc
     import hermes_agent.tools.web_tools as wt
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-own-key")
     monkeypatch.setattr(fc._gateway, "resolve_managed_tool_gateway", lambda *a, **k: types.SimpleNamespace(

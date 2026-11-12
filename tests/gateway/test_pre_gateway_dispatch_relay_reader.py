@@ -15,7 +15,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 
 
 def _hook(callback):
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
 
     manager = get_plugin_manager()
     manager._discovered = True

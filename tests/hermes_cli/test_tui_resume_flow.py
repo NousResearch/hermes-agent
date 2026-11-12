@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 
 import pytest
-from hermes_cli import main_tui_launch
+from hermes_agent.hermes_cli import main_tui_launch
 
 
 def _args(**overrides):
@@ -27,7 +27,7 @@ def _raise_exit(rc):
 
 @pytest.fixture
 def main_mod(monkeypatch):
-    import hermes_cli.main as mod
+    import hermes_agent.hermes_cli.main as mod
 
     monkeypatch.setattr(mod, "_has_any_provider_configured", lambda: True)
     return mod

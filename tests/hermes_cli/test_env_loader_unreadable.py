@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import managed_scope
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_agent.hermes_cli import managed_scope
+from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
 
 
 def _deny_reads(monkeypatch, path: Path) -> None:
@@ -67,7 +67,7 @@ def test_unreadable_user_env_loads_as_absent_under_a_pinned_backend(tmp_path, mo
     monkeypatch.setenv("HERMES_ACP_AUTH_METHOD", "from-launcher")  # a readable .env clears it when unset there
     _deny_reads(monkeypatch, env_file)
 
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.env_loader"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.env_loader"):
         for _ in range(3):  # gateways reload the .env every turn
             assert load_hermes_dotenv(hermes_home=home) == []
 
@@ -111,7 +111,7 @@ def test_project_env_does_not_replace_launcher_keys(tmp_path, monkeypatch, pinne
 
 
 def test_reload_keeps_known_keys_when_user_env_is_unreadable(monkeypatch):
-    from hermes_cli.config import get_env_path, reload_env
+    from hermes_agent.hermes_cli.config import get_env_path, reload_env
 
     env_file = get_env_path()
     env_file.write_text("OPENAI_API_KEY=from-file\n", encoding="utf-8")
@@ -123,7 +123,7 @@ def test_reload_keeps_known_keys_when_user_env_is_unreadable(monkeypatch):
 
 
 def test_reload_still_removes_keys_a_readable_env_dropped(monkeypatch):
-    from hermes_cli.config import get_env_path, reload_env
+    from hermes_agent.hermes_cli.config import get_env_path, reload_env
 
     get_env_path().write_text("ANTHROPIC_API_KEY=from-file\n", encoding="utf-8")
     monkeypatch.setenv("OPENAI_API_KEY", "stale")

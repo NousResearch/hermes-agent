@@ -107,7 +107,7 @@ def consented_day(home: Path) -> bool:
     sending off (it stays local) or a send consent window opened at or before today 00:00Z. The
     sender's ``CONSENT_GATE_SQL`` passes a day's package only when ``period_start >= opened_at``, so a
     row recorded on the opt-in day itself would sit in a package that is never sent."""
-    from hermes_cli.config import read_raw_config_readonly
+    from hermes_agent.hermes_cli.config import read_raw_config_readonly
 
     from .shared_metrics_send_config import resolve_send_config
 

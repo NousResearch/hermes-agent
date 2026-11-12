@@ -293,7 +293,7 @@ class TestIsFreeTierModel:
 
     def test_pricing_cache_peek_zero_priced_model(self, monkeypatch):
         from hermes_agent.agent.credits_tracker import is_free_tier_model
-        from hermes_cli import models_pricing
+        from hermes_agent.hermes_cli import models_pricing
 
         # The picker keys the cache on the pre-/v1 root (get_pricing_for_provider
         # strips a trailing /v1 before fetch_models_with_pricing).
@@ -321,7 +321,7 @@ class TestIsFreeTierModel:
         paid_access=False for a free-tier identity ($0 by design), and that must never raise
         credits.depleted ("run /topup") on a surface that cannot top up."""
         from hermes_agent.agent.credits_tracker import is_free_tier_model
-        from hermes_cli import models_pricing
+        from hermes_agent.hermes_cli import models_pricing
 
         monkeypatch.setattr(models_pricing, "_pricing_cache", {})
         assert is_free_tier_model("nous/welcome", "https://welcome-api.nousresearch.com/v1") is True
@@ -331,7 +331,7 @@ class TestIsFreeTierModel:
         """The free-tier rule is the host, not the model name: the paid inference host can serve
         nous/welcome to a named account, and a depleted named account still sees the notice."""
         from hermes_agent.agent.credits_tracker import is_free_tier_model
-        from hermes_cli import models_pricing
+        from hermes_agent.hermes_cli import models_pricing
 
         monkeypatch.setattr(models_pricing, "_pricing_cache", {})
         assert is_free_tier_model("nous/welcome", "https://inference-api.nousresearch.com/v1") is False
@@ -340,7 +340,7 @@ class TestIsFreeTierModel:
 
     def test_exception_fails_open_to_false(self, monkeypatch):
         from hermes_agent.agent.credits_tracker import is_free_tier_model
-        from hermes_cli import models_pricing
+        from hermes_agent.hermes_cli import models_pricing
 
         class _Exploding:
             def get(self, *_a, **_kw):

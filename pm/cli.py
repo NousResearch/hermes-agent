@@ -236,7 +236,7 @@ def _install_names(names: list[str], target: str | None = None, *, verify: bool 
                 else:
                     ensure(name, explicit=True, verify=verify, progress=progress, _operation=operation)
                     if name == "python":
-                        from hermes_cli.venv_sync import publish_launchers
+                        from hermes_agent.hermes_cli.venv_sync import publish_launchers
 
                         publish_launchers(repo_root(), create=False)
                     progress.finish()
@@ -564,7 +564,7 @@ def cmd_gc(args) -> int:
     store = Store(writable_store_root())
     facts = _facts() if store.root == _store().root else Facts(store.root / "facts.json")
     removed, kept = _gc_store(store, facts)
-    from hermes_cli.runtime_state import collect_generations
+    from hermes_agent.hermes_cli.runtime_state import collect_generations
     from pm.environments import install_state_dir
     from pm.paths import repo_root
     from pm.runtime import collect_runtime_generations
@@ -865,7 +865,7 @@ def cmd_status(args) -> int:
 
 
 def cmd_repair(args) -> int:
-    from hermes_cli._early_recovery import recover_if_needed
+    from hermes_agent.hermes_cli._early_recovery import recover_if_needed
     from pm.paths import repo_root
 
     if not recover_if_needed(repo_root(), explicit=True):

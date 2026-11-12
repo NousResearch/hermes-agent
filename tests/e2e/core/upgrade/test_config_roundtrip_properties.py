@@ -47,8 +47,8 @@ import hermes_yaml as yaml
 
 from tests.e2e.core.upgrade._helpers import WORKTREE, isolated_env
 
-import hermes_cli.config as C
-from hermes_cli.config_defaults import DEFAULT_CONFIG
+import hermes_agent.hermes_cli.config as C
+from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 
 LATEST = int(DEFAULT_CONFIG["_config_version"])
 
@@ -389,7 +389,7 @@ def _quiet():
 class ReadFaults:
     """Counts every read of config.yaml through the lowest-level YAML read seam
     (``utils.fast_safe_load``, called by the file config backend that every config.yaml reader —
-    hermes_cli.config, ``read_user_config_raw`` and therefore tui_gateway — goes through) and fails
+    hermes_agent.hermes_cli.config, ``read_user_config_raw`` and therefore tui_gateway — goes through) and fails
     chosen reads with a transient ``EMFILE`` on an otherwise intact file."""
 
     def __init__(self, monkeypatch, config_path: Path):
@@ -764,7 +764,7 @@ def web_app():
         from starlette.testclient import TestClient
     except ImportError:
         pytest.skip("starlette not installed")
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     client = TestClient(app)  # no lifespan: requests only; profile/home resolved per request
     client.headers.update({_SESSION_HEADER_NAME: _SESSION_TOKEN})
     return client
@@ -1029,7 +1029,7 @@ def env_restore(monkeypatch):
 
 @pytest.mark.parametrize("seed", P4_SEEDS)
 def test_p4_load_hermes_dotenv_is_idempotent(seed, home, env_restore, monkeypatch):
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     text, keys, shell = gen_dotenv(seed)
     for k, v in shell.items():
         monkeypatch.setenv(k, v)
@@ -1078,7 +1078,7 @@ def test_p4_env_parser_sanitizer_and_writer_round_trip(seed, home, env_restore):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _migration_start_versions() -> list[int | None]:
-    from hermes_cli.config_migrations import MIGRATIONS, SUPPORT_FLOOR_VERSION
+    from hermes_agent.hermes_cli.config_migrations import MIGRATIONS, SUPPORT_FLOOR_VERSION
     starts = sorted({v - 1 for v, _fn in MIGRATIONS if v - 1 >= SUPPORT_FLOOR_VERSION})
     return [None, *starts]  # None = a hand-written config with no _config_version (full ladder)
 
@@ -1205,7 +1205,7 @@ def test_p6_null_section_survives_every_surface(section, web_app, home, monkeypa
     """No crash and no clobber of any OTHER section on load, effective resolution, gateway display
     resolvers, save, CLI set, TUI RPC and Desktop PUT (the #105674 `display: null` class)."""
     from hermes_agent.gateway.display_config import resolve_display_setting, resolve_tool_progress
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     from hermes_agent.tui_gateway import server
 
     text, tree, cfg, null_line = _p6_setup(section, monkeypatch)
@@ -1259,7 +1259,7 @@ def test_p6_all_sections_null_at_once_through_gateway_loader_and_migration(home,
     resolver and a migration from the previous schema version run without crashing; the
     migration stamps the latest version and keeps the file's comments."""
     from hermes_agent.gateway.config import load_gateway_config
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
 
     text = "# every section null\n" + "".join(f"{k}: null\n" for k in _TOP_LEVEL) + f"_config_version: {LATEST - 1}\n"
     cfg = _cfg_path()

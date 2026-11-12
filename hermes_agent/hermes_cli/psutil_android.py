@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import NoReturn
 
-from hermes_cli._old_updater import stop_for_relaunch
+from hermes_agent.hermes_cli._old_updater import stop_for_relaunch
 
 # Frozen data for old imports, not a download performed by this module.
 PSUTIL_URL = (

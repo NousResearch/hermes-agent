@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import cli
-from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE, KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+from hermes_agent import cli
+from hermes_agent.hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE, KANBAN_TERMINAL_PROVIDER_EXIT_CODE
 
 
 @pytest.fixture(autouse=True)

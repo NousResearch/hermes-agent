@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 
 def test_dump_cron_summary_accepts_utf8_bom(tmp_path):
-    from hermes_cli.dump import _cron_summary
+    from hermes_agent.hermes_cli.dump import _cron_summary
 
     cron = tmp_path / "cron"
     cron.mkdir()
@@ -24,9 +24,9 @@ def test_dump_cron_summary_accepts_utf8_bom(tmp_path):
 
 def test_status_scheduled_jobs_accepts_utf8_bom(monkeypatch, capsys, tmp_path):
     """hermes status must not print '(error reading jobs file)' under BOM."""
-    from hermes_cli import status as status_mod
-    import hermes_cli.auth as auth_mod
-    import hermes_cli.gateway as gateway_mod
+    from hermes_agent.hermes_cli import status as status_mod
+    import hermes_agent.hermes_cli.auth as auth_mod
+    import hermes_agent.hermes_cli.gateway as gateway_mod
 
     cron = tmp_path / "cron"
     cron.mkdir()

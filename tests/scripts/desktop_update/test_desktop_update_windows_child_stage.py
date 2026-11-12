@@ -1,7 +1,7 @@
 """The Windows hand-off relays the stages `hermes update` publishes, instead of one static line.
 
 The real ``windows.ps1`` runs a fixture ``hermes`` whose update publishes a stage through the real
-``hermes_cli.update_stage.publish_stage`` and then waits to be released. On main the hand-off never
+``hermes_agent.hermes_cli.update_stage.publish_stage`` and then waits to be released. On main the hand-off never
 told the child where to publish, so the window (and the hand-off log) read "Updating code and
 dependencies" for the whole 20-60 minute run (#139952, #135363).
 """

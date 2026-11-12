@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import socket
 
-from hermes_cli import doctor_connectivity as dc
+from hermes_agent.hermes_cli import doctor_connectivity as dc
 
 _AAAA = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("2001:db8::1", 443, 0, 0))]
 

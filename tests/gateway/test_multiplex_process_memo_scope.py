@@ -115,7 +115,7 @@ def test_media_policy_reads_routed_profile_config_not_env(two_homes, monkeypatch
     # Gateway startup bridges the LAUNCH profile's policy into the process env.
     for var in ("HERMES_MEDIA_DELIVERY_STRICT", "HERMES_MEDIA_ALLOW_DIRS"):
         monkeypatch.delenv(var, raising=False)
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     media_policy.apply_media_policy_env(load_config())
     assert media_policy.media_delivery_strict() is True
     assert media_policy.media_delivery_allow_dirs() == "/srv/a"
@@ -129,7 +129,7 @@ def test_routed_media_policy_bridge_never_writes_the_shared_env(two_homes, monke
     land in os.environ, where the launch profile's own deliveries and children read it."""
     a, b = two_homes
     from hermes_agent.gateway import media_policy
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     (b / "config.yaml").write_text(yaml.safe_dump(
         {"gateway": {"strict": False, "media_delivery_allow_dirs": ["/srv/b"]}}), encoding="utf-8")

@@ -25,13 +25,13 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.session_lost_and_found import (
+from hermes_agent.hermes_cli.session_lost_and_found import (
     _parse_sqlite3_cli_version,
     _wal_reset_vulnerable,
     find_sqlite3_cli,
     find_sqlite3_cli_refusal,
 )
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable
+from hermes_agent.hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable
 
 LIVE_DB_SALVAGE_COMMAND = 'sqlite3 ~/.hermes/state.db ".recover"'
 
@@ -89,18 +89,18 @@ class TestWalResetVersionGate:
 class TestFindSqlite3CliRefusal:
     def test_missing_binary_refusal(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which", lambda _: None
+            "hermes_agent.hermes_cli.session_lost_and_found.shutil.which", lambda _: None
         )
         assert find_sqlite3_cli() is None
         assert find_sqlite3_cli_refusal()["reason"] == "missing"
 
     def test_no_dbpage_refusal(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "hermes_agent.hermes_cli.session_lost_and_found.shutil.which",
             lambda _: "/usr/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "hermes_agent.hermes_cli.session_lost_and_found._cli_supports_recover",
             lambda _: False,
         )
         assert find_sqlite3_cli() is None
@@ -114,15 +114,15 @@ class TestFindSqlite3CliRefusal:
         passes, while the WAL-reset opener bug is still present.
         """
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "hermes_agent.hermes_cli.session_lost_and_found.shutil.which",
             lambda _: "/usr/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "hermes_agent.hermes_cli.session_lost_and_found._cli_supports_recover",
             lambda _: True,
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
+            "hermes_agent.hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
             lambda _: (3, 45, 1),
         )
         assert find_sqlite3_cli() is None
@@ -133,15 +133,15 @@ class TestFindSqlite3CliRefusal:
 
     def test_fixed_capable_cli_accepted(self, monkeypatch):
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "hermes_agent.hermes_cli.session_lost_and_found.shutil.which",
             lambda _: "/usr/local/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "hermes_agent.hermes_cli.session_lost_and_found._cli_supports_recover",
             lambda _: True,
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
+            "hermes_agent.hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
             lambda _: (3, 51, 3),
         )
         assert find_sqlite3_cli() == "/usr/local/bin/sqlite3"
@@ -152,15 +152,15 @@ class TestFindSqlite3CliRefusal:
         version grounds alone (the salvage lane runs against a snapshot
         copy, not the live file)."""
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found.shutil.which",
+            "hermes_agent.hermes_cli.session_lost_and_found.shutil.which",
             lambda _: "/usr/bin/sqlite3",
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._cli_supports_recover",
+            "hermes_agent.hermes_cli.session_lost_and_found._cli_supports_recover",
             lambda _: True,
         )
         monkeypatch.setattr(
-            "hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
+            "hermes_agent.hermes_cli.session_lost_and_found._parse_sqlite3_cli_version",
             lambda _: None,
         )
         assert find_sqlite3_cli() == "/usr/bin/sqlite3"
@@ -172,14 +172,14 @@ class TestParseSqlite3CliVersion:
             stdout = b"3.51.4 2026-XX-XX 12:34:56\n"
 
         with patch(
-            "hermes_cli.session_lost_and_found.subprocess.run",
+            "hermes_agent.hermes_cli.session_lost_and_found.subprocess.run",
             return_value=Probe(),
         ):
             assert _parse_sqlite3_cli_version("x") == (3, 51, 4)
 
     def test_unexecutable_returns_none(self):
         with patch(
-            "hermes_cli.session_lost_and_found.subprocess.run",
+            "hermes_agent.hermes_cli.session_lost_and_found.subprocess.run",
             side_effect=OSError("no such file"),
         ):
             assert _parse_sqlite3_cli_version("x") is None
@@ -247,7 +247,7 @@ class TestEmittedCommandsSatisfyCliContract:
     def _namespace(source: Path, **overrides) -> argparse.Namespace:
         """The namespace hermes main() produces for `sessions recover`.
 
-        Mirrors the registrations in hermes_cli/main.py (sessions_recover
+        Mirrors the registrations in hermes_agent/hermes_cli/main.py (sessions_recover
         subparser): --source, --output, --inspect-only, --work-dir,
         --chunk-size (default 1000), --allow-partial, --report.
         """
@@ -268,7 +268,7 @@ class TestEmittedCommandsSatisfyCliContract:
         """Guard the test's own premise: the bare `--source <db>` shape the
         v1 banner printed (neither --inspect-only nor --output) is rejected
         with rc 2 by the real dispatcher."""
-        import hermes_cli.sessions_cmd as sc
+        import hermes_agent.hermes_cli.sessions_cmd as sc
 
         rc = sc.cmd_sessions(self._namespace(tmp_path / "state.db"))
         assert rc == 2
@@ -277,7 +277,7 @@ class TestEmittedCommandsSatisfyCliContract:
         """`--inspect-only` (stage 1 of the emitted sequence) must pass
         the contract gate and reach actual inspection work (rc 0/1, not
         the gate's 2)."""
-        import hermes_cli.sessions_cmd as sc
+        import hermes_agent.hermes_cli.sessions_cmd as sc
 
         source = tmp_path / "state.db"
         conn = sqlite3.connect(str(source))
@@ -295,7 +295,7 @@ class TestEmittedCommandsSatisfyCliContract:
     def test_output_stage_dispatches_past_gate(self, tmp_path):
         """`--output recovered-state.db` (stage 2) must pass the contract
         gate and reach actual recovery work (rc 0/1, not the gate's 2)."""
-        import hermes_cli.sessions_cmd as sc
+        import hermes_agent.hermes_cli.sessions_cmd as sc
 
         source = tmp_path / "state.db"
         conn = sqlite3.connect(str(source))

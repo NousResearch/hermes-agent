@@ -15,7 +15,7 @@ These tests pin the fixed behavior:
   :func:`hermes_agent.agent.skill_commands.scan_skill_commands`), so the slug differs
   from the directory name when the declared name is multi-word.
 * ``disabled`` membership is checked by the declared name, because that
-  is what :func:`hermes_cli.skills_config.save_disabled_skills` stores.
+  is what :func:`hermes_agent.hermes_cli.skills_config.save_disabled_skills` stores.
 """
 from __future__ import annotations
 

@@ -39,7 +39,7 @@ def _docs_text() -> str:
 def config_leaves() -> list[str]:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 
     out: list[str] = []
 
@@ -60,7 +60,7 @@ def config_leaves() -> list[str]:
 def slash_commands() -> list[str]:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    from hermes_cli.commands import COMMAND_REGISTRY
+    from hermes_agent.hermes_cli.commands import COMMAND_REGISTRY
 
     return sorted(c.name for c in COMMAND_REGISTRY)
 

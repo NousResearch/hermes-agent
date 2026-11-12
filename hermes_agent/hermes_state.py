@@ -96,7 +96,7 @@ _MAX_SAFE_MESSAGES = 20_000  # resume/export guard default
 def _configured_transcript_limit(key: str, fallback: int = _MAX_SAFE_MESSAGES) -> int:
     """``sessions.<key>`` from config.yaml (lazy import: circular at load), else *fallback*; 0 disables."""
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         value = (load_config_readonly().get("sessions") or {}).get(key)
         if value is None:
             return fallback
@@ -1700,7 +1700,7 @@ class SessionDB(
         compression chain (``_resume_lineage_ids``) — exactly the rows a resume loads — so a
         worker transcript stays kanban-owned across rotations, while a delegate/branch child
         of a worker (a DIFFERENT conversation) is not swept in. Plain classification, not a
-        gate: the resume-time guard (``hermes_cli/kanban_resume_guard.py``) owns the decision
+        gate: the resume-time guard (``hermes_agent/hermes_cli/kanban_resume_guard.py``) owns the decision
         and the dispatcher-owned exemption."""
         lineage = self._resume_lineage_ids(session_id)
         if not lineage:

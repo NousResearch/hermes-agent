@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-import hermes_cli.models as mod
+import hermes_agent.hermes_cli.models as mod
 
 
 @pytest.fixture(autouse=True)
@@ -73,7 +73,7 @@ def test_fallback_row_is_recorded_as_fallback_and_never_served_stale():
 
 
 def test_codex_cold_fallback_retries_after_short_ttl(monkeypatch, tmp_path):
-    from hermes_cli import auth, codex_models
+    from hermes_agent.hermes_cli import auth, codex_models
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     monkeypatch.setattr(auth, "resolve_codex_runtime_credentials", lambda **_: {"api_key": "test-token"})

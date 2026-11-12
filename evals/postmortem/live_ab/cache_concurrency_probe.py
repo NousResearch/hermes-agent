@@ -156,7 +156,7 @@ MODEL = ARGS.model or ("claude-fable-5.1" if PROVIDER == "anthropic" else "anthr
 if ARGS.wire:
     API_MODE = "chat_completions" if ARGS.wire == "chat" else "anthropic_messages"
 elif PROVIDER == "nous":
-    from hermes_cli.providers import nous_api_mode
+    from hermes_agent.hermes_cli.providers import nous_api_mode
     API_MODE = nous_api_mode(MODEL)
 else:
     API_MODE = "chat_completions" if PROVIDER == "openrouter" else "anthropic_messages"
@@ -175,7 +175,7 @@ def creds():
     if PROVIDER == "anthropic":
         key = ARGS.api_key or os.environ.get("ANTHROPIC_API_KEY") or sys.exit("ANTHROPIC_API_KEY or --api-key required")
         return dict(api_key=key, base_url="https://api.anthropic.com", provider="anthropic")
-    from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+    from hermes_agent.hermes_cli.auth_nous import resolve_nous_runtime_credentials
     c = resolve_nous_runtime_credentials()
     return dict(api_key=c["api_key"], base_url=c.get("base_url") or "https://inference-api.nousresearch.com/v1", provider="nous")
 CRED = creds()

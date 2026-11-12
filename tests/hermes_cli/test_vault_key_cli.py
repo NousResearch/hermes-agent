@@ -35,7 +35,7 @@ def hermes(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     backend = _MemoryKeyring()
     keyring.set_keyring(backend)
-    from hermes_cli.subcommands.vault import build_vault_parser
+    from hermes_agent.hermes_cli.subcommands.vault import build_vault_parser
 
     parser = argparse.ArgumentParser(prog="hermes")
     build_vault_parser(parser.add_subparsers())
@@ -52,7 +52,7 @@ def test_vault_key_migrate_moves_the_key_and_records_the_choice(hermes, capsys):
     run, backend, home = hermes
     item = VaultStore().add_item("login", "Example", {"identifier_type": "email", "identifier": "jane@example.com",
                                                       "password": "dummy-pw-cli-9"}, origin="https://example.com").id
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
 
     run("key", "migrate", "--to", "keychain")
     assert not (home / "vault" / "vault.key").exists() and len(backend.entries) == 1

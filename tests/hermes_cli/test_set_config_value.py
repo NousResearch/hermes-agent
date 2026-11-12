@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli.config import (
+from hermes_agent.hermes_cli.config import (
     config_command,
     set_config_value,
 )
@@ -93,7 +93,7 @@ class TestGatewayPlatformsPrefixRedirect:
         assert load_gateway_config().platforms[Platform.TELEGRAM].enabled is True
 
     def test_nested_display_setting_still_reaches_display_platforms(self):
-        from hermes_cli.config import _redirect_platform_display_key
+        from hermes_agent.hermes_cli.config import _redirect_platform_display_key
         key, _ = _redirect_platform_display_key("gateway.platforms.telegram.streaming")
         assert key == "display.platforms.telegram.streaming"
 
@@ -101,7 +101,7 @@ class TestGatewayPlatformsPrefixRedirect:
         """A config whose value lives ONLY under ``gateway.platforms`` is still honoured by the gateway
         (``merge_platform_sections``), so ``get`` must read it and ``unset`` must remove it instead of
         reporting "not set" while the gateway keeps the platform enabled."""
-        from hermes_cli.config import get_config_value, unset_config_value
+        from hermes_agent.hermes_cli.config import get_config_value, unset_config_value
 
         legacy = "gateway:\n  platforms:\n    telegram:\n      enabled: true\n"
         (_isolated_hermes_home / "config.yaml").write_text(legacy, encoding="utf-8")
@@ -421,7 +421,7 @@ class TestSecretRedactionInDisplay:
     """`config set`/`config show` must not echo credential values in plaintext."""
 
     def test_redact_config_value_masks_nested_api_key(self):
-        from hermes_cli.config import redact_config_value
+        from hermes_agent.hermes_cli.config import redact_config_value
         secret = "cfut_SUPERSECRETTOKEN1234567890abcdef"
         model = {"default": "@cf/foo", "provider": "custom", "api_key": secret}
 
@@ -434,7 +434,7 @@ class TestSecretRedactionInDisplay:
         assert out["provider"] == "custom"
 
     def test_redact_config_value_walks_lists(self):
-        from hermes_cli.config import redact_config_value
+        from hermes_agent.hermes_cli.config import redact_config_value
         secret = "sk-deadbeefdeadbeefdeadbeef"
         cfg = {"custom_providers": [{"name": "p", "api_key": secret}]}
 
@@ -444,7 +444,7 @@ class TestSecretRedactionInDisplay:
         assert out["custom_providers"][0]["name"] == "p"
 
     def test_redact_config_value_ignores_benign_keys(self):
-        from hermes_cli.config import redact_config_value
+        from hermes_agent.hermes_cli.config import redact_config_value
         cfg = {"token_count": 1234, "secret_santa": "alice", "max_turns": 90}
 
         out = redact_config_value(cfg)
@@ -568,7 +568,7 @@ class TestValidateConfigKey:
         "platform_toolsets.cli",
     ])
     def test_known_keys_pass(self, key):
-        from hermes_cli.config import _validate_config_key
+        from hermes_agent.hermes_cli.config import _validate_config_key
         is_known, _ = _validate_config_key(key)
         assert is_known, f"Expected {key!r} to validate as known"
 
@@ -580,7 +580,7 @@ class TestValidateConfigKey:
         ("platform_toolset.cli", "platform_toolsets.cli"),
     ])
     def test_unknown_keys_with_suggestion(self, key, expected_in_suggestion):
-        from hermes_cli.config import _validate_config_key
+        from hermes_agent.hermes_cli.config import _validate_config_key
         is_known, suggestion = _validate_config_key(key)
         assert not is_known, f"Expected {key!r} to validate as unknown"
         if expected_in_suggestion is not None:
@@ -591,7 +591,7 @@ class TestValidateConfigKey:
     def test_underscore_only_first_segment_escapes(self):
         """The underscore escape only applies to the FIRST segment. A real
         typo in a sub-key (e.g. agent._max_turns) is still caught."""
-        from hermes_cli.config import _validate_config_key
+        from hermes_agent.hermes_cli.config import _validate_config_key
         is_known, _suggestion = _validate_config_key("agent._max_turns")
         assert not is_known, "Sub-key typo under a known top-level key must still be flagged"
 
@@ -826,7 +826,7 @@ class TestMalformedYAMLConfigPreservation:
 
     def test_unset_config_value_refuses_broken_yaml(self, _isolated_hermes_home, capsys):
         """unset_config_value must raise, not overwrite the broken config."""
-        from hermes_cli.config import unset_config_value
+        from hermes_agent.hermes_cli.config import unset_config_value
 
         self._write_broken_config(_isolated_hermes_home)
 
@@ -857,7 +857,7 @@ class TestLiteralDotKeyEscaping:
         (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False))
 
     def test_split_key_path_escaped_dot(self):
-        from hermes_cli.config import _split_key_path
+        from hermes_agent.hermes_cli.config import _split_key_path
 
         assert _split_key_path("providers.qwen3\\.5-397b.api_key") == [
             "providers", "qwen3.5-397b", "api_key",
@@ -981,7 +981,7 @@ class TestConfigGetRedaction:
                                      "mcp_servers.s.env.MY_API_KEY"])
     def test_config_get_masks_every_credential_path(self, _isolated_hermes_home, capsys, monkeypatch, key):
         self._seed(_isolated_hermes_home, monkeypatch)
-        from hermes_cli.config import get_config_value
+        from hermes_agent.hermes_cli.config import get_config_value
 
         get_config_value(key)
         out = capsys.readouterr().out
@@ -993,7 +993,7 @@ class TestConfigGetRedaction:
 
     def test_config_get_raw_prints_the_real_value(self, _isolated_hermes_home, capsys, monkeypatch):
         self._seed(_isolated_hermes_home, monkeypatch)
-        from hermes_cli.config import get_config_value
+        from hermes_agent.hermes_cli.config import get_config_value
 
         get_config_value("providers.gemini.api_key", raw=True)
         assert capsys.readouterr().out.strip() == self.SECRET
@@ -1017,7 +1017,7 @@ class TestConfigGetRedaction:
         (_isolated_hermes_home / "config.yaml").write_text(
             "mcp_servers:\n  s:\n    url: https://x.example\n" + yaml_line, encoding="utf-8")
         (_isolated_hermes_home / ".env").write_text(env_line + "\n", encoding="utf-8")
-        from hermes_cli.config import get_config_value
+        from hermes_agent.hermes_cli.config import get_config_value
 
         get_config_value(key)
         out = capsys.readouterr().out.strip()

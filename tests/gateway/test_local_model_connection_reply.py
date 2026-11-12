@@ -198,8 +198,8 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
         from hermes_agent.gateway.run_turn_runner import TurnRunner
         from hermes_agent.gateway.session import SessionSource
         from hermes_agent.gateway.turn_context import TurnContext
-        from hermes_cli.auth import AuthError
-        from hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
+        from hermes_agent.hermes_cli.auth import AuthError
+        from hermes_agent.hermes_cli.auth_constants import CODEX_RATE_LIMITED_CODE
 
         def _resolve(**_kwargs):
             try:
@@ -260,7 +260,7 @@ def test_turn_runner_host_side_resolution_failure_does_not_send_user_to_login(mo
     from hermes_agent.gateway.run_turn_runner import TurnRunner
     from hermes_agent.gateway.session import SessionSource
     from hermes_agent.gateway.turn_context import TurnContext
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.auth import AuthError
 
     def _raising(cause):
         def _resolve(**_kwargs):

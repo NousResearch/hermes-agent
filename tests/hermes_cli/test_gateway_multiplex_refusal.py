@@ -24,8 +24,8 @@ def standalone_home(tmp_path, monkeypatch):
     (home / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-    from hermes_cli import gateway as gw
-    # The probe seams live on the hermes_cli.gateway facade, like the other refusal tests.
+    from hermes_agent.hermes_cli import gateway as gw
+    # The probe seams live on the hermes_agent.hermes_cli.gateway facade, like the other refusal tests.
     monkeypatch.setattr(gw, "_is_service_installed", lambda: False)
     monkeypatch.setattr(gw, "_served_by_another_host_gateway", lambda name=None: None)
     monkeypatch.setattr(gw, "named_profile_served_by_running_multiplexer", lambda name=None: False)
@@ -73,8 +73,8 @@ def test_setup_stale_host_record_names_rescan(standalone_home, monkeypatch, caps
 
 def test_dashboard_standalone_refusal_resolves_once_and_preserves_invalid_profile(standalone_home, monkeypatch):
     from fastapi import HTTPException
-    from hermes_cli import web_server_gateway as web
-    from hermes_cli import web_server_profiles
+    from hermes_agent.hermes_cli import web_server_gateway as web
+    from hermes_agent.hermes_cli import web_server_profiles
 
     _gw, home = standalone_home
     resolved = []

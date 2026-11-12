@@ -22,8 +22,8 @@ from tests.tools.test_delegation_backends import OPTIONS, PROBE_PLUGIN, REPO_PLU
 def options_backend(monkeypatch):
     """``delegation.backend: probe-options`` (adds a per-task ``option``) on a fake provider."""
     import hermes_yaml as yaml
-    from hermes_cli import plugins as plugins_mod
-    from hermes_cli.plugins import PluginManager
+    from hermes_agent.hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli.plugins import PluginManager
 
     home = Path(os.environ["HERMES_HOME"])
     plugin_dir = home / "plugins" / "probe-options"

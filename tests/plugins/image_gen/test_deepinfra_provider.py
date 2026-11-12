@@ -31,7 +31,7 @@ def _b64_png() -> str:
 @pytest.fixture(autouse=True)
 def _isolation(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    import hermes_cli.models as _models_mod
+    import hermes_agent.hermes_cli.models as _models_mod
     monkeypatch.setattr(_models_mod, "_deepinfra_catalog_cache", {})
     monkeypatch.setenv("DEEPINFRA_API_KEY", "test-key")
     yield
@@ -40,7 +40,7 @@ def test_list_models_filters_by_image_gen_tag(monkeypatch):
     """Plugin-side wiring: list_models() returns only ``image-gen``-tagged
     catalog entries and surfaces pricing + default dims when present."""
     import json
-    from hermes_cli import models
+    from hermes_agent.hermes_cli import models
 
     class _Resp:
         def __enter__(self): return self

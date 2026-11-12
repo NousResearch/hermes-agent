@@ -1,4 +1,4 @@
-"""``hermes_cli.left_core_migration``: homes that used a feature that left core get its catalog plugin.
+"""``hermes_agent.hermes_cli.left_core_migration``: homes that used a feature that left core get its catalog plugin.
 
 Real config/.env files under a temp home; the catalog lookup and the network install are stand-ins
 (the live install is exercised end to end outside the unit suite).
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.left_core_migration as lcm
+import hermes_agent.hermes_cli.left_core_migration as lcm
 
 
 @pytest.fixture(autouse=True)
@@ -18,7 +18,7 @@ def _fresh(monkeypatch):
     monkeypatch.setattr(lcm, "_attempted", set())
     monkeypatch.delenv("HASS_TOKEN", raising=False)
     # A catalog that lists every left-core plugin; never the network.
-    import hermes_cli.memory_provider_migration as mpm
+    import hermes_agent.hermes_cli.memory_provider_migration as mpm
     monkeypatch.setattr(mpm, "catalog_source", lambda name: name)
 
 
@@ -127,7 +127,7 @@ def test_migrate_home_installs_the_catalog_plugin_once(tmp_path):
 def test_migration_keeps_a_toolset_off_where_core_had_it_off(tmp_path):
     """Core's homeassistant toolset was on only where a platform's saved list (or default composite)
     carried it; as a plugin toolset it is on everywhere not in known_plugin_toolsets."""
-    from hermes_cli.tools_config import _enabled_plugin_toolsets
+    from hermes_agent.hermes_cli.tools_config import _enabled_plugin_toolsets
     home = _home(tmp_path, env="HASS_TOKEN=abc\n", config=(
         "platform_toolsets:\n  telegram: [web, terminal, file]\n  discord: [hermes-discord]\n"
         "  slack: [web, homeassistant]\n"))
@@ -164,8 +164,8 @@ def test_a_disabled_or_present_plugin_is_left_alone(tmp_path):
 def test_a_preinstalled_plugin_gets_the_scope_conversion_once(tmp_path):
     """A plugin installed before the update (inert while core shipped HA) is not proof the core-era
     toolset scope was converted; the conversion runs once and never undoes a later user choice."""
-    from hermes_cli.config import read_user_config_raw, save_config
-    from hermes_cli.tools_config import _enabled_plugin_toolsets, _save_platform_tools
+    from hermes_agent.hermes_cli.config import read_user_config_raw, save_config
+    from hermes_agent.hermes_cli.tools_config import _enabled_plugin_toolsets, _save_platform_tools
     home = _home(tmp_path, env="HASS_TOKEN=abc\n", config="platform_toolsets:\n  telegram: [web]\n")
     (home / "plugins" / "homeassistant").mkdir(parents=True)
     selections = {"telegram": ["web"], "acp": ["hermes-acp"], "webhook": ["hermes-webhook"]}
@@ -191,7 +191,7 @@ def test_a_preinstalled_plugin_gets_the_scope_conversion_once(tmp_path):
 
 
 def test_catalog_miss_is_reported_not_installed(tmp_path, monkeypatch):
-    import hermes_cli.memory_provider_migration as mpm
+    import hermes_agent.hermes_cli.memory_provider_migration as mpm
     monkeypatch.setattr(mpm, "catalog_source", lambda name: None)
     home = _home(tmp_path, env="HASS_TOKEN=abc\n")
     said = []
@@ -281,7 +281,7 @@ def test_a_malformed_route_url_does_not_abort_the_home_migration(tmp_path, monke
 def test_the_migration_installs_once_so_a_removal_sticks(tmp_path, monkeypatch):
     """At most one automatic install per home: after `hermes plugins remove`, neither `hermes update`
     nor startup reinstalls it. Until an install succeeds (catalog miss, failed install) it retries."""
-    import hermes_cli.memory_provider_migration as mpm
+    import hermes_agent.hermes_cli.memory_provider_migration as mpm
     import pm.install
     home = _home(tmp_path, env="HASS_TOKEN=abc\n")
     plugin = home / "plugins" / "homeassistant"
@@ -312,7 +312,7 @@ def test_the_migration_installs_once_so_a_removal_sticks(tmp_path, monkeypatch):
 def test_a_failed_startup_install_backs_off_and_reports_one_line(tmp_path, monkeypatch):
     """With the catalog or git unreachable, only the first agent start in a while pays the network
     round trip, and its notice is one line naming the cause; `hermes update` always retries."""
-    import hermes_cli.memory_provider_migration as mpm
+    import hermes_agent.hermes_cli.memory_provider_migration as mpm
     import pm.install
     home = _home(tmp_path, env="HASS_TOKEN=abc\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -342,7 +342,7 @@ def test_repeated_startup_failures_back_off_exponentially(tmp_path, monkeypatch)
     import os
     import time
 
-    import hermes_cli.memory_provider_migration as mpm
+    import hermes_agent.hermes_cli.memory_provider_migration as mpm
     import pm.install
     home = _home(tmp_path, env="HASS_TOKEN=abc\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -409,7 +409,7 @@ def test_old_mcp_serve_spelling_names_the_plugin_command(tmp_path, monkeypatch, 
     line on stderr, never on stdout (the MCP wire); once the plugin is installed only the spelling."""
     import sys
 
-    from hermes_cli import main as main_mod
+    from hermes_agent.hermes_cli import main as main_mod
     home = _home(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(sys, "argv", ["hermes", "mcp", "serve", "--tools"])
@@ -458,9 +458,9 @@ def test_langfuse_in_use_is_the_bundled_plugin_enabled(tmp_path, monkeypatch, co
 def test_old_langfuse_plugin_key_keeps_naming_the_catalog_plugin(tmp_path, monkeypatch):
     """`observability/langfuse` (every pre-move doc, an administrator's pinned list) names the install
     while the plugin is absent, and selects/resolves the installed plugin once it is there."""
-    from hermes_cli.plugins_cmd import _find_plugin_entry, _unknown_plugin_message
-    from hermes_cli.plugins_discovery import IN_BOTH_LISTS, gate_manifest
-    from hermes_cli.plugins_manifest import PluginManifest
+    from hermes_agent.hermes_cli.plugins_cmd import _find_plugin_entry, _unknown_plugin_message
+    from hermes_agent.hermes_cli.plugins_discovery import IN_BOTH_LISTS, gate_manifest
+    from hermes_agent.hermes_cli.plugins_manifest import PluginManifest
     home = _home(tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     for name in ("observability/langfuse", "langfuse"):

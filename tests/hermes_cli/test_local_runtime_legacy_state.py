@@ -14,7 +14,7 @@ import pytest
     ("pid-reused", False),
 ])
 def test_legacy_endpoint_requires_managed_process_identity(tmp_path, monkeypatch, case, accepted):
-    from hermes_cli.local_runtime import bootstrap, endpoint, recovery, supervisor
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, endpoint, recovery, supervisor
 
     root = tmp_path / "runtimes" / "llamacpp"
     root.mkdir(parents=True)

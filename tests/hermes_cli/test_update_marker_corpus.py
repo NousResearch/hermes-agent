@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import update_lock
+from hermes_agent.hermes_cli import update_lock
 
 CORPUS = json.loads((Path(__file__).resolve().parents[1] / "fixtures/update_marker_corpus.json")
                     .read_text(encoding="utf-8"))

@@ -4,8 +4,8 @@ from __future__ import annotations
 import sys
 import webbrowser
 
-from hermes_cli.colors import Colors, color
-from hermes_cli.config import load_config
+from hermes_agent.hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.config import load_config
 
 DEFAULT_PORTAL_URL = "https://portal.nousresearch.com"
 SUBSCRIPTION_URL = "https://portal.nousresearch.com/manage-subscription"
@@ -37,8 +37,8 @@ def _heading(title: str) -> None:
 
 def _cmd_status(args) -> int:
     """Show Portal auth + Tool Gateway routing summary."""
-    from hermes_cli.auth import get_nous_auth_status_local
-    from hermes_cli.nous_subscription import get_nous_subscription_features
+    from hermes_agent.hermes_cli.auth import get_nous_auth_status_local
+    from hermes_agent.hermes_cli.nous_subscription import get_nous_subscription_features
 
     config = load_config() or {}
     try:
@@ -49,7 +49,7 @@ def _cmd_status(args) -> int:
     free_tier = bool(auth.get("free_tier"))
     _heading("Nous Portal")
     if free_tier:
-        from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
+        from hermes_agent.hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
         print(f"  Auth:    {color(f'{FREE_TIER_LABEL} · {GUEST_MODEL}', Colors.GREEN)}")
         print(f"           {UPGRADE_HINT}")
         if auth.get("inference_base_url"):
@@ -104,7 +104,7 @@ def _cmd_open(args) -> int:
 
 def _cmd_tools(args) -> int:
     """List the Tool Gateway catalog + current routing."""
-    from hermes_cli.nous_subscription import get_nous_subscription_features, managed_image_partner
+    from hermes_agent.hermes_cli.nous_subscription import get_nous_subscription_features, managed_image_partner
 
     config = load_config() or {}
     try:
@@ -137,7 +137,7 @@ def _cmd_login(args) -> int:
 
     Reuses the exact wiring behind ``hermes setup --portal`` so the commands stay in lockstep.
     """
-    from hermes_cli.setup import _run_portal_one_shot
+    from hermes_agent.hermes_cli.setup import _run_portal_one_shot
 
     config = load_config() or {}
     try:

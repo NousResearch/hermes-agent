@@ -52,7 +52,7 @@ def has_xai_credentials() -> bool:
 def hermes_xai_user_agent() -> str:
     """Return a stable Hermes-specific User-Agent for xAI HTTP calls."""
     try:
-        from hermes_cli.version_info import get_version_info
+        from hermes_agent.hermes_cli.version_info import get_version_info
         return f"Hermes-Agent/{get_version_info().base_version}"
     except Exception:
         return "Hermes-Agent/unknown"
@@ -96,7 +96,7 @@ def read_xai_imagine_storage_config(section_name: str) -> dict[str, Any]:
     """Read ``<section_name>.xai.storage`` (``image_gen``/``video_gen``) -> {enabled, public_url, expires_after}.
     On by default so xAI returns permanent public URLs, not short-lived CDN ones; null TTL = permanent."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         storage = _dict_get(_dict_get(_dict_get(load_config(), section_name), "xai"), "storage")
     except Exception:
         storage = None
@@ -170,7 +170,7 @@ def _resolve_explicit_xai_api_key() -> str:
 
 def _xai_base_url_override() -> str:
     """``HERMES_XAI_BASE_URL`` then ``XAI_BASE_URL``, stripped; '' when unset."""
-    from hermes_cli.config import get_env_value
+    from hermes_agent.hermes_cli.config import get_env_value
     return str(get_env_value("HERMES_XAI_BASE_URL") or get_env_value("XAI_BASE_URL") or "").strip().rstrip("/")
 
 
@@ -188,7 +188,7 @@ def resolve_xai_http_credentials(
     entry, not whichever its strategy selects first.
 
     Prefers Hermes-managed xAI OAuth credentials when available, then falls back to ``XAI_API_KEY`` resolved
-    via ``hermes_cli.config.get_env_value`` so keys stored in ``~/.hermes/.env`` (the standard Hermes
+    via ``hermes_agent.hermes_cli.config.get_env_value`` so keys stored in ``~/.hermes/.env`` (the standard Hermes
     location) are honored — not just ones already exported into ``os.environ``. This keeps direct xAI
     endpoints (images, TTS, STT, etc.) aligned with the main runtime auth model and preserves the regression
     contract from PR #17140 / #17163.
@@ -196,7 +196,7 @@ def resolve_xai_http_credentials(
     scoping is identical to the fallback branch, and the base URL honors ``HERMES_XAI_BASE_URL`` /
     ``XAI_BASE_URL`` behind the same origin-pinning validation as the OAuth branch. See #87045, #88040.
     """
-    import hermes_cli.auth as auth_mod
+    import hermes_agent.hermes_cli.auth as auth_mod
     if prefer_api_key and (explicit_key := str(_resolve_explicit_xai_api_key() or "").strip()):
         # Origin-pinned so a tampered env override can't exfiltrate the bearer; rejection -> default URL.
         override = _xai_base_url_override()
@@ -223,7 +223,7 @@ def resolve_xai_http_credentials(
     except Exception:
         pass
 
-    from hermes_cli.config import get_env_value
+    from hermes_agent.hermes_cli.config import get_env_value
     api_key = _resolve_explicit_xai_api_key()
     base_url = str(get_env_value("XAI_BASE_URL") or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
     return {"provider": "xai", "api_key": api_key, "base_url": base_url}

@@ -7,7 +7,7 @@ import json
 import os
 import urllib.request
 
-from hermes_cli.debug_redaction import redact_debug_support_text
+from hermes_agent.hermes_cli.debug_redaction import redact_debug_support_text
 
 # Overridable via env so the feature can be pointed at staging / a local dev NAS instance.
 NAS_BASE = os.environ.get("HERMES_DIAGNOSTICS_BASE_URL", "https://portal.nousresearch.com")

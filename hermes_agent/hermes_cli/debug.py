@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from typing import Optional
 
 from hermes_constants import get_hermes_home
-from hermes_cli.debug_redaction import redact_debug_support_text
+from hermes_agent.hermes_cli.debug_redaction import redact_debug_support_text
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ def _save_pending(entries: list[dict]) -> None:
 @contextlib.contextmanager
 def _pending_lock():
     """Cross-process lock for pending.json read-modify-write (gateway sweep vs CLI/gateway share)."""
-    from hermes_cli.auth import _file_lock
+    from hermes_agent.hermes_cli.auth import _file_lock
     path = _pending_file()
     with _file_lock(path.with_name(path.name + ".lock"), _PENDING_LOCK_HOLDER, 10.0,
                     f"Timed out waiting for the pending paste list lock ({path})"):
@@ -248,7 +248,7 @@ class LogSnapshot:
 
 def _primary_log_path(log_name: str) -> Optional[Path]:
     """Where *log_name* would live if present. Doesn't check existence."""
-    from hermes_cli.logs import log_file_path
+    from hermes_agent.hermes_cli.logs import log_file_path
     return log_file_path(log_name)  # update/handoff: the ROOT home's, whatever profile is active
 
 
@@ -381,7 +381,7 @@ def _capture_dump(redact: bool = True) -> str:
     """Run ``hermes dump`` and return its stdout, force-redacted unless *redact* is False: the dump
     is upload-bound and quotes config values (e.g. ``fallback_providers``), so URL credentials are
     redacted too, as in the uploaded logs."""
-    from hermes_cli.dump import run_dump
+    from hermes_agent.hermes_cli.dump import run_dump
     capture = io.StringIO()
     with contextlib.redirect_stdout(capture), contextlib.suppress(SystemExit):
         run_dump(SimpleNamespace(show_keys=False))
@@ -412,7 +412,7 @@ def collect_debug_report(
                 buf.write(f"session {sess}: {st['heal_events']} heal events, "
                           f"{st['messages_healed']} messages healed, escalated={st['escalated']}\n")
     buf.write("\n")
-    from hermes_cli.logs import LOG_FILES
+    from hermes_agent.hermes_cli.logs import LOG_FILES
     for name in _REPORT_LOGS:
         snap = log_snapshots.get(name)
         if snap is None:
@@ -439,7 +439,7 @@ def collect_share_bundle(log_lines: int = 200, redact: bool = True) -> dict[str,
                                   log_snapshots=log_snapshots)
     banner = _REDACTION_BANNER if redact else ""
     bundle: dict[str, str] = {"report": banner + report}
-    from hermes_cli.logs import LOG_FILES
+    from hermes_agent.hermes_cli.logs import LOG_FILES
     for name in _FULL_LOGS:
         if full := log_snapshots[name].full_text:
             filename = LOG_FILES.get(name, f"{name}.log")
@@ -605,7 +605,7 @@ _NOUS_PRIVACY_NOTICE = """\
 
 def _run_debug_share_nous(args, *, log_lines: int, redact: bool) -> None:
     """``hermes debug share --nous``: gzip the same bundle into the Nous envelope → Nous-S3."""
-    from hermes_cli.diagnostics_upload import share_to_nous
+    from hermes_agent.hermes_cli.diagnostics_upload import share_to_nous
     print(_NOUS_PRIVACY_NOTICE)
     if not _confirm_upload(args):
         return

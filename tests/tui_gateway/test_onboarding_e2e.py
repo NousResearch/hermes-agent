@@ -15,7 +15,7 @@ from hermes_agent.agent import onboarding_record
 from hermes_agent.agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 from hermes_agent.agent.onboarding import observe_tool_result
 from hermes_agent.agent.onboarding_flow import Facts
-from hermes_cli.config import read_user_config_raw
+from hermes_agent.hermes_cli.config import read_user_config_raw
 from hermes_agent.tui_gateway import server, server_requests
 
 SID, STORED = "ui-onboarding", "onboarding-chat"

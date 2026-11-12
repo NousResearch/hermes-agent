@@ -9,7 +9,7 @@ import pytest
 
 from hermes_agent.cron import executions, jobs, scheduler, scheduler_authority
 from hermes_agent.cron.scheduler_bookkeeping import finish_interrupted_run
-from hermes_cli import gateway_client
+from hermes_agent.hermes_cli import gateway_client
 
 
 def _ownership_lost(job, fire, journal):

@@ -9,8 +9,8 @@ import pytest
 from fastapi import FastAPI
 
 from hermes_agent.gateway.runtime_ownership import ProfileOwnership
-from hermes_cli.gateway_runtime import GatewayDiscovery
-from hermes_cli.web_routers.sessions import manage_router
+from hermes_agent.hermes_cli.gateway_runtime import GatewayDiscovery
+from hermes_agent.hermes_cli.web_routers.sessions import manage_router
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch
 
@@ -18,7 +18,7 @@ AUTH = {'Authorization': 'Bearer standalone-token'}
 
 
 def _standalone_app(tmp_path, monkeypatch):
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
     monkeypatch.setattr(web_server, '_SESSION_TOKEN', 'standalone-token')
     monkeypatch.setattr('hermes_agent.hermes_state._default_db_path', lambda: tmp_path / 'state.db')
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -78,7 +78,7 @@ async def test_standalone_edit_refuses_while_a_gateway_owns_the_store(tmp_path, 
                 assert starting.json()['detail'].startswith('owner_unavailable: starting: Exclusive maintenance refused')
                 assert 'gateway owner not reachable (starting)' in caplog.text
                 # An owner that reserves after discovery read absent still wins the offline reservation.
-                monkeypatch.setattr('hermes_cli.gateway_runtime.discover_gateway_endpoint',
+                monkeypatch.setattr('hermes_agent.hermes_cli.gateway_runtime.discover_gateway_endpoint',
                                     lambda home, timeout=2.0: GatewayDiscovery('absent'))
                 refused = await client.patch('/api/sessions/owned',
                                              json={'request_id': 'r1', 'expected_revision': 0, 'title': 'X'})

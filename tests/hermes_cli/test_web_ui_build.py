@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main_web_build import _build_web_ui, _web_ui_build_needed
+from hermes_agent.hermes_cli.main_web_build import _build_web_ui, _web_ui_build_needed
 from tests.hermes_cli.test_source_build import stamp_product, copy_freshness_scripts, use_host_node_as_pm_node
 from tests.hermes_cli.test_source_build import source_checkout, source_products, _events
 
@@ -75,7 +75,7 @@ def test_failed_preparation_never_runs_web_compilation(source_products):
 
 @pytest.mark.platforms("linux")
 def test_web_rebuild_reuses_the_existing_desktop_union(source_products):
-    from hermes_cli.source_build import build_update_products
+    from hermes_agent.hermes_cli.source_build import build_update_products
 
     root, acquired = source_products
     build_update_products(root, desktop=True)
@@ -116,7 +116,7 @@ def test_contended_build_waits_and_rechecks_winner(tmp_path, monkeypatch, existi
     worker = threading.Thread(target=finish)
     worker.start()
     try:
-        with patch('hermes_cli.source_build.source_build_env', side_effect=AssertionError('duplicate preparation')):
+        with patch('hermes_agent.hermes_cli.source_build.source_build_env', side_effect=AssertionError('duplicate preparation')):
             assert _build_web_ui(web, fatal=True)
         assert (dist / 'index.html').read_text(encoding='utf-8') == 'winner'
     finally:

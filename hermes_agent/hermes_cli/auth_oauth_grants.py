@@ -1,7 +1,7 @@
 """Single-use OAuth grant hygiene: strip cloned grants from profiles, heal forked grants.
 
-Split out of ``hermes_cli/auth.py`` and re-exported there; origin helpers are imported lazily
-inside each function so ``hermes_cli.auth.<name>`` patches still intercept (and no import cycle).
+Split out of ``hermes_agent/hermes_cli/auth.py`` and re-exported there; origin helpers are imported lazily
+inside each function so ``hermes_agent.hermes_cli.auth.<name>`` patches still intercept (and no import cycle).
 """
 
 from __future__ import annotations
@@ -12,11 +12,11 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from hermes_cli.auth_constants import _decode_jwt_claims
+from hermes_agent.hermes_cli.auth_constants import _decode_jwt_claims
 from utils import file_signature
 
-# Log-record parity with the origin module (caplog tests pin "hermes_cli.auth").
-logger = logging.getLogger("hermes_cli.auth")
+# Log-record parity with the origin module (caplog tests pin "hermes_agent.hermes_cli.auth").
+logger = logging.getLogger("hermes_agent.hermes_cli.auth")
 
 # Pool providers whose OAuth refresh tokens are SINGLE-USE: redeeming rotates the pair and
 # revokes the old one, so a grant forked into two auth.json files is ONE credential with two
@@ -72,7 +72,7 @@ def merge_snapshot_auth_preserving_live_single_use_grants(
     lineage. Historical single-use refresh material with no live counterpart is dropped because
     there is no local evidence that it is still redeemable. Current live grants always survive.
     """
-    from hermes_cli.auth import _credential_token_pair, _merge_pool_row_generation
+    from hermes_agent.hermes_cli.auth import _credential_token_pair, _merge_pool_row_generation
 
     restored = copy.deepcopy(snapshot_store)
     snapshot_pool = restored.get("credential_pool")
@@ -217,7 +217,7 @@ def strip_cloned_single_use_oauth_grants(profile_dir: Path) -> dict[str, Any]:
     "files": [...]}`` of what was stripped. Never raises: a clone must not fail because hygiene
     could not run — the caller logs the summary.
     """
-    from hermes_cli.auth import _same_path, _save_auth_store
+    from hermes_agent.hermes_cli.auth import _same_path, _save_auth_store
     stripped: dict[str, Any] = {"pool": [], "providers": [], "files": []}
     profile_dir = Path(profile_dir)
     for name in SINGLE_USE_OAUTH_SINGLETON_FILES:
@@ -314,7 +314,7 @@ def _json_shape(fingerprint: tuple) -> list:
 def _oauth_heal_clean_mark_path() -> Optional[Path]:
     """Where the persisted clean marks live, or None when unavailable."""
     try:
-        from hermes_cli.auth import _auth_file_path
+        from hermes_agent.hermes_cli.auth import _auth_file_path
 
         return _auth_file_path().parent / "cache" / _OAUTH_HEAL_CLEAN_MARK_FILENAME
     except Exception:
@@ -387,7 +387,7 @@ def consume_oauth_heal_notices() -> list[str]:
 
     ``hermes auth list`` / ``hermes auth status`` print them so the user sees the consolidation.
     """
-    from hermes_cli.auth import _oauth_heal_notices
+    from hermes_agent.hermes_cli.auth import _oauth_heal_notices
     notes = list(_oauth_heal_notices)
     _oauth_heal_notices.clear()
     return notes
@@ -444,7 +444,7 @@ def _find_root_counterpart(
     Only a copied row ID or shared token material establishes lineage. The same
     account/client can issue multiple independent grants; identity is not proof.
     """
-    from hermes_cli.auth import _nonempty_str
+    from hermes_agent.hermes_cli.auth import _nonempty_str
     candidates = [i for i, r in enumerate(root_rows) if _is_oauth_pool_payload(r)]
     if not candidates:
         return None
@@ -464,7 +464,7 @@ def _find_root_counterpart(
 
 def _adopt_oauth_material(target: dict[str, Any], winner: dict[str, Any]) -> dict[str, Any]:
     """Return *target* carrying *winner*'s token pair, status markers cleared."""
-    from hermes_cli.auth import _POOL_STATUS_FIELDS
+    from hermes_agent.hermes_cli.auth import _POOL_STATUS_FIELDS
     merged = dict(target)
     for key in _OAUTH_TOKEN_FIELDS:
         if winner.get(key) is not None:
@@ -575,7 +575,7 @@ def owned_profile_reads_root_state(
 
     Seeding that state re-copies root's single-use refresh token into the profile's pool, which
     is the fork #100339 forbids; the singleton seeders skip it."""
-    from hermes_cli.auth import _global_auth_file_path, _same_path
+    from hermes_agent.hermes_cli.auth import _global_auth_file_path, _same_path
     global_root = _global_auth_file_path()
     return bool(
         source_path is not None and global_root is not None and _same_path(source_path, global_root)
@@ -661,7 +661,7 @@ class _HealPass:
     def heal_profile_singleton(self, profile_singleton: Optional[Path]) -> None:
         if profile_singleton is None or not profile_singleton.exists():
             return
-        from hermes_cli.auth import _is_same_auth_store
+        from hermes_agent.hermes_cli.auth import _is_same_auth_store
         if self.root_singleton is not None and _is_same_auth_store(profile_singleton, self.root_singleton):
             return  # an aliased singleton pair is one shared grant, not a fork: never self-compare/unlink
         # See #101356.
@@ -730,7 +730,7 @@ class _HealPass:
 
 
 def _heal_forked_single_use_oauth_grants(provider_id: str) -> Optional[dict[str, Any]]:
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         _auth_file_path, _auth_store_lock, _global_auth_file_path, _load_auth_store,
         _is_same_auth_store, _oauth_heal_clean_marks, _oauth_heal_notices, _same_path,
         _save_auth_store)

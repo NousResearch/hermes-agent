@@ -18,7 +18,7 @@ Retry authority is POSITIVE and TYPED — never inferred from an outcome shape:
 * only a ``failed`` turn whose classifier marked the failure ``retryable`` is
   eligible, and quota/billing walls are left to the dispatcher's
   cooldown/breaker accounting (``KANBAN_RATE_LIMIT_EXIT_CODE``, see
-  ``hermes_cli/cli_single_query.py::_single_query_exit_code``);
+  ``hermes_agent/hermes_cli/cli_single_query.py::_single_query_exit_code``);
 * ``interrupted=True`` is never retried (the interrupt was persisted and
   cleared by ``hermes_agent/agent/turn_recovery.py::abort_turn_on_interrupt`` — re-entering
   the model would resurrect explicitly cancelled work);
@@ -35,7 +35,7 @@ Retry authority is POSITIVE and TYPED — never inferred from an outcome shape:
 Incomplete-but-not-failed results (``partial`` / ``completed=False``) are
 deliberately NOT retry authority: truncation and compression repair are owned
 inside the conversation loop (#89289) and by the dispatcher. They still fail the
-process exit code (``hermes_cli/cli_single_query.py::_single_query_exit_code``) so such a run is booked
+process exit code (``hermes_agent/hermes_cli/cli_single_query.py::_single_query_exit_code``) so such a run is booked
 honestly instead of ending as a silent ``rc=0``.
 """
 
@@ -170,7 +170,7 @@ def _kanban_db_path() -> Optional[str]:
     """The dispatcher-pinned board DB — no ambient resolution, ever.
 
     The dispatcher pins ``HERMES_KANBAN_DB`` (plus run id + claim lock) at spawn
-    (``hermes_cli/kanban_db_dispatch.py``); that pin IS the exact authority
+    (``hermes_agent/hermes_cli/kanban_db_dispatch.py``); that pin IS the exact authority
     carrier the retry proof must re-check. If the pin is absent there is no
     exact carrier to re-prove, so this returns ``None`` and the caller fails
     closed: resolving whatever board is ambient *now* would silently move the
@@ -203,7 +203,7 @@ def worker_claim_is_live(
     re-prove, never a fallback to ambient board state.
 
     The lease itself is part of the liveness contract: the canonical stale-claim
-    selector (``hermes_cli/kanban_db.py::release_stale_claims``) treats
+    selector (``hermes_agent/hermes_cli/kanban_db.py::release_stale_claims``) treats
     ``status='running' AND claim_expires < now`` as stale and reclaims the task,
     and the worker-liveness path treats an expired claim as non-live. So both
     the task row AND the open run row must carry an UNEXPIRED ``claim_expires``

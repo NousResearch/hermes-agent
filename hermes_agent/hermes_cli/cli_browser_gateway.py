@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 from urllib.parse import urlparse
 
-from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
-from hermes_cli.cli_commands_session_tools import _say_block, _t
+from hermes_agent.hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
+from hermes_agent.hermes_cli.cli_commands_session_tools import _say_block, _t
 
 
 def _gateway_is_remote() -> bool:
@@ -25,7 +25,7 @@ def gateway_browser(cli, connection, word: str, rest: str) -> None:
     ``BROWSER_CDP_URL`` would change nothing the agent uses. ``connect``/``disconnect`` manage a
     browser on the gateway HOST: only against a local gateway (Desktop's rule). The gateway scopes
     them to this session's profile."""
-    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
     if word in {"connect", "disconnect"} and _gateway_is_remote():
         return _say_block(_t("browser.remote_gateway"))
     params = {"action": word, "session_id": cli.session_id}

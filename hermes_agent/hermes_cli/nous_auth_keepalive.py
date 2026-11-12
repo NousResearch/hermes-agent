@@ -7,7 +7,7 @@ import os
 import threading
 from typing import Optional
 
-from hermes_cli.auth import (
+from hermes_agent.hermes_cli.auth import (
     ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     AuthError,
@@ -50,7 +50,7 @@ def _timeout_seconds(value: Optional[float]) -> float:
 def _nous_config() -> dict:
     """The ``nous:`` section of config.yaml, or {} on any failure (config loader imported lazily)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         section = load_config().get("nous")
         return section if isinstance(section, dict) else {}
@@ -168,13 +168,13 @@ def refresh_nous_auth_keepalive_once(
         # Mid-life twin of start_nous_auth_keepalive's guard (a guest minted after the thread
         # started): its tokens are minted on demand, and an inference mint here would put a guest
         # who only uses connectors through the free-inference challenge every tick.
-        from hermes_cli.anon_auth import is_guest_state
+        from hermes_agent.hermes_cli.anon_auth import is_guest_state
         if is_guest_state(state):
             return False
         try:
             # Nobody is waiting on a keepalive tick: a free-tier browser challenge is announced to the
             # desktop (so it can clear before a token is needed) but never waited on here.
-            from hermes_cli.anon_challenge import background_caller
+            from hermes_agent.hermes_cli.anon_challenge import background_caller
             with background_caller():
                 resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds))
             logger.debug("Nous auth keepalive: refreshed singleton auth state")
@@ -212,14 +212,14 @@ def start_nous_auth_keepalive(
     """Start the process-wide Nous auth keepalive thread (idempotent; None when disabled)."""
     # Free-tier handoff retries run in every long-lived Nous process, guest or not and keepalive or
     # not: a CLI sign-in in another process may have left a move this one has to finish.
-    from hermes_cli.guest_handoff import start_worker
+    from hermes_agent.hermes_cli.guest_handoff import start_worker
     start_worker()
     interval_seconds = _interval_seconds(interval_seconds)
     if interval_seconds <= 0:
         return None
     # The free tier has no refresh token to keep alive: its access token is re-minted from the
     # anon credential on demand by the request path, so a background refresher has nothing to do.
-    from hermes_cli.anon_auth import is_guest_state
+    from hermes_agent.hermes_cli.anon_auth import is_guest_state
     try:
         if is_guest_state(get_provider_auth_state("nous")):
             logger.debug("Nous auth keepalive skipped: free tier has no refresh token")
@@ -247,7 +247,7 @@ def start_nous_auth_keepalive(
 
 def stop_nous_auth_keepalive(timeout: float = 5.0) -> None:
     """Stop the keepalive thread. Intended for graceful shutdown/tests."""
-    from hermes_cli.guest_handoff import stop_worker
+    from hermes_agent.hermes_cli.guest_handoff import stop_worker
     stop_worker(timeout)
     global _keepalive_thread
     with _keepalive_lock:

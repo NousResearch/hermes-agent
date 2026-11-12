@@ -1,8 +1,8 @@
 """Shared print/translate helpers + session-info slash handlers (``cli_commands_mixin`` split).
 
-Moved verbatim from ``hermes_cli/cli_commands_mixin.py`` (file-line ratchet #68779): the
+Moved verbatim from ``hermes_agent/hermes_cli/cli_commands_mixin.py`` (file-line ratchet #68779): the
 lazy-binding contract carries over unchanged — ``cli.py``-internal symbols are imported at
-call time via ``from cli import ...``, so patch seams on the ``cli`` facade still intercept.
+call time via ``from hermes_agent.cli import ...``, so patch seams on the ``cli`` facade still intercept.
 ``cli_commands_mixin`` re-imports every helper moved here, so existing ``from
 cli_commands_mixin import _t`` style imports keep working.
 """
@@ -21,7 +21,7 @@ from hermes_agent.agent.i18n import t
 
 def _cp(*lines: str) -> None:
     """``_cprint`` each line (lazy import: cli.py imports this module)."""
-    from cli import _cprint
+    from hermes_agent.cli import _cprint
     for line in lines:
         _cprint(line)
 
@@ -34,13 +34,13 @@ def _pr(*lines: str) -> None:
 
 def _save(key: str, value) -> bool:
     """cli.save_config_value, resolved lazily (cli.py imports this module)."""
-    from cli import save_config_value
+    from hermes_agent.cli import save_config_value
     return save_config_value(key, value)
 
 
 def _dim(text: str) -> str:
     """Wrap ``text`` in the dim ANSI escape."""
-    from cli import _DIM, _RST
+    from hermes_agent.cli import _DIM, _RST
     return f"{_DIM}{text}{_RST}"
 
 
@@ -51,7 +51,7 @@ def _dim_line(text: str) -> str:
 
 def _accent(text: str) -> str:
     """Wrap ``text`` in the skin accent ANSI escape."""
-    from cli import _ACCENT, _RST
+    from hermes_agent.cli import _ACCENT, _RST
     return f"{_ACCENT}{text}{_RST}"
 
 
@@ -82,7 +82,7 @@ def _lines(text: str, pad: str = "  ") -> list:
 
 def _rollback_kept(result: dict) -> None:
     """The kept / not-removed path lines of a restore result (in-process CLI and gateway client alike)."""
-    from hermes_cli.cli_commands_mixin import _summarize_paths
+    from hermes_agent.hermes_cli.cli_commands_mixin import _summarize_paths
     if skipped := result.get("skipped_user_edits"):
         _pr(*_lines(_gt("rollback.kept_user_edits", files=_summarize_paths(skipped))))
     if oversize := result.get("skipped_oversize"):
@@ -113,7 +113,7 @@ class CLICommandsSessionToolsMixin:
     def _rollback_chat_turn(self, taken) -> None:
         """Main's whole-tree ``/rollback`` also undoes the newest chat turn, but only one that made or followed
         the checkpoint taken at ``taken``: after ``/undo`` removed that turn, the turns the user kept stay."""
-        from hermes_cli.cli_session_mixin import _user_turn_indices
+        from hermes_agent.hermes_cli.cli_session_mixin import _user_turn_indices
         from hermes_agent.tools.checkpoint_undo_hint import rollback_rewinds_newest_turn
         history = self.conversation_history
         if history and rollback_rewinds_newest_turn(history, _user_turn_indices(history), taken):
@@ -142,7 +142,7 @@ class CLICommandsSessionToolsMixin:
     def _handle_agents_command(self):
         """Handle /agents — show background processes and agent status. On the gateway both run there:
         the session's ``process.list`` and its usage's running-subagent count (no per-delegation rows)."""
-        from hermes_cli.gateway_tools import process_registry as _registry, process_view
+        from hermes_agent.hermes_cli.gateway_tools import process_registry as _registry, process_view
         from hermes_agent.tools.process_registry import format_uptime_short
         process_registry, view = _registry(), process_view()
         if view is not None:
@@ -168,7 +168,7 @@ class CLICommandsSessionToolsMixin:
         """Handle /journey — the learning timeline (see `hermes journey`). Read-only views render
         Rich color that patch_stdout would swallow, so capture with forced ANSI and re-emit via
         ``_cprint``; ``delete``/``edit`` are interactive and keep real stdio."""
-        from hermes_cli.journey import register_cli
+        from hermes_agent.hermes_cli.journey import register_cli
         parser = argparse.ArgumentParser(prog="/journey", add_help=False)
         register_cli(parser)
         try:
@@ -194,7 +194,7 @@ class CLICommandsSessionToolsMixin:
         doesn't fire for image-only clipboard content (e.g., VSCode terminal,
         Windows Terminal with WSL2).
         """
-        from hermes_cli.clipboard import has_clipboard_image
+        from hermes_agent.hermes_cli.clipboard import has_clipboard_image
         if not has_clipboard_image():
             _cp(_dim_line(_t("paste.no_image")))
         elif self._try_attach_clipboard_image():
@@ -204,7 +204,7 @@ class CLICommandsSessionToolsMixin:
 
     def _handle_copy_command(self, cmd_original: str) -> None:
         """Handle /copy [number] — copy assistant output to clipboard."""
-        from cli import _assistant_copy_text
+        from hermes_agent.cli import _assistant_copy_text
         arg = _command_arg(cmd_original)
         assistant = [m for m in self.conversation_history if m.get("role") == "assistant"]
         if not assistant:
@@ -225,7 +225,7 @@ class CLICommandsSessionToolsMixin:
         if not text:
             return _cp(f"  {_t('copy.nothing_in_response')}")
         try:
-            from hermes_cli.clipboard import is_remote_shell_session, write_clipboard_text
+            from hermes_agent.hermes_cli.clipboard import is_remote_shell_session, write_clipboard_text
             # Over SSH native tools write the REMOTE clipboard; OSC 52 reaches the user's terminal.
             # Locally, OSC 52 is the fallback when native tools are unavailable/fail (SSH/tmux).
             if is_remote_shell_session() or not write_clipboard_text(text):
@@ -239,7 +239,7 @@ class CLICommandsSessionToolsMixin:
 
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""
-        from cli import _DIM, _IMAGE_EXTENSIONS, _RST, _cprint, _resolve_attachment_path, _split_path_input
+        from hermes_agent.cli import _DIM, _IMAGE_EXTENSIONS, _RST, _cprint, _resolve_attachment_path, _split_path_input
         raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
         if not raw_args:
             hint = "/path/to/image.png"
@@ -277,8 +277,8 @@ class CLICommandsSessionToolsMixin:
         _cp(_accent(_t("tools.disabling" if subcommand == "disable" else "tools.enabling",
                        names=", ".join(names))))
         self._run_tools_config(tools_action=subcommand, names=names, platform="cli")
-        from hermes_cli.tools_config import _get_platform_tools
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.tools_config import _get_platform_tools
+        from hermes_agent.hermes_cli.config import load_config
         self.enabled_toolsets = sorted(_get_platform_tools(load_config(), "cli"))  # plain data for session.create
         self.new_session()
         _cp(_dim(_t("tools.session_reset")))
@@ -288,7 +288,7 @@ class CLICommandsSessionToolsMixin:
         is captured (isatty=True so colors still render) and re-emitted through _cprint so
         patch_stdout's StdoutProxy doesn't garble the escapes; standalone/tests call straight through."""
         from argparse import Namespace
-        from hermes_cli.tools_config import tools_disable_enable_command
+        from hermes_agent.hermes_cli.tools_config import tools_disable_enable_command
         if getattr(self, "_app", None) is None:
             return tools_disable_enable_command(Namespace(**ns))
         buf = _TTYBuf()
@@ -298,12 +298,12 @@ class CLICommandsSessionToolsMixin:
 
     def _handle_autoprune_command(self, cmd: str):
         """/autoprune [on|off|later|status] — the low-disk auto-prune decision."""
-        from hermes_cli.slash_exec import CommandContext, execute_command
+        from hermes_agent.hermes_cli.slash_exec import CommandContext, execute_command
         _say_block(execute_command("autoprune", CommandContext(surface="cli", args=cmd.partition(" ")[2])).text)
 
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
-        from hermes_cli.slash_exec import CommandContext, execute_command
+        from hermes_agent.hermes_cli.slash_exec import CommandContext, execute_command
         reply = execute_command("profile", CommandContext(surface="cli"))
         _say_block(f"  {_t('profile.profile', profile=reply.data['profile'])}",
                    f"  {_t('profile.home', home=reply.data['home'])}")
@@ -313,7 +313,7 @@ def _stop_background_work() -> None:
     """``/stop``'s cleanup: kill the background processes, then interrupt the background (async)
     delegations. Mid-turn it runs on a worker thread, so it prints through ``_cprint``: a plain
     print() from off the input loop is buried by the prompt_toolkit redraw."""
-    from hermes_cli.gateway_tools import process_registry as _registry, process_view
+    from hermes_agent.hermes_cli.gateway_tools import process_registry as _registry, process_view
     process_registry, view = _registry(), process_view()
     if view is not None:
         view.refresh(force=True)
@@ -383,7 +383,7 @@ def _print_local_delegations() -> None:
 
 
 class _TTYBuf(StringIO):
-    """StringIO that claims to be a TTY so ``hermes_cli.colors.color()`` still emits ANSI escapes."""
+    """StringIO that claims to be a TTY so ``hermes_agent.hermes_cli.colors.color()`` still emits ANSI escapes."""
     def isatty(self) -> bool:
         return True
 

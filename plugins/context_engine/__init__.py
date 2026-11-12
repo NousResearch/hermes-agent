@@ -74,7 +74,7 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional[ContextEngine]:
     name = engine_dir.name
     is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
     module_name = f"{__package__}.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
-    from hermes_cli.plugin_isolation import user_plugin_host
+    from hermes_agent.hermes_cli.plugin_isolation import user_plugin_host
     host = None if is_bundled else user_plugin_host()
     if host is not None:
         return host.load_instance(engine_dir, module_name=module_name, capture="register_context_engine",
@@ -106,14 +106,14 @@ class _EngineCollector(_loader.NoopPluginContext):
             return
         conflict = "Context engine '%s' tried to register command '/%s' which %s Skipping."
         try:
-            from hermes_cli.commands import resolve_command
+            from hermes_agent.hermes_cli.commands import resolve_command
             if resolve_command(clean) is not None:
                 logger.warning(conflict, self._engine_name, clean, "conflicts with a built-in command.")
                 return
         except Exception:
             pass
         try:
-            from hermes_cli.plugins import get_plugin_manager
+            from hermes_agent.hermes_cli.plugins import get_plugin_manager
             manager = get_plugin_manager()
             if clean in manager._plugin_commands:
                 logger.warning(conflict, self._engine_name, clean, "is already registered by a plugin.")

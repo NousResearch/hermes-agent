@@ -2,8 +2,8 @@
 
 Ollama (native ``/api/tags`` probe, request headers, base-url resolution), LM Studio
 (``/api/v1/models``, load-on-demand) and Ollama Cloud (live + models.dev merged catalog with a
-disk cache). Split out of ``hermes_cli.models``; helpers still defined there are looked up on
-``hermes_cli.models`` at call time so ``patch("hermes_cli.models.<name>")`` mocks keep intercepting.
+disk cache). Split out of ``hermes_agent.hermes_cli.models``; helpers still defined there are looked up on
+``hermes_agent.hermes_cli.models`` at call time so ``patch("hermes_agent.hermes_cli.models.<name>")`` mocks keep intercepting.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
 from hermes_agent.agent.secret_scope import get_secret_str
-from hermes_cli.urllib_security import url_origin
+from hermes_agent.hermes_cli.urllib_security import url_origin
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("hermes_cli.models")
+logger = logging.getLogger("hermes_agent.hermes_cli.models")
 
 _OLLAMA_DEFAULT_PORT = 11434
 
@@ -58,7 +58,7 @@ def _root_for_ollama_native_api(base_url: str) -> str:
 
 def _configured_ollama_base_url() -> str:
     """``providers.ollama.base_url`` (legacy keys ``api`` / ``url``), or ``""``."""
-    from hermes_cli.models import _get_provider_config_dict
+    from hermes_agent.hermes_cli.models import _get_provider_config_dict
 
     cfg = _get_provider_config_dict("ollama")
     return str(cfg.get("base_url") or cfg.get("api") or cfg.get("url") or "").strip()
@@ -96,7 +96,7 @@ def _get_ollama_base_url() -> str:
     the active provider is ollama, or custom AND the endpoint actually serves ``/api/tags``
     (otherwise the picker would probe an unrelated endpoint and hide the local catalog) →
     ``OLLAMA_HOST`` → Ollama's local default."""
-    from hermes_cli.models import _get_model_config_dict
+    from hermes_agent.hermes_cli.models import _get_model_config_dict
     configured = _configured_ollama_base_url()
     if configured:
         return configured
@@ -137,10 +137,10 @@ def _drop_authorization(headers: dict[str, str]) -> None:
 
 def _get_ollama_request_headers() -> dict[str, str]:
     """Return configured headers and credentials for native Ollama requests."""
-    from hermes_cli.models import _get_provider_config_dict
+    from hermes_agent.hermes_cli.models import _get_provider_config_dict
     entry = _get_provider_config_dict("ollama")
     try:
-        from hermes_cli.config import normalize_extra_headers
+        from hermes_agent.hermes_cli.config import normalize_extra_headers
 
         result = normalize_extra_headers(entry.get("extra_headers"))
     except (ImportError, OSError, RuntimeError, TypeError, ValueError):
@@ -227,8 +227,8 @@ def probe_ollama_local_models(
     """Probe local Ollama-compatible models from native ``/api/tags`` (Ollama's authoritative local
     catalog; ``/v1/models`` is not required for local servers). ``None`` when the endpoint cannot be
     reached or returns malformed data; a list (possibly empty) when it was reachable."""
-    from hermes_cli.models import _get_ollama_base_url, _urlopen_model_catalog_request
-    from hermes_cli.version_info import hermes_user_agent
+    from hermes_agent.hermes_cli.models import _get_ollama_base_url, _urlopen_model_catalog_request
+    from hermes_agent.hermes_cli.version_info import hermes_user_agent
     root = _root_for_ollama_native_api(base_url or _get_ollama_base_url())
     if not root:
         return None
@@ -346,7 +346,7 @@ def _ollama_local_catalog(force_refresh: bool) -> list[str]:
     """Catalog for the raw ``ollama`` provider: native ``/api/tags`` when the endpoint is a real
     Ollama server, else the OpenAI-style ``/v1/models`` of the configured gateway (incl. Ollama
     Cloud)."""
-    from hermes_cli.models import _get_provider_config_dict, fetch_api_models
+    from hermes_agent.hermes_cli.models import _get_provider_config_dict, fetch_api_models
     if force_refresh:
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
@@ -373,7 +373,7 @@ def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
 
 def _lmstudio_request_headers(api_key: Optional[str] = None) -> dict:
     """HTTP headers for LM Studio native API requests."""
-    from hermes_cli.version_info import hermes_user_agent
+    from hermes_agent.hermes_cli.version_info import hermes_user_agent
     from hermes_agent.agent.command_token_source import materialize_probe_api_key
     token = materialize_probe_api_key(api_key)
     return {"User-Agent": hermes_user_agent(), **({"Authorization": f"Bearer {token}"} if token else {})}
@@ -386,7 +386,7 @@ def _lmstudio_fetch_raw_models(
 ) -> Optional[list[dict]]:
     """Raw model list from LM Studio's ``/api/v1/models``; None on network errors / malformed
     payloads; raises ``AuthError`` on HTTP 401/403."""
-    from hermes_cli.models import _urlopen_model_catalog_request
+    from hermes_agent.hermes_cli.models import _urlopen_model_catalog_request
     server_root = _lmstudio_server_root(base_url)
     if not server_root:
         return None
@@ -397,7 +397,7 @@ def _lmstudio_fetch_raw_models(
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
-            from hermes_cli.auth import AuthError
+            from hermes_agent.hermes_cli.auth import AuthError
             raise AuthError(
                 f"LM Studio rejected the request with HTTP {exc.code}.",
                 provider="lmstudio",
@@ -504,7 +504,7 @@ def ensure_lmstudio_model_loaded(
     Existing loaded-instance context is authoritative. Cold loads omit ``context_length`` unless the
     caller supplied an explicit override; the returned context comes from LM Studio's echoed or
     refreshed state."""
-    from hermes_cli.models import _urlopen_model_catalog_request
+    from hermes_agent.hermes_cli.models import _urlopen_model_catalog_request
 
     def _result(context_length: Optional[int], *, load_attempted: bool = False, rejected: bool = False):
         result = LMStudioLoadResult(context_length, load_attempted, rejected)
@@ -633,7 +633,7 @@ def _ollama_cloud_cache_path() -> Path:
 
 def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
     """Load cached Ollama Cloud models from disk (None when missing, empty, or stale)."""
-    from hermes_cli.models import _read_json_cache
+    from hermes_agent.hermes_cli.models import _read_json_cache
 
     try:
         data = _read_json_cache(_ollama_cloud_cache_path())
@@ -649,7 +649,7 @@ def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
 
 def _save_ollama_cloud_cache(models: list[str]) -> None:
     """Persist the merged Ollama Cloud model list to disk. Best-effort."""
-    from hermes_cli.models import _write_json_cache
+    from hermes_agent.hermes_cli.models import _write_json_cache
 
     try:
         _write_json_cache(_ollama_cloud_cache_path(), {"models": models, "cached_at": time.time()}, indent=None)
@@ -668,7 +668,7 @@ def fetch_ollama_cloud_models(
     (freshest) merged with models.dev additions (deduped, live first) → stale cache → models.dev
     only → ``[]``. ``cache_only`` (GUI read path) never runs the 8s network probe and never writes
     the disk cache. Never None."""
-    from hermes_cli.models import fetch_api_models
+    from hermes_agent.hermes_cli.models import fetch_api_models
     if not force_refresh:
         cached = _load_ollama_cloud_cache()
         if cached is not None:

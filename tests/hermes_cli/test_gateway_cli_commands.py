@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 class _Conn:
@@ -34,7 +34,7 @@ def _observed(name, arg):
 def gateway_cli(monkeypatch):
     def make(**replies):
         conn = _Conn(replies)
-        monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+        monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda cli: conn)
         cli = HermesCLI.__new__(HermesCLI)
         cli.session_id = "local-s"
         # The gateway-backed agent has no checkpoint manager of its own (GatewayAgent._checkpoint_mgr).
@@ -91,7 +91,7 @@ def test_diff_of_the_working_tree_stays_a_local_git_read(gateway_cli, monkeypatc
 
 def test_reload_rereads_env_in_the_gateway_and_reports_its_count(gateway_cli, monkeypatch, capsys):
     cli, conn = gateway_cli(**{"reload.env": {"updated": 3}})
-    monkeypatch.setattr("hermes_cli.config.reload_env", lambda: 0)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.reload_env", lambda: 0)
     assert cli.process_command("/reload") is True
     assert conn.calls == [_observed("reload", ""), ("reload.env", {"session_id": "local-s"})]
     assert "3" in capsys.readouterr().out
@@ -107,7 +107,7 @@ def test_handoff_is_refused_with_a_message_on_the_gateway(gateway_cli, capsys):
 
 def _save_cli(conn, tmp_path, monkeypatch):
     """A gateway-backed CLI with one said line in its mirror, run from ``tmp_path/work``."""
-    from hermes_cli.gateway_session_store import GatewaySessionStore
+    from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
     cli = HermesCLI.__new__(HermesCLI)
     cli.session_id, cli.conversation_history = "local-s", [{"role": "user", "content": "in-memory only"}]
     cli.model, cli.session_start = "fake-model", datetime(2026, 10, 18)
@@ -145,7 +145,7 @@ def test_save_on_an_older_gateway_falls_back_only_for_a_plain_json_save(tmp_path
     """An owner without ``session.export`` (-32601): its ``session.save`` writes default-named, unredacted
     JSON on the gateway host, so only ``/save json`` uses it, reported as on the gateway host; a
     format, name or ``redact`` is refused with a message, never silently dropped."""
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
     conn = _Conn({"session.export": GatewayRPCError("unknown_method", code=-32601),
                   "session.save": {"file": "/srv/gw/sessions/saved/hermes_conversation_x.json"}})
     cli = _save_cli(conn, tmp_path, monkeypatch)

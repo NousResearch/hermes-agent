@@ -7,7 +7,7 @@ valid everywhere — ``data`` — removes user data without touching code.
 
 Adapted from the restack branch: detection here reads the install stamp
 (``install-stamp.json`` with its required ``updateMechanism``) through
-``hermes_cli.steward`` instead of restack's ``installation.tree``.
+``hermes_agent.hermes_cli.steward`` instead of restack's ``installation.tree``.
 """
 
 import json
@@ -16,8 +16,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_cli.uninstall as un
-from hermes_cli.steward import (
+import hermes_agent.hermes_cli.uninstall as un
+from hermes_agent.hermes_cli.steward import (
     STEWARD_DESKTOP,
     STEWARD_DOCKER,
     STEWARD_NIX,
@@ -143,7 +143,7 @@ def test_run_data_uninstall_removes_electron_userdata(monkeypatch, tmp_path):
     userdata.mkdir()
     (userdata / "connection.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(un, "get_hermes_home", lambda: home)
-    import hermes_cli.gui_uninstall as gu
+    import hermes_agent.hermes_cli.gui_uninstall as gu
 
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: userdata)
 
@@ -159,7 +159,7 @@ def test_run_data_uninstall_works_on_sealed_trees(monkeypatch, tmp_path):
         json.dumps({"distribution": "nix", "updateMechanism": "external"})
     , encoding="utf-8")
     monkeypatch.setattr(un, "get_hermes_home", lambda: home)
-    import hermes_cli.gui_uninstall as gu
+    import hermes_agent.hermes_cli.gui_uninstall as gu
 
     monkeypatch.setattr(gu, "desktop_userdata_dir", lambda: tmp_path / "none")
 
@@ -175,8 +175,8 @@ def test_run_data_uninstall_works_on_sealed_trees(monkeypatch, tmp_path):
 
 
 def test_gui_summary_reports_steward_and_gate(monkeypatch, tmp_path):
-    import hermes_cli.gui_uninstall as gu
-    from hermes_cli import steward as st
+    import hermes_agent.hermes_cli.gui_uninstall as gu
+    from hermes_agent.hermes_cli import steward as st
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -199,8 +199,8 @@ def test_gui_summary_reports_steward_and_gate(monkeypatch, tmp_path):
 def test_gui_summary_classifies_the_agent_root(tmp_path, monkeypatch):
     """The steward facts classify the home's ``hermes-agent`` checkout — the
     tree the code-removal modes would delete — not some unrelated root."""
-    import hermes_cli.gui_uninstall as gu
-    from hermes_cli import steward as st
+    import hermes_agent.hermes_cli.gui_uninstall as gu
+    from hermes_agent.hermes_cli import steward as st
 
     seen = []
     monkeypatch.setattr(st, "classify_install", lambda root: seen.append(root) or ("git", True))

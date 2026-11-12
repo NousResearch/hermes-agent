@@ -181,8 +181,8 @@ def orphan_close_grace(authority, *, startup=False):
     """Blocking: ``sessions.orphan_end_grace_s`` of the profile that owns *authority*'s store (0 = never).
     Unset, the legacy backend's switches for the same reaping still opt out: ``dashboard.
     ws_orphan_reap_grace_s: 0`` (park forever) and, for *startup* arms, ``startup_orphan_sweep: false``."""
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     from hermes_agent.gateway.session_local import profile_env_scope
     from utils import is_truthy_value
     default = DEFAULT_CONFIG['sessions']['orphan_end_grace_s']

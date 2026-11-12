@@ -14,8 +14,8 @@ async def probe(mode):
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
     from hermes_agent.gateway.session_contract import SessionRef
-    from hermes_cli import web_server
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_agent.hermes_cli import web_server
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tests.gateway.fixtures.local_recovery_probe import rpc
     from websockets.asyncio.client import connect
 
@@ -51,9 +51,9 @@ async def probe(mode):
                 assert denied.get('error', {}).get('message') == 'profile_mismatch', denied
 
             if mode == 'control':
-                from hermes_cli.goals import GoalState, GoalGate
-                from hermes_cli.loops import LoopState
-                from hermes_cli.heartbeat import HeartbeatState
+                from hermes_agent.hermes_cli.goals import GoalState, GoalGate
+                from hermes_agent.hermes_cli.loops import LoopState
+                from hermes_agent.hermes_cli.heartbeat import HeartbeatState
                 # Owner writes fixture rows; reads must not call managers that clear barriers.
                 goal = GoalState('OWNER_GOAL', status='paused', created_at=10, waiting_on_pid=99999999,
                                  gates=[GoalGate(command='owned command', last_output_tail='PRIVATE_GATE_OUTPUT')])

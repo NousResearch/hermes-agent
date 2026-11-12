@@ -64,7 +64,7 @@ def _registry_entry(platform):
     if platform is None:
         return None
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()
     with contextlib.suppress(Exception):
         from hermes_agent.gateway.platform_registry import platform_registry
@@ -445,7 +445,7 @@ class GatewayAuthorizationMixin:
         if profile is None:
             from hermes_constants import get_process_hermes_home
             return get_process_hermes_home()  # the primary bot's home, never the per-turn override
-        from hermes_cli.profiles import get_profile_dir
+        from hermes_agent.hermes_cli.profiles import get_profile_dir
         return get_profile_dir(profile)
 
     def _adapter_profile_for_source(self, source: SessionSource) -> Optional[str]:
@@ -649,7 +649,7 @@ class GatewayAuthorizationMixin:
             # Idempotent: the env name lives on the plugin's entry, so a runner that never ran the
             # config passes (which discover) must still see it rather than silently deny.
             with contextlib.suppress(Exception):
-                from hermes_cli.plugins import discover_plugins
+                from hermes_agent.hermes_cli.plugins import discover_plugins
                 discover_plugins()
             allow_bots_var = authz_field(source.platform.value, "allow_bots_env", _registry_entry(source.platform)) or ""
             if allow_bots_var:

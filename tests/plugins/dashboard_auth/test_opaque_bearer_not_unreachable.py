@@ -32,15 +32,15 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server
-from hermes_cli.dashboard_auth import (
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.dashboard_auth import (
     InvalidCodeError,
     ProviderError,
     classify_jwks_lookup_error,
     clear_providers,
     register_provider,
 )
-from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
+from hermes_agent.hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE, SESSION_RT_COOKIE
 import plugins.dashboard_auth.nous as nous_plugin
 
 OPAQUE_PEER_KEY = "hk_live_opaque_peer_key_0123456789abcdef"

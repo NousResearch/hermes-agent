@@ -4,10 +4,10 @@ import json
 
 import pytest
 
-from hermes_cli import process_identity, update_cmd_fleet as fleet, update_inventory, update_receipt
-from hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
+from hermes_agent.hermes_cli import process_identity, update_cmd_fleet as fleet, update_inventory, update_receipt
+from hermes_agent.hermes_cli.update_inventory import RuntimeRecord, UpdatePlan
 from hermes_constants import get_hermes_home
-import hermes_cli.update_host_obligation as host_obligation
+import hermes_agent.hermes_cli.update_host_obligation as host_obligation
 
 MANUAL = {"kind": "serve", "profile": "work", "pid": 900, "supervisor": "manual-serve", "restart_via": "respawn-argv", "code_sha": "old", "detail": {"create_time": 1000.0}}
 CURRENT = {"profile": "alpha", "state": "current", "code_sha": "new"}
@@ -50,7 +50,7 @@ def seed(monkeypatch, old, marker, live, alive=True):
     target.write_text(json.dumps(old))
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: alive)
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "new")
-    monkeypatch.setattr("hermes_cli.update_cmd._current_checkout_sha", lambda: "new")
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd._current_checkout_sha", lambda: "new")
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **k: live)
     # Hold the host constant at one that still owes a gateway (the update stopped it and nothing
     # replaced it), so an empty live fleet stays unproven and only the receipt varies. Hosts that run
@@ -111,7 +111,7 @@ GATEWAYLESS_CASES = [
 @pytest.mark.parametrize("name,receipt,runtimes,states,checkout,pending", GATEWAYLESS_CASES, ids=[case[0] for case in GATEWAYLESS_CASES])
 def test_gatewayless_host_settles_on_host_evidence(monkeypatch, capsys, name, receipt, runtimes, states, checkout, pending):
     """An inventory-less marker with no live gateway settles on what the host runs now (#118742)."""
-    from hermes_cli.profiles import _get_default_hermes_home, _get_profiles_root
+    from hermes_agent.hermes_cli.profiles import _get_default_hermes_home, _get_profiles_root
 
     seed(monkeypatch, receipt, "new", [])
     (get_hermes_home() / "gateway_state.json").unlink()
@@ -119,8 +119,8 @@ def test_gatewayless_host_settles_on_host_evidence(monkeypatch, capsys, name, re
         write_gateway_state(_get_default_hermes_home() if profile == "default" else _get_profiles_root() / profile, state)
     monkeypatch.setattr(update_inventory, "collect_runtime_inventory", lambda: UpdatePlan(runtimes=list(runtimes)))
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: checkout)
-    monkeypatch.setattr("hermes_cli.update_cmd._current_checkout_sha", lambda: checkout)
-    monkeypatch.setattr("hermes_cli.update_cmd_fleet_checkout.checkout_contains", lambda sha: checkout == "hotfix")
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd._current_checkout_sha", lambda: checkout)
+    monkeypatch.setattr("hermes_agent.hermes_cli.update_cmd_fleet_checkout.checkout_contains", lambda sha: checkout == "hotfix")
 
     assert fleet._pending_fleet_restart_needed() is pending
     assert host_obligation.host_obligation_path().exists() is pending

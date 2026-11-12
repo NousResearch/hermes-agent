@@ -88,9 +88,9 @@ def _base_note(cmd):
 
 def classic_cell(cmd):
     """``hermes chat`` is main's ``HermesCLI`` with a gateway-backed agent and session store
-    (``hermes_cli/gateway_agent.py``, ``gateway_session_store.py``): every command runs main's own
+    (``hermes_agent/hermes_cli/gateway_agent.py``, ``gateway_session_store.py``): every command runs main's own
     handler in the CLI process. The cell names that handler; a gateway-only command has none."""
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     entry = HermesCLI._slash_handler(cmd.name)
     if entry is None:
         return "messaging-only: unknown command" if cmd.gateway_only else "unknown command"
@@ -243,7 +243,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 
 def render() -> str:
     sys.path.insert(0, str(ROOT))
-    from hermes_cli.commands import COMMAND_REGISTRY
+    from hermes_agent.hermes_cli.commands import COMMAND_REGISTRY
     served = _served_methods()
     ink, specs = _ink_commands(), _desktop_specs()
     rows = ["| Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |",

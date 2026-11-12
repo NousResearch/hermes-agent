@@ -33,7 +33,7 @@ def _write(path, text):
 
 
 def test_vendor_token_rewrite_keeps_the_process_catalog_fingerprint(process_provider):
-    from hermes_cli.models import _credential_fingerprint
+    from hermes_agent.hermes_cli.models import _credential_fingerprint
 
     _write(process_provider / ".claude" / ".credentials.json", '{"accessToken": "a"}')
     before = _credential_fingerprint("fp-process")
@@ -43,7 +43,7 @@ def test_vendor_token_rewrite_keeps_the_process_catalog_fingerprint(process_prov
 
 
 def test_the_profiles_own_credential_file_still_invalidates(process_provider):
-    from hermes_cli.models import _credential_fingerprint
+    from hermes_agent.hermes_cli.models import _credential_fingerprint
 
     _write(process_provider / ".fp-process" / "account.json", '{"account": "one"}')
     before = _credential_fingerprint("fp-process")
@@ -55,7 +55,7 @@ def test_the_profiles_own_credential_file_still_invalidates(process_provider):
 @pytest.mark.platforms("posix")
 def test_retargeting_an_override_symlink_invalidates(process_provider, monkeypatch):
     # The override text stays the same while an upgrade repoints the symlink it names.
-    from hermes_cli.models import _credential_fingerprint
+    from hermes_agent.hermes_cli.models import _credential_fingerprint
 
     monkeypatch.setattr(_providers._REGISTRY["fp-process"], "process_command_env_vars", ("FP_PROCESS_COMMAND",))
     for version in ("1", "2"):

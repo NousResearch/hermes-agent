@@ -12,7 +12,7 @@ import subprocess
 import sys
 from typing import Optional
 
-from hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
 from .adapter import sidecar_deps_installed
@@ -226,7 +226,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             return rc
     # 7. Enable the platform in config.yaml, or the channel silently stays offline.
     try:
-        from hermes_cli.config import write_platform_config_field
+        from hermes_agent.hermes_cli.config import write_platform_config_field
         write_platform_config_field("photon", "enabled", True, raw=True)
         print("  ✓ photon platform enabled in config.yaml")
     except Exception as e:
@@ -292,7 +292,7 @@ def _autoconfigure_access(phone: str) -> None:
     """Set PHOTON_ALLOWED_USERS and PHOTON_HOME_CHANNEL to the operator's number, each only
     when unset so a hand-tuned value is never clobbered on re-run."""
     try:
-        from hermes_cli.config import get_env_value, save_env_value
+        from hermes_agent.hermes_cli.config import get_env_value, save_env_value
     except ImportError:
         return
     for key, label in (("PHOTON_ALLOWED_USERS", "allowlisted your number"),
@@ -330,7 +330,7 @@ def _cmd_status(_args: argparse.Namespace) -> int:
 def _telemetry_enabled() -> bool:
     """PHOTON_TELEMETRY from env / ~/.hermes/.env; truthy set mirrors the sidecar's."""
     try:
-        from hermes_cli.config import get_env_value
+        from hermes_agent.hermes_cli.config import get_env_value
         raw = get_env_value("PHOTON_TELEMETRY")
     except ImportError:
         raw = os.getenv("PHOTON_TELEMETRY")
@@ -344,7 +344,7 @@ def _cmd_telemetry(args: argparse.Namespace) -> int:
         print("  Toggle with `hermes photon telemetry on` / `hermes photon telemetry off`.")
         return 0
     try:
-        from hermes_cli.config import save_env_value
+        from hermes_agent.hermes_cli.config import save_env_value
         save_env_value("PHOTON_TELEMETRY", "true" if state == "on" else "false")
     except Exception as e:
         print(f"could not save PHOTON_TELEMETRY: {e}", file=sys.stderr)

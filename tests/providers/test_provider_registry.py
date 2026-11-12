@@ -96,7 +96,7 @@ def test_api_key_profiles_declare_their_registry_key_env():
     variable first in ``env_vars``. Surfaces that read the profile (the provider-catalog e2e
     matrix, doctor, setup prompts) otherwise see a keyless provider. Runs on the default lane so
     the gap is caught even when the change classifier skips the e2e lane (#134320 -> #134385)."""
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
 
     missing = []
     for profile in providers.list_providers():

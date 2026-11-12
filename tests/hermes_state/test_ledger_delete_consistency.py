@@ -143,11 +143,11 @@ def test_sweeps_skip_sessions_with_live_work_and_retire_the_rest(tmp_path):
 
 
 def test_startup_repair_latches_after_a_refusal_and_warns_once(monkeypatch, caplog, tmp_path):
-    import cli
-    import hermes_cli.config
+    from hermes_agent import cli
+    import hermes_agent.hermes_cli.config
     import hermes_constants
 
-    monkeypatch.setattr(hermes_cli.config, 'load_config', lambda: {'sessions': {'auto_prune': False}})
+    monkeypatch.setattr(hermes_agent.hermes_cli.config, 'load_config', lambda: {'sessions': {'auto_prune': False}})
     monkeypatch.setattr(hermes_constants, 'get_hermes_home', lambda: tmp_path)
     meta = {}
     session_db = MagicMock()
@@ -156,7 +156,7 @@ def test_startup_repair_latches_after_a_refusal_and_warns_once(monkeypatch, capl
     session_db.prune_empty_ghost_sessions.side_effect = rt.RuntimeStoreError('session_busy')
     session_db.finalize_orphaned_compression_sessions.return_value = 0
 
-    with caplog.at_level(logging.DEBUG, logger='cli'):
+    with caplog.at_level(logging.DEBUG, logger='hermes_agent.cli'):
         cli._run_state_db_auto_maintenance(session_db)
         cli._run_state_db_auto_maintenance(session_db)
     refusals = [r for r in caplog.records if 'Ghost session prune skipped' in r.getMessage()]

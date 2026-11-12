@@ -116,8 +116,8 @@ async def test_update_prompt_answers_only_its_opener(surface, sender, tmp_path, 
     with patch("hermes_agent.gateway.slash_commands.project_root_str", lambda: str(tmp_path / "checkout")), \
             patch("hermes_agent.gateway.slash_commands._spawn_detached_update"), \
             patch("hermes_agent.gateway.run._resolve_hermes_bin", return_value=["hermes"]), \
-            patch("hermes_cli.config.is_managed", return_value=False), \
-            patch("hermes_cli.config.detect_install_method", return_value="git"):
+            patch("hermes_agent.hermes_cli.config.is_managed", return_value=False), \
+            patch("hermes_agent.hermes_cli.config.detect_install_method", return_value="git"):
         assert await runner._handle_update_command(MessageEvent(text="/update", source=_source("alice")))
     key = runner._session_key_for_source(_source("alice"))
     runner._session_state(key).persistent.update_prompt_pending = True
@@ -159,8 +159,8 @@ async def test_second_update_while_one_runs_keeps_the_first_opener(tmp_path, mon
     with patch("hermes_agent.gateway.slash_commands.project_root_str", lambda: str(tmp_path / "checkout")), \
             patch("hermes_agent.gateway.slash_commands._spawn_detached_update") as spawn, \
             patch("hermes_agent.gateway.run._resolve_hermes_bin", return_value=["hermes"]), \
-            patch("hermes_cli.config.is_managed", return_value=False), \
-            patch("hermes_cli.config.detect_install_method", return_value="git"):
+            patch("hermes_agent.hermes_cli.config.is_managed", return_value=False), \
+            patch("hermes_agent.hermes_cli.config.detect_install_method", return_value="git"):
         await runner._handle_update_command(MessageEvent(text="/update", source=_source("alice")))
         reply = await runner._handle_update_command(MessageEvent(text="/update", source=_source("bob")))
     assert spawn.call_count == 1 and "already running" in reply

@@ -1,4 +1,4 @@
-"""Comprehensive tests for hermes_cli.profiles module.
+"""Comprehensive tests for hermes_agent.hermes_cli.profiles module.
 
 Tests cover: validation, directory resolution, CRUD operations, active profile
 management, export/import, renaming, alias collision checks, profile isolation,
@@ -19,8 +19,8 @@ from unittest.mock import patch, MagicMock
 import hermes_yaml as yaml
 import pytest
 
-from hermes_cli import profiles
-from hermes_cli.profiles import (
+from hermes_agent.hermes_cli import profiles
+from hermes_agent.hermes_cli.profiles import (
     _clone_all_copytree_ignore,
     normalize_profile_name,
     validate_profile_name,
@@ -42,7 +42,7 @@ from hermes_cli.profiles import (
     backfill_profile_envs,
     profiles_to_serve,
 )
-from hermes_cli.config import DEFAULT_CONFIG
+from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
 
 
 # ---------------------------------------------------------------------------
@@ -563,9 +563,9 @@ class TestDeleteProfile:
         profile_dir = create_profile("coder", no_alias=True)
         set_active_profile("coder")
 
-        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
-             patch("hermes_cli.profiles.time.sleep"), \
-             patch("hermes_cli.profiles.shutil.rmtree", side_effect=PermissionError("locked")):
+        with patch("hermes_agent.hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_agent.hermes_cli.profiles.time.sleep"), \
+             patch("hermes_agent.hermes_cli.profiles.shutil.rmtree", side_effect=PermissionError("locked")):
             with pytest.raises(RuntimeError, match="Could not remove profile directory"):
                 delete_profile("coder", yes=True)
 
@@ -607,8 +607,8 @@ class TestDeleteProfile:
         db.close()
 
         # No live multiplexer: nothing else owns the store, so this process purges the durable rows.
-        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
-             patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
+        with patch("hermes_agent.hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_agent.hermes_cli.profiles._live_default_multiplexer", return_value=False):
             delete_profile("gone", yes=True)
 
         check = SessionDB(tmp_path / ".hermes" / "state.db")
@@ -632,7 +632,7 @@ class TestDeleteProfile:
         success: the identity settlement is reported as pending, with the retry named.
         """
         from hermes_agent.hermes_state import SessionDB
-        from hermes_cli.profiles import ProfileIdentitySettlementPending
+        from hermes_agent.hermes_cli.profiles import ProfileIdentitySettlementPending
 
         tmp_path = profile_env
         create_profile("gone", no_alias=True)
@@ -644,8 +644,8 @@ class TestDeleteProfile:
             scope=scope)
         db.close()
 
-        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
-             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True):
+        with patch("hermes_agent.hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_agent.hermes_cli.profiles._live_default_multiplexer", return_value=True):
             with pytest.raises(ProfileIdentitySettlementPending,
                                match="identity settlement is still pending") as ei:
                 delete_profile("gone", yes=True)
@@ -910,7 +910,7 @@ class TestListProfiles:
         # ``@<profile>`` completion must be just as walk-free: same spy, still one background walk.
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
-        from hermes_cli.web_routers import profiles as profiles_router
+        from hermes_agent.hermes_cli.web_routers import profiles as profiles_router
         from hermes_agent.tui_gateway import methods_complete
         app = FastAPI()
         app.include_router(profiles_router.router)
@@ -1064,8 +1064,8 @@ class TestWrapperScript:
     """Tests for create_wrapper_script() and remove_wrapper_script()."""
 
     def test_creates_sh_on_posix(self, profile_env, monkeypatch):
-        monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
-        from hermes_cli.profiles import create_wrapper_script
+        monkeypatch.setattr("hermes_agent.hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
+        from hermes_agent.hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
         assert wrapper.name == "mybot"
@@ -1076,7 +1076,7 @@ class TestWrapperScript:
 
     @pytest.mark.platforms("windows")
     def test_remove_finds_bat_on_windows(self, profile_env):
-        from hermes_cli.profiles import create_wrapper_script
+        from hermes_agent.hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
         assert wrapper.exists()
@@ -1123,14 +1123,14 @@ class TestFindAliasForProfile:
     """Tests for find_alias_for_profile() and alias display in list/show."""
 
     def test_profile_named_alias(self, profile_env):
-        from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
+        from hermes_agent.hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
         create_wrapper_script("steve")
         assert find_alias_for_profile("steve") == "steve"
 
 
     def test_ignores_unrelated_files(self, profile_env):
         # ~/.local/bin commonly holds unrelated binaries; they must not match.
-        from hermes_cli.profiles import _get_wrapper_dir, find_alias_for_profile
+        from hermes_agent.hermes_cli.profiles import _get_wrapper_dir, find_alias_for_profile
         wrapper_dir = _get_wrapper_dir()
         wrapper_dir.mkdir(parents=True, exist_ok=True)
         (wrapper_dir / "pip").write_text("#!/bin/sh\nexec python -m pip \"$@\"\n", encoding="utf-8")
@@ -1138,7 +1138,7 @@ class TestFindAliasForProfile:
 
 
     def test_list_profiles_surfaces_custom_alias(self, profile_env):
-        from hermes_cli.profiles import (
+        from hermes_agent.hermes_cli.profiles import (
             create_profile,
             create_wrapper_script,
             list_profiles,
@@ -1165,7 +1165,7 @@ class TestRenameProfile:
         assert old_dir.is_dir()
 
         # Mock alias collision to avoid subprocess calls
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+        with patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"):
             new_dir = rename_profile("oldname", "newname")
 
         assert not old_dir.is_dir()
@@ -1192,9 +1192,9 @@ class TestRenameProfile:
                 with pytest.raises(FileNotFoundError):
                     mkdir_under_hermes_home(old_dir / "logs")
 
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
-             patch("hermes_cli.profiles._notify_multiplexer", side_effect=_record_notify):
+        with patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_agent.hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_agent.hermes_cli.profiles._notify_multiplexer", side_effect=_record_notify):
             rename_profile("oldname", "newname")
 
         # (name, old_exists, new_exists, old_tombstoned): unroute first, hot-serve last.
@@ -1209,9 +1209,9 @@ class TestRenameProfile:
         create_profile("oldname", no_alias=True)
         old_dir = tmp_path / ".hermes" / "profiles" / "oldname"
 
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles._live_default_multiplexer", return_value=False), \
-             patch("hermes_cli.profiles._notify_multiplexer") as notify:
+        with patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_agent.hermes_cli.profiles._live_default_multiplexer", return_value=False), \
+             patch("hermes_agent.hermes_cli.profiles._notify_multiplexer") as notify:
             new_dir = rename_profile("oldname", "newname")
 
         notify.assert_not_called()
@@ -1240,8 +1240,8 @@ class TestRenameProfile:
             scope=str(tmp_path / ".hermes" / "sessions"))
         root_db.close()
 
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
+        with patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_agent.hermes_cli.profiles._live_default_multiplexer", return_value=False):
             rename_profile("oldname", "newname")
 
         new_dir = tmp_path / ".hermes" / "profiles" / "newname"
@@ -1263,9 +1263,9 @@ class TestRenameProfile:
         it in memory and would clobber the write); it delegates to the control verb instead."""
         create_profile("oldname", no_alias=True)
 
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
-             patch("hermes_cli.profiles._notify_multiplexer"), \
+        with patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_agent.hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_agent.hermes_cli.profiles._notify_multiplexer"), \
              patch("hermes_agent.gateway.control_socket.migrate_gateway_profile_identity",
                    return_value={"ok": True, "rekeyed": 1, "db": {}}) as verb, \
              patch("hermes_agent.hermes_state_registry.acquire") as acquire:
@@ -1282,7 +1282,7 @@ class TestRenameProfile:
         """The failed-live-migration end state must be recoverable: `hermes profile
         migrate-identity <old> <new>` rekeys the durable rows once no gateway holds the store, and
         is idempotent (a second run has nothing left to rekey but still succeeds)."""
-        from hermes_cli.profile_cmd import cmd_profile
+        from hermes_agent.hermes_cli.profile_cmd import cmd_profile
         from hermes_agent.hermes_state import SessionDB
         from argparse import Namespace
         tmp_path = profile_env
@@ -1303,15 +1303,15 @@ class TestRenameProfile:
 
         # Rename under a live multiplexer whose control verb answers nothing: the CLI warns and
         # leaves the (in-memory-owned) store alone, so the rows still name the old profile.
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles._live_default_multiplexer", return_value=True), \
-             patch("hermes_cli.profiles._notify_multiplexer"), \
+        with patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_agent.hermes_cli.profiles._live_default_multiplexer", return_value=True), \
+             patch("hermes_agent.hermes_cli.profiles._notify_multiplexer"), \
              patch("hermes_agent.gateway.control_socket.migrate_gateway_profile_identity", return_value=None):
             rename_profile("oldname", "newname")
         assert "hermes profile migrate-identity oldname newname" in capsys.readouterr().err
 
         # Gateway restarted/stopped → the retry command repairs both stores.
-        with patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
+        with patch("hermes_agent.hermes_cli.profiles._live_default_multiplexer", return_value=False):
             cmd_profile(Namespace(profile_action="migrate-identity",
                                   old_name="oldname", new_name="newname"))
             assert "✓ Session/routing identity migrated" in capsys.readouterr().out
@@ -1337,7 +1337,7 @@ class TestRenameProfile:
     def test_rename_accumulates_previous_names(self, profile_env):
         create_profile("firstname", no_alias=True)
 
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+        with patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"):
             rename_profile("firstname", "secondname")
             rename_profile("secondname", "thirdname")
 
@@ -1348,8 +1348,8 @@ class TestRenameProfile:
         create_profile("oldname", no_alias=True)
 
         # The history write is best-effort: it must never fail the rename.
-        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
-             patch("hermes_cli.profiles.write_profile_meta", side_effect=OSError("disk full")):
+        with patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_agent.hermes_cli.profiles.write_profile_meta", side_effect=OSError("disk full")):
             new_dir = rename_profile("oldname", "newname")
 
         assert new_dir.is_dir()
@@ -1600,7 +1600,7 @@ class TestEdgeCases:
         """
         import os
         import hermes_agent.gateway.status as gw_status
-        from hermes_cli.profiles import _check_gateway_running
+        from hermes_agent.hermes_cli.profiles import _check_gateway_running
 
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
@@ -1703,7 +1703,7 @@ class TestProfilesToServe:
         default_home = _get_default_hermes_home()
         (default_home / "config.yaml").write_text("gateway:\n  standalone: true\n", encoding="utf-8")
         caplog.clear()
-        with caplog.at_level("WARNING", logger="hermes_cli.profiles"):
+        with caplog.at_level("WARNING", logger="hermes_agent.hermes_cli.profiles"):
             serve = dict(profiles_to_serve(multiplex=True))
             assert profiles.profile_is_standalone(default_home) is False
             assert profiles.profile_is_standalone(default_home) is False
@@ -1724,7 +1724,7 @@ class TestProfilesToServe:
 
     @pytest.mark.parametrize("failure_at", ["stat", "read", "decode"])
     def test_standalone_io_failure_is_bounded_and_recovers(self, profile_env, monkeypatch, caplog, failure_at):
-        from hermes_cli import config
+        from hermes_agent.hermes_cli import config
 
         create_profile("solo", no_alias=True)
         home = get_profile_dir("solo")
@@ -1848,8 +1848,8 @@ def test_profile_delete_and_rename_stop_the_profiles_bot_desktop(profile_env, op
     (profile_dir / "bot-desktop" / "lease.json").write_text(
         json.dumps({"holder": "human", "viewer_id": "gone", "since": 1.0, "epoch": 3, "reason": ""}), encoding="utf-8")
     try:
-        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
-             patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+        with patch("hermes_agent.hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"):
             if op == "delete":
                 delete_profile("coder", yes=True)
             else:
@@ -1944,7 +1944,7 @@ class TestCloneAllExcludesRuntimeTrees:
 def test_count_skills_publishes_timestamp_after_the_walk(tmp_path, monkeypatch):
     """A scan longer than the TTL must not publish an already-expired cache entry (#107151):
     the cached timestamp is taken after _walk_skill_count returns, not before it starts."""
-    from hermes_cli import profiles as mod
+    from hermes_agent.hermes_cli import profiles as mod
 
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()

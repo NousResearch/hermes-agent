@@ -763,7 +763,7 @@ class TestAuxiliaryClientProviderPriority:
         }
         with patch("hermes_agent.agent.auxiliary_client._read_nous_auth", return_value=nous_auth), \
              patch("hermes_agent.agent.auxiliary_client.OpenAI"), \
-             patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None):
+             patch("hermes_agent.hermes_cli.models.get_nous_recommended_aux_model", return_value=None):
             _client, model = get_text_auxiliary_client()
         assert model == _NOUS_MODEL
 

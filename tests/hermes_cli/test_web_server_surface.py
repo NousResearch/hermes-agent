@@ -2,7 +2,7 @@
 
 One dashboard app serves every surface: the standalone ``hermes dashboard``, the headless
 ``hermes serve``, the gateway's own listener for native clients, and the gateway's Webapp. The surface
-policy (``hermes_cli.web_server_surface``) says which of them serve:
+policy (``hermes_agent.hermes_cli.web_server_surface``) says which of them serve:
 
 - ``/api/webapp-access/*``: native Desktop's Web Access pane, which calls the gateway's own listener
   (the private one, or the Webapp's when it is on);
@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server
 from tests.hermes_cli.native_gateway_client import native_desktop_client
 
 WEB_ACCESS = (("get", "/api/webapp-access/status", None), ("post", "/api/webapp-access/start", {}),
@@ -30,8 +30,8 @@ WEB_ACCESS = (("get", "/api/webapp-access/status", None), ("post", "/api/webapp-
 def nothing_acts(monkeypatch):
     """No route under test may build, register, write config or restart a gateway: a handler that
     runs answers 500 instead of acting."""
-    import hermes_cli.web_server_gateway as gateway
-    from hermes_cli import webapp, webapp_access
+    import hermes_agent.hermes_cli.web_server_gateway as gateway
+    from hermes_agent.hermes_cli import webapp, webapp_access
 
     def refuse(*_args, **_kwargs):
         raise AssertionError("a Web Access handler ran")
@@ -106,7 +106,7 @@ def test_chat_upload_bodies_are_capped_before_parsing_only_on_the_webapp(surface
     surface but the Webapp, as on main; the Webapp refuses it with 413 before reading the body."""
     import asyncio
 
-    from hermes_cli.web_upload_limit import CHAT_IMAGE_BODY_MAX_BYTES, ChatFileUploadLimitMiddleware
+    from hermes_agent.hermes_cli.web_upload_limit import CHAT_IMAGE_BODY_MAX_BYTES, ChatFileUploadLimitMiddleware
 
     reached, sent = [], []
 

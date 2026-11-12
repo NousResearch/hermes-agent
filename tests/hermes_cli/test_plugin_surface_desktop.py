@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.plugins_cmd_catalog import plugin_surface, surface_delta
+from hermes_agent.hermes_cli.plugins_cmd_catalog import plugin_surface, surface_delta
 
 
 @pytest.mark.parametrize("entry", ["plugin.js", "desktop/plugin.js"])

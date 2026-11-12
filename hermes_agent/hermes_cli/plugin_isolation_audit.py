@@ -2,7 +2,7 @@
 
 Reads a plugin directory's manifest and Python source (never imports it) and reports whether the
 plugin reaches Hermes only through ``ctx`` surfaces that cross the host boundary. The rules come
-from :mod:`hermes_cli.plugin_isolation`, the same tables the host enforces at runtime, so a plugin
+from :mod:`hermes_agent.hermes_cli.plugin_isolation`, the same tables the host enforces at runtime, so a plugin
 the audit calls host-ready loads in the host, and one it flags fails there with the same reason.
 
 What it cannot see in a process boundary it flags:
@@ -90,7 +90,7 @@ class _SourceVisitor(ast.NodeVisitor):
     """Collects ctx method calls, Hermes-module aliases, and writes through those aliases."""
 
     def __init__(self, rel: str, *, model_provider: bool = False):
-        from hermes_cli.plugin_isolation import (
+        from hermes_agent.hermes_cli.plugin_isolation import (
             HOST_DEGRADED_HOOKS, HOST_OBJECT_BASES, HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS,
         )
         self._unsupported, self._skipped = HOST_UNSUPPORTED_CTX_METHODS, HOST_SKIPPED_CTX_METHODS

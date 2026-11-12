@@ -5,8 +5,8 @@ purpose, so the client count IS its liveness signal."""
 from fastapi import FastAPI, WebSocket
 from starlette.testclient import TestClient
 
-import hermes_cli.web_server as ws_mod
-from hermes_cli.web_server_idle_exit import (
+import hermes_agent.hermes_cli.web_server as ws_mod
+from hermes_agent.hermes_cli.web_server_idle_exit import (
     IdleClientTracker, should_exit_idle, start_idle_watchdog, wrap_asgi_with_ws_tracking)
 
 
@@ -86,7 +86,7 @@ def test_turn_probe_counts_in_flight_cron_execution():
     """#107485: a cron job mid-run must keep the SSH-isolated backend alive; the run lives outside
     the dashboard session table, in the scheduler's running-job ledger."""
     from hermes_agent.cron import scheduler
-    from hermes_cli.web_server_idle_exit import turn_in_flight
+    from hermes_agent.hermes_cli.web_server_idle_exit import turn_in_flight
 
     assert turn_in_flight() is False
     with scheduler._running_lock:

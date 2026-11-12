@@ -244,7 +244,7 @@ class TestAdapterInit:
             staticmethod(lambda model="": {"enabled": True, "effort": "xhigh"}),
         )
         monkeypatch.setattr("hermes_agent.gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
-        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+        monkeypatch.setattr("hermes_agent.hermes_cli.tools_config._get_platform_tools", lambda *_: set())
 
         adapter = APIServerAdapter(PlatformConfig(enabled=True))
         monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
@@ -814,7 +814,7 @@ class TestHealthEndpoint:
             data = await resp.json()
             assert "version" in data
             assert isinstance(data["version"], str)
-            from hermes_cli.version_info import get_version_info
+            from hermes_agent.hermes_cli.version_info import get_version_info
             assert data["version"] == get_version_info().base_version
 
 
@@ -1009,16 +1009,16 @@ class TestToolsetsEndpoint:
         ]
         feature_snapshot = object()
         with patch(
-            "hermes_cli.tools_config._get_effective_configurable_toolsets",
+            "hermes_agent.hermes_cli.tools_config._get_effective_configurable_toolsets",
             return_value=fake_toolsets,
         ), patch(
-            "hermes_cli.tools_config._get_platform_tools",
+            "hermes_agent.hermes_cli.tools_config._get_platform_tools",
             return_value={"default"},
         ), patch(
-            "hermes_cli.tools_config.get_nous_subscription_features",
+            "hermes_agent.hermes_cli.tools_config.get_nous_subscription_features",
             return_value=feature_snapshot,
         ) as resolve_features, patch(
-            "hermes_cli.tools_config._toolset_has_keys",
+            "hermes_agent.hermes_cli.tools_config._toolset_has_keys",
             return_value=True,
         ) as has_keys, patch(
             "hermes_agent.toolsets.resolve_toolset",
@@ -1419,7 +1419,7 @@ class TestDeriveChatSessionId:
         """A gateway launched as ``work`` serves ``/p/work/`` and the bare route as ONE profile:
         both must derive one id, or the same conversation forks by URL."""
         import hermes_constants
-        from hermes_cli import profiles
+        from hermes_agent.hermes_cli import profiles
 
         work = tmp_path / "profiles" / "work"
         work.mkdir(parents=True)
@@ -2587,7 +2587,7 @@ def _patch_create_agent_runtime(monkeypatch, captured: dict, fake_agent_cls):
         "hermes_agent.gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None)
     )
     monkeypatch.setattr("hermes_agent.gateway.run._current_max_iterations", lambda: 90)
-    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+    monkeypatch.setattr("hermes_agent.hermes_cli.tools_config._get_platform_tools", lambda *_: set())
 
 
 class TestModelRoutesParsing:
@@ -3027,7 +3027,7 @@ class TestCreateAgentModelRecovery:
         )
         monkeypatch.setattr("hermes_agent.gateway.run._resolve_gateway_model", lambda: "")
         monkeypatch.setattr(
-            "hermes_cli.models.get_default_model_for_provider",
+            "hermes_agent.hermes_cli.models.get_default_model_for_provider",
             lambda provider: "gpt-5.5-codex" if provider == "openai-codex" else None,
         )
 

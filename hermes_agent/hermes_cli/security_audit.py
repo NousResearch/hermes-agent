@@ -67,7 +67,7 @@ def _discover_venv() -> list[Component]:
         if name.lower().replace("_", "-") == "hermes-agent" and version == "0.0.0":
             # pyproject declares 0.0.0 in source trees, which matches every advisory ever filed:
             # audit the running release instead, and skip the dist when no release is known.
-            from hermes_cli.version_info import get_version_info
+            from hermes_agent.hermes_cli.version_info import get_version_info
 
             version = get_version_info().base_version
             if version == "unknown":
@@ -157,7 +157,7 @@ def _extract_mcp_component(server_name: str, command: str, args: list[str]) -> O
 def _discover_mcp() -> list[Component]:
     """Pinned MCP server packages from ``config.yaml``."""
     try:
-        from hermes_cli.mcp_config import _get_mcp_servers
+        from hermes_agent.hermes_cli.mcp_config import _get_mcp_servers
     except Exception:
         return []
     servers = _get_mcp_servers()

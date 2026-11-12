@@ -289,9 +289,9 @@ def worker_archive(db, conn, sid, payload):
 
 
 def _migrate_worker_automation(db, conn, parent, child):
-    from hermes_cli.goals import GoalState
-    from hermes_cli.heartbeat import HeartbeatState
-    from hermes_cli.loops import LoopState
+    from hermes_agent.hermes_cli.goals import GoalState
+    from hermes_agent.hermes_cli.heartbeat import HeartbeatState
+    from hermes_agent.hermes_cli.loops import LoopState
     for family, state_type in (('goal', GoalState), ('heartbeat', HeartbeatState), ('loop', LoopState)):
         old_key, new_key = f'{family}:{parent}', f'{family}:{child}'
         row = conn.execute('SELECT value FROM state_meta WHERE key=?', (old_key,)).fetchone()

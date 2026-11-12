@@ -13,7 +13,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource
-from hermes_cli import goals, loops
+from hermes_agent.hermes_cli import goals, loops
 
 
 class _FakeSessionEntry:
@@ -218,7 +218,7 @@ async def test_failed_turn_with_text_never_drives_goal_or_until_judge(loop_env, 
     goal judge must not run on it (it burned the whole turn budget in seconds) and the /loop tick is
     released with no text, so a --until judge never grades it; the loop still reschedules."""
     from hermes_agent.gateway.session_results import execution_result
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
 
     runner = _make_runner()
     await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI --until CI is green"))

@@ -20,9 +20,9 @@ _MIB = 1024 * 1024
 
 @pytest.fixture
 def session(tmp_path, monkeypatch):
-    fake_cli = types.ModuleType("cli")
+    fake_cli = types.ModuleType("hermes_agent.cli")
     fake_cli._IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", fake_cli)
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     workspace = tmp_path / "workspace"
     workspace.mkdir()

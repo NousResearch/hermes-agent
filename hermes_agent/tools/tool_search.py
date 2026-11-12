@@ -16,7 +16,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG
+from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 from hermes_agent.tools.registry import tool_error
 from hermes_agent.toolsets import CLIENT_SURFACE_TOOLSETS, TOOLSET_SESSION_PLATFORMS
 from hermes_agent.tools.tool_search_catalog import (
@@ -111,9 +111,9 @@ def _safe_float(value: Any, fallback: float) -> float:
 
 
 def _config_from_loader(loader_name: str) -> ToolSearchConfig:
-    """Tool-search config via ``hermes_cli.config.<loader_name>`` (defaults on any failure)."""
+    """Tool-search config via ``hermes_agent.hermes_cli.config.<loader_name>`` (defaults on any failure)."""
     try:
-        import hermes_cli.config as _cfg_mod
+        import hermes_agent.hermes_cli.config as _cfg_mod
         tools_cfg = (getattr(_cfg_mod, loader_name)() or {}).get("tools")
         tools_cfg = tools_cfg if isinstance(tools_cfg, dict) else {}
         return ToolSearchConfig.from_raw(tools_cfg.get("tool_search"))
@@ -488,7 +488,7 @@ def dispatch_tool_search(args: dict[str, Any], *, current_tool_defs: list[dict[s
 def _record_search_metric(current_tool_defs: list[dict[str, Any]], *, hits: int, outcome: str,
                           catalog: Optional[list[CatalogEntry]] = None) -> None:
     """One ``hermes.tool_search.count`` row: which corpora the search read, never the query."""
-    from hermes_cli.observability.shared_metrics_events import record_tool_search
+    from hermes_agent.hermes_cli.observability.shared_metrics_events import record_tool_search
 
     local = bool(catalog if catalog is not None else _deferrable_in(current_tool_defs))
     hosted = connections_in_scope(current_tool_defs)

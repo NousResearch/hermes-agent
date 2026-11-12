@@ -199,7 +199,7 @@ def _agent_path_scope(profile_home: Path | None = None) -> Iterator[None]:
     Translation and the unmapped-path classification both run inside this scope, so they
     agree about the backend.
     """
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli.config import get_hermes_home
     from hermes_constants import (
         get_hermes_home_override, get_process_hermes_home, reset_hermes_home_override,
         set_hermes_home_override,
@@ -244,7 +244,7 @@ def _agent_container_path(
     if not raw.startswith("/") or raw.startswith("//") or ".." in raw.split("/"):
         return None
     try:
-        from hermes_cli.config import get_hermes_home
+        from hermes_agent.hermes_cli.config import get_hermes_home
         from hermes_agent.tools.terminal_scope import (
             build_profile_terminal_scope, get_terminal_scope, reset_terminal_scope, set_terminal_scope,
         )
@@ -392,8 +392,8 @@ def _dashboard_local_update_managed_externally() -> bool:
     the update button is the correct path. pip stays blocked in containers: its
     apply path mutates the running container filesystem.
     """
-    from hermes_cli.web_server import PROJECT_ROOT
-    from hermes_cli.config import detect_install_method
+    from hermes_agent.hermes_cli.web_server import PROJECT_ROOT
+    from hermes_agent.hermes_cli.config import detect_install_method
     if _default_hermes_root_is_opt_data():
         return True
     try:
@@ -479,7 +479,7 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> dict[str, Any]:
 
 
 def _hosted_fs_path_allowed(root: Path, target: Path) -> bool:
-    from hermes_cli.web_routers.files import _is_sensitive_path
+    from hermes_agent.hermes_cli.web_routers.files import _is_sensitive_path
 
     resolved = _canonical_path(target)
     return (_path_is_under(root, resolved)

@@ -12,7 +12,7 @@ from datetime import datetime, timezone, UTC
 from typing import Any, Dict, Optional
 
 # Same logger the code used before extraction (record parity).
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 
 
 _LOGGED_OUT: dict[str, Any] = {"logged_in": False, "source": None}
@@ -57,12 +57,12 @@ def _anthropic_oauth_status() -> dict[str, Any]:
 
     env_var_order: tuple = ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
         env_var_order = PROVIDER_REGISTRY["anthropic"].api_key_env_vars
     except (ImportError, KeyError):
         pass
-    from hermes_cli.config import get_env_value
-    from hermes_cli.env_loader import format_secret_source_suffix
+    from hermes_agent.hermes_cli.config import get_env_value
+    from hermes_agent.hermes_cli.env_loader import format_secret_source_suffix
     for var in env_var_order:
         value = get_env_value(var) or os.getenv(var)
         if value:
@@ -96,7 +96,7 @@ def _external_process_cli_command(provider_id: str, default: str) -> str:
     """Render an external-process provider's sign-in command with the CLI actually configured
     (its profile's ``process_command_env_vars`` override); others get ``default`` untouched."""
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
+        from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, get_external_process_provider_status
         pconfig = PROVIDER_REGISTRY.get(provider_id)
         if not pconfig or pconfig.auth_type != "external_process":
             return default
@@ -181,7 +181,7 @@ def _oauth_poller(label: str):
                 else:
                     _log.info("oauth/device: %s login completed (session=%s)", label, session_id)
             except Exception as e:
-                from hermes_cli.observability.shared_metrics_setup import note_oauth_failure
+                from hermes_agent.hermes_cli.observability.shared_metrics_setup import note_oauth_failure
                 _log.warning("%s device-code poll failed (session=%s): %s", label, session_id, e)
                 note_oauth_failure(sess, e)
                 with _oauth_sessions_lock:
@@ -254,8 +254,8 @@ def _minimax_poller(session_id: str, sess: dict[str, Any]) -> None:
     ``device_code``. Builds the same auth_state as the CLI's ``_minimax_oauth_login`` and persists
     via ``_minimax_save_auth_state`` so the system ends up as after ``hermes auth add minimax-oauth``.
     Region is fixed to "global" here; cn-region operators use the CLI's ``--region cn``."""
-    from hermes_cli.web_server_profiles import _profile_scope
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.web_server_profiles import _profile_scope
+    from hermes_agent.hermes_cli.auth import (
         _minimax_poll_token, _minimax_resolve_token_expiry_unix, _minimax_save_auth_state,
         MINIMAX_OAUTH_GLOBAL_INFERENCE, MINIMAX_OAUTH_SCOPE,
     )
@@ -299,9 +299,9 @@ def _minimax_poller(session_id: str, sess: dict[str, Any]) -> None:
 @_oauth_poller("xai")
 def _xai_device_poller(session_id: str, sess: dict[str, Any]) -> None:
     """Background poller for xAI's OAuth device-code flow."""
-    from hermes_cli.web_server_profiles import _profile_scope
+    from hermes_agent.hermes_cli.web_server_profiles import _profile_scope
     import httpx
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         _save_xai_oauth_tokens, _xai_oauth_discovery, _xai_oauth_poll_device_token,
         mark_provider_active_if_unset, unsuppress_credential_source,
     )
@@ -359,7 +359,7 @@ def _profile_device_poller(session_id: str, sess: dict[str, Any]) -> None:
     """Drive a device-code login a provider profile owns (``ProviderProfile.start_device_login``):
     one ``poll_device_login`` per interval (each bound to the session's profile) until approved, then
     ``save_device_login`` under the session's profile scope, in one critical section with the cancel check like the built-in savers."""
-    from hermes_cli.web_server_profiles import _config_profile_scope, _profile_scope
+    from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope, _profile_scope
     profile, state, interval = sess["_provider_profile"], sess["_device_state"], int(sess["interval"])
     result: dict[str, Any] = {}
     while time.time() < sess["expires_at"]:

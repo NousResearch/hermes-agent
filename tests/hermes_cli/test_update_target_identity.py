@@ -13,9 +13,9 @@ import urllib.request
 
 import pytest
 
-from hermes_cli import main as cli_main, update_cmd, update_receipt
-from hermes_cli.update_inventory import UpdatePlan
-from hermes_cli.update_cmd import _sync_with_upstream_if_needed
+from hermes_agent.hermes_cli import main as cli_main, update_cmd, update_receipt
+from hermes_agent.hermes_cli.update_inventory import UpdatePlan
+from hermes_agent.hermes_cli.update_cmd import _sync_with_upstream_if_needed
 
 
 def git(root, *args):
@@ -71,7 +71,7 @@ def update_tree(tmp_path, monkeypatch):
         plans.append(plan)
         return plan
 
-    monkeypatch.setattr('hermes_cli.update_inventory.collect_runtime_inventory', inventory)
+    monkeypatch.setattr('hermes_agent.hermes_cli.update_inventory.collect_runtime_inventory', inventory)
     monkeypatch.setattr(cli_main, '_sync_with_upstream_if_needed',
                         lambda *_a, **_k: pytest.fail('stable update reached upstream branch sync'))
 
@@ -90,7 +90,7 @@ def update_tree(tmp_path, monkeypatch):
 
 def _publish_stable(monkeypatch, t):
     """stable = the latest published GitHub release; its resolver pins t.wanted (v1.1.0)."""
-    from hermes_cli import source_releases
+    from hermes_agent.hermes_cli import source_releases
 
     monkeypatch.setattr(source_releases, '_resolve_stable', lambda repository, *_: source_releases.SourceTarget(
         'stable', 'stable', repository, commit=t.wanted, version='1.1.0'))
@@ -318,7 +318,7 @@ def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, 
             local += '?' + parsed.query
         return real_open(local, *args, **kwargs)
 
-    from hermes_cli import update_custody
+    from hermes_agent.hermes_cli import update_custody
 
     real_custody_run, seam = update_custody.run, threading.local()
 

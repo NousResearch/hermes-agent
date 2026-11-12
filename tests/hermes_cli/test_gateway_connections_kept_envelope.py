@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli import gateway_connections as store
 
 LOCKED = {"encoding": "safeStorage", "value": "djEwAAAAlocked"}
 

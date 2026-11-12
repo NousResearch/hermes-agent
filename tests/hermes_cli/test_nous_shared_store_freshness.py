@@ -11,8 +11,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-import hermes_cli.auth as auth_mod
-from hermes_cli import auth_nous
+import hermes_agent.hermes_cli.auth as auth_mod
+from hermes_agent.hermes_cli import auth_nous
 
 
 def _jwt(tag: str, seconds: int, *, issued: int | None = None, sub: str = "user-1") -> str:

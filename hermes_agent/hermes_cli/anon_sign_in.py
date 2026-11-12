@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, ClassVar, ContextManager, Iterator, Optional
 
-from hermes_cli.auth_constants import httpx
+from hermes_agent.hermes_cli.auth_constants import httpx
 
 
 UPGRADE_START = "Sign in with a Nous account to unlock more models and tools."
@@ -170,12 +170,12 @@ class Failed(SignInState):
 
     @property
     def retryable(self) -> bool:
-        from hermes_cli import anon_auth as _core
+        from hermes_agent.hermes_cli import anon_auth as _core
         return bool(self.reason.startswith("anon_") and self.reason not in _core.ANON_TERMINAL_CODES)
 
     @property
     def copy(self) -> str:
-        from hermes_cli import anon_auth as _core
+        from hermes_agent.hermes_cli import anon_auth as _core
         if self.reason in _core.ANON_UNREACHABLE_CODES:
             return UPGRADE_SERVICE_UNREACHABLE
         if self.reason in (_core.ANON_RATE_LIMITED, _core.ANON_GATE_PAUSED):
@@ -206,7 +206,7 @@ def _failed_from_exception(exc: BaseException) -> Failed:
     """A ``Failed`` that keeps the service's own verdict: the ``anon_*`` code and wait hint an
     ``AuthError`` carries, or the wire's shape for a transport error. The raw detail never reaches a
     chat; ``copy_terminal`` may show it when nothing better is known."""
-    from hermes_cli import anon_auth as _core
+    from hermes_agent.hermes_cli import anon_auth as _core
     err = _core.classify_mint_exception(exc)
     reason = str(err.code or "")
     if reason == _core.ANON_SERVER_ERROR and not isinstance(exc, _core.AuthError):
@@ -226,13 +226,13 @@ def _default_persist_guard(is_cancelled: Callable[[], bool]) -> Callable[[], Con
 
 def _account_email(account_state: dict[str, Any], fallback: Optional[str]) -> str:
     """The signed-in account's email, read from its own access token."""
-    from hermes_cli.auth_constants import _decode_jwt_claims
+    from hermes_agent.hermes_cli.auth_constants import _decode_jwt_claims
     email = _decode_jwt_claims(account_state.get("access_token")).get("email")
     return str(email or fallback or "").strip()
 
 
 def _handoff_lines(results: list[dict[str, Any]]) -> tuple[str, ...]:
-    from hermes_cli.guest_handoff import result_lines
+    from hermes_agent.hermes_cli.guest_handoff import result_lines
     return tuple(line for view in results for line in result_lines(view))
 
 
@@ -240,8 +240,8 @@ def _handoff_status(results: list[dict[str, Any]], replaced: Optional[dict[str, 
     """The handoff a completed sign-in reports (``guest_handoff.wire_status`` form): the latest record its
     own run attempted, else the replaced free tier's saved record (another process held it), else
     None when it replaced no free tier. Read under the scope."""
-    from hermes_cli import anon_auth as _core
-    from hermes_cli.guest_handoff import record_status, wire_status
+    from hermes_agent.hermes_cli import anon_auth as _core
+    from hermes_agent.hermes_cli.guest_handoff import record_status, wire_status
     if results:
         return wire_status(results[-1])
     anon_token = replaced.get("anon_token") if _core.is_guest_state(replaced) else None
@@ -278,12 +278,12 @@ def run_sign_in(
     entered inside the generator, on whichever thread is advancing it.
     *client_factory* is the HTTP client seam, ``client_factory(timeout_seconds, verify)``.
     """
-    from hermes_cli import anon_auth as _core
-    from hermes_cli.auth import PROVIDER_REGISTRY, _resolve_verify
-    from hermes_cli.auth_device_flow import DeviceFlowCancelled, _request_device_code
-    from hermes_cli.auth_error_copy import is_device_code_expired
-    from hermes_cli.auth_nous import _nous_http_client, _nous_portal_base_url
-    from hermes_cli.guest_handoff import drain
+    from hermes_agent.hermes_cli import anon_auth as _core
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, _resolve_verify
+    from hermes_agent.hermes_cli.auth_device_flow import DeviceFlowCancelled, _request_device_code
+    from hermes_agent.hermes_cli.auth_error_copy import is_device_code_expired
+    from hermes_agent.hermes_cli.auth_nous import _nous_http_client, _nous_portal_base_url
+    from hermes_agent.hermes_cli.guest_handoff import drain
 
     is_cancelled = cancelled or (lambda: False)
     open_scope = scope or contextlib.nullcontext

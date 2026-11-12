@@ -55,7 +55,7 @@ def _coerce_bool(value: Any, fallback: bool) -> bool:
 
 def load_config() -> ConnectorConfig:
     try:
-        from hermes_cli.config import load_config_readonly as _load
+        from hermes_agent.hermes_cli.config import load_config_readonly as _load
 
         cfg = _load() or {}
         tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
@@ -75,7 +75,7 @@ def managed_tools_rolled_out() -> bool:
     says nothing about that, so entitlement is the wrong predicate here: the portal mints its
     answer onto the token as ``managed_tools`` and this reads only that. A token minted before
     the claim existed carries none and reads as not enabled."""
-    from hermes_cli.nous_account import get_nous_portal_account_info
+    from hermes_agent.hermes_cli.nous_account import get_nous_portal_account_info
 
     account_info = get_nous_portal_account_info()
     return bool(account_info.logged_in) and account_info.managed_tools_rolled_out
@@ -96,7 +96,7 @@ def connectors_available(
         if not resolved_loader().enabled:
             return False
         if entitlement_check is None:
-            from hermes_cli.anon_auth import is_guest_state
+            from hermes_agent.hermes_cli.anon_auth import is_guest_state
             from hermes_agent.tools.managed_tool_gateway import _read_nous_provider_state
 
             # Availability must not mint or refresh an identity.
@@ -113,7 +113,7 @@ def connectors_available(
 def guest_identity_pending() -> bool:
     """No Nous identity or bearer yet, and a guest one may be created (``nous.guest`` is not false
     and no earlier mint was refused for good). No network: this feeds the ``check_fn``."""
-    from hermes_cli.anon_auth import guest_allowed, last_mint_failure
+    from hermes_agent.hermes_cli.anon_auth import guest_allowed, last_mint_failure
     from hermes_agent.tools.managed_tool_gateway import _read_nous_provider_state, peek_nous_access_token
 
     if not guest_allowed() or _read_nous_provider_state() is not None or peek_nous_access_token():
@@ -127,7 +127,7 @@ _SETUP_FAILED = "Hosted connectors could not be set up. "
 
 def guest_setup_failure() -> Optional[str]:
     """The last failed guest creation for this profile, worded with the wait still left, or None."""
-    from hermes_cli.anon_auth import anon_failure_copy, last_mint_failure
+    from hermes_agent.hermes_cli.anon_auth import anon_failure_copy, last_mint_failure
 
     if not (failure := last_mint_failure()):
         return None
@@ -141,8 +141,8 @@ def ensure_guest_identity() -> Optional[str]:
     a refusal, a rate limit or an unreachable portal, with the wait when there is one."""
     if not guest_identity_pending():
         return None
-    from hermes_cli.anon_auth import ensure_portal_identity
-    from hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli.anon_auth import ensure_portal_identity
+    from hermes_agent.hermes_cli.auth_constants import AuthError
 
     try:
         if ensure_portal_identity(explicit=True) is not None:

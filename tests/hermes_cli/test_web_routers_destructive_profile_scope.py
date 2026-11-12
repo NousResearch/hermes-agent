@@ -48,7 +48,7 @@ def _multiplex_state_is_per_test():
 def homes(tmp_path, monkeypatch, _isolate_hermes_home):
     """Isolated launch home + one named profile, both seeded with real files."""
     from hermes_constants import get_hermes_home
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     launch_home = get_hermes_home()
     profiles_root = launch_home / "profiles"
@@ -82,7 +82,7 @@ def client(monkeypatch, homes):
         pytest.skip("fastapi/starlette not installed")
 
     from hermes_agent import hermes_state
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", homes["launch"] / "state.db")
     c = TestClient(app)
@@ -122,8 +122,8 @@ def seams(monkeypatch):
     """
     from hermes_agent.agent import credential_pool
     from hermes_agent.agent import credential_sources
-    from hermes_cli import web_server_gateway, web_server_sessions
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli import web_server_gateway, web_server_sessions
+    from hermes_agent.hermes_cli.config import get_hermes_home
 
     record = {"spawn": [], "db": [], "pool_home": []}
 
@@ -315,7 +315,7 @@ def test_unnamed_profile_still_means_the_launch_profile_on_a_single_profile_host
 ):
     """A plain ``hermes serve`` has nothing to confuse: `curl` with no profile is unchanged."""
     from hermes_agent.agent.secret_scope import is_multiplex_active
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
 
     empty_root = tmp_path / "no-named-profiles"
@@ -352,8 +352,8 @@ def readiness_only_in_beta(homes, monkeypatch):
     configured, and — the dangerous direction — accepts one only the launch profile has and
     writes it into the target as a broken setting.
     """
-    from hermes_cli import web_server_memory
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli import web_server_memory
+    from hermes_agent.hermes_cli.config import get_hermes_home
 
     def _statuses():
         ready = get_hermes_home().resolve() == homes["worker_beta"].resolve()
@@ -381,8 +381,8 @@ def test_memory_provider_readiness_is_judged_in_the_profile_being_written(
 
 def test_local_models_quickstart_activates_into_the_named_profile(client, homes, monkeypatch):
     """Quickstart is ``activate`` plus a download; its config writes must follow ``?profile=``."""
-    from hermes_cli.config import get_hermes_home
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     entry = type("_Entry", (), {"id": "m1", "display_name": "M One", "min_engine": None})()
     variant = type("_Variant", (), {"model_id": "m1-q4"})()
@@ -418,9 +418,9 @@ def test_curator_pause_writes_the_named_profiles_state(client, homes):
 
 
 def test_forced_update_check_runs_in_the_named_profiles_scope(client, homes, monkeypatch):
-    from hermes_cli import source_check
-    from hermes_cli.config import get_hermes_home
-    from hermes_cli.web_routers import actions
+    from hermes_agent.hermes_cli import source_check
+    from hermes_agent.hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli.web_routers import actions
 
     seen = []
 
@@ -440,8 +440,8 @@ def test_forced_update_check_runs_in_the_named_profiles_scope(client, homes, mon
 
 
 def test_egress_status_reads_the_named_profiles_config(client, homes, monkeypatch):
-    from hermes_cli import proxy_cli
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli import proxy_cli
+    from hermes_agent.hermes_cli.config import load_config
 
     monkeypatch.setattr(proxy_cli, "format_status_text",
                         lambda **_kw: str((load_config().get("proxy") or {}).get("label")))
@@ -453,8 +453,8 @@ def test_egress_status_reads_the_named_profiles_config(client, homes, monkeypatc
 
 
 def test_memory_provider_setup_runs_in_the_named_profiles_home(client, homes, monkeypatch):
-    from hermes_cli.config import get_hermes_home
-    from hermes_cli.web_routers import memory_providers as mp
+    from hermes_agent.hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli.web_routers import memory_providers as mp
 
     monkeypatch.setattr(mp, "_memory_provider_manifest", lambda _name: {"name": "mem0"})
     monkeypatch.setattr(mp, "_load_memory_provider", lambda _name: None)

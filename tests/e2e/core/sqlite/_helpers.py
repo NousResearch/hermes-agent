@@ -34,7 +34,7 @@ import time
 import zlib
 from pathlib import Path
 
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable
+from hermes_agent.hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable
 from tests.conformance.persistence._harness import REPO_ROOT, kill9_and_reap, wait_for
 
 ROLES = Path(__file__).with_name("_roles.py")
@@ -137,7 +137,7 @@ class Chamber:
         return proc
 
     def spawn_cli(self, name: str, *argv: str) -> subprocess.Popen:
-        """A real `hermes …` CLI subprocess against this HERMES_HOME (``hermes_cli.main`` run as ``__main__``
+        """A real `hermes …` CLI subprocess against this HERMES_HOME (``hermes_agent.hermes_cli.main`` run as ``__main__``
         by ``_roles.py cli`` so the journal-mode seam applies to it too)."""
         stderr = open(self.work / f"{name}.stderr", "wb")
         payload = {"workdir": str(self.work), "name": name, "argv": list(argv)}

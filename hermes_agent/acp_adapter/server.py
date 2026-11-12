@@ -353,14 +353,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
     ) -> tuple[str | None, str, str]:
         """Rebuild the session agent on a new model -> (old provider, new provider, model).
 
-        Resolution goes through ``hermes_cli.model_switch.switch_model`` seeded with the live
+        Resolution goes through ``hermes_agent.hermes_cli.model_switch.switch_model`` seeded with the live
         agent route — the same catalog/alias/credential validation as CLI/gateway/TUI ``/model``
         — so ACP never hands the session a model no provider can serve. ``provider:model`` picker
         ids become ``--provider``. ACP never persists. ``keep_endpoint`` carries base_url/api_mode
         over when the provider is unchanged."""
-        from hermes_cli.config import get_compatible_custom_providers, load_config
-        from hermes_cli.model_switch import switch_model
-        from hermes_cli.models import parse_model_input
+        from hermes_agent.hermes_cli.config import get_compatible_custom_providers, load_config
+        from hermes_agent.hermes_cli.model_switch import switch_model
+        from hermes_agent.hermes_cli.models import parse_model_input
 
         current_provider, current_model = getattr(state.agent, "provider", None), str(state.model or "")
         explicit_provider, model_input = parse_model_input(raw_model, "")
@@ -392,7 +392,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         # working model instead of a model/agent mismatch that persists via save_session.
         state.agent, state.model = agent, new_model
         self.session_manager.save_session(state.session_id)
-        from hermes_cli.observability.shared_metrics_events import record_model_switch
+        from hermes_agent.hermes_cli.observability.shared_metrics_events import record_model_switch
 
         record_model_switch(
             from_provider=current_provider, to_provider=target_provider, surface="acp", from_model=current_model,
@@ -520,7 +520,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         (``hermes_agent/agent/turn_context.py``). No-op if discovery finished, join timed out, registry
         unchanged, or session closed."""
         try:
-            from hermes_cli.mcp_startup import mcp_discovery_in_flight
+            from hermes_agent.hermes_cli.mcp_startup import mcp_discovery_in_flight
         except Exception:
             return
         if not mcp_discovery_in_flight():
@@ -529,7 +529,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         def _wait_then_refresh() -> None:
             try:
-                from hermes_cli.mcp_startup import join_mcp_discovery
+                from hermes_agent.hermes_cli.mcp_startup import join_mcp_discovery
 
                 if not join_mcp_discovery(timeout=30.0):
                     return
@@ -567,7 +567,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         self, protocol_version: int | None = None, client_capabilities: ClientCapabilities | None = None,
         client_info: Implementation | None = None, **kwargs: Any,
     ) -> InitializeResponse:
-        from hermes_cli.version_info import get_version_info
+        from hermes_agent.hermes_cli.version_info import get_version_info
 
         auth_methods = build_auth_methods()
         logger.info(

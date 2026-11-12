@@ -108,7 +108,7 @@ def _api_server_base_url() -> str:
     except ValueError:
         port = 8642
     try:
-        from hermes_cli.config import cfg_get, load_config_readonly
+        from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly
         host = str(cfg_get(load_config_readonly(), "platforms", "api_server", "extra", "host", default="") or "").strip()
     except Exception:
         host = ""
@@ -183,7 +183,7 @@ def _hand_off_primary_routed_run(job: dict[str, Any], extra_prompt: Optional[str
     routed = _primary_routed_delivery_platforms(job)
     if not routed:
         return None
-    from hermes_cli.cron import _builtin_gateway_liveness
+    from hermes_agent.hermes_cli.cron import _builtin_gateway_liveness
     alive = _builtin_gateway_liveness()
     if alive is not True:
         # None = the probe could not tell; a run queued for a ticker that may not exist is worse

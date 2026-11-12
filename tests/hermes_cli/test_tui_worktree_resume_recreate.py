@@ -30,8 +30,8 @@ def _branches(repo):
 
 def _quit_clean_session_with_history(tmp_path, monkeypatch):
     """``hermes --tui -w``, one user + assistant exchange, ``/quit`` (row ended ``tui_shutdown``)."""
-    from hermes_cli import main_tui_launch
-    from hermes_cli.worktree_ops import _setup_worktree
+    from hermes_agent.hermes_cli import main_tui_launch
+    from hermes_agent.hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
@@ -62,7 +62,7 @@ def _quit_clean_session_with_history(tmp_path, monkeypatch):
 
 
 def _resume(session_id, **extra):
-    from hermes_cli import main as m
+    from hermes_agent.hermes_cli import main as m
     args = SimpleNamespace(resume=session_id, continue_last=None, in_dir=None, worktree=False,
                            no_restore_cwd=False, create_if_missing=False, **extra)
     m._resolve_chat_session_args(args, use_tui=True)
@@ -87,7 +87,7 @@ def _turn_runs_in(cwd):
 def test_resume_recreates_the_removed_tui_worktree_so_turns_run(tmp_path, monkeypatch, no_restore_cwd):
     repo, tree, wt_info = _quit_clean_session_with_history(tmp_path, monkeypatch)
     monkeypatch.chdir(tmp_path)
-    from hermes_cli import main as m
+    from hermes_agent.hermes_cli import main as m
     args = SimpleNamespace(resume='tui-wt', continue_last=None, in_dir=None, worktree=False,
                            no_restore_cwd=no_restore_cwd, create_if_missing=False)
     m._resolve_chat_session_args(args, use_tui=True)
@@ -104,7 +104,7 @@ def test_resume_recreates_the_removed_tui_worktree_so_turns_run(tmp_path, monkey
 
 def test_resume_reuses_the_surviving_branch(tmp_path, monkeypatch):
     """A tree removed while its branch survived comes back on that branch, at its commit."""
-    from hermes_cli.worktree_ops import _setup_worktree
+    from hermes_agent.hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
@@ -155,7 +155,7 @@ def test_a_store_error_reading_the_policy_falls_back_to_the_row_cwd(tmp_path, mo
     import sqlite3
 
     from hermes_agent import hermes_state_local
-    from hermes_cli.worktree_ops import _setup_worktree
+    from hermes_agent.hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
@@ -182,13 +182,13 @@ def test_a_store_error_reading_the_policy_falls_back_to_the_row_cwd(tmp_path, mo
 async def test_resume_recreates_the_removed_classic_worktree(tmp_path, monkeypatch):
     """Classic ``hermes -w`` runs its session's tools in the tree (frozen policy cwd) while the row
     keeps main's stamp, the repo root. Quit removes the clean tree; ``-c`` now gets it back."""
-    import cli
+    from hermes_agent import cli
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.gateway.session_local import create_local_session
-    from hermes_cli import main as m
+    from hermes_agent.hermes_cli import main as m
 
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)

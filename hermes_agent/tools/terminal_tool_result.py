@@ -137,7 +137,7 @@ def _apply_output_transform_hook(command, output, returncode, task_id, env_type)
     """Plugin output-transform seam (fail-open; first string result wins).
     Replacements are still subject to the output limit applied afterwards."""
     with _quiet("transform_terminal_output hook"):
-        from hermes_cli.lifecycle import invoke_hook
+        from hermes_agent.hermes_cli.lifecycle import invoke_hook
         from hermes_agent.tools.approval_context import _approval_tool_call_id
         # Concurrent terminal calls in one turn must gate per call, not collapse into one;
         # an empty id is treated as "no identity" by the hook gate.

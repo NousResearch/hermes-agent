@@ -11,8 +11,8 @@ before rotating (flush-then-rotate, #47202), so nothing lands on the wrong row.
 
 import pytest
 
-from cli import HermesCLI
-from hermes_cli import cli_commands_mixin
+from hermes_agent.cli import HermesCLI
+from hermes_agent.hermes_cli import cli_commands_mixin
 
 
 class _Agent:

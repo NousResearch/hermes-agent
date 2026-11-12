@@ -12,7 +12,7 @@ import threading
 
 import pytest
 
-import hermes_cli.web_routers.ops as _rt_ops
+import hermes_agent.hermes_cli.web_routers.ops as _rt_ops
 
 # ---------------------------------------------------------------------------
 # web_server credential-pool handlers off the loop
@@ -20,7 +20,7 @@ import hermes_cli.web_routers.ops as _rt_ops
 
 @pytest.mark.asyncio
 async def test_list_credential_pool_runs_off_event_loop(monkeypatch):
-    import hermes_cli.auth as auth_mod
+    import hermes_agent.hermes_cli.auth as auth_mod
 
     loop_thread = threading.get_ident()
     seen = {}

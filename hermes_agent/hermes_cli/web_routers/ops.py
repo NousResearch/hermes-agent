@@ -20,34 +20,34 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from hermes_cli.config import redact_key
-from hermes_cli.web_deps import late
-from hermes_cli.web_server_files import _path_is_under
-from hermes_cli.web_server_gateway import _restart_gateway_after
-from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
-from hermes_cli.web_models import (
+from hermes_agent.hermes_cli.config import redact_key
+from hermes_agent.hermes_cli.web_deps import late
+from hermes_agent.hermes_cli.web_server_files import _path_is_under
+from hermes_agent.hermes_cli.web_server_gateway import _restart_gateway_after
+from hermes_agent.hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
+from hermes_agent.hermes_cli.web_models import (
     BackupRequest, CredentialPoolAdd, HookCreate, HookDelete, ImportRequest, MemoryProviderSelect,
     MemoryReset, PairingApprove, PairingRevoke, WebhookCreate, WebhookEnabledToggle,
 )
-from hermes_cli.web_routers._common import (
+from hermes_agent.hermes_cli.web_routers._common import (
     config_scoped_to_thread, config_write_scope, destructive_profile, http_failure,
     spawn_profile_action,
 )
-from hermes_cli.web_routers.files import stream_upload_to_path
+from hermes_agent.hermes_cli.web_routers.files import stream_upload_to_path
 
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
-_discover_memory_provider_statuses = late("_discover_memory_provider_statuses", "hermes_cli.web_server_memory")
-_gateway_subcommand = late("_gateway_subcommand", "hermes_cli.web_server_gateway")
-_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
-_resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
-_spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
-_write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
-get_hermes_home = late("get_hermes_home", "hermes_cli.config")
-load_config = late("load_config", "hermes_cli.config")
-save_config = late("save_config", "hermes_cli.config")
+_discover_memory_provider_statuses = late("_discover_memory_provider_statuses", "hermes_agent.hermes_cli.web_server_memory")
+_gateway_subcommand = late("_gateway_subcommand", "hermes_agent.hermes_cli.web_server_gateway")
+_config_profile_scope = late("_config_profile_scope", "hermes_agent.hermes_cli.web_server_profiles")
+_resolve_profile_dir = late("_resolve_profile_dir", "hermes_agent.hermes_cli.web_server_profiles")
+_spawn_hermes_action = late("_spawn_hermes_action", "hermes_agent.hermes_cli.web_server_gateway")
+_write_platform_enabled = late("_write_platform_enabled", "hermes_agent.hermes_cli.web_server_messaging")
+get_hermes_home = late("get_hermes_home", "hermes_agent.hermes_cli.config")
+load_config = late("load_config", "hermes_agent.hermes_cli.config")
+save_config = late("save_config", "hermes_agent.hermes_cli.config")
 
 
 def _spawn_action(argv: list[str], name: str, *, log_msg: str, prefix: str,
@@ -133,7 +133,7 @@ async def clear_pending_pairing(profile: Optional[str] = None):
     return {"ok": True, "cleared": await asyncio.to_thread(_pairing_store(profile).clear_pending)}
 
 
-# --- Webhooks: same JSON store as the CLI (hermes_cli.webhook); the adapter
+# --- Webhooks: same JSON store as the CLI (hermes_agent.hermes_cli.webhook); the adapter
 # hot-reloads it. Per-route HMAC secrets are redacted on read, surfaced once on create.
 
 
@@ -158,7 +158,7 @@ def _webhook_route_summary(name: str, route: dict[str, Any], base_url: str) -> d
 @router.get("/api/webhooks")
 async def list_webhooks(profile: Optional[str] = None):
     def _run():
-        import hermes_cli.webhook as wh
+        import hermes_agent.hermes_cli.webhook as wh
 
         base_url = wh._get_webhook_base_url()
         return {
@@ -193,7 +193,7 @@ async def enable_webhooks(profile: Optional[str] = None):
 
 @router.post("/api/webhooks")
 async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
-    import hermes_cli.webhook as wh
+    import hermes_agent.hermes_cli.webhook as wh
 
     def _enabled():
         return wh._is_webhook_enabled()
@@ -260,7 +260,7 @@ async def delete_webhook(name: str, profile: Optional[str] = None):
     profile = destructive_profile(profile, "DELETE /api/webhooks/{name}")
 
     def _run():
-        import hermes_cli.webhook as wh
+        import hermes_agent.hermes_cli.webhook as wh
 
         def remove(subscriptions):
             del subscriptions[_webhook_key_in(subscriptions, name)]
@@ -276,7 +276,7 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Op
     """Disabled routes stay on disk (re-enable later) but the gateway rejects
     their events with 403; it hot-reloads the file, so no restart is needed."""
     def _run():
-        import hermes_cli.webhook as wh
+        import hermes_agent.hermes_cli.webhook as wh
 
         def toggle(subscriptions):
             key = _webhook_key_in(subscriptions, name)
@@ -295,7 +295,7 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Op
 
 @router.post("/api/gateway/start")
 async def start_gateway(profile: Optional[str] = None):
-    from hermes_cli.web_server_gateway import multiplexed_profile_refusal
+    from hermes_agent.hermes_cli.web_server_gateway import multiplexed_profile_refusal
     # The spawned `hermes -p X gateway start` would refuse with exit 78 into an action log nobody reads;
     # surface the same refusal here so the UI can point at the multiplexer instead of showing "started".
     refusal = await asyncio.to_thread(multiplexed_profile_refusal, profile, "start")
@@ -308,7 +308,7 @@ async def start_gateway(profile: Optional[str] = None):
 
 @router.post("/api/gateway/stop")
 async def stop_gateway(profile: Optional[str] = None, interrupt: bool = False):
-    from hermes_cli.web_server_gateway import live_session_refusal, multiplexed_profile_refusal
+    from hermes_agent.hermes_cli.web_server_gateway import live_session_refusal, multiplexed_profile_refusal
     # A served profile has no gateway of its own to stop: the child prints "No gateway running for this
     # profile" (exit 0) while the multiplexer keeps serving it and the UI flips to "stopped".
     refusal = await asyncio.to_thread(multiplexed_profile_refusal, profile, "stop")
@@ -351,7 +351,7 @@ def _pool_entry_summary(entry: Any, index: int) -> dict[str, Any]:
 @router.get("/api/credentials/pool")
 async def list_credential_pool(profile: Optional[str] = None):
     from hermes_agent.agent.credential_pool import load_pool
-    from hermes_cli.auth import read_credential_pool
+    from hermes_agent.hermes_cli.auth import read_credential_pool
 
     def _run():
         providers = []
@@ -418,7 +418,7 @@ async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[s
             # (mirrors `hermes auth add`).
             if not provider.startswith(CUSTOM_POOL_PREFIX):
                 try:
-                    from hermes_cli.auth import _load_auth_store, unsuppress_credential_source
+                    from hermes_agent.hermes_cli.auth import _load_auth_store, unsuppress_credential_source
 
                     suppressed = _load_auth_store().get("suppressed_sources", {})
                     for src in list(suppressed.get(provider, []) or []):
@@ -450,7 +450,7 @@ async def remove_credential_pool_entry(provider: str, index: int, profile: Optio
     """
     from hermes_agent.agent.credential_pool import load_pool
     from hermes_agent.agent.credential_sources import find_removal_step
-    from hermes_cli.auth import suppress_credential_source
+    from hermes_agent.hermes_cli.auth import suppress_credential_source
 
     provider = (provider or "").strip().lower()
 
@@ -675,12 +675,12 @@ async def list_hooks(profile: Optional[str] = None):
     """Configured shell hooks with consent (allowlist) status, whether the
     script is currently executable, and the valid hook events for the form."""
     def _run():
-        from hermes_cli.config import load_config as _load_config
+        from hermes_agent.hermes_cli.config import load_config as _load_config
         from hermes_agent.agent import shell_hooks
 
         valid_events = []
         with contextlib.suppress(Exception):
-            from hermes_cli.plugins import VALID_HOOKS
+            from hermes_agent.hermes_cli.plugins import VALID_HOOKS
             valid_events = sorted(VALID_HOOKS)
 
         specs = []
@@ -737,7 +737,7 @@ async def create_hook(body: HookCreate, profile: Optional[str] = None):
     event, command = _hook_body_fields(body)
     valid_hooks = None
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import VALID_HOOKS as valid_hooks
+        from hermes_agent.hermes_cli.plugins import VALID_HOOKS as valid_hooks
     if valid_hooks is not None and event not in valid_hooks:
         raise HTTPException(status_code=400, detail=f"Unknown event '{event}'. Valid: {', '.join(sorted(valid_hooks))}")
 

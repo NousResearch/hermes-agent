@@ -60,7 +60,7 @@ def _peer_key(peer_name: str, peer_profile: str, sender: Any) -> str:
 
 
 def _peer_url(peer_name: str, sender: Any) -> str:
-    from hermes_cli.config_backend import read_config_doc_readonly
+    from hermes_agent.hermes_cli.config_backend import read_config_doc_readonly
 
     doc = read_config_doc_readonly(sender.root / "config.yaml")
     peers = doc.get("bot_peers") if isinstance(doc, dict) else None

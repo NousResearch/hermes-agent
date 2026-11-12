@@ -29,7 +29,7 @@ def test_session_route_anchors_reach_metadata_and_context_then_clear(monkeypatch
 def test_slash_subscription_keeps_the_routed_source_owner(tmp_path, monkeypatch):
     import asyncio
     from hermes_agent.gateway.platforms.event import MessageEvent
-    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
+    from hermes_agent.hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kbn
 
     monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
     runner = GatewayRunner.__new__(GatewayRunner)

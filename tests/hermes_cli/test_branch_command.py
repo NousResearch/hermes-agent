@@ -36,7 +36,7 @@ def cli_instance(tmp_path, session_db):
 
     cli = MagicMock()
     cli._agent_running = False  # a bare MagicMock attribute is truthy and would trip the mid-turn guard
-    from hermes_cli.cli_init_mixin import CLIInitMixin
+    from hermes_agent.hermes_cli.cli_init_mixin import CLIInitMixin
     # The id seam: a plain SessionDB (no gateway facade) keeps main's local mint.
     cli._new_session_id = lambda now, **kw: CLIInitMixin._new_session_id(cli, now, **kw)
     cli._session_db = session_db
@@ -74,7 +74,7 @@ class TestBranchCommandCLI:
         """Branching is child-first: when create_session fails the user stays on the original
         session, so it must not be marked ended as "branched" (#11030)."""
         from unittest.mock import patch
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         original = cli_instance.session_id
         with patch.object(session_db, "create_session", side_effect=RuntimeError("boom")):
@@ -87,8 +87,8 @@ class TestBranchCommandCLI:
     def test_gateway_refusal_is_reported_and_leaves_the_session(self, cli_instance, session_db, capsys):
         """A gateway /branch step that fails (e.g. the child's YOLO could not be set, CLI-20) prints
         main's branch error and keeps the user on the original session, never a traceback."""
-        from cli import HermesCLI
-        from hermes_cli.gateway_client import GatewayClientError
+        from hermes_agent.cli import HermesCLI
+        from hermes_agent.hermes_cli.gateway_client import GatewayClientError
 
         def refused(now, **kw):
             raise GatewayClientError("Gateway did not answer config.set")
@@ -102,7 +102,7 @@ class TestBranchCommandCLI:
 
     def test_branch_copies_history(self, cli_instance, session_db):
         """Branching should copy all messages to the new session."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         HermesCLI._handle_branch_command(cli_instance, "/branch")
 
@@ -113,7 +113,7 @@ class TestBranchCommandCLI:
 
     def test_branch_with_custom_name(self, cli_instance, session_db):
         """Custom branch name should be used as the title."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         HermesCLI._handle_branch_command(cli_instance, "/branch refactor approach")
 
@@ -124,7 +124,7 @@ class TestBranchCommandCLI:
 
     def test_branch_no_session_db(self, cli_instance):
         """Branching without a session DB should show an error."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         cli_instance._session_db = None
 
         HermesCLI._handle_branch_command(cli_instance, "/branch")
@@ -141,7 +141,7 @@ class TestBranchCommandCLI:
         Without this, providers that cache per-session state in
         initialize() keep writing under the old session_id. See #6672.
         """
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         # Wire a real-ish agent object with a MagicMock memory_manager
         agent = MagicMock()
@@ -172,7 +172,7 @@ class TestBranchFlushesBeforeEndSession:
     compress_context() already do."""
 
     def test_branch_flushes_when_agent_present(self, cli_instance, session_db):
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         agent = MagicMock()
         cli_instance.agent = agent
@@ -187,7 +187,7 @@ class TestBranchFlushesBeforeEndSession:
     def test_branch_child_row_carries_the_parent_system_prompt(self, cli_instance, session_db):
         """The branch's first turn must send the bytes the parent already sends: with no stored prompt the
         child rebuilds (a fresh workspace probe) and the copied transcript's warm cache is lost at byte 0."""
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         parent_id = cli_instance.session_id
         session_db.update_system_prompt(parent_id, "PARENT PROMPT\n\nWorkspace snapshot: session start")
@@ -230,7 +230,7 @@ class TestBranchPreservesReasoningFields:
     """
 
     def test_reasoning_fields_survive_branch(self, cli_instance, session_db):
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         cli_instance.conversation_history = [
             {"role": "user", "content": "Sort this list."},

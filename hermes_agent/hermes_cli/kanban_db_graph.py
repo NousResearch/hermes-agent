@@ -12,7 +12,7 @@ def inherit_creator_origin(
     """Copy durable origin inside creation's transaction, never adding dependencies."""
     if not creator_task_id:
         return
-    from hermes_cli.kanban_db import _inherit_notify_subs
+    from hermes_agent.hermes_cli.kanban_db import _inherit_notify_subs
 
     conn.execute(
         "UPDATE tasks SET session_id = COALESCE(session_id, "
@@ -99,7 +99,7 @@ def decompose_triage_task(
     Returns child ids in input order, or None when the root is missing / not
     in triage, or has already decomposed. Atomic: malformed entries abort fan-out.
     """
-    from hermes_cli.kanban_db import (
+    from hermes_agent.hermes_cli.kanban_db import (
         _canonical_assignee, _link, _append_event, _insert_comment,
         write_txn, recompute_ready,
     )
@@ -180,7 +180,7 @@ def _insert_decomposed_child(
     with no lock; leaving it unset makes dispatch materialize a fresh
     ``<repo>/.worktrees/<child-id>`` per child from the board anchor.
     """
-    from hermes_cli.kanban_db import (
+    from hermes_agent.hermes_cli.kanban_db import (
         _new_task_id, _canonical_assignee, _append_event,
     )
 

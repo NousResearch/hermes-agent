@@ -76,8 +76,8 @@ class PluginWorld:
         return repo, version(repo, **kwargs)
 
     def command(self, action: str, **kwargs) -> None:
-        from hermes_cli.plugins_cmd import plugins_command
-        from hermes_cli.subcommands.plugins import build_plugins_parser
+        from hermes_agent.hermes_cli.plugins_cmd import plugins_command
+        from hermes_agent.hermes_cli.subcommands.plugins import build_plugins_parser
 
         parser = argparse.ArgumentParser()
         build_plugins_parser(parser.add_subparsers(), cmd_plugins=plugins_command)

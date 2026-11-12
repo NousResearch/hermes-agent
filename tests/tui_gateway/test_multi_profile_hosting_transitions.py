@@ -46,8 +46,8 @@ def two_homes(tmp_path, monkeypatch):
 def test_send_keeps_external_source_value_over_raw_dotenv(two_homes, monkeypatch):
     """B's ``.env`` and B's secret manager both define SHARED_TOKEN; the installed scope (manager
     wins) survives ``_load_hermes_env`` for the routed ``send``."""
-    from hermes_cli import env_loader
-    from hermes_cli.send_cmd import _load_hermes_env
+    from hermes_agent.hermes_cli import env_loader
+    from hermes_agent.hermes_cli.send_cmd import _load_hermes_env
 
     _root, b = two_homes
     # B's secret manager already hydrated for this process (a hydrated home is not re-pulled).
@@ -92,7 +92,7 @@ def test_launch_body_survives_first_secondary_activation(two_homes):
 def test_launch_body_survives_first_secondary_activation_on_the_dashboard(two_homes, monkeypatch):
     pytest.importorskip("fastapi")
     from hermes_agent.agent.secret_scope import get_secret
-    from hermes_cli import web_server_profiles as wsp
+    from hermes_agent.hermes_cli import web_server_profiles as wsp
 
     _root, b = two_homes
     monkeypatch.setattr(wsp, "_resolve_profile_dir", lambda name: b)

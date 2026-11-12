@@ -25,7 +25,7 @@ import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from cli import HermesCLI, _ChatTurn
+from hermes_agent.cli import HermesCLI, _ChatTurn
 
 
 class _StreamingTTSArming:

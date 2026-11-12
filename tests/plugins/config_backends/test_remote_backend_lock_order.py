@@ -1,7 +1,7 @@
 """Remote backend lock order: same-thread re-entry, logging outside backend locks, the formatter."""
 from __future__ import annotations
 
-from hermes_cli.config_backend import ConfigBackendUnavailable, write_config_key
+from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable, write_config_key
 from plugins.config_backends import remote as remote_pkg
 from plugins.config_backends.remote import backend as backend_mod
 
@@ -149,7 +149,7 @@ def test_the_formatter_never_reads_config(tmp_path, monkeypatch):
     (its policy is not recorded yet: the secure default), and no config read is attempted."""
     import logging
 
-    import hermes_cli.config_backend as cb
+    import hermes_agent.hermes_cli.config_backend as cb
     from hermes_agent.agent import redact
     from hermes_agent.agent.redact import RedactingFormatter
     from hermes_constants import hermes_home_key, reset_hermes_home_override, set_hermes_home_override

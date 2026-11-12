@@ -12,7 +12,7 @@ def _read_dm_role_auth_guild() -> Optional[int]:
     """Return the guild ID opted-in for DM role-based auth, or None (secure default). Read from
     config.yaml ``discord.dm_role_auth_guild`` only (behavioral, not a secret); int or numeric string."""
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_agent.hermes_cli.config import read_raw_config
         cfg = read_raw_config() or {}
         discord_cfg = cfg.get("discord", {}) or {}
         raw = discord_cfg.get("dm_role_auth_guild")
@@ -38,7 +38,7 @@ def _read_discord_prompt_timeout() -> int:
     (default 300), clamped to [MIN, MAX] to keep their UI lifetime bounded."""
     raw: Any = None
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_agent.hermes_cli.config import read_raw_config
         cfg = read_raw_config() or {}
         approvals_cfg = cfg.get("approvals", {}) or {}
         raw = approvals_cfg.get("discord_prompt_timeout")

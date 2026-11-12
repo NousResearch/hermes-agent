@@ -13,9 +13,9 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli import anon_auth
-from hermes_cli.auth import _load_auth_store
-from hermes_cli.web_server import _SESSION_TOKEN, app
+from hermes_agent.hermes_cli import anon_auth
+from hermes_agent.hermes_cli.auth import _load_auth_store
+from hermes_agent.hermes_cli.web_server import _SESSION_TOKEN, app
 from tests.hermes_cli.anon_portal import as_local_desktop_backend, claimed_trial
 from tests.hermes_cli.test_anon_upgrade import (
     EMAIL, FREE_PICK, INFERENCE, PORTAL, WELCOME, _model_config, _write_model_config, free_account, portal)
@@ -94,7 +94,7 @@ def test_a_sign_in_cancelled_while_waiting_stops_the_token_poll_and_persists_not
     """The poller is blocked on the token endpoint when the user cancels: the poll stops, and
     nothing reaches the auth store."""
     import threading
-    from hermes_cli import web_server_oauth
+    from hermes_agent.hermes_cli import web_server_oauth
     guest = anon_auth.ensure_portal_identity(explicit=True)
     portal.token_pending = True
 

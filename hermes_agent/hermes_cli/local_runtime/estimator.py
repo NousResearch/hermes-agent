@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import Enum
 
-from hermes_cli.local_runtime.gguf import GGUFHeader
+from hermes_agent.hermes_cli.local_runtime.gguf import GGUFHeader
 
 # q8_0: 34-byte blocks of 32 f16-equivalent elements (exact).
 _Q8_BYTES_PER_ELEM = 34 / 32

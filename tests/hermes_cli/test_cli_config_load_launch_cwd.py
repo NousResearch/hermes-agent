@@ -6,7 +6,7 @@ import os
 import sys
 import types
 
-from hermes_cli.cli_config_load import _mirror_config_to_env
+from hermes_agent.hermes_cli.cli_config_load import _mirror_config_to_env
 
 
 def _mirror(monkeypatch, tmp_path):

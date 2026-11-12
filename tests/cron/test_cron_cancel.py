@@ -127,7 +127,7 @@ def test_cancelling_a_script_job_kills_it_and_names_the_reason(tmp_path, monkeyp
     venv = tmp_path / "venv"
     (venv / "bin").mkdir(parents=True)
     (venv / "bin" / "python").symlink_to(sys.executable)
-    monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable))
+    monkeypatch.setattr("hermes_agent.hermes_cli._launchers.resolve_store_python", lambda repo: Path(sys.executable))
     monkeypatch.setattr("pm.environments.selected_venv", lambda repo: venv)
     # Spawning sanitizes PATH, which resolves the real install's bin dir; the guard refuses that
     # read. The bin dir is irrelevant to the kill, and None is the documented "no install" answer.

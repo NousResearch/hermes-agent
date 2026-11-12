@@ -72,7 +72,7 @@ except ImportError:  # pragma: no cover - platform-specific fallback
 
 def configured_key_storage() -> str:
     """``vault.key_storage``: where a NEW vault's key goes (``file`` default, or ``keychain``)."""
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
 
     section = load_config_readonly().get("vault") or {}
     value = section.get("key_storage") if isinstance(section, dict) else None
@@ -227,7 +227,7 @@ class VaultStore:
         # bespoke chmod — same requirement as the browser-profile snapshot
         # dir (f1d05c review).
         try:
-            from hermes_cli.config import _secure_dir
+            from hermes_agent.hermes_cli.config import _secure_dir
 
             _secure_dir(self._base)
         except Exception:

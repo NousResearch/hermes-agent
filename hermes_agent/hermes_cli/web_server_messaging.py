@@ -10,12 +10,12 @@ from dataclasses import dataclass
 from fastapi import HTTPException
 from pathlib import Path
 from typing import Any, Optional
-from hermes_cli.config import OPTIONAL_ENV_VARS, write_platform_config_field
-from hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
-from hermes_cli.version_info import hermes_user_agent
+from hermes_agent.hermes_cli.config import OPTIONAL_ENV_VARS, write_platform_config_field
+from hermes_agent.hermes_cli.setup_hidden_env import is_setup_hidden_env as _is_setup_hidden_env
+from hermes_agent.hermes_cli.version_info import hermes_user_agent
 
 # Same logger the code used before extraction (record parity).
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 
 
 # Card metadata for core-only platforms (no plugin, so no PlatformEntry to declare it). Plugin
@@ -78,7 +78,7 @@ def _messaging_platform_catalog() -> tuple[dict[str, Any], ...]:
     try:
         # Plugin discovery normally runs as a side effect of importing model_tools, which this
         # server process doesn't do — trigger it explicitly (idempotent).
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()
         from hermes_agent.gateway.platform_registry import platform_registry
         for plugin_entry in platform_registry.plugin_entries():
@@ -120,7 +120,7 @@ _MESSAGING_KEYS_PAGE_KEYS = frozenset({
 def _platform_env_prefixes(platform_id: str) -> tuple[str, ...]:
     """Env-var prefixes owned by a messaging platform card (shared with the profile-clone
     channel stripper so a card and a clone agree on which keys belong to a platform)."""
-    from hermes_cli.profile_channels import platform_env_prefixes
+    from hermes_agent.hermes_cli.profile_channels import platform_env_prefixes
     return platform_env_prefixes(platform_id)
 
 
@@ -223,7 +223,7 @@ def _whatsapp_onboarding_payload(pairing_id: str, record: _WhatsAppOnboardingSes
 
 
 def _restart_gateway_after_whatsapp_onboarding(profile: Optional[str] = None) -> dict[str, Any]:
-    from hermes_cli.web_server_gateway import _restart_gateway_after
+    from hermes_agent.hermes_cli.web_server_gateway import _restart_gateway_after
     return _restart_gateway_after(profile, what="WhatsApp onboarding", label="WhatsApp onboarding")
 
 

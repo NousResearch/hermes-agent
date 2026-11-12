@@ -133,13 +133,13 @@ def _ledger_enabled() -> bool:
 
 
 def _connect() -> sqlite3.Connection:
-    from hermes_cli.sqlite_util import open_db
+    from hermes_agent.hermes_cli.sqlite_util import open_db
 
     return open_db(_db_path(), db_label="verification_evidence.db", initialize=_ensure_schema)
 
 
 def _transaction():
-    from hermes_cli.sqlite_util import transaction
+    from hermes_agent.hermes_cli.sqlite_util import transaction
 
     return transaction(_connect())
 

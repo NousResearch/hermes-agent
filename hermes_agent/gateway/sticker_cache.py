@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_agent.hermes_cli.config import get_hermes_home
 from utils import atomic_json_write
 
 CACHE_PATH = get_hermes_home() / "sticker_cache.json"

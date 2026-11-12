@@ -1,4 +1,4 @@
-"""Tests for kanban board export / import (``hermes_cli.kanban_transfer``).
+"""Tests for kanban board export / import (``hermes_agent.hermes_cli.kanban_transfer``).
 
 The contract these pin down is "a board survives the trip to another
 machine, and nothing that only made sense on the exporting machine comes
@@ -29,10 +29,10 @@ _WORKTREE = Path(__file__).resolve().parents[2]
 if str(_WORKTREE) not in sys.path:
     sys.path.insert(0, str(_WORKTREE))
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_transfer as kt
-from hermes_cli.archive_safe import normalize_archive_parts, safe_extract_targz
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_transfer as kt
+from hermes_agent.hermes_cli.archive_safe import normalize_archive_parts, safe_extract_targz
 
 
 @pytest.fixture

@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 
-from hermes_cli import update_completion
+from hermes_agent.hermes_cli import update_completion
 
 
 class _Win32Sys:
@@ -25,7 +25,7 @@ def _fake_windows_prepare(tmp_path, monkeypatch, acquire):
     import pm.client
     import pm.environments
     import pm.receipt
-    from hermes_cli import update_lock, venv_sync
+    from hermes_agent.hermes_cli import update_lock, venv_sync
 
     events = []
     monkeypatch.setattr(update_completion, "sys", _Win32Sys())
@@ -70,7 +70,7 @@ def test_windows_bootstrap_holds_a_checkout_lease_before_it_writes_the_checkout(
 def test_windows_bootstrap_that_cannot_join_the_checkout_lock_writes_nothing(tmp_path, monkeypatch):
     """L3: refused the join (a foreign update owns the checkout), the bootstrap stops before
     arming the completion or touching the venv, never an unfenced writer."""
-    from hermes_cli.update_lock import UpdateHolder
+    from hermes_agent.hermes_cli.update_lock import UpdateHolder
 
     _root, events = _fake_windows_prepare(
         tmp_path, monkeypatch, lambda events, root: UpdateHolder(pid=4242, age_seconds=0.0))

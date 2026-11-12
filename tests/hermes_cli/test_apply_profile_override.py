@@ -65,7 +65,7 @@ def _run_apply_profile_override(
     for key, value in (extra_env or {}).items():
         monkeypatch.setenv(key, value)
 
-    from hermes_cli.main import _apply_profile_override
+    from hermes_agent.hermes_cli.main import _apply_profile_override
     _apply_profile_override()
 
     return os.environ.get("HERMES_HOME")
@@ -92,7 +92,7 @@ def test_missing_sticky_profile_allows_recovery_commands(
     assert result == str(root)
     assert "saved profile 'ray' no longer exists; running this recovery command" in capsys.readouterr().err
     if argv[1:3] == ["profile", "use"]:
-        from hermes_cli.profile_cmd import cmd_profile
+        from hermes_agent.hermes_cli.profile_cmd import cmd_profile
 
         cmd_profile(SimpleNamespace(profile_action="use", profile_name="default"))
         assert not (root / "active_profile").exists()
@@ -179,7 +179,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
 
         monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_dir=str(user_home)))
 
-        from hermes_cli.main import _apply_profile_override, _resolve_sudo_user_profile_env
+        from hermes_agent.hermes_cli.main import _apply_profile_override, _resolve_sudo_user_profile_env
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") == str(profile_dir)
@@ -237,7 +237,7 @@ class TestSupervisedChildIgnoresStickyProfile:
         monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
         monkeypatch.setattr(sys, "argv", ["hermes", "-p", "coder", "gateway", "run"])
 
-        from hermes_cli.main import _apply_profile_override
+        from hermes_agent.hermes_cli.main import _apply_profile_override
         _apply_profile_override()
 
         result = os.environ.get("HERMES_HOME")
@@ -354,7 +354,7 @@ class TestGeneralizedSupervisorMarkers:
         are protected without relying on the INVOCATION_ID heuristic."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         (tmp_path / "home").mkdir()
-        from hermes_cli.gateway import generate_systemd_unit
+        from hermes_agent.hermes_cli.gateway import generate_systemd_unit
 
         unit = generate_systemd_unit()
         assert 'Environment="HERMES_SUPERVISED_CHILD=1"' in unit
@@ -364,7 +364,7 @@ class TestGeneralizedSupervisorMarkers:
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         (tmp_path / "home").mkdir()
-        from hermes_cli.gateway import generate_launchd_plist
+        from hermes_agent.hermes_cli.gateway import generate_launchd_plist
 
         plist = generate_launchd_plist()
         assert "<key>HERMES_SUPERVISED_CHILD</key>" in plist
@@ -378,7 +378,7 @@ class TestS6ContainerGatewayRun:
     def test_the_redirected_run_keeps_the_root_home_despite_the_active_profile(
         self, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr("hermes_cli.service_manager._s6_running", lambda: True)
+        monkeypatch.setattr("hermes_agent.hermes_cli.service_manager._s6_running", lambda: True)
         root = tmp_path / ".hermes"
         result = _run_apply_profile_override(
             tmp_path, monkeypatch, hermes_home=str(root), active_profile="coder",
@@ -389,7 +389,7 @@ class TestS6ContainerGatewayRun:
     def test_a_foreground_run_and_other_verbs_still_follow_the_active_profile(
         self, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr("hermes_cli.service_manager._s6_running", lambda: True)
+        monkeypatch.setattr("hermes_agent.hermes_cli.service_manager._s6_running", lambda: True)
         root = tmp_path / ".hermes"
         for argv in (["hermes", "gateway", "run", "--no-supervise"], ["hermes", "chat"]):
             result = _run_apply_profile_override(
@@ -399,7 +399,7 @@ class TestS6ContainerGatewayRun:
 
 
 def test_module_entry_keeps_an_explicit_default_profile_over_the_sticky_one(tmp_path):
-    """`python -m hermes_cli.main --profile default` (how Hermes spawns its own CLI) stays on the root
+    """`python -m hermes_agent.hermes_cli.main --profile default` (how Hermes spawns its own CLI) stays on the root
     home while active_profile names another profile: a second import of the module must not re-read
     the stripped argv and fall to the sticky profile."""
     import subprocess

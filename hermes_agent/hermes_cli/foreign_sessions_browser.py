@@ -5,7 +5,7 @@ import re
 import socket
 from pathlib import Path
 
-from hermes_cli.foreign_sessions import _SOURCE_DB_NAMES, _SOURCE_LABELS, _SOURCES, _parser, _walk
+from hermes_agent.hermes_cli.foreign_sessions import _SOURCE_DB_NAMES, _SOURCE_LABELS, _SOURCES, _parser, _walk
 
 MAX_LOG_BYTES = 32 * 1024 * 1024
 

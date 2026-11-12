@@ -19,10 +19,10 @@ def _resolve_model() -> str:
         return m.strip()
     # No env seed / config preference: the cost-safe silent default (cache-only read), never an unpicked flagship.
     with contextlib.suppress(Exception):
-        from hermes_cli.models import get_preferred_silent_default_model
+        from hermes_agent.hermes_cli.models import get_preferred_silent_default_model
         return get_preferred_silent_default_model()
     # Data-only module (no heavy imports), so this holds when the lookup above fails.
-    from hermes_cli.models_catalog_static import PREFERRED_SILENT_DEFAULT_MODEL
+    from hermes_agent.hermes_cli.models_catalog_static import PREFERRED_SILENT_DEFAULT_MODEL
     return PREFERRED_SILENT_DEFAULT_MODEL
 
 
@@ -61,8 +61,8 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     if not (explicit_model := _env_model_seed()):
         return model, None
     with contextlib.suppress(Exception):
-        from hermes_cli.model_switch import resolve_startup_model_route
-        from hermes_cli.models import detect_static_provider_for_model
+        from hermes_agent.hermes_cli.model_switch import resolve_startup_model_route
+        from hermes_agent.hermes_cli.models import detect_static_provider_for_model
         full_cfg = _load_cfg()
         cfg = full_cfg.get("model") or {}
         current_provider = ((str(cfg.get("provider") or "").strip().lower() if isinstance(cfg, dict) else "")
@@ -80,7 +80,7 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
 
 def _is_routable_provider(provider: str) -> bool:
     with contextlib.suppress(Exception):
-        from hermes_cli.runtime_provider import is_routable_provider
+        from hermes_agent.hermes_cli.runtime_provider import is_routable_provider
         return is_routable_provider(provider)
     return False
 
@@ -146,7 +146,7 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     provider, base_url, api_mode = (str(route.get(k) or "").strip() for k in ("provider", "base_url", "api_mode"))
     service_tier = str(model_config.get("service_tier") or "").strip()
     reasoning_config = model_config.get("reasoning_config")
-    from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+    from hermes_agent.hermes_cli.runtime_provider import is_foreign_provider_endpoint
     if is_foreign_provider_endpoint(provider, base_url):
         # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
         base_url = api_mode = ""
@@ -155,7 +155,7 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
     if provider and not _is_routable_provider(provider):
         healed = None
         try:
-            from hermes_cli.runtime_provider import canonical_custom_identity
+            from hermes_agent.hermes_cli.runtime_provider import canonical_custom_identity
             healed = canonical_custom_identity(base_url=base_url or None, model=model or None)
         except Exception:
             logger.debug("custom provider identity recovery failed", exc_info=True)
@@ -197,7 +197,7 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     agent = session_runtime_view(agent)
     attr = lambda k: str(getattr(agent, k, "") or "").strip()
     model, base_url = attr("model"), attr("base_url")
-    from hermes_cli.runtime_provider_custom import session_provider_identity
+    from hermes_agent.hermes_cli.runtime_provider_custom import session_provider_identity
     provider = session_provider_identity(attr("provider"), attr("requested_provider"), base_url, model)
     reasoning_config = getattr(agent, "reasoning_config", None)
     live = {
@@ -354,7 +354,7 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
     unresolved = [name for name in explicit if name not in built_in]
     if unresolved:
         try:
-            from hermes_cli.plugins import discover_plugins
+            from hermes_agent.hermes_cli.plugins import discover_plugins
             discover_plugins()
             plugin_valid = [name for name in unresolved if validate_toolset(name)]
         except Exception:
@@ -368,7 +368,7 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
     if not unresolved:
         return built_in
     try:  # (enabled, disabled) MCP server names from raw config; both empty on any failure
-        from hermes_cli.config import read_raw_config
+        from hermes_agent.hermes_cli.config import read_raw_config
         from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
         raw_cfg = read_raw_config()
         mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
@@ -416,8 +416,8 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             return resolved
         fallback_notice = "[tui] no valid HERMES_TUI_TOOLSETS entries; using configured CLI toolsets"
     try:
-        from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools, _platform_toolsets_explicitly_saved
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.tools_config import _get_platform_tools, _platform_toolsets_explicitly_saved
         cfg = load_config()
         # include_default_mcp_servers=True is the runtime variant (the agent must be able to call
         # default MCP servers); the config-editing variant would silently drop MCP tools from the TUI.
@@ -456,7 +456,7 @@ def _load_disabled_toolsets() -> list[str] | None:
     try:
         from hermes_agent.agent.skill_utils import parse_config_string_list
 
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         agent_cfg = load_config().get("agent") or {}
         disabled = parse_config_string_list(agent_cfg.get("disabled_toolsets"))
@@ -510,8 +510,8 @@ def _tool_lifecycle_required_for_ui(name: str) -> bool:
 def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _RuntimeFallbackResolution:
     """Resolve the primary runtime or one complete provider/model fallback. Provider-only fallback entries
     are skipped so the unavailable primary model can never leak into a different runtime."""
-    from hermes_cli.auth import AuthError
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
     try:
         return _RuntimeFallbackResolution(resolve_runtime_provider(**(resolve_kwargs or {})), None, False)
     except AuthError as primary_exc:
@@ -521,12 +521,12 @@ def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _Runti
             if not fb_provider or not fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
+                from hermes_agent.hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
                 runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
                 # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
                 runtime["provider"] = effective_runtime_provider(entry, runtime)
-                from hermes_cli.auth import primary_failure_wording
+                from hermes_agent.hermes_cli.auth import primary_failure_wording
                 logging.getLogger(__name__).warning(
                     "Primary %s (%s), falling back to %s model %s",
                     primary_failure_wording(primary_exc)[0], primary_exc, fb_provider, fb_model)
@@ -549,11 +549,11 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
         provider_norm = str(requested_provider or "").strip().lower()
         # An empty provider names no route either; once the main slot targets another model it 404s (#132648).
         if provider_norm == "custom":
-            from hermes_cli.runtime_provider import canonical_custom_identity
+            from hermes_agent.hermes_cli.runtime_provider import canonical_custom_identity
             if recovered := canonical_custom_identity(base_url=override_base_url or None, model=model or None):
                 requested_provider = recovered
         elif not provider_norm and _config_model_target()[0] != model:
-            from hermes_cli.runtime_provider_custom import empty_provider_identity
+            from hermes_agent.hermes_cli.runtime_provider_custom import empty_provider_identity
             requested_provider = empty_provider_identity(override_base_url, model) or requested_provider
         if provider_norm == "custom" and override_base_url:
             # Failing identity recovery, still hand base_url to the direct-alias branch so pool/env credentials resolve.
@@ -577,7 +577,7 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
             raise RuntimeError("Auth fallback resolved without a model")
         # Same pre-agent switch the messaging gateway surfaces (#74349); _make_agent pops it onto the
         # agent's one-shot notice so the TUI/Desktop user sees which provider actually answered.
-        from hermes_cli.fallback_config import pre_agent_fallback_notice
+        from hermes_agent.hermes_cli.fallback_config import pre_agent_fallback_notice
         # requested_provider=None means resolve_runtime_provider read the persisted config provider;
         # ``model: <id>`` (string shorthand) names no provider.
         cfg_model = _load_cfg().get("model")
@@ -599,8 +599,8 @@ def _rederive_per_model_route(model: str, runtime: dict) -> None:
     that pick the wire per model (OpenCode Zen/Go, Nous, profiles with api_mode_for_model) must re-derive both from the target model,
     or a resumed opencode-go session keeps a MiniMax-era anthropic_messages route (and its /v1-stripped or
     other-family relay URL) for a chat_completions model like deepseek-v4-flash-vision-exp (#96066)."""
-    from hermes_cli.model_switch import model_derived_api_mode
-    from hermes_cli.models import normalize_opencode_base_url
+    from hermes_agent.hermes_cli.model_switch import model_derived_api_mode
+    from hermes_agent.hermes_cli.models import normalize_opencode_base_url
     provider = str(runtime.get("requested_provider") or runtime.get("provider") or "")
     api_mode = model_derived_api_mode(provider, model)
     if api_mode is None:
@@ -612,7 +612,7 @@ def _rederive_per_model_route(model: str, runtime: dict) -> None:
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     """Config ephemeral system prompt + HERMES_TUI_SKILLS preload block. Hard-fails only when EVERY requested
     skill is missing (cli.py parity): a typo'd name must not auto-block the Kanban task."""
-    from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
+    from hermes_agent.hermes_cli.config import resolve_ephemeral_system_prompt_from_config
     system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)
     startup_skills = _parse_tui_skills_env()
     if not startup_skills:
@@ -644,7 +644,7 @@ def _make_agent(
     from hermes_agent.run_agent import AIAgent
     # MCP discovery runs in a daemon thread (a dead server can't freeze the shell); the agent snapshots its tool
     # list once, so briefly wait for in-flight discovery. Dashboard /api/ws uses mcp_startup; TUI stdio uses entry.
-    for _mod in ("hermes_cli.mcp_startup", "hermes_agent.tui_gateway.entry"):
+    for _mod in ("hermes_agent.hermes_cli.mcp_startup", "hermes_agent.tui_gateway.entry"):
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()

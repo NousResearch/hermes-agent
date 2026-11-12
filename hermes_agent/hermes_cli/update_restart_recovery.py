@@ -24,7 +24,7 @@ The pass covers two runtime families, because the in-process restart phase
 covers both and an abort can strand either one (#92145):
 
 - **gateway profiles**, relaunched through the existing per-profile
-  ``hermes_cli.main -p <profile> gateway restart`` command; and
+  ``hermes_agent.hermes_cli.main -p <profile> gateway restart`` command; and
 - **``hermes-serve*`` systemd units**, restarted directly through
   ``systemctl``.  ``hermes serve`` is not a gateway profile and has no
   per-profile relaunch command, but it is the runtime that hosts
@@ -92,7 +92,7 @@ def _succeeded(result: Any) -> bool:
 
 def _launch_profile() -> str:
     """Profile this recovery process was launched as: ``<root>/profiles/<name>`` in ``HERMES_HOME`` names it,
-    anything else is the default profile. Mirrors ``hermes_cli.profiles.profile_root_for_env_home`` without
+    anything else is the default profile. Mirrors ``hermes_agent.hermes_cli.profiles.profile_root_for_env_home`` without
     importing it — this module stays stdlib-only at import time."""
     home = os.environ.get("HERMES_HOME", "").strip()
     if home:
@@ -141,7 +141,7 @@ def _run_profile_restart(profile: str, *, run: Callable[..., Any]) -> bool:
     # `--interrupt`: the update owns this restart (drain-first, 31637312899); a live session must not
     # strand the profile on pre-update code the way a refusal would. `--detach`: this bounded call
     # must not itself become a service-less profile's gateway (killed at the timeout below).
-    argv = [sys.executable, "-m", "hermes_cli.main", "-p", profile, "gateway", "restart", "--interrupt", "--detach"]
+    argv = [sys.executable, "-m", "hermes_agent.hermes_cli.main", "-p", profile, "gateway", "restart", "--interrupt", "--detach"]
     return _succeeded(_run_quiet(run, argv, timeout=_PROFILE_RESTART_TIMEOUT, **kwargs))
 
 

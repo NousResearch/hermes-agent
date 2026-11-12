@@ -41,7 +41,7 @@ def test_delivery_targets_route_binds_profile_scope(tmp_path, monkeypatch):
 
     monkeypatch.setattr(scheduler_delivery, "cron_delivery_targets", _fake_targets)
 
-    from hermes_cli.web_routers import cron as cron_router
+    from hermes_agent.hermes_cli.web_routers import cron as cron_router
 
     result = asyncio.run(cron_router.get_cron_delivery_targets())
 

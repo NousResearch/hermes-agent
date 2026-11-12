@@ -13,8 +13,8 @@ from argparse import Namespace
 import sys
 import types
 
-from hermes_cli import main as main_mod
-from hermes_cli import mcp_startup
+from hermes_agent.hermes_cli import main as main_mod
+from hermes_agent.hermes_cli import mcp_startup
 
 
 def _install_discover_spy(monkeypatch):
@@ -25,7 +25,7 @@ def _install_discover_spy(monkeypatch):
 
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.plugins",
+        "hermes_agent.hermes_cli.plugins",
         types.SimpleNamespace(
             discover_plugins=_discover,
             # main.py now kicks discovery off in a background thread; both
@@ -34,7 +34,7 @@ def _install_discover_spy(monkeypatch):
         ),
     )
     # The plain-chat path also arms MCP discovery. Its config probe imports
-    # ``hermes_cli.plugins`` (replaced by the stub above), fails, and falls
+    # ``hermes_agent.hermes_cli.plugins`` (replaced by the stub above), fails, and falls
     # back to "assume configured", which spawned a REAL ``cli-mcp-discovery``
     # daemon thread that was still importing ``hermes_agent.tools.mcp_tool`` when pytest
     # exited. A daemon thread inside a C-extension import at interpreter

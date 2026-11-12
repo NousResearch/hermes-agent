@@ -1,8 +1,8 @@
 """Pre-import startup fast paths — THE canonical lightweight helpers.
 
-This module is imported by ``hermes_cli/main.py`` BEFORE its heavy import
+This module is imported by ``hermes_agent/hermes_cli/main.py`` BEFORE its heavy import
 wall (config, argparse tree, logging, providers). Everything here must stay
-**stdlib-only and cheap** (os/sys file probes; no yaml, no hermes_cli.config,
+**stdlib-only and cheap** (os/sys file probes; no yaml, no hermes_agent.hermes_cli.config,
 no argparse). A guard test (``test_startup_fast_import_weight``) subprocess-
 imports this module and fails if any heavy module sneaks into sys.modules.
 
@@ -16,7 +16,7 @@ noticed. One implementation, imported by both the fast path and the module
 constants, makes that drift structurally impossible; the parity guard test
 would have caught eb4040242 the day it landed.
 
-``hermes_cli/config.py``'s ``get_container_exec_info()`` reads the same
+``hermes_agent/hermes_cli/config.py``'s ``get_container_exec_info()`` reads the same
 ``.container-mode`` file; keep the file-format assumptions here and there in
 sync (this module deliberately only PROBES existence/typos cheaply and errs
 toward the slow path, which then does the authoritative parse).
@@ -201,12 +201,12 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
     # Registry-owned banner label (includes "· upstream <sha>" for git installs); banner.py keeps
     # rich/prompt_toolkit lazy, so this import is light.
     try:
-        from hermes_cli.banner import format_banner_version_label
+        from hermes_agent.hermes_cli.banner import format_banner_version_label
 
         print(format_banner_version_label())
     except Exception:
-        from hermes_cli import __release_date__
-        from hermes_cli.version_info import get_version_info
+        from hermes_agent.hermes_cli import __release_date__
+        from hermes_agent.hermes_cli.version_info import get_version_info
 
         print(f"Hermes Agent v{get_version_info().derived_version} ({__release_date__})")
     print(f"Install directory: {project_root_str()}")
@@ -215,7 +215,7 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
     try:
         from pathlib import Path
 
-        from hermes_cli.config import detect_install_method
+        from hermes_agent.hermes_cli.config import detect_install_method
 
         install_method = detect_install_method(Path(project_root_str()))
     except Exception:
@@ -230,8 +230,8 @@ def print_fast_version_info(*, check_updates: bool = True) -> None:
     # Synchronous update status — bounded by check_for_updates' own subprocess/network timeouts
     # and its 6-hour cache; any failure prints nothing.
     try:
-        from hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
-        from hermes_cli.config import recommended_update_command
+        from hermes_agent.hermes_cli.source_check import UPDATE_AVAILABLE_NO_COUNT, check_for_updates
+        from hermes_agent.hermes_cli.config import recommended_update_command
 
         status = check_for_updates(passive=True)
         behind = status.get("behind")

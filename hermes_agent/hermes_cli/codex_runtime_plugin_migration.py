@@ -458,7 +458,7 @@ def migrate(
     plugins: list[dict] = []
     plugin_query_succeeded = False
     if discover_plugins and not dry_run:
-        from hermes_cli.codex_runtime_switch import get_configured_codex_binary
+        from hermes_agent.hermes_cli.codex_runtime_switch import get_configured_codex_binary
         plugins, plugin_err = _query_codex_plugins(
             codex_home=codex_home, codex_bin=get_configured_codex_binary(hermes_config))
         if plugin_err:

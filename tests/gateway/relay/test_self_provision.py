@@ -66,7 +66,7 @@ def _arm(monkeypatch, *, url="wss://connector.example/relay", token="nas-token")
     monkeypatches resolve_nous_access_token to raise instead.
     """
     monkeypatch.setattr(relay, "relay_url", lambda: url)
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: token)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.resolve_nous_access_token", lambda: token)
 
 
 # ─────────────────────────── config readers ───────────────────────────
@@ -220,7 +220,7 @@ def test_no_nas_token_is_non_fatal(monkeypatch):
     def _boom():
         raise RuntimeError("no token")
 
-    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", _boom)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.resolve_nous_access_token", _boom)
     # Must not raise; returns False; no creds set.
     assert relay.self_provision_relay() is False
     assert relay.relay_connection_auth() == (None, None)
@@ -239,7 +239,7 @@ def test_relay_display_name_suppresses_stock_brand(monkeypatch):
         def get_branding(self, key, fallback=""):
             return "Hermes Agent" if key == "agent_name" else fallback
 
-    monkeypatch.setattr("hermes_cli.skin_engine.get_active_skin", lambda: _Skin())
+    monkeypatch.setattr("hermes_agent.hermes_cli.skin_engine.get_active_skin", lambda: _Skin())
     assert relay.relay_display_name() is None
 
 
@@ -271,7 +271,7 @@ def _boot_with_expired_login(tmp_path, monkeypatch, *, env_file: str, stored_por
         portals.append(kwargs["portal_base_url"])
         raise RuntimeError("stop before any network call")
 
-    monkeypatch.setattr("hermes_cli.auth._refresh_nous_or_quarantine", _refresh)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth._refresh_nous_or_quarantine", _refresh)
     return portals
 
 
@@ -291,7 +291,7 @@ def test_startup_refresh_uses_launch_profile_portal_when_multiplexed(tmp_path, m
 
 def test_startup_refresh_without_override_stays_on_default_portal(tmp_path, monkeypatch):
     """With no override anywhere, the startup refresh keeps the default Portal."""
-    from hermes_cli.auth_nous import DEFAULT_NOUS_PORTAL_URL
+    from hermes_agent.hermes_cli.auth_nous import DEFAULT_NOUS_PORTAL_URL
 
     portals = _boot_with_expired_login(
         tmp_path, monkeypatch, env_file="", stored_portal=DEFAULT_NOUS_PORTAL_URL)
@@ -327,7 +327,7 @@ def test_startup_idp_secret_ref_keeps_launch_env_value_when_multiplexed(tmp_path
         "    client_id: relay-client\n    client_secret: ${RELAY_IDP_SECRET}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(launch_home))
     # The autouse fixture stubs config reads; this test needs the real ``${VAR}`` expansion.
-    from hermes_cli.config_effective import load_user_config_effective
+    from hermes_agent.hermes_cli.config_effective import load_user_config_effective
     monkeypatch.setattr("hermes_agent.gateway.run._load_gateway_config",
                         lambda config_path=None: load_user_config_effective(launch_home / "config.yaml"))
     monkeypatch.setenv("RELAY_IDP_SECRET", "injected-launch-secret")

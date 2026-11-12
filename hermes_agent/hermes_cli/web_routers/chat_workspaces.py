@@ -15,12 +15,12 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 
-from hermes_cli.web_deps import late
-from hermes_cli.web_routers._common import http_failure, scoped_to_thread
+from hermes_agent.hermes_cli.web_deps import late
+from hermes_agent.hermes_cli.web_routers._common import http_failure, scoped_to_thread
 
 router = APIRouter()
 
-_open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.web_server_sessions")
+_open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_agent.hermes_cli.web_server_sessions")
 
 
 def resolve_chat_cwd(raw: Optional[str]) -> Optional[str]:
@@ -42,7 +42,7 @@ def _collect_workspaces(profile: Optional[str], scan: bool) -> dict:
     # The dashboard hosts the in-process gateway (``web_server`` imports ``hermes_agent.tui_gateway.server``
     # at startup), so the sidebar's repo-discovery helpers are already bound there.
     import hermes_agent.tui_gateway.server as gateway
-    from hermes_cli import projects_db as pdb
+    from hermes_agent.hermes_cli import projects_db as pdb
 
     # Browsing never bootstraps the owner's session store: a profile whose gateway has not
     # yet initialized state.db simply contributes no session-derived roots (``db=None``).

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import process_identity
+from hermes_agent.hermes_cli import process_identity
 from tests.waiting import wait_until
 from hermes_agent.tools import browser_use_cli
 

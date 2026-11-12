@@ -15,7 +15,7 @@ PRUNE_RPC_TIMEOUT = 600
 
 def live_owner():
     """The ready gateway endpoint serving this home, else None. Discovery only: never starts one."""
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
     from hermes_constants import get_hermes_home
     found = discover_gateway_endpoint(get_hermes_home().resolve())
     return found.endpoint if found.state == "ready" else None
@@ -24,7 +24,7 @@ def live_owner():
 def owner_prune(endpoint, **params) -> dict:
     """Run one ``session.prune`` on *endpoint*; raises ``GatewayClientError`` on refusal/loss."""
     import asyncio
-    from hermes_cli.gateway_client import connect_gateway
+    from hermes_agent.hermes_cli.gateway_client import connect_gateway
 
     async def _run():
         async with connect_gateway(endpoint) as client:

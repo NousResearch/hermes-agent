@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 @pytest.fixture
 def bare_cli():
@@ -37,7 +37,7 @@ class TestRecoverTerminalAfterInterrupt:
         """
         bare_cli._force_full_redraw = MagicMock()
         with patch(
-            "hermes_cli.curses_ui.flush_stdin", side_effect=OSError("no tty")
+            "hermes_agent.hermes_cli.curses_ui.flush_stdin", side_effect=OSError("no tty")
         ):
             bare_cli._recover_terminal_after_interrupt()  # must not raise
 
@@ -50,7 +50,7 @@ class TestRecoverTerminalAfterInterrupt:
             side_effect=lambda: events.append("redraw")
         )
         with patch(
-            "hermes_cli.curses_ui.flush_stdin",
+            "hermes_agent.hermes_cli.curses_ui.flush_stdin",
             side_effect=lambda: events.append("flush"),
         ):
             bare_cli._recover_terminal_after_interrupt()
@@ -63,6 +63,6 @@ class TestRecoverTerminalAfterInterrupt:
         Under pytest stdin is not a TTY, so this must return cleanly without
         touching termios.
         """
-        from hermes_cli.curses_ui import flush_stdin
+        from hermes_agent.hermes_cli.curses_ui import flush_stdin
 
         flush_stdin()  # must not raise in a non-TTY test environment

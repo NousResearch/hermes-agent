@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.auth import (
+from hermes_agent.hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
     _read_codex_tokens,
@@ -388,7 +388,7 @@ def _patch_httpx(monkeypatch, response):
     def _factory(*args, **kwargs):
         return _StubHTTPClient(response)
 
-    monkeypatch.setattr("hermes_cli.auth.httpx.Client", _factory)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth.httpx.Client", _factory)
 
 
 def test_refresh_429_classified_as_quota_not_auth_failure(monkeypatch):
@@ -398,7 +398,7 @@ def test_refresh_429_classified_as_quota_not_auth_failure(monkeypatch):
     dedicated rate-limit code so callers surface a "retry later" notice rather
     than a misleading "run hermes auth".
     """
-    from hermes_cli.auth import (
+    from hermes_agent.hermes_cli.auth import (
         CODEX_RATE_LIMITED_CODE,
         format_auth_error,
         is_rate_limited_auth_error,
@@ -426,7 +426,7 @@ def test_refresh_429_classified_as_quota_not_auth_failure(monkeypatch):
 
 def test_refresh_429_without_retry_after_header(monkeypatch):
     """429 without a Retry-After header still classifies as quota, no relogin."""
-    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE
+    from hermes_agent.hermes_cli.auth import CODEX_RATE_LIMITED_CODE
 
     response = _StubHTTPResponse(429, {"error": "rate_limited"})
     _patch_httpx(monkeypatch, response)

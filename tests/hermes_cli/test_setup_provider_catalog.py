@@ -8,7 +8,7 @@ import pytest
 def test_setup_offers_registered_provider_catalog(monkeypatch, live):
     from hermes_agent import providers
     from hermes_agent.providers.base import ProviderProfile
-    from hermes_cli import auth, config, model_setup_flows as flows, models
+    from hermes_agent.hermes_cli import auth, config, model_setup_flows as flows, models
 
     class SetupProfile(ProviderProfile):
         def fetch_models(self, *, api_key=None, base_url=None):
@@ -37,7 +37,7 @@ def test_setup_offers_registered_provider_catalog(monkeypatch, live):
     monkeypatch.setattr(flows, "_models_dev_merged", lambda *_: [])
     monkeypatch.setattr(config, "load_config", dict)
     monkeypatch.setattr(models, "fetch_api_models", lambda *_args, **_kwargs: [])
-    from hermes_cli import models_pricing
+    from hermes_agent.hermes_cli import models_pricing
     monkeypatch.setattr(models_pricing, "get_pricing_for_provider", lambda *_: {})
     picker = Mock(return_value=None)
     monkeypatch.setattr(flows, "_pick_model_or_prompt", picker)
@@ -56,7 +56,7 @@ def test_setup_uses_profile_endpoint_and_headers(tmp_path, monkeypatch):
 
     from hermes_agent import providers
     from hermes_agent.providers.base import ProviderProfile
-    from hermes_cli import model_setup_flows as flows
+    from hermes_agent.hermes_cli import model_setup_flows as flows
 
     requests = []
 
@@ -103,7 +103,7 @@ def test_setup_matches_picker_when_catalog_fetch_fails(monkeypatch):
 
     from hermes_agent import providers
     from hermes_agent.providers.base import ProviderProfile
-    from hermes_cli import model_setup_flows as flows, models
+    from hermes_agent.hermes_cli import model_setup_flows as flows, models
 
     class DownProfile(ProviderProfile):
         def fetch_models(self, *, api_key=None, base_url=None, timeout=8.0):
@@ -129,7 +129,7 @@ def test_switch_validation_trusts_profile_owned_catalog(monkeypatch):
     neither is still rejected."""
     from hermes_agent import providers
     from hermes_agent.providers.base import ProviderProfile
-    from hermes_cli import models, models_validate
+    from hermes_agent.hermes_cli import models, models_validate
 
     class PlanProfile(ProviderProfile):
         def fetch_models(self, *, api_key=None, base_url=None, timeout=8.0):
@@ -154,7 +154,7 @@ def test_setup_keeps_curated_list_when_profile_catalog_is_down_and_declares_no_f
 
     from hermes_agent import providers
     from hermes_agent.providers.base import ProviderProfile
-    from hermes_cli import model_setup_flows as flows, models
+    from hermes_agent.hermes_cli import model_setup_flows as flows, models
 
     class DownProfile(ProviderProfile):
         def fetch_models(self, *, api_key=None, base_url=None, timeout=8.0):

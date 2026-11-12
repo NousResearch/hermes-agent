@@ -18,7 +18,7 @@ from utils import fast_safe_load
 from plugins.config_backends import remote as remote_pkg
 from plugins.config_backends.remote import backend as backend_mod
 from plugins.config_backends.remote import credentials as cred_mod
-from hermes_cli.config_backend import (
+from hermes_agent.hermes_cli.config_backend import (
     ConfigBackendUnavailable, ConfigLockedError, ConfigValueError, get_config_backend, write_config_key)
 
 from .stub_plane import INSTANCE, TOKEN, StubPlane, remote_env
@@ -46,7 +46,7 @@ def _gets(plane):
 
 
 def _config_cmd(capsys, *argv):
-    from hermes_cli.config import config_command
+    from hermes_agent.hermes_cli.config import config_command
     ns = argparse.Namespace(config_command=argv[0], key=argv[1], value=argv[2] if len(argv) > 2 else None,
                             force=False)
     with pytest.raises(SystemExit) as exc:
@@ -65,7 +65,7 @@ def test_selected_from_env_and_file_tooling_off(plane):
 
 
 def test_reads_come_from_plane_not_local_file(plane):
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     plane.upper = {"model": {"default": "hermes-4", "provider": "nous"}, "terminal": {"timeout": 180}}
     local = plane.home / "config.yaml"
     local.write_text(json.dumps({"model": {"default": "LOCAL"}, "terminal": {"timeout": 1}}))
@@ -82,7 +82,7 @@ def test_reads_come_from_plane_not_local_file(plane):
 
 
 def test_boot_fetch_runs_inside_load_hermes_dotenv(plane):
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     load_hermes_dotenv(hermes_home=plane.home)
     assert len(_gets(plane)) == 1
     load_hermes_dotenv(hermes_home=plane.home)  # idempotent: one fetch per process per profile
@@ -92,7 +92,7 @@ def test_boot_fetch_runs_inside_load_hermes_dotenv(plane):
 # --- fail-closed boot ---------------------------------------------------------------------
 
 def test_boot_retries_then_exits_on_outage(plane):
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     plane.fail_status = 503
     with pytest.raises(ConfigBackendUnavailable) as exc:
         load_hermes_dotenv(hermes_home=plane.home)
@@ -102,7 +102,7 @@ def test_boot_retries_then_exits_on_outage(plane):
 
 
 def test_boot_does_not_retry_a_refusal(plane, monkeypatch):
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     monkeypatch.setenv("HERMES_CONFIG_INSTANCE_ID", "someone-else")
     with pytest.raises(ConfigBackendUnavailable) as exc:
         load_hermes_dotenv(hermes_home=plane.home)
@@ -111,7 +111,7 @@ def test_boot_does_not_retry_a_refusal(plane, monkeypatch):
 
 
 def test_boot_requires_instance_id(plane, monkeypatch):
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     monkeypatch.delenv("HERMES_CONFIG_INSTANCE_ID")
     with pytest.raises(ConfigBackendUnavailable, match="HERMES_CONFIG_INSTANCE_ID"):
         load_config()
@@ -119,7 +119,7 @@ def test_boot_requires_instance_id(plane, monkeypatch):
 
 
 def test_bad_idp_credentials_fail_closed(plane, monkeypatch):
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     monkeypatch.setenv("GATEWAY_RELAY_IDP_CLIENT_SECRET", "wrong")
     with pytest.raises(ConfigBackendUnavailable, match="IdP token request"):
         load_config()
@@ -127,7 +127,7 @@ def test_bad_idp_credentials_fail_closed(plane, monkeypatch):
 
 
 def test_partial_idp_config_is_not_retried(plane, monkeypatch):
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     monkeypatch.delenv("GATEWAY_RELAY_IDP_CLIENT_SECRET")
     with pytest.raises(ConfigBackendUnavailable, match="CLIENT_SECRET"):
         load_config()
@@ -137,7 +137,7 @@ def test_partial_idp_config_is_not_retried(plane, monkeypatch):
 def test_secret_source_supplying_plane_credential_refuses_start(plane):
     from types import SimpleNamespace
 
-    from hermes_cli.env_loader import _refuse_protected_env_from_sources
+    from hermes_agent.hermes_cli.env_loader import _refuse_protected_env_from_sources
     report = SimpleNamespace(provenance={"GATEWAY_RELAY_IDP_CLIENT_SECRET": object()},
                              sources=[SimpleNamespace(skipped_existing=["HERMES_CONFIG_REMOTE_URL"])])
     with pytest.raises(ConfigBackendUnavailable) as exc:
@@ -153,7 +153,7 @@ def test_boot_refuses_remote_secrets_source_that_maps_plane_credential(plane, mo
     from types import SimpleNamespace
 
     from hermes_agent.agent.secret_sources import registry
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
     plane.upper = {"secrets": {"command": {"enabled": True}}}
     seen = {}
 
@@ -172,7 +172,7 @@ def test_boot_refuses_remote_secrets_source_that_maps_plane_credential(plane, mo
 def test_file_backend_has_no_protected_names(monkeypatch):
     from types import SimpleNamespace
 
-    from hermes_cli.env_loader import _refuse_protected_env_from_sources
+    from hermes_agent.hermes_cli.env_loader import _refuse_protected_env_from_sources
     monkeypatch.delenv("HERMES_CONFIG_BACKEND", raising=False)
     _refuse_protected_env_from_sources(
         SimpleNamespace(provenance={"GATEWAY_RELAY_IDP_CLIENT_SECRET": object()}, sources=[]))
@@ -181,7 +181,7 @@ def test_file_backend_has_no_protected_names(monkeypatch):
 # --- writes -------------------------------------------------------------------------------
 
 def test_config_set_sends_only_the_changed_key(plane):
-    from hermes_cli.config import load_config, set_config_value
+    from hermes_agent.hermes_cli.config import load_config, set_config_value
     plane.upper = {"model": {"default": "hermes-4", "provider": "nous"}, "terminal": {"timeout": 180}}
 
     set_config_value("display.personality", "pirate")
@@ -199,7 +199,7 @@ def test_config_set_sends_only_the_changed_key(plane):
 
 
 def test_change_under_existing_section_is_a_leaf_set(plane):
-    from hermes_cli.config import set_config_value
+    from hermes_agent.hermes_cli.config import set_config_value
     plane.upper = {"display": {"personality": "concise", "compact": False}}
     set_config_value("display.personality", "pirate")
     assert plane.patches()[0]["body"]["set"] == {"display.personality": "pirate"}
@@ -207,7 +207,7 @@ def test_change_under_existing_section_is_a_leaf_set(plane):
 
 
 def test_write_conflict_rereads_and_retries_once(plane):
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     load_config()
     plane.profile("default")["version"] = 5  # another writer moved the profile level
     write_config_key(plane.home / "config.yaml", "display.personality", "pirate")
@@ -243,7 +243,7 @@ def test_r7_scalar_over_locked_subtree_refused(plane):
 
 
 def test_bulk_save_strips_locked_keys_and_sends_the_rest(plane, capsys):
-    from hermes_cli.config import read_raw_config, save_config
+    from hermes_agent.hermes_cli.config import read_raw_config, save_config
     plane.upper = {"terminal": {"timeout": 180}, "model": {"default": "hermes-4"}}
     plane.upper_locks = [{"path": "terminal", "level": "tenant"}]
     doc = read_raw_config()
@@ -292,7 +292,7 @@ def test_yaml_only_values_are_converted_before_the_diff(plane):
 # --- poll, outage, versions ---------------------------------------------------------------
 
 def test_poll_picks_up_changes_and_invalidates_caches(plane):
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     plane.upper = {"display": {"personality": "concise"}}
     assert load_config()["display"]["personality"] == "concise"
     backend = remote_pkg.get_remote_backend()
@@ -310,7 +310,7 @@ def test_poll_picks_up_changes_and_invalidates_caches(plane):
 def test_config_cache_version_is_the_remote_version(plane):
     # main's parse caches key on config_cache_version: the remote backend must serve it, and a
     # poll that installs a new layer must change it exactly as it changes config_version.
-    from hermes_cli.config_backend import config_cache_version, config_cache_version_or_none
+    from hermes_agent.hermes_cli.config_backend import config_cache_version, config_cache_version_or_none
     cfg = plane.home / "config.yaml"
     backend = remote_pkg.get_remote_backend()
     plane.upper = {"display": {"personality": "concise"}}
@@ -322,7 +322,7 @@ def test_config_cache_version_is_the_remote_version(plane):
 
 
 def test_outage_while_running_keeps_in_memory_doc(plane):
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     plane.upper = {"display": {"personality": "concise"}}
     load_config()
     backend = remote_pkg.get_remote_backend()
@@ -338,7 +338,7 @@ def test_outage_while_running_keeps_in_memory_doc(plane):
 
 
 def test_poll_refusal_logs_error_but_keeps_running(plane, caplog):
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     load_config()
     plane.fail_status = 403
     with caplog.at_level("WARNING"):
@@ -354,7 +354,7 @@ def test_poll_refusal_logs_error_but_keeps_running(plane, caplog):
 def test_forked_child_rearms_its_poller(plane):
     import os
 
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     load_config()
     backend = remote_pkg.get_remote_backend()
     first = backend._poller
@@ -389,7 +389,7 @@ def test_backend_edits_paths_with_the_diff_helpers():
 def test_named_profile_fetches_its_own_layer(plane):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     work = plane.home / "profiles" / "work"
     work.mkdir(parents=True)
     plane.profile("work")["values"] = {"display": {"personality": "formal"}}
@@ -404,8 +404,8 @@ def test_named_profile_fetches_its_own_layer(plane):
 # --- migrations, unknown keys, managed scope ----------------------------------------------
 
 def test_old_writer_version_migrates_in_memory_only(plane):
-    from hermes_cli.config import read_raw_config
-    from hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION
+    from hermes_agent.hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION
     latest = backend_mod._latest_config_version()
     old = max(SUPPORT_FLOOR_VERSION, latest - 1)
     plane.profile("default").update(values={"display": {"personality": "pirate"}}, version=1, writer=old)
@@ -420,8 +420,8 @@ def test_old_writer_version_migrates_in_memory_only(plane):
 
 def test_migration_steps_persist_into_memory(plane, monkeypatch):
     """A migration step's ``_persist_migration`` lands in the in-memory layer, not on disk/plane."""
-    from hermes_cli import config as config_mod
-    from hermes_cli import config_migrations
+    from hermes_agent.hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config_migrations
     latest = backend_mod._latest_config_version()
     plane.profile("default").update(values={"old_key": 1}, version=1, writer=latest - 1)
 
@@ -437,7 +437,7 @@ def test_migration_steps_persist_into_memory(plane, monkeypatch):
 
 
 def test_unknown_top_level_key_warns_once(plane, caplog):
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     plane.upper = {"from_the_future": {"x": 1}}
     with caplog.at_level("WARNING"):
         load_config()
@@ -446,9 +446,9 @@ def test_unknown_top_level_key_warns_once(plane, caplog):
 
 
 def test_managed_config_yaml_is_ignored_and_flagged(plane, tmp_path, monkeypatch, capsys):
-    from hermes_cli import managed_scope
-    from hermes_cli.config import load_config
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli import managed_scope
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     managed = tmp_path / "etc-hermes"
     managed.mkdir()
     (managed / "config.yaml").write_text(json.dumps({"display": {"personality": "managed"}}))
@@ -466,14 +466,14 @@ def test_managed_config_yaml_is_ignored_and_flagged(plane, tmp_path, monkeypatch
 # --- tooling ------------------------------------------------------------------------------
 
 def test_file_tooling_refused(plane):
-    from hermes_cli.config_backend import require_file_tooling
+    from hermes_agent.hermes_cli.config_backend import require_file_tooling
     with pytest.raises(ConfigBackendUnavailable, match="Profile clone"):
         require_file_tooling("Profile clone")
 
 
 def test_doctor_reports_backend_status(plane, capsys):
-    from hermes_cli.doctor_config import _check_config_backend
-    from hermes_cli.doctor_report import Finding
+    from hermes_agent.hermes_cli.doctor_config import _check_config_backend
+    from hermes_agent.hermes_cli.doctor_report import Finding
     f = Finding()
     assert _check_config_backend(get_config_backend(), plane.home, f) is True
     assert "Remote Config" in capsys.readouterr().out
@@ -485,7 +485,7 @@ def test_doctor_reports_backend_status(plane, capsys):
 
 
 def test_general_plugin_manager_never_loads_config_backends(plane, monkeypatch):
-    from hermes_cli.plugins import PluginManager
+    from hermes_agent.hermes_cli.plugins import PluginManager
     monkeypatch.setenv("HERMES_CONFIG_BACKEND", "file")
     mgr = PluginManager()
     mgr.discover_and_load()
@@ -502,7 +502,7 @@ def test_secret_source_cannot_switch_remote_mode_off_at_boot(plane, monkeypatch)
     """D32 through the REAL startup path and a real command source: a source that writes
     HERMES_CONFIG_BACKEND=file must not disarm remote mode (and with it the protected-name check)
     and let the next read fall back to the local config.yaml."""
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
     monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
     (plane.home / "config.yaml").write_text(json.dumps({"display": {"personality": "local"}}))
     plane.upper = {"display": {"personality": "remote"}, "secrets": _BACKEND_FLIP_SOURCE}
@@ -521,8 +521,8 @@ def test_file_mode_ignores_a_source_that_selects_the_backend(monkeypatch, capsys
     import os
     from types import SimpleNamespace
 
-    from hermes_cli.config_backend import get_config_backend as gcb
-    from hermes_cli.env_loader import _refuse_protected_env_from_sources
+    from hermes_agent.hermes_cli.config_backend import get_config_backend as gcb
+    from hermes_agent.hermes_cli.env_loader import _refuse_protected_env_from_sources
     monkeypatch.delenv("HERMES_CONFIG_BACKEND", raising=False)
     before = dict(os.environ)
     file_backend = gcb()
@@ -604,7 +604,7 @@ def test_stale_fetch_with_same_profile_version_is_dropped(plane, monkeypatch):
 
 
 def _old_compression_profile(plane):
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     assert backend_mod._latest_config_version() > 46
     plane.upper = {"compression": {"threshold_tokens": 256000}}  # the old default the 46->47 step removes
     plane.profile("default")["writer"] = 46
@@ -613,7 +613,7 @@ def _old_compression_profile(plane):
 
 
 def test_migration_is_not_sent_by_an_unrelated_write(plane):
-    from hermes_cli.config import set_config_value
+    from hermes_agent.hermes_cli.config import set_config_value
     _old_compression_profile(plane)
 
     set_config_value("display.personality", "pirate")
@@ -624,7 +624,7 @@ def test_migration_is_not_sent_by_an_unrelated_write(plane):
 
 
 def test_migration_is_not_sent_after_a_cas_reread(plane):
-    from hermes_cli.config import set_config_value
+    from hermes_agent.hermes_cli.config import set_config_value
     _old_compression_profile(plane)
     plane.profile("default")["version"] = 3  # another writer moved the profile level: first PATCH 409s
 
@@ -638,7 +638,7 @@ def test_migration_is_not_sent_after_a_cas_reread(plane):
 
 
 def test_bulk_save_after_migration_sends_only_the_edit(plane):
-    from hermes_cli.config import read_raw_config, save_config
+    from hermes_agent.hermes_cli.config import read_raw_config, save_config
     _old_compression_profile(plane)
     doc = read_raw_config()
     doc.setdefault("display", {})["personality"] = "pirate"
@@ -654,7 +654,7 @@ def test_bulk_save_after_migration_sends_only_the_edit(plane):
 def test_unrelated_write_keeps_an_old_profile_stamp_so_later_reads_still_migrate(plane):
     """Orchestrator ruling (option 1): the profile level stamped 46 still stores a pre-migration
     key; an unrelated write must not re-stamp it, or every later reader would skip 46->47."""
-    from hermes_cli.config import read_raw_config, set_config_value
+    from hermes_agent.hermes_cli.config import read_raw_config, set_config_value
     assert backend_mod._latest_config_version() > 46
     plane.profile("default").update(values={"compression": {"threshold_tokens": 256000}}, writer=46)
     assert "threshold_tokens" not in (read_raw_config().get("compression") or {}), "precondition"
@@ -675,7 +675,7 @@ def test_unrelated_write_keeps_an_old_profile_stamp_so_later_reads_still_migrate
 
 @pytest.mark.parametrize("stored", ["latest", None])
 def test_write_stamps_a_current_or_unstamped_profile_level(plane, stored):
-    from hermes_cli.config import set_config_value
+    from hermes_agent.hermes_cli.config import set_config_value
     latest = backend_mod._latest_config_version()
     plane.profile("default")["writer"] = latest if stored == "latest" else None
 
@@ -687,7 +687,7 @@ def test_write_stamps_a_current_or_unstamped_profile_level(plane, stored):
 
 
 def test_write_never_lowers_a_newer_profile_stamp(plane):
-    from hermes_cli.config import set_config_value
+    from hermes_agent.hermes_cli.config import set_config_value
     newer = backend_mod._latest_config_version() + 1
     plane.profile("default")["writer"] = newer
 
@@ -703,7 +703,7 @@ def _dashboard_put(config):
 
     from fastapi import HTTPException
 
-    from hermes_cli.web_routers.config_env import ConfigUpdate, update_config
+    from hermes_agent.hermes_cli.web_routers.config_env import ConfigUpdate, update_config
     try:
         asyncio.run(update_config(ConfigUpdate(config=config)))
     except HTTPException as exc:
@@ -713,7 +713,7 @@ def _dashboard_put(config):
 
 def test_dashboard_save_of_a_newly_locked_key_returns_the_lock_message(plane):
     """The lock arrived on the plane after the last poll, so only the server refuses (403)."""
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     plane.upper = {"display": {"personality": "old"}}
     read_raw_config()
     plane.upper_locks = [{"path": "display.personality", "level": "tenant"}]
@@ -733,7 +733,7 @@ def test_dashboard_save_secret_literal_is_a_400(plane):
 
 
 def test_dashboard_unexpected_config_failure_stays_opaque(plane):
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     read_raw_config()
     plane.fail_status = 500  # the write reaches the plane, which fails: not an expected refusal
     status, detail = _dashboard_put({"display": {"personality": "new"}})
@@ -751,7 +751,7 @@ def test_refused_source_plane_url_is_never_visible_to_a_concurrent_request(plane
     import threading
 
     from hermes_agent.agent.secret_sources import registry
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
     monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
     with StubPlane() as other:
         plane.upper = {"secrets": {"command": {
@@ -787,7 +787,7 @@ def test_file_mode_publishes_permitted_source_values(monkeypatch, tmp_path):
     """Staging must not lose ordinary secrets: permitted names are published after the check."""
     import os
 
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
     monkeypatch.delenv("HERMES_CONFIG_BACKEND", raising=False)
     monkeypatch.setenv("CC_STAGED_SECRET", "x")
     monkeypatch.delenv("CC_STAGED_SECRET")
@@ -809,7 +809,7 @@ def test_migration_of_a_replaced_doc_does_not_touch_the_replacement(plane, monke
     must not run against it (the replacement stays intact, nothing is written back)."""
     import threading
 
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     latest = backend_mod._latest_config_version()
     assert latest > 46
     plane.profile("default").update(values={"compression": {"threshold_tokens": 256000}}, writer=46)
@@ -851,7 +851,7 @@ def test_migration_of_a_replaced_doc_does_not_touch_the_replacement(plane, monke
 def test_dashboard_save_refused_by_plane_value_check_is_a_400(plane):
     """The plane's own value refusal (config_value_invalid too_deep, contract §11.1) reaches the
     dashboard as a 400 with its reason, not an opaque 500."""
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     read_raw_config()
     value = "leaf"
     for _ in range(33):
@@ -869,7 +869,7 @@ def test_dashboard_save_refused_by_plane_value_check_is_a_400(plane):
     (400, "config_secret_literal", 400), (413, "config_level_too_large", 413), (413, "config_body_too_large", 413),
     (400, "config_request_invalid", None), (500, "internal", None)])
 def test_plane_refusals_map_to_http(status, error, expected):
-    from hermes_cli.web_routers._common import config_refusal_http
+    from hermes_agent.hermes_cli.web_routers._common import config_refusal_http
     from plugins.config_backends.remote import client
     exc = backend_mod.RemoteBackend._write_error(
         client.Response(status=status, body={"error": error, "message": "refused", "path": "a.b"},
@@ -892,7 +892,7 @@ def _multi_group_plane(plane):
 def test_multi_group_response_fields_are_ignored_and_group_lock_refuses_client_side(plane):
     """portal-groups §7.5: several group levels, locks[].groupId and groupProvenance are ignorable;
     a group lock is just an upper lock (lockedBy "group"), refused before anything is sent."""
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     _multi_group_plane(plane)
 
     doc = read_raw_config()
@@ -911,7 +911,7 @@ def test_multi_group_response_fields_are_ignored_and_group_lock_refuses_client_s
 def test_plane_group_lock_refusal_maps_to_locked_error_and_403():
     """A server-side config_key_locked from a group lock carries lockedByGroupId (portal-groups
     §6.6); the agent still maps it to ConfigLockedError(path, "group") and the dashboard's 403."""
-    from hermes_cli.web_routers._common import config_refusal_http
+    from hermes_agent.hermes_cli.web_routers._common import config_refusal_http
     from plugins.config_backends.remote import client
     exc = backend_mod.RemoteBackend._write_error(client.Response(
         status=403, body={"error": "config_key_locked", "path": "terminal.backend", "lockedBy": "group",
@@ -926,7 +926,7 @@ def test_plane_group_lock_refusal_maps_to_locked_error_and_403():
 def test_etag_is_opaque_and_echoed_verbatim(plane, monkeypatch):
     """The plane's ETag (hermes-config-etag/2 since portal-groups §6.8) is never parsed: whatever
     bytes it sends come back unchanged in If-None-Match."""
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     _multi_group_plane(plane)
     real_effective = plane.effective
     opaque = 'W/"v2:any-bytes/at all"'
@@ -959,7 +959,7 @@ def _drop_process_deployment(plane, monkeypatch, tmp_path):
     """Move the deployment out of the process env (as on a host where it lives in .env files);
     returns the managed dir. Every name stays recorded by monkeypatch, so whatever a dotenv load
     publishes is undone at teardown."""
-    from hermes_cli import config_backend
+    from hermes_agent.hermes_cli import config_backend
     for name in remote_env(plane):
         monkeypatch.delenv(name, raising=False)
     managed = tmp_path / "managed"
@@ -972,7 +972,7 @@ def _drop_process_deployment(plane, monkeypatch, tmp_path):
 def test_cas_retry_of_a_document_write_replays_only_its_own_edit(plane, monkeypatch):
     """F1: another writer commits between our read and our PATCH. The 409 retry re-applies OUR
     edit to the re-read doc; it must not turn the other writer's changes into edits of ours."""
-    from hermes_cli.config import set_config_value
+    from hermes_agent.hermes_cli.config import set_config_value
     from plugins.config_backends.remote import client
     plane.profile("default").update(values={"display": {"personality": "concise", "compact": False}}, version=1)
     real_request = client.request
@@ -1004,9 +1004,9 @@ def test_edit_during_an_in_memory_migration_never_sends_the_migration(plane, mon
     of compression.threshold_tokens is not sent (D12)."""
     import threading
 
-    from hermes_cli import config_migrations
-    from hermes_cli.config import read_raw_config, set_config_value
-    from hermes_cli.config_backend import read_config_doc
+    from hermes_agent.hermes_cli import config_migrations
+    from hermes_agent.hermes_cli.config import read_raw_config, set_config_value
+    from hermes_agent.hermes_cli.config_backend import read_config_doc
     assert backend_mod._latest_config_version() > 46
     plane.profile("default").update(values={"compression": {"threshold_tokens": 256000}}, version=1, writer=46)
     get_config_backend()._state(plane.home)
@@ -1090,7 +1090,7 @@ def test_a_dead_poller_is_rearmed_by_a_cached_read(plane):
     """F3: a poller that died must not leave cached profiles without updates."""
     import threading
 
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     load_config()
     backend = remote_pkg.get_remote_backend()
     dead = threading.Thread(target=lambda: None)
@@ -1105,7 +1105,7 @@ def test_instance_id_from_the_managed_dotenv_boots(plane, monkeypatch, tmp_path)
     """F4: the deployment in the home's .env, the instance id only in the managed .env."""
     import os
 
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     managed = _drop_process_deployment(plane, monkeypatch, tmp_path)
     env = remote_env(plane)
     (managed / ".env").write_text(f"HERMES_CONFIG_INSTANCE_ID={env.pop('HERMES_CONFIG_INSTANCE_ID')}\n")
@@ -1126,7 +1126,7 @@ def test_child_for_another_profile_keeps_the_remote_deployment(plane, monkeypatc
     import subprocess
     import sys
 
-    from hermes_cli.env_loader import load_hermes_dotenv
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
     from hermes_agent.tools.environments.local import served_profile_child_env
     _drop_process_deployment(plane, monkeypatch, tmp_path)
     env = remote_env(plane)
@@ -1142,10 +1142,10 @@ def test_child_for_another_profile_keeps_the_remote_deployment(plane, monkeypatc
     child_env = served_profile_child_env(target_home=beta, inherit_credentials=True)
     child_env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3])
     code = ("import json\n"
-            "from hermes_cli.env_loader import load_hermes_dotenv\n"
+            "from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv\n"
             "load_hermes_dotenv()\n"
-            "from hermes_cli.config_backend import get_config_backend\n"
-            "from hermes_cli.config import load_config\n"
+            "from hermes_agent.hermes_cli.config_backend import get_config_backend\n"
+            "from hermes_agent.hermes_cli.config import load_config\n"
             "print('RESULT=' + json.dumps([get_config_backend().name, load_config()['display']['personality']]))\n")
     proc = subprocess.run([sys.executable, "-c", code], env=child_env, capture_output=True, text=True,
                           timeout=120, stdin=subprocess.DEVNULL, cwd=str(tmp_path), check=False)
@@ -1161,7 +1161,7 @@ def test_setting_a_value_that_old_schema_migration_rewrites_is_refused(plane, ca
     """F8: on a level stamped 46 (option 1 keeps that stamp), 256000 is exactly what the 46->47
     step removes on every read: acknowledging it would hide it. Refused, nothing sent. A value
     the migration keeps is saved as usual."""
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     assert backend_mod._latest_config_version() > 46
     plane.profile("default").update(values={"display": {"personality": "old"}}, version=1, writer=46)
     read_raw_config()
@@ -1204,7 +1204,7 @@ def profile_plane(tmp_path, monkeypatch):
 
 def test_fresh_profile_creation_succeeds_against_a_healthy_plane(profile_plane):
     """F6: the staging home is never read through the remote backend."""
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
     before = len(profile_plane.requests)
 
     path = create_profile("fresh", no_alias=True, no_skills=True)
@@ -1216,7 +1216,7 @@ def test_fresh_profile_creation_succeeds_against_a_healthy_plane(profile_plane):
 
 def test_rename_is_refused_before_anything_moves(profile_plane, monkeypatch):
     """F7: the plane keys settings by profile name and has no rename."""
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     for name in ("_check_gateway_running", "_cleanup_gateway_service", "_maybe_unregister_gateway_service",
                  "_stop_bot_desktop", "_live_default_multiplexer", "_maybe_register_gateway_service"):
         monkeypatch.setattr(profiles, name, lambda *a, **k: False)
@@ -1235,7 +1235,7 @@ def test_rename_is_refused_before_anything_moves(profile_plane, monkeypatch):
 
 def test_roster_model_follows_the_remote_layer_not_the_local_file(profile_plane):
     """F9: a poll changes the profile's model while an ignored local config.yaml stays put."""
-    from hermes_cli.profiles import list_profiles
+    from hermes_agent.hermes_cli.profiles import list_profiles
     named = profile_plane.home / "profiles" / "roster"
     named.mkdir(parents=True)
     (named / "config.yaml").write_text("model:\n  default: ignored-local\n")
@@ -1252,7 +1252,7 @@ def test_roster_model_follows_the_remote_layer_not_the_local_file(profile_plane)
 
 
 def _tui_server(monkeypatch, home):
-    from hermes_cli import banner
+    from hermes_agent.hermes_cli import banner
     monkeypatch.setattr(banner, "prefetch_update_check", lambda: None)
     from hermes_agent.tui_gateway import server
     monkeypatch.setattr(server, "_hermes_home", home)
@@ -1344,7 +1344,7 @@ def _absent_section_race(plane, monkeypatch):
 def test_cas_retry_keeps_a_sibling_added_to_a_section_the_doc_lacked(plane, monkeypatch, entry):
     """Round 4 #1: our edit adds terminal.timeout to a doc with no terminal section; the 409 retry
     must add that one key to the re-read doc, not replace the section another writer created."""
-    from hermes_cli.config import set_config_value
+    from hermes_agent.hermes_cli.config import set_config_value
     _absent_section_race(plane, monkeypatch)
 
     if entry == "set_config_value":
@@ -1362,7 +1362,7 @@ def test_cas_retry_of_a_new_empty_section_keeps_a_concurrent_one(plane, monkeypa
     """An empty mapping the edit adds means "make this a mapping": on retry it must not replace
     the mapping (with keys) another writer created meanwhile."""
     _absent_section_race(plane, monkeypatch)
-    from hermes_cli.config_backend import Changes
+    from hermes_agent.hermes_cli.config_backend import Changes
     get_config_backend().write_changes(plane.home, Changes(set={"terminal": {}}))
     assert plane.profile("default")["values"]["terminal"] == {"persistent": True}
     assert len(plane.patches()) == 1  # nothing left to send after the re-read: one PATCH, the 409
@@ -1370,7 +1370,7 @@ def test_cas_retry_of_a_new_empty_section_keeps_a_concurrent_one(plane, monkeypa
 
 def test_explicit_section_replacement_stays_a_replacement(plane):
     """Control: replacing a present section with a scalar, or unsetting it, is still sent whole."""
-    from hermes_cli.config_backend import Changes
+    from hermes_agent.hermes_cli.config_backend import Changes
     plane.profile("default").update(values={"terminal": {"persistent": True, "timeout": 3}}, version=1)
     backend = get_config_backend()
     backend.write_changes(plane.home, Changes(unset=("terminal",)))
@@ -1394,8 +1394,8 @@ def test_routed_hydration_refuses_a_source_that_supplies_a_protected_name(profil
     every retry refuses again; the profile hydrates once the mapping is gone."""
     import os
 
-    from hermes_cli import env_loader
-    from hermes_cli.web_server_profiles import _config_profile_scope
+    from hermes_agent.hermes_cli import env_loader
+    from hermes_agent.hermes_cli.web_server_profiles import _config_profile_scope
     monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
     monkeypatch.setattr(env_loader, "_SOURCE_SUPPLIED_NAMES", set())
     monkeypatch.delenv("HERMES_PORTAL_BASE_URL", raising=False)
@@ -1420,7 +1420,7 @@ def test_routed_hydration_refuses_a_source_that_supplies_a_protected_name(profil
 def test_file_mode_routed_hydration_drops_only_the_selector(monkeypatch, tmp_path, capsys):
     """Control: under the file backend a routed source may not switch the backend either, but its
     other values (a Portal URL included: file mode has no plane credential) still hydrate."""
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
     for name in ("HERMES_CONFIG_BACKEND", "HERMES_CONFIG_REMOTE_URL", "HERMES_CONFIG_INSTANCE_ID"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(env_loader, "_APPLIED_HOMES", set())
@@ -1450,7 +1450,7 @@ def _sibling_with_legacy_soul(home):
 def test_remote_read_migration_changes_no_local_file(plane):
     """Round 4 #3: reading default's remote config stamped 40 runs the 40->41 step in memory. That
     step's only effect is on profile SOUL.md files; a config read must not rewrite a sibling's."""
-    from hermes_cli.config_backend import read_config_doc
+    from hermes_agent.hermes_cli.config_backend import read_config_doc
     soul = _sibling_with_legacy_soul(plane.home)
     plane.profile("default").update(values={"display": {"personality": "old"}}, writer=40, version=1)
 
@@ -1464,7 +1464,7 @@ def test_remote_read_migration_changes_no_local_file(plane):
 def test_refused_write_validation_changes_no_local_file(plane):
     """Round 4 #3: the config_migration_conflict check simulates the migration of the stored doc;
     a refused edit must leave every local file as it was."""
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     plane.profile("default").update(values={}, writer=40, version=1)
     read_raw_config()
     soul = _sibling_with_legacy_soul(plane.home)  # created after the read's own migration
@@ -1487,14 +1487,14 @@ def test_config_only_migration_ladder_touches_no_file(tmp_path, monkeypatch, con
     """The whole ladder from the support floor, config-only, over a home whose files every
     file-touching step would change (.env dead/legacy values, a legacy SOUL.md section, no logs/):
     the only output is the config document. Control: a file-mode run does change them."""
-    from hermes_cli import config as config_mod
-    from hermes_cli import config_migrations
+    from hermes_agent.hermes_cli import config as config_mod
+    from hermes_agent.hermes_cli import config_migrations
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     for name in ("HERMES_CONFIG_BACKEND", "LLM_MODEL", "OPENAI_MODEL", "TERMINAL_VERCEL_RUNTIME"):
         monkeypatch.delenv(name, raising=False)
-    from hermes_cli.config_defaults import LEGACY_VERCEL_RUNTIME
+    from hermes_agent.hermes_cli.config_defaults import LEGACY_VERCEL_RUNTIME
     (home / ".env").write_text(f"LLM_MODEL=old-model\nTERMINAL_VERCEL_RUNTIME={LEGACY_VERCEL_RUNTIME}\n")
     (home / "SOUL.md").write_text(_LEGACY_SOUL)
     _sibling_with_legacy_soul(home)
@@ -1518,8 +1518,8 @@ def test_concurrent_first_reader_waits_for_the_bootstrap(plane, monkeypatch, tmp
     must wait for it, not select the file backend and read the local config.yaml meanwhile."""
     import threading
 
-    from hermes_cli import config_backend, env_loader
-    from hermes_cli.config_backend import read_config_doc
+    from hermes_agent.hermes_cli import config_backend, env_loader
+    from hermes_agent.hermes_cli.config_backend import read_config_doc
     _drop_process_deployment(plane, monkeypatch, tmp_path)
     (plane.home / ".env").write_text("".join(f"{k}={v}\n" for k, v in remote_env(plane).items()))
     (plane.home / "config.yaml").write_text("display:\n  personality: forbidden-local\n")
@@ -1554,7 +1554,7 @@ def test_concurrent_first_reader_waits_for_the_bootstrap(plane, monkeypatch, tmp
 
 def test_same_thread_reentry_during_the_bootstrap_does_not_deadlock(monkeypatch):
     """Control: an import-time config read on the bootstrapping thread itself returns at once."""
-    from hermes_cli import config_backend, env_loader
+    from hermes_agent.hermes_cli import config_backend, env_loader
     monkeypatch.setattr(config_backend, "_BOOTSTRAPPED", False)
     seen = []
 
@@ -1572,10 +1572,10 @@ def _fresh_interpreter_boot(tmp_path, env, project_env):
     import subprocess
     import sys
     code = ("import json\n"
-            "from hermes_cli.env_loader import load_hermes_dotenv\n"
+            "from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv\n"
             f"load_hermes_dotenv(project_env={str(project_env)!r}, load_external_secrets=False)\n"
-            "from hermes_cli.config_backend import get_config_backend\n"
-            "from hermes_cli.config import load_config\n"
+            "from hermes_agent.hermes_cli.config_backend import get_config_backend\n"
+            "from hermes_agent.hermes_cli.config import load_config\n"
             "print('RESULT=' + json.dumps([get_config_backend().name, load_config()['display']['personality']]))\n")
     child = {k: v for k, v in os.environ.items() if k in ("PATH", "LANG", "TMPDIR", "SYSTEMROOT")}
     child.update(env, PYTHONPATH=str(Path(__file__).resolve().parents[3]))
@@ -1605,7 +1605,7 @@ def test_plane_credential_from_the_project_dotenv_boots(plane, tmp_path):
 def test_bootstrap_keeps_the_dotenv_precedence(tmp_path, monkeypatch):
     """The bootstrap composes the layers as load_hermes_dotenv does: user .env overrides the
     process, the project .env only fills gaps when a user .env exists, managed .env wins last."""
-    from hermes_cli.env_loader import _bootstrap_env
+    from hermes_agent.hermes_cli.env_loader import _bootstrap_env
     home = tmp_path / "home"
     home.mkdir()
     managed = tmp_path / "managed"
@@ -1676,7 +1676,7 @@ def test_tui_shared_metrics_set_refuses_a_locked_consent(plane, monkeypatch):
     plane.upper_locks = [{"path": "telemetry.shared_metrics", "level": "tenant"}]
     server = _tui_server(monkeypatch, plane.home)
     recorded = []
-    from hermes_cli import setup as setup_mod
+    from hermes_agent.hermes_cli import setup as setup_mod
     monkeypatch.setattr(setup_mod, "_record_send_consent_change", lambda **kw: recorded.append(kw))
 
     answer = server._methods["shared_metrics.set"](1, {"enabled": True, "send": True})
@@ -1689,7 +1689,7 @@ def test_poll_between_read_and_save_sends_only_the_callers_edit(plane, monkeypat
     """A poll landing after ``set_config_value`` read the doc and before it saved must not turn
     the keys that poll changed into edits of ours (sent with the current expectedVersion, so no
     409 could catch them): only the requested key is sent; the poll's changes survive."""
-    from hermes_cli import config as cfg
+    from hermes_agent.hermes_cli import config as cfg
     prof = plane.profile("default")
     prof.update(values={"display": {"personality": "concise", "compact": False}}, version=1)
     backend = get_config_backend()
@@ -1716,8 +1716,8 @@ def test_model_switch_masks_inherited_endpoint_credentials(plane, monkeypatch):
     """A switch to a new endpoint clears endpoint-bound keys. When an upper level supplies them,
     a profile-level unset cannot reach them, so the switch stores null ("no value") instead: the
     old endpoint's key never reaches the new endpoint."""
-    from hermes_cli.config import read_user_config_raw
-    from hermes_cli.model_switch import ModelSwitchResult, persist_model_selection
+    from hermes_agent.hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.model_switch import ModelSwitchResult, persist_model_selection
     plane.upper = {"model": {"default": "old", "provider": "custom:old", "base_url": "https://old.example/v1",
                              "api_key": "${OLD_KEY}", "key_env": "OLD_KEY", "api_key_env": "OLD_KEY",
                              "context_length": 123456}}
@@ -1756,9 +1756,9 @@ def test_poll_between_read_and_atomic_config_write_sends_only_the_callers_edit(p
 
 def _dashboard_switch(monkeypatch, url):
     import asyncio
-    from hermes_cli.model_switch import ModelSwitchResult
-    from hermes_cli.web_models import ModelAssignment
-    from hermes_cli.web_routers import models
+    from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
+    from hermes_agent.hermes_cli.web_models import ModelAssignment
+    from hermes_agent.hermes_cli.web_routers import models
     result = ModelSwitchResult(success=True, new_model="new", target_provider="custom", provider_changed=True,
                                base_url=url, api_mode="chat_completions", is_global=True)
     monkeypatch.setattr(models, "_dashboard_code_skew_guard", lambda: None)
@@ -1775,7 +1775,7 @@ def test_dashboard_model_switch_masks_inherited_endpoint_credentials(plane, monk
     """POST /api/model/set saves the whole document. Under Remote Config its model block is the
     effective one, so the endpoint-bound keys it clears must be masked (null), not dropped from
     the profile, or the old endpoint's key would reach the new endpoint."""
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     url = "https://new.example/v1"
     plane.upper = {"model": dict(_OLD_ROUTE), "providers": {"known-new": {"base_url": url}}}
     assert _dashboard_switch(monkeypatch, url)["ok"] is True
@@ -1801,8 +1801,8 @@ def test_dashboard_model_switch_keeps_mask_when_target_provider_carries_key_env(
     """The target provider's key_env pointer replaces the inline key. Under Remote Config the
     inherited ``model.api_key`` must stay masked (null) after that credential step, or the old
     endpoint's key (which outranks key_env at runtime) reaches the new endpoint."""
-    from hermes_cli.config import read_user_config_raw
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
     url = "https://new.example/v1"
     monkeypatch.setenv("OLD_KEY", "old-synthetic-key")
     monkeypatch.setenv("NEW_KEY", "new-synthetic-key")
@@ -1821,7 +1821,7 @@ def test_dashboard_model_switch_refuses_when_a_lock_lands_after_the_guard(plane,
     """A lock published after the preflight guard (seen by a poll right before the save, or by the
     re-read after a 409) refuses the whole assignment: no half route is saved and acknowledged."""
     from fastapi import HTTPException
-    from hermes_cli import config as cfgmod
+    from hermes_agent.hermes_cli import config as cfgmod
     url = "https://new.example/v1"
     plane.upper = {"model": dict(_OLD_ROUTE), "providers": {"known-new": {"base_url": url}}}
     backend = get_config_backend()
@@ -1850,9 +1850,9 @@ def test_custom_endpoint_make_default_refuses_when_its_provider_entry_is_locked(
     naming it. A lock on providers (present up front, seen by a poll before the save, or by the
     re-read after a 409) refuses both: never model.provider naming an entry that was not saved."""
     from fastapi import HTTPException
-    from hermes_cli.model_switch import ModelSwitchResult
-    from hermes_cli.web_models import CustomEndpointUpdate
-    from hermes_cli.web_routers import config_env
+    from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
+    from hermes_agent.hermes_cli.web_models import CustomEndpointUpdate
+    from hermes_agent.hermes_cli.web_routers import config_env
     plane.upper = {"model": {"default": "old-model", "provider": "custom:old", "base_url": "https://old.example/v1"},
                    "providers": {"custom:old": {"name": "old", "base_url": "https://old.example/v1", "model": "old-model"}}}
     lock = [{"path": "providers", "level": "tenant"}]

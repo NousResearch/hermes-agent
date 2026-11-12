@@ -1,7 +1,7 @@
 """Static provider/model catalog tables (data only — no network).
 
 Curated per-provider model lists, the canonical provider registry, display groups and alias
-maps. Split out of ``hermes_cli.models``.
+maps. Split out of ``hermes_agent.hermes_cli.models``.
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ VERCEL_AI_GATEWAY_MODELS: list[tuple[str, str]] = [("moonshotai/kimi-k2.6", "rec
 def _codex_curated_models() -> list[str]:
     """openai-codex curated list from codex_models.py (DEFAULT_CODEX_MODELS + forward-compat
     synthesis) so the gateway /model picker and the CLI ``hermes model`` flow share one source."""
-    from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _finalize_codex_models
+    from hermes_agent.hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _finalize_codex_models
     return _finalize_codex_models(list(DEFAULT_CODEX_MODELS))
 
 
@@ -342,7 +342,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = _CuratedCatalog({
     "azure-foundry": [],
     # Vertex's OpenAI-compatible endpoint has no /models route, so without this the /model picker
     # only shows the configured model. IDs carry the "google/" publisher prefix Vertex expects
-    # (see hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
+    # (see hermes_agent/hermes_cli/model_setup_flows.py); validated live against a GCP project (global region).
     "vertex": [
         "google/gemini-3.8-flash", "google/gemini-4-argon", "google/gemini-3.7-flash",  # [0] = silent default
         "google/gemini-3.1-pro-preview", "google/gemini-3-pro-preview", "google/gemini-3.6-flash",
@@ -437,7 +437,7 @@ def sync_plugin_provider_catalog() -> int:
 
     Runs at import and again from ``providers._sync_auth_registry`` whenever a profile is registered
     after this module was imported. The import-time pass alone observes a *partial* registry: a
-    plugin whose own imports pull ``hermes_cli.models`` in mid-``_discover_providers()``, or a
+    plugin whose own imports pull ``hermes_agent.hermes_cli.models`` in mid-``_discover_providers()``, or a
     profile registered later at runtime, would otherwise never reach the picker, ``hermes model``,
     ``/model`` or the Desktop ``model.options`` list until restart — the catalog twin of the auth
     registry window (#102123). Idempotent by slug; built-in rows are never rewritten. A row lands
@@ -488,7 +488,7 @@ _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named prov
 def listed_canonical_providers() -> list[ProviderEntry]:
     """``CANONICAL_PROVIDERS`` minus pre-release profiles the user has not opted into: what a provider
     LIST offers. Typed paths (``provider:model``, labels, ``--provider``) keep the full table."""
-    from hermes_cli import models  # the binding every list consumer read before this filter existed
+    from hermes_agent.hermes_cli import models  # the binding every list consumer read before this filter existed
     from hermes_agent.providers import unlisted_provider_names
     hidden = unlisted_provider_names()
     return [p for p in models.CANONICAL_PROVIDERS if p.slug not in hidden]
@@ -641,7 +641,7 @@ _PROVIDER_ALIASES = _CatalogAliases((
     ("ollama", "custom"),  # bare "ollama" = local; use "ollama-cloud" for cloud
     ("ollama_cloud", "ollama-cloud"),
     # Local OpenAI-compatible servers route through the generic "custom" provider
-    # (parity with hermes_cli.auth and hermes_cli.providers). Issue #62213. The llamacpp
+    # (parity with hermes_agent.hermes_cli.auth and hermes_agent.hermes_cli.providers). Issue #62213. The llamacpp
     # aliases stay unmapped: they are the managed local runtime's picker id, and the model
     # validator must reach its staged-library branch before the custom one.
     ("local", "custom"), ("vllm", "custom"),
@@ -664,7 +664,7 @@ PREFERRED_SILENT_DEFAULT_MODEL = "z-ai/glm-5.3"
 # otherwise silently bill the most expensive model (863 Opus requests before one user noticed).
 # Network-free (cache-only) on purpose — this is the hot resolution path. The *interactive* default
 # (GUI onboarding / ``hermes model``) uses the tier-aware ``get_recommended_default_model`` in
-# hermes_cli/web_server.py + ``partition_nous_models_by_tier``, which may hit the Portal.
+# hermes_agent/hermes_cli/web_server.py + ``partition_nous_models_by_tier``, which may hit the Portal.
 _SILENT_DEFAULT_PROVIDERS: frozenset[str] = frozenset({"nous", "openrouter"})
 
 

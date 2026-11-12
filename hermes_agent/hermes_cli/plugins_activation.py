@@ -74,7 +74,7 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> dict[str, Any]:
     summary = {"name": name, "key": plugin_key, "activated_now": now, "deferred": deferred}
     # Read in the process that loaded the plugin (for a gateway answer, the gateway): a dependency
     # installed after it booted is not importable there until it restarts.
-    from hermes_cli.plugins_loader import missing_python_dependencies
+    from hermes_agent.hermes_cli.plugins_loader import missing_python_dependencies
     if missing := missing_python_dependencies(manifest):
         summary["missing_dependencies"] = missing
     return summary
@@ -96,7 +96,7 @@ def dependency_blocked_summaries(manager: Any) -> list[dict[str, Any]]:
     plugin importing a just-installed dependency at load time fails in a process booted before the
     install; without this entry the caller would read "loaded nothing, needs nothing" instead of
     "restart". Never part of the ``on_plugin_loaded`` payload: nothing of these plugins loaded."""
-    from hermes_cli.plugins_loader import missing_python_dependencies
+    from hermes_agent.hermes_cli.plugins_loader import missing_python_dependencies
     out = []
     for key, loaded in list(manager._plugins.items()):
         manifest = getattr(loaded, "manifest", None)
@@ -199,9 +199,9 @@ def load_and_go_live(name: str) -> Optional[dict[str, Any]]:
 
 
 def _go_live(name: str) -> Optional[dict[str, Any]]:
-    from hermes_cli.plugins_activation_live import connect_plugin_mcp, live_notice, plugin_skills
+    from hermes_agent.hermes_cli.plugins_activation_live import connect_plugin_mcp, live_notice, plugin_skills
     try:
-        from hermes_cli.plugins import _join_background_discovery, get_plugin_manager
+        from hermes_agent.hermes_cli.plugins import _join_background_discovery, get_plugin_manager
         _join_background_discovery()
         manager = get_plugin_manager()
         # Other forced passes (a reload-plugins verb, the dashboard) do not take the go-live lock, so the
@@ -249,7 +249,7 @@ def notify_serve_backend(name: str, home: Path) -> Optional[dict[str, Any]]:
         import json
         import urllib.request
         from hermes_agent.gateway import host_rendezvous as hr
-        from hermes_cli.url_utils import format_url_host
+        from hermes_agent.hermes_cli.url_utils import format_url_host
         record = _serve_backend_record()
         if record is None:
             return None
@@ -270,7 +270,7 @@ def _gateway_present() -> bool:
     """A gateway runs for this profile (its own, or the multiplexer serving it from the root), or a
     gateway service is installed for it."""
     from hermes_agent.gateway.status import get_running_pid
-    from hermes_cli.gateway import _installed_service_kind
+    from hermes_agent.hermes_cli.gateway import _installed_service_kind
     from hermes_constants import get_default_hermes_root, get_hermes_home
     homes = {Path(get_hermes_home()).resolve(), Path(get_default_hermes_root()).resolve()}
     return (any(get_running_pid(home / "gateway.pid", cleanup_stale=False) for home in homes)
@@ -284,7 +284,7 @@ _RESTART_LINES = {"gateway": "  hermes gateway restart",
 def dependency_restart_hint(missing: list[str], processes: list[str]) -> str:
     """What to do when running processes cannot import a plugin's dependencies: one restart line per
     process that reported the gap (``gateway`` / ``backend``), never one that can already import them."""
-    from hermes_cli.plugins_loader import installed_in_selected_environment
+    from hermes_agent.hermes_cli.plugins_loader import installed_in_selected_environment
     deps = ", ".join(missing)
     restart = "\n".join(_RESTART_LINES[p] for p in processes)
     if installed_in_selected_environment(missing):

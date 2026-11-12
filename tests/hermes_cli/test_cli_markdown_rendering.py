@@ -3,7 +3,7 @@ from io import StringIO
 from rich.console import Console
 from rich.markdown import Markdown
 
-from cli import _render_final_assistant_content
+from hermes_agent.cli import _render_final_assistant_content
 
 
 def _render_to_text(renderable) -> str:

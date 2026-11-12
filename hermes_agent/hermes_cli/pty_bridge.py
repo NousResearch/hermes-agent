@@ -2,7 +2,7 @@
 
 Wraps a child process behind a pseudo-terminal so its ANSI output can be streamed to xterm.js and
 keystrokes fed back in; the only caller is the ``/api/pty`` WebSocket endpoint in
-``hermes_cli.web_server``. POSIX-only: depends on ``fcntl``, ``termios`` and ``ptyprocess`` (native
+``hermes_agent.hermes_cli.web_server``. POSIX-only: depends on ``fcntl``, ``termios`` and ``ptyprocess`` (native
 Windows would need a separate ConPTY/``pywinpty`` implementation).
 """
 

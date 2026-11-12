@@ -160,7 +160,7 @@ try:  # plugin tool discovery (user/project/pip plugins)
     # message — freezing Discord/Telegram heartbeats for up to 120s whenever any configured MCP server was
     # slow or unreachable (#16856). - hermes_agent/gateway/run.py            -> start_gateway() uses run_in_executor -
     # hermes_agent/acp_adapter/server.py     -> asyncio.to_thread on session init
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
     discover_plugins()
 except Exception as e:
     logger.debug("Plugin discovery failed: %s", e)
@@ -284,8 +284,8 @@ def _tool_defs_cache_key(
     if profile_scope == CHECK_FN_CACHE_BYPASS:
         return None
     try:
-        from hermes_cli.config import get_config_path
-        from hermes_cli.config_backend import config_version
+        from hermes_agent.hermes_cli.config import get_config_path
+        from hermes_agent.hermes_cli.config_backend import config_version
         cfg_fp = config_version(get_config_path())
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
@@ -565,12 +565,12 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
 
 def _active_model_config() -> tuple[str, dict[str, Any]]:
     """(model_id, model section) from config.yaml; model_id is "" when unset."""
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     cfg = load_config() or {}
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     raw_model_id = model_cfg.get("model") or model_cfg.get("default") or ""
     if isinstance(raw_model_id, dict):
-        from hermes_cli.config import split_model_config_default
+        from hermes_agent.hermes_cli.config import split_model_config_default
         raw_model_id, _ = split_model_config_default(raw_model_id)
     return str(raw_model_id).strip(), model_cfg
 
@@ -600,7 +600,7 @@ def _resolve_active_context_length() -> int:
             # Credential resolution failing (offline, no keys) degrades to a
             # provider+base_url-only lookup so static fallbacks still apply.
             try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
+                from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
                 rt = resolve_runtime_provider(requested=provider, target_model=model_id) or {}
                 base_url = str(rt.get("base_url") or base_url or "").strip()
                 api_key = str(rt.get("api_key") or "").strip()
@@ -706,7 +706,7 @@ def _emit_post_tool_call_hook(
     if _post_tool_call_hook_suppressed.get():
         return
     try:
-        from hermes_cli.lifecycle import has_hook, invoke_hook
+        from hermes_agent.hermes_cli.lifecycle import has_hook, invoke_hook
         if not has_hook("post_tool_call"):
             return
         if status is None:
@@ -778,7 +778,7 @@ def _apply_request_middleware(
 ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     """tool_request middleware: returns (args, original_args, trace); fail-open."""
     try:
-        from hermes_cli.middleware import apply_tool_request_middleware
+        from hermes_agent.hermes_cli.middleware import apply_tool_request_middleware
         mw = apply_tool_request_middleware(function_name, function_args, **ids.hook_kwargs())
         return mw.payload, mw.original_payload, mw.trace
     except Exception as _mw_err:
@@ -799,7 +799,7 @@ def _pre_dispatch_guards(function_name: str, function_args: dict[str, Any], skip
     if not skip_pre_tool_call_hook:
         block_message: Optional[str] = None
         try:
-            from hermes_cli.plugins import _dispatch_pre_tool_call_hooks
+            from hermes_agent.hermes_cli.plugins import _dispatch_pre_tool_call_hooks
             block_message, modified_args = _dispatch_pre_tool_call_hooks(
                 function_name, function_args, middleware_trace=list(middleware_trace), **ids.hook_kwargs(),
             )
@@ -865,7 +865,7 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
     with _approval_observability(ids):
         if skip_tool_execution_middleware:
             return _dispatch(function_args)
-        from hermes_cli.middleware import run_tool_execution_middleware
+        from hermes_agent.hermes_cli.middleware import run_tool_execution_middleware
         return run_tool_execution_middleware(function_name, function_args, _dispatch, original_args=original_args,
                                              **ids.hook_kwargs())
 
@@ -878,7 +878,7 @@ def _apply_transform_tool_result_hook(function_name: str, function_args: dict[st
     first string return wins. Gated on has_hook so the no-listener path is cheap.
     """
     try:
-        from hermes_cli.lifecycle import has_hook, invoke_hook
+        from hermes_agent.hermes_cli.lifecycle import has_hook, invoke_hook
         if has_hook("transform_tool_result"):
             status, error_type, error_message = _tool_result_observer_fields(function_name, result)
             hook_results = invoke_hook("transform_tool_result", tool_name=function_name, args=function_args,

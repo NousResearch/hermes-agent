@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 @contextmanager
 def build_lock(source: Path):
-    from hermes_cli.runtime_state import _lock
+    from hermes_agent.hermes_cli.runtime_state import _lock
 
     directory = source / ".build"
     if directory.is_symlink():

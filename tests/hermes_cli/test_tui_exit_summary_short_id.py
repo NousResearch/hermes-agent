@@ -26,7 +26,7 @@ def home(tmp_path, monkeypatch):
 
 
 def test_epilogue_prints_short_resume_id_for_canonical_session(home, capsys):
-    from hermes_cli.main_tui_launch import _print_tui_exit_summary
+    from hermes_agent.hermes_cli.main_tui_launch import _print_tui_exit_summary
     sid = 'local-' + 'ab12cd34ef56a7b8' + '0' * 48
     _seed(home, sid)
     _print_tui_exit_summary(sid)
@@ -38,15 +38,15 @@ def test_epilogue_prints_short_resume_id_for_canonical_session(home, capsys):
 
 
 def test_short_id_resumes_the_session(home):
-    from hermes_cli.main import _resolve_session_by_name_or_id
+    from hermes_agent.hermes_cli.main import _resolve_session_by_name_or_id
     sid = 'local-' + 'ab12cd34ef56a7b8' + '0' * 48
     _seed(home, sid)
     assert _resolve_session_by_name_or_id(sid[:22]) == sid
 
 
 def test_ambiguous_prefix_falls_back_to_full_id(home, capsys):
-    from hermes_cli.main import _resolve_session_by_name_or_id
-    from hermes_cli.main_tui_launch import _print_tui_exit_summary
+    from hermes_agent.hermes_cli.main import _resolve_session_by_name_or_id
+    from hermes_agent.hermes_cli.main_tui_launch import _print_tui_exit_summary
     a = 'local-' + 'ab12cd34ef56a7b8' + '0' * 48
     b = 'local-' + 'ab12cd34ef56a7b8' + '1' * 48
     _seed(home, a)
@@ -57,7 +57,7 @@ def test_ambiguous_prefix_falls_back_to_full_id(home, capsys):
 
 
 def test_stored_ids_print_unchanged(home, capsys):
-    from hermes_cli.main_tui_launch import _print_tui_exit_summary
+    from hermes_agent.hermes_cli.main_tui_launch import _print_tui_exit_summary
     _seed(home, '20261012_185208_a67483')
     _print_tui_exit_summary('20261012_185208_a67483')
     assert 'hermes --tui --resume 20261012_185208_a67483\n' in capsys.readouterr().out
@@ -68,7 +68,7 @@ def test_branch_child_epilogue_counts_the_branched_conversation(home, capsys):
     the canonical child is named, and its total includes the branch it was cut from."""
     import json
     from hermes_agent.hermes_state import SessionDB
-    from hermes_cli.main_tui_launch import _print_tui_exit_summary
+    from hermes_agent.hermes_cli.main_tui_launch import _print_tui_exit_summary
     parent = 'local-' + '1' * 64
     child = 'local-' + '2' * 64
     _seed(home, parent, tokens=(300, 60))

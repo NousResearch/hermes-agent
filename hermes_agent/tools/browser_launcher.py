@@ -131,12 +131,12 @@ def needs_chromium_sandbox_bypass() -> bool:
 
 
 def _chromium_missing_hint() -> str:
-    from hermes_cli.browser_runtime import chromium_missing_hint
+    from hermes_agent.hermes_cli.browser_runtime import chromium_missing_hint
     return chromium_missing_hint()
 
 
 def _resolve_executable() -> Optional[str]:
-    from hermes_cli.browser_runtime import chromium_executable
+    from hermes_agent.hermes_cli.browser_runtime import chromium_executable
     exe = chromium_executable()
     if not exe:
         return None
@@ -159,7 +159,7 @@ def _maybe_autoinstall_chromium() -> bool:
     if _autoinstall_attempted:
         return False
     _autoinstall_attempted = True
-    from hermes_cli.browser_runtime import chromium_executable
+    from hermes_agent.hermes_cli.browser_runtime import chromium_executable
     from hermes_constants import is_termux
     if running_in_docker() or is_termux() or _explicit_executable_configured(chromium_executable):
         return False
@@ -252,7 +252,7 @@ def build_chromium_argv(executable: str, user_data_dir: str, *, packaged: bool, 
 
 def _spawn_kwargs() -> dict[str, Any]:
     if os.name == "nt":
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
         return {"creationflags": windows_hide_flags() | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
     # detached-spawn: ok — a shared-profile Chromium outlives its launcher for its other holders (browser_launcher_holders); a crashed owner's throwaway one is reaped from its launch record by the next Hermes
     return {"start_new_session": True}

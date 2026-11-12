@@ -119,7 +119,7 @@ def env_reply_mode(config: GatewayConfig, platform: Platform, env: str) -> None:
         config.platforms.setdefault(platform, PlatformConfig()).reply_to_mode = mode
 
 
-# ``partial`` (not a closure) so ``hermes_cli.profile_channels`` can read the env names a step owns
+# ``partial`` (not a closure) so ``hermes_agent.hermes_cli.profile_channels`` can read the env names a step owns
 # from ``step.keywords`` (``env`` / ``env_base``).
 def home_step(platform: Platform, env_base: str, *, strip: bool = False):
     return partial(env_home_channel, platform=platform, env_base=env_base, strip=strip)
@@ -192,7 +192,7 @@ def bundled_sibling(directory: str, stem: str = "gateway_env") -> Any:
     from hermes_agent.gateway.config import Platform
     if directory not in Platform._scan_bundled_plugin_platforms()[0]:
         return None
-    from hermes_cli.plugins import get_bundled_plugins_dir
+    from hermes_agent.hermes_cli.plugins import get_bundled_plugins_dir
     path = get_bundled_plugins_dir() / "platforms" / directory / f"{stem}.py"
     if not path.is_file():
         return None

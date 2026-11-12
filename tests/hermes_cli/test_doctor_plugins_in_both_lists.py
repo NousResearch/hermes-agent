@@ -5,7 +5,7 @@ they had to turn them off (#131216), and nothing else said so.
 """
 from __future__ import annotations
 
-from hermes_cli.doctor_state import _check_plugins_in_both_lists
+from hermes_agent.hermes_cli.doctor_state import _check_plugins_in_both_lists
 
 
 def test_plugin_in_both_lists_is_an_issue_with_the_command_that_settles_it(tmp_path, monkeypatch):

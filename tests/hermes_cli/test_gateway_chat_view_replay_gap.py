@@ -14,7 +14,7 @@ GAP = {"method": "event", "params": {"type": "session.replay_gap", "session_id":
 
 
 async def real_oneshot(tmp_path, mode, **view_kwargs):
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
     owner = Owner(tmp_path / "state.db", pause=mode)
     try:
         view = GatewayChatView(owner, await owner.conn.resume(owner.ref, {}), **view_kwargs)
@@ -28,7 +28,7 @@ async def real_oneshot(tmp_path, mode, **view_kwargs):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["ended", "live"])
 async def test_stream_json_result_is_authoritative_and_no_text_follows_the_gap(tmp_path, capsys, mode):
-    from hermes_cli.stream_json import StreamJsonEmitter
+    from hermes_agent.hermes_cli.stream_json import StreamJsonEmitter
     assert await real_oneshot(tmp_path, mode, emitter=StreamJsonEmitter(model="m", session_id="s")) == 0
     records = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
     text = "".join(r.get("text", "") for r in records if r["type"] == "text")
@@ -55,7 +55,7 @@ class Peer:
 
 async def gapped(answer, run):
     """``run(view)`` on a view of ``s`` whose admission ``a`` is acked, then cut by a gap."""
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
     view = GatewayChatView(Peer(answer), {"stored_session_id": "s"})
     task = asyncio.create_task(run(view))
     try:
@@ -105,7 +105,7 @@ async def test_unknown_row_settles_the_interactive_turn(capsys):
 
 @pytest.mark.asyncio
 async def test_ack_during_the_reattach_settles_against_its_snapshot(capsys):
-    from hermes_cli.gateway_chat_view import GatewayChatView
+    from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
     entered, release = asyncio.Event(), asyncio.Event()
 
     def event(kind, payload):

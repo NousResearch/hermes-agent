@@ -3,8 +3,8 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.config import get_managed_system, is_managed, recommended_update_command
-from hermes_cli.main import cmd_update
+from hermes_agent.hermes_cli.config import get_managed_system, is_managed, recommended_update_command
+from hermes_agent.hermes_cli.main import cmd_update
 from hermes_agent.tools.skills_hub_official import OptionalSkillSource
 
 
@@ -16,8 +16,8 @@ def test_recommended_update_command_defaults_to_hermes_update(monkeypatch):
     # somewhere with that marker, which would make get_managed_update_command()
     # return "Update your Nix flake input ..." instead of falling through to
     # detect_install_method().
-    with patch("hermes_cli.config.get_managed_update_command", return_value=None), \
-         patch("hermes_cli.config.detect_install_method", return_value="git"):
+    with patch("hermes_agent.hermes_cli.config.get_managed_update_command", return_value=None), \
+         patch("hermes_agent.hermes_cli.config.detect_install_method", return_value="git"):
         assert recommended_update_command() == "hermes update"
 
 
@@ -28,7 +28,7 @@ def test_get_managed_system_false_values(monkeypatch, false_value):
 
     assert get_managed_system() is None
     assert not is_managed()
-    with patch("hermes_cli.config.detect_install_method", return_value="git"):
+    with patch("hermes_agent.hermes_cli.config.detect_install_method", return_value="git"):
         assert recommended_update_command() == "hermes update"
 
 

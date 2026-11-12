@@ -3,8 +3,8 @@ import argparse
 import json
 import shutil
 
-from hermes_cli import update_completion
-from hermes_cli.subcommands.update import build_update_parser
+from hermes_agent.hermes_cli import update_completion
+from hermes_agent.hermes_cli.subcommands.update import build_update_parser
 from tests.hermes_cli.test_update_completion_process import transition
 
 

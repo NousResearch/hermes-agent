@@ -36,7 +36,7 @@ _skill_commands_sig_by_key: dict[tuple, tuple] = {}
 _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
 # instead of slugging to "" and being dropped (#12351); Telegram's ``[a-z0-9_]`` menu limit is
-# applied by hermes_cli/commands_platforms.py, not here.
+# applied by hermes_agent/hermes_cli/commands_platforms.py, not here.
 _SKILL_INVALID_CHARS = re.compile(r"[^\w-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
@@ -469,7 +469,7 @@ def skill_command_collision_note(name: str) -> Optional[str]:
     built-in handlers), and the ``/skills`` listing plus the command palette render the note so
     the skipped skill is explained where the user looks, not only in the log.
     """
-    from hermes_cli.commands import resolve_command
+    from hermes_agent.hermes_cli.commands import resolve_command
     cmd_name = slugify_skill_name(name)
     if not cmd_name or resolve_command(cmd_name) is None:
         return None
@@ -679,9 +679,9 @@ def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
     config-only disable takes effect without a rescan.
     """
     from hermes_agent.agent.skill_utils import get_disabled_skill_names
-    from hermes_cli.plugins import discover_plugins, get_plugin_manager
-    from hermes_cli.plugins_content import plugin_skill_owners
-    from hermes_cli.plugins_discovery import _get_disabled_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_manager
+    from hermes_agent.hermes_cli.plugins_content import plugin_skill_owners
+    from hermes_agent.hermes_cli.plugins_discovery import _get_disabled_plugins
     from hermes_constants import get_hermes_home
 
     discover_plugins()  # no-op once this home is discovered
@@ -985,7 +985,7 @@ def resolve_auto_load_skills(user_config: dict | None = None) -> list[str]:
     empty when unset, malformed, or the config is unreadable."""
     if user_config is None:
         try:
-            from hermes_cli.config import load_config_readonly
+            from hermes_agent.hermes_cli.config import load_config_readonly
             user_config = load_config_readonly()
         except Exception:
             return []

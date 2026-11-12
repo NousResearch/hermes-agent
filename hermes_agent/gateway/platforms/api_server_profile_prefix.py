@@ -17,7 +17,7 @@ def _handle_is_free() -> bool:
     pre-reservation ``profiles/hermes`` (served, parked or standalone) keeps it, so its traffic is
     never answered by the default profile. Fail closed: unknown counts as taken."""
     try:
-        from hermes_cli.profiles import profile_exists
+        from hermes_agent.hermes_cli.profiles import profile_exists
         return not profile_exists(DEFAULT_PROFILE_HANDLE)
     except Exception:
         logger.warning("Cannot check for a '%s' profile", DEFAULT_PROFILE_HANDLE, exc_info=True)
@@ -31,7 +31,7 @@ def _prefix_profile(request: Any) -> str:
     raw = (request.match_info.get("profile") or "").strip()
     if not raw:
         return ""
-    from hermes_cli.profiles import normalize_profile_name
+    from hermes_agent.hermes_cli.profiles import normalize_profile_name
     return normalize_profile_name(raw)
 
 
@@ -63,7 +63,7 @@ def resolve_request_profile(adapter: Any, request: Any):
             alias and _prefix_names_served_profile("default") and _handle_is_free())
         return None if served else _PROFILE_REJECTED
     try:
-        from hermes_cli.profiles import profiles_to_serve
+        from hermes_agent.hermes_cli.profiles import profiles_to_serve
         served = {name for name, _ in profiles_to_serve(multiplex=True)}
     except Exception:
         # Fail closed: a prefix this gateway cannot prove it serves is a 404.

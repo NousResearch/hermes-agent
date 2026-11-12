@@ -1,8 +1,8 @@
 """Plugin loading: directory/entry-point module import, deferred bundled platforms, portable packages,
-dependency/config-schema warnings. Mixed into :class:`hermes_cli.plugins.PluginManager`.
+dependency/config-schema warnings. Mixed into :class:`hermes_agent.hermes_cli.plugins.PluginManager`.
 
 Origin-internal names (``PluginContext``, ``LoadedPlugin``, ``_PLUGINS_DEBUG`` …) are imported lazily
-through ``hermes_cli.plugins`` so tests that patch them on the origin keep working.
+through ``hermes_agent.hermes_cli.plugins`` so tests that patch them on the origin keep working.
 """
 
 from __future__ import annotations
@@ -24,14 +24,14 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, 
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from hermes_agent.registration_lifecycle import replacement_coordinator
-from hermes_cli.plugins_discovery import ENTRY_POINTS_GROUP, _select_entry_point_group
-from hermes_cli.plugins_manifest import PluginManifest, manifest_key, portable_mcp_server_name, validate_config_schema
-from hermes_cli.plugins_state import _plugin_settings_entry
+from hermes_agent.hermes_cli.plugins_discovery import ENTRY_POINTS_GROUP, _select_entry_point_group
+from hermes_agent.hermes_cli.plugins_manifest import PluginManifest, manifest_key, portable_mcp_server_name, validate_config_schema
+from hermes_agent.hermes_cli.plugins_state import _plugin_settings_entry
 
 if TYPE_CHECKING:  # pragma: no cover
-    from hermes_cli.plugins import LoadedPlugin, PluginContext
+    from hermes_agent.hermes_cli.plugins import LoadedPlugin, PluginContext
 
-logger = logging.getLogger("hermes_cli.plugins")
+logger = logging.getLogger("hermes_agent.hermes_cli.plugins")
 
 _NS_PARENT = "hermes_plugins"
 _MODULE_NAMESPACE_LOCK = threading.RLock()
@@ -69,7 +69,7 @@ def _resolve_plugin_load_timeout() -> float:
     loads inline with no deadline; clamped to ``_MAX_LOAD_TIMEOUT_SECS``)."""
     default = _LOAD_TIMEOUT_SECS
     try:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         plugins_cfg = (load_config_readonly() or {}).get("plugins")
         if not isinstance(plugins_cfg, dict) or plugins_cfg.get("load_timeout_seconds") is None:
             return default
@@ -253,7 +253,7 @@ def hermes_fit_error(manifest: Any) -> Optional[str]:
     requirement on ``hermes-agent``. PM's build leaves such a plugin out by the same gate
     (``pm.workspace.hermes_fit_error``), so it is skipped here rather than imported without its
     dependencies, and loads again once Hermes fits."""
-    from hermes_cli.plugins_manifest import requires_hermes_error
+    from hermes_agent.hermes_cli.plugins_manifest import requires_hermes_error
 
     reason = requires_hermes_error(manifest)
     path = getattr(manifest, "path", None)
@@ -307,7 +307,7 @@ class PluginLoaderMixin:
         ``plugins.manage`` install-enable-update, a tool-triggered force re-discovery or the gateway's
         ``reload-plugins`` verb (all of which run ``discover_plugins(force=True)``; a non-forced call
         short-circuits on ``_discovered`` and never fires). See
-        :func:`hermes_cli.plugins_activation.plugin_activation_summary` for the payload: ``activated_now``
+        :func:`hermes_agent.hermes_cli.plugins_activation.plugin_activation_summary` for the payload: ``activated_now``
         (gateway commands/transforms/hooks/callbacks, live at once) vs ``deferred`` (``tools``/``prompt``
         until the next session, ``mcp_servers`` — the plugin's mcp.json server names — until ``mcp.reload``).
         Listeners belong to the process (gateway runner, TUI server), not to a plugin, so ``unload()``
@@ -330,7 +330,7 @@ class PluginLoaderMixin:
         ``loaded_before``; nothing new = no event. One raising listener never starves the rest."""
         if not self._plugin_loaded_listeners:
             return
-        from hermes_cli.plugins_activation import activation_summaries
+        from hermes_agent.hermes_cli.plugins_activation import activation_summaries
         summaries = [s for s in activation_summaries(self) if s["key"] not in loaded_before]
         if not summaries:
             return
@@ -353,7 +353,7 @@ class PluginLoaderMixin:
         """Register a lazy loader for a bundled platform: the adapter imports only when the
         ``platform_registry`` is first asked for it; a placeholder ``LoadedPlugin`` keeps it visible in
         ``hermes plugins list`` until then."""
-        from hermes_cli.plugins import LoadedPlugin
+        from hermes_agent.hermes_cli.plugins import LoadedPlugin
         lookup_key = manifest_key(manifest)
         loaded = LoadedPlugin(manifest=manifest, enabled=True, deferred=True)
         self._plugins[lookup_key] = loaded
@@ -370,7 +370,7 @@ class PluginLoaderMixin:
         retries the import. A failed load disposes its lease (the registry forgets the platform), so without
         this a load that raised or overran its deadline at startup stays down until a forced re-discovery
         (#126356). True when a loader was re-armed."""
-        from hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins, gate_manifest
+        from hermes_agent.hermes_cli.plugins_discovery import _get_disabled_plugins, _get_enabled_plugins, gate_manifest
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             failed = next((p.manifest for p in self._plugins.values()
                            if p.error and not p.enabled and p.manifest.kind == "platform"
@@ -442,7 +442,7 @@ class PluginLoaderMixin:
         the code is imported from; ``provides_tools`` is what asks for it. A platform that does not declare
         the field is untouched and stays fully deferred.
         """
-        from hermes_cli.plugins import PluginContext, _PLUGINS_DEBUG
+        from hermes_agent.hermes_cli.plugins import PluginContext, _PLUGINS_DEBUG
         if not manifest.provides_tools:
             return
         lookup_key = manifest_key(manifest)
@@ -545,7 +545,7 @@ class PluginLoaderMixin:
         plugin_id = manifest_key(manifest)
         settings: Mapping[str, Any] = {}
         try:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
             entry = _plugin_settings_entry(load_config() or {}, plugin_id) or {}
             raw = entry.get("settings")
             if not isinstance(raw, Mapping):
@@ -563,7 +563,7 @@ class PluginLoaderMixin:
 
     def _load_plugin_scoped(self, manifest: PluginManifest) -> None:
         """Load one plugin with the manager's home bound as current."""
-        from hermes_cli.plugins import LoadedPlugin, PluginContext, _PLUGINS_DEBUG
+        from hermes_agent.hermes_cli.plugins import LoadedPlugin, PluginContext, _PLUGINS_DEBUG
         loaded = LoadedPlugin(manifest=manifest)
         plugin_key = manifest_key(manifest)
         logger.debug(
@@ -625,7 +625,7 @@ class PluginLoaderMixin:
                 self._attribute_registrations(loaded, plugin_key, registration_start)
                 self._publish_staged_registrations(ctx)
                 loaded.enabled = True
-                from hermes_cli.plugins_ledger import _hook_source_of
+                from hermes_agent.hermes_cli.plugins_ledger import _hook_source_of
 
                 self._drop_fallback_hooks(_hook_source_of(manifest.name, loaded.module))
         except (Exception, SystemExit) as exc:
@@ -672,7 +672,7 @@ class PluginLoaderMixin:
 
     def _runs_in_plugin_host(self, manifest: PluginManifest) -> bool:
         """``plugins.isolation: host`` sends every non-bundled Python plugin to the profile's host."""
-        from hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
+        from hermes_agent.hermes_cli.plugin_isolation import ISOLATION_HOST, isolation_mode
         return manifest.source != "bundled" and isolation_mode() == ISOLATION_HOST
 
     def _plugin_host(self) -> Any:
@@ -681,7 +681,7 @@ class PluginLoaderMixin:
         failed creation stores nothing, and the next caller tries again."""
         host = getattr(self, "_plugin_host_instance", None)
         if host is None:
-            from hermes_cli.plugin_host import PluginHost
+            from hermes_agent.hermes_cli.plugin_host import PluginHost
             with _PLUGIN_HOST_CREATE_LOCK:
                 host = getattr(self, "_plugin_host_instance", None)
                 if host is None:
@@ -695,7 +695,7 @@ class PluginLoaderMixin:
 
     def _track_tool_override_policy(self, manifest: PluginManifest, module_name: str) -> None:
         """Install the plugin's tool-override policy in hermes_agent.tools.registry as a ledger-owned lease."""
-        from hermes_cli.plugins import PluginContext
+        from hermes_agent.hermes_cli.plugins import PluginContext
         from hermes_agent.tools.registry import registry as _registry
         scope = self.scope_key
         with replacement_coordinator.transaction():
@@ -740,10 +740,10 @@ class PluginLoaderMixin:
 
     def _load_portable_plugin(self, manifest: PluginManifest, loaded: LoadedPlugin) -> None:
         """Load validated portable components without importing Python code."""
-        from hermes_cli.plugins import PluginContext
+        from hermes_agent.hermes_cli.plugins import PluginContext
         lookup_key = manifest_key(manifest)
         try:
-            from hermes_cli.agent_plugins import load_agent_plugin
+            from hermes_agent.hermes_cli.agent_plugins import load_agent_plugin
             package = load_agent_plugin(
                 Path(manifest.path), get_hermes_home() / "plugin-data" / manifest.data_namespace)
             ctx = PluginContext(manifest, self)
@@ -754,7 +754,7 @@ class PluginLoaderMixin:
                     ctx.register_skill(skill.name, skill.skill_md, skill.description, skill.frontmatter)
                 except Exception as exc:
                     logger.warning("Agent Plugin '%s' skill '%s' skipped: %s", lookup_key, skill.name, exc)
-            from hermes_cli.agent_plugins import _clear_liveness, _set_liveness
+            from hermes_agent.hermes_cli.agent_plugins import _clear_liveness, _set_liveness
             from hermes_platform import declaration
             registered: list[str] = []
             try:

@@ -37,7 +37,7 @@ from hermes_agent.gateway.session import (
     neutralize_untrusted_inline_text,
 )
 from hermes_agent.gateway.turn_lease import TurnLeaseTimeoutError
-from hermes_cli.observability.shared_metrics_busy import (
+from hermes_agent.hermes_cli.observability.shared_metrics_busy import (
     note_busy_admitting, note_busy_outcome, settle_busy_arrival, stamp_busy_arrival)
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -258,7 +258,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         with suppress(Exception):
             _estop_cmd = event.get_command()
             if _estop_cmd:
-                from hermes_cli.commands import resolve_command as _resolve_estop_cmd
+                from hermes_agent.hermes_cli.commands import resolve_command as _resolve_estop_cmd
                 if _resolve_estop_cmd(_estop_cmd) is not None:
                     return True
         with suppress(Exception):
@@ -345,7 +345,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         else:
             if cmd:
                 with suppress(Exception):
-                    from hermes_cli.commands import resolve_command as _resolve_update_cmd
+                    from hermes_agent.hermes_cli.commands import resolve_command as _resolve_update_cmd
                     _cmd_def = _resolve_update_cmd(cmd)
                     _recognized_cmd = _cmd_def.name if _cmd_def else None
             response_text = "" if _recognized_cmd else (event.text or "").strip()
@@ -655,7 +655,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     ) -> tuple[bool, Optional[str]]:
         """Slash-command / photo-burst handling on the busy fast-path → ``(handled, result)``. Each
         command's mid-run behavior is declared on its CommandDef (busy_policy / busy_handler)."""
-        from hermes_cli.commands import resolve_command as _resolve_cmd_inner
+        from hermes_agent.hermes_cli.commands import resolve_command as _resolve_cmd_inner
         _evt_cmd = event.get_command()
         _cmd_def_inner = _resolve_cmd_inner(_evt_cmd) if _evt_cmd else None
 
@@ -898,7 +898,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     ) -> tuple[bool, Optional[str], Optional[str], Optional[str]]:
         """Resolve the slash command (aliases, access gate, hooks) → ``(handled, result, command,
         canonical)``; when ``handled`` the caller returns ``result`` as-is (may be None)."""
-        from hermes_cli.commands import (is_gateway_known_command, is_interrupt_then_dispatch,
+        from hermes_agent.hermes_cli.commands import (is_gateway_known_command, is_interrupt_then_dispatch,
                                          resolve_command as _resolve_cmd)
 
         def _canon(cmd):
@@ -962,7 +962,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         return True, ""
 
     async def _hm_cmd_egress(self, event, source, _quick_key):
-        from hermes_cli.proxy_cli import format_status_text
+        from hermes_agent.hermes_cli.proxy_cli import format_status_text
         return True, format_status_text()
 
     async def _hm_rewrite_turn_to_prompt(self, event, source, name: str, ack: str, build) -> tuple[bool, Optional[str]]:
@@ -993,7 +993,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
 
     async def _hm_cmd_init(self, event, source, _quick_key):
         # /init builds the prompt first: the ack wording depends on whether AGENTS.md exists.
-        from hermes_cli.init_command import build_init_prompt_for_cwd
+        from hermes_agent.hermes_cli.init_command import build_init_prompt_for_cwd
 
         try:
             # The SESSION's active directory, not this process's launch dir: the desktop app
@@ -1064,8 +1064,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         # /moa is one-shot sugar only: run a single prompt through the default MoA preset, then
         # restore the prior model. To *switch* to a MoA preset for the session, pick it from the
         # model picker (MoA presets surface as a virtual "Mixture of Agents" provider).
-        from hermes_cli.moa_config import moa_usage, normalize_moa_config
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.moa_config import moa_usage, normalize_moa_config
+        from hermes_agent.hermes_cli.config import load_config
 
         moa_payload = event.get_command_args().strip()
         if not moa_payload:
@@ -1146,7 +1146,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
     def _hm_unknown_slash_reply(command: str, source: SessionSource) -> Optional[str]:
         """Reply for a /command that is not built-in/plugin/skill; None when it is known."""
         from hermes_agent.gateway.run import _check_unavailable_skill
-        from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        from hermes_agent.hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
         # Known commands never need an unavailable-skill hint (which can require a cold scan).
         if command.replace("_", "-") in GATEWAY_KNOWN_COMMANDS:
             return None
@@ -1360,7 +1360,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return None
         event, source, is_internal = _admitted
         if not is_internal:
-            from hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
+            from hermes_agent.hermes_cli.observability.shared_metrics_events import record_gateway_slash_command
             record_gateway_slash_command(event)
         # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
         # not on the adapter's raw inbound: profile routing, the ignored-channel
@@ -1426,7 +1426,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         _claim_state.turn.agent = _AGENT_PENDING_SENTINEL
         _claim_state.turn.event = event
         _claim_state.turn.started_ts = time.time()
-        from hermes_cli.observability.shared_metrics_gateway import start_reply_clock
+        from hermes_agent.hermes_cli.observability.shared_metrics_gateway import start_reply_clock
         start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
@@ -1740,7 +1740,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 if _msg_raw_ctx is not None:
                     _msg_config_ctx = int(_msg_raw_ctx)
             try:
-                from hermes_cli.config import get_compatible_custom_providers
+                from hermes_agent.hermes_cli.config import get_compatible_custom_providers
 
                 _msg_custom_providers = get_compatible_custom_providers(_msg_cfg)
             except Exception:
@@ -1758,7 +1758,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             _msg_config_ctx = None
         if _msg_config_ctx is not None:
             try:
-                from hermes_cli.route_identity import should_clear_context_pin_async
+                from hermes_agent.hermes_cli.route_identity import should_clear_context_pin_async
 
                 if await should_clear_context_pin_async(
                     None, None,  # model match already checked above
@@ -1770,7 +1770,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
                 _msg_config_ctx = None
         if _msg_custom_providers and _msg_base_url:
             with suppress(Exception):
-                from hermes_cli.config import get_custom_provider_context_length
+                from hermes_agent.hermes_cli.config import get_custom_provider_context_length
 
                 _msg_config_ctx = get_custom_provider_context_length(
                     model=_msg_model, base_url=_msg_base_url, custom_providers=_msg_custom_providers,
@@ -1913,7 +1913,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         try:
             from hermes_agent.agent.image_routing import decide_image_input_mode
             from hermes_agent.agent.auxiliary_client import _read_main_model, _read_main_provider
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
 
             cfg = user_config if isinstance(user_config, dict) else load_config()
             resolved_provider = (provider or "").strip()

@@ -1,7 +1,7 @@
 """
 Integration tests for the desktop boot handshake fix (PR #50231 / issue #50209).
 
-Simulates a slow hermes_cli.gateway import (15-30 s on a fresh Windows install
+Simulates a slow hermes_agent.hermes_cli.gateway import (15-30 s on a fresh Windows install
 with Defender scanning every new .pyc) by patching the two helpers that touch
 the blocking import and measuring response latency.
 
@@ -18,8 +18,8 @@ import time
 import threading
 from unittest.mock import patch
 
-import hermes_cli.web_server as web_server_mod
-import hermes_cli.web_server_lifecycle as _web_server_lifecycle
+import hermes_agent.hermes_cli.web_server as web_server_mod
+import hermes_agent.hermes_cli.web_server_lifecycle as _web_server_lifecycle
 
 SLOW_SECONDS = 1  # represents the Defender worst-case (scaled down for CI speed)
 

@@ -28,7 +28,7 @@ from hermes_agent.gateway.status_inline_source import (
     inline_source_flag_index,
 )
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
-from hermes_cli._subprocess_compat import pid_exists_stdlib
+from hermes_agent.hermes_cli._subprocess_compat import pid_exists_stdlib
 from hermes_agent.gateway.status_lock_dir import unusable_lock_dir, unusable_lock_dir_recovered
 from utils import atomic_json_write
 
@@ -272,7 +272,7 @@ def recorded_gateway_home_conflicts(
         return True
 
 
-# Mirrors hermes_cli.profiles._PROFILE_ID_RE -- duplicated so gateway identity code
+# Mirrors hermes_agent.hermes_cli.profiles._PROFILE_ID_RE -- duplicated so gateway identity code
 # stays import-light (hermes_constants + stdlib only).
 _PROFILE_LABEL_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -425,7 +425,7 @@ def terminate_pid(
         os.kill(pid, signal.SIGTERM if not force else getattr(signal, "SIGKILL", signal.SIGTERM))
         return
     # Hide flags: a bare taskkill spawn from windowless pythonw.exe would flash a conhost window.
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 
     try:
         result = subprocess.run(
@@ -498,7 +498,7 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     # process_birth: macOS's clock-step-stable kernel start (#140580); unchanged with no step.
     try:
         import psutil  # type: ignore
-        from hermes_cli.process_identity import process_birth
+        from hermes_agent.hermes_cli.process_identity import process_birth
         return round(process_birth(psutil.Process(pid)) * 100)
     except Exception:
         return None
@@ -556,7 +556,7 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
-    # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
+    # ``python -c <src> … -m hermes_agent.hermes_cli.main gateway run``: the trailing argv belongs to the program
     # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
     # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
     if command_line_runs_inline_source(cased_tokens):
@@ -616,7 +616,7 @@ def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
     …``: the trailing argv is the inline program's data, not that process's own identity (#107002).
     Callers that inspect a command line as SPAWN INTENT — "if I launch this, does a gateway runtime
     eventually appear?" — need the opposite answer, because
-    ``gateway._spawn_gateway_restart_watcher`` hides a real ``… -m hermes_cli.main gateway run``
+    ``gateway._spawn_gateway_restart_watcher`` hides a real ``… -m hermes_agent.hermes_cli.main gateway run``
     behind exactly that wrapper. ``tests/_fixtures/live_system_guard.py`` is the canonical caller.
 
     Still no substring matching: the wrapper is peeled token-wise and each remaining suffix is
@@ -715,7 +715,7 @@ def command_line_names_hermes_home(command_lc: str, home_lc: str) -> bool:
 
 def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     """True when a gateway command line belongs to ``profile_home`` (mirrors
-    ``hermes_cli.gateway._matches_current_profile``): a stale state file can record a PID recycled
+    ``hermes_agent.hermes_cli.gateway._matches_current_profile``): a stale state file can record a PID recycled
     onto ANOTHER profile's live gateway. Named profiles carry ``-p``/``--profile <name>`` or
     ``HERMES_HOME=`` on argv; the default gateway runs bare. Separators normalized."""
     command_lc = command.lower().replace("\\", "/")
@@ -774,7 +774,7 @@ def _record_argv() -> list[str]:
     """``sys.argv`` with the inline-source placeholder replaced by the entry point this process runs.
 
     The published launcher script (``_launchers._launcher_script``: the POSIX ``bin/hermes`` shell
-    launcher and the Windows ``.cmd``) imports ``hermes_cli.main`` inside ``python -I -c <script>``,
+    launcher and the Windows ``.cmd``) imports ``hermes_agent.hermes_cli.main`` inside ``python -I -c <script>``,
     so ``sys.argv`` is ``["-c", "gateway", "run"]`` — a record the argv matcher can never accept
     once the live command line is unreadable (Windows/EACCES fallback in
     ``_record_matches_live_gateway_pid``). Recording the module path follows runpy's ``alter_sys``
@@ -806,7 +806,7 @@ def _get_code_identity_fields() -> dict[str, Any]:
     degrades to absent fields.
     """
     try:
-        from hermes_cli.version_info import get_code_identity
+        from hermes_agent.hermes_cli.version_info import get_code_identity
 
         identity = get_code_identity()
         return {"code_sha": identity.get("sha"), "code_version": identity.get("version")}
@@ -1304,8 +1304,8 @@ def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, d
     if not name:
         return None
     from hermes_agent.gateway.host_topology import host_gateway_topology
-    from hermes_cli.gateway import named_profile_served_by_running_multiplexer
-    from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
+    from hermes_agent.hermes_cli.gateway import named_profile_served_by_running_multiplexer
+    from hermes_agent.hermes_cli.gateway_multiplex_served import live_default_gateway_pid
     from hermes_constants import get_default_hermes_root
     # The roster is matched by NAME, and the multiplexer only serves ``<default root>/profiles/<name>``:
     # a profile directory copied to another root (sandbox, restore-from-backup) keeps the name but is
@@ -1899,7 +1899,7 @@ def _update_pause_on_disk() -> bool:
     record directory cannot be listed. Only then does a consume need the pause lock and a checkpoint,
     and only then can accepted-stop evidence beside a request still be owed: with none, every pause
     was settled by recovery or the updater (or never made: every non-Windows host)."""
-    from hermes_cli import update_pause_record
+    from hermes_agent.hermes_cli import update_pause_record
     record = update_pause_record.record_path()
     try:
         with os.scandir(record.parent) as entries:
@@ -1914,7 +1914,7 @@ def _update_pause_on_disk() -> bool:
 def _checkpoint_planned_stop(path: Path, record: dict[str, Any]) -> None:
     """``on_consume``, decided after the request was read: an update writes its record before its
     request, so a pause that appeared since the consumer first looked is checkpointed too."""
-    from hermes_cli import update_pause_record
+    from hermes_agent.hermes_cli import update_pause_record
     if _update_pause_on_disk():
         with update_pause_record._mutex(_PLANNED_STOP_MUTEX_WAIT_S):
             update_pause_record.mark_stop_consumed(path, record)
@@ -1922,7 +1922,7 @@ def _checkpoint_planned_stop(path: Path, record: dict[str, Any]) -> None:
 
 def consume_planned_stop_marker_for_self() -> bool:
     """Return True when the current process is being intentionally stopped."""
-    from hermes_cli import update_pause_record
+    from hermes_agent.hermes_cli import update_pause_record
     path = _get_planned_stop_marker_path()
     try:
         paused = _update_pause_on_disk()

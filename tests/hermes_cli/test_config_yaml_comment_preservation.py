@@ -52,7 +52,7 @@ def home(tmp_path):
     (tmp_path / ".env").touch()
     (tmp_path / "config.yaml").write_text(COMMENTED, encoding="utf-8")
     with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
-        from hermes_cli import config as config_mod
+        from hermes_agent.hermes_cli import config as config_mod
         config_mod._RAW_CONFIG_CACHE.clear()
         yield tmp_path
 
@@ -71,14 +71,14 @@ def _assert_preserved(path: Path) -> dict:
 
 class TestEveryWriterPreservesComments:
     def test_config_set(self, home):
-        from hermes_cli.config import set_config_value
+        from hermes_agent.hermes_cli.config import set_config_value
 
         set_config_value("streaming.enabled", "true")
         data = _assert_preserved(home / "config.yaml")
         assert data["streaming"]["enabled"] is True
 
     def test_config_unset(self, home):
-        from hermes_cli.config import unset_config_value
+        from hermes_agent.hermes_cli.config import unset_config_value
 
         unset_config_value("model.default")
         data = _assert_preserved(home / "config.yaml")
@@ -86,7 +86,7 @@ class TestEveryWriterPreservesComments:
 
     def test_save_config_plugin_enable_and_memory_provider(self, home):
         """The bulk writer behind ``plugins enable``, ``memory setup``, the wizard and the dashboard."""
-        from hermes_cli.config import load_config, save_config
+        from hermes_agent.hermes_cli.config import load_config, save_config
 
         cfg = load_config()
         cfg["plugins"]["enabled"].append("beta")
@@ -97,7 +97,7 @@ class TestEveryWriterPreservesComments:
         assert data["memory"]["provider"] == "honcho"
 
     def test_migration_version_bump(self, home):
-        from hermes_cli.config import check_config_version, migrate_config
+        from hermes_agent.hermes_cli.config import check_config_version, migrate_config
 
         _, latest = check_config_version()
         migrate_config(interactive=False, quiet=True)
@@ -106,7 +106,7 @@ class TestEveryWriterPreservesComments:
 
     def test_atomic_config_write_direct(self, home):
         """Non-deleting direct callers keep using the guarded writer."""
-        from hermes_cli.config import atomic_config_write, read_user_config_raw
+        from hermes_agent.hermes_cli.config import atomic_config_write, read_user_config_raw
 
         raw = read_user_config_raw(home / "config.yaml")
         raw["model"]["provider"] = "auto"
@@ -115,7 +115,7 @@ class TestEveryWriterPreservesComments:
         assert data["model"]["provider"] == "auto"
 
     def test_boilerplate_only_on_create(self, home):
-        from hermes_cli.config import save_config
+        from hermes_agent.hermes_cli.config import save_config
 
         (home / "config.yaml").unlink()
         save_config({"model": {"provider": "test"}})

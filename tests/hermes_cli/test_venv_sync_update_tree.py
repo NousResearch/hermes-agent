@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import venv_sync
+from hermes_agent.hermes_cli import venv_sync
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -21,7 +21,7 @@ _HOLDER = """
 import sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
-from hermes_cli.update_lock import UpdateLock
+from hermes_agent.hermes_cli.update_lock import UpdateLock
 assert UpdateLock(path=Path(sys.argv[3]), install_root=sys.argv[2]).acquire()
 print("held", flush=True)
 time.sleep(120)
@@ -75,7 +75,7 @@ def test_a_tail_child_custody_refuses_never_runs_and_stays_owed(tmp_path, monkey
     """N10/R6b: the launch-time tail writes the checkout, so its child is started in the update's
     custody. One custody refuses (Windows: the job would not take it) never runs unfenced: the
     launch fails as a failed tail does, so the tail stays owed."""
-    from hermes_cli import update_custody
+    from hermes_agent.hermes_cli import update_custody
 
     root, started = _tail_root(tmp_path, monkeypatch)
 
@@ -94,7 +94,7 @@ def test_a_tail_child_the_job_refuses_never_runs(tmp_path, monkeypatch):
     job handle is an event); the tail child must not run outside the job."""
     import ctypes
 
-    from hermes_cli import update_lock
+    from hermes_agent.hermes_cli import update_lock
 
     root, started = _tail_root(tmp_path, monkeypatch)
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)

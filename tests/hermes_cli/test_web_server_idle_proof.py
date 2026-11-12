@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.web_server_idle_proof import idle_proof, pending_human_input
+from hermes_agent.hermes_cli.web_server_idle_proof import idle_proof, pending_human_input
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

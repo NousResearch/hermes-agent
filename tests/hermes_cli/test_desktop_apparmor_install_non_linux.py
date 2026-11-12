@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import main_desktop_apparmor
+from hermes_agent.hermes_cli import main_desktop_apparmor
 
 pytestmark = pytest.mark.platforms("not linux")
 

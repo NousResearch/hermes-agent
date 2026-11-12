@@ -144,7 +144,7 @@ def _write_config(home, plugins, vault):
 def vault_home(tmp_path, monkeypatch):
     """Temp HERMES_HOME with one real local-vault login; yields a loader for plugins written into it."""
     from hermes_agent.agent.vault_store import get_vault_store
-    from hermes_cli.plugins import PluginManager
+    from hermes_agent.hermes_cli.plugins import PluginManager
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     home = tmp_path / "home"
@@ -307,8 +307,8 @@ def test_builtin_namespaces_are_reserved_and_backend_names_cannot_be_taken_over(
 
 
 def test_plugin_backend_is_off_until_enabled_refused_in_host_and_origin_checked(vault_home, page):
-    from hermes_cli.plugin_host_child import RemotePluginContext
-    from hermes_cli.plugin_host_wire import PluginHostUnsupported
+    from hermes_agent.hermes_cli.plugin_host_child import RemotePluginContext
+    from hermes_agent.hermes_cli.plugin_host_wire import PluginHostUnsupported
 
     home, local, load = vault_home
     _write_plugin(home, "alpha_vault", _RECORDING_BACKEND.format(

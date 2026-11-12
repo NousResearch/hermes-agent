@@ -28,11 +28,11 @@ from hermes_agent.agent.secret_scope import build_profile_secret_scope, reset_se
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
-from hermes_cli import config_backend as _config_backend
-from hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_exists, supports_file_tooling
-from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_agent.hermes_cli import config_backend as _config_backend
+from hermes_agent.hermes_cli.config_backend import Changes, ConfigBackendUnavailable, config_exists, supports_file_tooling
+from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
 # The slash-worker client (slash_worker_client.py) runs on these globals; tests patch them here.
-from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from hermes_agent.tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
 from utils import is_truthy_value
 from hermes_agent.hermes_state_ids import new_session_id
@@ -56,7 +56,7 @@ from hermes_agent.tui_gateway.user_messages import (
     resume_failed_message, turn_error_text)
 from hermes_agent.tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ threading.excepthook = lambda args: _record_crash(
     "thread exception", args.exc_type, args.exc_value, args.exc_traceback, thread_name=args.thread.name)
 
 with contextlib.suppress(Exception):
-    from hermes_cli.banner import prefetch_update_check
+    from hermes_agent.hermes_cli.banner import prefetch_update_check
 
     prefetch_update_check()
 
@@ -128,7 +128,7 @@ def _ws_orphan_setting(env_var: str, cfg_key: str, default: float) -> float:
     if raw is None or not str(raw).strip():
         raw = None
         with contextlib.suppress(Exception):
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
             raw = (load_config().get("dashboard") or {}).get(cfg_key)
     with contextlib.suppress(ValueError, TypeError):
         return max(0.0, float(raw) if raw is not None else default)
@@ -382,7 +382,7 @@ def _profile_db(params: dict | None = None, *, writer: bool = False):
 
     Foreign-profile handles are read-only unless ``writer=True``: that store belongs to ITS
     gateway/dashboard, and a writer here would take its write lock per RPC. Mirrors
-    hermes_cli.web_routers.profiles._read_profile_db."""
+    hermes_agent.hermes_cli.web_routers.profiles._read_profile_db."""
     profile = (params.get("profile") or "").strip() or None if isinstance(params, dict) else None
     # Launch/own profile → the shared _get_db() handle (left open); another profile → a dedicated
     # handle closed below (app-global remote mode). db is None when unavailable.
@@ -394,7 +394,7 @@ def _profile_db(params: dict | None = None, *, writer: bool = False):
                 from hermes_agent.hermes_state_registry import acquire
                 db = acquire(Path(profile_home) / "state.db")
             else:
-                from hermes_cli.web_server_sessions import _open_session_db_at_path
+                from hermes_agent.hermes_cli.web_server_sessions import _open_session_db_at_path
                 _bootstrap_served_profile_store(Path(profile_home) / "state.db")
                 db = _open_session_db_at_path(Path(profile_home) / "state.db", read_only=True)
             owns = True
@@ -417,7 +417,7 @@ def _canonical_profile_request(name: str) -> str:
     id), in which case it wins; other unknown names keep failing closed in ``_profile_home``.
     """
     if name.casefold() in {".hermes", "hermes"}:
-        from hermes_cli import profiles as profiles_mod
+        from hermes_agent.hermes_cli import profiles as profiles_mod
         # Check the profiles root directly: get_profile_dir rejects "hermes" as a
         # reserved name, but a pre-reserved-list install may still carry that dir.
         if not (profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)).is_dir():
@@ -458,7 +458,7 @@ def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
     if not (name := _canonical_profile_request((profile or "").strip())):
         return None
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
     try:
         home = Path(profiles_mod.get_profile_dir(name))
     except ValueError:
@@ -543,7 +543,7 @@ def _profile_configured_cwd(profile_home: Path | None) -> str | None:
         return None
     try:
         with contextlib.suppress(Exception):
-            from hermes_cli.config_effective import load_user_config_effective
+            from hermes_agent.hermes_cli.config_effective import load_user_config_effective
             p = Path(profile_home) / "config.yaml"
             return _configured_cwd_from_cfg(load_user_config_effective(p)) if config_exists(p) else None
     except ConfigBackendUnavailable as exc:  # a SystemExit: the agent build reports it; the cwd is a hint
@@ -867,9 +867,9 @@ def _load_cfg_raw() -> dict:
     expansion applied here would be persisted on the next save). Behavioral reads use :func:`_load_cfg`.
     Cache keyed on the resolved path so profiles don't clobber."""
     global _cfg_cache, _cfg_sig, _cfg_path
-    from hermes_cli.config_backend import config_cache_version, config_exists
-    from hermes_cli.config import read_user_config_raw
-    from hermes_cli.config_read_errors import FailedConfigRead
+    from hermes_agent.hermes_cli.config_backend import config_cache_version, config_exists
+    from hermes_agent.hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config_read_errors import FailedConfigRead
     try:
         p = _active_config_path()
         try:
@@ -893,15 +893,15 @@ def _load_cfg() -> dict:
     ``_load_cfg() == {}`` sentinels. Fail-open to ``{}``. Never pass the result to ``_save_cfg`` (use
     ``_load_cfg_raw()``)."""
     with contextlib.suppress(Exception):
-        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_agent.hermes_cli.config_effective import load_user_config_effective
         return load_user_config_effective(_active_config_path())
     return {}
 
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
-    from hermes_cli.config import atomic_config_replace
-    from hermes_cli.config_backend import config_cache_version, supports_file_tooling
+    from hermes_agent.hermes_cli.config import atomic_config_replace
+    from hermes_agent.hermes_cli.config_backend import config_cache_version, supports_file_tooling
     path = _active_config_path()
     atomic_config_replace(path, cfg)
     if not supports_file_tooling():
@@ -1358,7 +1358,7 @@ def _probe_config_health(cfg: dict) -> str:
         personality = str(display_cfg.get("personality", "") or "").strip().lower()
         if personality and personality not in {"default", "none", "neutral"}:
             with contextlib.suppress(Exception):
-                from hermes_cli.personality import available_personalities
+                from hermes_agent.hermes_cli.personality import available_personalities
                 if personality not in available_personalities(cfg):
                     warnings.append(f"`display.personality: {personality}` does not match any built-in or "
                                     "`agent.personalities` entry; personality overlay will be skipped.")
@@ -1367,7 +1367,7 @@ def _probe_config_health(cfg: dict) -> str:
 
 def _current_profile_name() -> str:
     with contextlib.suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         return get_active_profile_name() or "default"
     return "default"
 
@@ -1397,7 +1397,7 @@ def _project_info_for_cwd(cwd: str) -> dict | None:
     if not str(cwd or "").strip():
         return None
     try:
-        from hermes_cli import projects_db as pdb
+        from hermes_agent.hermes_cli import projects_db as pdb
         with pdb.connect_closing() as conn:
             project = pdb.project_for_path(conn, cwd)
         return None if project is None else {
@@ -1436,7 +1436,7 @@ def _fast_tier_applies(agent, model: str, provider: str, *, route_known: bool, t
     profile-wide ``service_tier: fast`` sends nothing to a local server or a proxy, and the session must not
     report Fast there either. ``route_known`` is False while a switch is pending: the agent's base URL still
     belongs to the old route."""
-    from hermes_cli.models import resolve_fast_mode_overrides
+    from hermes_agent.hermes_cli.models import resolve_fast_mode_overrides
     base_url = None
     if route_known and agent is not None:
         if getattr(agent, "api_mode", None) == "anthropic_messages":
@@ -1508,8 +1508,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "profile_name": profile_name_for_home(sess.get("profile_home")) or _current_profile_name(),
     }
     with contextlib.suppress(Exception):
-        from hermes_cli import __release_date__
-        from hermes_cli.version_info import get_version_info
+        from hermes_agent.hermes_cli import __release_date__
+        from hermes_agent.hermes_cli.version_info import get_version_info
 
         info.update(version=get_version_info().base_version, release_date=__release_date__)
     live_agent = agent is not None and not sess.get("_compute_host_active")
@@ -1521,7 +1521,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
                 name = t["function"]["name"]
                 info["tools"].setdefault(get_toolset_for_tool(name) or "other", []).append(name)
         with contextlib.suppress(Exception):
-            from hermes_cli.banner import get_available_skills
+            from hermes_agent.hermes_cli.banner import get_available_skills
             info["skills"] = get_available_skills()
     info["mcp_servers"] = []
     with contextlib.suppress(Exception):
@@ -1531,8 +1531,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
         info["system_prompt"] = (
             mirror.get("system_prompt") if "system_prompt" in mirror else getattr(agent, "_cached_system_prompt", "") or "")
     with contextlib.suppress(Exception):
-        from hermes_cli.banner import get_update_result
-        from hermes_cli.config import recommended_update_command
+        from hermes_agent.hermes_cli.banner import get_update_result
+        from hermes_agent.hermes_cli.config import recommended_update_command
         # Two assignments (not one info.update): if recommended_update_command() raises,
         # update_behind must still be reported, as on main.
         info["update_behind"] = get_update_result(timeout=0.5)
@@ -1672,7 +1672,7 @@ _pet_payload_cache: dict[tuple, dict] = {}
 def _pet_cfg() -> dict:
     """``display.pet`` from the canonical config ({} on any failure)."""
     with contextlib.suppress(Exception):
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         display = load_config().get("display")
         pet = display.get("pet") if isinstance(display, dict) else None
         return pet if isinstance(pet, dict) else {}
@@ -1944,7 +1944,7 @@ def _finish_reload(rid, params: dict, *, coalesced: bool) -> dict:
     """Shared tail for both reload paths: honor ``always`` (persist the confirm opt-out) and return the ok payload."""
     if bool(params.get("always", False)):
         try:
-            from cli import save_config_value
+            from hermes_agent.cli import save_config_value
             save_config_value("approvals.mcp_reload_confirm", False)
         except Exception as _exc:
             logger.warning("Failed to persist mcp_reload_confirm=false: %s", _exc)
@@ -1980,7 +1980,7 @@ def _cli_exec_blocked(argv: list[str]) -> str | None:
 
 def _resolve_name(name: str) -> str:
     with contextlib.suppress(Exception):
-        from hermes_cli.commands import resolve_command
+        from hermes_agent.hermes_cli.commands import resolve_command
         return r.name if (r := resolve_command(name)) else name
     return name
 

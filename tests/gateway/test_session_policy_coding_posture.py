@@ -60,7 +60,7 @@ def test_a_project_file_written_mid_session_does_not_switch_toolsets(tmp_path):
 
 
 def test_plugin_mcp_servers_stay_in_the_posture(project, monkeypatch):
-    monkeypatch.setattr('hermes_cli.plugins.get_portable_mcp_server_names_nowait', lambda: {'plug'})
+    monkeypatch.setattr('hermes_agent.hermes_cli.plugins.get_portable_mcp_server_names_nowait', lambda: {'plug'})
     assert {'coding', 'plug'} <= set(create({'source': 'gui', 'cwd': str(project)}, FOCUS).toolsets)
 
 

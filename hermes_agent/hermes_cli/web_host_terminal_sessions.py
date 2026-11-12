@@ -20,11 +20,11 @@ import time
 
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 
-from hermes_cli.pty_session import (
+from hermes_agent.hermes_cli.pty_session import (
     _VIEWER_SEND_ERRORS, _VIEWER_SEND_TIMEOUT_SECONDS, WS_CLOSE_VIEWER_STALLED,
     WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry, RegistryFull, _close_ws, run_reaper,
 )
-from hermes_cli.web_host_terminal import META_PREFIX
+from hermes_agent.hermes_cli.web_host_terminal import META_PREFIX
 from hermes_constants import assert_named_profile_home_live, get_hermes_home
 
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
@@ -103,7 +103,7 @@ def _request_identity(ws: WebSocket) -> tuple[str, str]:
 
 
 def _request_home(profile: str | None) -> Path:
-    from hermes_cli.web_server_profiles import _resolve_profile_dir
+    from hermes_agent.hermes_cli.web_server_profiles import _resolve_profile_dir
     requested = (profile or "").strip()
     return (
         _resolve_profile_dir(requested)
@@ -134,15 +134,15 @@ class HostTerminalRegistry(PtySessionRegistry):
         raise RegistryFull()
 
     async def create(self, ws: WebSocket, identity: tuple[str, str]):
-        from hermes_cli.web_host_terminal import query_dimension, resolve_argv
-        from hermes_cli.web_server_chat import PtyBridge
+        from hermes_agent.hermes_cli.web_host_terminal import query_dimension, resolve_argv
+        from hermes_agent.hermes_cli.web_server_chat import PtyBridge
         token = secrets.token_urlsafe(32)
         owner = None
 
         def spawn():
             nonlocal owner
             if getattr(ws.state, "ssh_terminal", None) is not None:
-                from hermes_cli.web_host_terminal_ssh import prepare_shell
+                from hermes_agent.hermes_cli.web_host_terminal_ssh import prepare_shell
                 owner, argv, cwd, env = prepare_shell(ws, identity)
             else:
                 home = _request_home(ws.query_params.get("profile"))
@@ -157,7 +157,7 @@ class HostTerminalRegistry(PtySessionRegistry):
             return bridge
 
         if getattr(ws.state, "ssh_terminal", None) is not None:
-            from hermes_cli.web_host_terminal_ssh import warm_tunnel
+            from hermes_agent.hermes_cli.web_host_terminal_ssh import warm_tunnel
             await asyncio.to_thread(warm_tunnel, ws)
         session, _ = await self.attach_or_spawn(token, spawn=spawn)
         assert owner is not None  # spawn completed
@@ -503,7 +503,7 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
     exited or the terminal was closed) or a deleted profile drops the session. ConPTY
     buffers input itself, so Windows writes land at once and keep the bridge's deadline.
     """
-    from hermes_cli.web_server_chat import _RESIZE_RE
+    from hermes_agent.hermes_cli.web_server_chat import _RESIZE_RE
     inbox: asyncio.Queue = _InputQueue()
     ended = asyncio.get_running_loop().create_future()
     reader = asyncio.create_task(_read_frames(ws, inbox, ended))
@@ -550,8 +550,8 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
 
 async def host_terminal(ws: WebSocket) -> None:
     """Called only after both the existing WS gate and host policy have passed."""
-    from hermes_cli.pty_session import WS_CLOSE_PROCESS_EXITED, WS_CLOSE_PROCESS_EXITED_REASON
-    from hermes_cli.web_server_chat import _pty_fail
+    from hermes_agent.hermes_cli.pty_session import WS_CLOSE_PROCESS_EXITED, WS_CLOSE_PROCESS_EXITED_REASON
+    from hermes_agent.hermes_cli.web_server_chat import _pty_fail
     session = None
     try:
         registry = get_host_terminals(ws.app)

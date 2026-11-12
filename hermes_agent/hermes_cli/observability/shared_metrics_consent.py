@@ -72,7 +72,7 @@ def consent_state(raw_cfg: Any) -> dict:
 
 
 def _current_state() -> dict:
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
 
     return consent_state(read_raw_config())
 
@@ -94,10 +94,10 @@ def save_consent(enabled: bool, send: bool, config: dict | None = None) -> None:
     to the shipped defaults, so a "No thanks" (both false) saved through it vanished and the
     profile was asked again on every surface. ``config`` (a caller's in-memory copy, e.g. the
     wizard's) gets the same answer so its later save agrees. Sending cannot outlive collection."""
-    from hermes_cli.config import (
+    from hermes_agent.hermes_cli.config import (
         _write_user_config, get_config_path, is_managed, managed_error, require_readable_config_before_write,
     )
-    from hermes_cli.setup import _record_send_consent_change
+    from hermes_agent.hermes_cli.setup import _record_send_consent_change
 
     if is_managed():
         managed_error("save configuration")
@@ -123,8 +123,8 @@ def offer_consent(config: dict | None = None, *, reask: bool = False) -> bool:
     """Ask once, with the offer's two answers; "No thanks" is the default so Enter never
     opts anyone in. Esc leaves a first question open (asked again next time); on a re-ask it keeps
     the recorded "No thanks", so nobody is asked a third time. True when answered."""
-    from hermes_cli.cli_output import print_info, print_success
-    from hermes_cli.curses_ui import curses_radiolist, flush_stdin
+    from hermes_agent.hermes_cli.cli_output import print_info, print_success
+    from hermes_agent.hermes_cli.curses_ui import curses_radiolist, flush_stdin
 
     # The offer appears seconds into startup; an Enter typed while Hermes booted would otherwise
     # answer it ("No thanks") before it was ever on screen, so the user was never really asked.
@@ -150,8 +150,8 @@ def offer_consent(config: dict | None = None, *, reask: bool = False) -> bool:
 def offer_consent_if_undecided(config: dict | None = None) -> None:
     """The end-of-setup offer: every ``hermes setup`` flow funnels through the setup-completed
     record, so this one call covers Quick, Full, Blank Slate, Portal and ``--quick``."""
-    from hermes_cli.config import is_managed
-    from hermes_cli.setup import is_noninteractive
+    from hermes_agent.hermes_cli.config import is_managed
+    from hermes_agent.hermes_cli.setup import is_noninteractive
 
     if is_managed() or is_noninteractive() or not sys.stdin.isatty():
         return
@@ -168,8 +168,8 @@ def offer_consent_before_chat(args: Any) -> None:
     """One-time offer before an interactive chat on a profile that never answered. Skipped for
     anything without a person at a terminal (``-q``, piped or JSON output, spawned actions) and for
     a Desktop-spawned pane (the app shows its own strip)."""
-    from hermes_cli.config import is_managed
-    from hermes_cli.setup import is_noninteractive
+    from hermes_agent.hermes_cli.config import is_managed
+    from hermes_agent.hermes_cli.setup import is_noninteractive
 
     if any(getattr(args, name, None) for name in ("query", "query_file", "oneshot", "oneshot_exit")):
         return

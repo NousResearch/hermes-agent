@@ -64,8 +64,8 @@ def rig(tmp_path: Path):
 
 # The CLI's own startup sequence (load ~/.hermes/.env), then the picker entry point.
 _DISCOVERY_PROBE = (
-    "import json; from hermes_cli.env_loader import load_hermes_dotenv; load_hermes_dotenv(); "
-    "from hermes_cli.models import provider_model_ids; "
+    "import json; from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv; load_hermes_dotenv(); "
+    "from hermes_agent.hermes_cli.models import provider_model_ids; "
     "print('IDS=' + json.dumps(list(provider_model_ids('anthropic', force_refresh=True))))"
 )
 

@@ -31,7 +31,7 @@ def _route_paths(policy):
     """Secret paths the session's own route authenticates with: its ``model:`` block, a direct alias's
     key (``api_key_from``) and the one ``providers:`` / ``custom_providers:`` entry the runtime's own
     named-provider selection routes its provider through."""
-    from hermes_cli.runtime_provider_custom import (custom_provider_config_path_for_url,
+    from hermes_agent.hermes_cli.runtime_provider_custom import (custom_provider_config_path_for_url,
                                                     named_custom_provider_config_path)
     config = json.loads(policy.config_json)
     model = config.get('model') if isinstance(config.get('model'), dict) else {}
@@ -169,7 +169,7 @@ _URL_KEYS = ('base_url', 'api', 'url')
 
 
 def _url(value):
-    from hermes_cli.route_identity import normalize_route_base_url
+    from hermes_agent.hermes_cli.route_identity import normalize_route_base_url
     return normalize_route_base_url(str(value or '').strip())
 
 
@@ -184,7 +184,7 @@ def _binding(config, path):
         endpoint['resolved'] = _resolved(owner, block, config)
         endpoint['resolved'][-1] = _url(endpoint['resolved'][-1])
     elif isinstance(block, dict) and path[0] in _ENTRY_SECTIONS:
-        from hermes_cli.runtime_provider_custom import _entry_url
+        from hermes_agent.hermes_cli.runtime_provider_custom import _entry_url
         endpoint['resolved'] = _url(_entry_url(block))
     for key in _URL_KEYS:
         if isinstance(endpoint.get(key), str):
@@ -307,7 +307,7 @@ def _current_custom_path(frozen, config, path):
     An entry the profile no longer declares maps to no index (absent), never to whatever entry now
     sits at ``i``, unless that entry is the same endpoint renamed in place (the fingerprint then decides,
     as on main). A frozen entry with no name has no identity: its index is all there is."""
-    from hermes_cli.providers import custom_provider_slug
+    from hermes_agent.hermes_cli.providers import custom_provider_slug
 
     def identity(entry):
         if not isinstance(entry, dict) or not (entry.get('name') or entry.get('provider_key')):
@@ -324,7 +324,7 @@ def _current_custom_path(frozen, config, path):
     for index, entry in enumerate(current):
         if identity(entry) == mine:  # the first match, as the runtime's own name lookup takes
             return (path[0], index, *path[2:])
-    from hermes_cli.runtime_provider_custom import _entry_url, _normalize_base_url_for_match as url
+    from hermes_agent.hermes_cli.runtime_provider_custom import _entry_url, _normalize_base_url_for_match as url
     if 0 <= path[1] < len(current) and isinstance(current[path[1]], dict) \
             and url(_entry_url(current[path[1]])) == url(_entry_url(held[path[1]])):
         return path  # renamed in place: same endpoint at the same index, as main read it (the fingerprint decides)
@@ -333,7 +333,7 @@ def _current_custom_path(frozen, config, path):
 
 def _entry_owner_path(entry, config):
     """The ``providers:`` / ``custom_providers:`` entry a fallback entry authenticates through."""
-    from hermes_cli.runtime_provider_custom import (custom_provider_config_path_for_url,
+    from hermes_agent.hermes_cli.runtime_provider_custom import (custom_provider_config_path_for_url,
                                                     named_custom_provider_config_path)
     provider = str(entry.get('provider') or '').strip()
     if provider.lower() == 'custom':

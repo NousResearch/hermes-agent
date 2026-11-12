@@ -188,7 +188,7 @@ def _install_browsers(tmp_path, monkeypatch, *, playwright: bool, system: bool):
         pw_exe.write_text("#!/bin/sh\n", encoding="utf-8")
         pw_exe.chmod(0o755)
     monkeypatch.setattr(
-        "hermes_cli.browser_runtime.chromium_executable",
+        "hermes_agent.hermes_cli.browser_runtime.chromium_executable",
         lambda *, allow_override=True: str(pw_exe) if playwright else None,
     )
     sys_exe = tmp_path / "bin" / "chromium"
@@ -303,7 +303,7 @@ def test_headless_shell_override_is_not_a_headed_browser(tmp_path, monkeypatch):
 
 def test_headless_override_does_not_hide_pm_headed_browser(tmp_path, monkeypatch):
     import pm
-    from hermes_cli.browser_runtime import chromium_executable
+    from hermes_agent.hermes_cli.browser_runtime import chromium_executable
 
     headless = tmp_path / "chrome-headless-shell"
     headed = tmp_path / "chrome"

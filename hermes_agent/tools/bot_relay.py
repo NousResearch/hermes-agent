@@ -103,7 +103,7 @@ def _bot_mode_cfg(key: str, *, loader: str) -> Any:
     """``bot_mode.<key>`` from config, read lazily (tools/ must not import CLI
     config at import time); None when absent or the config is unreadable."""
     try:
-        import hermes_cli.config as cfgmod
+        import hermes_agent.hermes_cli.config as cfgmod
 
         cfg = getattr(cfgmod, loader)() or {}
         return (cfg.get("bot_mode") or {}).get(key)
@@ -491,7 +491,7 @@ def _hermes_cli() -> str:
     # Do not select batch shims: cmd.exe reinterprets otherwise literal argv
     # (for example an ampersand in a query-file path), even with shell=False.
     name = "hermes.exe" if sys.platform == "win32" else "hermes"
-    from hermes_cli._startup_fast import project_root_str
+    from hermes_agent.hermes_cli._startup_fast import project_root_str
     published = Path(project_root_str()) / ".hermes" / "bin" / name
     if published.is_file():
         return str(published)

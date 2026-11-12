@@ -12,9 +12,9 @@ from types import MappingProxyType
 
 import pytest
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_output
-from hermes_cli import kanban_workflow as kw
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_output
+from hermes_agent.hermes_cli import kanban_workflow as kw
 from hermes_agent.tools import kanban_tools_schemas
 
 

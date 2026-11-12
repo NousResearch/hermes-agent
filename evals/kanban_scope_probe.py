@@ -14,8 +14,8 @@ if len(sys.argv) == 2:
         p = subprocess.run([sys.executable, __file__, str(repo), "isolated"], cwd=home, env=env, stdin=subprocess.DEVNULL, check=False)
         sys.exit(p.returncode)
 sys.path.insert(0, str(repo))
-from hermes_cli import kanban_db as kb
-from hermes_cli.kanban_db_connect import connect
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli.kanban_db_connect import connect
 from hermes_agent.agent.transports.codex_app_server import CodexAppServerClient
 
 home = Path(os.environ["HOME"])

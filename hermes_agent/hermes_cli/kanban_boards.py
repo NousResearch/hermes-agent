@@ -8,9 +8,9 @@ from __future__ import annotations
 import argparse
 from typing import Optional
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli.kanban_output import _err, _fmt_counts, _json_out
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli.kanban_output import _err, _fmt_counts, _json_out
 
 
 def _dispatch_boards(args: argparse.Namespace) -> int:
@@ -161,8 +161,8 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
 
 
 def _cmd_boards_export(args: argparse.Namespace) -> int:
-    from hermes_cli import kanban_transfer
-    from hermes_cli.sizefmt import format_bytes
+    from hermes_agent.hermes_cli import kanban_transfer
+    from hermes_agent.hermes_cli.sizefmt import format_bytes
 
     slug = args.slug or kb.get_current_board()
     output = args.output or f"{slug}.tar.gz"
@@ -185,7 +185,7 @@ def _cmd_boards_export(args: argparse.Namespace) -> int:
 
 
 def _cmd_boards_import(args: argparse.Namespace) -> int:
-    from hermes_cli import kanban_transfer
+    from hermes_agent.hermes_cli import kanban_transfer
 
     try:
         res = kanban_transfer.import_board(args.archive, args.as_slug, activate=args.switch)

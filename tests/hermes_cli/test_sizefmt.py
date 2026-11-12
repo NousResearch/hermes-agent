@@ -1,4 +1,4 @@
-"""Tests for the shared byte formatter (hermes_cli.sizefmt).
+"""Tests for the shared byte formatter (hermes_agent.hermes_cli.sizefmt).
 
 Consolidates six near-identical formatters (backup, checkpoints, doctor,
 update_cmd, context_references, curator_backup). The contract below locks
@@ -9,7 +9,7 @@ previously rendered 1 TiB as '1024.0 GB').
 
 import pytest
 
-from hermes_cli.sizefmt import format_bytes
+from hermes_agent.hermes_cli.sizefmt import format_bytes
 
 @pytest.mark.parametrize(
     "n,expected",

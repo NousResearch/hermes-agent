@@ -13,10 +13,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.observability import relay_shared_metrics
-from hermes_cli.observability import shared_metrics_contract as contract
-from hermes_cli.observability import shared_metrics_desktop as desktop
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_agent.hermes_cli.observability import relay_shared_metrics
+from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
+from hermes_agent.hermes_cli.observability import shared_metrics_desktop as desktop
+from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
 from hermes_agent.tui_gateway import server
 
 TODAY = "2026-09-27"
@@ -204,7 +204,7 @@ def test_setting_change_sends_only_the_schema_key_and_the_backend_decides_the_di
 
 
 def test_v3_schema_accepts_exactly_the_desktop_contract_values():
-    from hermes_cli import observability
+    from hermes_agent.hermes_cli import observability
 
     schema = json.loads((Path(observability.__file__).parent / "schemas/hermes.shared_metrics.v4.schema.json").read_text())
     by_name = {d["properties"]["name"]["const"]: d for d in schema["$defs"].values() if "properties" in d}

@@ -1398,7 +1398,7 @@ agent:
   # Custom personalities (use with /personality command).
   # Built-ins (helpful, concise, technical, creative, teacher, kawaii, catgirl,
   # pirate, shakespeare, surfer, noir, uwu, philosopher, hype) are always
-  # available on every surface — defined once in hermes_cli/personality.py.
+  # available on every surface — defined once in hermes_agent/hermes_cli/personality.py.
   # Entries here ADD new personalities or OVERRIDE a built-in by name.
   # The active selection is stored in display.personality (never here, and
   # never in agent.system_prompt — that field is your manual system prompt).
@@ -1804,7 +1804,7 @@ stt:
 # Text-to-speech. Only the deepinfra block is documented here — the
 # remaining providers (edge, openai, xai, minimax, mistral, gemini,
 # elevenlabs, neutts, kittentts, piper) inherit sensible defaults from
-# DEFAULT_CONFIG in hermes_cli/config.py.
+# DEFAULT_CONFIG in hermes_agent/hermes_cli/config.py.
 # tts:
 #   provider: "deepinfra"
 #   deepinfra:
@@ -1816,7 +1816,7 @@ stt:
 
 # "Hey Hermes" hands-free wake word (off by default; toggle with /wake).
 # Full engine/provider options inherit from DEFAULT_CONFIG in
-# hermes_cli/config_defaults.py — only capture placement is documented here.
+# hermes_agent/hermes_cli/config_defaults.py — only capture placement is documented here.
 # wake_word:
 #   enabled: false
 #   capture: "auto"    # auto | local | client
@@ -2173,7 +2173,7 @@ display:
 # stdout the script may return JSON that either blocks the tool call or
 # injects context into the next LLM call.
 #
-# Valid events (mirror hermes_cli.plugins.VALID_HOOKS):
+# Valid events (mirror hermes_agent.hermes_cli.plugins.VALID_HOOKS):
 #   pre_tool_call, post_tool_call, pre_llm_call, post_llm_call,
 #   pre_api_request, post_api_request, on_session_start, on_session_end,
 #   on_session_finalize, on_session_reset, subagent_stop

@@ -32,7 +32,7 @@ def _make_local_skill(tmp_path: Path, name: str, body: str) -> None:
 
 def _rewrite(event_text: str, tmp_path, monkeypatch, plugin_home):
     """Drive ``_hm_skill_slash_rewrite`` for a Discord event; returns its reply."""
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     monkeypatch.setenv("HERMES_HOME", str(plugin_home))
     plugins_mod._reset_plugin_managers_for_tests()

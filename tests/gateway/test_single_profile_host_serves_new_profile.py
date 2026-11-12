@@ -17,8 +17,8 @@ from hermes_agent.agent.secret_scope import is_multiplex_active
 from hermes_agent.gateway.config import GatewayConfig
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.status import flush_runtime_status, write_runtime_status
-from hermes_cli import gateway_migrate as gm
-from hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON
+from hermes_agent.hermes_cli import gateway_migrate as gm
+from hermes_agent.hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON
 
 
 @pytest.fixture

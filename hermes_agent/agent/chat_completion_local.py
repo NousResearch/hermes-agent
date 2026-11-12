@@ -26,7 +26,7 @@ def _streams_llamacpp(agent) -> bool:
     through the router, so it would keep the server busy after Hermes gives up on it."""
     if getattr(agent, "api_mode", "") not in ("", "chat_completions"):
         return False
-    from hermes_cli.local_runtime.capabilities import is_managed_provider
+    from hermes_agent.hermes_cli.local_runtime.capabilities import is_managed_provider
 
     return is_managed_provider(str(getattr(agent, "provider", "") or ""), str(getattr(agent, "base_url", "") or ""))
 
@@ -76,8 +76,8 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> Optional[str]:
         if not base:
             return None
         from hermes_agent.agent.chat_completion_helpers import estimate_request_context_tokens
-        from hermes_cli.local_runtime.load_progress import get_loading_progress, get_prefill_progress
-        from hermes_cli.local_runtime.supervisor import state_path
+        from hermes_agent.hermes_cli.local_runtime.load_progress import get_loading_progress, get_prefill_progress
+        from hermes_agent.hermes_cli.local_runtime.supervisor import state_path
         state = json.loads(state_path().read_text(encoding="utf-8-sig"))
         managed = urlparse(str(state.get("base_url", ""))).netloc.lower()
         if not managed or urlparse(base).netloc.lower() != managed:

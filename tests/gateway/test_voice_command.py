@@ -165,7 +165,7 @@ class TestHandleVoiceCommand:
 
         fake_cfg = {"voice": {"auto_tts": True}}
         monkeypatch.setattr(
-            "hermes_cli.config.load_config",
+            "hermes_agent.hermes_cli.config.load_config",
             lambda: fake_cfg,
         )
         adapter = SimpleNamespace(
@@ -771,7 +771,7 @@ class TestDiscordVoiceChannelMethods:
         from plugins.platforms.discord.adapter import DiscordAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
-        with patch("hermes_cli.config.read_raw_config", return_value={
+        with patch("hermes_agent.hermes_cli.config.read_raw_config", return_value={
             "discord": {
                 "voice_channel_inactivity_timeout_seconds": 0,
                 "voice_playback_timeout_seconds": 240,

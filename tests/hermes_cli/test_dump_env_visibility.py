@@ -21,8 +21,8 @@ def _api_key_line(out: str, label: str) -> str:
 
 
 def test_dump_flags_shell_only_key_not_in_dotenv(monkeypatch, capsys, tmp_path):
-    from hermes_cli import dump
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli import dump
+    from hermes_agent.hermes_cli.config import get_hermes_home
 
     monkeypatch.setattr(dump, "get_project_root", lambda: tmp_path / "noproject")
 
@@ -42,8 +42,8 @@ def test_dump_flags_shell_only_key_not_in_dotenv(monkeypatch, capsys, tmp_path):
 
 
 def test_dump_leaves_unset_key_untouched(monkeypatch, capsys, tmp_path):
-    from hermes_cli import dump
-    from hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli import dump
+    from hermes_agent.hermes_cli.config import get_hermes_home
 
     monkeypatch.setattr(dump, "get_project_root", lambda: tmp_path / "noproject")
     monkeypatch.delenv("KEENABLE_API_KEY", raising=False)

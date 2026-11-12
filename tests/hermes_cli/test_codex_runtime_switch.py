@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import codex_runtime_switch as crs
+from hermes_agent.hermes_cli import codex_runtime_switch as crs
 
 
 class TestParseArgs:
@@ -98,7 +98,7 @@ class TestApply:
 
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")), \
-             patch("hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
+             patch("hermes_agent.hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
             mig.return_value.migrated = ["filesystem", "hermes-tools"]
             mig.return_value.migrated_plugins = []
             mig.return_value.plugin_query_error = None
@@ -139,7 +139,7 @@ class TestApply:
 
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")), \
-             patch("hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
+             patch("hermes_agent.hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
             mig.return_value.migrated = ["filesystem", "hermes-tools"]
             mig.return_value.migrated_plugins = []
             mig.return_value.plugin_query_error = None
@@ -161,7 +161,7 @@ class TestApply:
             "model": {"openai_runtime": "codex_app_server"},
             "mcp_servers": {"x": {"command": "y"}},
         }
-        with patch("hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
+        with patch("hermes_agent.hermes_cli.codex_runtime_plugin_migration.migrate") as mig:
             r = crs.apply(cfg, "auto")
         assert r.success
         assert not mig.called  # disabling does not migrate
@@ -172,7 +172,7 @@ class TestApply:
         cfg = {"mcp_servers": {"x": {"command": "y"}}}
         with patch.object(crs, "check_codex_binary_ok",
                           return_value=(True, "0.130.0")), \
-             patch("hermes_cli.codex_runtime_plugin_migration.migrate",
+             patch("hermes_agent.hermes_cli.codex_runtime_plugin_migration.migrate",
                    side_effect=RuntimeError("disk full")):
             r = crs.apply(cfg, "codex_app_server")
         assert r.success  # change still applied

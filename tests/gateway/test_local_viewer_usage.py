@@ -142,7 +142,7 @@ def test_usage_frame_carries_the_tui_view_the_desktop_status_bar_reads():
     from hermes_agent.tui_gateway.contracts.registry import EVENTS
     frame = usage_frame(usage_stats(_agent()))
     EVENTS['session.usage'].payload.model_validate(frame)
-    # The classic CLI / TUI mirror (``hermes_cli.gateway_agent.apply_session_usage``) reads these.
+    # The classic CLI / TUI mirror (``hermes_agent.hermes_cli.gateway_agent.apply_session_usage``) reads these.
     assert frame['tokens_per_s'] == 10.0 and frame['context_length'] == 128000
     # The Desktop status bar reads these: context bar, cache-hit rate, throughput.
     usage = frame['usage']

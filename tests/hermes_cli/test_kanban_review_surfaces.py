@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban as kc
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban as kc
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
 
 
 @pytest.fixture
@@ -324,7 +324,7 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(cli_claimed.current_run_id))
 
     from hermes_agent.agent import auxiliary_client
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
 
     monkeypatch.setattr(
         auxiliary_client,
@@ -347,7 +347,7 @@ def test_goal_mode_review_handoff_cannot_bypass_judge(
 def test_goal_loop_stops_after_reviewer_requests_changes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from hermes_cli import goals
+    from hermes_agent.hermes_cli import goals
 
     monkeypatch.setattr(
         goals,

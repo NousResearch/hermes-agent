@@ -13,8 +13,8 @@ HOLD_S = 3.0
 
 
 def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
     from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.gateway.session_kanban import run_task
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
@@ -22,7 +22,7 @@ def test_run_task_kanban_write_never_blocks_the_loop(tmp_path, monkeypatch):
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
     monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
     monkeypatch.delenv('HERMES_DELEGATED_CHILD', raising=False)
-    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env',
+    monkeypatch.setattr('hermes_agent.hermes_cli.profiles.resolve_profile_env',
                         lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
     workspace = tmp_path / 'workspace'
     workspace.mkdir()

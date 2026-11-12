@@ -21,7 +21,7 @@ def test_committed_parity_table_matches_every_client_verdict():
     assert gen.OUT.read_text(encoding="utf-8") == rendered, (
         "website/docs/developer-guide/gateway-command-parity.md is stale — run "
         "scripts/gen_gateway_command_parity.py")
-    from hermes_cli.commands import COMMAND_REGISTRY
+    from hermes_agent.hermes_cli.commands import COMMAND_REGISTRY
     rows = [line for line in rendered.splitlines() if line.startswith("| `/")]
     assert len(rows) == len(COMMAND_REGISTRY)
     # Per-session settings run their gateway handler for a local session (an admission-fenced control;

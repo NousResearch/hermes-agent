@@ -1,4 +1,4 @@
-"""Tests for the per-profile Projects store (hermes_cli/projects_db)."""
+"""Tests for the per-profile Projects store (hermes_agent/hermes_cli/projects_db)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-from hermes_cli import projects_db as pdb
+from hermes_agent.hermes_cli import projects_db as pdb
 
 
 @pytest.fixture

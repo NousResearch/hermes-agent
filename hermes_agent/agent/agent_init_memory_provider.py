@@ -66,7 +66,7 @@ def resolve_memory_provider(name: str, say=None):
             return None
         if find_provider_dir(name) is None:
             # The provider left core for the catalog (or was never installed): fetch it once.
-            from hermes_cli.memory_provider_migration import recover_at_startup
+            from hermes_agent.hermes_cli.memory_provider_migration import recover_at_startup
 
             if recover_at_startup(name, say=say):
                 provider = load_memory_provider(name)
@@ -140,7 +140,7 @@ def _memory_provider_init_kwargs(agent, platform) -> dict[str, Any]:
         kwargs["cwd"] = agent.session_cwd
     # Profile identity for per-profile provider scoping
     with suppress(Exception):
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         kwargs["agent_identity"] = get_active_profile_name()
         kwargs["agent_workspace"] = "hermes"
     return kwargs

@@ -7,7 +7,7 @@ from typing import Callable
 
 def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     """Attach the ``update`` subcommand to ``subparsers``."""
-    from hermes_cli.release_channels import validate_name
+    from hermes_agent.hermes_cli.release_channels import validate_name
     update_parser = subparsers.add_parser(
         "update", help="Update Hermes Agent to the latest version",
         description="Pull the latest changes from git and reinstall dependencies")

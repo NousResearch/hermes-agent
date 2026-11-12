@@ -14,7 +14,7 @@ import threading
 
 import pytest
 
-from hermes_cli.web_routers import config_env
+from hermes_agent.hermes_cli.web_routers import config_env
 
 
 def test_get_schema_builds_off_the_loop_thread(monkeypatch):
@@ -45,7 +45,7 @@ def test_get_schema_builds_off_the_loop_thread(monkeypatch):
 
 def test_get_egress_status_reads_off_the_loop_thread(monkeypatch):
     """The egress status read runs on a worker thread, never the event-loop thread."""
-    from hermes_cli import proxy_cli
+    from hermes_agent.hermes_cli import proxy_cli
 
     idents = {}
 

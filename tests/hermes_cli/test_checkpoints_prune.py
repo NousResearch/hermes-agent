@@ -77,7 +77,7 @@ def _patch_checkpoint_manager(monkeypatch, status: dict, prune_calls: list):
 
 @pytest.mark.parametrize("status", [_PRE_V2_ONLY_STATUS, _MIXED_STATUS], ids=["pre_v2_only", "mixed"])
 def test_keep_orphans_skips_prompt(monkeypatch, capsys, status):
-    import hermes_cli.checkpoints as checkpoints_cli
+    import hermes_agent.hermes_cli.checkpoints as checkpoints_cli
 
     prune_calls: list = []
     _patch_checkpoint_manager(monkeypatch, status, prune_calls)
@@ -109,7 +109,7 @@ def test_empty_preview_binds_empty_allowlist(monkeypatch, capsys):
     must not be deletable: the allowlist passed down must be the exact
     (empty) displayed set, never the unrestricted None sentinel.
     """
-    import hermes_cli.checkpoints as checkpoints_cli
+    import hermes_agent.hermes_cli.checkpoints as checkpoints_cli
 
     prune_calls: list = []
     _patch_checkpoint_manager(monkeypatch, _V2_ORPHAN_ONLY_STATUS, prune_calls)

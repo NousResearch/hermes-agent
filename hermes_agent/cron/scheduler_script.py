@@ -24,8 +24,8 @@ from hermes_agent.cron.jobs import _ensure_cron_dir
 from pathlib import Path
 from typing import Any, Callable, Optional, TYPE_CHECKING
 
-from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 if TYPE_CHECKING:
     from hermes_agent.cron.cancellation import _CancelEventLike
@@ -161,7 +161,7 @@ def _posix_cron_script_argv(script: Path) -> tuple[list[str], dict[str, str]]:
     rebuilt only on a dependency change, so the bootstrap puts the live checkout first.
     Lazy installs are off for the script's process tree: a script importing ``hermes_bootstrap``
     could otherwise complete a source update and ``execv`` itself onto the bare store Python."""
-    from hermes_cli._launchers import resolve_store_python
+    from hermes_agent.hermes_cli._launchers import resolve_store_python
     from pm.environments import project_python
 
     repo = Path(project_root_str())
@@ -193,7 +193,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
         if sibling.exists():
             interpreter = sibling
 
-    from hermes_cli._launchers import resolve_store_python
+    from hermes_agent.hermes_cli._launchers import resolve_store_python
     from pm.environments import committed_venv, site_packages as dependency_site
 
     repo = Path(project_root_str())

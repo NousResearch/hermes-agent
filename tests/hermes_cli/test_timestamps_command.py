@@ -14,7 +14,7 @@ from datetime import datetime
 
 import hermes_yaml as yaml
 
-from hermes_cli.cli_commands_mixin import CLICommandsMixin
+from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
 
 
 class _Stub(CLICommandsMixin):
@@ -27,7 +27,7 @@ def _seed(tmp_path, monkeypatch, value=False):
     hh.mkdir()
     (hh / "config.yaml").write_text(f"display:\n  timestamps: {str(value).lower()}\n")
     monkeypatch.setenv("HERMES_HOME", str(hh))
-    import cli
+    from hermes_agent import cli
 
     monkeypatch.setattr(cli, "_hermes_home", hh, raising=False)
     return hh
@@ -42,7 +42,7 @@ def test_timestamps_on_sets_and_persists(tmp_path, monkeypatch):
 
 
 def _render_history(history, show_ts):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     h = HermesCLI.__new__(HermesCLI)
     h.show_timestamps = show_ts

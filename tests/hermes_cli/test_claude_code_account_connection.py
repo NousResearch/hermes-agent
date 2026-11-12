@@ -1,6 +1,6 @@
 """Accounts Connected must follow Claude Code token validity, not token presence."""
 
-from hermes_cli.web_server import _SESSION_TOKEN, app
+from hermes_agent.hermes_cli.web_server import _SESSION_TOKEN, app
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
@@ -26,7 +26,7 @@ def test_expired_claude_code_token_is_not_connected(monkeypatch):
 
 def test_windows_claude_code_removal_command_is_unambiguous_powershell():
     """PowerShell must not see ``rm -f``: ``-f`` is an ambiguous Remove-Item parameter."""
-    from hermes_cli.web_routers.oauth import _oauth_provider_disconnect_command
+    from hermes_agent.hermes_cli.web_routers.oauth import _oauth_provider_disconnect_command
 
     command = _oauth_provider_disconnect_command(
         {"id": "claude-code", "flow": "external"}, platform="win32"
@@ -42,7 +42,7 @@ def test_windows_claude_code_removal_command_is_unambiguous_powershell():
 
 def test_disconnect_is_not_success_when_nothing_was_cleared(monkeypatch):
     """A no-op clear must not be a 200 the client can toast as removed."""
-    from hermes_cli import auth as auth_mod
+    from hermes_agent.hermes_cli import auth as auth_mod
 
     monkeypatch.setattr(auth_mod, "clear_provider_auth", lambda _provider: False)
 
@@ -53,7 +53,7 @@ def test_disconnect_is_not_success_when_nothing_was_cleared(monkeypatch):
 
 
 def test_disconnect_failure_does_not_echo_the_store_error(monkeypatch):
-    from hermes_cli import auth as auth_mod
+    from hermes_agent.hermes_cli import auth as auth_mod
 
     secret = "auth store is read-only: /secret/hermes-home"
 

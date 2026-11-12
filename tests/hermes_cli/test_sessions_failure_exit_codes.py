@@ -9,7 +9,7 @@ import pytest
 
 
 def _run_cli(monkeypatch, argv_tail):
-    import hermes_cli.main as main_mod
+    import hermes_agent.hermes_cli.main as main_mod
 
     monkeypatch.setattr(sys, "argv", ["hermes", "sessions", *argv_tail])
     try:

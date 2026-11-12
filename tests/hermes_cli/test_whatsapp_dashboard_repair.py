@@ -15,8 +15,8 @@ from typing import cast
 import pytest
 from fastapi import HTTPException
 
-from hermes_cli import web_models, web_server_messaging
-from hermes_cli.web_routers import messaging
+from hermes_agent.hermes_cli import web_models, web_server_messaging
+from hermes_agent.hermes_cli.web_routers import messaging
 
 
 @pytest.fixture
@@ -70,7 +70,7 @@ def pairing(tmp_path, monkeypatch):
         return asyncio.run(messaging.start_whatsapp_onboarding(web_models.WhatsAppOnboardingStart(**kwargs)))
 
     def gateway_can_acquire():
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 
         output = tmp_path / "lock-probe.txt"
         code = "from hermes_agent.gateway.status import acquire_scoped_lock; import sys; print(acquire_scoped_lock('whatsapp-session', sys.argv[1])[0])"
@@ -242,7 +242,7 @@ def test_thread_start_failure_releases_reservation(pairing, monkeypatch):
 
 
 def test_apply_waits_for_flush_before_restarting_gateway(pairing, monkeypatch):
-    from hermes_cli import config
+    from hermes_agent.hermes_cli import config
 
     result = pairing.start(reset_session=True)
     record = messaging._whatsapp_onboarding_sessions[result["pairing_id"]]
@@ -354,7 +354,7 @@ def test_open_credentials_refuse_backup_on_windows(pairing):
 
 
 def test_apply_retains_flushing_bridge_for_reset_guard(pairing, monkeypatch):
-    from hermes_cli import config
+    from hermes_agent.hermes_cli import config
 
     result = pairing.start()
     record = messaging._whatsapp_onboarding_sessions[result["pairing_id"]]
@@ -389,7 +389,7 @@ def test_cancel_during_process_start_cannot_race_session_backup(pairing, monkeyp
 
 
 def test_repair_selected_profile_leaves_default_session_untouched(pairing, monkeypatch):
-    from hermes_cli import web_server_profiles
+    from hermes_agent.hermes_cli import web_server_profiles
 
     other = pairing.home / "profiles" / "work"
     other.mkdir(parents=True)
@@ -421,7 +421,7 @@ def test_query_profile_is_honored_for_repair(pairing, monkeypatch):
     from fastapi import FastAPI
     import httpx
 
-    from hermes_cli import web_server_profiles
+    from hermes_agent.hermes_cli import web_server_profiles
 
     other = pairing.home / "profiles" / "work"
     other.mkdir(parents=True)

@@ -316,7 +316,7 @@ class PtyHermes:
         supervisor while the gateway lives: it belongs to the gateway, and after the gateway's last
         owned command it stays for an idle grace on purpose (``_SUPERVISOR_IDLE_EXIT_S``)."""
         from hermes_agent.gateway.status import looks_like_gateway_command_line
-        from hermes_cli.process_identity import is_owner_death_supervisor
+        from hermes_agent.hermes_cli.process_identity import is_owner_death_supervisor
 
         def alive() -> list[int]:
             pids = set(session_members(self.sid))

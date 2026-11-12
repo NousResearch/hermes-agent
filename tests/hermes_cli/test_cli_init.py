@@ -50,7 +50,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     try:
         with patch.dict(sys.modules, prompt_toolkit_stubs), \
              patch.dict("os.environ", clean_env, clear=False):
-            import cli as _cli_mod
+            import hermes_agent.cli as _cli_mod
             _cli_mod = importlib.reload(_cli_mod)
             with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), \
                  patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}):
@@ -67,7 +67,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
         # the prompt_toolkit output cache reset in this dir's conftest).
         # Reload once more with the real modules visible so cli's globals
         # rebind cleanly.
-        import cli as _cli_restore
+        import hermes_agent.cli as _cli_restore
         importlib.reload(_cli_restore)
 
 
@@ -152,7 +152,7 @@ class TestBusyInputMode:
         # Import AFTER _make_cli: the harness reloads the cli module, so the
         # sentinel class must come from the same (reloaded) module the
         # instance's handler compares against.
-        import cli as _cli_mod
+        import hermes_agent.cli as _cli_mod
         cli._pending_input.put(_cli_mod._VoiceInputMessage("spoken prompt"))
         cli.process_command("/queue edit 1 corrected prompt")
         items = cli._pending_input_items()
@@ -182,7 +182,7 @@ class TestBusyInputMode:
         """A bad index used to raise ValueError out of the slash handler, which
         escapes the prompt_toolkit key handler and kills the TUI."""
         cli = _make_cli()
-        import cli as _cli_mod
+        import hermes_agent.cli as _cli_mod
         printed = []
         with patch.object(_cli_mod, "_cprint", side_effect=lambda s, *a, **k: printed.append(s)):
             cli.process_command("/queue first prompt")
@@ -233,7 +233,7 @@ class TestPromptToolkitTerminalCompatibility:
         from unittest.mock import patch as _patch
         from prompt_toolkit.key_binding import KeyBindings
 
-        from cli import _bind_prompt_submit_keys
+        from hermes_agent.cli import _bind_prompt_submit_keys
 
         def submit_handler(event):
             return None
@@ -286,7 +286,7 @@ class TestPromptToolkitTerminalCompatibility:
         binding added separately in the prompt setup."""
         from prompt_toolkit.key_binding import KeyBindings
 
-        from cli import _bind_prompt_submit_keys
+        from hermes_agent.cli import _bind_prompt_submit_keys
 
         def submit_handler(event):
             return None
@@ -298,7 +298,7 @@ class TestPromptToolkitTerminalCompatibility:
         assert ("c-j",) not in bindings
 
     def test_cpr_warning_callback_is_disabled(self):
-        from cli import _disable_prompt_toolkit_cpr_warning
+        from hermes_agent.cli import _disable_prompt_toolkit_cpr_warning
 
         renderer = SimpleNamespace(cpr_not_supported_callback=lambda: None)
         app = SimpleNamespace(renderer=renderer)
@@ -318,7 +318,7 @@ class TestPromptToolkitTerminalCompatibility:
         ``tests/hermes_cli/test_cpr_local_leak.py`` under ``platforms("windows")``, where it
         runs against a real Windows console.
         """
-        from cli import _terminal_may_leak_cpr
+        from hermes_agent.cli import _terminal_may_leak_cpr
 
         for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "PROMPT_TOOLKIT_NO_CPR"):
             monkeypatch.delenv(var, raising=False)
@@ -550,7 +550,7 @@ class TestRootLevelProviderOverride:
             },
         }))
 
-        import cli
+        from hermes_agent import cli
         monkeypatch.setattr(cli, "_hermes_home", hermes_home)
         cfg = cli.load_cli_config()
 
@@ -573,7 +573,7 @@ class TestRootLevelProviderOverride:
             },
         }))
 
-        import cli
+        from hermes_agent import cli
         monkeypatch.setattr(cli, "_hermes_home", hermes_home)
         cfg = cli.load_cli_config()
 
@@ -595,7 +595,7 @@ class TestRootLevelProviderOverride:
             },
         }))
 
-        import cli
+        from hermes_agent import cli
         monkeypatch.setattr(cli, "_hermes_home", hermes_home)
         cfg = cli.load_cli_config()
 
@@ -618,7 +618,7 @@ class TestRootLevelProviderOverride:
             },
         }))
 
-        import cli
+        from hermes_agent import cli
         monkeypatch.setattr(cli, "_hermes_home", hermes_home)
         cfg = cli.load_cli_config()
 
@@ -627,7 +627,7 @@ class TestRootLevelProviderOverride:
 
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""
-        from hermes_cli.config import _normalize_root_model_keys
+        from hermes_agent.hermes_cli.config import _normalize_root_model_keys
 
         config = {
             "provider": "opencode-go",
@@ -646,7 +646,7 @@ class TestRootLevelProviderOverride:
 
     def test_normalize_root_model_keys_does_not_override_existing(self):
         """Existing model.provider is never overridden by root-level key."""
-        from hermes_cli.config import _normalize_root_model_keys
+        from hermes_agent.hermes_cli.config import _normalize_root_model_keys
 
         config = {
             "provider": "stale-provider",
@@ -672,7 +672,7 @@ class TestRootLevelProviderOverride:
 
     def test_normalize_model_alias_to_default(self):
         """model.model becomes model.default."""
-        from hermes_cli.config import _normalize_root_model_keys
+        from hermes_agent.hermes_cli.config import _normalize_root_model_keys
 
         result = _normalize_root_model_keys({"model": {"model": "via-model-key"}})
         assert result["model"]["default"] == "via-model-key"
@@ -682,7 +682,7 @@ class TestRootLevelProviderOverride:
 
     def test_normalize_model_wins_over_name(self):
         """Precedence: model > name when both are aliases and default is empty."""
-        from hermes_cli.config import _normalize_root_model_keys
+        from hermes_agent.hermes_cli.config import _normalize_root_model_keys
 
         result = _normalize_root_model_keys({"model": {"model": "m-key", "name": "n-key"}})
         assert result["model"]["default"] == "m-key"
@@ -698,7 +698,7 @@ class TestRootLevelProviderOverride:
 
     def test_nested_dict_default_flattens_model_and_provider(self):
         """dict model.default -> string default + provider, no outer provider set."""
-        from hermes_cli.config import _normalize_root_model_keys
+        from hermes_agent.hermes_cli.config import _normalize_root_model_keys
 
         result = _normalize_root_model_keys({
             "model": {
@@ -710,7 +710,7 @@ class TestRootLevelProviderOverride:
 
     def test_nested_dict_default_provider_wins_over_auto(self):
         """Nested provider replaces the merged default "auto"."""
-        from hermes_cli.config import _normalize_root_model_keys
+        from hermes_agent.hermes_cli.config import _normalize_root_model_keys
 
         result = _normalize_root_model_keys({
             "model": {
@@ -723,7 +723,7 @@ class TestRootLevelProviderOverride:
 
     def test_nested_dict_default_never_overrides_explicit_provider(self):
         """An explicitly configured model.provider beats the nested provider."""
-        from hermes_cli.config import _normalize_root_model_keys
+        from hermes_agent.hermes_cli.config import _normalize_root_model_keys
 
         result = _normalize_root_model_keys({
             "model": {
@@ -736,7 +736,7 @@ class TestRootLevelProviderOverride:
 
     def test_nested_dict_model_alias_flattens_to_default(self):
         """dict model.model alias also flattens (default > model > name)."""
-        from hermes_cli.config import _normalize_root_model_keys
+        from hermes_agent.hermes_cli.config import _normalize_root_model_keys
 
         result = _normalize_root_model_keys({
             "model": {
@@ -749,7 +749,7 @@ class TestRootLevelProviderOverride:
 
     def test_flat_string_default_untouched(self):
         """Plain string defaults keep existing behavior exactly."""
-        from hermes_cli.config import _normalize_root_model_keys
+        from hermes_agent.hermes_cli.config import _normalize_root_model_keys
 
         result = _normalize_root_model_keys({
             "model": {"default": "flat-default-model", "provider": "auto"},
@@ -765,14 +765,14 @@ class TestPluginToolsetStartupValidation:
     (tests/hermes_cli/test_cli_profile_toolsets.py)."""
 
     def test_init_probes_no_plugins_and_keeps_the_list(self, monkeypatch):
-        import cli as _cli_mod
+        import hermes_agent.cli as _cli_mod
 
         stub = object.__new__(_cli_mod.HermesCLI)
         printed: list[str] = []
         stub._console_print = printed.append
         monkeypatch.setattr(_cli_mod, "CLI_CONFIG", {"agent": {}})
         for name in ("get_plugin_toolset_keys_nowait", "discover_plugins", "get_plugin_manager"):
-            monkeypatch.setattr(f"hermes_cli.plugins.{name}", lambda *_a: pytest.fail("probed plugins"))
+            monkeypatch.setattr(f"hermes_agent.hermes_cli.plugins.{name}", lambda *_a: pytest.fail("probed plugins"))
         stub._init_toolsets(["terminal", "voice_stack", "voice_stak"])
         assert printed == []
         assert stub.enabled_toolsets == ["terminal", "voice_stack", "voice_stak"]

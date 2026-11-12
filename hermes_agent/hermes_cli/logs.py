@@ -39,7 +39,7 @@ LOG_FILES = {
     "gui": "gui.log",
     "desktop": "desktop.log",
     # Full stdout/stderr mirror of the last `hermes update` runs (written by
-    # hermes_cli.main's _UpdateOutputStream; append-only across runs). When a
+    # hermes_agent.hermes_cli.main's _UpdateOutputStream; append-only across runs). When a
     # Desktop-driven update fails at the Electron rebuild the ONLY artifacts
     # holding the root cause are this file and the hand-off log below, so
     # `hermes logs list` (a directory scan) showing them without readable

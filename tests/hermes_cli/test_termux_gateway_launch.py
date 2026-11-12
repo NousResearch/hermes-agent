@@ -3,7 +3,7 @@ import sys
 
 
 def test_termux_fast_launch_defers_agent_startup_like_main(monkeypatch):
-    from hermes_cli import main
+    from hermes_agent.hermes_cli import main
 
     monkeypatch.setenv("TERMUX_VERSION", "fixture")
     monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)

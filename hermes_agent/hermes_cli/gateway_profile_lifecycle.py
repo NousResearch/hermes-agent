@@ -5,7 +5,7 @@ import logging
 from contextlib import contextmanager
 
 from hermes_constants import get_hermes_home, get_default_hermes_root
-from hermes_cli.profiles import parked_marker_path, profile_is_parked, profile_is_standalone, profiles_to_serve
+from hermes_agent.hermes_cli.profiles import parked_marker_path, profile_is_parked, profile_is_standalone, profiles_to_serve
 
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ def host_scope_for_all_verb(owner):
     with the host DOWN ``-p X gateway start|restart --all`` re-launched X's own gateway, which the
     named-profile guard then refused (exit 78): the host stayed down after a Desktop update.
     """
-    from hermes_cli.gateway_migrate import _home_env
+    from hermes_agent.hermes_cli.gateway_migrate import _home_env
     return _home_env(owner.home if owner is not None else get_default_hermes_root())
 
 
@@ -62,7 +62,7 @@ def restart_all_verb_scope(owner):
 
 def profile_lifecycle(command: str, args) -> bool:
     """True when a named-profile command was handled (including an unconfirmed request)."""
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     from hermes_agent.gateway.control_socket import request_unserve_profile, request_serve_profile_hot
 
     name = gw._current_profile_name()
@@ -85,7 +85,7 @@ def profile_lifecycle(command: str, args) -> bool:
         marker.unlink()
         owner = gw._host_multiplexer_for_all_verb()
         if owner is None:
-            from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
+            from hermes_agent.hermes_cli.gateway_multiplex_served import live_default_gateway_pid
             if live_default_gateway_pid() is None:
                 return False  # Unpark even when today's normal start path must start the host first.
         host_home = owner.home if owner is not None else get_default_hermes_root()
@@ -105,7 +105,7 @@ def profile_lifecycle(command: str, args) -> bool:
         return False
     host_home = owner.home if owner is not None else get_default_hermes_root()
     # Unserving stops this profile's executing turns: the live-work policy applies before the teardown.
-    from hermes_cli.gateway_lifecycle_guards import refuse_while_sessions_live
+    from hermes_agent.hermes_cli.gateway_lifecycle_guards import refuse_while_sessions_live
     refuse_while_sessions_live(command, args, host_home=host_home, profile=name)
     if command == "stop":
         # Persist intent BEFORE teardown: the periodic rescan must not re-add this profile.
@@ -134,7 +134,7 @@ def profile_lifecycle(command: str, args) -> bool:
 
 def print_parked_status() -> bool:
     """A parked satellite is still installed, but is not a running gateway."""
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
     name = gw._current_profile_name()
     if name and name != "default" and profile_is_parked(get_hermes_home()):
         print(f"Profile '{name}': parked (hermes -p {name} gateway start)")
@@ -180,7 +180,7 @@ def _pid_owned_by_home(pid: int, home) -> bool:
     """
     from hermes_agent.gateway import host_attach, host_rendezvous as hr
     from hermes_agent.gateway.status import _same_hermes_home
-    from hermes_cli.dashboard_procs import _hermes_home_for_pid
+    from hermes_agent.hermes_cli.dashboard_procs import _hermes_home_for_pid
 
     record = hr.read_record(hr.ROLE_GATEWAY)
     is_host = record is not None and record.pid == pid and hr.record_names_live_owner(record)
@@ -219,7 +219,7 @@ def _launch_record_owns(pid: int, home) -> bool:
 def report_profile_stop_failure() -> None:
     """Do not report absence when a live PID was refused or the probe failed."""
     from hermes_agent.gateway.status import get_running_pid
-    from hermes_cli import gateway as gw
+    from hermes_agent.hermes_cli import gateway as gw
 
     try:
         absent = get_running_pid() is None and not gw.find_gateway_pids()

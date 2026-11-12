@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Same logger the code used before extraction (record parity).
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 
 def _normalize_memory_provider_name(name: Any) -> str:
     from hermes_agent.agent.memory_provider import is_core_memory_provider
@@ -31,7 +31,7 @@ def _load_memory_provider(name: str, *, register_skills: Optional[bool] = None):
 
 def _memory_provider_manifest(name: str) -> dict[str, Any]:
     try:
-        from hermes_cli.memory_setup import memory_provider_dependency_inputs
+        from hermes_agent.hermes_cli.memory_setup import memory_provider_dependency_inputs
 
         manifest, _inputs = memory_provider_dependency_inputs(name)
         return manifest
@@ -47,7 +47,7 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _memory_provider_setup_manifest(name: str) -> tuple[dict, dict]:
-    from hermes_cli.memory_setup import memory_provider_dependency_inputs
+    from hermes_agent.hermes_cli.memory_setup import memory_provider_dependency_inputs
     from plugins.memory import find_provider_dir
     from pm.plugin_declarations import read_python_declaration
 
@@ -207,7 +207,7 @@ def _read_json_file(path: Path) -> dict[str, Any]:
 
 def _read_memory_provider_existing_values(name: str) -> dict[str, Any]:
     """Best-effort read of existing provider config across legacy/native stores."""
-    from hermes_cli.config import get_hermes_home, load_config
+    from hermes_agent.hermes_cli.config import get_hermes_home, load_config
 
     hermes_home = get_hermes_home()
     values: dict[str, Any] = {}
@@ -240,7 +240,7 @@ def _read_memory_provider_existing_values(name: str) -> dict[str, Any]:
 
 
 def _env_lookup(env_key: Optional[str]) -> str:
-    from hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.config import load_env
     if not env_key:
         return ""
     return str(load_env().get(env_key) or os.environ.get(env_key) or "")
@@ -333,7 +333,7 @@ def _memory_provider_status(row: dict[str, Any], setup: dict[str, Any], configur
 
 
 def _discover_memory_provider_statuses() -> list[dict[str, Any]]:
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     discovered: dict[str, dict[str, Any]] = {}
     try:
         from plugins.memory import discover_memory_providers

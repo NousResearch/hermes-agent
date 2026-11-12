@@ -11,7 +11,7 @@ out, whichever provider it signed in with. ``<gateway>`` comes from a digest of 
 gateways' Webapps on one hostname keep their own logins and leave the standalone dashboard's alone.
 
 A request that passes records the generation of the credential it was checked against
-(``hermes_cli.browser_credential``) on ``request.state.webapp_sign_in``; the socket tickets it mints
+(``hermes_agent.hermes_cli.browser_credential``) on ``request.state.webapp_sign_in``; the socket tickets it mints
 carry that generation, so the sockets they open are tracked (``web_session_sockets.track``) and close
 at sign-out, and a ticket minted before a sign-out opens nothing after it. The standalone dashboard
 never sets or checks the binding.
@@ -43,7 +43,7 @@ from typing import Optional
 from fastapi import Request
 from fastapi.responses import Response
 
-from hermes_cli import browser_credential
+from hermes_agent.hermes_cli import browser_credential
 
 _MESSAGE = b"webapp-sign-in"
 _log = logging.getLogger(__name__)
@@ -74,7 +74,7 @@ def applies(request: Request) -> bool:
 def check(request: Request) -> bool:
     """Whether the cookie login on *request* is bound to the browser credential in use now. When it
     is, records that credential's generation on ``request.state.webapp_sign_in``."""
-    from hermes_cli.dashboard_auth.cookies import read_webapp_signin_cookie
+    from hermes_agent.hermes_cli.dashboard_auth.cookies import read_webapp_signin_cookie
 
     token = browser_credential.current()
     presented = read_webapp_signin_cookie(request, _gateway(request)) or ""
@@ -91,8 +91,8 @@ def sign_in_of(request: Request) -> Optional[str]:
 
 
 def _set(response: Response, request: Request, token: str) -> None:
-    from hermes_cli.dashboard_auth.cookies import detect_https, set_webapp_signin_cookie
-    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+    from hermes_agent.hermes_cli.dashboard_auth.cookies import detect_https, set_webapp_signin_cookie
+    from hermes_agent.hermes_cli.dashboard_auth.prefix import prefix_from_request
 
     set_webapp_signin_cookie(response, value=binding(token), use_https=detect_https(request),
                              prefix=prefix_from_request(request), gateway=_gateway(request))
@@ -135,7 +135,7 @@ def access_token_works_alone(request: Request, token: str) -> bool:
 def _is_deployment_token(token: str) -> bool:
     """Whether *token* is the deployment session token the registered session-token provider read at
     startup. No browser login holds it: that provider has no sign-in."""
-    from hermes_cli.dashboard_auth import get_provider
+    from hermes_agent.hermes_cli.dashboard_auth import get_provider
 
     matches = getattr(get_provider("session-token"), "matches_token", None) if token else None
     return callable(matches) and bool(matches(token))
@@ -172,7 +172,7 @@ def _home(request: Request) -> Optional[Path]:
 
 def cookie_gateway(request: Request) -> str:
     """The suffix the gateway's Webapp gives every sign-in cookie it sets (``hermes_session_at_<it>``
-    and the rest, ``hermes_cli.dashboard_auth.cookies``): cookies are not scoped to a port. ``""`` off
+    and the rest, ``hermes_agent.hermes_cli.dashboard_auth.cookies``): cookies are not scoped to a port. ``""`` off
     the Webapp, where the standalone dashboard keeps main's names."""
     return _gateway(request) if getattr(request.app.state, "ui_surface", None) == "webapp" else ""
 

@@ -3,7 +3,7 @@
 import io
 import contextlib
 
-from hermes_cli.main_desktop import _diagnose_esbuild_ignore_scripts
+from hermes_agent.hermes_cli.main_desktop import _diagnose_esbuild_ignore_scripts
 
 
 def _hintprinted(output: str | None) -> bool:

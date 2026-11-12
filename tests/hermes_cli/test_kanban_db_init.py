@@ -4,8 +4,8 @@ import contextlib
 import sqlite3
 from pathlib import Path
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
 
 
 def _make_legacy_db(path: Path) -> None:

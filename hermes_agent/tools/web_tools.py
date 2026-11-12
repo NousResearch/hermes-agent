@@ -41,7 +41,7 @@ def _env_value(name: str) -> str:
     and ``check_web_api_key()`` blind to it. See #34290.
     """
     try:
-        from hermes_cli.config import get_env_value
+        from hermes_agent.hermes_cli.config import get_env_value
         val = get_env_value(name)
     except Exception:
         val = None
@@ -55,7 +55,7 @@ def _has_env(name: str) -> bool:
 def _load_web_config() -> dict:
     """Load the ``web:`` section from config.yaml; always a dict (a null section yields ``{}``)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         return load_config().get("web") or {}
     except Exception:
         return {}
@@ -282,7 +282,7 @@ def _ensure_web_plugins_loaded() -> None:
     configured and ``FIRECRAWL_API_KEY`` set. See #27580.
     """
     try:
-        from hermes_cli.plugins import _ensure_plugins_discovered
+        from hermes_agent.hermes_cli.plugins import _ensure_plugins_discovered
         _ensure_plugins_discovered()
     except Exception as exc:
         # Warning, not debug: a broken plugin import is otherwise invisible.

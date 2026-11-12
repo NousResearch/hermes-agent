@@ -1,6 +1,6 @@
 """Tests for Anthropic OAuth setup flow behavior."""
 
-from hermes_cli.config import load_env, save_env_value
+from hermes_agent.hermes_cli.config import load_env, save_env_value
 
 
 def test_run_anthropic_oauth_flow_prefers_claude_code_credentials(tmp_path, monkeypatch, capsys):
@@ -22,7 +22,7 @@ def test_run_anthropic_oauth_flow_prefers_claude_code_credentials(tmp_path, monk
         lambda creds: True,
     )
 
-    from hermes_cli.main_provider_setup import _run_anthropic_oauth_flow
+    from hermes_agent.hermes_cli.main_provider_setup import _run_anthropic_oauth_flow
 
     save_env_value("ANTHROPIC_TOKEN", "stale-env-token")
     assert _run_anthropic_oauth_flow(save_env_value) is True
@@ -41,11 +41,11 @@ def test_run_anthropic_oauth_flow_manual_token_still_persists(tmp_path, monkeypa
     monkeypatch.setattr("hermes_agent.agent.anthropic_credentials.is_claude_code_token_valid", lambda creds: False)
     monkeypatch.setattr("builtins.input", lambda _prompt="": "sk-ant-oat01-manual-token")
     monkeypatch.setattr(
-        "hermes_cli.secret_prompt.masked_secret_prompt",
+        "hermes_agent.hermes_cli.secret_prompt.masked_secret_prompt",
         lambda _prompt="": "sk-ant-oat01-manual-token",
     )
 
-    from hermes_cli.main_provider_setup import _run_anthropic_oauth_flow
+    from hermes_agent.hermes_cli.main_provider_setup import _run_anthropic_oauth_flow
 
     assert _run_anthropic_oauth_flow(save_env_value) is True
 

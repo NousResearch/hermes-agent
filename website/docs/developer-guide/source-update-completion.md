@@ -124,7 +124,7 @@ still hold and write the checkout even when its on-disk modules are damaged.
 Wait for any running update to finish.
 
 The repair code lives in the tree a killed move tears (`hermes_bootstrap.py`,
-`hermes_cli/__init__.py`, `_early_recovery.py`, `update_lock.py`,
+`hermes_agent/hermes_cli/__init__.py`, `_early_recovery.py`, `update_lock.py`,
 `update_custody.py`). Before git writes, every tree move publishes those
 recovery/lock/custody modules, as committed at the move's starting commit, to
 `<git dir>/hermes-update-recovery/<pre>/`, outside the working tree and keyed
@@ -138,7 +138,7 @@ the recorded git or an absolute `PATH` entry, never the current directory) and
 verified the same way. Then: stdlib plus the copy only, the same restore claim
 and checkout lock (a live writer gets `Not repairing the checkout now` and exit
 1, no traceback), then a relaunch from the restored tree. Limits: other entry
-points (`python -m hermes_cli.main`, the `hermes-agent` hook) have no such
+points (`python -m hermes_agent.hermes_cli.main`, the `hermes-agent` hook) have no such
 fallback; a launcher minted before this fallback existed has none, so a kill
 during the first update onto this code (run under the old launcher) is not
 covered; a `pre` whose tree lacks the checkout lock or custody runner is not

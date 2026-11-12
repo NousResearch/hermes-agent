@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def responses_default(monkeypatch):
-    import hermes_cli.auth
+    import hermes_agent.hermes_cli.auth
     from hermes_agent import providers
     from hermes_agent.providers.base import ProviderProfile
 
@@ -26,7 +26,7 @@ def responses_default(monkeypatch):
     providers._REGISTRY.pop("respdefault", None)
     providers._SOURCES.pop("respdefault", None)
     providers._PROVIDER_LIST_CACHE = None
-    hermes_cli.auth.PROVIDER_REGISTRY.pop("respdefault", None)
+    hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY.pop("respdefault", None)
 
 
 @pytest.mark.parametrize(("model", "api_mode"), [
@@ -35,7 +35,7 @@ def responses_default(monkeypatch):
     ("broken-z", "codex_responses"),     # a raising hook degrades to the declared default
 ])
 def test_hook_none_keeps_the_profiles_declared_api_mode(responses_default, model, api_mode):
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     assert resolve_runtime_provider(requested="respdefault", target_model=model)["api_mode"] == api_mode
 
@@ -43,8 +43,8 @@ def test_hook_none_keeps_the_profiles_declared_api_mode(responses_default, model
 def test_a_model_pick_with_a_raising_hook_gets_the_wire_resolution_gave(responses_default):
     """``/model`` and session resume re-derive the wire through ``model_derived_api_mode``: a raising hook
     degrades there exactly as in runtime resolution instead of failing the switch."""
-    from hermes_cli.model_switch import model_derived_api_mode
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.model_switch import model_derived_api_mode
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     resolved = resolve_runtime_provider(requested="respdefault", target_model="broken-z")["api_mode"]
     assert model_derived_api_mode("respdefault", "broken-z", "sk-fake") == resolved == "codex_responses"

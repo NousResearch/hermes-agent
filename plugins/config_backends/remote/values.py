@@ -17,7 +17,7 @@ from functools import lru_cache
 from pathlib import Path as _FsPath
 from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
 
-from hermes_cli.config_backend import ConfigValueError
+from hermes_agent.hermes_cli.config_backend import ConfigValueError
 
 from .paths import Path, encode
 

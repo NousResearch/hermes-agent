@@ -19,7 +19,7 @@ from hermes_agent.agent.secret_scope import (
     set_multiplex_active,
     set_secret_scope,
 )
-from hermes_cli.config import get_env_value
+from hermes_agent.hermes_cli.config import get_env_value
 
 
 @contextlib.contextmanager

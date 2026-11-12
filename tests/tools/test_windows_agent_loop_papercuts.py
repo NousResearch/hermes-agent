@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli._subprocess_compat import split_command_line
+from hermes_agent.hermes_cli._subprocess_compat import split_command_line
 
 
 class TestSplitCommandLine:
@@ -81,7 +81,7 @@ class TestAutocompleteDevicePaths:
         import os
         import subprocess
 
-        from hermes_cli import commands_completion as cc
+        from hermes_agent.hermes_cli import commands_completion as cc
 
         monkeypatch.chdir(tmp_path)
         cwd = os.getcwd()

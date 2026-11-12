@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from hermes_cli import models
+from hermes_agent.hermes_cli import models
 
 
 class _Response:
@@ -27,7 +27,7 @@ def test_anthropic_picker_discovers_models_with_pool_api_key(monkeypatch):
         lambda: None,
     )
     monkeypatch.setattr(
-        "hermes_cli.auth.read_credential_pool",
+        "hermes_agent.hermes_cli.auth.read_credential_pool",
         lambda provider: (
             [
                 {
@@ -75,7 +75,7 @@ def test_anthropic_pool_api_key_overrides_conflicting_active_endpoint(monkeypatc
         lambda: None,
     )
     monkeypatch.setattr(
-        "hermes_cli.auth.read_credential_pool",
+        "hermes_agent.hermes_cli.auth.read_credential_pool",
         lambda provider: (
             [
                 {

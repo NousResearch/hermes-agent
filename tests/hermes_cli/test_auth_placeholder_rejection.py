@@ -12,7 +12,7 @@ Regression for the placeholder shapes; the pooled-key case covers the sibling re
 
 import pytest
 
-from hermes_cli.auth import has_usable_secret, AuthError
+from hermes_agent.hermes_cli.auth import has_usable_secret, AuthError
 
 
 @pytest.mark.parametrize("value, usable", [
@@ -51,7 +51,7 @@ def test_placeholder_keys_resolve_as_unconfigured(tmp_path, monkeypatch):
     monkeypatch.setenv("XAI_API_KEY", "your_key_here")
 
     from hermes_agent.agent.credential_pool import AUTH_TYPE_API_KEY, SOURCE_MANUAL, PooledCredential, load_pool
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
 
     with pytest.raises(AuthError, match="No usable credentials found for provider 'xai'"):
         resolve_runtime_provider(requested="xai")

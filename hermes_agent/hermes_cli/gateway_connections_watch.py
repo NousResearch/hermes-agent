@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli import gateway_connections as store
 
 _log = logging.getLogger(__name__)
 POLL_INTERVAL_S = 1.5
@@ -41,10 +41,10 @@ def _stamp(path: Path) -> Optional[tuple[int, int, int]]:
 
 
 def _teardown(changed: list[str], removed: list[str]) -> None:
-    from hermes_cli import gateway_connections_oauth as oauth
-    from hermes_cli import gateway_connections_reach as reach
-    from hermes_cli import gateway_connections_ssh as ssh
-    from hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets
+    from hermes_agent.hermes_cli import gateway_connections_oauth as oauth
+    from hermes_agent.hermes_cli import gateway_connections_reach as reach
+    from hermes_agent.hermes_cli import gateway_connections_ssh as ssh
+    from hermes_agent.hermes_cli.web_routers.webapp_relay_proxy import close_gateway_sockets
 
     # Each entry on its own: a host that stopped answering (ssh teardown raising) must not leave
     # the rest open or stop the watcher.

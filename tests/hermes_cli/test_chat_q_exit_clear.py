@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import cli as cli_mod
+import hermes_agent.cli as cli_mod
 
 
 # ── A3.1 Test-First: verify _clear_terminal_on_exit gating ──────────────────
@@ -98,7 +98,7 @@ def test_clear_fallback_spawns_no_shell(monkeypatch):
     resolved `clear` binary, with the real (0 off-Windows) hide flags."""
     import subprocess as sp
 
-    import hermes_cli.cli_session_mixin as mixin_mod
+    import hermes_agent.hermes_cli.cli_session_mixin as mixin_mod
 
     calls = []
     monkeypatch.setattr(mixin_mod.shutil, "which",
@@ -119,8 +119,8 @@ def test_clear_fallback_windows_runs_cls_with_hidden_console(monkeypatch):
     real windows_hide_flags() (CREATE_NO_WINDOW) so no console flashes (#116904)."""
     import subprocess as sp
 
-    import hermes_cli.cli_session_mixin as mixin_mod
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    import hermes_agent.hermes_cli.cli_session_mixin as mixin_mod
+    from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 
     calls = []
     monkeypatch.setattr(sp, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
@@ -138,7 +138,7 @@ def test_clear_fallback_windows_runs_cls_with_hidden_console(monkeypatch):
 def test_clear_fallback_skips_spawn_when_no_clear(monkeypatch):
     """POSIX without `clear` on PATH: skip the spawn entirely instead of letting a
     shell swallow the failure (#116904's silent no-op)."""
-    import hermes_cli.cli_session_mixin as mixin_mod
+    import hermes_agent.hermes_cli.cli_session_mixin as mixin_mod
 
     calls = []
     monkeypatch.setattr(mixin_mod.shutil, "which", lambda _exe: None)

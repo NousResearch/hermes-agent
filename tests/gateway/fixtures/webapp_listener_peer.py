@@ -60,7 +60,7 @@ async def sockets_across_sign_out(runner, client, origin, ask):
     from websockets.asyncio.client import connect
 
     from hermes_agent.gateway.runtime_bootstrap import TicketStore
-    from hermes_cli import web_host_terminal, web_server
+    from hermes_agent.hermes_cli import web_host_terminal, web_server
     from tests.gateway.fixtures.local_recovery_probe import rpc
 
     # A harmless program stands in for the user's login shell.
@@ -110,7 +110,7 @@ async def probe(mode, port, dist, platform):
     from hermes_agent.gateway.run_runtime import start_gateway_runtime_api
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.webapp_listener import TOKEN_PATH
-    import hermes_cli.webapp
+    import hermes_agent.hermes_cli.webapp
     from tests.gateway.fixtures.local_recovery_probe import rpc
 
     home = Path(os.environ["HERMES_HOME"])
@@ -123,7 +123,7 @@ async def probe(mode, port, dist, platform):
         (home / TOKEN_PATH).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         (home / TOKEN_PATH).write_text(SEEDED_TOKEN + "\n", encoding="utf-8")
         (home / TOKEN_PATH).chmod(0o600)
-    hermes_cli.webapp.webapp_dist_dir = lambda _root: Path(dist)  # the built bundle, without a build
+    hermes_agent.hermes_cli.webapp.webapp_dist_dir = lambda _root: Path(dist)  # the built bundle, without a build
     runner = GatewayRunner()
     runner.session_control_server = GatewayControlServer(home)  # verbs only; not listening
     # Set by the gateway bootstrap, which this fixture skips; the gateway is up.
@@ -133,7 +133,7 @@ async def probe(mode, port, dist, platform):
     await start_gateway_runtime_api(runner)
     links_checked = follow_launch_path(runner, home, platform)
     api = runner.session_api
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     def ask(verb):
         raw = json.dumps({"protocol": 1, "verb": verb, "id": 1, "params": {}}).encode()

@@ -1,15 +1,15 @@
 """Credential sections of `hermes status`, run through ``status._SECTIONS`` with its shared context.
-Origin helpers (``_row``, ``_first_env_value``, ...) are resolved through the ``hermes_cli.status``
+Origin helpers (``_row``, ``_first_env_value``, ...) are resolved through the ``hermes_agent.hermes_cli.status``
 module object so tests that monkeypatch that module keep working."""
 
 from datetime import datetime, timezone, UTC
 
-from hermes_cli.auth import AuthError
-from hermes_cli.nous_account import (
+from hermes_agent.hermes_cli.auth import AuthError
+from hermes_agent.hermes_cli.nous_account import (
     format_nous_portal_entitlement_message, get_nous_portal_account_info)
-from hermes_cli.nous_subscription import get_nous_subscription_features
+from hermes_agent.hermes_cli.nous_subscription import get_nous_subscription_features
 from hermes_agent.tools.tool_backend_helpers import managed_nous_tools_enabled
-from hermes_cli import config
+from hermes_agent.hermes_cli import config
 from hermes_time import safe_strftime
 
 
@@ -90,7 +90,7 @@ _FEATURE_STATES = (
 
 def _render_api_keys(ctx):
     _status._section("API Keys")
-    from hermes_cli.auth import get_anthropic_key
+    from hermes_agent.hermes_cli.auth import get_anthropic_key
     # Anthropic uses the dedicated lookup (it also resolves OAuth tokens).
     for name, env_ref in (*_API_KEYS.items(), ("Anthropic", get_anthropic_key)):
         value = env_ref() if callable(env_ref) else _status._first_env_value(env_ref)
@@ -99,7 +99,7 @@ def _render_api_keys(ctx):
 
 def _render_auth_providers(ctx):
     _status._section("Auth Providers")
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
     try:
         # Read-only display: the refresh-free snapshot, so `hermes status` never performs an OAuth
         # refresh or burns a single-use refresh token.
@@ -127,7 +127,7 @@ def _render_auth_providers(ctx):
     )
     if nous_status.get("free_tier"):
         # Free tier: never rendered as an account login (no account ids, no refresh row).
-        from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
+        from hermes_agent.hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
         _status._row("Nous Portal", True, f"{FREE_TIER_LABEL} · {GUEST_MODEL}")
         _status._detail("", UPGRADE_HINT)
         inference_url = nous_status.get("inference_base_url")
@@ -188,7 +188,7 @@ def _render_apikey_providers(ctx):
     # LM Studio reachability: probe only when it is the active provider so users with foreign
     # configs see no noise. Auth rejection vs. a silent empty list is the common support case.
     if _status._effective_provider_label() == "LM Studio":
-        from hermes_cli.models_local import probe_lmstudio_models
+        from hermes_agent.hermes_cli.models_local import probe_lmstudio_models
         model_cfg = ctx.config.get("model")
         base = ((model_cfg.get("base_url") if isinstance(model_cfg, dict) else None)
                 or _status.get_env_value("LM_BASE_URL") or "http://127.0.0.1:1234/v1")
@@ -202,4 +202,4 @@ def _render_apikey_providers(ctx):
         _status._row("LM Studio", ok, msg, 16, " ")
 
 
-import hermes_cli.status as _status
+import hermes_agent.hermes_cli.status as _status

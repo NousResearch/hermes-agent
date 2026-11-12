@@ -44,7 +44,7 @@ _RESTARTING = "Restarting gateway(s) paused by an interrupted"
 _MISSING_SERVICE = "hermes-e2e-no-such-gateway-service"
 
 # Every driver: the installed module behind the same bootstrap a launch runs (a resume imports
-# hermes_cli.main, whose bootstrap would otherwise re-enter this script mid-resume), and a hook that
+# hermes_agent.hermes_cli.main, whose bootstrap would otherwise re-enter this script mid-resume), and a hook that
 # stops on one line of it (kill or park).
 _DRIVER = """
 import inspect, json, os, sys, time

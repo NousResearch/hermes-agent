@@ -37,12 +37,12 @@ async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_fi
 
 def setup_qqbot() -> None:
     """Interactive setup: scan-to-configure or manual App ID / App Secret."""
-    from hermes_cli.cli_output import print_info, print_success, print_warning
-    from hermes_cli.config import save_env_value
-    from hermes_cli.gateway_setup_wizard import (
+    from hermes_agent.hermes_cli.cli_output import print_info, print_success, print_warning
+    from hermes_agent.hermes_cli.config import save_env_value
+    from hermes_agent.hermes_cli.gateway_setup_wizard import (
         confirm_reconfigure, offer_home_channel, print_setup_header, prompt_csv, save_env_values,
     )
-    from hermes_cli.setup import prompt, prompt_choice, prompt_yes_no
+    from hermes_agent.hermes_cli.setup import prompt, prompt_choice, prompt_yes_no
 
     print_setup_header("🐧 QQ Bot")
     if not confirm_reconfigure("QQ Bot", "QQ_APP_ID", "QQ_CLIENT_SECRET"):

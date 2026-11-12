@@ -64,8 +64,8 @@ async def probe(peer):
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.run_api import start_gateway_api, stop_gateway_api
     from hermes_agent.gateway.session_contract import SessionRef
-    from hermes_cli import web_server
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_agent.hermes_cli import web_server
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     runner = GatewayRunner()
     authority = await initialize_session_authority(runner, profile_id='fixture', instance_id='policy')
     api = await start_gateway_api(runner)

@@ -23,7 +23,7 @@ def _build_payload() -> dict[str, Any]:
 def _primary_hex() -> str:
     """The active skin's primary color (mirrors the TUI theme primary)."""
     try:
-        from hermes_cli.skin_engine import get_active_skin
+        from hermes_agent.hermes_cli.skin_engine import get_active_skin
 
         skin = get_active_skin()
         return skin.get_color("ui_primary", "") or skin.get_color("banner_title", "#FFD700")

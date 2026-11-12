@@ -712,7 +712,7 @@ async def _migrate(authority, actor, home, root):
             continue
         if authority.db.get_compression_tip(owner['session_id']) != entry.session_id:
             continue
-        from hermes_cli.active_sessions import active_session_liveness_guard
+        from hermes_agent.hermes_cli.active_sessions import active_session_liveness_guard
         with active_session_liveness_guard(owner['session_id'], registry_home=home) as active:
             if active:
                 raise RuntimeStoreError('runtime_coordination_required')

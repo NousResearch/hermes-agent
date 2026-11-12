@@ -20,19 +20,19 @@ hermes_agent/agent/proxy_sources/iron_proxy.py     Core: binary lookup, GPG chec
                                        subprocess lifecycle, mappings I/O, PID/nonce
                                        defense.  Pure-function surface where possible.
 
-hermes_cli/proxy_cli.py               Wizard + slash command handlers.
+hermes_agent/hermes_cli/proxy_cli.py               Wizard + slash command handlers.
                                        `hermes egress {install,setup,start,stop,
                                        status,disable,config}`.  Wires the
                                        core module into argparse.
 
-hermes_cli/subcommands/egress.py:_dispatch_egress
+hermes_agent/hermes_cli/subcommands/egress.py:_dispatch_egress
                                        Top-level subparser dispatcher.
                                        dest='egress_command' (intentionally
                                        disjoint from the inbound OAuth
                                        `hermes proxy` subparser, which uses
                                        dest='proxy_command').
 
-hermes_cli/config.py: proxy schema    The `proxy:` block in DEFAULT_CONFIG.
+hermes_agent/hermes_cli/config.py: proxy schema    The `proxy:` block in DEFAULT_CONFIG.
                                        Adding a knob means: add it here, add a
                                        wizard prompt or `setdefault` in
                                        proxy_cli.cmd_setup, and document it
@@ -306,8 +306,8 @@ scripts/run_tests.sh tests/agent/test_iron_proxy.py tests/hermes_cli/test_iron_p
 HERMES_RUN_E2E=1 scripts/run_tests.sh tests/agent/test_iron_proxy_e2e.py
 
 # Live PTY smoke against `hermes egress`
-HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-egress-test python3 -m hermes_cli.main egress --help
-HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-egress-test python3 -m hermes_cli.main egress setup --help
+HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-egress-test python3 -m hermes_agent.hermes_cli.main egress --help
+HERMES_HOME=$HOME/.hermes/cache/scratch/hermes-egress-test python3 -m hermes_agent.hermes_cli.main egress setup --help
 ```
 
 The CLI uses argparse, so `--help` is a good first probe for "did my new flag register correctly".

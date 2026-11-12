@@ -57,7 +57,7 @@ def _profile_mention_items(prefix: str) -> list[dict]:
     is also offered as 'hermes' when no real profile claims that name."""
     out: list[dict] = []
     try:
-        from hermes_cli.profiles import list_profiles
+        from hermes_agent.hermes_cli.profiles import list_profiles
         seen: set[str] = set()
         # Per keystroke: only name/description are read, so never walk skill trees in-request (#114041).
         for p in list_profiles(lazy_skill_count=True):
@@ -161,7 +161,7 @@ def _backend_dir_entries(search_dir: str, session_key: str | None) -> list[tuple
         'if [ -d "$p" ]; then printf "%s/\\n" "${p##*/}"; else printf "%s\\n" "${p##*/}"; fi; done'
     )
     try:
-        from hermes_cli.observability.shared_metrics_loop import unmetered_backend_calls
+        from hermes_agent.hermes_cli.observability.shared_metrics_loop import unmetered_backend_calls
         from hermes_agent.tools.terminal_tool import terminal_tool
         # Pre-confirm this internal read-only listing: its fixed `sh -c` script shape is
         # guard-flagged as "shell command via -c/-lc flag", so under smart approvals every
@@ -323,7 +323,7 @@ def _(rid, params: dict) -> dict:
     skew = _model_skew_err(rid)
     if skew is not None:
         return skew
-    from hermes_cli.inventory import build_model_options_payload
+    from hermes_agent.hermes_cli.inventory import build_model_options_payload
     # A spawned agent owns the live provider/model/base_url; empty attributes must
     # NOT clobber disk config (with_overrides is truthy-only).
     return _ok(rid, build_model_options_payload(
@@ -339,8 +339,8 @@ def _(rid, params: dict) -> dict:
     skew = _model_skew_err(rid)
     if skew is not None:
         return skew
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.config import is_managed
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli.config import is_managed
     slug, api_key = (params.get("slug") or "").strip(), (params.get("api_key") or "").strip()
     if not slug or not api_key:
         return _err(rid, 4001, "slug and api_key are required")
@@ -355,22 +355,22 @@ def _(rid, params: dict) -> dict:
     # Save the key to ~/.hermes/.env via the unified credential lifecycle so any stale config.yaml mirror of
     # the previous key (model.api_key, custom_providers[*].api_key) is rotated in the same action (#62269).
     env_var = pconfig.api_key_env_vars[0]
-    from hermes_cli.config import load_env
-    from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
+    from hermes_agent.hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
     previous = load_env().get(env_var)
     # Under the profile scope the save publishes into the addressed profile's secret scope (and the
     # shared os.environ only for the launch profile), so the refreshed inventory below sees it.
     save_provider_env_credential(env_var, api_key)
     if api_key != previous:  # a same-key re-save connects nothing new
-        from hermes_cli.observability.shared_metrics_setup import record_provider_setup_done
+        from hermes_agent.hermes_cli.observability.shared_metrics_setup import record_provider_setup_done
         record_provider_setup_done(_resolve_session_platform(), slug, background=True)
     # The launch profile's boot record may still say "nothing configured"; the gated picker's own chat
     # waits on setup.status, so the fresh key must move the record (+ setup.ready). reconcile_record
     # leaves it alone when the bound home is another profile's.
-    from hermes_cli.free_tier_bootstrap import reconcile_record
+    from hermes_agent.hermes_cli.free_tier_bootstrap import reconcile_record
     reconcile_record()
     # Shared inventory builder (lock-step with model.options / dashboard); picker_hints carries `authenticated`.
-    from hermes_cli.inventory import build_models_payload
+    from hermes_agent.hermes_cli.inventory import build_models_payload
     payload = build_models_payload(_model_picker_context(_session_agent(params)), picker_hints=True, max_models=50)
     provider_data = next((p for p in payload["providers"] if p["slug"] == slug), None)
     if provider_data is None:  # key saved but provider didn't appear — still success
@@ -384,10 +384,10 @@ def _(rid, params: dict) -> dict:
 @_catch(5035)
 def _(rid, params: dict) -> dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
-    from hermes_cli import managed_scope
-    from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
-    from hermes_cli.config import env_write_refusal, load_env
-    from hermes_cli.credential_lifecycle import remove_provider_env_credential
+    from hermes_agent.hermes_cli import managed_scope
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
+    from hermes_agent.hermes_cli.config import env_write_refusal, load_env
+    from hermes_agent.hermes_cli.credential_lifecycle import remove_provider_env_credential
     if not (slug := (params.get("slug") or "").strip()):
         return _err(rid, 4001, "slug is required")
     pconfig = PROVIDER_REGISTRY.get(slug)

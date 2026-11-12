@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.container_boot — the cont-init.d-time
+"""Tests for hermes_agent.hermes_cli.container_boot — the cont-init.d-time
 reconciliation that recreates per-profile gateway s6 service slots
 from the persistent profiles directory.
 
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.container_boot import (
+from hermes_agent.hermes_cli.container_boot import (
     ReconcileAction,
     reconcile_profile_gateways,
 )
@@ -45,11 +45,11 @@ def _hermetic_container_argv(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch ``_read_container_argv`` themselves (both override this).
     """
     monkeypatch.setattr(
-        "hermes_cli.container_boot._read_container_argv",
+        "hermes_agent.hermes_cli.container_boot._read_container_argv",
         lambda: (),
     )
     # This fixture owns real files, but does not run as the image's service user.
-    monkeypatch.setattr("hermes_cli.service_manager._chown_hermes", lambda path: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.service_manager._chown_hermes", lambda path: None)
 
 
 def _make_profile(
@@ -266,7 +266,7 @@ def test_main_skips_reconcile_in_dashboard_container_s6v3(
     reconciled, and it started its own gateway-default (dual Telegram
     getUpdates 409). Asserting the slot is absent proves the skip fires.
     """
-    from hermes_cli import container_boot
+    from hermes_agent.hermes_cli import container_boot
 
     scandir = tmp_path / "run-service"; scandir.mkdir()
     _make_profile(tmp_path, "worker", state="running")

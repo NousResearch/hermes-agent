@@ -12,8 +12,8 @@ import subprocess
 
 import pytest
 
-from hermes_cli import setup_agent_import as step
-from hermes_cli.setup import prompt_yes_no as real_prompt_yes_no
+from hermes_agent.hermes_cli import setup_agent_import as step
+from hermes_agent.hermes_cli.setup import prompt_yes_no as real_prompt_yes_no
 
 
 @pytest.fixture
@@ -45,9 +45,9 @@ def homes(tmp_path, monkeypatch):
         (hermes_home / "config.yaml").write_text(f"imported: {hermes_args[-1]}\n", encoding="utf-8")
         return subprocess.CompletedProcess(argv, 0)
 
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", ask)
-    monkeypatch.setattr("hermes_cli.setup.prompt_checklist", checklist)
-    monkeypatch.setattr("hermes_cli.plugins_cmd_install.cmd_install", install)
+    monkeypatch.setattr("hermes_agent.hermes_cli.setup.prompt_yes_no", ask)
+    monkeypatch.setattr("hermes_agent.hermes_cli.setup.prompt_checklist", checklist)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins_cmd_install.cmd_install", install)
     monkeypatch.setattr(step.subprocess, "run", run)
     return user_home, hermes_home, calls, answers
 
@@ -110,7 +110,7 @@ def test_headless_or_nothing_found_asks_nothing(headless, homes, monkeypatch):
 def test_a_refused_enable_skips_the_import_and_setup_goes_on(homes, monkeypatch):
     """Installed but disabled, and PM cannot admit the enable: the error is printed, nothing is
     imported, and the step returns so the rest of setup still runs."""
-    from hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_agent.hermes_cli.plugins_admission import AdmissionRefused
     user_home, hermes_home, calls, _answers = homes
     (user_home / ".cursor").mkdir()
     (hermes_home / "plugins" / "agent-importers").mkdir(parents=True)
@@ -118,7 +118,7 @@ def test_a_refused_enable_skips_the_import_and_setup_goes_on(homes, monkeypatch)
     def refuse(name, **_):
         calls.append(("enable", name))
         raise AdmissionRefused("dependency conflict")
-    monkeypatch.setattr("hermes_cli.plugins_cmd.cmd_enable", refuse)
+    monkeypatch.setattr("hermes_agent.hermes_cli.plugins_cmd.cmd_enable", refuse)
 
     assert step.offer_agent_import(hermes_home) == ""
 
@@ -128,7 +128,7 @@ def test_a_refused_enable_skips_the_import_and_setup_goes_on(homes, monkeypatch)
 def test_setup_menu_shows_what_was_found_with_the_question(homes, monkeypatch):
     """Setup's yes/no is a full-screen menu that hides what was printed before it, so the detection
     lines travel with the question: "any of them" must point at text the user can see."""
-    from hermes_cli import setup
+    from hermes_agent.hermes_cli import setup
     user_home, hermes_home, calls, _answers = homes
     for d in (".openclaw", ".claude", ".codex"):
         (user_home / d).mkdir()
@@ -137,8 +137,8 @@ def test_setup_menu_shows_what_was_found_with_the_question(homes, monkeypatch):
     def radiolist(title, items, selected=0, *, description=None, **_):
         menus.append((title, items, description))
         return 1  # "No"
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", real_prompt_yes_no)
-    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", radiolist)
+    monkeypatch.setattr("hermes_agent.hermes_cli.setup.prompt_yes_no", real_prompt_yes_no)
+    monkeypatch.setattr("hermes_agent.hermes_cli.curses_ui.curses_radiolist", radiolist)
 
     with setup._setup_navigation_scope():
         assert step.offer_agent_import(hermes_home) == ""
@@ -167,7 +167,7 @@ def test_hermes_migrate_names_an_agent_installs_the_plugin_and_forwards_its_flag
     when missing, and the import runs as its own command (no --from-setup) with the user's flags."""
     import argparse
 
-    from hermes_cli.subcommands.migrate import build_migrate_parser
+    from hermes_agent.hermes_cli.subcommands.migrate import build_migrate_parser
     user_home, hermes_home, calls, _answers = homes
     parser = argparse.ArgumentParser()
     build_migrate_parser(parser.add_subparsers(dest="command"))

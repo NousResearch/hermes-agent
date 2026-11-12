@@ -7,8 +7,8 @@ class TestRetiredTirithKeys:
     def test_v50_drops_tirith_keys_and_enables_nothing(self, tmp_path, monkeypatch):
         """The scanner left core: its keys are dropped, sibling security settings survive, and no
         plugin is enabled in its place."""
-        from hermes_cli.config import DEFAULT_CONFIG
-        from hermes_cli.config_migrations import run_migrations
+        from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config_migrations import run_migrations
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({

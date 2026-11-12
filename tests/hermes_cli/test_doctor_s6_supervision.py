@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import doctor_platform, service_manager
+from hermes_agent.hermes_cli import doctor_platform, service_manager
 
 ROOT_SCANDIR = Path("/run/service")
 

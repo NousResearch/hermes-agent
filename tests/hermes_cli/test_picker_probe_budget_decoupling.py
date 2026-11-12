@@ -10,16 +10,16 @@ the budget so visibility no longer shortens discovery.
 
 import pytest
 
-from hermes_cli.model_switch import list_authenticated_providers
+from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
 
 
 @pytest.fixture(autouse=True)
 def _no_builtin_catalog_fetches(monkeypatch):
     """Keep the row builder independent of provider credentials and network."""
-    monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids", lambda *_a, **_kw: [])
-    monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda *_a, **_kw: [])
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
-    monkeypatch.setattr("hermes_cli.models_local.fetch_ollama_local_models", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.cached_provider_model_ids", lambda *_a, **_kw: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.provider_model_ids", lambda *_a, **_kw: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_local.fetch_ollama_local_models", lambda *_a, **_kw: None)
 
 
 def _slow_endpoint_rows(monkeypatch, **extra):
@@ -29,7 +29,7 @@ def _slow_endpoint_rows(monkeypatch, **extra):
                    timeout=5.0, api_mode=None, **_kw):
         return ["slow-discovered-model"] if timeout >= 5.0 else None
 
-    monkeypatch.setattr("hermes_cli.model_switch_providers._fetch_picker_live_models", _fake_live)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch_providers._fetch_picker_live_models", _fake_live)
     return list_authenticated_providers(
         current_provider="custom", current_base_url="http://127.0.0.1:9999/v1",
         current_model="kept-model", probe_custom_providers=False,

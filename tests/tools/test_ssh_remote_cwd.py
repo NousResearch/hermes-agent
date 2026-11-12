@@ -17,7 +17,7 @@ import hermes_agent.tools.file_tools_write_guards as write_guards
 from hermes_agent.tools import terminal_tool
 from hermes_agent.tools import file_tools
 from hermes_agent.tools.file_tools_write_guards import _check_sensitive_path
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 from hermes_agent.tools import terminal_tool_config
 from hermes_agent.tools.terminal_tool_config import coerce_ssh_remote_cwd
 
@@ -143,8 +143,8 @@ def test_files_pane_maps_a_named_profiles_dirs_in_its_own_scope(image_home, monk
     from contextlib import contextmanager
 
     import hermes_constants
-    from hermes_cli import ssh_workspace_fs
-    from hermes_cli.web_routers import files as file_routes
+    from hermes_agent.hermes_cli import ssh_workspace_fs
+    from hermes_agent.hermes_cli.web_routers import files as file_routes
 
     profile = os.path.join(image_home, "profiles", "work")
     os.makedirs(os.path.join(profile, "home"))

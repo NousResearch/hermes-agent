@@ -6,8 +6,8 @@ import hermes_yaml as yaml
 class TestRetiredMultiplexAllowlist:
     def test_v43_drops_multiplex_profile_allowlist_from_user_config(self, tmp_path, monkeypatch):
         """The multiplexer serves every profile; a stale allowlist must not linger in config.yaml."""
-        from hermes_cli.config import DEFAULT_CONFIG
-        from hermes_cli.config_migrations import run_migrations
+        from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config_migrations import run_migrations
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -25,8 +25,8 @@ class TestRetiredMultiplexAllowlist:
 class TestCuratorFasterPrune:
     def test_v44_rewrites_old_curator_defaults_but_keeps_user_values(self, tmp_path, monkeypatch):
         """Old 30/90 defaults move to 14/30; an explicitly customized window is untouched."""
-        from hermes_cli.config import DEFAULT_CONFIG
-        from hermes_cli.config_migrations import run_migrations
+        from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config_migrations import run_migrations
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -44,8 +44,8 @@ class TestRetiredBotChatDeliveryTimeout:
     def test_v51_drops_bot_chat_delivery_timeout_with_a_note(self, tmp_path, monkeypatch):
         """The removed cron knob is dropped from existing configs with a one-time note;
         sibling cron settings and the rest of the file survive untouched."""
-        from hermes_cli.config import DEFAULT_CONFIG
-        from hermes_cli.config_migrations import run_migrations
+        from hermes_agent.hermes_cli.config import DEFAULT_CONFIG
+        from hermes_agent.hermes_cli.config_migrations import run_migrations
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -68,7 +68,7 @@ class TestRetiredKeysWhateverTheStamp:
     own step numbers both still carry keys nothing reads."""
 
     def test_unversioned_config_drops_the_retired_bot_chat_timeout(self, tmp_path, monkeypatch):
-        from hermes_cli.config import migrate_config
+        from hermes_agent.hermes_cli.config import migrate_config
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -82,7 +82,7 @@ class TestRetiredKeysWhateverTheStamp:
     def test_branch_stamped_home_still_gets_main_retired_key_steps(self, tmp_path, monkeypatch):
         """A home stamped 50 by a build whose v50 was the cron-key step skipped main's v46 (MCP
         `disabled: true`) and v50 (tirith keys). Both apply, and a second pass writes nothing."""
-        from hermes_cli.config import migrate_config
+        from hermes_agent.hermes_cli.config import migrate_config
 
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -98,5 +98,5 @@ class TestRetiredKeysWhateverTheStamp:
         settled = config_path.read_bytes()
         assert migrate_config(interactive=False, quiet=True)["config_added"] == []
         assert config_path.read_bytes() == settled
-        from hermes_cli.config_migrations import LEGACY_KEY_STEPS, STAMP_INDEPENDENT_STEPS
+        from hermes_agent.hermes_cli.config_migrations import LEGACY_KEY_STEPS, STAMP_INDEPENDENT_STEPS
         assert STAMP_INDEPENDENT_STEPS <= LEGACY_KEY_STEPS

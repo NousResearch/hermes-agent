@@ -24,7 +24,7 @@ def _set(monkeypatch, hermes_home, key, value, force=False):
     """Isolated call to set_config_value against a temp HERMES_HOME."""
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     # set_config_value resolves the home live via get_config_path()/get_hermes_home()
-    from hermes_cli.config import set_config_value
+    from hermes_agent.hermes_cli.config import set_config_value
     set_config_value(key, value, force=force)
 
 
@@ -91,7 +91,7 @@ class TestRedirectSiblingSurfaces:
 
     def test_get_mirrors_gateway_resolution_after_set(self, hermes_home, monkeypatch, capsys):
         from hermes_agent.gateway.display_config import resolve_display_setting
-        from hermes_cli.config import get_config_value
+        from hermes_agent.hermes_cli.config import get_config_value
 
         _set(monkeypatch, hermes_home, "platforms.telegram.streaming", "false")
         capsys.readouterr()
@@ -102,7 +102,7 @@ class TestRedirectSiblingSurfaces:
         assert resolve_display_setting(raw, "telegram", "streaming") is False
 
     def test_unset_removes_the_redirected_leaf(self, hermes_home, monkeypatch):
-        from hermes_cli.config import unset_config_value
+        from hermes_agent.hermes_cli.config import unset_config_value
 
         _set(monkeypatch, hermes_home, "platforms.telegram.streaming", "false")
         unset_config_value("platforms.telegram.streaming")
@@ -113,7 +113,7 @@ class TestRedirectSiblingSurfaces:
         assert result["platforms"]["telegram"] == {"token": "secret-bot-token"}
 
     def test_unset_missing_redirected_leaf_exits_nonzero(self, hermes_home, monkeypatch):
-        from hermes_cli.config import unset_config_value
+        from hermes_agent.hermes_cli.config import unset_config_value
 
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         with pytest.raises(SystemExit) as exc:
@@ -123,7 +123,7 @@ class TestRedirectSiblingSurfaces:
 
     def test_redirect_helper_only_touches_known_display_keys(self):
         from hermes_agent.gateway.display_config import OVERRIDEABLE_KEYS
-        from hermes_cli.config import _redirect_platform_display_key
+        from hermes_agent.hermes_cli.config import _redirect_platform_display_key
 
         for setting in OVERRIDEABLE_KEYS:
             canonical, note = _redirect_platform_display_key(f"platforms.discord.{setting}")

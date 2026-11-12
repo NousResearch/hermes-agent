@@ -26,7 +26,7 @@ from hermes_agent.agent.gemini_schema import prepare_gemini_tool_parameters, san
 
 logger = logging.getLogger(__name__)
 
-from hermes_cli.version_info import hermes_user_agent
+from hermes_agent.hermes_cli.version_info import hermes_user_agent
 
 
 def _api_client() -> str:

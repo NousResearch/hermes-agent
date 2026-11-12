@@ -89,7 +89,7 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
             thread.start()
             thread.join(20)
             return results[0]
-        monkeypatch.setattr("hermes_cli.middleware.run_tool_execution_middleware", middleware)
+        monkeypatch.setattr("hermes_agent.hermes_cli.middleware.run_tool_execution_middleware", middleware)
 
     def pre_hook(name, args, **kwargs):
         if name != "terminal":
@@ -112,7 +112,7 @@ def test_desktop_publishes_final_commands_before_wait_and_runs_in_order(tmp_path
             errors.append(exc)
 
     with ExitStack() as scope, patch(
-        "hermes_cli.plugins._dispatch_pre_tool_call_hooks", side_effect=pre_hook
+        "hermes_agent.hermes_cli.plugins._dispatch_pre_tool_call_hooks", side_effect=pre_hook
     ):
         scope.callback(reset_terminal_scope, set_terminal_scope({"TERMINAL_ENV": "local", "TERMINAL_CWD": str(tmp_path)}))
         worker = threading.Thread(target=propagate_context_to_thread(run), daemon=True)

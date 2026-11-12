@@ -79,8 +79,8 @@ class OpenRouterProfile(ProviderProfile):
         if not effort and not disabled:
             return cfg
         try:
-            from hermes_cli.models import clamp_reasoning_effort_to_supported
-            from hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
+            from hermes_agent.hermes_cli.models import clamp_reasoning_effort_to_supported
+            from hermes_agent.hermes_cli.models_reasoning_caps import openrouter_model_reasoning_capabilities
 
             caps = openrouter_model_reasoning_capabilities(model)
             if not caps or not caps.get("supports_reasoning"):
@@ -110,7 +110,7 @@ class OpenRouterProfile(ProviderProfile):
         self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
     ) -> list[str] | None:
         """Public OpenRouter catalog (no auth), cached per process. Tool-call
-        filtering happens in hermes_cli/models.py, which the picker reaches first."""
+        filtering happens in hermes_agent/hermes_cli/models.py, which the picker reaches first."""
         global _CACHE
         if _CACHE is not None:
             return _CACHE

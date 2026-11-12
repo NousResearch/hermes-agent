@@ -16,16 +16,16 @@ network or auth state is required.
 """
 
 import pytest
-from hermes_cli import model_switch
-import hermes_cli.models as models_mod
-import hermes_cli.model_switch_providers as hermes_cli_model_switch_providers
-from hermes_cli import model_switch_providers
+from hermes_agent.hermes_cli import model_switch
+import hermes_agent.hermes_cli.models as models_mod
+import hermes_agent.hermes_cli.model_switch_providers as hermes_cli_model_switch_providers
+from hermes_agent.hermes_cli import model_switch_providers
 
 
 @pytest.fixture(autouse=True)
 def _disable_live_custom_provider_model_probe(monkeypatch):
     """Keep custom-provider picker fixtures independent of local model servers."""
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
 
 
 def _make_provider(slug, name=None, models=None, *, is_current=False,
@@ -76,7 +76,7 @@ def test_passthrough_kwargs_to_base(monkeypatch):
 
     monkeypatch.setattr(model_switch, "list_authenticated_providers", _capture)
     monkeypatch.setattr(hermes_cli_model_switch_providers, "list_authenticated_providers", _capture)
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
 
     model_switch_providers.list_picker_providers(
@@ -101,8 +101,8 @@ def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     """Interactive picker should preserve current custom endpoint semantics."""
     monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("hermes_agent.agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
-    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
-    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+    monkeypatch.setattr("hermes_agent.hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_openrouter_models",
                         lambda *a, **kw: [])
 
     result = model_switch_providers.list_picker_providers(
@@ -161,9 +161,9 @@ def _stub_kimi_discovery(monkeypatch, *, canonical):
     the 2b cross-check pass should iterate.
     """
     import hermes_agent.agent.models_dev as md
-    import hermes_cli.models as hm
-    import hermes_cli.models_catalog_static as hermes_cli_models_catalog_static
-    from hermes_cli import models_catalog_static
+    import hermes_agent.hermes_cli.models as hm
+    import hermes_agent.hermes_cli.models_catalog_static as hermes_cli_models_catalog_static
+    from hermes_agent.hermes_cli import models_catalog_static
 
     kimi_map = {
         "kimi": "kimi-for-coding",
@@ -183,7 +183,7 @@ def _stub_kimi_discovery(monkeypatch, *, canonical):
         name = "Kimi For Coding"
 
     monkeypatch.setattr(md, "get_provider_info", lambda _pid: _PInfo())
-    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_agent.hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr(hm, "CANONICAL_PROVIDERS", canonical)
     monkeypatch.setattr(hermes_cli_models_catalog_static, "CANONICAL_PROVIDERS", canonical)
     monkeypatch.setattr(hm, "cached_provider_model_ids",
@@ -193,8 +193,8 @@ def _stub_kimi_discovery(monkeypatch, *, canonical):
 
 def test_single_kimi_credential_yields_one_canonical_row(monkeypatch):
     """One Kimi key yields a single row under the canonical 'kimi-coding' slug."""
-    import hermes_cli.models as hm
-    from hermes_cli import models_catalog_static
+    import hermes_agent.hermes_cli.models as hm
+    from hermes_agent.hermes_cli import models_catalog_static
 
     _stub_kimi_discovery(
         monkeypatch,
@@ -221,8 +221,8 @@ def test_distinct_kimi_china_credential_still_listed(monkeypatch):
     Negative-control guard: the de-dup must collapse only the alias/canonical
     pair that share a credential, not legitimately distinct providers.
     """
-    import hermes_cli.models as hm
-    from hermes_cli import models_catalog_static
+    import hermes_agent.hermes_cli.models as hm
+    from hermes_agent.hermes_cli import models_catalog_static
 
     _stub_kimi_discovery(
         monkeypatch,

@@ -7,11 +7,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from hermes_cli.active_sessions import try_acquire_active_session
+from hermes_agent.hermes_cli.active_sessions import try_acquire_active_session
 
 
 def test_discovery_uses_exact_profile_and_owner_handshake(tmp_path):
-    from hermes_cli.shared_session_attach import discover_attach_url
+    from hermes_agent.hermes_cli.shared_session_attach import discover_attach_url
 
     home = tmp_path / "profile"
     other = tmp_path / "other"
@@ -45,7 +45,7 @@ def test_discovery_uses_exact_profile_and_owner_handshake(tmp_path):
         assert requests == []
         assert discover_attach_url("same-id", registry_home=home) == reply["websocket_url"]
         assert len(requests) == 1
-        from hermes_cli.shared_session_attach import configure_tui_attachment
+        from hermes_agent.hermes_cli.shared_session_attach import configure_tui_attachment
         env = {"HERMES_TUI_GATEWAY_URL": "   "}
         configure_tui_attachment(env, "same-id", registry_home=home)
         assert env["HERMES_TUI_GATEWAY_URL"] == reply["websocket_url"]
@@ -64,8 +64,8 @@ def test_discovery_uses_exact_profile_and_owner_handshake(tmp_path):
 
 
 def test_discovery_refuses_unsupported_owner_without_releasing_lease(tmp_path, monkeypatch):
-    from hermes_cli.shared_session_attach import discover_attach_url
-    from hermes_cli.active_sessions import active_session_registry_snapshot
+    from hermes_agent.hermes_cli.shared_session_attach import discover_attach_url
+    from hermes_agent.hermes_cli.active_sessions import active_session_registry_snapshot
 
     lease, error = try_acquire_active_session(
         session_id="old", surface="desktop", config={}, registry_home=tmp_path,
@@ -81,7 +81,7 @@ def test_discovery_refuses_unsupported_owner_without_releasing_lease(tmp_path, m
         registry = tmp_path / "runtime" / "active_sessions.json"
         with monkeypatch.context() as patch:
             # Our own pid is never probed (#108005), so model a FOREIGN owner whose inspection is denied.
-            from hermes_cli.active_sessions import _read_entries, _write_entries
+            from hermes_agent.hermes_cli.active_sessions import _read_entries, _write_entries
             entries = _read_entries(registry)
             entries[0]["pid"] = os.getpid() + 2**22
             _write_entries(registry, entries)
@@ -99,7 +99,7 @@ def test_discovery_refuses_unsupported_owner_without_releasing_lease(tmp_path, m
 
 def test_discovery_failure_message_names_state_and_resume_path(tmp_path):
     """A refused handshake keeps the lease and points at the working alternative."""
-    from hermes_cli.shared_session_attach import discover_attach_url
+    from hermes_agent.hermes_cli.shared_session_attach import discover_attach_url
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):

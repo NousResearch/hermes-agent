@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from hermes_cli.tools_config import (
+from hermes_agent.hermes_cli.tools_config import (
     STT_MODEL_CATALOG,
     TOOL_CATEGORIES,
     _checklist_toolset_keys,
@@ -39,7 +39,7 @@ class TestConfigWrites:
     def test_apply_provider_selection_stt(self):
         config = {}
         with patch(
-            "hermes_cli.tools_config.get_nous_subscription_features"
+            "hermes_agent.hermes_cli.tools_config.get_nous_subscription_features"
         ) as feats:
             feats.return_value = MagicMock(
                 nous_auth_present=False, account_info=None
@@ -62,7 +62,7 @@ class TestModelPicker:
         """Dashboard selects and Desktop suggestions offer exactly STT_MODEL_CATALOG per provider."""
         import re
 
-        from hermes_cli.web_server_config import _SCHEMA_OVERRIDES
+        from hermes_agent.hermes_cli.web_server_config import _SCHEMA_OVERRIDES
         from hermes_agent.tools.transcription_common import BUILTIN_STT_PROVIDERS, STT_MODEL_CONFIG_KEY
 
         desktop = (Path(__file__).resolve().parents[2] / "apps/desktop/src/app/settings/constants.ts").read_text()
@@ -80,7 +80,7 @@ class TestModelPicker:
     def test_configure_stt_model_defaults_to_current(self):
         config = {"stt": {"openai": {"model": "gpt-transcribe"}}}
         with patch(
-            "hermes_cli.tools_config._prompt_choice", return_value=0
+            "hermes_agent.hermes_cli.tools_config._prompt_choice", return_value=0
         ) as pc:
             _configure_stt_model("openai", config)
         # default index should point at the currently configured model

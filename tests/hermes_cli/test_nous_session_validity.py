@@ -4,8 +4,8 @@ import base64
 import json
 import time
 
-from hermes_cli import auth
-from hermes_cli import auth_nous
+from hermes_agent.hermes_cli import auth
+from hermes_agent.hermes_cli import auth_nous
 
 
 def _invoke_jwt(*, seconds: int = 3600) -> str:

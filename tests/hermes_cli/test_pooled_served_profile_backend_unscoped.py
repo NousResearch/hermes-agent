@@ -37,7 +37,7 @@ def pooled_served_process(tmp_path, monkeypatch):
     # wearing a gateway command line.
     monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
     monkeypatch.setattr(profiles_mod, "_check_gateway_running", lambda home: False)
     return root
 
@@ -53,7 +53,7 @@ def test_unscoped_liveness_in_a_served_profile_process_matches_the_scoped_answer
 
 
 def test_unscoped_lifecycle_verbs_in_a_served_profile_process_address_the_multiplexer(pooled_served_process):
-    from hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment, multiplexed_profile_refusal
+    from hermes_agent.hermes_cli.web_server_gateway import _gateway_subcommand, _profile_action_environment, multiplexed_profile_refusal
     # `stop` on a served profile PARKS it under the host (no refusal); `start` while unparked refuses.
     assert multiplexed_profile_refusal(None, "stop") is None and multiplexed_profile_refusal(None, "start")
     restart = _gateway_subcommand(None, "restart")

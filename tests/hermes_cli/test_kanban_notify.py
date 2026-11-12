@@ -3,10 +3,10 @@ import pytest
 
 from pathlib import Path
 from types import SimpleNamespace
-from hermes_cli import kanban as kc
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_notify as kbn
+from hermes_agent.hermes_cli import kanban as kc
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_notify as kbn
 from unittest.mock import AsyncMock, MagicMock, patch
 
 # ---------------------------------------------------------------------------
@@ -31,9 +31,9 @@ def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
     """delivery_mode persists; an explicit re-subscribe is last-write-wins, a
     ``None`` re-subscribe leaves the existing mode untouched, an unknown value
     is ignored, and none of this clobbers the notifier_profile owner."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
 
     conn = kbc.connect()
     try:
@@ -105,9 +105,9 @@ def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
     last-write-wins, and a None re-subscribe leaves it untouched. The
     active-wake path replays this field so the woken turn keys to the
     operator's real channel."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
 
     conn = kbc.connect()
     try:
@@ -138,9 +138,9 @@ def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
         conn.close()
 
 def test_notify_sub_user_id_backfills_legacy_senderless_rows(kanban_home):
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
 
     conn = kbc.connect()
     try:
@@ -160,9 +160,9 @@ def test_notify_sub_user_id_backfills_legacy_senderless_rows(kanban_home):
 def test_notify_sub_user_id_alt_persists_and_backfills_legacy_rows(kanban_home):
     """user_id_alt is persisted with the notify subscription routing tuple and
     can backfill a pre-existing row created before the alt id was known."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
 
     conn = kbc.connect()
     try:
@@ -190,9 +190,9 @@ def test_notify_sub_user_id_alt_persists_and_backfills_legacy_rows(kanban_home):
 async def test_notifier_notify_plus_wake_sends_and_wakes(kanban_home):
     """notify+wake delivers the passive message AND wakes the agent; a plain
     notify sub only sends. The agent is woken only for the notify+wake sub."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.config import Platform
 
@@ -255,9 +255,9 @@ async def test_notifier_plain_notify_never_wakes_even_with_session_id(kanban_hom
     """Plain/default notify must remain passive even when the task carries a
     creator session_id. This guards against the older unconditional wake path
     that forged adapter.handle_message events after every terminal delivery."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.config import Platform
 
@@ -308,9 +308,9 @@ async def test_notifier_plain_notify_never_wakes_even_with_session_id(kanban_hom
 @pytest.mark.asyncio
 async def test_notifier_notify_wake_does_not_wake_on_status_event(kanban_home):
     """notify+wake wakes on terminal outcomes, not on dashboard status churn."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.config import Platform
 
@@ -359,9 +359,9 @@ async def test_notifier_wake_forwards_persisted_chat_type_and_user_id(kanban_hom
     """The active-wake call must carry the subscription's persisted chat_type and
     user_id so ``deliver_wake`` resolves the operator's real (e.g. group)
     session instead of a hardcoded one."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.config import Platform
 
@@ -415,9 +415,9 @@ async def test_notifier_wake_forwards_persisted_chat_type_and_user_id(kanban_hom
 async def test_notifier_wake_only_skips_send_and_advances_cursor(kanban_home):
     """wake-only: NO passive send, the agent is woken exactly once, and the
     cursor advances so repeated ticks do not re-wake."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.config import Platform
 
@@ -488,9 +488,9 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     a truly final status (done / archived) — see the comment on
     TERMINAL_KINDS in hermes_agent/gateway/run.py and PR #21398.
     """
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.config import Platform
 
@@ -760,9 +760,9 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     """Missing artifact paths are silently skipped — they may have been
     referenced by name only. The notifier must not crash and must still
     deliver any artifacts that do exist."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.config import Platform
     from hermes_agent.tools import kanban_tools as kt
@@ -840,10 +840,10 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 async def test_notifier_uploads_review_handoff_artifacts(kanban_home, tmp_path, monkeypatch):
     """A review handoff's files are uploaded from the durable staged copy —
     not the scratch original the reviewer's completion is about to delete."""
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
-    from hermes_cli import kanban_db_workspace as kbw
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
+    from hermes_agent.hermes_cli import kanban_db_workspace as kbw
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.config import Platform
 
@@ -923,7 +923,7 @@ async def test_notifier_uploads_review_handoff_artifacts(kanban_home, tmp_path, 
 # ---------------------------------------------------------------------------
 
 def test_migration_backfills_legacy_gateway_subs_to_notify_wake(kanban_home):
-    from hermes_cli.kanban_db_connect import _migrate_add_optional_columns
+    from hermes_agent.hermes_cli.kanban_db_connect import _migrate_add_optional_columns
 
     with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="legacy sub upgrade")
@@ -959,7 +959,7 @@ def test_migration_backfills_legacy_gateway_subs_to_notify_wake(kanban_home):
     assert rows["tui"] == "notify"
 
 def test_migration_backfill_runs_only_on_first_add(kanban_home):
-    from hermes_cli.kanban_db_connect import _migrate_add_optional_columns
+    from hermes_agent.hermes_cli.kanban_db_connect import _migrate_add_optional_columns
 
     with kbc.connect() as conn:
         task_id = kb.create_task(conn, title="explicit downgrade survives")
@@ -1016,9 +1016,9 @@ def _assert_full_inherited_sub(subs):
     )
 
 def test_link_tasks_inherits_all_routing_columns(kanban_home):
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
 
     conn = kbc.connect()
     try:
@@ -1034,9 +1034,9 @@ def test_link_tasks_inherits_all_routing_columns(kanban_home):
     _assert_full_inherited_sub(subs)
 
 def test_create_with_parents_inherits_delivery_metadata(kanban_home):
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
 
     conn = kbc.connect()
     try:
@@ -1077,9 +1077,9 @@ def _backdate_task(kb, conn, tid, *, days):
         )
 
 def test_gc_purges_stale_done_sub_keeps_fresh_one(kanban_home):
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
 
     conn = kbc.connect()
     try:
@@ -1098,10 +1098,10 @@ def test_gc_purges_stale_done_sub_keeps_fresh_one(kanban_home):
         conn.close()
 
 def test_gc_honors_configured_retention_days(kanban_home):
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 
     # The watcher reads kanban.done_sub_retention_days from config; the
     # shipped default must exist and drive the sweep when passed through.
@@ -1130,9 +1130,9 @@ def test_gc_honors_configured_retention_days(kanban_home):
         conn.close()
 
 def test_gc_spares_reopened_task_even_when_old(kanban_home):
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
 
     conn = kbc.connect()
     try:
@@ -1158,9 +1158,9 @@ def _set_task_status(kb, conn, tid, status):
         kb._append_event(conn, tid, "status", {"status": status})
 
 def test_gc_purges_blocked_task_that_never_done(kanban_home):
-    import hermes_cli.kanban_db as kb
-    from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli import kanban_db_notify as kbn
+    import hermes_agent.hermes_cli.kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db_notify as kbn
 
     conn = kbc.connect()
     try:

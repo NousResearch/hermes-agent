@@ -1,7 +1,7 @@
 """A named-profile update's refusal tells the user to reopen THAT profile for its snapshot."""
 import subprocess
 
-from hermes_cli import update_downgrade_guard as guard
+from hermes_agent.hermes_cli import update_downgrade_guard as guard
 from tests.hermes_cli import test_update_downgrade_guard as base
 
 repo = base.repo  # the real git repo fixture: an old tag predating the runtime ledger

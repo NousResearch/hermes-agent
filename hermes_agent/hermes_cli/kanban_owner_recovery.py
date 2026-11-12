@@ -55,7 +55,7 @@ def owner_reclaim_paused(conn, task_id):
             return row[1] == 'interrupted'
         if row is None or row[0] in {'queued', 'unknown'}:
             return True
-        from hermes_cli.process_identity import worker_birth
+        from hermes_agent.hermes_cli.process_identity import worker_birth
         return worker_birth(psutil.Process(receipt['pid'])) != receipt['birth']
     except (OSError, ValueError, KeyError, TypeError, psutil.Error):
         return True
@@ -80,7 +80,7 @@ def _latest_run_event(conn, task_id, kind):
 
 def _host_local_lock(lock) -> bool:
     """True when ``lock`` was issued by this host — the only pids we can judge."""
-    from hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db as kb
     return bool(lock) and str(lock).startswith(kb._host_prefix())
 
 
@@ -89,7 +89,7 @@ def bound_interpreter_gone(conn, task_id):
     bound = _latest_run_event(conn, task_id, 'worker_bound')
     if not bound:
         return False
-    from hermes_cli.kanban_db_dispatch import _worker_alive
+    from hermes_agent.hermes_cli.kanban_db_dispatch import _worker_alive
     return not _worker_alive(bound.get('pid'), bound.get('started_at'))
 
 
@@ -105,11 +105,11 @@ def _owner_process_gone(receipt) -> bool:
         pid = int(receipt['pid'])
     except (KeyError, TypeError, ValueError):
         return False
-    from hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli import kanban_db as kb
     if not kb._pid_alive(pid):
         return True  # absent, or an exited zombie still waiting to be reaped
     try:
-        from hermes_cli.process_identity import worker_birth
+        from hermes_agent.hermes_cli.process_identity import worker_birth
         current = worker_birth(psutil.Process(pid))
     except psutil.NoSuchProcess:
         return True
@@ -154,8 +154,8 @@ def owner_attempt_provably_over(conn, task_id) -> bool:
     compared, no recorded pid inside the claim's TTL, or an unreadable clock all return False
     and the pause holds.
     """
-    from hermes_cli import kanban_db as kb
-    from hermes_cli.kanban_db_dispatch import _worker_alive
+    from hermes_agent.hermes_cli import kanban_db as kb
+    from hermes_agent.hermes_cli.kanban_db_dispatch import _worker_alive
     if _latest_run_event(conn, task_id, 'worker_bound'):
         return False  # a bound run is the crash sweep's to book (bound_interpreter_gone)
     receipt = _owner_receipt(conn, task_id)
@@ -228,7 +228,7 @@ def apply_attempt_note(conn, task_id, pid, dead) -> None:
     if lost:
         dead.event_payload["worker_lost"] = lost
         if dead.protocol_violation:
-            from hermes_cli.kanban_db_dispatch import _PROTOCOL_VIOLATION_ERROR
+            from hermes_agent.hermes_cli.kanban_db_dispatch import _PROTOCOL_VIOLATION_ERROR
             dead.protocol_violation = False
             dead.event_payload.pop("protocol_violation", None)
             dead.event_payload["exit_kind"] = dead.kind
@@ -237,7 +237,7 @@ def apply_attempt_note(conn, task_id, pid, dead) -> None:
             dead.error_text = (f"pid {pid} exited cleanly after its managed worker was lost."
                                + dead.error_text.removeprefix(_PROTOCOL_VIOLATION_ERROR))
     # Before the worker's own output: the stored error is capped, and the output may be long.
-    from hermes_cli.kanban_db_dispatch import WORKER_OUTPUT_SEP
+    from hermes_agent.hermes_cli.kanban_db_dispatch import WORKER_OUTPUT_SEP
     head, sep, output = dead.error_text.partition(WORKER_OUTPUT_SEP)
     dead.error_text = f"{head} [{note}]{sep}{output}"
 

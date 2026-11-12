@@ -9,12 +9,12 @@ into a warning, silence on a clean config.
 
 from unittest.mock import patch
 
-from hermes_cli.doctor_config import _check_channel_record_hygiene
+from hermes_agent.hermes_cli.doctor_config import _check_channel_record_hygiene
 
 
 def test_clean_config_prints_nothing(capsys):
     with (
-        patch("hermes_cli.config.load_config", return_value={}),
+        patch("hermes_agent.hermes_cli.config.load_config", return_value={}),
     ):
         _check_channel_record_hygiene()
     assert capsys.readouterr().out == ""
@@ -37,7 +37,7 @@ def test_stale_records_warned_with_reason_texts(tmp_path, capsys, monkeypatch):
             }
         }
     }
-    with patch("hermes_cli.config.load_config", return_value=config):
+    with patch("hermes_agent.hermes_cli.config.load_config", return_value=config):
         _check_channel_record_hygiene()
     out = capsys.readouterr().out
     assert "Stale channel record: deadbeefdeadbeef" in out
@@ -47,7 +47,7 @@ def test_stale_records_warned_with_reason_texts(tmp_path, capsys, monkeypatch):
 
 
 def test_unreadable_config_degrades_to_a_warning(capsys):
-    with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+    with patch("hermes_agent.hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
         _check_channel_record_hygiene()
     out = capsys.readouterr().out
     assert "Channel-record hygiene unreadable" in out

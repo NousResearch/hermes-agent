@@ -1,7 +1,7 @@
 #!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/run-in-hermes-env" python3 "$0" "$@"'
 """Regenerate apps/desktop/src/lib/desktop-slash-registry.json from COMMAND_REGISTRY.
 
-Run after changing any ``desktop=`` value or alias in ``hermes_cli/commands.py``;
+Run after changing any ``desktop=`` value or alias in ``hermes_agent/hermes_cli/commands.py``;
 ``tests/hermes_cli/test_desktop_slash_registry.py`` fails until the committed
 copy matches. ``--check`` writes nothing and exits 1 when the committed JSON
 differs from what the registry renders (the same verdict the pytest gives,
@@ -20,7 +20,7 @@ OUT = ROOT / "apps" / "desktop" / "src" / "lib" / "desktop-slash-registry.json"
 
 def render() -> str:
     sys.path.insert(0, str(ROOT))
-    from hermes_cli.commands import desktop_surface_registry
+    from hermes_agent.hermes_cli.commands import desktop_surface_registry
 
     return json.dumps(desktop_surface_registry(), indent=2, sort_keys=True) + "\n"
 

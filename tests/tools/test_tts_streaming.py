@@ -142,7 +142,7 @@ def test_openai_streamer_forwards_consent_attestation(monkeypatch):
             self.audio.speech.with_streaming_response = _StreamingCreate()
 
     monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "env-key")
-    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key, *args: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_env_value", lambda key, *args: None)
     monkeypatch.setattr("openai.OpenAI", _OpenAI)
 
     section = {"api_key": "k", "consent_attestation": "I have consent"}
@@ -178,7 +178,7 @@ def test_openai_streamer_prefers_configured_api_key(monkeypatch):
             self.audio.speech.with_streaming_response = _StreamingCreate()
 
     monkeypatch.setattr(ts, "resolve_openai_audio_api_key", lambda: "env-key")
-    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key, *args: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_env_value", lambda key, *args: None)
     monkeypatch.setattr("openai.OpenAI", _OpenAI)
 
     config = {

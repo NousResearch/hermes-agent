@@ -103,7 +103,7 @@ def _skills_cfg(key: str, default):
     """``skills.<key>`` from the read-only merged config (no deepcopy), or *default* when the
     read fails. Lazy import keeps this module importable without the CLI."""
     try:
-        from hermes_cli.config import cfg_get, load_config_readonly  # read-only hot path: no deepcopy
+        from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly  # read-only hot path: no deepcopy
         return cfg_get(load_config_readonly(), "skills", key, default=default)
     except Exception as e:  # pragma: no cover — best-effort config read
         logger.debug("skill_ledger: config read failed (%s); skills.%s defaults to %r", e, key, default)

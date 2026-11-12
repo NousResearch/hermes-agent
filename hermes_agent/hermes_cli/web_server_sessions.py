@@ -11,7 +11,7 @@ from typing import Dict, Optional
 from hermes_agent.hermes_state_common import _RESET_CHILD_SQL, _sql_json_extract
 
 # Same logger the code used before extraction (record parity).
-_log = logging.getLogger("hermes_cli.web_server")
+_log = logging.getLogger("hermes_agent.hermes_cli.web_server")
 
 _DESCENDANTS_SQL = f"""
             WITH RECURSIVE descendants(id, parent_session_id, started_at) AS (
@@ -86,8 +86,8 @@ def _session_mutation_context(request, profile):
     """Use the same principal and profile boundary for prepare and apply."""
     from fastapi import HTTPException
     from hermes_agent.gateway.session_contract import SessionActor
-    from hermes_cli.web_server import _has_valid_session_token
-    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_agent.hermes_cli.web_server import _has_valid_session_token
+    from hermes_agent.hermes_cli.web_server_cron import _cron_profile_home
     from hermes_agent.hermes_state import _default_db_path
 
     native = getattr(request.state, 'native_http_principal', None)
@@ -213,10 +213,10 @@ async def _mutate_via_gateway_owner(profile, actor, params):
     """
     from fastapi import HTTPException
     from hermes_agent.gateway.runtime_ownership import OwnershipConflict
-    from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
-    from hermes_cli.gateway_runtime import discover_gateway_endpoint
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError
-    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError, GatewayRPCError, connect_gateway
+    from hermes_agent.hermes_cli.gateway_runtime import discover_gateway_endpoint
+    from hermes_agent.hermes_cli.gateway_runtime_discovery import DiscoveryError
+    from hermes_agent.hermes_cli.web_server_cron import _cron_profile_home
     from hermes_agent.hermes_state import _default_db_path
 
     home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
@@ -275,7 +275,7 @@ async def _mutate_session_request(request, profile, session_id, *, request_id,
     from fastapi import HTTPException
     from hermes_agent.gateway.session_contract import SessionRef
     from hermes_agent.gateway.session_mutations import mutate_session
-    from hermes_cli.gateway_client import GatewayClientError
+    from hermes_agent.hermes_cli.gateway_client import GatewayClientError
     from hermes_agent.hermes_state_mutation_guards import MUTATION_GUARD_REFUSALS
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
@@ -322,7 +322,7 @@ def _with_session_maintenance(profile, operation, *args):
     """Offline bulk actions reserve the exact owner lock through final DB close."""
     from fastapi import HTTPException
     from hermes_agent.gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
-    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_agent.hermes_cli.web_server_cron import _cron_profile_home
     from hermes_agent.hermes_state import _default_db_path
 
     home = Path(_cron_profile_home(profile)[1]) if profile else Path(_default_db_path()).parent
@@ -407,7 +407,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
         if isinstance(exc, sqlite3.DatabaseError) and is_malformed_db_error(exc):
             # Same structured 503 the analytics routers publish (``corrupt_store_as_status``): a
             # corrupt image names the repair (`hermes doctor`), never a generic "schema unavailable".
-            from hermes_cli.web_routers._common import corrupt_store_status
+            from hermes_agent.hermes_cli.web_routers._common import corrupt_store_status
             raise corrupt_store_status(db_path, exc) from exc
         if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_error(exc):
             detail = "Session store is busy (disk I/O or lock). Retry; the list was not cleared."
@@ -421,7 +421,7 @@ def _open_session_db_at_path(db_path: Path, *, read_only: bool):
 
 def _session_db_path_for_profile(profile: Optional[str]) -> Path:
     """state.db path for ``profile`` (None/empty = this process's own)."""
-    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_agent.hermes_cli.web_server_cron import _cron_profile_home
     from hermes_agent.hermes_state import _default_db_path
 
     if profile:
@@ -459,7 +459,7 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
             return
         _last_auto_archive_check[key] = now
 
-        from hermes_cli.config import load_config as _load_full_config
+        from hermes_agent.hermes_cli.config import load_config as _load_full_config
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         # The config that governs a store is the one in that store's OWN home. A zero-arg
@@ -474,7 +474,7 @@ def _maybe_auto_archive_for_profile(profile: Optional[str]) -> None:
             reset_hermes_home_override(_home_token)
         if not cfg.get("auto_archive", False):
             return
-        from hermes_cli.profiles import _check_gateway_running
+        from hermes_agent.hermes_cli.profiles import _check_gateway_running
 
         # A live gateway owns this profile's store and runs the same sweep on its own
         # housekeeping tick ("state.db maintenance tick" in hermes_agent/gateway/run.py, profile-scoped so a
@@ -517,7 +517,7 @@ def _skill_maintenance_idle_for(started_at: float) -> Optional[float]:
 
 def _maybe_run_skill_maintenance(started_at: float) -> None:
     from hermes_constants import get_hermes_home
-    from hermes_cli.profiles import _check_gateway_running
+    from hermes_agent.hermes_cli.profiles import _check_gateway_running
 
     # A live messaging gateway already owns these chores for this profile.
     if _check_gateway_running(get_hermes_home()):

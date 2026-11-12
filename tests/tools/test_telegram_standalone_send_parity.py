@@ -314,7 +314,7 @@ def test_a_sender_written_to_the_earlier_contract_still_delivers(standalone, mon
     (no ``notify``) is reached through the real registry lookup and is never handed ``notify``; a
     sender taking ``**kwargs`` still gets it."""
     from hermes_agent.gateway.platform_registry import platform_registry
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
     discover_plugins()
     entry = platform_registry.get("telegram")
     calls = []
@@ -339,7 +339,7 @@ def test_an_unhashable_callable_sender_still_delivers(standalone, monkeypatch) -
     """A ``standalone_sender_fn`` that is a callable object defining ``__eq__`` (so unhashable)
     is reached through the real registry lookup and still gets ``notify``."""
     from hermes_agent.gateway.platform_registry import platform_registry
-    from hermes_cli.plugins import discover_plugins
+    from hermes_agent.hermes_cli.plugins import discover_plugins
     discover_plugins()
 
     class Sender:

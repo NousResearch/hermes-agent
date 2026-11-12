@@ -15,12 +15,12 @@ from datetime import datetime, timedelta, timezone, UTC
 
 import pytest
 
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
-from hermes_cli.observability.shared_metrics_sender import (
+from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_agent.hermes_cli.observability.shared_metrics_sender import (
     CONSENT_GATE_SQL,
     reconcile_send_consent,
 )
-from hermes_cli.sqlite_util import write_txn
+from hermes_agent.hermes_cli.sqlite_util import write_txn
 
 T0 = datetime(2026, 8, 1, tzinfo=UTC)
 
@@ -158,7 +158,7 @@ class TestClockAdversaries:
         permanent). Capped, the mark moves at most MAX_OBS_ADVANCE_SECONDS
         past its previous value, so honest time overtakes it.
         """
-        from hermes_cli.observability.shared_metrics_sender import (
+        from hermes_agent.hermes_cli.observability.shared_metrics_sender import (
             MAX_OBS_ADVANCE_SECONDS,
         )
 

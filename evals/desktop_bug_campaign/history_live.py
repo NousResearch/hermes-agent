@@ -35,7 +35,7 @@ with SessionDB(db_path=home/'state.db') as db:
     db.append_message('history-control', 'assistant', 'CONTROL_REPLY')
 env = {k: v for k, v in os.environ.items() if k in ['PATH', 'HOME', 'LANG', 'USER', 'VIRTUAL_ENV']}
 env.update(HOME=str(home), HERMES_HOME=str(home), HERMES_DASHBOARD_SESSION_TOKEN='history-fixture-token', PYTHONPATH=repo, HERMES_NONINTERACTIVE='1')
-cmd=[sys.executable, '-m', 'hermes_cli.main', 'serve', '--host', '127.0.0.1', '--port', str(args.port), '--isolated']
+cmd=[sys.executable, '-m', 'hermes_agent.hermes_cli.main', 'serve', '--host', '127.0.0.1', '--port', str(args.port), '--isolated']
 log=open(out/(tag+'-serve.log'),'w',encoding='utf-8')
 p=subprocess.Popen(cmd,cwd=repo,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT)
 frames=[]

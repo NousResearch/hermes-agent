@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.slack_cli import _build_full_manifest, slack_manifest_command
-from hermes_cli.subcommands.slack import build_slack_parser
-from hermes_cli import main_platform_setup
+from hermes_agent.hermes_cli.slack_cli import _build_full_manifest, slack_manifest_command
+from hermes_agent.hermes_cli.subcommands.slack import build_slack_parser
+from hermes_agent.hermes_cli import main_platform_setup
 
 
 def _parse_slack_args(argv):
@@ -27,7 +27,7 @@ def _run_console_entrypoint(*argv: str) -> subprocess.CompletedProcess[str]:
         [
             sys.executable,
             "-c",
-            "from hermes_cli.main import main; raise SystemExit(main())",
+            "from hermes_agent.hermes_cli.main import main; raise SystemExit(main())",
             *argv,
         ],
         cwd=Path(__file__).resolve().parents[2],
@@ -39,8 +39,8 @@ def _run_console_entrypoint(*argv: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_slack_dispatcher_propagates_manifest_failure(monkeypatch):
-    from hermes_cli import main as main_module
-    from hermes_cli import slack_cli
+    from hermes_agent.hermes_cli import main as main_module
+    from hermes_agent.hermes_cli import slack_cli
 
     monkeypatch.setattr(slack_cli, "slack_manifest_command", lambda _args: 2)
 

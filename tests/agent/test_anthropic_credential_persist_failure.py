@@ -79,7 +79,7 @@ def hermes_home(tmp_path, monkeypatch):
         json.dumps({"version": 1, "providers": {}}), encoding="utf-8"
     )
     monkeypatch.setattr(
-        "hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True
+        "hermes_agent.hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True
     )
     return home
 
@@ -305,7 +305,7 @@ def test_reauthentication_clears_the_persist_failure_quarantine(
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True
+        "hermes_agent.hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True
     )
     monkeypatch.setattr(AA, "claude_code_credentials_path", lambda: claude_credentials)
     monkeypatch.setattr(AA, "_read_claude_code_credentials_from_keychain", lambda: None)

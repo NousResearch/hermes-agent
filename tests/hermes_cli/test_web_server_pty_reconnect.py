@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
-import hermes_cli.web_server_chat as _web_server_chat
+import hermes_agent.hermes_cli.web_server_chat as _web_server_chat
 
 
 pytestmark = pytest.mark.platforms("posix")  # PTY bridge is POSIX-only
@@ -41,7 +41,7 @@ class _OneFrameBridge:
 def pty_client(monkeypatch, _isolate_hermes_home):
     from starlette.testclient import TestClient
 
-    import hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server as ws
 
     monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
     monkeypatch.setattr(_web_server_chat.PtyBridge, "spawn", _OneFrameBridge.spawn)

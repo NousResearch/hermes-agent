@@ -98,7 +98,7 @@ CHATS = {
 
 async def _deliver(chat, *, hold, monkeypatch):
     import hermes_agent.gateway.run as gateway_run
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
 
     home = Path(os.environ["HERMES_HOME"])
     platform = Platform.SLACK if chat.platform == Platform.RELAY else Platform.TELEGRAM

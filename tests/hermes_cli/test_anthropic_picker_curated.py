@@ -13,7 +13,7 @@ Bug — newly-routed curated aliases vanished on a native Anthropic setup
 
 from unittest.mock import patch
 
-from hermes_cli import models as M
+from hermes_agent.hermes_cli import models as M
 
 
 def test_anthropic_merge_dedupes_overlap_and_appends_live_only():

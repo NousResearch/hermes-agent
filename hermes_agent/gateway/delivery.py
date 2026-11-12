@@ -8,7 +8,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
-from hermes_cli.config import get_hermes_home
+from hermes_agent.hermes_cli.config import get_hermes_home
 
 from .config import Platform, GatewayConfig, PlatformConfig
 from .session import SessionSource
@@ -160,7 +160,7 @@ async def _ensure_named_dm_topic(adapter: Any, chat_id: str, name: str, *, refre
     from hermes_constants import get_routing_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
     owner = getattr(adapter, "_owner_profile", None)  # None = the launch (primary) profile's bot
     if isinstance(owner, str) and owner:
-        from hermes_cli.profiles import get_profile_dir
+        from hermes_agent.hermes_cli.profiles import get_profile_dir
         token = set_hermes_home_override(get_profile_dir(owner))
     else:
         token = set_hermes_home_override(get_routing_process_hermes_home())

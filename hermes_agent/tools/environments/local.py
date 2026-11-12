@@ -20,8 +20,8 @@ from pathlib import Path
 from hermes_constants import get_process_hermes_home
 from hermes_agent.tools.environments.base import BaseEnvironment
 from hermes_agent.tools.environments.base_output import _pipe_stdin
-from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.process_identity import own_process_groups, release_process_groups
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli.process_identity import own_process_groups, release_process_groups
 from hermes_agent.tools.environments.local_env_policy import (
     _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
@@ -30,7 +30,7 @@ from hermes_agent.tools.environments.local_env_policy import (
     strip_profile_gate_env, strip_supervised_process_identity)
 from hermes_agent.tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -264,7 +264,7 @@ def _inject_session_context_env(env: dict) -> None:
             env[var_name] = "" if value is None else str(value)
         elif _engaged:
             env.pop(var_name, None)
-    from hermes_cli.plugins_session_env import resolve_session_env
+    from hermes_agent.hermes_cli.plugins_session_env import resolve_session_env
     if plugin_env := resolve_session_env(env.get("HERMES_SESSION_ID", "")):
         for name, value in _scrub_credentials(plugin_env, inherit_credentials=False).items():
             if value is None:
@@ -516,7 +516,7 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     if not target or not _is_routed_home(target):
         return env
     launch_home = get_routing_process_hermes_home()
-    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    from hermes_agent.hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
     # Folded strip: on Windows the env block is case-insensitive, so residue
     # stored under a variant casing is the same variable and must go too. The
     # selection folds the same way so a lowercase ``path`` in .env is still
@@ -531,8 +531,8 @@ def strip_launch_profile_env(env: dict, target_home: str | Path | None = None) -
     # it last, with override, so it beats the user's own .env) — leave them in place. Neither is
     # the config backend's deployment (which backend, which plane, which instance): it is the
     # instance's, and a child without it reads the target profile's config from another backend.
-    from hermes_cli.config_backend import deployment_env_names
-    from hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
+    from hermes_agent.hermes_cli.config_backend import deployment_env_names
+    from hermes_agent.hermes_cli.env_loader import launch_dotenv_keys, managed_dotenv_keys, source_supplied_names
     managed_names = {key.upper() for key in managed_dotenv_keys()} | set(deployment_env_names())
     residue_names = {
         key.upper() for key in
@@ -552,7 +552,7 @@ def restore_managed_env(env: dict) -> dict:
     has been overlaid. ``_apply_managed_env`` gives those keys precedence over the user's own ``.env`` in
     the launch process; a routed child must see the same precedence, or the routed user's value for a
     managed key (``ORG_POLICY_FLAG=user-value``) silently wins over policy."""
-    from hermes_cli.env_loader import managed_dotenv_keys
+    from hermes_agent.hermes_cli.env_loader import managed_dotenv_keys
     for key in managed_dotenv_keys():
         if key in os.environ:
             env[key] = os.environ[key]
@@ -835,7 +835,7 @@ def _read_terminal_shell_init_config() -> tuple[list[str], bool]:
     """(shell_init_files, auto_source_bashrc) from config.yaml; defaults on any
     failure so terminal execution never breaks."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         terminal_cfg = (load_config() or {}).get("terminal") or {}
         files = terminal_cfg.get("shell_init_files") or []
         if not isinstance(files, list):
@@ -1074,7 +1074,7 @@ class LocalEnvironment(BaseEnvironment):
 
     def _snapshot_excluded_passthrough_names(self) -> tuple[str, ...]:
         """Plus the plugins' session env names: each command gets its own session's values."""
-        from hermes_cli.plugins_session_env import session_env_names
+        from hermes_agent.hermes_cli.plugins_session_env import session_env_names
         return tuple(sorted({*super()._snapshot_excluded_passthrough_names(), *session_env_names()}))
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict | None = None, persistent: bool = True):

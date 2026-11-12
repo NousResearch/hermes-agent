@@ -1,4 +1,4 @@
-"""Tests for hermes_cli/terminal_breadcrumbs.py — per-terminal ``hermes -c``.
+"""Tests for hermes_agent/hermes_cli/terminal_breadcrumbs.py — per-terminal ``hermes -c``.
 
 Covers terminal id derivation (tty vs env vars vs none), breadcrumb
 write/read roundtrip under a temp HERMES_HOME, stale-session fallback
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import terminal_breadcrumbs as tb
+from hermes_agent.hermes_cli import terminal_breadcrumbs as tb
 
 pytestmark = pytest.mark.platforms("linux")  # os.ttyname is POSIX-only
 
@@ -164,7 +164,7 @@ def test_config_gate_off_disables_writes_and_resolution(
     hermes_home, monkeypatch, no_terminal_env
 ):
     _fake_tty(monkeypatch, "/dev/pts/9")
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     monkeypatch.setattr(
         config_mod, "load_config", lambda: {"session": {"terminal_continue": False}}

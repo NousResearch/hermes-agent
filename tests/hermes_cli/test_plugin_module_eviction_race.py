@@ -13,7 +13,7 @@ from __future__ import annotations
 import threading
 import types
 
-from hermes_cli import plugins_loader
+from hermes_agent.hermes_cli import plugins_loader
 
 
 def test_evict_modules_survives_a_concurrent_mapping_insert(monkeypatch):

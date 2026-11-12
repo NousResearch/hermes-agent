@@ -12,7 +12,7 @@ from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.input.vt100_parser import Vt100Parser
 from prompt_toolkit.keys import Keys
 
-from hermes_cli.pt_input_extras import install_shift_enter_alias
+from hermes_agent.hermes_cli.pt_input_extras import install_shift_enter_alias
 
 SHIFT_ENTER_SEQUENCES = (
     "\x1b[13;2u",      # Kitty / CSI-u, modifier=2 (Shift)

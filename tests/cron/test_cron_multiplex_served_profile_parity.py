@@ -55,7 +55,7 @@ def test_cron_env_settings_resolve_from_the_served_profile(two_homes):
         captured.update(kw)
         return {}
 
-    import hermes_cli.runtime_provider as rp
+    import hermes_agent.hermes_cli.runtime_provider as rp
     original = rp.resolve_runtime_provider
     rp.resolve_runtime_provider = fake_resolve
     try:

@@ -1,8 +1,8 @@
 import json
 import sys
 
-from hermes_cli.session_export import export_record_count, render_sessions_export
-from hermes_cli.session_export_html import (
+from hermes_agent.hermes_cli.session_export import export_record_count, render_sessions_export
+from hermes_agent.hermes_cli.session_export_html import (
     _generate_messages_html,
     generate_multi_session_html_export,
 )
@@ -96,7 +96,7 @@ def test_export_record_count_switches_unit_for_prompt_only_exports():
 
 
 def test_sessions_export_cli_prompt_only_stdout(monkeypatch, capsys, tmp_path):
-    import hermes_cli.main as main_mod
+    import hermes_agent.hermes_cli.main as main_mod
     from hermes_agent import hermes_state
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

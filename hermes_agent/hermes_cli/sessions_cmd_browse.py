@@ -3,7 +3,7 @@ delete-with-confirmation; numbered-list fallback when curses is unavailable (Win
 
 from typing import Optional
 
-from hermes_cli.timefmt import relative_time as _relative_time
+from hermes_agent.hermes_cli.timefmt import relative_time as _relative_time
 from hermes_agent.hermes_state_errors import SessionActiveWriteGuardError
 
 
@@ -255,7 +255,7 @@ def _session_browse_picker(sessions: list, session_db=None) -> Optional[str]:
 
     def _delete_session(session_id: str) -> bool:
         try:
-            from hermes_cli.sessions_cmd import get_hermes_home
+            from hermes_agent.hermes_cli.sessions_cmd import get_hermes_home
             sessions_dir = get_hermes_home() / "sessions"
         except Exception:
             sessions_dir = None

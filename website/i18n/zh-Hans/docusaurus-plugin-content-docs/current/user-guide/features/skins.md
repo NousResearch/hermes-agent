@@ -263,7 +263,7 @@ Hermes Mod 遵循 `HERMES_HOME` 环境变量，因此也适用于[配置文件](
 
 ## 操作说明
 
-- 内置皮肤从 `hermes_cli/skin_engine.py` 加载。
+- 内置皮肤从 `hermes_agent/hermes_cli/skin_engine.py` 加载。
 - 未知皮肤自动回退到 `default`。
 - `/skin` 立即更新当前会话的活动 CLI 主题。
 - `~/.hermes/skins/` 中的用户皮肤优先于同名内置皮肤。

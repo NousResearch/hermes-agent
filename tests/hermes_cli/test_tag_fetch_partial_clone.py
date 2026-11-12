@@ -14,7 +14,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from hermes_cli.gitlock import fetch_full_commit_graph
+from hermes_agent.hermes_cli.gitlock import fetch_full_commit_graph
 
 
 def _server_repo(tmp_path: Path) -> Path:
@@ -92,7 +92,7 @@ def test_a_tag_refresh_is_bounded_short_and_a_history_fill_keeps_the_long_budget
     # A tags-only refresh on a full-history checkout is a ref listing; a slow remote must not hold
     # the update for 15 minutes when a miss only leaves the version label stale. Filling a shallow
     # checkout's history really transfers commits, so it keeps the long budget.
-    from hermes_cli import gitlock
+    from hermes_agent.hermes_cli import gitlock
 
     server = _server_repo(tmp_path)
     _git(server, "config", "uploadpack.allowFilter", "true")

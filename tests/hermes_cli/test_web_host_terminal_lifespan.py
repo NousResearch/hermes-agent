@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from hermes_cli.web_host_terminal_sessions import get_host_terminals, host_terminal_lifespan
+from hermes_agent.hermes_cli.web_host_terminal_sessions import get_host_terminals, host_terminal_lifespan
 
 
 @pytest.mark.asyncio
@@ -60,9 +60,9 @@ async def test_overlapping_lifespans_close_only_their_owned_registry(older_first
 def test_real_shells_remain_owned_after_overlapping_lifespan_exit(tmp_path, monkeypatch, older_first):
     import psutil
 
-    from hermes_cli import web_host_terminal, web_server
-    from hermes_cli.web_routers.webapp import SESSION_TOKEN_OWNER, mint_socket_ticket, router
-    from hermes_cli.web_session_sockets import HOST_TERMINAL_SOCKET
+    from hermes_agent.hermes_cli import web_host_terminal, web_server
+    from hermes_agent.hermes_cli.web_routers.webapp import SESSION_TOKEN_OWNER, mint_socket_ticket, router
+    from hermes_agent.hermes_cli.web_session_sockets import HOST_TERMINAL_SOCKET
 
     home = tmp_path / ".hermes"
     home.mkdir()

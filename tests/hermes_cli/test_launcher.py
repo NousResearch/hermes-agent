@@ -7,25 +7,25 @@ from pathlib import Path
 
 
 def test_launcher_delegates_to_argparse_entrypoint(monkeypatch):
-    """`./hermes` should use `hermes_cli.main`, not the legacy Fire wrapper."""
+    """`./hermes` should use `hermes_agent.hermes_cli.main`, not the legacy Fire wrapper."""
     launcher_path = Path(__file__).resolve().parents[2] / "hermes"
     called = []
 
-    fake_main_module = types.ModuleType("hermes_cli.main")
+    fake_main_module = types.ModuleType("hermes_agent.hermes_cli.main")
 
     def fake_main():
         called.append("hermes_cli.main")
 
     fake_main_module.main = fake_main
-    monkeypatch.setitem(sys.modules, "hermes_cli.main", fake_main_module)
+    monkeypatch.setitem(sys.modules, "hermes_agent.hermes_cli.main", fake_main_module)
 
-    fake_cli_module = types.ModuleType("cli")
+    fake_cli_module = types.ModuleType("hermes_agent.cli")
 
     def legacy_cli_main(*args, **kwargs):
         raise AssertionError("launcher should not import cli.main")
 
     fake_cli_module.main = legacy_cli_main
-    monkeypatch.setitem(sys.modules, "cli", fake_cli_module)
+    monkeypatch.setitem(sys.modules, "hermes_agent.cli", fake_cli_module)
 
     fake_fire_module = types.ModuleType("fire")
 

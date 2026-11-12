@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import hermes_yaml as yaml
 from hermes_agent.agent.status_output import StatusOutputMixin
-from hermes_cli.cli_stream_mixin import CLIStreamMixin
+from hermes_agent.hermes_cli.cli_stream_mixin import CLIStreamMixin
 from hermes_agent.tui_gateway import server
 from tests.tui_gateway.test_auto_continue import turn_env, marker_home, _session
 
@@ -87,7 +87,7 @@ def test_cli_callbacks_honor_bound_snapshot_not_file(tmp_path, monkeypatch, init
 @pytest.mark.parametrize("initial", [False, True])
 @pytest.mark.parametrize("fail", [False, True])
 def test_cli_real_chat_binds_refreshes_and_restores_snapshot(tmp_path, monkeypatch, initial, fail):
-    from hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
+    from hermes_agent.hermes_cli.cli_chat_turn_mixin import CLIChatTurnMixin
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
     cfg = tmp_path / "config.yaml"

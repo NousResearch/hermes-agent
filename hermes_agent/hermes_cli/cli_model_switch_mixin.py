@@ -1,7 +1,7 @@
 """Model picker, /model switch application, runtime snapshot/restore, and codex runtime handling for the interactive CLI
 
 Mixin split out of ``cli.py``; bound onto ``HermesCLI`` via the MRO. cli.py-internal
-symbols are imported LAZILY inside each method (``from cli import ...``) — the mixin
+symbols are imported LAZILY inside each method (``from hermes_agent.cli import ...``) — the mixin
 never imports ``cli`` at module load time (import cycle).
 
 Tests drive the switch paths with bare stubs lacking most mixin methods, so shared steps are
@@ -18,7 +18,7 @@ import threading
 from rich.markup import escape as _escape
 from hermes_agent.agent.i18n import t
 from utils import base_url_host_matches
-from hermes_cli.cli_agent_setup_mixin import _retire_agent
+from hermes_agent.hermes_cli.cli_agent_setup_mixin import _retire_agent
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def _resolve_cli_reasoning(cli) -> None:
     because a lazily built agent inherits this field — an always-thinking model then goes out with
     the launch model's effort and 400s (#112921, #96012). ``agent.switch_model`` re-resolves its own
     copy for the live-agent path."""
-    from cli import CLI_CONFIG
+    from hermes_agent.cli import CLI_CONFIG
     from hermes_constants import resolve_reasoning_config
     # getattr: tests drive /new unbound on a SimpleNamespace without ``model`` (blank -> config default).
     cli.reasoning_config = resolve_reasoning_config(CLI_CONFIG, getattr(cli, "model", None) or "")
@@ -74,7 +74,7 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     provider_changed = bool(provider) and provider != current_provider
     if stored_model == current_model and not provider_changed:
         return None
-    from hermes_cli.runtime_provider import is_foreign_provider_endpoint
+    from hermes_agent.hermes_cli.runtime_provider import is_foreign_provider_endpoint
     if is_foreign_provider_endpoint(provider, base_url):
         # The endpoint and its wire belong to the provider this chat left; resolve the stored one's own.
         base_url = api_mode = None
@@ -82,10 +82,10 @@ def stored_session_route(session_meta, *, current_model, current_provider):
     # pick the wire per model (OpenCode Zen/Go, Nous, plugin profiles) re-derive both from the stored model, or a
     # resumed opencode-go session keeps a MiniMax-era anthropic_messages route for a chat_completions
     # model (#96066) — the CLI/oneshot twin of tui_gateway's _rederive_per_model_route.
-    from hermes_cli.model_switch import model_derived_api_mode
+    from hermes_agent.hermes_cli.model_switch import model_derived_api_mode
     derived = model_derived_api_mode(provider or "", stored_model)
     if derived is not None:
-        from hermes_cli.models import normalize_opencode_base_url
+        from hermes_agent.hermes_cli.models import normalize_opencode_base_url
         api_mode = derived
         base_url = normalize_opencode_base_url(provider, api_mode, base_url) or None
     return stored_model, provider, base_url, api_mode, provider_changed
@@ -94,7 +94,7 @@ def stored_session_route(session_meta, *, current_model, current_provider):
 def _main_slot_serves(model) -> bool:
     """An empty provider means the row ran on the profile's route; it is lost only once that route
     targets another model (#132648)."""
-    from hermes_cli.runtime_provider import _get_model_config
+    from hermes_agent.hermes_cli.runtime_provider import _get_model_config
     return str(_get_model_config().get("default") or "").strip() == str(model or "").strip()
 
 
@@ -106,13 +106,13 @@ def _heal_bare_custom_provider(provider, *, base_url, model):
     if not str(provider or "").strip():
         if _main_slot_serves(model):
             return None
-        from hermes_cli.runtime_provider_custom import empty_provider_identity
+        from hermes_agent.hermes_cli.runtime_provider_custom import empty_provider_identity
         return empty_provider_identity(base_url, model)
     try:
         # Heal bare "custom" persisted by older builds / gateway turns: it's the resolved billing class, not
         # a routable identity. (Stricter than the TUI gateway's recovery, which keeps bare "custom" when a
         # base_url exists — the CLI's resolve path would hard-fail on it, #14676.)
-        from hermes_cli.runtime_provider import canonical_custom_identity
+        from hermes_agent.hermes_cli.runtime_provider import canonical_custom_identity
         return canonical_custom_identity(base_url=base_url or None, model=model or None) or None
     except Exception:
         return None
@@ -120,11 +120,11 @@ def _heal_bare_custom_provider(provider, *, base_url, model):
 
 def _merge_preflight_warning(cli, result, custom_providers) -> None:
     """Fold the context-compression preflight warning into ``result`` (fail-soft)."""
-    from cli import logger
+    from hermes_agent.cli import logger
     if cli.agent is None:
         return
     try:
-        from hermes_cli.context_switch_guard import merge_preflight_compression_warning
+        from hermes_agent.hermes_cli.context_switch_guard import merge_preflight_compression_warning
         # Prefer the fresh inventory list (same source as switch_model / TUI); fall back
         # to the agent-init snapshot.
         merge_preflight_compression_warning(
@@ -145,8 +145,8 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
     providers and prompt caching). ``strict_context``: the typed /model path lets
     context-resolution errors propagate; the picker path swallows them.
     """
-    from cli import _cprint
-    from hermes_cli.model_switch import format_model_for_display, resolve_display_context_length
+    from hermes_agent.cli import _cprint
+    from hermes_agent.hermes_cli.model_switch import format_model_for_display, resolve_display_context_length
     _display_old = format_model_for_display(old_model)
     _display_new = format_model_for_display(result.new_model)
     cli._pending_model_switch_note = (
@@ -158,7 +158,7 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
     _cprint(f"    {t('gateway.model.provider_label', provider=result.provider_label or result.target_provider)}")
     if result.target_provider == "moa":
         # The preset name hides who pays: the aggregator runs every tool-loop step (#112359).
-        from hermes_cli.moa_config import normalize_moa_config
+        from hermes_agent.hermes_cli.moa_config import normalize_moa_config
         moa_cfg = cli.config.get("moa") if isinstance(cli.config, dict) else {}
         agg = normalize_moa_config(moa_cfg)["presets"].get(result.new_model, {}).get("aggregator") or {}
         if agg:
@@ -203,7 +203,7 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
 def _switch_model_from(
     cli, raw_input, *, is_global, explicit_provider, user_providers, custom_providers):
     """``switch_model`` seeded with this CLI's live route."""
-    from hermes_cli.model_switch import switch_model
+    from hermes_agent.hermes_cli.model_switch import switch_model
     return switch_model(
         raw_input=raw_input, current_provider=cli.provider or "", current_model=cli.model or "",
         current_base_url=cli.base_url or "", current_api_key=cli.api_key or "", is_global=is_global,
@@ -230,7 +230,7 @@ def _one_turn_selection_context(cli):
     A live compressor measurement wins. Otherwise refresh ``session.stats``, then the session row's
     persisted usage anchor (a resume, before this process has run a turn).
     """
-    from hermes_cli.model_selection_guards import SelectionContext, selection_context_for_agent
+    from hermes_agent.hermes_cli.model_selection_guards import SelectionContext, selection_context_for_agent
     agent = getattr(cli, "agent", None)
     if agent is not None and hasattr(agent, "_refresh_stats"):
         agent._refresh_stats()
@@ -279,7 +279,7 @@ _MODEL_USAGE_COL = 36
 def _configured_default_route() -> tuple[str, str]:
     """``(model, provider)`` config.yaml names NOW (``/model reset``'s target). A fresh read, not the
     startup snapshot: the dashboard or another surface may have changed the default since launch."""
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
     model_cfg = (load_config_readonly() or {}).get("model")
     if not isinstance(model_cfg, dict):
         return (model_cfg.strip() if isinstance(model_cfg, str) else ""), ""
@@ -313,13 +313,13 @@ def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool, one
 
     ``one_turn`` (``--once``): the level rides the one-turn admission (``model_override.reasoning``)
     and the restore snapshot puts the CLI's own level back. It is never a session pin."""
-    from cli import CLI_CONFIG, _cprint, _parse_reasoning_config, save_config_value
+    from hermes_agent.cli import CLI_CONFIG, _cprint, _parse_reasoning_config, save_config_value
     parsed = _parse_reasoning_config(effort)
     if parsed is None:
         return
     cli.reasoning_config = parsed
     if one_turn:
-        from hermes_cli.gateway_agent import GatewayAgent
+        from hermes_agent.hermes_cli.gateway_agent import GatewayAgent
         pending = getattr(cli, "_pending_one_turn_model_restore", None)
         if isinstance(pending, dict):
             pending["one_turn_reasoning"] = effort  # the agent chat rebuilds carries it too
@@ -350,7 +350,7 @@ def _commit_model_switch(
     ``picker``: tolerate context-resolution errors and label the config write "(--global)"; the
     typed path additionally records the one-turn restore snapshot. ``reasoning_effort`` (from
     ``--reasoning`` or the picker's effort step) is applied after the swap."""
-    from cli import HermesCLI, _cprint
+    from hermes_agent.cli import HermesCLI, _cprint
     old_model, old_provider = cli.model, getattr(cli, "provider", None)
     # A second ``--once`` before the turn restores to the route before the first one.
     snapshot = (getattr(cli, "_pending_one_turn_model_restore", None)
@@ -370,7 +370,7 @@ def _commit_model_switch(
         return
     # A TUI slash worker replays /model on its shadow CLI; the tui_gateway mirror counts the real switch.
     if not getattr(cli, "is_slash_worker", False):
-        from hermes_cli.observability.shared_metrics_events import record_model_switch
+        from hermes_agent.hermes_cli.observability.shared_metrics_events import record_model_switch
         record_model_switch(
             from_provider=old_provider, to_provider=result.target_provider, surface="cli", from_model=old_model,
             session_id=getattr(getattr(cli, "agent", None), "session_id", None) or getattr(cli, "session_id", None))
@@ -383,7 +383,7 @@ def _commit_model_switch(
         _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn,
                                       one_turn=one_turn)
     if persist_global:
-        from hermes_cli.model_switch import persist_model_selection
+        from hermes_agent.hermes_cli.model_switch import persist_model_selection
         persist_model_selection(result)
         _cprint(f"    {t('cli.model.saved_global' if picker else 'cli.model.saved')}")
     elif one_turn:
@@ -398,9 +398,9 @@ def _commit_model_switch(
 
 def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
     """``/model`` with no args: open the picker, or print usage when nothing is authed."""
-    from cli import _cprint
-    from hermes_cli.inventory import build_models_payload
-    from hermes_cli.providers import get_label
+    from hermes_agent.cli import _cprint
+    from hermes_agent.hermes_cli.inventory import build_models_payload
+    from hermes_agent.hermes_cli.providers import get_label
     try:
         if ctx is None:
             raise RuntimeError("inventory context unavailable")
@@ -435,7 +435,7 @@ class CLIModelSwitchMixin:
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
-        from cli import _split_model_config_default
+        from hermes_agent.cli import _split_model_config_default
         current_model = str(self.model or "").strip()
         if isinstance(self.model, dict):
             current_model, _ = _split_model_config_default(self.model)
@@ -465,7 +465,7 @@ class CLIModelSwitchMixin:
             return changed
 
         try:
-            from hermes_cli.model_normalize import (
+            from hermes_agent.hermes_cli.model_normalize import (
                 _AGGREGATOR_PROVIDERS, normalize_model_for_provider)
             if resolved_provider not in _AGGREGATOR_PROVIDERS:
                 _adopt(
@@ -482,15 +482,15 @@ class CLIModelSwitchMixin:
             logger.debug("normalize_model_id(%s) failed", resolved_provider, exc_info=True)
             native_id = None
         if native_id is not None:  # a profile-owned id space also re-derives the wire for the new id
-            from hermes_cli.model_switch import model_derived_api_mode
+            from hermes_agent.hermes_cli.model_switch import model_derived_api_mode
             return _adopt_with_mode(
                 lambda m: native_id,
                 lambda m: model_derived_api_mode(resolved_provider, m, self.api_key or "") or self.api_mode,
                 lambda new: t("cli.model.normalized_model", old=current_model, new=new, provider=resolved_provider))
 
-        from hermes_cli.models import opencode_provider_family
+        from hermes_agent.hermes_cli.models import opencode_provider_family
         if opencode_provider_family(resolved_provider) is not None:
-            from hermes_cli.models import normalize_opencode_model_id, opencode_model_api_mode
+            from hermes_agent.hermes_cli.models import normalize_opencode_model_id, opencode_model_api_mode
             return _adopt_with_mode(
                 lambda m: normalize_opencode_model_id(resolved_provider, m),
                 lambda m: opencode_model_api_mode(resolved_provider, m),
@@ -511,7 +511,7 @@ class CLIModelSwitchMixin:
 
         # 2. Replace untouched default with a Codex model
         if self._model_is_default:
-            from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+            from hermes_agent.hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
 
             fallback_model = DEFAULT_CODEX_MODELS[0]
             try:
@@ -541,7 +541,7 @@ class CLIModelSwitchMixin:
         model with the ambient default (#79536). Mirrors the gateway's ``update_session_model()`` call.
         getattr: tests drive the switch paths with ``object.__new__`` stubs.
         """
-        from cli import logger
+        from hermes_agent.cli import logger
         db = getattr(self, "_session_db", None)
         sid = getattr(self, "session_id", None)
         if not db or not sid:
@@ -572,14 +572,14 @@ class CLIModelSwitchMixin:
         must not be sent to the session's endpoint; on failure the ambient credentials are kept
         so the session still opens (the first turn surfaces the auth error).
         """
-        from cli import logger
+        from hermes_agent.cli import logger
         if not (session_meta or {}).get("model") or getattr(self, "_explicit_model_override", False):
             return
         route = stored_session_route(session_meta, current_model=self.model, current_provider=self.provider)
         if route is None:
             return
         stored_model, stored_provider, stored_base_url, stored_api_mode, provider_changed = route
-        from hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
+        from hermes_agent.hermes_cli.local_runtime.endpoint import LLAMACPP_ALIASES
         managed = str(stored_provider or "").strip().lower() in LLAMACPP_ALIASES
         self.model = stored_model
         if stored_provider:
@@ -596,7 +596,7 @@ class CLIModelSwitchMixin:
             self._explicit_api_key = None
             self._explicit_base_url = None
             try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
+                from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
                 resolved = resolve_runtime_provider(requested=stored_provider, target_model=self.model or None)
                 if resolved.get("api_key"):
                     self.api_key = resolved["api_key"]
@@ -619,7 +619,7 @@ class CLIModelSwitchMixin:
             self._explicit_api_key = None
             self._explicit_base_url = stored_base_url
             try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
+                from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
                 resolved = resolve_runtime_provider(requested=stored_provider, target_model=self.model or None)
                 if resolved.get("api_key"):
                     self.api_key = resolved["api_key"]
@@ -671,7 +671,7 @@ class CLIModelSwitchMixin:
         if not getattr(result, "success", False):
             return True
         try:
-            from hermes_cli.model_selection_guards import (
+            from hermes_agent.hermes_cli.model_selection_guards import (
                 combined_selection_warning, selection_context_for_agent)
             primed = getattr(self, "_one_turn_selection_context", None)
             warning = combined_selection_warning(
@@ -694,7 +694,7 @@ class CLIModelSwitchMixin:
         large context; Ink/Desktop/ACP show the same ``confirm_message``): ask in the same prompt as
         ``_confirm_expensive_model_switch``. Only a yes re-sends with the owner's token. The identical
         warning the user just confirmed for this switch is not asked twice."""
-        from hermes_cli.gateway_mutations import confirmation_title
+        from hermes_agent.hermes_cli.gateway_mutations import confirmation_title
         message = refusal.get("confirm_message") or ""
         confirmed, self._confirmed_switch_warning = getattr(self, "_confirmed_switch_warning", None), None
         if message and message == confirmed:
@@ -703,7 +703,7 @@ class CLIModelSwitchMixin:
 
     def _confirm_and_apply_model_switch_result(
         self, result, persist_global: bool, custom_providers=None, reasoning_effort: str = "") -> None:
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         try:
             if result.success and not self._confirm_expensive_model_switch(result):
                 _cprint(f"  {t('cli.model.switch_cancelled')}")
@@ -731,7 +731,7 @@ class CLIModelSwitchMixin:
 
     def _restore_model_runtime_snapshot(self, snapshot: dict | None) -> None:
         """Restore a model runtime captured before a one-turn override."""
-        from cli import _cprint, logger
+        from hermes_agent.cli import _cprint, logger
         if not snapshot:
             return
         one_turn = _runtime_fields(self)
@@ -742,7 +742,7 @@ class CLIModelSwitchMixin:
         agent = getattr(self, "agent", None)
         if agent is None:
             return
-        from hermes_cli.gateway_agent import GatewayAgent
+        from hermes_agent.hermes_cli.gateway_agent import GatewayAgent
         # A gateway agent's one-turn level only rode the admission: put it back locally, write nothing.
         restore_reasoning = (agent.restore_reasoning if isinstance(agent, GatewayAgent)
                              else lambda config: setattr(agent, "reasoning_config", config))
@@ -822,7 +822,7 @@ class CLIModelSwitchMixin:
         otherwise the staged broken credentials leak into the next turn even though the agent
         rolled back. Returns False after printing the failure (a failed switch is a no-op).
         """
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         if self.agent is None and getattr(self, "_gateway_session_open", False) and not self._init_agent():
             # Before the first turn: the stand-in built for that turn reads the gateway session's model,
             # so the switch must commit on the session now; _init_agent printed why it could not.
@@ -869,7 +869,7 @@ class CLIModelSwitchMixin:
                     setattr(self, _k, _v)
                 if str(exc) == "launch_credentials_unavailable":
                     # No model switch can fix a chat whose launch key changed; say what does.
-                    from hermes_cli.cli_chat_error_copy import refusal_text
+                    from hermes_agent.hermes_cli.cli_chat_error_copy import refusal_text
                     _cprint(f"  {refusal_text(exc)}")
                     return False
                 _cprint(f"  {t('cli.model.switch_failed', model=result.new_model, error=exc, old_model=old_model)}")
@@ -881,7 +881,7 @@ class CLIModelSwitchMixin:
     def _apply_model_switch_result(
         self, result, persist_global: bool, custom_providers=None, reasoning_effort: str = "") -> None:
         """Picker-path commit (see _commit_model_switch)."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         if not result.success:
             _cprint(f"  ✗ {result.error_message}")
             return
@@ -908,11 +908,11 @@ class CLIModelSwitchMixin:
             model_list = provider_data.get("models", [])
             if not model_list:
                 try:
-                    from hermes_cli.models import cached_provider_model_ids
+                    from hermes_agent.hermes_cli.models import cached_provider_model_ids
                     model_list = cached_provider_model_ids(provider_data["slug"]) or model_list
                 except Exception:
                     pass
-            from hermes_cli.models_validate import offered_model_ids
+            from hermes_agent.hermes_cli.models_validate import offered_model_ids
             model_list = offered_model_ids(
                 model_list, provider_data.get("slug"), provider_data.get("api_url"))
             state.update(
@@ -994,8 +994,8 @@ class CLIModelSwitchMixin:
 
         Switches are session-scoped unless ``model.persist_switch_by_default`` or ``--global``.
         """
-        from cli import _cprint
-        from hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
+        from hermes_agent.cli import _cprint
+        from hermes_agent.hermes_cli.model_switch import parse_model_switch_args, resolve_persist_behavior
 
         parts = cmd_original.split(None, 1)  # split off '/model'
         request = parse_model_switch_args(parts[1].strip() if len(parts) > 1 else "")
@@ -1023,14 +1023,14 @@ class CLIModelSwitchMixin:
         # --refresh: wipe the picker cache so every authed provider's /v1/models is re-fetched.
         if request.force_refresh:
             try:
-                from hermes_cli.models import clear_provider_models_cache
+                from hermes_agent.hermes_cli.models import clear_provider_models_cache
                 clear_provider_models_cache()
                 _cprint(f"  {t('cli.model.cleared_picker_cache')}")
             except Exception:
                 pass
 
         # Live session state is overlaid truthy-only so empty self.* attrs don't clobber config.
-        from hermes_cli.inventory import load_picker_context
+        from hermes_agent.hermes_cli.inventory import load_picker_context
         try:
             ctx = load_picker_context().with_overrides(
                 current_provider=self.provider or "", current_model=self.model or "",
@@ -1060,7 +1060,7 @@ class CLIModelSwitchMixin:
         self, result, persist_global: bool, one_turn: bool, custom_provs=None, reasoning_effort: str = "") -> None:
         """Confirm an expensive model switch and apply it (typed /model path). Runs on a worker
         thread when the TUI is active (see _run_confirm_and_apply) so the modal can render."""
-        from cli import _cprint
+        from hermes_agent.cli import _cprint
         # ``--once`` does not reach the owner's mutate guard. A resumed session's compressor is
         # still cold; the persisted anchor is what that guard would have measured.
         self._one_turn_selection_context = _one_turn_selection_context(self) if one_turn else None
@@ -1082,8 +1082,8 @@ class CLIModelSwitchMixin:
             /codex-runtime codex_app_server      — hand turns to codex subprocess
             /codex-runtime on / off              — synonyms for the above
         """
-        from cli import _cprint
-        from hermes_cli import codex_runtime_switch as crs
+        from hermes_agent.cli import _cprint
+        from hermes_agent.hermes_cli import codex_runtime_switch as crs
 
         parts = cmd_original.split(None, 1)
         new_value, errors = crs.parse_args(parts[1].strip() if len(parts) > 1 else "")
@@ -1092,7 +1092,7 @@ class CLIModelSwitchMixin:
                 _cprint(f"❌ {err}")
             return
         try:
-            from hermes_cli.config import load_config, save_config
+            from hermes_agent.hermes_cli.config import load_config, save_config
         except Exception as exc:
             _cprint(t("cli.model.could_not_load_config", error=exc))
             return
@@ -1107,11 +1107,11 @@ class CLIModelSwitchMixin:
 
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
-        from cli import _looks_like_slash_command
+        from hermes_agent.cli import _looks_like_slash_command
         if not text or has_images or not _looks_like_slash_command(text):
             return False
         try:
-            from hermes_cli.commands import resolve_command
+            from hermes_agent.hermes_cli.commands import resolve_command
             cmd = resolve_command(text.split(None, 1)[0].lower().lstrip('/'))
             return bool(cmd and cmd.name == "model")
         except Exception:
@@ -1120,8 +1120,8 @@ class CLIModelSwitchMixin:
     def _cmd_moa(self, cmd_original: str):
         """/moa one-shot: run one prompt through the default MoA preset, then restore the prior
         model (a session-long MoA switch goes through the picker's virtual MoA provider)."""
-        from cli import _cprint, _slash_args
-        from hermes_cli.moa_config import moa_usage, normalize_moa_config
+        from hermes_agent.cli import _cprint, _slash_args
+        from hermes_agent.hermes_cli.moa_config import moa_usage, normalize_moa_config
 
         payload = _slash_args(cmd_original)
         if not payload:

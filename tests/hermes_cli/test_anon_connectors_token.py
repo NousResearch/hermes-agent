@@ -16,9 +16,9 @@ from datetime import datetime, timedelta, timezone, UTC
 import httpx
 import pytest
 
-from hermes_cli import anon_auth, anon_challenge
-from hermes_cli import auth as auth_mod
-from hermes_cli.auth_nous import resolve_nous_runtime_credentials
+from hermes_agent.hermes_cli import anon_auth, anon_challenge
+from hermes_agent.hermes_cli import auth as auth_mod
+from hermes_agent.hermes_cli.auth_nous import resolve_nous_runtime_credentials
 
 from tests.hermes_cli.anon_portal import WELCOME, claimed_trial, install_portal, make_jwt
 
@@ -61,7 +61,7 @@ def _forget_memo(monkeypatch):
 def _persist_guest_tokens(*, inference: int | None = None, connectors: int | None = None) -> dict:
     """Write held tokens expiring in the given seconds. An inference-only write is exactly what
     current releases persist; ``connectors`` adds the new slot beside it."""
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+    from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
     at = lambda s: (datetime.now(UTC) + timedelta(seconds=s)).isoformat()
     tokens = {}
     with _auth_store_lock():
@@ -120,7 +120,7 @@ class TestConnectorsCallers:
         assert len(nas.token_requests) == 1
 
     def test_account_reads_use_the_connectors_token(self, trial, presented):
-        from hermes_cli.nous_account import get_nous_portal_account_info, reset_nous_portal_account_info_cache
+        from hermes_agent.hermes_cli.nous_account import get_nous_portal_account_info, reset_nous_portal_account_info_cache
         nas = trial
         nas.challenge_required = True
         auth_mod.resolve_nous_access_token()
@@ -208,13 +208,13 @@ class TestNoInferenceIntent:
         assert anon_auth.is_guest_state(anon_auth.current_nous_state())
 
     def test_the_keepalive_never_mints_for_a_guest(self, nas):
-        from hermes_cli.nous_auth_keepalive import refresh_nous_auth_keepalive_once
+        from hermes_agent.hermes_cli.nous_auth_keepalive import refresh_nous_auth_keepalive_once
         auth_mod.resolve_nous_access_token()
         assert refresh_nous_auth_keepalive_once() is False
         assert _purposes(nas) == ["connectors"]
 
     def test_a_model_catalog_read_never_waits_on_a_challenge(self, nas, presented):
-        from hermes_cli.models import _nous_catalog, get_curated_nous_model_ids
+        from hermes_agent.hermes_cli.models import _nous_catalog, get_curated_nous_model_ids
         nas.challenge_required = True
         nas.challenge_never_clears = True
         assert _nous_catalog("nous", False) == (get_curated_nous_model_ids() or None)

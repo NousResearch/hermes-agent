@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.kanban_diagnostics — rule-engine that produces
+"""Tests for hermes_agent.hermes_cli.kanban_diagnostics — rule-engine that produces
 structured distress signals (diagnostics) for kanban tasks.
 
 These tests exercise each rule in isolation using minimal in-memory
@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_diagnostics as kd
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_diagnostics as kd
 
 
 # ---------------------------------------------------------------------------

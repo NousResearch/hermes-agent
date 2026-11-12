@@ -20,7 +20,7 @@ def owned_by_profile(definition: Path, profile_dir: Path) -> bool:
     ``hermes-gateway-<name>`` unit (the unit dir is account-anchored): delete/rename then disabled,
     stopped and unlinked a live gateway of another install. Same owner rule as
     ``gateway_service_owner.definition_belongs_to_home``."""
-    from hermes_cli.gateway_service_owner import _resolve, pinned_home
+    from hermes_agent.hermes_cli.gateway_service_owner import _resolve, pinned_home
     raw = pinned_home(definition)
     if raw is None or _resolve(raw) == _resolve(profile_dir):
         return True
@@ -32,7 +32,7 @@ def remove_system_systemd_unit(profile_dir: Path) -> bool:
     """Remove ``/etc/systemd/system/hermes-gateway-<profile>.service`` when root; otherwise
     name the leftover and the exact command, because the profile dir the ``gateway uninstall
     --system`` verb would need to resolve the name from is about to vanish."""
-    from hermes_cli import gateway
+    from hermes_agent.hermes_cli import gateway
     svc_name = gateway.get_service_name()
     unit = gateway._SYSTEM_UNIT_DIR / f"{svc_name}.service"
     if not unit.exists() or not owned_by_profile(unit, profile_dir):
@@ -59,7 +59,7 @@ def remove_windows_task() -> bool:
     """Delete the profile's Scheduled Task and Startup-folder login item. Direct ``schtasks
     /Delete`` rather than ``gateway_windows.uninstall()``: that verb may open a UAC prompt,
     which a dashboard DELETE or a scripted rename must never block on."""
-    from hermes_cli import gateway_windows as gw
+    from hermes_agent.hermes_cli import gateway_windows as gw
     task_name = gw.get_task_name()
     removed = False
     if gw.is_task_registered():

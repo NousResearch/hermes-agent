@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from hermes_agent.gateway.session_events import SessionEvents
 from hermes_agent.gateway.session_settlement_recovery import _publish_completion
-from hermes_cli.active_sessions import MAX_CONCURRENT_SESSIONS, ActiveSessionRefusal
+from hermes_agent.hermes_cli.active_sessions import MAX_CONCURRENT_SESSIONS, ActiveSessionRefusal
 
 
 def test_refused_turn_publishes_completion_with_its_reason():

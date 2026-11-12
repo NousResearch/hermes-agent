@@ -105,8 +105,8 @@ def _resolve_home_dir() -> str:
 
 
 def _build_subprocess_env() -> dict[str, str]:
-    # Lazy: the env policy imports hermes_cli.config, and provider plugins import this module
-    # while hermes_cli.config is still initializing (discovery runs from it).
+    # Lazy: the env policy imports hermes_agent.hermes_cli.config, and provider plugins import this module
+    # while hermes_agent.hermes_cli.config is still initializing (discovery runs from it).
     from hermes_constants import apply_subprocess_home_env
     from hermes_agent.tools.environments.local import hermes_subprocess_env
 
@@ -401,7 +401,7 @@ class ACPClient:
                 + self.unsupported_transport_hint
             )
         try:
-            from hermes_cli._subprocess_compat import windows_hide_flags  # hide the Windows console flash (#56747); pipes intact for the ACP wire
+            from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags  # hide the Windows console flash (#56747); pipes intact for the ACP wire
 
             # Hide the console the CLI child would otherwise flash on Windows (#56747). Hide-only — stdio
             # pipes stay intact for the ACP wire.

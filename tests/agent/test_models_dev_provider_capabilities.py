@@ -11,9 +11,9 @@ from hermes_agent.agent import models_dev
 def _isolated_registry(monkeypatch, catalog=None):
     # A post-discovery registration mirrors the profile into the picker catalog; keep that scoped too.
     # Both imported before any patch: the catalog's import-time sync must see the real registry, and
-    # hermes_cli.models must bind the real list so the undo restores it.
-    import hermes_cli.models as hm
-    import hermes_cli.models_catalog_static as static
+    # hermes_agent.hermes_cli.models must bind the real list so the undo restores it.
+    import hermes_agent.hermes_cli.models as hm
+    import hermes_agent.hermes_cli.models_catalog_static as static
     monkeypatch.setattr(static, "CANONICAL_PROVIDERS", list(static.CANONICAL_PROVIDERS))
     monkeypatch.setattr(static, "_canonical_slugs", set(static._canonical_slugs))
     monkeypatch.setattr(static, "_PROVIDER_LABELS", dict(static._PROVIDER_LABELS))
@@ -31,12 +31,12 @@ def _isolated_registry(monkeypatch, catalog=None):
 
 def test_declared_capabilities_reach_every_consumer_and_user_override_wins(monkeypatch):
     from hermes_agent.agent.image_routing import decide_image_input_mode
-    from hermes_cli.inventory import _apply_capabilities
+    from hermes_agent.hermes_cli.inventory import _apply_capabilities
 
     _isolated_registry(monkeypatch)
     overrides: dict = {}
     monkeypatch.setattr(models_dev, "_load_model_overrides", lambda: overrides)
-    monkeypatch.setattr("hermes_cli.inventory._reasoning_catalog_reader", lambda slug: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.inventory._reasoning_catalog_reader", lambda slug: None)
     declaration = {
         "tier-high": {"supports_reasoning": False, "supports_vision": True, "context_window": 64000},
     }

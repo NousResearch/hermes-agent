@@ -106,7 +106,7 @@ def test_each_turn_sends_the_agent_s_current_wire_model(monkeypatch):
 def test_runtime_retires_thread_when_an_in_place_switch_changes_the_codex_provider(monkeypatch):
     """turn/start can change the model but not the provider: switching between codex's own provider and a
     named custom provider (``[model_providers.<id>]``) starts a thread carrying the new modelProvider."""
-    import hermes_cli.runtime_provider as rp
+    import hermes_agent.hermes_cli.runtime_provider as rp
     monkeypatch.setattr(rp, "load_config", lambda: {"providers": {"my-gateway": {"api": "https://gw.example/v1"}}})
     client = _FakeClient()
     monkeypatch.setattr(sess_mod, "CodexAppServerClient", lambda **kw: client)

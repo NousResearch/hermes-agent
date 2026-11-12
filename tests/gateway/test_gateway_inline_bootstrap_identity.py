@@ -22,8 +22,8 @@ import pytest
 from hermes_agent.gateway import status
 from hermes_agent.gateway.status import looks_like_gateway_command_line, looks_like_gateway_runtime_command_line
 from hermes_agent.gateway.status_inline_source import inline_bootstrap_argv
-from hermes_cli import _launchers, venv_sync
-from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+from hermes_agent.hermes_cli import _launchers, venv_sync
+from hermes_agent.hermes_cli.update_cmd_windows import _hermes_holder_subcommand
 
 ROOT = Path("/opt/Hermes Agent/hermes-agent")
 PY = "/opt/venv/bin/python3"
@@ -81,7 +81,7 @@ def test_bundled_posix_launcher_bootstrap_is_a_gateway() -> None:
     source = (
         "import os, site, sys; sys.argv[0]='hermes'; "
         "site.addsitedir(os.environ['HERMES_SITE']); "
-        "from hermes_cli.main import main; sys.exit(main())"
+        "from hermes_agent.hermes_cli.main import main; sys.exit(main())"
     )
     command_line = " ".join([PY, "-P", "-c", source, "gateway", "run", "--replace"])
     assert looks_like_gateway_command_line(command_line)

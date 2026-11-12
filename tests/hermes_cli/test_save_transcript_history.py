@@ -26,7 +26,7 @@ def _compacted_store(path):
 
 
 def _cli_save(db, fmt, out):
-    import cli
+    from hermes_agent import cli
 
     stub = SimpleNamespace(_session_db=db, session_id="s1", conversation_history=[], model="m",
                            session_start=datetime(2026, 1, 1))

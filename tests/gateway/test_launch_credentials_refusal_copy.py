@@ -43,8 +43,8 @@ def test_turn_on_a_chat_whose_route_key_changed_names_new_chat_not_retry(tmp_pat
 def test_cli_refusal_of_a_control_on_that_chat_names_new_chat():
     """The classic CLI's /model (and /compress, /worktree) printed the bare reason code for the same
     refusal; any retry or model pick repeats it."""
-    from hermes_cli.cli_chat_error_copy import refusal_text
-    from hermes_cli.gateway_client import GatewayRPCError
+    from hermes_agent.hermes_cli.cli_chat_error_copy import refusal_text
+    from hermes_agent.hermes_cli.gateway_client import GatewayRPCError
 
     refused = GatewayRPCError('launch_credentials_unavailable', code=4001, data={
         'reason': 'launch_credentials_unavailable', 'field': 'model.api_key',

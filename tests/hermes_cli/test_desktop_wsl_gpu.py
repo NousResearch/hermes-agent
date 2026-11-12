@@ -4,7 +4,7 @@ its GPU process (#106117) — and never overrides an explicit Mesa choice or fir
 import argparse
 from pathlib import Path
 
-from hermes_cli import main_desktop
+from hermes_agent.hermes_cli import main_desktop
 from hermes_platform.host import runtime as host_runtime
 
 

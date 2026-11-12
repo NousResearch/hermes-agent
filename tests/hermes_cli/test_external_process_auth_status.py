@@ -16,7 +16,7 @@ import os
 
 import pytest
 
-from hermes_cli.auth import (
+from hermes_agent.hermes_cli.auth import (
     get_auth_status,
     get_external_process_provider_status,
     resolve_external_process_provider_credentials,
@@ -39,7 +39,7 @@ def acme_acp(tmp_path, monkeypatch):
     from hermes_agent import providers
     from pathlib import Path
 
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("USERPROFILE", str(tmp_path))
@@ -199,7 +199,7 @@ def test_explicit_filter_keeps_signed_in_external_process_row(tmp_path, monkeypa
     # A verified CLI login leaves no trace in active_provider/config/env —
     # the explicit-only desktop filter must treat it like the Anthropic OAuth
     # carve-out and keep the row.
-    from hermes_cli.inventory import _filter_explicit_provider_rows
+    from hermes_agent.hermes_cli.inventory import _filter_explicit_provider_rows
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(acme_acp, "evidence", (True, "~/.acme/credentials.json"), raising=False)
@@ -218,7 +218,7 @@ def test_explicit_filter_drops_unverified_external_process_row(tmp_path, monkeyp
     # Merely having the executable on PATH is ambient discovery, not an
     # explicit configuration — the desktop filter keeps its narrower contract
     # for a profile whose CLI exposes readable token stores (none here).
-    from hermes_cli.inventory import _filter_explicit_provider_rows
+    from hermes_agent.hermes_cli.inventory import _filter_explicit_provider_rows
 
     monkeypatch.setenv("HOME", str(tmp_path))  # no credential stores
     monkeypatch.setattr(acme_acp, "evidence", (False, None), raising=False)
@@ -236,7 +236,7 @@ def test_explicit_filter_drops_unverified_external_process_row(tmp_path, monkeyp
 
 
 def test_cli_command_reflects_configured_executable(tmp_path, monkeypatch, acme_acp):
-    from hermes_cli.web_server_oauth import _external_process_cli_command
+    from hermes_agent.hermes_cli.web_server_oauth import _external_process_cli_command
 
     fake = tmp_path / ("acme.exe" if os.name == "nt" else "acme")
     fake.write_text("", encoding="utf-8")
@@ -249,12 +249,12 @@ def test_cli_command_reflects_configured_executable(tmp_path, monkeypatch, acme_
 
 
 def test_cli_command_untouched_for_non_external_providers(acme_acp):
-    from hermes_cli.web_server_oauth import _external_process_cli_command
+    from hermes_agent.hermes_cli.web_server_oauth import _external_process_cli_command
 
     assert _external_process_cli_command("nous", "hermes auth add nous") == "hermes auth add nous"
 
 
 def test_cli_command_default_when_no_override(monkeypatch, acme_acp):
-    from hermes_cli.web_server_oauth import _external_process_cli_command
+    from hermes_agent.hermes_cli.web_server_oauth import _external_process_cli_command
 
     assert _external_process_cli_command("acme-acp", "acme login") == "acme login"

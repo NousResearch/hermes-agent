@@ -11,8 +11,8 @@ from __future__ import annotations
 import functools
 import shutil
 
-from hermes_cli.cli_panel import _Panel
-from hermes_cli.cli_render import _clip_cells, _wrap_panel_text
+from hermes_agent.hermes_cli.cli_panel import _Panel
+from hermes_agent.hermes_cli.cli_render import _clip_cells, _wrap_panel_text
 
 PROMPT_STYLE = "class:backtrack-prompt bold"
 SELECTED_STYLE = "class:backtrack-prompt-selected reverse"
@@ -24,7 +24,7 @@ def transcript_turns(cli) -> list[tuple[str, str]]:
     """``(prompt, reply)`` per real user turn, oldest first; index = the ordinal /undo rewinds.
     The reply is the visible assistant text up to the next turn (tool calls and handoffs dropped)."""
     from hermes_agent.agent.compaction_display import project_compaction_message_for_display
-    from hermes_cli.cli_session_mixin import _user_turn_indices
+    from hermes_agent.hermes_cli.cli_session_mixin import _user_turn_indices
     history = cli.conversation_history or []
     starts = _user_turn_indices(history)
     prompts = cli._backtrack_prompts()

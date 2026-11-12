@@ -1,5 +1,5 @@
 """Gateway housekeeping chores that keep the data disk healthy: stale media-cache cleanup and the
-home-channel prompt for the low-disk auto-prune decision (see ``hermes_cli/prune_advisor.py``).
+home-channel prompt for the low-disk auto-prune decision (see ``hermes_agent/hermes_cli/prune_advisor.py``).
 
 A headless gateway on a small VPS is where a disk fills up, and its owner may never open the CLI,
 so the question goes to each served profile's home channel; Desktop and Ink TUI viewers of local
@@ -49,7 +49,7 @@ def maybe_post_auto_prune_prompt(runner, loop) -> None:
     if runner is None or loop is None:
         return
     from hermes_agent.agent.async_utils import safe_schedule_threadsafe
-    from hermes_cli import prune_advisor
+    from hermes_agent.hermes_cli import prune_advisor
     from hermes_constants import get_routing_process_hermes_home
 
     reachable = {profile for profile, *_rest in runner._served_home_channel_transports()}
@@ -79,7 +79,7 @@ async def publish_local_auto_prune_notice(authority, ref) -> None:
     import time
     from hermes_agent.gateway.config import Platform
     from hermes_agent.gateway.session_policy import policy_for_source
-    from hermes_cli import prune_advisor
+    from hermes_agent.hermes_cli import prune_advisor
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     live = authority.sessions.get(ref.session_id)
@@ -109,7 +109,7 @@ def clear_local_auto_prune_notice(runner, source) -> None:
     """After /autoprune is answered on a local session, drop its sticky notice for that viewer."""
     from hermes_agent.gateway.config import Platform
     from hermes_agent.gateway.session_authorities import active_authority
-    from hermes_cli.prune_advisor import NOTICE_KEY
+    from hermes_agent.hermes_cli.prune_advisor import NOTICE_KEY
     if getattr(source, "platform", None) != Platform.LOCAL:
         return
     authority = active_authority(runner)
@@ -122,7 +122,7 @@ async def _post(runner, profile, home, advice) -> bool:
     """Send to the profile's home channels; True when at least one send was delivered."""
     from hermes_agent.gateway.run import _async_profile_runtime_scope
     from hermes_agent.gateway.warning_notifications import present_notification
-    from hermes_cli.prune_advisor import advice_lines
+    from hermes_agent.hermes_cli.prune_advisor import advice_lines
 
     delivered = False
     scope = _async_profile_runtime_scope(Path(home)) if profile is not None else contextlib.nullcontext()

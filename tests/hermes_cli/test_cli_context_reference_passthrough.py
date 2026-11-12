@@ -11,7 +11,7 @@ class _Staged(Exception):
 
 
 def test_chat_submits_at_references_unexpanded(tmp_path, monkeypatch):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     (tmp_path / "example.py").write_text("CLIENT-SIDE-CONTENT", encoding="utf-8")
     monkeypatch.chdir(tmp_path)

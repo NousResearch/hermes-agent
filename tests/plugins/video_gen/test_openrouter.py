@@ -139,7 +139,7 @@ def _generate_capturing(monkeypatch, tmp_path, provider):
 
 
 def _add_pooled_key(key, label):
-    from hermes_cli.auth_commands import auth_add_command
+    from hermes_agent.hermes_cli.auth_commands import auth_add_command
     auth_add_command(SimpleNamespace(provider="openrouter", auth_type="api-key", api_key=key, label=label))
 
 
@@ -231,7 +231,7 @@ def test_generate_rejects_local_image_paths_before_spending(monkeypatch):
 
 
 def test_register_exposes_openrouter_in_the_video_gen_picker(monkeypatch):
-    from hermes_cli import plugins as plugin_loader, tools_config
+    from hermes_agent.hermes_cli import plugins as plugin_loader, tools_config
     from plugins.video_gen.openrouter import register
 
     class _Context:

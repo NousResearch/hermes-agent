@@ -103,9 +103,9 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     requested = job.get("provider") or cron_default_provider(cfg) or None
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
-    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
+    from hermes_agent.hermes_cli.auth import AuthError, is_rate_limited_auth_error
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         kwargs = {"requested": requested, "target_model": model}
         if job.get("base_url"):
             kwargs["explicit_base_url"] = job.get("base_url")
@@ -134,7 +134,7 @@ def _credential_store_scope_label() -> str:
     profile, a gateway launched without the shell's env) otherwise reports a bare "No credentials
     stored" that cannot be told apart from a real login gap (#116213).
     """
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name
     from hermes_constants import get_hermes_home
     return f"[profile '{get_active_profile_name() or 'default'}', HERMES_HOME {get_hermes_home()}]"
 
@@ -174,7 +174,7 @@ def _primary_profile_routes_for_current_home() -> list:
             return []
 
         from hermes_agent.gateway.profile_routing import parse_profile_routes
-        from hermes_cli.profiles import profile_matches_home
+        from hermes_agent.hermes_cli.profiles import profile_matches_home
         return [
             route for route in parse_profile_routes(routes_raw)
             if route.enabled and profile_matches_home(route.profile)
@@ -361,7 +361,7 @@ def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
     requested = [str(name) for name in (job.get("enabled_toolsets") or [])]
     if not requested:
         return None
-    from hermes_cli.tools_config import enabled_mcp_server_names
+    from hermes_agent.hermes_cli.tools_config import enabled_mcp_server_names
     from hermes_agent.toolsets import resolve_toolset
     from hermes_agent.tools.mcp_tool_discovery import mcp_server_reconnecting
     missing = [name for name in requested

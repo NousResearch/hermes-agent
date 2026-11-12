@@ -99,7 +99,7 @@ def _receipt_file_rows(selected: dict[str, Path]) -> list[dict]:
 
 def channel_prefix(request: dict) -> str:
     """A channel build is an allocation, never a source SHA alias."""
-    from hermes_cli.release_channels import build_prefix, validate_request
+    from hermes_agent.hermes_cli.release_channels import build_prefix, validate_request
     return build_prefix(validate_request(request)["buildId"])
 
 

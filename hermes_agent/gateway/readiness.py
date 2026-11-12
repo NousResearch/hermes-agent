@@ -49,7 +49,7 @@ def _probe_state_db(home: Path) -> dict[str, Any]:
 
 
 def _probe_config(home: Path) -> dict[str, Any]:
-    from hermes_cli.config_backend import ConfigBackendUnavailable, config_exists, read_config_doc_readonly
+    from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable, config_exists, read_config_doc_readonly
     path = home / "config.yaml"
     try:
         if not config_exists(path):

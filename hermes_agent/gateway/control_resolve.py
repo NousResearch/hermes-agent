@@ -50,7 +50,7 @@ def _in_scope(home: Path, own: Path) -> bool:
 
     Decided from the path alone plus ``named_profile_home``'s read of *own*'s markers, so nothing
     under a foreign or not-yet-trusted home is opened before the answer is known."""
-    from hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
+    from hermes_agent.hermes_cli.gateway_runtime_multiplex import multiplexer_root_for
     if home == own:
         return True
     return (home.parent == own / "profiles" and not home.name.startswith(".")
@@ -62,7 +62,7 @@ def _install_code_sha() -> Optional[str]:
 
     Read without touching the process's cached identity: ``identify``'s ``code_sha`` must keep naming
     the code this gateway booted from, which is how a client spots an owner that outlived an update."""
-    from hermes_cli.version_info import installed_commit_sha
+    from hermes_agent.hermes_cli.version_info import installed_commit_sha
     return installed_commit_sha()
 
 
@@ -73,7 +73,7 @@ def _verdict(payload: dict, requested: Optional[Path], own: Path):
     gateway's home is the multiplexer root of *requested*, the socket discovery asks when the
     profile has none of its own (``_served_by_multiplexer``, then the lock verdict). None (a home
     outside this gateway's root, see :func:`_contained_home`) is not this gateway's to judge."""
-    from hermes_cli import gateway_runtime as runtime
+    from hermes_agent.hermes_cli import gateway_runtime as runtime
     if requested is None:
         return None, runtime.GatewayDiscovery("inaccessible", reason_code="profile_mismatch")
     if requested == own:
@@ -91,7 +91,7 @@ def _contained_home(home: str, own: Path) -> Optional[Path]:
     it (a symlinked component leading out of the root resolves outside and fails). Only then is a
     private overlay lock followed, and its owner home must pass the same check before it is read or
     tightened, so a rejected request leaves every path outside the root untouched."""
-    from hermes_cli import gateway_runtime as runtime
+    from hermes_agent.hermes_cli import gateway_runtime as runtime
     requested = Path(runtime._canonical_home(home))
     if not _in_scope(requested, own):
         return None
@@ -106,9 +106,9 @@ def _contained_home(home: str, own: Path) -> Optional[Path]:
 def resolve_profile(home: str, *, identify: Callable[[], dict[str, Any]], own_home: Path) -> dict[str, Any]:
     """The ``resolve-profile`` result for the client's profile *home* (an absolute spelling with no
     ``.``/``..`` or empty component; symlinks are resolved)."""
-    from hermes_cli import gateway_runtime as runtime
-    from hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GATEWAY_WS_TICKET_PREFIX, gateway_ws_target
-    from hermes_cli.gateway_runtime_attach import failure_message
+    from hermes_agent.hermes_cli import gateway_runtime as runtime
+    from hermes_agent.hermes_cli.gateway_client import GATEWAY_WS_PROTOCOL, GATEWAY_WS_TICKET_PREFIX, gateway_ws_target
+    from hermes_agent.hermes_cli.gateway_runtime_attach import failure_message
     from hermes_constants import get_default_hermes_root
 
     own = Path(runtime._canonical_home(own_home))

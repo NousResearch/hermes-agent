@@ -10,7 +10,7 @@ import sys
 
 import pytest
 
-from hermes_cli import process_identity
+from hermes_agent.hermes_cli import process_identity
 from hermes_agent.tools import mcp_tool_lifecycle
 
 pytestmark = pytest.mark.platforms("posix")

@@ -34,7 +34,7 @@ def test_enable_consent(plugin_world, monkeypatch, caps, flag, existing, answer,
         "plugins": {"entries": {"hook-only-probe": {"allow_tool_override": existing}}}
     }
     (home / "config.yaml").write_text(yaml.safe_dump(initial), encoding="utf-8")
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
 
     console = MagicMock()
     console.input.return_value = answer

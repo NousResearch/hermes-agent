@@ -36,7 +36,7 @@ def bridge(tmp_path, monkeypatch):
 
 
 def test_an_explicit_userconfig_is_the_file_bridged(bridge, tmp_path, monkeypatch):
-    from hermes_cli.source_build import source_build_env
+    from hermes_agent.hermes_cli.source_build import source_build_env
 
     (bridge / "npmrc").write_text("registry=https://hermes-file.invalid/\nhermes-only=1\n", encoding="utf-8")
     selected = tmp_path / "selected-npmrc"
@@ -51,7 +51,7 @@ def test_an_explicit_userconfig_is_the_file_bridged(bridge, tmp_path, monkeypatc
 
 
 def test_quoted_values_are_exported_without_their_quotes(bridge):
-    from hermes_cli.source_build import source_build_env
+    from hermes_agent.hermes_cli.source_build import source_build_env
 
     (bridge / "npmrc").write_text(
         "registry=\"https://mirror.invalid/\"\nelectron-mirror='https://mirror.invalid/electron/'\n", encoding="utf-8")
@@ -64,7 +64,7 @@ def test_quoted_values_are_exported_without_their_quotes(bridge):
 
 
 def test_without_a_userconfig_the_home_npmrc_is_bridged(bridge, tmp_path):
-    from hermes_cli.source_build import source_build_env
+    from hermes_agent.hermes_cli.source_build import source_build_env
 
     (tmp_path / "user" / ".npmrc").write_text("disturl=https://mirror.invalid/node\n", encoding="utf-8")
 
@@ -80,7 +80,7 @@ def test_without_a_userconfig_the_home_npmrc_is_bridged(bridge, tmp_path):
 def test_a_utf16_npmrc_reads_as_npm_reads_it_instead_of_failing_the_build(bridge):
     """Windows PowerShell 5.1's ``>`` writes UTF-16. npm decodes the file as UTF-8 and finds no
     usable setting in it; it never fails, and neither may a source build."""
-    from hermes_cli.source_build import source_build_env
+    from hermes_agent.hermes_cli.source_build import source_build_env
     from pm.index_config import NPM_PUBLIC_REGISTRY, npm_registry
 
     npmrc = bridge / "npmrc"
@@ -93,7 +93,7 @@ def test_a_utf16_npmrc_reads_as_npm_reads_it_instead_of_failing_the_build(bridge
 
 
 def test_inline_comments_are_not_part_of_the_value(bridge):
-    from hermes_cli.source_build import source_build_env
+    from hermes_agent.hermes_cli.source_build import source_build_env
     from pm.index_config import npm_registry
 
     npmrc = bridge / "npmrc"
@@ -108,7 +108,7 @@ def test_inline_comments_are_not_part_of_the_value(bridge):
 
 
 def test_keys_under_an_ini_section_are_not_settings(bridge):
-    from hermes_cli.source_build import source_build_env
+    from hermes_agent.hermes_cli.source_build import source_build_env
     from pm.index_config import npm_registry
 
     npmrc = bridge / "npmrc"
@@ -122,7 +122,7 @@ def test_keys_under_an_ini_section_are_not_settings(bridge):
 
 
 def test_an_optional_variable_reference_expands_to_empty(bridge, monkeypatch):
-    from hermes_cli.source_build import source_build_env
+    from hermes_agent.hermes_cli.source_build import source_build_env
     from pm.index_config import npm_registry
 
     monkeypatch.delenv("UNSET_NPMRC_VAR", raising=False)
@@ -137,7 +137,7 @@ def test_an_optional_variable_reference_expands_to_empty(bridge, monkeypatch):
 
 
 def test_one_time_passwords_and_inline_tls_keys_never_reach_install_scripts(bridge):
-    from hermes_cli.source_build import source_build_env
+    from hermes_agent.hermes_cli.source_build import source_build_env
 
     (bridge / "npmrc").write_text("otp=123456\nkey=-----BEGIN PRIVATE KEY-----\ncert=CLIENT-CERT\n"
                                   "OTP=654321\nfund=false\n", encoding="utf-8")
@@ -151,7 +151,7 @@ def test_one_time_passwords_and_inline_tls_keys_never_reach_install_scripts(brid
 def test_values_no_child_environment_can_carry_are_skipped(bridge):
     """A JSON-unquoted ``\\ud800`` (lone surrogate), ``\\u0000`` or a raw NUL byte would make
     every install spawn fail; npm survives them, and so must a source build."""
-    from hermes_cli.source_build import source_build_env
+    from hermes_agent.hermes_cli.source_build import source_build_env
     from pm.index_config import npm_registry
 
     npmrc = bridge / "npmrc"

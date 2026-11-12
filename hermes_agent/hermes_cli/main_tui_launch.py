@@ -1,6 +1,6 @@
 """TUI (ui-tui) launcher: prepared source builds and argv/env assembly.
 
-Split out of ``hermes_cli/main.py``. Names that still live in main (``PROJECT_ROOT``, ...)
+Split out of ``hermes_agent/hermes_cli/main.py``. Names that still live in main (``PROJECT_ROOT``, ...)
 are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
@@ -18,7 +18,7 @@ from typing import Optional
 from hermes_agent.agent.i18n import t
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("hermes_cli.main")
+logger = logging.getLogger("hermes_agent.hermes_cli.main")
 
 
 def _bypass_chat_launch(args) -> bool:
@@ -76,7 +76,7 @@ def _branch_lineage(db, session: dict) -> list:
 
 def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Optional[str] = None) -> None:
     """Print a shell-visible epilogue after TUI exits."""
-    from hermes_cli.main import _resolve_last_session
+    from hermes_agent.hermes_cli.main import _resolve_last_session
     target = (
         _read_tui_active_session_file(active_session_file) or session_id or _resolve_last_session(source="tui")
     )
@@ -86,7 +86,7 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
     db = None
     try:
         from hermes_agent.hermes_state import SessionDB
-        from hermes_cli.config import get_hermes_home
+        from hermes_agent.hermes_cli.config import get_hermes_home
         db = SessionDB(db_path=get_hermes_home() / "state.db", read_only=True)
         session = db.get_session(target)
         if not session:
@@ -108,7 +108,7 @@ def _print_tui_exit_summary(session_id: Optional[str], active_session_file: Opti
             db.close()
 
     # Sessions live under the profile's HERMES_HOME — mirror cli_session_mixin::_print_exit_summary.
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_agent.hermes_cli.profiles import get_active_profile_name
     active_profile = get_active_profile_name()
     profile_flag = "" if active_profile in ("default", "custom") else f" -p {active_profile}"
     print(f"\n{t('cli.session.exit_resume_hint')}\n  hermes --tui --resume {resume_id}{profile_flag}")
@@ -130,7 +130,7 @@ def _tui_force_build() -> bool:
 
 
 def _tui_need_rebuild(root: Path) -> bool:
-    from hermes_cli.source_build import source_product_current
+    from hermes_agent.hermes_cli.source_build import source_product_current
 
     return _tui_force_build() or not source_product_current(root.parent, "tui", root / "dist")
 
@@ -254,7 +254,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool, notices: Optional[list] = None)
     if not tui_dev and not _tui_need_rebuild(tui_dir):
         return [_tui_node_bin("node"), "--expose-gc", str(tui_dir / "dist/entry.js")], tui_dir
 
-    from hermes_cli.source_build import build_source_tui, prepare_launch_dependencies, source_build_env
+    from hermes_agent.hermes_cli.source_build import build_source_tui, prepare_launch_dependencies, source_build_env
 
     project_root = tui_dir.parent
     try:
@@ -308,7 +308,7 @@ def _split_comma_items(items, *, split_non_str: bool = True) -> list[str]:
 def _normalize_tui_toolsets(toolsets: object) -> list[str]:
     """Normalize argparse/Fire-style toolset input for the TUI subprocess."""
     try:
-        from hermes_cli.oneshot import _normalize_toolsets
+        from hermes_agent.hermes_cli.oneshot import _normalize_toolsets
         return _normalize_toolsets(toolsets) or []
     except (AttributeError, ImportError):
         return _split_comma_items(toolsets, split_non_str=False) if toolsets else []
@@ -364,7 +364,7 @@ def _resolve_tui_heap_mb(default_mb: int = 8192) -> int:
 
 def _safe_tui_cwd(env: Optional[dict] = None) -> str:
     """Return a stable cwd value for the Node TUI child environment."""
-    from hermes_cli.main import PROJECT_ROOT
+    from hermes_agent.hermes_cli.main import PROJECT_ROOT
     try:
         return os.getcwd()
     except FileNotFoundError:
@@ -380,7 +380,7 @@ def _apply_tui_python_env(env: dict) -> None:
     Inherited values name whatever shell launched us (a checkout's dev shell exports both),
     and the gateway child must run the code and interpreter of the Hermes that spawned it.
     """
-    from hermes_cli.main import PROJECT_ROOT
+    from hermes_agent.hermes_cli.main import PROJECT_ROOT
     env["HERMES_PYTHON_SRC_ROOT"] = str(PROJECT_ROOT)
     env["HERMES_PYTHON"] = sys.executable
 
@@ -393,7 +393,7 @@ def _setup_tui_worktree() -> dict:
     """Create the ``--worktree`` checkout for a TUI launch (prune + async pack maintenance); exits on failure."""
     wt_info = None
     try:
-        from cli import _git_repo_root, _maintain_pack_health, _prune_stale_worktrees, _setup_worktree
+        from hermes_agent.cli import _git_repo_root, _maintain_pack_health, _prune_stale_worktrees, _setup_worktree
         repo = _git_repo_root()
         if repo:
             _prune_stale_worktrees(repo)
@@ -403,7 +403,7 @@ def _setup_tui_worktree() -> dict:
 
             _threading.Thread(
                 target=_maintain_pack_health, args=(repo,), name="pack-maintenance", daemon=True).start()
-        from hermes_cli.config import get_hermes_home
+        from hermes_agent.hermes_cli.config import get_hermes_home
         # The session's frozen cwd keeps this checkout; name the store from creation so a
         # launcher killed with its terminal still leaves the tree to its sessions.
         wt_info = _setup_worktree(retain_db=get_hermes_home() / "state.db")
@@ -423,9 +423,9 @@ def _remove_idle_clean_tui_worktree(wt_info: dict) -> bool:
     still works in it; and by ``_cleanup_worktree`` when it is dirty, holds unpushed commits or
     something no branch keeps.
     """
-    from hermes_cli.config import get_hermes_home
-    from hermes_cli.worktree_exit import _still_in_use
-    from hermes_cli.worktree_ops import _retained_tree_is_live, _tree_still_served
+    from hermes_agent.hermes_cli.config import get_hermes_home
+    from hermes_agent.hermes_cli.worktree_exit import _still_in_use
+    from hermes_agent.hermes_cli.worktree_ops import _retained_tree_is_live, _tree_still_served
 
     path = wt_info.get("path")
     if not path or not Path(path).is_dir():
@@ -439,7 +439,7 @@ def _remove_idle_clean_tui_worktree(wt_info: dict) -> bool:
         # After the grace above: a legacy sidecar stamps its rows ``tui_shutdown`` as it exits.
         if _tree_still_served(db_path, path):
             return False
-        from cli import _cleanup_worktree
+        from hermes_agent.cli import _cleanup_worktree
         _cleanup_worktree(wt_info)
     except Exception:
         logger.debug("TUI worktree cleanup failed; keeping %s", path, exc_info=True)
@@ -541,7 +541,7 @@ def _launch_tui(
     image: Optional[str] = None, worktree: bool = False, checkpoints: bool = False,
     pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False):
     """Replace current process with the TUI."""
-    from hermes_cli.main import PROJECT_ROOT
+    from hermes_agent.hermes_cli.main import PROJECT_ROOT
     tui_dir = PROJECT_ROOT / "ui-tui"
 
     import tempfile
@@ -555,14 +555,14 @@ def _launch_tui(
     # names *a* real directory, so the is_dir() repair in _apply_tui_python_env keeps it
     # and the gateway starts in last session's project. `--worktree` still wins below.
     env["HERMES_CWD"] = _safe_tui_cwd(env)
-    from hermes_cli.shared_session_attach import configure_tui_attachment
+    from hermes_agent.hermes_cli.shared_session_attach import configure_tui_attachment
     try:
         configure_tui_attachment(env, resume_session_id)
     except (ValueError, RuntimeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(1) from None
     try:
-        from hermes_cli.config import apply_terminal_config_to_env
+        from hermes_agent.hermes_cli.config import apply_terminal_config_to_env
         apply_terminal_config_to_env(env=env)
     except Exception:
         logger.debug("Failed to apply terminal config bridge for TUI launch", exc_info=True)
@@ -573,7 +573,7 @@ def _launch_tui(
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
     if native_mode is None:
         try:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
             from utils import is_truthy_value
             display = load_config().get("display", {})
             native_mode = is_truthy_value(display.get("tui_native", False)) if isinstance(display, dict) else False
@@ -599,7 +599,7 @@ def _launch_tui(
     # This shell's allowlisted environment, sent as each session's ``client_env`` (LC-8, T3): taken from
     # the shell before the launcher's own edits (NODE_OPTIONS heap, TUI pins) so the session gets the
     # PATH / venv / HERMES_* values the user exported.
-    from hermes_cli.gateway_chat import shell_client_env
+    from hermes_agent.hermes_cli.gateway_chat import shell_client_env
     env["HERMES_TUI_CLIENT_ENV"] = json.dumps(shell_client_env())
 
     skills_value = ""
@@ -649,9 +649,9 @@ def _launch_tui(
         with contextlib.suppress(OSError):
             os.unlink(active_session_file)
         if wt_info and code in {0, 130}:
-            from hermes_cli.worktree_exit import ask_exit_choice
+            from hermes_agent.hermes_cli.worktree_exit import ask_exit_choice
             ask_exit_choice(wt_info)
-        from hermes_cli.worktree_exit import apply_exit_choice
+        from hermes_agent.hermes_cli.worktree_exit import apply_exit_choice
         if wt_info and apply_exit_choice(wt_info, print):
             wt_info = None  # archived or discarded at the user's request
         if wt_info and _remove_idle_clean_tui_worktree(wt_info):
@@ -662,8 +662,8 @@ def _launch_tui(
             if attached_session:
                 # The launch lock names this (exiting) pid; hand it to the session so a later
                 # launch's stale prune keeps the tree while the session is resumable.
-                from hermes_cli.config import get_hermes_home
-                from hermes_cli.worktree_ops import _retain_worktree_for_session
+                from hermes_agent.hermes_cli.config import get_hermes_home
+                from hermes_agent.hermes_cli.worktree_ops import _retain_worktree_for_session
                 _retain_worktree_for_session(wt_info["repo_root"], wt_info["path"], attached_session,
                                              get_hermes_home() / "state.db")
             print(f"Worktree retained for this session: {wt_info['path']}", file=sys.stderr)
@@ -671,7 +671,7 @@ def _launch_tui(
     # Exit code 42 = TUI requested an update. Relaunch as `hermes update`;
     # preserve_inherited=False keeps --tui and other flags out of the subcommand.
     if code == 42:
-        from hermes_cli.relaunch import relaunch
+        from hermes_agent.hermes_cli.relaunch import relaunch
         print("\n☤ Launching update...\n")
         relaunch(["update"], preserve_inherited=False)
 
@@ -691,7 +691,7 @@ def _pin_kanban_board_env() -> None:
     if os.environ.get("HERMES_KANBAN_BOARD"):
         return
     with contextlib.suppress(Exception):
-        from hermes_cli.kanban_db import get_current_board
+        from hermes_agent.hermes_cli.kanban_db import get_current_board
         os.environ["HERMES_KANBAN_BOARD"] = get_current_board()
 
 
@@ -723,7 +723,7 @@ def _resolve_use_tui(args) -> bool:
     if os.environ.get("HERMES_TUI") == "1":
         return True
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         iface = (load_config().get("display", {}) or {}).get("interface", "cli")
         return isinstance(iface, str) and iface.strip().lower() == "tui"
     except Exception:

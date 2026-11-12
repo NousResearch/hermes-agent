@@ -12,7 +12,7 @@ from tests.waiting import async_wait_until
 
 
 def test_restore_refuses_live_authority_without_changing_data(tmp_path):
-    from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+    from hermes_agent.hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
 
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -62,7 +62,7 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path):
             assert not restored and after == before
             # The real daemon still holds the source DB. Separate-output salvage
             # must not require stopping it or installing recovered runtime work.
-            from hermes_cli.session_recovery import recover_session_database
+            from hermes_agent.hermes_cli.session_recovery import recover_session_database
             hashes = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in bundle if p.exists()}
             report = recover_session_database(home / 'state.db', tmp_path / 'salvaged.db')
             assert report['verified'] and report['source_unchanged'], report
@@ -103,7 +103,7 @@ def test_import_and_startup_exclude_each_other_before_publication(tmp_path, monk
     import sys
     import zipfile
     from hermes_agent.gateway.runtime_ownership import ProfileOwnership
-    from hermes_cli import backup
+    from hermes_agent.hermes_cli import backup
 
     home = tmp_path / 'state'
     home.mkdir(mode=0o700)
@@ -177,7 +177,7 @@ def test_recovery_output_exemption_excludes_canonical_activation(tmp_path):
     import hashlib
     import pytest
     from hermes_agent.gateway.runtime_ownership import ProfileOwnership
-    from hermes_cli.session_recovery import recover_session_database, SessionRecoverySafetyError
+    from hermes_agent.hermes_cli.session_recovery import recover_session_database, SessionRecoverySafetyError
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, admit_session_input
 

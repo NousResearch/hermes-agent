@@ -41,13 +41,13 @@ if str(_checkout_root) not in sys.path:
 
 from hermes_agent.cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
-from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
+from hermes_agent.hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from hermes_agent.cron.env_settings import cron_env_setting
-from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.config import (
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli.config import (
     load_config, load_config_readonly)
-from hermes_cli.config_backend import ConfigBackendUnavailable
-from hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
+from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
+from hermes_agent.hermes_cli.fallback_config import get_fallback_chain, scoped_fallback_chain
 from hermes_time import now as _hermes_now, safe_strftime
 from hermes_agent.agent.interrupt_compat import request_hard_interrupt
 from hermes_agent.agent.delegation_context import (
@@ -55,7 +55,7 @@ from hermes_agent.agent.delegation_context import (
 from hermes_agent.agent.memory_provider import ctx_bound
 from hermes_agent.agent.session_activity import AwakeIdleMeter
 from hermes_agent.agent.turn_failure_copy import is_max_iteration_handoff
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger(__name__)
 
@@ -448,14 +448,14 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     if "no_mcp" in per_job:
         return result
     # lazy: avoid heavy hermes_cli import at module load; shares MCP-membership with gateway/CLI
-    from hermes_cli.tools_config import enabled_mcp_server_names
+    from hermes_agent.hermes_cli.tools_config import enabled_mcp_server_names
     enabled_mcp = enabled_mcp_server_names(cfg)
     # A job names an MCP server by its TOOLSET name (``mcp-<server>``) or by the bare alias the
     # registry registers for it; compare against BOTH, or a job that named one server never matched
     # and the fallback below unioned EVERY enabled server into its allowlist (#141468).
     # A server that is CONFIGURED but disabled still counts as named: it is the user's selection, it
     # stays off, and it must not fall through to every enabled server either - the same rule the
-    # interactive resolver follows (hermes_cli.tools_config._merge_mcp_servers).
+    # interactive resolver follows (hermes_agent.hermes_cli.tools_config._merge_mcp_servers).
     configured = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
     known = enabled_mcp | {str(name) for name in configured}
     if set(result) & (known | {f"mcp-{name}" for name in known}):
@@ -491,7 +491,7 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
             return []
         return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
     try:
-        from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
+        from hermes_agent.hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
         return sorted(_get_platform_tools(cfg or {}, "cron"))
     except Exception as exc:
         raise RuntimeError(
@@ -812,7 +812,7 @@ def try_register_running_job(job_id: str, *, owner=None, future=_FUTURE_PENDING)
     and ``mark_running_jobs_interrupted``. Dedupe is per PROFILE: the key carries the active cron
     scope's home, so one multiplexing process never treats two profiles' same-named jobs as one.
     """
-    from hermes_cli.backend_retirement import retirement
+    from hermes_agent.hermes_cli.backend_retirement import retirement
 
     key = _inflight_key(job_id, _remember_inflight_home(_get_hermes_home()))
     with retirement.work() as admitted, _running_lock:
@@ -1352,7 +1352,7 @@ def _reclaim_fds_best_effort() -> None:
 
         gc.collect()
     with contextlib.suppress(Exception):
-        from hermes_cli.resource_limits import apply_nofile_soft_limit
+        from hermes_agent.hermes_cli.resource_limits import apply_nofile_soft_limit
 
         apply_nofile_soft_limit(None)
 
@@ -1394,7 +1394,7 @@ def _cron_cleanup_timeout_seconds() -> float:
     """Return the wall-clock bound for cron post-run cleanup."""
     default = 10.0
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         cfg = load_config() or {}
         cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
@@ -1511,7 +1511,7 @@ def _run_no_agent_job(
     # Load .env first so auto-delivery can resolve *_HOME_CHANNEL: the agent path's per-run dotenv
     # reload never runs for no_agent jobs. Does not override existing values.
     try:
-        from hermes_cli.env_loader import load_hermes_dotenv
+        from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
 
         load_hermes_dotenv(hermes_home=_get_hermes_home())
     except Exception:
@@ -1609,14 +1609,14 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     """Load config.yaml and resolve the run's model: per-job pin > cron.model (fleet default) >
     the main agent model (config ``model:``, then HERMES_MODEL) > the claimed welcome trial's. Re-read
     every tick (no cache) so ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
-    from hermes_cli.anon_auth import trial_model
+    from hermes_agent.hermes_cli.anon_auth import trial_model
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
     _model_cfg: Any = {}
     try:
-        from hermes_cli.config_backend import config_exists
-        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_agent.hermes_cli.config_backend import config_exists
+        from hermes_agent.hermes_cli.config_effective import load_user_config_effective
         _cfg_path = str(_get_hermes_home() / "config.yaml")
         if config_exists(_cfg_path):
             _cfg = load_user_config_effective(Path(_cfg_path))
@@ -1747,9 +1747,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
     a paid primary model). Provider precedence: per-job pin > cron.model_provider > persisted
     global config (None lets resolve_runtime_provider read it). A pinned job has no chain here
     (``_job_fallback_chain``): its resolve failure is the job's failure."""
-    from hermes_cli.runtime_provider import (
+    from hermes_agent.hermes_cli.runtime_provider import (
         resolve_runtime_provider, format_runtime_provider_error)
-    from hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.auth import AuthError
 
     model = jc.model
     requested = job.get("provider") or jc.cron_default_provider or None
@@ -1786,7 +1786,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             if not fb_provider or not fb_model:
                 continue
             try:
-                from hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
+                from hermes_agent.hermes_cli.fallback_config import effective_runtime_provider, fallback_entry_runtime_kwargs
 
                 runtime = resolve_runtime_provider(**fallback_entry_runtime_kwargs(entry))
                 # Named custom entries resolve to the bare "custom" billing class; keep the configured
@@ -1797,7 +1797,7 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                     job_id, runtime.get("provider"), fb_model)
                 # Delivered with the job output (#74349): a cron agent has no status rail, so the
                 # switch would otherwise stay in the scheduler log only. run_job pops it.
-                from hermes_cli.fallback_config import pre_agent_fallback_notice
+                from hermes_agent.hermes_cli.fallback_config import pre_agent_fallback_notice
                 runtime["_fallback_notice"] = pre_agent_fallback_notice(
                     requested or (jc.model_cfg.get("provider") if isinstance(jc.model_cfg, dict) else ""),
                     model, runtime.get("provider"), fb_model)
@@ -2237,7 +2237,7 @@ def _prepare_job_prompt(
     # Fail closed on a corrupt config.yaml: defaults would let auto-detection bill a provider the
     # user never chose. no_agent jobs are exempt. Escape hatch: HERMES_IGNORE_USER_CONFIG=1.
     if not job.get("no_agent"):
-        from hermes_cli.config import InvalidUserConfigError, require_parseable_user_config
+        from hermes_agent.hermes_cli.config import InvalidUserConfigError, require_parseable_user_config
 
         try:
             require_parseable_user_config()
@@ -2405,7 +2405,7 @@ def _reload_dotenv_and_publish_delivery_target(job: dict) -> None:
     """Re-read .env for this run and publish the auto-deliver target into the session ContextVars."""
     # Reset the secret-source cache FIRST or a Bitwarden/BSM-backed secret is never re-resolved
     # (only the placeholder reloads -> 401s).
-    from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
+    from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
     from hermes_agent.gateway.session_context import _VAR_MAP
 
     reset_secret_source_cache(_get_hermes_home())
@@ -2442,7 +2442,7 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.prefill_messages = _load_prefill_messages(_cfg, job_id)
 
     # resolve_turn_limit() honors none/unlimited (sys.maxsize) and explicit 0 / null.
-    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+    from hermes_agent.hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
     _mt = _cfg.get("agent", {}).get("max_turns")
     if _mt is None:
         _mt = _cfg.get("max_turns")
@@ -3214,7 +3214,7 @@ def _install_fire_secret_scope() -> tuple[contextvars.Token, Optional[contextvar
     """
     from hermes_agent.agent.secret_scope import set_multiplex_context, set_secret_scope
     from hermes_agent.cron.scheduler_provider import routed_profile_fire
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 
     home = Path(_get_hermes_home())
@@ -3706,7 +3706,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
         "HERMES_EXEC_ASK",
     ):
         worker_env.pop(_presence_var, None)
-    # `-m hermes_agent.cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
+    # `-m hermes_agent.cron.scheduler` has no hermes_agent.hermes_cli.main bootstrap; pin this checkout explicitly
     # (PYTHONSAFEPATH / stale editable mapping, #112729), hand the child the committed
     # dependency generation (#122222), and mark it so its own entry runs the PM dependency
     # boot. See hermes_agent/cron/scheduler_worker_env.py and hermes_agent/cron/worker_bootstrap.py.
@@ -3868,7 +3868,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         set_secret_scope,
     )
     from hermes_agent.cron.executions import adopt_claimed_execution
-    from hermes_cli.env_loader import hydrate_profile_secret_sources
+    from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import (
         reset_hermes_home_override,
         set_hermes_home_override,
@@ -3884,7 +3884,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
         # discovery; this process starts with the builtin registry alone, so hydrating without it
         # silently dropped every plugin-sourced credential (#121929). Runs under the home override
         # so a multiplexed worker loads the OWNING profile's plugins, not the launch profile's.
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
 
         discover_plugins()
         hydrate_profile_secret_sources(profile_home)
@@ -4032,7 +4032,7 @@ def _worktree_maintenance_repos() -> list[str]:
     repos: set = set()
 
     with contextlib.suppress(Exception):
-        from hermes_cli.worktree_registry import registered_repos
+        from hermes_agent.hermes_cli.worktree_registry import registered_repos
         repos.update(registered_repos())
 
     # Hermes source checkout (git installs only; wheel installs have no .git).

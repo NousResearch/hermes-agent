@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 def test_alias_credential_reader_accepts_a_scalar_model_entry(tmp_path):
     from hermes_agent.gateway.session_mutation_model import _alias_credential
-    from hermes_cli.model_switch import ModelSwitchResult
+    from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
     (tmp_path / 'config.yaml').write_text('model: far-model\nmodel_aliases: {}\n')
     authority = SimpleNamespace(db=SimpleNamespace(db_path=str(Path(tmp_path) / 'state.db')))

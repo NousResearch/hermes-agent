@@ -4,16 +4,16 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli.models_validate import validate_requested_model
+from hermes_agent.hermes_cli.models_validate import validate_requested_model
 
 
 def _validate(model, staged=("Qwen3-4B-Q4_K_M",), live=("other-model",), **kw):
     """validate against a managed-local world: staged files on disk + a live listing that
     (spawn-only as it is) hasn't learned the new file yet."""
     with (
-        patch("hermes_cli.models.fetch_api_models", return_value=list(live)),
+        patch("hermes_agent.hermes_cli.models.fetch_api_models", return_value=list(live)),
         patch(
-            "hermes_cli.models.probe_api_models",
+            "hermes_agent.hermes_cli.models.probe_api_models",
             return_value={
                 "models": list(live),
                 "probed_url": "http://127.0.0.1:18434/v1/models",
@@ -23,7 +23,7 @@ def _validate(model, staged=("Qwen3-4B-Q4_K_M",), live=("other-model",), **kw):
             },
         ),
         patch(
-            "hermes_cli.local_runtime.bootstrap.staged_model_ids",
+            "hermes_agent.hermes_cli.local_runtime.bootstrap.staged_model_ids",
             return_value=list(staged),
         ),
     ):

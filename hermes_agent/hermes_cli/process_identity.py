@@ -56,7 +56,7 @@ _LEDGER_LOCK = threading.Lock()
 def install_id(project_root: Optional[Path] = None) -> str:
     """Stable 12-hex identifier for THIS install (derived from its path)."""
     if project_root is None:
-        from hermes_cli._startup_fast import project_root_str
+        from hermes_agent.hermes_cli._startup_fast import project_root_str
 
         project_root = Path(project_root_str())
     try:
@@ -265,7 +265,7 @@ def _ledger_path() -> Path:
 
         return Path(get_default_hermes_root()) / LEDGER_FILENAME
     except Exception:
-        from hermes_cli.config import get_hermes_home
+        from hermes_agent.hermes_cli.config import get_hermes_home
 
         return Path(get_hermes_home()) / LEDGER_FILENAME
 
@@ -394,7 +394,7 @@ def is_desktop_owned_backend(argv: Optional[Sequence[str]] = None) -> bool:
         return False
     if os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN"):
         return True
-    from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+    from hermes_agent.hermes_cli._startup_fast import is_desktop_ssh_backend_argv
 
     return is_desktop_ssh_backend_argv(list(sys.argv[1:] if argv is None else argv))
 
@@ -472,7 +472,7 @@ def _append_entry(entry: LedgerEntry) -> bool:
 
     See #91660.
     """
-    from hermes_cli.active_sessions import _FileLock
+    from hermes_agent.hermes_cli.active_sessions import _FileLock
 
     path = _ledger_path()
     with _LEDGER_LOCK, ExitStack() as held:
@@ -610,7 +610,7 @@ def _reparented_orphan(pid: int) -> bool:
     unavailable there, so this rung never fires (desktop tree-kill reaps instead).
     """
     try:
-        from hermes_cli.dashboard_procs import (
+        from hermes_agent.hermes_cli.dashboard_procs import (
             _REAP_MIN_AGE_SECONDS, _lock_owned_serve_pids, _process_ppid)
         if _process_ppid(pid) not in (0, 1):
             return False

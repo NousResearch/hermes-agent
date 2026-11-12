@@ -14,10 +14,10 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
-from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
+from hermes_agent.hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical_layouts
 
 from hermes_agent.hermes_state_ids import is_known_session_id  # every minted id shape: sentinel for schema-less rows
-from hermes_cli.session_recovery import (
+from hermes_agent.hermes_cli.session_recovery import (
     _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _DANGLING_TOOL_PIN, _count_rows,
     _immediate_transaction, _placeholder_titles, _quoted_columns, _table_columns,
 )
@@ -81,10 +81,10 @@ SQLITE3_CLI_GUIDANCE = (
 # generations. A salvage shell must therefore be version-gated, not just
 # capability-gated, before it is pointed at (a copy of) a Hermes database.
 #
-# The predicate lives in hermes_cli.sqlite_runtime (stdlib-only, shared with
+# The predicate lives in hermes_agent.hermes_cli.sqlite_runtime (stdlib-only, shared with
 # the installer/update gates) so the embedded runtime and the salvage shell
 # can never disagree about which versions are safe.
-from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable
+from hermes_agent.hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _wal_reset_vulnerable
 
 _WAL_RESET_VULNERABLE_GUIDANCE = (
     "salvage against a Hermes database with the WAL-reset bug "

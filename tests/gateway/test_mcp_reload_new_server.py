@@ -59,7 +59,7 @@ def _worker_servers(frame, monkeypatch):
     from hermes_agent.tools.mcp_tool_config import _load_mcp_config
     config, toolsets = json.loads(frame['policy']['config_json']), set(frame['policy']['toolsets'])
     with monkeypatch.context() as bound:
-        bound.setattr('hermes_cli.config.load_config', lambda *args, **kwargs: config)
+        bound.setattr('hermes_agent.hermes_cli.config.load_config', lambda *args, **kwargs: config)
         servers = _load_mcp_config()
     return {name: cfg for name, cfg in servers.items() if name in toolsets}, toolsets
 

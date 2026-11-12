@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli import gateway as hermes_gateway
-from hermes_cli import gateway_windows
-from hermes_cli import main as cli_main
-from hermes_cli import main_install_repair
-from hermes_cli import update_cmd
+from hermes_agent.hermes_cli import gateway as hermes_gateway
+from hermes_agent.hermes_cli import gateway_windows
+from hermes_agent.hermes_cli import main as cli_main
+from hermes_agent.hermes_cli import main_install_repair
+from hermes_agent.hermes_cli import update_cmd
 
 
 def _run_cold_start(monkeypatch, capsys, *, surviving_pids):
@@ -55,7 +55,7 @@ def test_failed_readiness_keeps_the_dead_attestation_for_the_retry(monkeypatch, 
     """#110020 review: the attestation is the retry's only authority to spawn under Desktop
     ownership, so a spawn that returns a PID but never becomes ready must NOT consume it —
     otherwise the registered retry sees ownership with no marker and "succeeds" with no gateway."""
-    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
     gateway_windows._write_start_attestation([555], "direct spawn (PID 555)")
     marker = tmp_path / "state" / "gateway.start-attestation.json"
 

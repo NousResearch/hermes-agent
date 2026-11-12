@@ -372,7 +372,7 @@ def approvals_command(args) -> int:
     if sub == "suggest":
         return suggest_command(args)
     if sub == "test":
-        from hermes_cli.approvals_test import approvals_test_command
+        from hermes_agent.hermes_cli.approvals_test import approvals_test_command
         return approvals_test_command(args)
     print(
         "usage: hermes approvals <subcommand>\n"

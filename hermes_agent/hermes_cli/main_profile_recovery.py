@@ -20,7 +20,7 @@ def _uninstall_keeps_data(args: list[str]) -> bool:
     every other profile under ``profiles/``, without asking, so it is refused like ``--data``.
     The plain interactive menu still offers a full wipe, but only behind its own confirmations.
     """
-    from hermes_cli.subcommands.uninstall import build_uninstall_parser
+    from hermes_agent.hermes_cli.subcommands.uninstall import build_uninstall_parser
 
     parser = argparse.ArgumentParser(add_help=False)
     build_uninstall_parser(parser.add_subparsers(dest="command"), cmd_uninstall=lambda _args: None)
@@ -36,7 +36,7 @@ def _uninstall_keeps_data(args: list[str]) -> bool:
 
 def is_stale_profile_recovery_command(argv: list[str]) -> bool:
     """``profile list``, ``profile use default``, or an ``uninstall`` that keeps user data."""
-    from hermes_cli._parser import command_argv
+    from hermes_agent.hermes_cli._parser import command_argv
 
     command = command_argv(argv)
     if command[:2] == ["profile", "list"]:

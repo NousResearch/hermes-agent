@@ -10,7 +10,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.session import SessionSource, SessionStore
 from hermes_agent.gateway.session_authority import LiveSession, initialize_session_authority
 from hermes_agent.gateway.session_controls import AuthorityConnection
-from hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError, GatewayRPCError
 from hermes_agent.hermes_state_runtime import list_session_admissions
 from tests.waiting import async_wait_until
 

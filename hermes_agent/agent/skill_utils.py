@@ -214,15 +214,15 @@ def _raw_config_cache_clear() -> None:
 
 def _config_cache_key(config_path: Path) -> Optional[tuple[Any, ...]]:
     """``(path, *backend cache version)`` identity of config.yaml, or None when unreadable/absent."""
-    from hermes_cli.config_backend import config_cache_version_or_none
+    from hermes_agent.hermes_cli.config_backend import config_cache_version_or_none
     version = config_cache_version_or_none(config_path)
     return None if version is None else (str(config_path), *version)
 
 
 def _load_raw_config() -> dict[str, Any]:
-    """Read config.yaml with a version-keyed cache (no hermes_cli.config import)."""
+    """Read config.yaml with a version-keyed cache (no hermes_agent.hermes_cli.config import)."""
     from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
-    from hermes_cli.config_backend import config_exists, read_config_doc
+    from hermes_agent.hermes_cli.config_backend import config_exists, read_config_doc
 
     snapshot = worker_config_snapshot()
     if snapshot is not None:
@@ -340,7 +340,7 @@ def _config_str_list(raw) -> list[str]:
 def get_external_skills_dirs() -> list[Path]:
     """Validated, deduplicated ``skills.external_dirs`` (existing dirs only). Entries
     are ``~``/``${VAR}`` expanded, relative to HERMES_HOME; the local skills dir is skipped."""
-    from hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.config_backend import config_exists
     config_path = get_config_path()
     if not config_exists(config_path):
         return []

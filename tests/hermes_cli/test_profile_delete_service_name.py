@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.agent.secret_scope import set_multiplex_active
-from hermes_cli import profiles
+from hermes_agent.hermes_cli import profiles
 
 
 @pytest.fixture

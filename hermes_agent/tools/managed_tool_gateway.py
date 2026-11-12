@@ -46,12 +46,12 @@ def _read_nous_provider_state() -> Optional[dict]:
     the root identity. Reading only ``HERMES_HOME/auth.json`` made that profile look signed out to
     the connector gate alone, so ``manage_connections`` vanished from its tool list."""
     try:
-        from hermes_cli.auth import get_provider_auth_state
+        from hermes_agent.hermes_cli.auth import get_provider_auth_state
 
         nous_provider = get_provider_auth_state("nous")
         if not isinstance(nous_provider, dict):
             return None
-        from hermes_cli.anon_auth import guest_allowed, is_guest_state
+        from hermes_agent.hermes_cli.anon_auth import guest_allowed, is_guest_state
 
         if is_guest_state(nous_provider) and not guest_allowed():
             return None
@@ -77,7 +77,7 @@ def _read_user_token_override() -> Optional[str]:
 def peek_nous_access_token() -> Optional[str]:
     """Cheap token probe: env override or cached auth-store token, no expiry check and no network —
     availability scans must stay off the synchronous OAuth refresh path (:func:`read_nous_access_token`)."""
-    from hermes_cli.anon_auth import held_connectors_token
+    from hermes_agent.hermes_cli.anon_auth import held_connectors_token
 
     return _read_user_token_override() or _clean(held_connectors_token(_read_nous_provider_state()))
 
@@ -95,20 +95,20 @@ def read_nous_access_token() -> Optional[str]:
     nous_provider = _read_nous_provider_state() or {}
     if not nous_provider:
         return None
-    from hermes_cli.anon_auth import held_connectors_token
+    from hermes_agent.hermes_cli.anon_auth import held_connectors_token
 
     if fresh_token := _clean(held_connectors_token(nous_provider, skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)):
         return fresh_token
     cached_token = peek_nous_access_token()
     try:
-        from hermes_cli.auth import resolve_nous_access_token
+        from hermes_agent.hermes_cli.auth import resolve_nous_access_token
 
         if refreshed_token := _clean(resolve_nous_access_token(refresh_skew_seconds=_NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS)):
             return refreshed_token
     except Exception as exc:
         # Same dead-credential rule as inference (one place decides it: anon_auth): a retired free-tier
         # identity is replaced once, here, instead of handing back its stale token forever.
-        from hermes_cli.anon_auth import AnonCredentialDead
+        from hermes_agent.hermes_cli.anon_auth import AnonCredentialDead
 
         if isinstance(exc, AnonCredentialDead):
             return _replace_dead_guest_token(nous_provider, str(exc.code or "anon_credential_dead"))
@@ -117,8 +117,8 @@ def read_nous_access_token() -> Optional[str]:
 
 
 def _replace_dead_guest_token(dead_state: dict, code: str = "anon_credential_dead") -> Optional[str]:
-    from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED, clear_dead_guest, ensure_portal_identity
-    from hermes_cli.auth import resolve_nous_access_token
+    from hermes_agent.hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED, clear_dead_guest, ensure_portal_identity
+    from hermes_agent.hermes_cli.auth import resolve_nous_access_token
 
     clear_dead_guest(code, dead_token=dead_state.get("anon_token"))
     # Same rule as inference: a locked account is retired but never silently replaced.

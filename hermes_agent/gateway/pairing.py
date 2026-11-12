@@ -69,7 +69,7 @@ def _allowlist_env_for_platform(platform: str) -> Optional[str]:
     have loaded them yet."""
     platform = (platform or "").lower().strip()
     with contextlib.suppress(Exception):
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
     with contextlib.suppress(Exception):
         from hermes_agent.gateway.platform_env import authz_field
@@ -146,7 +146,7 @@ def _configured_allowlist(platform: str):
 def _write_allowlist_env(env_var: str, ids: list) -> None:
     """Best-effort persist (empty list removes the key); the pairing store grant still authorizes via the union."""
     with contextlib.suppress(Exception):
-        from hermes_cli.config import save_env_value, remove_env_value
+        from hermes_agent.hermes_cli.config import save_env_value, remove_env_value
         save_env_value(env_var, ",".join(ids)) if ids else remove_env_value(env_var)
 
 
@@ -380,7 +380,7 @@ class PairingStore:
         The file lock is taken FIRST: ``is_approved`` runs on the gateway event loop under
         ``self._lock``, so holding it while waiting (up to 10 s) on another process would stall
         every chat on that loop. ``is_approved`` never takes the file lock, so the order is safe."""
-        from hermes_cli.auth import _file_lock
+        from hermes_agent.hermes_cli.auth import _file_lock
         with _file_lock(
             self._dir / ".lock", _dir_lock_holder(self._dir), 10.0,
             f"Timed out waiting for the pairing store lock ({self._dir})",

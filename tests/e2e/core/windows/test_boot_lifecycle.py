@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli.version_info import get_version_info
+from hermes_agent.hermes_cli.version_info import get_version_info
 from tests.e2e.core.windows._helpers import (
     WinHome,
     db_rows,

@@ -23,7 +23,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, Optional
 
-from hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
+from hermes_agent.hermes_cli.process_identity import release_process_group_once_empty, spawn_owned
 from utils import is_truthy_value
 
 
@@ -104,7 +104,7 @@ def terminate_command_process_tree(proc: subprocess.Popen) -> None:
         try:
             # CREATE_NO_WINDOW: taskkill is a console-subprocess — the kill itself must not
             # flash a window on windowless hosts, same class of defect as the spawn above.
-            from hermes_cli._subprocess_compat import windows_hide_flags
+            from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL, timeout=5, stdin=subprocess.DEVNULL,
                            creationflags=windows_hide_flags(), check=False)
@@ -143,7 +143,7 @@ def provider_popen_group_kwargs(os_name: str) -> dict[str, Any]:
     On Windows the shell=True spawn routes through cmd.exe, a console-subsystem
     shim: with only CREATE_NEW_PROCESS_GROUP it allocates a *visible* console
     window flash on every provider run from a windowless host (pythonw gateway,
-    TUI, Desktop). The shared detach bundle (hermes_cli._subprocess_compat.
+    TUI, Desktop). The shared detach bundle (hermes_agent.hermes_cli._subprocess_compat.
     windows_detach_flags_without_breakaway) adds CREATE_NO_WINDOW so the child
     owns a hidden console its descendants inherit instead — deliberately without
     CREATE_BREAKAWAY_FROM_JOB: this child is foreground-owned and killed by us on
@@ -152,7 +152,7 @@ def provider_popen_group_kwargs(os_name: str) -> dict[str, Any]:
     timeout, and the group dies with this process: the idle timer lives here, so
     a stalled command used to outlive a SIGKILLed Hermes forever.
     """
-    from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
+    from hermes_agent.hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway
     if os_name == "nt":
         return {"creationflags": windows_detach_flags_without_breakaway()}
     return {}

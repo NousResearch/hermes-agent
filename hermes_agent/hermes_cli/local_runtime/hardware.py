@@ -20,8 +20,8 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-from hermes_cli.local_runtime.devices import GGML_DEVICE_GPU
-from hermes_cli.local_runtime.estimator import HardwareBudget
+from hermes_agent.hermes_cli.local_runtime.devices import GGML_DEVICE_GPU
+from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 from hermes_platform.host.facts import gpu_class
 
 logger = logging.getLogger(__name__)
@@ -252,7 +252,7 @@ def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
         _gpu_query_cache = (now, None)
         return None
 
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
         out = subprocess.run(
             [exe, "--query-gpu=memory.total,memory.free,name,pci.device_id,memory.used,utilization.gpu",
@@ -318,9 +318,9 @@ def _cuda_driver_pool() -> tuple[int, bool | None] | None:
 def _configured_engine():
     """The engine the probes below run: the managed server's own when one is up or booting, else
     the installed engine for ``local_runtime.backend``."""
-    from hermes_cli.config import load_config_readonly
-    from hermes_cli.local_runtime.binaries import installed_engine
-    from hermes_cli.local_runtime.bootstrap import serving_engine
+    from hermes_agent.hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.local_runtime.binaries import installed_engine
+    from hermes_agent.hermes_cli.local_runtime.bootstrap import serving_engine
 
     engine = serving_engine()
     if engine is not None:
@@ -376,7 +376,7 @@ def _accelerator_device(*, fresh: bool = False) -> dict | None:
     the cache read for a launch-time free-memory answer.
     """
     with suppress(Exception):  # a probe miss must never block budgeting
-        from hermes_cli.local_runtime.devices import probe_devices
+        from hermes_agent.hermes_cli.local_runtime.devices import probe_devices
 
         engine = _configured_engine()
         if engine is None or engine.backend not in _GPU_ENGINE_BACKENDS:
@@ -470,8 +470,8 @@ def _gpu_engine_runs_the_model() -> bool:
         engine = _configured_engine()
         if engine is not None:
             return engine.backend in _GPU_ENGINE_BACKENDS
-        from hermes_cli.config import load_config_readonly
-        from hermes_cli.local_runtime.binaries import resolve_backend
+        from hermes_agent.hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.local_runtime.binaries import resolve_backend
 
         section = load_config_readonly().get("local_runtime") or {}
         return resolve_backend(section.get("backend") or "auto") in _GPU_ENGINE_BACKENDS

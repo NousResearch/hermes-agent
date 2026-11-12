@@ -8,7 +8,7 @@ import pytest
 
 def test_update_notice_offers_v1_trigram_tool_calls_rebuild(tmp_path, monkeypatch, capsys):
     """A deployed v1 trigram projection still receives the opt-in notice."""
-    from hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import update_cmd
     import hermes_constants
     from hermes_agent import hermes_state
 
@@ -63,7 +63,7 @@ def test_doctor_collects_structural_fts_upgrade_status(
     tmp_path, monkeypatch, base_layout, trigram_layout, marker, large,
 ):
     """Real read-only collection must ignore forged or lagging version markers."""
-    from hermes_cli import doctor_state
+    from hermes_agent.hermes_cli import doctor_state
     from hermes_agent.hermes_state_dbfile import collect_state_db_stats
     from hermes_agent.hermes_state_fts import _expected_vtable_sql
     from hermes_agent.hermes_state_common import FTS_SQL, FTS_TRIGRAM_SQL
@@ -103,7 +103,7 @@ def test_doctor_collects_structural_fts_upgrade_status(
 
 @pytest.mark.parametrize("progress, pending", [(0, True), (10, False)])
 def test_doctor_collects_pending_rebuild_with_settled_layout(tmp_path, monkeypatch, progress, pending):
-    from hermes_cli import doctor_state
+    from hermes_agent.hermes_cli import doctor_state
     from hermes_agent.hermes_state_dbfile import collect_state_db_stats
     from hermes_agent.hermes_state_fts import _expected_vtable_sql
     from hermes_agent.hermes_state_common import FTS_SQL, FTS_TRIGRAM_SQL

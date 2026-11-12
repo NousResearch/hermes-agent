@@ -1,8 +1,8 @@
 """The browser credential, and how every grant made under it ends when it is replaced.
 
-The browser credential is the dashboard session token (``hermes_cli.web_server._SESSION_TOKEN``). A
+The browser credential is the dashboard session token (``hermes_agent.hermes_cli.web_server._SESSION_TOKEN``). A
 loopback Webapp tab holds it; behind the sign-in gate each Webapp login is bound to it
-(``hermes_cli.webapp_sign_in``). The gateway keeps the Webapp's credential in its home
+(``hermes_agent.hermes_cli.webapp_sign_in``). The gateway keeps the Webapp's credential in its home
 (``hermes_agent.gateway.webapp_listener.browser_session_token``) and sets it when its listener starts.
 
 Every grant a browser gets under the credential records the credential's generation, a SHA-256 digest
@@ -31,7 +31,7 @@ _revokers: dict[str, Callable[[], int]] = {}
 
 def current() -> str:
     """The browser credential in use now."""
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
     return web_server._SESSION_TOKEN
 
 
@@ -69,7 +69,7 @@ def on_rotate(name: str, revoker: Callable[[], int]) -> None:
 def rotate(credential: str) -> dict[str, int]:
     """Make *credential* the browser credential and end every grant made under the one it replaces.
     Returns how many grants each registered revoker ended, by name. Safe from any thread."""
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     web_server._SESSION_TOKEN = credential
     with _lock:

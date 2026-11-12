@@ -27,7 +27,7 @@ def test_load_soul_md_drops_legacy_protocol_section(tmp_path, monkeypatch):
 
 
 def test_migration_41_strips_every_profile_soul_once(tmp_path, monkeypatch):
-    from hermes_cli.config_migrations import _migrate_to_41
+    from hermes_agent.hermes_cli.config_migrations import _migrate_to_41
 
     home = tmp_path / ".hermes"
     (home / "profiles" / "worker").mkdir(parents=True)

@@ -21,7 +21,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.api_server import APIServerAdapter
-from hermes_cli.subcommands import peer as peer_mod
+from hermes_agent.hermes_cli.subcommands import peer as peer_mod
 from hermes_agent.hermes_state import SessionDB
 
 AUTHOR = {"id": "bot:cto", "name": "cto", "is_bot": True}
@@ -51,7 +51,7 @@ async def test_a_peer_turn_into_a_bot_chat_without_an_authority_runs_here(tmp_pa
     db.create_session("scratch", "api_server")
     lease = None
     if open_in_desktop:
-        from hermes_cli.active_sessions import try_acquire_active_session
+        from hermes_agent.hermes_cli.active_sessions import try_acquire_active_session
         lease, refusal = try_acquire_active_session(
             session_id="bot-chat", surface="desktop", config={}, registry_home=home, track_liveness=True,
             metadata={"live_session_id": "live-1", "bot_live_delivery_consumer": True})
@@ -112,7 +112,7 @@ async def test_a_peer_run_into_a_bot_chat_without_an_authority_runs_here(tmp_pat
     db.create_session("bot-chat", "desktop")
     db.set_session_title("bot-chat", "Bot Chat")
     db.create_session("scratch", "api_server")
-    from hermes_cli.active_sessions import try_acquire_active_session
+    from hermes_agent.hermes_cli.active_sessions import try_acquire_active_session
     lease, refusal = try_acquire_active_session(
         session_id="bot-chat", surface="desktop", config={}, registry_home=home, track_liveness=True,
         metadata={"live_session_id": "live-1", "bot_live_delivery_consumer": True})

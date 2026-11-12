@@ -61,7 +61,7 @@ def main() -> None:
     from pm.lock import Facts
     from pm.store import current_target, tree_digest
     from pm.environments import selected_venv
-    from hermes_cli._launchers import ensure_install_launchers
+    from hermes_agent.hermes_cli._launchers import ensure_install_launchers
 
     # PM's worker runs on PM's own staged runtime (truststore, ruamel), never on
     # the application interpreter; only the tool acquisition is substituted.

@@ -5,14 +5,14 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_cli import web_server
-import hermes_cli.config as _cfg_mod
-import hermes_cli.web_routers.dashboard_ui as _rt_dashboard_ui
-import hermes_cli.web_server_dashboard as _web_server_dashboard
-import hermes_cli.web_server_memory as _web_server_memory
-from hermes_cli import plugins_cmd
-from hermes_cli import plugin_catalog
-from hermes_cli import plugins_cmd_catalog
+from hermes_agent.hermes_cli import web_server
+import hermes_agent.hermes_cli.config as _cfg_mod
+import hermes_agent.hermes_cli.web_routers.dashboard_ui as _rt_dashboard_ui
+import hermes_agent.hermes_cli.web_server_dashboard as _web_server_dashboard
+import hermes_agent.hermes_cli.web_server_memory as _web_server_memory
+from hermes_agent.hermes_cli import plugins_cmd
+from hermes_agent.hermes_cli import plugin_catalog
+from hermes_agent.hermes_cli import plugins_cmd_catalog
 from hermes_agent.tools import registry as tools_registry
 
 
@@ -153,7 +153,7 @@ def test_plugins_hub_route_builds_catalog_annotations_off_event_loop(monkeypatch
 def test_plugin_install_endpoint_invalidates_hub_cache(monkeypatch):
     import asyncio
 
-    from hermes_cli.web_models import _AgentPluginInstallBody
+    from hermes_agent.hermes_cli.web_models import _AgentPluginInstallBody
 
     tools_registry.invalidate_check_fn_cache()
     _web_server_dashboard._invalidate_plugins_hub_cache()

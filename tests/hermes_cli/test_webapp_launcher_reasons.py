@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import webapp_launcher as launcher
+from hermes_agent.hermes_cli import webapp_launcher as launcher
 
 
 def _args(**overrides) -> Namespace:

@@ -7,7 +7,7 @@ import hermes_yaml as yaml
 
 def test_platform_env_key_round_trips_without_a_config_yaml_copy(tmp_path, monkeypatch, capsys):
     """``config set/get/unset`` shares the platform setup flow's .env storage."""
-    from hermes_cli import config as cfg
+    from hermes_agent.hermes_cli import config as cfg
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
@@ -37,7 +37,7 @@ def test_registered_env_setting_converges_stale_config_yaml_copy(tmp_path, monke
     """A non-suffix adapter key (``*_ALLOWED_USERS``) routes to ``.env``; a top-level ``config.yaml``
     copy left by an older ``config set`` is dropped on ``set`` and ``unset`` so one reader can't see a
     value the other doesn't. Credentials keep their own ``.env`` lifecycle (control)."""
-    from hermes_cli import config as cfg
+    from hermes_agent.hermes_cli import config as cfg
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
@@ -65,7 +65,7 @@ def test_unregistered_upper_snake_name_routes_to_env_by_shape(tmp_path, monkeypa
     (``TELEGRAM_GROUP_ALLOWED_USERS`` is read straight from ``os.getenv``): it lands in ``.env``,
     the stale ``config.yaml`` copy converges, and ``get`` reads the ``.env`` value. A lowercase bare
     key keeps the open top-level namespace (control)."""
-    from hermes_cli import config as cfg
+    from hermes_agent.hermes_cli import config as cfg
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
@@ -92,7 +92,7 @@ def test_env_writer_denylist_guards_upper_snake_names_and_unknown_names_get_a_no
     """Routing by shape closes the config.yaml detour around the env writer's denylist: a
     denylisted name is refused and written nowhere. A name neither registered nor documented is
     still stored in ``.env`` with a one-line note."""
-    from hermes_cli import config as cfg
+    from hermes_agent.hermes_cli import config as cfg
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))

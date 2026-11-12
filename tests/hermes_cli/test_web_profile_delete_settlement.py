@@ -30,7 +30,7 @@ def profile_env(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def client(profile_env):
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     with TestClient(web_server.app, raise_server_exceptions=False) as c:
         c.headers["Authorization"] = f"Bearer {web_server._SESSION_TOKEN}"
@@ -39,7 +39,7 @@ def client(profile_env):
 
 def test_settle_pending_delete_reports_partial_success(client, monkeypatch):
     """The profile really is deleted; only the identity settlement is missing — report both."""
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
 
     monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **k: None)
     # A live multiplexer owns the routing index and none is reachable here, so the settlement
@@ -63,7 +63,7 @@ def test_settle_pending_delete_reports_partial_success(client, monkeypatch):
 
 def test_filesystem_remove_failure_still_reports_500(client, monkeypatch):
     """A plain rmtree failure keeps the generic 500 — not every delete error is a partial success."""
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
 
     monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **k: None)
 

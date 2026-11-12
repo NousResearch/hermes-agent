@@ -15,7 +15,7 @@ import tempfile
 
 
 def child(out: Path) -> None:
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
     from hermes_agent.run_agent import AIAgent
     from hermes_agent.agent.context_breakdown import compute_session_context_breakdown
     from hermes_agent.tui_gateway.server import _get_usage, _format_live_context_output

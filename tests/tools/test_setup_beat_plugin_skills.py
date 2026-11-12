@@ -13,7 +13,7 @@ import json
 import pytest
 
 from hermes_agent.agent import onboarding_flow as flow
-from hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli import plugins as plugins_mod
 from hermes_agent.tools.setup_beat_tool import _result
 
 PC = flow.Facts(os="windows", arch="amd64", machine_kind="PC", nvidia_platform="discrete")
@@ -35,7 +35,7 @@ def home(tmp_path, monkeypatch):
 
 def _install_blender_from_catalog(home):
     """What a catalog install leaves: the portable plugin tree and the installer-owned record."""
-    from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+    from hermes_agent.hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
 
     plugin = home / "plugins" / "blender"
     (plugin / "skills" / "blender").mkdir(parents=True)
@@ -65,7 +65,7 @@ def test_the_build_beat_names_an_installed_plugin_skill_by_its_registered_name(h
 
 
 def test_a_skill_saved_under_the_hashed_portable_name_still_loads(home):
-    from hermes_cli.plugins_manifest import _portable_data_namespace
+    from hermes_agent.hermes_cli.plugins_manifest import _portable_data_namespace
     from hermes_agent.tools.skills_tool import skill_view
 
     _install_blender_from_catalog(home)

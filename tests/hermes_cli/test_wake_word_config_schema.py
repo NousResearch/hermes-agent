@@ -1,7 +1,7 @@
 """The config UI offers the same wake providers the runtime resolves."""
 
-from hermes_cli.config import load_config
-from hermes_cli.web_server_config import _schema_with_dynamic_provider_options
+from hermes_agent.hermes_cli.config import load_config
+from hermes_agent.hermes_cli.web_server_config import _schema_with_dynamic_provider_options
 from hermes_agent.tools.wake_word import _PROVIDERS, _provider
 
 

@@ -13,7 +13,7 @@ async def test_probe_skip_keeps_a_parked_profile_parked(tmp_path, monkeypatch):
 
     runner, home = _runner(tmp_path, monkeypatch)
     _mkprofile(home, 'alpha', 'DISCORD_BOT_TOKEN=alpha-token\n')
-    with patch('hermes_cli.profiles.get_active_profile_name', return_value='default'):
+    with patch('hermes_agent.hermes_cli.profiles.get_active_profile_name', return_value='default'):
         await runner._start_secondary_profile_adapters()
         _mkprofile(home, 'delta', 'DISCORD_BOT_TOKEN=delta-token\n')
 

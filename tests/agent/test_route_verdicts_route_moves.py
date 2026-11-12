@@ -31,7 +31,7 @@ def test_nous_refresh_onto_another_host_drops_the_old_hosts_verdicts(api_mode, n
     agent = _tripped(_make_agent(provider="nous", base_url=_PAID))
     agent.api_mode = api_mode
     agent._rebuild_anthropic_client = MagicMock()
-    with patch("hermes_cli.auth.resolve_nous_runtime_credentials",
+    with patch("hermes_agent.hermes_cli.auth.resolve_nous_runtime_credentials",
                return_value={"api_key": "fresh-agent-key", "base_url": new_url}), \
             patch("hermes_agent.agent.process_bootstrap.OpenAI", return_value=MagicMock()):
         assert agent._try_refresh_nous_client_credentials(force=True) is True
@@ -93,7 +93,7 @@ def test_a_route_that_refused_streaming_does_not_turn_streaming_off_for_the_next
 
 def test_a_route_change_restores_the_configured_streaming_seed_not_streaming_on():
     """``model.streaming: false`` is configuration, not a verdict: a route change keeps it."""
-    with patch("hermes_cli.config.load_config_readonly", return_value={"model": {"streaming": False}}):
+    with patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={"model": {"streaming": False}}):
         agent = _make_agent(fallback_model=_FALLBACK)
     assert agent._disable_streaming is True
     _fail_over(agent)
@@ -129,8 +129,8 @@ def _recover_from(agent, retry, status_code, message):
 
     err = _FakeApiError(status_code, message)
     classified = classify_api_error(err, provider=agent.provider, model=agent.model)
-    with patch("hermes_cli.models_reasoning_caps.refresh_reasoning_caps_async", lambda provider: None), \
-            patch("hermes_cli.config.load_config_readonly", return_value={}):
+    with patch("hermes_agent.hermes_cli.models_reasoning_caps.refresh_reasoning_caps_async", lambda provider: None), \
+            patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={}):
         return recover_after_classification(
             agent, err, classified, retry, status_code=status_code, error_context={}, messages=[], api_messages=[],
         )
@@ -217,7 +217,7 @@ def _soft_auth_failure_refresh(agent, retry, url):
     agent._extract_api_error_context = extract_api_error_context
     response = SimpleNamespace(status="failed", output=[], error=SimpleNamespace(code="invalid_api_key", message="Invalid API key"))
     with patch.object(agent, "_recover_with_credential_pool", lambda **kw: recover_with_credential_pool(agent, **kw)), \
-            patch("hermes_cli.config.load_config_readonly", return_value={}):
+            patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value={}):
         verdict = retry_invalid_response(
             agent, response=response, error_details=["failed"], _retry=retry, thinking_spinner=None, messages=[],
             api_messages=[], api_kwargs={}, active_system_prompt="", conversation_history=None, retry_count=0,
@@ -277,7 +277,7 @@ def test_a_nous_401_refresh_onto_another_host_rearms_its_effort_repair(new_url, 
     for name in ("_try_refresh_nous_client_credentials", "_adopt_openai_credentials"):
         setattr(agent, name, MethodType(getattr(ClientLifecycleMixin, name), agent))
     retry = _spent_effort_repair(agent)
-    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": "fresh", "base_url": new_url}):
+    with patch("hermes_agent.hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": "fresh", "base_url": new_url}):
         assert _recover_from(agent, retry, 401, "invalid api key")[0] is True
     assert agent.base_url == new_url
     _destination_effort_repaired(agent, retry, moved)
@@ -326,10 +326,10 @@ def test_a_return_to_the_endpoint_that_spent_the_repair_rearms_it():
     for name in ("_try_refresh_nous_client_credentials", "_adopt_openai_credentials"):
         setattr(agent, name, MethodType(getattr(ClientLifecycleMixin, name), agent))
     retry = _spent_effort_repair(agent)
-    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": "free", "base_url": _WELCOME}):
+    with patch("hermes_agent.hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": "free", "base_url": _WELCOME}):
         assert _recover_from(agent, retry, 401, "invalid api key")[0] is True
     heal = SimpleNamespace(error_context={"welcome_route": "named_on_welcome_host"})
-    with patch("hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": "paid", "base_url": _PAID}):
+    with patch("hermes_agent.hermes_cli.auth.resolve_nous_runtime_credentials", return_value={"api_key": "paid", "base_url": _PAID}):
         assert _recover_welcome_tier(agent, heal, retry) is True
     assert agent.base_url == _PAID
     _destination_effort_repaired(agent, retry, True)

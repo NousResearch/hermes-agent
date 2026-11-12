@@ -197,14 +197,14 @@ def test_config_reader_falls_back_when_config_unreadable(monkeypatch):
         raise RuntimeError("config unreadable")
 
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config", _boom, raising=False
+        "hermes_agent.hermes_cli.config.read_raw_config", _boom, raising=False
     )
     val = pr_mod.ProcessRegistry._oneshot_completion_wait_seconds()
     assert val > 0
 
 def test_config_value_is_floored_at_zero(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.read_raw_config",
+        "hermes_agent.hermes_cli.config.read_raw_config",
         lambda: {"terminal": {"oneshot_completion_wait_seconds": -5}},
         raising=False,
     )
@@ -233,7 +233,7 @@ def test_finalize_single_query_settles_session_then_releases_then_lingers(monkey
     end-stamp or a remote commit mid-turn; the lease release precedes the exit
     linger, so a finished turn stops refusing deliveries (#118826); the linger
     precedes teardown (the parent owns the children's pipes)."""
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     order = []
     from hermes_agent.tools.process_registry import process_registry
@@ -266,7 +266,7 @@ def test_finalize_single_query_settles_session_then_releases_then_lingers(monkey
 
 def test_finalize_single_query_survives_wait_failure(monkeypatch):
     """A raising wait must not break the durable flush path."""
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     order = []
     from hermes_agent.tools.process_registry import process_registry

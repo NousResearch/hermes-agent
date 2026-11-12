@@ -257,7 +257,7 @@ def _lan_webapp(monkeypatch, tmp_path, *, registered=None, address=LAN, public_u
     """A gateway serving the Webapp on every interface (``webapp.host: 0.0.0.0``) behind the sign-in
     gate, this machine's LAN address being *address*, after Web Access Start registered Nous sign-in
     for the callback *registered* (None: never)."""
-    from hermes_cli import webapp_access
+    from hermes_agent.hermes_cli import webapp_access
 
     config = "webapp:\n  enabled: true\n  host: 0.0.0.0\n  port: 9555\n"
     runner, _, home = _start_runtime_api(monkeypatch, tmp_path, config)

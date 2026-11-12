@@ -1,14 +1,14 @@
 """Public event bridge for plugin backends (#116305 item 8, salvage of #116419).
 
 A plugin backend pushes events to its own desktop half through
-``hermes_cli.plugin_events`` instead of importing
+``hermes_agent.hermes_cli.plugin_events`` instead of importing
 ``hermes_agent.tui_gateway.server._broadcast_global_event``.
 """
 from __future__ import annotations
 
 import pytest
 
-from hermes_cli import plugin_events
+from hermes_agent.hermes_cli import plugin_events
 
 
 class _Peer:
@@ -105,7 +105,7 @@ def test_broadcast_without_a_gateway_module_is_a_logged_no_op(monkeypatch, caplo
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _no_gateway)
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugin_events"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.plugin_events"):
         plugin_events.broadcast_plugin_event("rss-reader", "feed.updated")
     assert "plugin.rss-reader.feed.updated" in caplog.text
 

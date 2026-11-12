@@ -127,7 +127,7 @@ def claim_lock() -> Iterator[None]:
     if not places.markers:
         yield
         return
-    from hermes_cli.auth import _file_lock
+    from hermes_agent.hermes_cli.auth import _file_lock
 
     lock_path = places.markers[0].with_name(places.markers[0].name + ".lock")
     with _file_lock(lock_path, _claim_lock_holder, CLAIM_LOCK_TIMEOUT_SECONDS,
@@ -156,7 +156,7 @@ def _write_marker(content: dict[str, str], *, answer_moved: bool = True) -> None
         atomic_json_write(marker, content)  # unique temp name: two backends may mark at once
     probe.cache_clear()
     if answer_moved:
-        from hermes_cli import onboarding_due
+        from hermes_agent.hermes_cli import onboarding_due
 
         onboarding_due.invalidate()
 
@@ -252,7 +252,7 @@ def _service_homes() -> Iterable[Path]:
     """The ``HERMES_HOME`` of every gateway service this OS user runs: its own definitions, the
     machine-wide units that run as it, and the launchers its Scheduled Tasks start. Another account's
     gateway is that account's install."""
-    from hermes_cli import gateway_windows
+    from hermes_agent.hermes_cli import gateway_windows
     from hermes_platform.resolver import known_dirs
 
     for machine_wide, globs in ((False, known_dirs.gateway_service_definition_globs()),
@@ -266,8 +266,8 @@ def _service_homes() -> Iterable[Path]:
 def _definition_homes(definition: Path, *, machine_wide: bool, follow: bool = True) -> Iterator[Path]:
     """The homes one definition names, and those named by the launchers it starts (the Windows
     Startup-folder fallback names only its launcher). Unreadable: none."""
-    from hermes_cli.gateway_runtime_service_identity import launcher_text
-    from hermes_cli.gateway_service_owner import service_definition_homes, service_definition_launchers
+    from hermes_agent.hermes_cli.gateway_runtime_service_identity import launcher_text
+    from hermes_agent.hermes_cli.gateway_service_owner import service_definition_homes, service_definition_launchers
 
     try:
         text = launcher_text(_read_bytes(definition))
@@ -300,7 +300,7 @@ def _is_this_account(account: str) -> bool:
 
 def _launcher_root() -> Iterable[Path]:
     """The root that owns the ``hermes`` on PATH: its launcher execs that root's ``tools/`` Python."""
-    from hermes_cli._launchers import _launcher_python
+    from hermes_agent.hermes_cli._launchers import _launcher_python
     from hermes_platform.resolver import locate_command
 
     found = locate_command("hermes").command
@@ -398,7 +398,7 @@ _USER_ENV_CATEGORIES = frozenset({"provider", "tool", "messaging", "skill"})
 
 
 def _provider_key(home: _Root) -> bool:
-    from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+    from hermes_agent.hermes_cli.config_defaults import OPTIONAL_ENV_VARS
 
     from hermes_agent.agent.secret_scope import load_env_file
 

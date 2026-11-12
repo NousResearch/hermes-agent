@@ -22,7 +22,7 @@ import json
 import secrets
 import time
 
-from hermes_cli.dashboard_auth.base import (
+from hermes_agent.hermes_cli.dashboard_auth.base import (
     DashboardAuthProvider,
     InvalidCodeError,
     LoginStart,

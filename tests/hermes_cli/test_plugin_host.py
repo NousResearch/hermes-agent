@@ -8,8 +8,8 @@ import time
 import hermes_yaml as yaml
 import pytest
 
-from hermes_cli import plugins as plugins_mod
-from hermes_cli.plugins import PluginManager
+from hermes_agent.hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli.plugins import PluginManager
 
 PROBE_PLUGIN = '''
 import json, os
@@ -107,7 +107,7 @@ def test_plugin_runs_out_of_process_with_ctx_round_trips_and_survives_host_crash
 
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_isolation_host_keeps_every_user_import_path_out_of_process(tmp_path, monkeypatch):
-    from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+    from hermes_agent.hermes_cli.plugin_isolation_audit import audit_plugin_dir
     from plugins import plugin_loader
 
     home = _home_with_plugins(tmp_path, monkeypatch, {"platformprobe": PLATFORM_PLUGIN, "fine": PROBE_PLUGIN})
@@ -128,7 +128,7 @@ def test_isolation_host_keeps_every_user_import_path_out_of_process(tmp_path, mo
 def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path, monkeypatch):
     """The isolated party must not be able to opt out: an operator pin in the managed scope
     (/etc/hermes/config.yaml) wins over a profile config that says in_process."""
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
     from hermes_agent.tools.registry import registry
 
     _home_with_plugins(tmp_path, monkeypatch, {"hostprobe": PROBE_PLUGIN}, isolation="in_process")
@@ -393,7 +393,7 @@ def test_late_failure_of_an_abandoned_load_leaves_the_reloaded_plugin_alone(tmp_
     # A hosted load abandoned at its deadline (inside register(), or still waiting for the host to start)
     # can fail after a reload of the same plugin succeeded. Host state is keyed by plugin, not by load,
     # so that late failure must not unload the live load.
-    from hermes_cli import plugin_host, plugins_loader
+    from hermes_agent.hermes_cli import plugin_host, plugins_loader
     from tests.waiting import wait_until
     from hermes_agent.tools.registry import registry
 

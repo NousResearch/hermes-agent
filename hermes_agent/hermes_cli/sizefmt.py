@@ -1,4 +1,4 @@
-"""Small shared size-formatting helpers for CLI/agent output (sibling of ``hermes_cli.timefmt``:
+"""Small shared size-formatting helpers for CLI/agent output (sibling of ``hermes_agent.hermes_cli.timefmt``:
 a tiny purpose-named module lightweight consumers can import without the CLI surface)."""
 
 from __future__ import annotations

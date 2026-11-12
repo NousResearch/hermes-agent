@@ -9,7 +9,7 @@ description: >
   Python's stdlib asyncio for the IRC protocol.
 author: Nous Research
 # ``requires_env`` entries are surfaced in ``hermes config`` UI via the
-# platform-plugin env var injector in ``hermes_cli/config.py``.
+# platform-plugin env var injector in ``hermes_agent/hermes_cli/config.py``.
 requires_env:
   - name: IRC_SERVER
     description: "IRC server hostname (e.g. irc.libera.chat)"

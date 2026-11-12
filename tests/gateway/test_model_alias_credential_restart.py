@@ -14,7 +14,7 @@ async def test_literal_alias_key_survives_owner_restart_and_stays_in_profile(tmp
     from hermes_agent.gateway.session_mutation_model import prepare_model
     from hermes_agent.gateway.session_policy import build_policy, restore_policy
     from hermes_agent.hermes_state import SessionDB
-    from hermes_cli import model_switch
+    from hermes_agent.hermes_cli import model_switch
     old_url, far_url = 'http://127.0.0.1:9/v1', 'http://127.0.0.3:9/v1'
     (tmp_path / 'config.yaml').write_text(
         f'model_aliases:\n  Far: {{model: far-model, provider: custom, base_url: "{far_url}", api_key: sk-far-literal}}\n')

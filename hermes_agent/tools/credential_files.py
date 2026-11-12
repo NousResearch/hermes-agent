@@ -16,7 +16,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
-from hermes_cli.config import cfg_get
+from hermes_agent.hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_dir, get_hermes_home
 
 from hermes_agent.agent.provider_media import GENERATED_SUBDIR, MEDIA_CACHE_MAX_AGE_HOURS
@@ -132,7 +132,7 @@ def _load_config_files() -> list[dict[str, str]]:
 
     result: list[dict[str, str]] = []
     try:
-        from hermes_cli.config import read_raw_config
+        from hermes_agent.hermes_cli.config import read_raw_config
         hermes_home = get_hermes_home()
         cred_files = cfg_get(read_raw_config(), "terminal", "credential_files")
         for item in cred_files if isinstance(cred_files, list) else []:

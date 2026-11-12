@@ -13,7 +13,7 @@ from datetime import datetime
 
 import pytest
 
-from hermes_cli.inventory import build_model_options_payload, load_picker_context
+from hermes_agent.hermes_cli.inventory import build_model_options_payload, load_picker_context
 
 
 def _pool_entry(provider: str, cooldown: str, model: str = "some-model") -> dict:
@@ -93,16 +93,16 @@ def test_kept_row_says_which_limit_and_when_it_resets(pooled_home, provider):
 
 def test_picker_visibility_keeps_the_full_custom_probe_budget(monkeypatch):
     """Keeping cooldown rows visible must not shorten the current custom endpoint's live probe."""
-    monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids", lambda *_a, **_kw: [])
-    monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda *_a, **_kw: [])
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
-    monkeypatch.setattr("hermes_cli.models_local.fetch_ollama_local_models", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.cached_provider_model_ids", lambda *_a, **_kw: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.provider_model_ids", lambda *_a, **_kw: [])
+    monkeypatch.setattr("hermes_agent.hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.models_local.fetch_ollama_local_models", lambda *_a, **_kw: None)
 
     def answers_after_1_5s(_api_key, _api_url, _native, _preserve, headers=None, timeout=5.0,
                            api_mode=None, **_kw):
         return ["slow-discovered-model"] if timeout >= 5.0 else None
 
-    monkeypatch.setattr("hermes_cli.model_switch_providers._fetch_picker_live_models", answers_after_1_5s)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch_providers._fetch_picker_live_models", answers_after_1_5s)
     ctx = load_picker_context().with_overrides(
         current_provider="custom", current_base_url="http://127.0.0.1:9999/v1", current_model="kept-model")
 

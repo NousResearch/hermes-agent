@@ -18,7 +18,7 @@ from unittest.mock import patch
 # scope. Under the test runner argv (`pytest …`) it's a no-op, but we import
 # at file scope so individual tests don't race the import side-effect with
 # their `patch("os.write")` context.
-from hermes_cli.main import _suppress_mouse_residue_early
+from hermes_agent.hermes_cli.main import _suppress_mouse_residue_early
 
 class TestEarlyMouseDisable:
 

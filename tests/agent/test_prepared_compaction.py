@@ -128,7 +128,7 @@ def test_flag_off_leaves_compression_inline_and_stateless():
 
 def test_config_flag_reaches_the_compressor_through_the_loader(tmp_path, monkeypatch):
     from hermes_agent.agent.agent_init import _parse_compression_config
-    from hermes_cli.config import DEFAULT_CONFIG, load_config_readonly
+    from hermes_agent.hermes_cli.config import DEFAULT_CONFIG, load_config_readonly
 
     agent = SimpleNamespace(model="m", provider="openrouter", api_mode="chat_completions", quiet_mode=True)
     assert DEFAULT_CONFIG["compression"]["prepare_ahead"] is False

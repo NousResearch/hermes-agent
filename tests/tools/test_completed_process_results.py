@@ -184,7 +184,7 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path, request):
     try:
         producer = subprocess.run([
             sys.executable, "-c",
-            "import cli; cli.main(query='Run the background review', quiet=True, "
+            "from hermes_agent import cli; cli.main(query='Run the background review', quiet=True, "
             "oneshot=True, provider='custom', model='test-model', api_key='local-test-only', "
             f"base_url={url!r}, toolsets='terminal', max_turns=3, ignore_rules=True)",
         ], cwd=tmp_path, env=env, stdin=subprocess.DEVNULL,

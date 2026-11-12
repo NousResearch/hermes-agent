@@ -1,7 +1,7 @@
 import asyncio
 import threading
 
-from hermes_cli.web_routers import status
+from hermes_agent.hermes_cli.web_routers import status
 
 
 def test_get_logs_yields_while_reading_and_filtering(tmp_path, monkeypatch):
@@ -16,8 +16,8 @@ def test_get_logs_yields_while_reading_and_filtering(tmp_path, monkeypatch):
         assert loop_ran.wait(2), "log reading blocked the event loop"
         return ["fixture"]
 
-    import hermes_cli.logs
-    monkeypatch.setattr(hermes_cli.logs, "_read_tail", blocking_read)
+    import hermes_agent.hermes_cli.logs
+    monkeypatch.setattr(hermes_agent.hermes_cli.logs, "_read_tail", blocking_read)
 
     async def exercise():
         asyncio.get_running_loop().call_soon(loop_ran.set)

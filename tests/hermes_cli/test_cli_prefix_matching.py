@@ -1,6 +1,6 @@
 """Tests for slash command prefix matching in HermesCLI.process_command."""
 from unittest.mock import MagicMock, patch
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _make_cli():
@@ -34,7 +34,7 @@ class TestSlashCommandPrefixMatching:
         printed = []
         cli_obj.console.print = lambda *a, **kw: printed.append(str(a))
 
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
         with patch.object(cli_mod, '_skill_commands', fake_skill):
             cli_obj.process_command("/test-skill-xy")
 
@@ -48,7 +48,7 @@ class TestSlashCommandPrefixMatching:
         cli_obj = _make_cli()
         fake_skill = {"/quint-pipeline": {"name": "Quint Pipeline", "description": "test"}}
 
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
         with patch.object(cli_mod, '_skill_commands', fake_skill):
             # /quit is caught by the exact "/quit" branch → process_command returns False
             result = cli_obj.process_command("/qui")
@@ -62,7 +62,7 @@ class TestSlashCommandPrefixMatching:
         """/re matches /reset and /retry (both 6 chars) — no unique shortest, stays ambiguous."""
         cli_obj = _make_cli()
         printed = []
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
         with patch.object(cli_mod, '_cprint', side_effect=lambda t: printed.append(t)):
             cli_obj.process_command("/re")
         combined = " ".join(printed)
@@ -72,7 +72,7 @@ class TestSlashCommandPrefixMatching:
         """/help typed with /help-extra skill installed → exact match wins."""
         cli_obj = _make_cli()
         fake_skill = {"/help-extra": {"name": "Help Extra", "description": ""}}
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
         with patch.object(cli_mod, '_skill_commands', fake_skill), \
              patch.object(cli_obj, 'show_help') as mock_help:
             cli_obj.process_command("/help")

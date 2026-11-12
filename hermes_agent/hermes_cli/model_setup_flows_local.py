@@ -1,7 +1,7 @@
 """``hermes model`` → Local models: the desktop's Local Models setup, in the terminal.
 
 The flow drives the handlers behind the desktop's Local Models pane
-(``hermes_cli/web_routers/local_models.py``) in-process, so both surfaces run one code path:
+(``hermes_agent/hermes_cli/web_routers/local_models.py``) in-process, so both surfaces run one code path:
 the catalog priced for this machine, quickstart (pinned engine via PM, model download, server
 start, default assignment) and activate for a model already on disk. Progress renders from the
 same job view the desktop polls; Ctrl+C pauses a download, and the next run resumes from the
@@ -21,7 +21,7 @@ def local_models_available() -> bool:
     """Whether PM pins an engine for this machine at all. CPU is pinned on every target that has
     any build, so its absence means no backend can install; GPU detection waits for selection."""
     try:
-        from hermes_cli.local_runtime.binaries import unavailable_reason
+        from hermes_agent.hermes_cli.local_runtime.binaries import unavailable_reason
 
         return unavailable_reason("cpu") is None
     except Exception:
@@ -120,9 +120,9 @@ def _model_flow_local(config, current_model=""):
     """Pick a catalog model sized for this machine (or one already on disk) and make it the default,
     installing the pinned engine and downloading the model as needed."""
     del config, current_model
-    from hermes_cli.main_provider_setup import _prompt_provider_choice
-    from hermes_cli.setup import prompt_yes_no
-    from hermes_cli.web_routers import local_models as lm
+    from hermes_agent.hermes_cli.main_provider_setup import _prompt_provider_choice
+    from hermes_agent.hermes_cli.setup import prompt_yes_no
+    from hermes_agent.hermes_cli.web_routers import local_models as lm
 
     hw = lm.local_models_hardware()
     status = lm.local_models_status()

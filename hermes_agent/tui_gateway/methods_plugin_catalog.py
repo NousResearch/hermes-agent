@@ -21,8 +21,8 @@ _profile_scoped = _registry.profile_scoped
 @method("plugins.catalog.lookup")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    from hermes_cli.plugin_catalog import load_catalog_live, match_removed, resolved_removed_entries
-    from hermes_cli.plugins_cmd_catalog import looks_like_catalog_name
+    from hermes_agent.hermes_cli.plugin_catalog import load_catalog_live, match_removed, resolved_removed_entries
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import looks_like_catalog_name
 
     name = str(params.get("name") or "").strip()
     if not looks_like_catalog_name(name):  # the same rule `hermes plugins install <name>` applies

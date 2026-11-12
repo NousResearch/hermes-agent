@@ -11,7 +11,7 @@ import importlib
 import os
 
 import pytest
-from hermes_cli import main_tui_launch
+from hermes_agent.hermes_cli import main_tui_launch
 
 
 @pytest.fixture(autouse=True)
@@ -35,9 +35,9 @@ def _isolate_kanban_board_env():
 
 
 def test_pin_writes_resolved_board_when_env_unset(monkeypatch):
-    main_mod = importlib.import_module("hermes_cli.main")
+    main_mod = importlib.import_module("hermes_agent.hermes_cli.main")
 
-    import hermes_cli.kanban_db as kdb
+    import hermes_agent.hermes_cli.kanban_db as kdb
     monkeypatch.setattr(kdb, "get_current_board", lambda: "space")
 
     main_tui_launch._pin_kanban_board_env()
@@ -47,9 +47,9 @@ def test_pin_writes_resolved_board_when_env_unset(monkeypatch):
 
 def test_pin_does_not_overwrite_existing_env(monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_BOARD", "preset")
-    main_mod = importlib.import_module("hermes_cli.main")
+    main_mod = importlib.import_module("hermes_agent.hermes_cli.main")
 
-    import hermes_cli.kanban_db as kdb
+    import hermes_agent.hermes_cli.kanban_db as kdb
 
     def _explode():
         raise AssertionError("get_current_board must not be called when env is set")

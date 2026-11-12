@@ -478,7 +478,7 @@ def _builtin_session(provider: str, stt_config: dict[str, Any], language: Option
         model = str(section.get("streaming_model") or DEFAULT_OPENAI_STREAMING_MODEL)
         return OpenAIRealtimeSession(creds[0], creds[1], model, language, prompt, on_partial)
     if provider == "xai":
-        from hermes_cli.config import get_env_value
+        from hermes_agent.hermes_cli.config import get_env_value
         api_key = str(get_env_value("XAI_API_KEY") or "").strip()  # API key only, like the Desktop wire
         if not api_key:
             return None

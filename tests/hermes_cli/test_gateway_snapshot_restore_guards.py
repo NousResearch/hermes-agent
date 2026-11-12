@@ -3,13 +3,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.backup import create_quick_snapshot
-from hermes_cli.cli_commands_mixin import CLICommandsMixin
-from hermes_cli.gateway_client import GatewayClientError
-from hermes_cli.gateway_connection import GatewayConnection
-from hermes_cli.gateway_runtime import GatewayDiscovery, GatewayEndpoint
-from hermes_cli.gateway_session_store import GatewaySessionStore
-from hermes_cli.profiles import parked_marker_path
+from hermes_agent.hermes_cli.backup import create_quick_snapshot
+from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
+from hermes_agent.hermes_cli.gateway_client import GatewayClientError
+from hermes_agent.hermes_cli.gateway_connection import GatewayConnection
+from hermes_agent.hermes_cli.gateway_runtime import GatewayDiscovery, GatewayEndpoint
+from hermes_agent.hermes_cli.gateway_session_store import GatewaySessionStore
+from hermes_agent.hermes_cli.profiles import parked_marker_path
 
 
 class _Connection:
@@ -74,7 +74,7 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
     control_home = str(tmp_path) if satellite else str(home)
     endpoint = GatewayEndpoint(str(home), "owner", 5, 1, "http://127.0.0.1:1", "none",
                                frozenset({"session-authority-v1"}), control_home)
-    monkeypatch.setattr("hermes_cli.gateway_runtime.discover_gateway_endpoint",
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_runtime.discover_gateway_endpoint",
                         lambda home: GatewayDiscovery("ready", endpoint))
     monkeypatch.setattr(GatewayConnection, "shared", classmethod(lambda cls: _Connection()))
     monkeypatch.setattr("hermes_agent.gateway.control_socket.identify_gateway", lambda h, **kw: {
@@ -95,8 +95,8 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
         return {"pending": True}
     monkeypatch.setattr("hermes_agent.gateway.control_socket.request_unserve_profile", unserve)
     monkeypatch.setattr("hermes_agent.gateway.control_socket.request_serve_profile_hot", serve)
-    monkeypatch.setattr("hermes_cli.profiles_remove.wait_profile_unowned", lambda home: True)
-    monkeypatch.setattr("hermes_cli.backup.restore_quick_snapshot",
+    monkeypatch.setattr("hermes_agent.hermes_cli.profiles_remove.wait_profile_unowned", lambda home: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.backup.restore_quick_snapshot",
                         restore or (lambda sid: pytest.fail("restore ran without the identified owner's handoff")))
 
     target = "../outside" if case == "invalid-id" else snapshot
@@ -117,7 +117,7 @@ def test_restore_reply_follows_the_restore_not_the_rejoin(tmp_path, monkeypatch,
 
 
 def test_rejoin_of_a_compressed_session_keeps_undo_counts(monkeypatch):
-    from hermes_cli.cli_snapshot import _rejoin_cli
+    from hermes_agent.hermes_cli.cli_snapshot import _rejoin_cli
     rows = [{"row_id": 1, "role": "user", "content": "OLD", "archived": True},
             {"row_id": 2, "role": "assistant", "content": "OLD answer", "archived": True},
             {"row_id": 3, "role": "user", "content": "summary of OLD"},
@@ -131,7 +131,7 @@ def test_rejoin_of_a_compressed_session_keeps_undo_counts(monkeypatch):
 
     store = GatewaySessionStore(Connection())
     store.snapshots["kept"] = snapshot  # the restored session, already resumed
-    monkeypatch.setattr("hermes_cli.gateway_tools.bind_session", lambda cli, connection: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_tools.bind_session", lambda cli, connection: None)
     cli = SimpleNamespace(session_id="kept", conversation_history=[])
 
     _rejoin_cli(cli, store)

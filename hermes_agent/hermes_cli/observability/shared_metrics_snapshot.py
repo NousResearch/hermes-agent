@@ -59,7 +59,7 @@ def _skill_count() -> int:
 
 
 def _profile_count() -> int:
-    from hermes_cli.profiles import list_profile_names
+    from hermes_agent.hermes_cli.profiles import list_profile_names
 
     return len(list_profile_names())
 

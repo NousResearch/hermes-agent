@@ -12,9 +12,9 @@ from fastapi import HTTPException
 
 
 def test_no_backend_surface_offers_skills_hub_slot():
-    from hermes_cli.config_defaults import DEFAULT_CONFIG
-    from hermes_cli.main_provider_setup import _AUX_TASKS
-    from hermes_cli.web_server_config import _AUX_TASK_SLOTS
+    from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_agent.hermes_cli.main_provider_setup import _AUX_TASKS
+    from hermes_agent.hermes_cli.web_server_config import _AUX_TASK_SLOTS
 
     assert "skills_hub" not in DEFAULT_CONFIG["auxiliary"]
     assert "skills_hub" not in {key for key, _name, _desc in _AUX_TASKS}
@@ -27,8 +27,8 @@ def test_leftover_skills_hub_block_is_kept_but_never_acted_on(tmp_path, monkeypa
     leftover = {"provider": "openrouter", "model": "some/model"}
     (home / "config.yaml").write_text(yaml.safe_dump({"auxiliary": {"skills_hub": leftover}}))
     monkeypatch.setenv("HERMES_HOME", str(home))
-    from hermes_cli.config import load_config
-    from hermes_cli.web_server_config import _apply_aux_assignment_sync, _stale_aux_pins
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.web_server_config import _apply_aux_assignment_sync, _stale_aux_pins
 
     cfg = load_config()
     assert cfg["auxiliary"]["skills_hub"]["model"] == "some/model"

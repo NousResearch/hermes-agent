@@ -10,7 +10,7 @@ import pytest
 
 from hermes_agent.agent import onboarding_record
 from hermes_agent.agent.onboarding_flow import PENDING, Answered, Facts, Shown
-from hermes_cli.config import read_user_config_raw
+from hermes_agent.hermes_cli.config import read_user_config_raw
 from hermes_agent.tui_gateway import server
 
 FACTS = Facts(os="macos", arch="arm64", machine_kind="Mac", plugins=())
@@ -45,7 +45,7 @@ def client(root, monkeypatch):
 
     monkeypatch.setitem(server._methods, "session.resume", resume)
     monkeypatch.setitem(server._methods, "prompt.submit", submit)
-    from hermes_cli.process_identity import serving_local_desktop
+    from hermes_agent.hermes_cli.process_identity import serving_local_desktop
     with serving_local_desktop(True):  # the local Desktop's requests: only it starts a first run
         yield calls
 

@@ -8,9 +8,9 @@ import tempfile
 
 import pytest
 
-from hermes_cli import config as config_api
-from hermes_cli import gateway
-from hermes_cli import gateway_setup_service as setup_service
+from hermes_agent.hermes_cli import config as config_api
+from hermes_agent.hermes_cli import gateway
+from hermes_agent.hermes_cli import gateway_setup_service as setup_service
 
 
 @pytest.fixture
@@ -78,7 +78,7 @@ def test_import_and_ordinary_setup_never_authorize_install(supervisor, choice, i
     assert setup_service.ensure_gateway_service() is installed
     assert setup_service.ensure_gateway_service(interactive=True) is installed
     assert setup_service.ensure_gateway_service(context="import", install=True) is installed
-    from hermes_cli.backup import _revive_gateway_after_import
+    from hermes_agent.hermes_cli.backup import _revive_gateway_after_import
     _revive_gateway_after_import(profile)
     assert gateway.get_systemd_unit_path().exists() is installed
     forbidden = {"enable", "enable-linger", "daemon-reload"}

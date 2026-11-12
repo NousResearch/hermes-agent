@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-logger = logging.getLogger("hermes_cli.auth")
+logger = logging.getLogger("hermes_agent.hermes_cli.auth")
 
 IDLE, PENDING, RETRYING, CLAIMED, GONE, FAILED = "idle", "pending", "retrying", "claimed", "gone", "failed"
 _ACTIVE = frozenset({PENDING, RETRYING})
@@ -76,7 +76,7 @@ def _home_key() -> str:
 
 
 def _records_path() -> Path:
-    from hermes_cli.auth_nous import _nous_shared_store_path
+    from hermes_agent.hermes_cli.auth_nous import _nous_shared_store_path
     return _nous_shared_store_path().with_name(HANDOFF_FILENAME)
 
 
@@ -98,7 +98,7 @@ def _update(path: Path, key: str, change) -> Optional[dict[str, Any]]:
     """Apply *change(record) -> record | None* to one record under the records lock and return what
     was written (None: nothing written). The innermost lock: the hook takes it under the auth-store
     locks, and it never holds another lock itself."""
-    from hermes_cli.auth import _file_lock, _save_private_json
+    from hermes_agent.hermes_cli.auth import _file_lock, _save_private_json
     with _file_lock(path.with_suffix(".lock"), _records_lock_holder, 15.0, f"Timed out waiting for {path.name}"):
         data = _load(path)
         record = change(data["records"].get(key))
@@ -115,14 +115,14 @@ def note_store_write(auth_store: dict[str, Any], provider_id: str, state: Any) -
     """``auth._store_provider_state``'s hook: the Nous state the store holds now is the one replaced
     (the profile's own, else the root store's it falls back to)."""
     if provider_id == "nous":
-        from hermes_cli.auth import _load_provider_state
+        from hermes_agent.hermes_cli.auth import _load_provider_state
         note_replacement(_load_provider_state(auth_store, "nous"), state)
 
 
 def note_replacement(previous: Any, new: Any) -> None:
     """Record that a non-guest Nous state replaced the guest *previous*. Idempotent per ``anon_``
     credential; a finished record is never reopened."""
-    from hermes_cli.anon_auth import is_guest_state
+    from hermes_agent.hermes_cli.anon_auth import is_guest_state
     if not is_guest_state(previous) or is_guest_state(new) or not isinstance(new, dict):
         return
     anon_token = previous.get("anon_token")
@@ -162,8 +162,8 @@ def drain() -> list[dict[str, Any]]:
 
 
 def _run_one(path: Path, key: str) -> Optional[dict[str, Any]]:
-    from hermes_cli.auth import get_provider_auth_state
-    from hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli.auth import get_provider_auth_state
+    from hermes_agent.hermes_cli.auth_constants import AuthError
     try:
         bearer = _bearer()
     except (AuthError, TimeoutError) as exc:  # a busy store lock defers the move like a missing token
@@ -193,7 +193,7 @@ def _reserve(record: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
 
 
 def _bearer(*, force: bool = False) -> str:
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
     # The resolver's 5 s memo can still hold the guest's token from just before the save.
     with auth._RESOLVE_TOKEN_CACHE_LOCK:
         auth._RESOLVE_TOKEN_CACHE.pop(_home_key(), None)
@@ -205,7 +205,7 @@ def _bearer(*, force: bool = False) -> str:
 
 def _refresh_account_token() -> None:
     """The account's token picks up the carried cohort only on its next mint, so mint it now."""
-    from hermes_cli.auth_constants import AuthError
+    from hermes_agent.hermes_cli.auth_constants import AuthError
     try:
         _bearer(force=True)
     except AuthError as exc:
@@ -214,10 +214,10 @@ def _refresh_account_token() -> None:
 
 def _post(anon_token: str, bearer: str, account: dict[str, Any]) -> tuple[str, dict[str, Any], Optional[float]]:
     from hermes_agent.agent.retry_utils import parse_retry_after_seconds
-    from hermes_cli.anon_auth import _anon_headers
-    from hermes_cli.auth import _nous_portal_base_url, _resolve_verify
-    from hermes_cli.auth_constants import httpx
-    from hermes_cli.auth_nous import _nous_http_client
+    from hermes_agent.hermes_cli.anon_auth import _anon_headers
+    from hermes_agent.hermes_cli.auth import _nous_portal_base_url, _resolve_verify
+    from hermes_agent.hermes_cli.auth_constants import httpx
+    from hermes_agent.hermes_cli.auth_nous import _nous_http_client
     verify = _resolve_verify(insecure=None, ca_bundle=None, auth_state=account)
     try:
         with _nous_http_client(CLAIM_TIMEOUT_SECONDS, verify) as client:

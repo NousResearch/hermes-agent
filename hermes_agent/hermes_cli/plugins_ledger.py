@@ -1,5 +1,5 @@
 """Registration ownership ledger and unload: every plugin registration is recorded with its inverse so force
-reload / targeted unload unwind registries in reverse order. Mixed into :class:`hermes_cli.plugins.PluginManager`.
+reload / targeted unload unwind registries in reverse order. Mixed into :class:`hermes_agent.hermes_cli.plugins.PluginManager`.
 """
 
 from __future__ import annotations
@@ -11,13 +11,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Union
 
 from hermes_agent.registration_lifecycle import replacement_coordinator
-from hermes_cli.plugins_loader import _plugin_home_scope
-from hermes_cli.plugins_manifest import PluginManifest, manifest_key
+from hermes_agent.hermes_cli.plugins_loader import _plugin_home_scope
+from hermes_agent.hermes_cli.plugins_manifest import PluginManifest, manifest_key
 
 if TYPE_CHECKING:  # pragma: no cover
-    from hermes_cli.plugins import LoadedPlugin
+    from hermes_agent.hermes_cli.plugins import LoadedPlugin
 
-logger = logging.getLogger("hermes_cli.plugins")
+logger = logging.getLogger("hermes_agent.hermes_cli.plugins")
 
 
 def _hook_source_of(name: str, module: Any) -> Optional[tuple]:
@@ -235,7 +235,7 @@ class PluginLedgerMixin:
 
     def _dispose_registrations(self, registrations: list[PluginRegistration]) -> None:
         """Dispose registrations in reverse acquisition order, best effort."""
-        from hermes_cli.plugins import _PLUGINS_DEBUG
+        from hermes_agent.hermes_cli.plugins import _PLUGINS_DEBUG
         for registration in reversed(registrations):
             try:
                 registration.dispose()
@@ -247,7 +247,7 @@ class PluginLedgerMixin:
 
     @staticmethod
     def _resolve_plugin_key(plugin: str | PluginManifest | LoadedPlugin) -> str:
-        from hermes_cli.plugins import LoadedPlugin
+        from hermes_agent.hermes_cli.plugins import LoadedPlugin
         if isinstance(plugin, LoadedPlugin):
             return manifest_key(plugin.manifest)
         return manifest_key(plugin) if isinstance(plugin, PluginManifest) else str(plugin)

@@ -1,4 +1,4 @@
-"""Ink's gateway bootstrap: a thin wrapper over ``hermes_cli.gateway_runtime_attach.attach_gateway``,
+"""Ink's gateway bootstrap: a thin wrapper over ``hermes_agent.hermes_cli.gateway_runtime_attach.attach_gateway``,
 the attach ``hermes gateway attach`` runs. The child is a client, never an agent owner.
 
 ``--start`` ensures the owner (first launch). A reconnect discovers only, except ``--recover``
@@ -42,9 +42,9 @@ def bootstrap(start: bool, recover: bool = False) -> dict:
         # client retries: a one-off read error must not end the TUI's gateway for its lifetime.
         raise ImportError(f"dependency environment unavailable: {exc}") from exc
     from hermes_constants import get_hermes_home
-    from hermes_cli.gateway_client import gateway_ws_target
-    from hermes_cli.gateway_runtime import GatewayDiscovery
-    from hermes_cli.gateway_runtime_attach import (GatewayAttach, TicketUnavailable, attach_gateway,
+    from hermes_agent.hermes_cli.gateway_client import gateway_ws_target
+    from hermes_agent.hermes_cli.gateway_runtime import GatewayDiscovery
+    from hermes_agent.hermes_cli.gateway_runtime_attach import (GatewayAttach, TicketUnavailable, attach_gateway,
                                                    failure_message, scrub_client_launch_env)
 
     scrub_client_launch_env()

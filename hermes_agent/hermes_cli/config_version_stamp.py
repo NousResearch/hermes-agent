@@ -1,6 +1,6 @@
 """The config schema-version stamp: raw reads of ``_config_version`` from config.yaml.
 
-Split out of :mod:`hermes_cli.config` (code-health size ratchet); ``hermes_cli.config``
+Split out of :mod:`hermes_agent.hermes_cli.config` (code-health size ratchet); ``hermes_agent.hermes_cli.config``
 late-imports these and re-exports them, and :mod:`scripts.docker_config_migrate` reads the
 raw stamp directly. ``_coerce_config_version`` stays module-private here.
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG
+from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG
 
 
 def _coerce_config_version(value) -> int:
@@ -29,8 +29,8 @@ def read_config_version_stamp(*, raise_on_parse_error: bool = False) -> tuple[Op
     never-stamped current-schema file, not an ancient install — ``migrate_config()`` gives it only
     the legacy-key steps). A missing file, or malformed YAML under a tolerant caller, reads as
     ``latest`` exactly as ``check_config_version()`` always reported it."""
-    from hermes_cli.config import InvalidUserConfigError, _warn_config_parse_failure, get_config_path
-    from hermes_cli.config_backend import config_exists, read_config_doc
+    from hermes_agent.hermes_cli.config import InvalidUserConfigError, _warn_config_parse_failure, get_config_path
+    from hermes_agent.hermes_cli.config_backend import config_exists, read_config_doc
 
     latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
     config_path = get_config_path()
@@ -87,8 +87,8 @@ def note_first_stamp(home, on_disk: dict, to_write: dict) -> list[str]:
     from hermes_agent.agent.safe_worker_policy import worker_config_snapshot
     if worker_config_snapshot() is not None:
         return []  # a frozen worker never reads the profile's files; its owner migrates the home
-    from hermes_cli.config_migrations_browser import adopt_agent_browser_env
-    from hermes_cli.left_core_migration import LEFT_CORE, record_core_use
+    from hermes_agent.hermes_cli.config_migrations_browser import adopt_agent_browser_env
+    from hermes_agent.hermes_cli.left_core_migration import LEFT_CORE, record_core_use
     for version in sorted({feature.left_at for feature in LEFT_CORE if feature.left_at}):
         record_core_use(home, to_write, version)
     return adopt_agent_browser_env(home, to_write)
@@ -99,8 +99,8 @@ def stamp_missing_config() -> bool:
     runs on the home. When its .env still carries AGENT_BROWSER_* settings, create config.yaml with its
     first stamp (:func:`note_first_stamp`) now, before callers trust that shortcut, or the browser those
     settings chose is lost. A home without them stays without a config.yaml. Returns whether one was written."""
-    from hermes_cli.config import _secure_file, atomic_config_write, get_config_path, is_managed
-    from hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.config import _secure_file, atomic_config_write, get_config_path, is_managed
+    from hermes_agent.hermes_cli.config_backend import config_exists
     path = get_config_path()
     if config_exists(path) or is_managed():
         return False

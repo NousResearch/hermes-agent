@@ -59,7 +59,7 @@ class CommandDef:
     # "interrupt_then_dispatch" = interrupt first (/stop, /new, /reset; Guard 1, platforms/base.py).
     busy_policy: str = "reject"
     busy_handler: str | None = None  # key of a special mid-run handler in Guard-2 table
-    # Key in ``hermes_cli.slash_exec.EXECUTORS`` (a string, not a callable: keeps this module
+    # Key in ``hermes_agent.hermes_cli.slash_exec.EXECUTORS`` (a string, not a callable: keeps this module
     # import-light for the gateway).
     execute: str | None = None
     argument_mode: str | None = None  # desktop composer: options|text|mixed; None inferred
@@ -437,7 +437,7 @@ def build_commands() -> dict[str, str]:
 
 
 # ``COMMANDS`` / ``COMMANDS_BY_CATEGORY`` resolve lazily through the module ``__getattr__`` below so
-# every ``from hermes_cli.commands import COMMANDS`` sees the active language.
+# every ``from hermes_agent.hermes_cli.commands import COMMANDS`` sees the active language.
 _LAZY_LOCALIZED_TABLES = {"COMMANDS": build_commands, "COMMANDS_BY_CATEGORY": build_commands_by_category}
 
 # Subcommands lookup: "/cmd" -> ["sub1", ...]; explicit ``subcommands`` first (in
@@ -510,7 +510,7 @@ def _resolve_config_gates() -> set[str]:
     if not gated:
         return set()
     try:
-        from hermes_cli.config import cfg_get, read_raw_config
+        from hermes_agent.hermes_cli.config import cfg_get, read_raw_config
         cfg = read_raw_config()
     except Exception:
         return set()
@@ -557,7 +557,7 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     """(name, description, args_hint) for ``PluginContext.register_command`` slash commands.
     Lazy so importing this module never forces plugin discovery."""
     try:
-        from hermes_cli.plugins import get_plugin_commands
+        from hermes_agent.hermes_cli.plugins import get_plugin_commands
         commands = get_plugin_commands() or {}
     except Exception:
         return []

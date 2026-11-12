@@ -10,8 +10,8 @@ def homes(tmp_path, monkeypatch):
     managed.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
-    import hermes_cli.config as cfg
-    from hermes_cli import managed_scope
+    import hermes_agent.hermes_cli.config as cfg
+    from hermes_agent.hermes_cli import managed_scope
 
     cfg._LOAD_CONFIG_CACHE.clear()
     cfg._RAW_CONFIG_CACHE.clear()
@@ -24,7 +24,7 @@ def homes(tmp_path, monkeypatch):
 
 
 def test_config_set_managed_key_rejected(homes, capsys):
-    from hermes_cli.config import set_config_value
+    from hermes_agent.hermes_cli.config import set_config_value
 
     with pytest.raises(SystemExit) as exc:
         set_config_value("model.default", "user/override")
@@ -49,14 +49,14 @@ def env_homes(tmp_path, monkeypatch):
     (managed / ".env").write_text(
         "OPENAI_API_BASE=https://org.example/v1\n", encoding="utf-8"
     )
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
 
     managed_scope.invalidate_managed_cache()
     return home, managed
 
 
 def test_save_env_value_managed_key_rejected(env_homes, capsys):
-    from hermes_cli.config import save_env_value, get_env_path
+    from hermes_agent.hermes_cli.config import save_env_value, get_env_path
 
     save_env_value("OPENAI_API_BASE", "https://user.example/v1")
     assert "managed" in capsys.readouterr().err.lower()
@@ -80,8 +80,8 @@ def pinned_env(tmp_path, monkeypatch):
     stale top-level config.yaml copy of the channel."""
     import json
 
-    import hermes_cli.config as cfg
-    from hermes_cli import managed_scope
+    import hermes_agent.hermes_cli.config as cfg
+    from hermes_agent.hermes_cli import managed_scope
 
     home, managed = tmp_path / "home", tmp_path / "managed"
     home.mkdir()
@@ -121,7 +121,7 @@ def _assert_user_stores_untouched(home, before):
 def test_api_env_write_of_locked_key_is_refused_and_writes_nothing(pinned_env, monkeypatch, method, lock, refusal):
     from fastapi.testclient import TestClient
 
-    from hermes_cli.web_server import _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.web_server import _SESSION_TOKEN, app
 
     if lock == "install":
         monkeypatch.setenv("HERMES_MANAGED", "nixos")
@@ -141,8 +141,8 @@ def anthropic_homes(tmp_path, monkeypatch):
     """A user home whose auth.json holds a manually added anthropic key, and an empty managed dir."""
     import json
 
-    import hermes_cli.config as cfg
-    from hermes_cli import managed_scope
+    import hermes_agent.hermes_cli.config as cfg
+    from hermes_agent.hermes_cli import managed_scope
 
     home, managed = tmp_path / "home", tmp_path / "managed"
     home.mkdir()

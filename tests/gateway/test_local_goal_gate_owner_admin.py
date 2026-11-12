@@ -94,7 +94,7 @@ async def test_messaging_goal_gate_add_stays_admin_only():
     runner._get_goal_manager_for_event = _mgr_for
     runner._run_in_executor_with_context = _inline
     source = SessionSource(platform=Platform.TELEGRAM, chat_id='c', user_id='u', chat_type='dm')
-    with patch('hermes_cli.goals.last_user_message_from_db', lambda _sid: None):
+    with patch('hermes_agent.hermes_cli.goals.last_user_message_from_db', lambda _sid: None):
         out = await runner._handle_goal_command(MessageEvent(text='/goal gate add true', source=source))
     assert mgr.added == []
     assert 'admin' in out.lower()

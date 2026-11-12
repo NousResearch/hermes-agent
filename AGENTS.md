@@ -95,7 +95,7 @@ all profile-aware via `get_hermes_home()`.
 
 Every former god file is a **facade** (public entry points + the names other packages import) plus
 **siblings** `<stem>_<topic>.py`, each owning one topic (the tree above, `hermes_agent/gateway/run.py`,
-`hermes_agent/tools/mcp_tool.py`, `hermes_cli/kanban.py`, `hermes_cli/web_server.py`).
+`hermes_agent/tools/mcp_tool.py`, `hermes_agent/hermes_cli/kanban.py`, `hermes_agent/hermes_cli/web_server.py`).
 
 - **Find code by topic:** `grep -rn "def name" <dir>/<stem>_*.py`, not by reading the facade.
 - **Siblings late-import the facade** inside functions; never a module-level cycle.
@@ -113,7 +113,7 @@ Every former god file is a **facade** (public entry points + the names other pac
 - **No defensive clutter:** no wrappers or `try/except: pass` around code that cannot fail, no flags
   nobody sets, no dead code wired in without E2E proof. Comments keep the WHY, cut the WHAT.
 - **Never infer process identity from argv substrings;** use
-  `hermes_agent.gateway.status.looks_like_gateway_command_line` / `hermes_cli.update_cmd._hermes_holder_subcommand`
+  `hermes_agent.gateway.status.looks_like_gateway_command_line` / `hermes_agent.hermes_cli.update_cmd._hermes_holder_subcommand`
   (HX003).
 - **Never hardcode `~/.hermes`:** `get_hermes_home()` for paths, `display_hermes_home()` for text
   (HX001). `_get_profiles_root()` is HOME-anchored on purpose.
@@ -131,7 +131,7 @@ Every former god file is a **facade** (public entry points + the names other pac
   dispatch over condition ladders; desktop keeps routes in `src/app`, atoms in `src/store`, pure
   helpers in `src/lib`.
 - **Don't add core/plugin crossings:** core never imports a specific bundled plugin, and plugins
-  use only the published plugin API (`hermes_cli/data/plugin_api.json`, `ctx`). Existing crossings
+  use only the published plugin API (`hermes_agent/hermes_cli/data/plugin_api.json`, `ctx`). Existing crossings
   are baselined; `scripts/boundary_lint.py` fails the test suite (not `scripts/check`) on new ones.
 - **A new config key or slash command ships with its docs** (`tests/ci/test_docs_drift.py`).
 - **Commits and PRs:** rebase onto `main` before merging (a squash from a stale branch silently
@@ -145,14 +145,14 @@ Every former god file is a **facade** (public entry points + the names other pac
 | Area | Read | Covers |
 |---|---|---|
 | `hermes_agent/run_agent.py`, `hermes_agent/agent/` | `hermes_agent/agent/AGENTS.md` | turn phases, message-flow invariants, compression, model/aux resolution, i18n |
-| `cli.py`, `hermes_cli/` | `hermes_cli/AGENTS.md` | CLI mixins, slash registry, config system, skins, `hermes update`, profiles / multiplex |
+| `cli.py`, `hermes_agent/hermes_cli/` | `hermes_agent/hermes_cli/AGENTS.md` | CLI mixins, slash registry, config system, skins, `hermes update`, profiles / multiplex |
 | `hermes_agent/gateway/` | `hermes_agent/gateway/AGENTS.md` | adapters, message guards, streaming, notifications, token locks, § Profile scope |
 | `plugins/platforms/` new adapter | `hermes_agent/gateway/platforms/ADDING_A_PLATFORM.md` | step-by-step adapter guide |
 | `hermes_agent/tools/`, `hermes_agent/toolsets.py`, `hermes_agent/model_tools.py` | `hermes_agent/tools/AGENTS.md` | adding tools, registry, toolsets, delegation, session-scoped surface tools |
-| `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | plugin kinds, native compat contract, in-tree policy, boundary lint |
+| `plugins/`, `hermes_agent/hermes_cli/plugins*.py` | `plugins/AGENTS.md` | plugin kinds, native compat contract, in-tree policy, boundary lint |
 | `plugin-catalog/` | `plugin-catalog/README.md` | catalog admission rules (mirrored in the developer guide; keep identical) |
 | `hermes_agent/tui_gateway/`, `ui-tui/` | `hermes_agent/tui_gateway/AGENTS.md` | process model, JSON-RPC transport, slash flow |
-| `web/`, `hermes_cli/web_routers/` | `web/AGENTS.md` | dashboard embeds the real TUI |
+| `web/`, `hermes_agent/hermes_cli/web_routers/` | `web/AGENTS.md` | dashboard embeds the real TUI |
 | `apps/desktop/` | `apps/desktop/AGENTS.md`, `apps/desktop/src/AGENTS.md` | state authority, gateway backend contract, slash palette, Bot Mode |
 | `skills/`, `optional-skills/`, `hermes_agent/agent/curator*.py` | `skills/AGENTS.md` | frontmatter, authoring standards, curator |
 | `hermes_agent/cron/`, kanban | `hermes_agent/cron/AGENTS.md` | scheduler invariants, job fields, kanban dispatcher |

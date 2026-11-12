@@ -41,7 +41,7 @@ def _write_hook_script(tmp_path: Path) -> Path:
 
 class TestTTYPromptFlow:
     def test_first_use_prompts_and_approves(self, tmp_path):
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -60,7 +60,7 @@ class TestTTYPromptFlow:
         assert entry["command"] == str(script)
 
     def test_first_use_prompts_and_rejects(self, tmp_path):
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -78,7 +78,7 @@ class TestTTYPromptFlow:
 
     def test_subsequent_use_does_not_prompt(self, tmp_path):
         """After the first approval, re-registration must be silent."""
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -111,7 +111,7 @@ class TestTTYPromptFlow:
 
 class TestNonTTYFlow:
     def test_no_tty_no_flag_skips_registration(self, tmp_path):
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -126,7 +126,7 @@ class TestNonTTYFlow:
 
 
     def test_no_tty_with_env_accepts(self, tmp_path, monkeypatch):
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -165,7 +165,7 @@ def _write_config_with_hook(tmp_path: Path) -> Path:
 
 class TestNeverPromptOutsideForegroundCLI:
     def test_default_registration_declines_without_reading_a_tty_stdin(self, tmp_path, monkeypatch, caplog):
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -181,7 +181,7 @@ class TestNeverPromptOutsideForegroundCLI:
         assert str(shell_hooks.allowlist_path()) in caplog.text  # names the profile home to approve in
 
     def test_opt_in_still_approves_without_a_prompt(self, tmp_path, monkeypatch):
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_hook_script(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -199,7 +199,7 @@ class TestNeverPromptOutsideForegroundCLI:
         """The P0 shape: gateway startup and every secondary-profile load register from the loop
         thread; a prompt there froze the loop until the liveness watchdog exited 75."""
         from hermes_agent.gateway.run_startup import GatewayStartupMixin
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_config_with_hook(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()
@@ -219,7 +219,7 @@ class TestNeverPromptOutsideForegroundCLI:
         assert plugins._plugin_manager._hooks.get("on_session_start", []) == []
 
     def test_force_reload_reregistration_never_prompts(self, tmp_path, monkeypatch, caplog):
-        from hermes_cli import plugins
+        from hermes_agent.hermes_cli import plugins
 
         script = _write_config_with_hook(tmp_path)
         plugins._plugin_manager = plugins.PluginManager()

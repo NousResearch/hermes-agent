@@ -1658,9 +1658,9 @@ Full guide: website/docs/user-guide/messaging/google_chat.md
 
 def interactive_setup() -> None:
     """``hermes setup`` wizard: print GCP instructions, prompt for env vars, persist to ``~/.hermes/.env``."""
-    from hermes_cli.cli_output import print_info, print_success, print_warning, prompt, prompt_yes_no
-    from hermes_cli.config import get_env_value, save_env_value
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from hermes_agent.hermes_cli.cli_output import print_info, print_success, print_warning, prompt, prompt_yes_no
+    from hermes_agent.hermes_cli.config import get_env_value, save_env_value
+    from hermes_agent.hermes_cli.setup_platforms import declines_reconfigure
     if declines_reconfigure("Google Chat", "Reconfigure Google Chat?", "GOOGLE_CHAT_SUBSCRIPTION_NAME"):
         return
     for line in _SETUP_WALKTHROUGH.splitlines():

@@ -21,13 +21,13 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-import hermes_cli.config as _cfg_mod
-import hermes_cli.web_server_cron as _web_server_cron
-from hermes_cli import web_server
+import hermes_agent.hermes_cli.config as _cfg_mod
+import hermes_agent.hermes_cli.web_server_cron as _web_server_cron
+from hermes_agent.hermes_cli import web_server
 import plugins.dashboard_auth.session_token as session_token_plugin
-from hermes_cli.dashboard_auth import ProviderError, TokenPrincipal, clear_providers, register_provider
-from hermes_cli.profiles import get_profile_dir
-from hermes_cli.web_routers import peer as peer_routes
+from hermes_agent.hermes_cli.dashboard_auth import ProviderError, TokenPrincipal, clear_providers, register_provider
+from hermes_agent.hermes_cli.profiles import get_profile_dir
+from hermes_agent.hermes_cli.web_routers import peer as peer_routes
 from hermes_constants import get_hermes_home
 from tests.hermes_cli.conftest_dashboard_auth import StubAuthProvider, _sign
 
@@ -529,7 +529,7 @@ def test_a_multiplexed_profiles_key_from_a_secret_source_is_found(tmp_path, monk
     monkeypatch.delenv("API_SERVER_PORT", raising=False)
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
     monkeypatch.setattr(_web_server_cron, "_cron_default_profile", lambda: "default")
-    from hermes_cli import env_loader
+    from hermes_agent.hermes_cli import env_loader
     monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", lambda _home: None)
     monkeypatch.setattr(env_loader, "get_secret_source_values",
                         lambda home: {"API_SERVER_KEY": "vault-key-0123456789abcdef"} if home == worker_home else {})

@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server
 from tests.hermes_cli import test_plugin_api_consent_gate as consent_gate
 
 daemon = consent_gate.daemon  # the multiplexed daemon stand-in fixture

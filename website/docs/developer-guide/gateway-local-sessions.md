@@ -37,7 +37,7 @@ only to an owner whose `runtime.describe` lists `client` in `session_create.para
 
 The name is stored with the frozen creation request, so it is part of the exact-retry identity
 and survives a restart. `session.info` returns it as `client` (absent when none was sent), and
-plugins read it through `hermes_cli.plugin_session.session_client()` and the `client` /
+plugins read it through `hermes_agent.hermes_cli.plugin_session.session_client()` and the `client` /
 `client_version` keys of prompt-section session info. It is attribution only: `source` still
 picks the session policy (send `source: "tui"` for terminal-client behaviour), and no toolset,
 approval, permission, prompt text or telemetry reads `client`. Hermes does not verify the name,

@@ -14,7 +14,7 @@ from hermes_agent.tools.environments.local_env_policy import _is_hermes_internal
 def load_hermes_env_vars() -> dict[str, str]:
     """``~/.hermes/.env`` values, or ``{}`` — a broken .env must not fail command execution."""
     try:
-        from hermes_cli.config import load_env
+        from hermes_agent.hermes_cli.config import load_env
         return load_env() or {}
     except Exception:
         return {}

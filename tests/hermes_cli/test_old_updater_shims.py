@@ -153,11 +153,11 @@ def test_current_updater_entrypoints_declare_the_handoff_sentinel():
     # The sentinel local looks unused; deleting it would make a current
     # `hermes update` frame hand off to the takeover child mid-run. Assert
     # against the shipped entrypoints in a fresh interpreter: importing
-    # hermes_cli.main probes the checkout's payload manifest, which the
+    # hermes_agent.hermes_cli.main probes the checkout's payload manifest, which the
     # in-process home-I/O guard refuses for worktrees under ~/.hermes.
     code = (
-        "from hermes_cli import main as hermes_main\n"
-        "from hermes_cli import update_cmd\n"
+        "from hermes_agent.hermes_cli import main as hermes_main\n"
+        "from hermes_agent.hermes_cli import update_cmd\n"
         "print('_hermes_current_updater_frame' in "
         "update_cmd._cmd_update_impl.__code__.co_varnames)\n"
         "print('_hermes_current_updater_frame' in "
@@ -172,7 +172,7 @@ def test_current_updater_entrypoints_declare_the_handoff_sentinel():
 @pytest.mark.parametrize("unpack", [False, True], ids=["path-era", "tuple-era"])
 @pytest.mark.parametrize("status", [0, 19])
 def test_ensure_uv_stops_both_historical_return_contracts(unpack, status, fresh_child):
-    from hermes_cli.managed_uv import ensure_uv
+    from hermes_agent.hermes_cli.managed_uv import ensure_uv
 
     fresh_child.returncode = status
     with fresh_child.exits():
@@ -185,7 +185,7 @@ def test_ensure_uv_stops_both_historical_return_contracts(unpack, status, fresh_
 
 
 def test_retired_probes_and_refreshes_do_no_work(no_external_work, tmp_path):
-    from hermes_cli import _install_repair, backup, banner, config, main, update_cmd
+    from hermes_agent.hermes_cli import _install_repair, backup, banner, config, main, update_cmd
     from hermes_agent.tools import browser_tool
 
     assert _install_repair._sync_windows_cli_launchers(tmp_path) == []
@@ -260,7 +260,7 @@ def test_old_updater_retains_its_code_but_loads_new_managed_uv(old_updater, fres
 
 
 def test_live_windows_scan_does_not_use_the_retired_main_alias(monkeypatch, no_external_work):
-    from hermes_cli import main, process_identity, update_cmd_windows
+    from hermes_agent.hermes_cli import main, process_identity, update_cmd_windows
 
     # Routing, not OS emulation: lifecycle fallback accepts rows on any host.
     monkeypatch.setattr(main, "_detect_venv_python_processes", no_external_work)

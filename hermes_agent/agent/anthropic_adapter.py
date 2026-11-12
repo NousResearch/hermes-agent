@@ -28,7 +28,7 @@ from hermes_agent.agent.anthropic_message_convert import (
 )
 from hermes_agent.agent.errors import EmptyStreamError
 
-from hermes_cli.version_info import get_version_info
+from hermes_agent.hermes_cli.version_info import get_version_info
 
 
 # ``import anthropic`` is deliberately NOT at module top: the SDK costs ~220 ms of imports and
@@ -462,7 +462,7 @@ def _custom_provider_extra_headers(base_url) -> dict[str, str]:
     if not base_url:
         return {}
     try:
-        from hermes_cli.config import get_custom_provider_extra_headers
+        from hermes_agent.hermes_cli.config import get_custom_provider_extra_headers
         return get_custom_provider_extra_headers(str(base_url))
     except Exception:
         logger.debug("custom-provider extra_headers skipped for Anthropic client", exc_info=True)

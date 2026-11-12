@@ -2,8 +2,8 @@ import pytest
 
 
 def _set_xai_oauth_unavailable(monkeypatch):
-    from hermes_cli import auth
-    from hermes_cli import auth_xai
+    from hermes_agent.hermes_cli import auth
+    from hermes_agent.hermes_cli import auth_xai
 
     monkeypatch.setattr(auth, "resolve_xai_oauth_runtime_credentials", lambda **_: {})
     monkeypatch.setattr(auth_xai, "resolve_xai_oauth_runtime_credentials", lambda **_: {})
@@ -11,7 +11,7 @@ def _set_xai_oauth_unavailable(monkeypatch):
 
 def test_xai_credentials_fail_closed_without_profile_scope(tmp_path, monkeypatch):
     from hermes_agent.agent import secret_scope
-    from hermes_cli.config import invalidate_env_cache
+    from hermes_agent.hermes_cli.config import invalidate_env_cache
     from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -35,7 +35,7 @@ def test_xai_credentials_do_not_fall_back_to_environ_when_scope_has_no_key(
     tmp_path, monkeypatch
 ):
     from hermes_agent.agent import secret_scope
-    from hermes_cli.config import invalidate_env_cache
+    from hermes_agent.hermes_cli.config import invalidate_env_cache
     from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -95,7 +95,7 @@ def test_prefer_api_key_wins_over_available_oauth(monkeypatch):
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
+        "hermes_agent.hermes_cli.config.get_env_value",
         lambda name, default=None: {"XAI_API_KEY": "paid-key-x1"}.get(name, default),
     )
     _install_fake_oauth_pool(monkeypatch, "oauth-token-x1")
@@ -118,7 +118,7 @@ def test_prefer_api_key_falls_back_to_oauth_without_explicit_key(monkeypatch):
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.config.get_env_value", lambda name, default=None: default
+        "hermes_agent.hermes_cli.config.get_env_value", lambda name, default=None: default
     )
     _install_fake_oauth_pool(monkeypatch, "oauth-token-x1")
 
@@ -136,7 +136,7 @@ def test_prefer_api_key_honors_hermes_xai_base_url_with_validation(monkeypatch):
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
+        "hermes_agent.hermes_cli.config.get_env_value",
         lambda name, default=None: {
             "XAI_API_KEY": "paid-key-x1",
             "HERMES_XAI_BASE_URL": "https://staging.x.ai/v1",
@@ -149,7 +149,7 @@ def test_prefer_api_key_honors_hermes_xai_base_url_with_validation(monkeypatch):
     assert creds["base_url"] == "https://staging.x.ai/v1"
 
     monkeypatch.setattr(
-        "hermes_cli.config.get_env_value",
+        "hermes_agent.hermes_cli.config.get_env_value",
         lambda name, default=None: {
             "XAI_API_KEY": "paid-key-x1",
             "XAI_BASE_URL": "https://attacker.example/v1",
@@ -164,7 +164,7 @@ def test_prefer_api_key_honors_profile_scope_only_key(tmp_path, monkeypatch):
     os.environ / .env) is honored on the preferred path — the read goes
     through resolve_provider_secret, not a raw env lookup."""
     from hermes_agent.agent import secret_scope
-    from hermes_cli.config import invalidate_env_cache
+    from hermes_agent.hermes_cli.config import invalidate_env_cache
     from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -213,7 +213,7 @@ def _write_auth_store(tmp_path, monkeypatch, suppressed):
     ({}, "xai"),                                    # control: the env key still wins when not removed
 ])
 def test_suppressed_env_key_does_not_override_oauth(tmp_path, monkeypatch, suppressed, expected_provider):
-    from hermes_cli.config import invalidate_env_cache
+    from hermes_agent.hermes_cli.config import invalidate_env_cache
     from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     _write_auth_store(tmp_path, monkeypatch, suppressed)

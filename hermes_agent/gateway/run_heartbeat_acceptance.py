@@ -48,7 +48,7 @@ async def admit_heartbeat(runner, adapter, source, session_id, route):
     """Coalesce overdue ticks behind the canonical FIFO, not an adapter-local slot."""
     import json
     from hermes_agent.gateway.platforms.event import MessageEvent
-    from hermes_cli.heartbeat import HeartbeatManager
+    from hermes_agent.hermes_cli.heartbeat import HeartbeatManager
     from hermes_agent.hermes_state_runtime import list_session_admissions
 
     from hermes_agent.gateway.session_authorities import active_authority

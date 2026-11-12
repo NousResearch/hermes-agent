@@ -2,7 +2,7 @@
 """Fail when a ``config.yaml`` is written by anything but the comment-preserving writer.
 
 Every writer of ``~/.hermes/config.yaml`` (and ``profiles/*/config.yaml``) must go through
-``hermes_cli.config.atomic_config_write`` (safe) or ``atomic_config_replace`` (explicit full-state)
+``hermes_agent.hermes_cli.config.atomic_config_write`` (safe) or ``atomic_config_replace`` (explicit full-state)
 → ``utils.atomic_roundtrip_yaml_save`` (ruamel
 round-trip). A PyYAML dump (``yaml.dump`` / ``yaml.safe_dump`` / ``utils.atomic_yaml_write``)
 of a config path re-serialises the parsed dict and destroys every user comment — the #92554
@@ -14,8 +14,8 @@ Flags, in the scanned trees:
   first argument names a config path (``config_path``, ``cfg_path``, ``config.yaml``,
   ``get_config_path()``, ``_active_config_path()``, ``live_path``);
 * ``<config path>.write_text(... dump(...) ...)``;
-* any ``yaml.dump`` / ``yaml.safe_dump`` / ``atomic_yaml_write`` call inside ``hermes_cli/config.py``
-  or ``hermes_cli/config_*.py`` (the config system has exactly one on-disk primitive).
+* any ``yaml.dump`` / ``yaml.safe_dump`` / ``atomic_yaml_write`` call inside ``hermes_agent/hermes_cli/config.py``
+  or ``hermes_agent/hermes_cli/config_*.py`` (the config system has exactly one on-disk primitive).
 
 Suppress a true false positive with ``# config-writer: ok — <why>`` on the call's line.
 

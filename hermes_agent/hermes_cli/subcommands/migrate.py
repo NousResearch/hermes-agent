@@ -5,7 +5,7 @@ from __future__ import annotations
 
 def build_migrate_parser(subparsers) -> None:
     """Attach the ``migrate`` subcommand to ``subparsers``."""
-    from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
+    from hermes_agent.hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
 
     migrate_parser = subparsers.add_parser(
         "migrate", help="Move over from another agent, or migrate retired models and deprecated settings",
@@ -47,8 +47,8 @@ def build_migrate_parser(subparsers) -> None:
 def _add_agent_import_parsers(migrate_subparsers) -> None:
     """``hermes migrate <agent>``: one per importer setup offers; runs the agent-importers plugin's
     ``hermes import-agent <agent>`` (installing the plugin first when it is missing)."""
-    from hermes_cli.migrate import cmd_migrate_agent
-    from hermes_cli.setup_agent_import import IMPORT_SOURCES
+    from hermes_agent.hermes_cli.migrate import cmd_migrate_agent
+    from hermes_agent.hermes_cli.setup_agent_import import IMPORT_SOURCES
 
     for source in IMPORT_SOURCES:
         sub = migrate_subparsers.add_parser(
@@ -72,5 +72,5 @@ def _add_agent_import_parsers(migrate_subparsers) -> None:
 
 
 def _cmd_migrate_relay(args) -> None:
-    from hermes_cli.relay_plugin_migrate import cmd_migrate_relay
+    from hermes_agent.hermes_cli.relay_plugin_migrate import cmd_migrate_relay
     cmd_migrate_relay(args)

@@ -1,9 +1,9 @@
 """Cross-surface contract for the persistent /approvals mode command."""
 
 
-from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, gateway_help_lines, resolve_command
-from hermes_cli.commands_completion import SlashCommandCompleter
-from hermes_cli.commands_platforms import telegram_bot_commands
+from hermes_agent.hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, SUBCOMMANDS, gateway_help_lines, resolve_command
+from hermes_agent.hermes_cli.commands_completion import SlashCommandCompleter
+from hermes_agent.hermes_cli.commands_platforms import telegram_bot_commands
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -28,8 +28,8 @@ def test_approvals_registry_drives_help_menu_and_autocomplete():
 
 
 def test_shared_command_refuses_managed_mode_override(tmp_path, monkeypatch):
-    from hermes_cli import managed_scope
-    from hermes_cli.approval_mode import run_approval_mode_command
+    from hermes_agent.hermes_cli import managed_scope
+    from hermes_agent.hermes_cli.approval_mode import run_approval_mode_command
 
     home = tmp_path / "home"
     managed = tmp_path / "managed"

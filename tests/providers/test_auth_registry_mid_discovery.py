@@ -1,8 +1,8 @@
-"""Regression tests for #102123: plugins discovered after ``hermes_cli.auth`` is
+"""Regression tests for #102123: plugins discovered after ``hermes_agent.hermes_cli.auth`` is
 first imported must still reach ``PROVIDER_REGISTRY``.
 
-``hermes_cli.auth`` mirrors provider-plugin profiles into ``PROVIDER_REGISTRY``
-when it is imported.  If a plugin's own imports pull ``hermes_cli.auth`` in
+``hermes_agent.hermes_cli.auth`` mirrors provider-plugin profiles into ``PROVIDER_REGISTRY``
+when it is imported.  If a plugin's own imports pull ``hermes_agent.hermes_cli.auth`` in
 while ``providers._discover_providers()`` is still iterating the plugin
 directories, that mirror runs against a partial profile list (the discovery
 guard is already set, so ``list_providers()`` returns whatever has been
@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 from hermes_agent import providers
-import hermes_cli.auth as auth_mod
+import hermes_agent.hermes_cli.auth as auth_mod
 from hermes_agent.providers.base import ProviderProfile
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -73,7 +73,7 @@ def _run_probe(hermes_home: Path, code: str) -> subprocess.CompletedProcess:
 
 def test_plugins_discovered_after_auth_import_resolve(tmp_path):
     hermes_home = tmp_path / ".hermes"
-    # Sorted first: a plugin whose imports drag hermes_cli.auth in mid-discovery
+    # Sorted first: a plugin whose imports drag hermes_agent.hermes_cli.auth in mid-discovery
     # (any plugin importing hermes_agent.agent.credential_pool or similar does this).
     _write_plugin(
         hermes_home,
@@ -97,7 +97,7 @@ def test_plugins_discovered_after_auth_import_resolve(tmp_path):
         "from hermes_agent import providers\n"
         "names = {p.name for p in providers.list_providers()}\n"
         "assert {'aaa-early-probe', 'zzz-late-probe'} <= names, names\n"
-        "from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider\n"
+        "from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider\n"
         # Discovery completion must have mirrored the late plugin already;
         # consumers that read PROVIDER_REGISTRY directly rely on this.
         "assert 'zzz-late-probe' in PROVIDER_REGISTRY, sorted(PROVIDER_REGISTRY)\n"
@@ -113,7 +113,7 @@ def test_plugins_discovered_after_auth_import_resolve(tmp_path):
 
 # ---------------------------------------------------------------------------
 # In-process: the sync hook's contract (partial snapshot reconciled, idempotent,
-# never imports hermes_cli.auth on its own).
+# never imports hermes_agent.hermes_cli.auth on its own).
 # ---------------------------------------------------------------------------
 
 EARLY = "probe-102123-early"

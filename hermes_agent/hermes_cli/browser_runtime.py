@@ -23,7 +23,7 @@ _SYSTEM_CHROMIUM_COMMANDS = ("chromium", "chromium-browser")
 
 def _configured_executable() -> str | None:
     """``browser.executable_path`` from the active profile's config (managed overlay applied)."""
-    from hermes_cli.config import cfg_get, load_config_readonly
+    from hermes_agent.hermes_cli.config import cfg_get, load_config_readonly
 
     value = cfg_get(load_config_readonly(), "browser", "executable_path", default="")
     value = os.path.expanduser(value.strip()) if isinstance(value, str) else ""

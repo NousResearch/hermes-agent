@@ -28,7 +28,7 @@ def test_reset_drops_the_pin_and_adopts_config_without_repinning(monkeypatch, tm
             api_key="k", api_mode="chat_completions", warning_message="", model_info=None, error_message="",
             runtime_capabilities=None, request_overrides=None, usage_notice="")
 
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", _switch_model)
     agent = _Agent()
     session = {"agent": agent, "model_override": {"model": "pinned", "provider": "pin-prov"},
                "one_turn_model_restore": {"model": "pinned"}, "config_model_seen": ("cfg-model", "cfg-prov")}

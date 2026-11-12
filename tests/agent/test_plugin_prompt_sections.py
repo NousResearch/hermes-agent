@@ -8,8 +8,8 @@ import sys
 import textwrap
 
 from hermes_agent.agent.system_prompt import build_system_prompt, invalidate_system_prompt
-from hermes_cli import plugins
-from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from hermes_agent.hermes_cli import plugins
+from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 from hermes_agent.run_agent import AIAgent
 
 

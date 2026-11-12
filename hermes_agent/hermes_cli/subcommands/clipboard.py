@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from hermes_cli.subcommands._shared import add_json_flag
+from hermes_agent.hermes_cli.subcommands._shared import add_json_flag
 
 
 def _cmd_clipboard(args):
-    from hermes_cli.clipboard_cmd import cmd_clipboard
+    from hermes_agent.hermes_cli.clipboard_cmd import cmd_clipboard
 
     return cmd_clipboard(args)
 

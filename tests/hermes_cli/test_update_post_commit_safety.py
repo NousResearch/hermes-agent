@@ -372,7 +372,7 @@ _RECEIPT_CHILD = textwrap.dedent('''
 
 @pytest.mark.platforms("posix")
 def test_old_schema_handoff_receipt_keeps_the_previous_runs_manual_serve_debt(tmp_path):
-    from hermes_cli.process_identity import _process_create_time
+    from hermes_agent.hermes_cli.process_identity import _process_create_time
 
     home = tmp_path / "home" / ".hermes"
     home.mkdir(parents=True)

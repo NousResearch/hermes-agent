@@ -18,7 +18,7 @@ def timeline_store(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_agent.hermes_state.DEFAULT_DB_PATH", home / "state.db")
     db = SessionDB(db_path=home / "state.db")
     db.create_session(session_id="timeline-root", source="desktop")
-    from hermes_cli.web_routers.sessions import manage_router
+    from hermes_agent.hermes_cli.web_routers.sessions import manage_router
 
     app = FastAPI()
     app.include_router(manage_router)

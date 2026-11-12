@@ -1,6 +1,6 @@
 """Cron imports remain usable when a daemon spans an on-disk upgrade.
 
-A long-running scheduler already has ``hermes_cli.sqlite_util`` and ``hermes_agent.cron.jobs`` cached from
+A long-running scheduler already has ``hermes_agent.hermes_cli.sqlite_util`` and ``hermes_agent.cron.jobs`` cached from
 BEFORE the upgrade; the first lazy import of a cron store afterwards must not need names those
 stale modules lack (``scheduler_prompt._build_job_prompt`` imports ``hermes_agent.cron.notepad`` unguarded, so
 an ``ImportError`` there fails every job tick until restart).

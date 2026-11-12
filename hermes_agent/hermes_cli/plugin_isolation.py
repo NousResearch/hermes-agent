@@ -2,7 +2,7 @@
 
 ``in_process`` (default) imports every plugin into the Hermes process, as always. ``host`` keeps
 third-party plugin code OUT of it: general plugins load in one plugin-host process per profile
-(:mod:`hermes_cli.plugin_host`) and talk to Hermes only through ``ctx``; every other path that would
+(:mod:`hermes_agent.hermes_cli.plugin_host`) and talk to Hermes only through ``ctx``; every other path that would
 import a user-supplied module in-process (category providers, model-provider profiles, dashboard
 plugin APIs) refuses with a stated reason. Bundled plugins ship with Hermes and stay in-process.
 
@@ -12,8 +12,8 @@ single-user install crash isolation (a plugin that segfaults or hangs takes down
 gateway), which is why it is a plain config value and not a cloud-only switch.
 
 The ctx surface tables below are the single source of truth for both the runtime boundary
-(:mod:`hermes_cli.plugin_host_child` refuses these methods) and the static audit
-(:mod:`hermes_cli.plugin_isolation_audit`), so "the audit says pool-safe" and "it loads in the host"
+(:mod:`hermes_agent.hermes_cli.plugin_host_child` refuses these methods) and the static audit
+(:mod:`hermes_agent.hermes_cli.plugin_isolation_audit`), so "the audit says pool-safe" and "it loads in the host"
 cannot drift apart.
 """
 
@@ -27,7 +27,7 @@ import sys
 from types import ModuleType
 from typing import Any, Dict, FrozenSet, Iterator, List, Mapping, Optional
 
-logger = logging.getLogger("hermes_cli.plugins")
+logger = logging.getLogger("hermes_agent.hermes_cli.plugins")
 
 ISOLATION_IN_PROCESS = "in_process"
 ISOLATION_HOST = "host"
@@ -86,7 +86,7 @@ HOST_DEGRADED_HOOKS: dict[str, str] = {
 
 def _plugins_config(config: Optional[Mapping[str, Any]] = None) -> Mapping[str, Any]:
     if config is None:
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         config = load_config_readonly() or {}
     section = config.get("plugins") if isinstance(config, Mapping) else None
     return section if isinstance(section, Mapping) else {}
@@ -165,7 +165,7 @@ def user_plugin_host() -> Any:
     """
     if isolation_mode() != ISOLATION_HOST:
         return None
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
     return get_plugin_manager()._plugin_host()
 
 
@@ -181,7 +181,7 @@ def transient_plugin_host(before_stop: Optional[Any] = None) -> Iterator[None]:
     if isolation_mode() != ISOLATION_HOST:
         yield
         return
-    from hermes_cli.plugins import get_plugin_manager
+    from hermes_agent.hermes_cli.plugins import get_plugin_manager
     manager = get_plugin_manager()
     was_running = manager._running_plugin_host() is not None
     try:

@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Set
 
-from hermes_cli.config import get_env_value, load_config
-from hermes_cli.nous_account import (
+from hermes_agent.hermes_cli.config import get_env_value, load_config
+from hermes_agent.hermes_cli.nous_account import (
     NousPortalAccountInfo, format_nous_portal_entitlement_message, get_nous_portal_account_info,
 )
 from hermes_agent.tools.managed_tool_gateway import is_managed_tool_gateway_ready
@@ -167,7 +167,7 @@ def _toolset_enabled(config: dict[str, object], toolset_key: str) -> bool:
     target_tools = set(resolve_toolset(toolset_key))
     if not target_tools:
         return False
-    from hermes_cli.toolset_validation import parse_platform_toolsets_value
+    from hermes_agent.hermes_cli.toolset_validation import parse_platform_toolsets_value
     for platform, raw_toolsets in platform_toolsets.items():
         toolset_names = list(parse_platform_toolsets_value(raw_toolsets) or [])
         if not toolset_names:
@@ -199,7 +199,7 @@ def _local_browser_runnable(browser_cfg: dict[str, object]) -> bool:
         return False
     if str(browser_cfg.get("engine") or "auto").strip().lower() == "lightpanda":
         return True
-    from hermes_cli.browser_runtime import chromium_executable
+    from hermes_agent.hermes_cli.browser_runtime import chromium_executable
 
     return chromium_executable() is not None
 
@@ -584,7 +584,7 @@ def prompt_enable_tool_gateway(config: dict[str, object], *, force_fresh: bool =
     if not unconfigured and not has_direct:
         return set()
     try:
-        from hermes_cli.setup import prompt_checklist
+        from hermes_agent.hermes_cli.setup import prompt_checklist
     except Exception:
         return set()
     # Frame the offer by entitlement: a $0 free-tool-pool user is not on a paid plan.
@@ -622,7 +622,7 @@ def prompt_enable_tool_gateway(config: dict[str, object], *, force_fresh: bool =
         config["tool_gateway_declined_tools"] = sorted((declined | set(newly_declined)) - set(chosen_keys))
     changed = apply_gateway_defaults(config, chosen_keys, account_info) if chosen_keys else set()
     if changed or newly_declined:
-        from hermes_cli.config import save_config
+        from hermes_agent.hermes_cli.config import save_config
 
         save_config(config)
         for key in sorted(changed):
@@ -672,7 +672,7 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
     """Run the Nous Portal device-code OAuth and persist credentials only (no model selection, no
     provider switch, no Tool Gateway bulk prompt). ``False`` if the user declined or the flow failed."""
     try:
-        from hermes_cli import auth
+        from hermes_agent.hermes_cli import auth
     except Exception as exc:  # pragma: no cover - defensive
         print(f"  Could not start Nous Portal login: {exc}")
         return False
@@ -691,15 +691,15 @@ def _run_nous_portal_login_only(*, capability: str) -> bool:
             prior_active_provider = auth._load_auth_store().get("active_provider")
         auth_state = None
         # Interrupting the import question defaults to importing.
-        from hermes_cli.anon_auth import is_guest_state
+        from hermes_agent.hermes_cli.anon_auth import is_guest_state
 
         shared = auth._read_shared_nous_state()
         if shared and not is_guest_state(shared) and _confirm("  Found existing Nous OAuth credentials. Import them? [Y/n]: ") is not False:
             auth_state = auth._try_import_shared_nous_state(timeout_seconds=15.0)
         if auth_state is None:
             auth_state = auth._nous_device_code_login()
-        from hermes_cli.anon_auth import settle_after_upgrade
-        from hermes_cli.guest_handoff import drain, result_lines
+        from hermes_agent.hermes_cli.anon_auth import settle_after_upgrade
+        from hermes_agent.hermes_cli.guest_handoff import drain, result_lines
         with auth._auth_store_lock():
             auth_store = auth._load_auth_store()
             auth._save_provider_state(auth_store, "nous", auth_state)

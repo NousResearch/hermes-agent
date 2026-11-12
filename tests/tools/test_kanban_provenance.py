@@ -8,7 +8,7 @@ from hermes_agent.hermes_state import SessionDB
 
 @pytest.mark.parametrize("linked,explicit", [(False, None), (True, None), (False, "override")])
 def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, explicit):
-    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kn
+    from hermes_agent.hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kn
     from hermes_agent.tools import kanban_tools as kt, async_delegation
     from hermes_agent.gateway.session_context import set_session_vars, clear_session_vars
 
@@ -47,7 +47,7 @@ def test_worker_create_keeps_durable_origin(tmp_path, monkeypatch, linked, expli
 
 
 def test_tool_subscription_captures_conversation_anchors(tmp_path, monkeypatch):
-    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kn
+    from hermes_agent.hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_notify as kn
     from hermes_agent.tools import kanban_tools as kt
     from hermes_agent.gateway.session_context import set_session_vars, clear_session_vars
 
@@ -73,7 +73,7 @@ def test_tool_subscription_captures_conversation_anchors(tmp_path, monkeypatch):
 ])
 def test_tool_create_only_stamps_persisted_ambient_session(tmp_path, monkeypatch, session_id, persisted):
     """Ambient worker ids are provenance only after their state.db row exists."""
-    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db as kb, kanban_db_connect as kbc
     from hermes_agent.tools import kanban_tools as kt
     from hermes_agent.gateway.session_context import scoped_current_session_id
 
@@ -99,7 +99,7 @@ def test_tool_create_only_stamps_persisted_ambient_session(tmp_path, monkeypatch
 def test_tool_create_stamps_request_scoped_session_over_process_env(tmp_path, monkeypatch):
     """In a multi-session process os.environ holds the LAST agent built; the request-scoped
     binding names the conversation that actually ordered the card."""
-    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
+    from hermes_agent.hermes_cli import kanban_db as kb, kanban_db_connect as kbc
     from hermes_agent.tools import kanban_tools as kt
     from hermes_agent.gateway.session_context import scoped_current_session_id
 

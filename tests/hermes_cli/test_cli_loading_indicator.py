@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 class TestCLILoadingIndicator:
     def _make_cli(self):

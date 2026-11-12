@@ -16,7 +16,7 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 
-from hermes_cli.urllib_security import open_credentialed_url
+from hermes_agent.hermes_cli.urllib_security import open_credentialed_url
 
 logger = logging.getLogger(__name__)
 

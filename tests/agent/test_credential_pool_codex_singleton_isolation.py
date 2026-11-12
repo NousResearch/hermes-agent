@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-import hermes_cli.auth as auth_mod
+import hermes_agent.hermes_cli.auth as auth_mod
 from hermes_agent.agent.credential_pool import load_pool
 
 

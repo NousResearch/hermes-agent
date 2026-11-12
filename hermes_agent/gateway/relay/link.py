@@ -152,8 +152,8 @@ def _get(path: str) -> dict:
 
 def portal_agents_url() -> str:
     """The Portal this instance signs in to (operator override, stored login, then default)."""
-    from hermes_cli.auth import get_provider_auth_state
-    from hermes_cli.auth_nous import _nous_portal_base_url
+    from hermes_agent.hermes_cli.auth import get_provider_auth_state
+    from hermes_agent.hermes_cli.auth_nous import _nous_portal_base_url
 
     return f"{_nous_portal_base_url(get_provider_auth_state('nous') or {})}/agents"
 

@@ -253,7 +253,7 @@ class TestAtomicRoundtripYamlSave:
         return fake_open
 
     def test_refuses_to_overwrite_unreadable_existing_config(self, config_path):
-        """Shares the fail-closed contract with hermes_cli.config.atomic_config_write:
+        """Shares the fail-closed contract with hermes_agent.hermes_cli.config.atomic_config_write:
         an existing-but-unreadable config.yaml (permission error, broken mount)
         must raise rather than being silently replaced with only new_state."""
         original = "model:\n  default: test-model\n"

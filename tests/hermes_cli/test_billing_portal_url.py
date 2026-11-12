@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from hermes_cli.nous_billing import (
+from hermes_agent.hermes_cli.nous_billing import (
     BillingError,
     _absolutize_portal_url,
     _raise_for_error,

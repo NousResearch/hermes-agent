@@ -25,7 +25,7 @@ import errno
 import sys
 import pm.environments as environments
 target, phase = sys.argv[1:3]
-from hermes_cli import _early_recovery, venv_sync
+from hermes_agent.hermes_cli import _early_recovery, venv_sync
 
 def denied(*args, **kwargs):
     raise PermissionError(errno.EACCES, "Permission denied", target)
@@ -84,7 +84,7 @@ raise SystemExit(main(["repair"]))
     exc = PermissionError(13, "Permission denied", str(outside))
     assert install_state_permission_message(root, exc) is None
 
-    from hermes_cli import _early_recovery
+    from hermes_agent.hermes_cli import _early_recovery
 
     project = tmp_path / "source"
     project.mkdir()

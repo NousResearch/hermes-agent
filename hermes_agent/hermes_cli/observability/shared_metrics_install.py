@@ -50,13 +50,13 @@ def _safe(reader, default: str) -> str:
 
 
 def _version_info():
-    from hermes_cli.version_info import get_version_info
+    from hermes_agent.hermes_cli.version_info import get_version_info
 
     return get_version_info()
 
 
 def _project_root() -> Path:
-    from hermes_cli.config import get_project_root
+    from hermes_agent.hermes_cli.config import get_project_root
 
     return get_project_root()
 
@@ -65,8 +65,8 @@ def detect_client_install_method() -> str:
     """``detect_install_method()``, except the Microsoft Store build, which the stamp names and
     that function's update-gating vocabulary has no word for (it would read ``unknown``).
     Kept out of ``detect_install_method`` on purpose: update and uninstall branch on its result."""
-    from hermes_cli.config import detect_install_method
-    from hermes_cli.steward import read_install_stamp
+    from hermes_agent.hermes_cli.config import detect_install_method
+    from hermes_agent.hermes_cli.steward import read_install_stamp
 
     root = _project_root()
     if read_install_stamp(root).get("updateMechanism") == "microsoft-store":
@@ -77,7 +77,7 @@ def detect_client_install_method() -> str:
 def release_channel(config: dict[str, Any]) -> str:
     """The channel this install follows: a package's baked channel, a source install's channel
     record, else the checkout's branch (``main`` for main/master, ``dev`` for any other)."""
-    from hermes_cli.update_channel import _package_channel, _read_stamp, resolve_update_channel
+    from hermes_agent.hermes_cli.update_channel import _package_channel, _read_stamp, resolve_update_channel
 
     root = _project_root()
     resolved = resolve_update_channel(config, root)
@@ -100,7 +100,7 @@ def version_age_bucket(now: float | None = None) -> str:
 
 def behind_bucket(home: Path | None = None, now: float | None = None) -> str:
     """Commits/releases behind, from the update check's cached result for this exact revision."""
-    from hermes_cli.update_channel import install_id
+    from hermes_agent.hermes_cli.update_channel import install_id
     from hermes_constants import get_hermes_home
 
     root = _project_root()
@@ -151,7 +151,7 @@ def _is_local_endpoint(base_url: Any) -> bool:
 def _custom_base_url(provider: str) -> Any:
     """A ``providers:`` / ``custom_providers:`` entry's endpoint, by ``custom:<name>`` or bare name
     (built-in ids shadow entries, as at runtime)."""
-    from hermes_cli.runtime_provider_custom import _get_named_custom_provider
+    from hermes_agent.hermes_cli.runtime_provider_custom import _get_named_custom_provider
 
     entry = _get_named_custom_provider(provider)
     return entry.get("base_url") if isinstance(entry, dict) else None

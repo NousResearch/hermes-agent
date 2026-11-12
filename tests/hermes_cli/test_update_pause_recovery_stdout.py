@@ -8,12 +8,12 @@ verdict (a torn checkout), so the deferral notice is what gets printed.
 
 from __future__ import annotations
 
-from hermes_cli import update_pause_record as pause_record
-from hermes_cli.update_cmd_windows import _resume_windows_gateways_after_update
+from hermes_agent.hermes_cli import update_pause_record as pause_record
+from hermes_agent.hermes_cli.update_cmd_windows import _resume_windows_gateways_after_update
 
 
 def test_a_recovering_resume_prints_its_notices_to_stderr(monkeypatch, capsys):
-    from hermes_cli import main
+    from hermes_agent.hermes_cli import main
     monkeypatch.setattr(main, "_is_windows", lambda: True)
     monkeypatch.setattr(pause_record, "tree_is_whole", lambda token: (False, "the checkout is mid-pull"))
     token = {"resume_needed": True, "pause_id": "p", "recovery": True, "profiles": {"default": 4242}}

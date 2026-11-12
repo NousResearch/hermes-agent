@@ -18,7 +18,7 @@ def _missing_package(monkeypatch):
 
 @pytest.mark.parametrize("executable", ["npm", "node"])
 def test_dashboard_reports_prepared_bridge_binary_missing(tmp_path, monkeypatch, executable):
-    from hermes_cli.web_routers import messaging
+    from hermes_agent.hermes_cli.web_routers import messaging
     from hermes_agent.gateway.platforms import whatsapp_common
 
     _missing_package(monkeypatch)
@@ -39,7 +39,7 @@ def test_dashboard_reports_prepared_bridge_binary_missing(tmp_path, monkeypatch,
 
 @pytest.mark.parametrize("executable", ["npm", "node"])
 def test_cli_reports_prepared_bridge_binary_missing(tmp_path, monkeypatch, capsys, executable):
-    from hermes_cli import main, main_platform_setup as setup
+    from hermes_agent.hermes_cli import main, main_platform_setup as setup
     from hermes_agent.gateway.platforms import whatsapp_common
 
     _missing_package(monkeypatch)

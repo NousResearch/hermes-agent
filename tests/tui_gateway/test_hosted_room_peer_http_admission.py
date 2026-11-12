@@ -58,7 +58,7 @@ def test_only_a_definite_refusal_marks_an_admission_not_admitted(monkeypatch, st
             return io.BytesIO(code)
         raise urllib.error.HTTPError("https://peer.example.test/v1/runs", status, "refused", {},
                                      io.BytesIO(json.dumps({"error": {"code": code}}).encode()))
-    monkeypatch.setattr("hermes_cli.urllib_security.open_credentialed_url", respond)
+    monkeypatch.setattr("hermes_agent.hermes_cli.urllib_security.open_credentialed_url", respond)
     client = PeerRunsHTTPClient(base_url="https://peer.example.test", api_key="")
     with pytest.raises(PeerRunsHTTPError) as caught:
         client._request("/v1/runs", method="POST", body={"input": "frozen"}, room_grant="signed.room.grant")

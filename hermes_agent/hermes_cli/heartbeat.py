@@ -93,7 +93,7 @@ class HeartbeatState:
 def _get_session_db() -> Optional[Any]:
     """Persistence goes through the goals module's per-HERMES_HOME cached SessionDB (one shared connection)."""
     try:
-        from hermes_cli.goals import _get_session_db as _goals_db
+        from hermes_agent.hermes_cli.goals import _get_session_db as _goals_db
         return _goals_db()
     except Exception as exc:  # pragma: no cover
         logger.debug("HeartbeatManager: SessionDB bootstrap failed (%s)", exc)
@@ -139,7 +139,7 @@ def save_heartbeat(session_id: str, state: HeartbeatState) -> None:
         return
     db = _get_session_db()
     if db is None:
-        from hermes_cli.goals import _warn_dropped_write
+        from hermes_agent.hermes_cli.goals import _warn_dropped_write
         _warn_dropped_write("HeartbeatManager", "heartbeat", session_id)
         return
     try:

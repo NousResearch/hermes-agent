@@ -65,7 +65,7 @@ def _write(path: Path, payload: dict) -> None:
 
 def test_missing_global_auth_file_is_safe(profile_env):
     """Profile processes that never had a global auth.json still work."""
-    from hermes_cli.auth import read_credential_pool
+    from hermes_agent.hermes_cli.auth import read_credential_pool
 
     # No global auth.json written at all.
     _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
@@ -96,7 +96,7 @@ def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
         }],
     }))
 
-    from hermes_cli.auth import read_credential_pool
+    from hermes_agent.hermes_cli.auth import read_credential_pool
 
     # Profile reads still work; malformed global is silently ignored.
     assert read_credential_pool("openrouter")[0]["id"] == "prof-1"
@@ -115,7 +115,7 @@ def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
 
 
 def test_provider_auth_state_falls_back_to_global_when_profile_has_none(profile_env):
-    from hermes_cli.auth import get_provider_auth_state
+    from hermes_agent.hermes_cli.auth import get_provider_auth_state
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
         "nous": {"access_token": "nous-global", "refresh_token": "rt-global"},
@@ -128,7 +128,7 @@ def test_provider_auth_state_falls_back_to_global_when_profile_has_none(profile_
 
 
 def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
-    from hermes_cli.auth import get_provider_auth_state
+    from hermes_agent.hermes_cli.auth import get_provider_auth_state
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(providers={}))
     _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
@@ -151,7 +151,7 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 
 def test_codex_runtime_uses_global_pool_when_profile_singleton_is_empty(profile_env):
     """Stale empty profile Codex state must not block the global credential pool."""
-    from hermes_cli.auth import resolve_codex_runtime_credentials
+    from hermes_agent.hermes_cli.auth import resolve_codex_runtime_credentials
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
         "openai-codex": [{
@@ -190,7 +190,7 @@ def test_codex_runtime_uses_global_pool_when_profile_singleton_is_empty(profile_
 def test_codex_cooldown_clear_writes_to_the_store_that_owns_the_borrowed_pool(profile_env):
     """A restored quota must unfreeze the ROOT row a profile borrows; clearing the (empty)
     profile store would leave every later resolve stuck on the stale cooldown."""
-    from hermes_cli.auth_codex import clear_codex_pool_quota_cooldowns
+    from hermes_agent.hermes_cli.auth_codex import clear_codex_pool_quota_cooldowns
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
         "openai-codex": [{"id": "glob", "auth_type": "oauth", "priority": 0,
@@ -208,7 +208,7 @@ def test_codex_cooldown_clear_writes_to_the_store_that_owns_the_borrowed_pool(pr
 def test_codex_cooldown_clear_never_touches_root_when_profile_owns_rows(profile_env):
     """A profile with its own Codex rows is the owner: the root's cooldown state is not ours to
     clear, even when none of the profile's rows are exhausted (0 cleared, root byte-identical)."""
-    from hermes_cli.auth_codex import clear_codex_pool_quota_cooldowns
+    from hermes_agent.hermes_cli.auth_codex import clear_codex_pool_quota_cooldowns
 
     root_file = profile_env["global"] / "auth.json"
     _write(root_file, _make_auth_store(pool={
@@ -231,7 +231,7 @@ def test_root_write_through_is_visible_to_the_next_fallback_read(profile_env):
     """``_save_auth_store(target_path=root)`` must invalidate the mtime memo: a same-tick
     read-after-write (coarse-mtime filesystems) would otherwise keep serving the stale root."""
     import os
-    from hermes_cli.auth import _save_auth_store, read_credential_pool
+    from hermes_agent.hermes_cli.auth import _save_auth_store, read_credential_pool
 
     root_file = profile_env["global"] / "auth.json"
     _write(root_file, _make_auth_store(pool={"openai-codex": [{"id": "glob", "access_token": "old"}]}))
@@ -259,7 +259,7 @@ def test_root_write_through_is_visible_to_the_next_fallback_read(profile_env):
 
 
 def test_write_credential_pool_targets_profile_not_global(profile_env):
-    from hermes_cli.auth import read_credential_pool, write_credential_pool
+    from hermes_agent.hermes_cli.auth import read_credential_pool, write_credential_pool
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
         "openrouter": [{
@@ -297,7 +297,7 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
 
 def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env):
     """Changing profile context cannot inherit another store's lock depth."""
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     profile_b = profile_env["global"] / "profiles" / "reviewer"
@@ -362,7 +362,7 @@ def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):
     A fresh login intentionally clears the entry's status; resurrecting the
     stale cooldown onto the new credentials would bench a just-authorized key.
     """
-    from hermes_cli.auth import write_credential_pool
+    from hermes_agent.hermes_cli.auth import write_credential_pool
 
     _write(classic_env / "auth.json", _make_auth_store(pool={
         "openrouter": [_pool_entry(

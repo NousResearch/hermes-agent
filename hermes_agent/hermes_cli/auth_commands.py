@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from pm import install_hint
-from hermes_cli.cli_output import line_input
+from hermes_agent.hermes_cli.cli_output import line_input
 
 import math
 import sys
@@ -19,12 +19,12 @@ from hermes_agent.agent.credential_pool import (
     _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
 from hermes_agent.agent.credential_pool_admin import CredentialNotSavedError
-import hermes_cli.auth as auth_mod
-from hermes_cli.auth import PROVIDER_REGISTRY
-from hermes_cli.auth_plugin_providers import (
+import hermes_agent.hermes_cli.auth as auth_mod
+from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_agent.hermes_cli.auth_plugin_providers import (
     canonical_registry_rows, dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
 from hermes_constants import OPENROUTER_BASE_URL
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_agent.hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
@@ -39,7 +39,7 @@ EXTERNAL_LOGIN_PROVIDERS = {"anthropic", "openai-codex"}
 def _get_custom_provider_entries() -> list[dict]:
     """Return configured provider entries with legacy and canonical pool IDs."""
     try:
-        from hermes_cli.config import get_compatible_custom_providers, load_config
+        from hermes_agent.hermes_cli.config import get_compatible_custom_providers, load_config
         config = load_config()
     except Exception:
         return []
@@ -114,7 +114,7 @@ def _migrate_legacy_custom_pool_key(provider: str, legacy_key: str) -> None:
         del credential_pool[legacy_key]
         auth_mod._save_auth_store(auth_store)
     try:
-        from hermes_cli.models import clear_provider_models_cache
+        from hermes_agent.hermes_cli.models import clear_provider_models_cache
         clear_provider_models_cache(legacy_key)
     except Exception:
         pass
@@ -143,7 +143,7 @@ def _unknown_provider_exit(provider: str) -> SystemExit:
     import difflib
     known = sorted({pid for pid, _ in canonical_registry_rows()} | {"openrouter"}
                    | {entry["name"] for entry in _get_custom_provider_entries()})
-    from hermes_cli.left_core_migration import provider_install_hint
+    from hermes_agent.hermes_cli.left_core_migration import provider_install_hint
     if moved := provider_install_hint(provider):
         return SystemExit(f"Unknown provider '{provider}'. {moved}")
     close = difflib.get_close_matches(provider, known, n=3, cutoff=0.5)
@@ -212,7 +212,7 @@ def _anthropic_oauth_login(args) -> dict:
 
 
 def _qwen_oauth_login(args) -> dict:
-    from hermes_cli.auth_qwen import _mark_qwen_oauth_active
+    from hermes_agent.hermes_cli.auth_qwen import _mark_qwen_oauth_active
 
     creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
     _mark_qwen_oauth_active(creds)
@@ -236,7 +236,7 @@ class _OAuthAddSpec:
 
 
 def _codex_login(args) -> dict:
-    from hermes_cli.auth_codex_browser import codex_oauth_login
+    from hermes_agent.hermes_cli.auth_codex_browser import codex_oauth_login
     return codex_oauth_login(args)
 
 
@@ -315,8 +315,8 @@ def _add_nous_oauth_credential(args, provider: str) -> PooledCredential:
     def _persist(creds: dict, what: str) -> PooledCredential:
         # `--label` is embedded into providers.nous so label_from_token doesn't overwrite it on every
         # subsequent load_pool("nous").
-        from hermes_cli.anon_auth import settle_after_upgrade
-        from hermes_cli.guest_handoff import drain, result_lines
+        from hermes_agent.hermes_cli.anon_auth import settle_after_upgrade
+        from hermes_agent.hermes_cli.guest_handoff import drain, result_lines
         entry = auth_mod.persist_nous_credentials(creds, label=custom_label)
         handoff = drain()  # a replaced free tier hands its apps over once the save lands
         settle_after_upgrade(creds)  # a config left on the free tier's route moves to the account
@@ -330,7 +330,7 @@ def _add_nous_oauth_credential(args, provider: str) -> PooledCredential:
     # Codex-style auto-import: a shared Nous credential at <hermes-root>/shared/nous_auth.json
     # (written by any previous login) makes `hermes --profile <name> auth add nous --type oauth`
     # a one-tap operation for multi-profile users.
-    from hermes_cli.anon_auth import is_guest_state
+    from hermes_agent.hermes_cli.anon_auth import is_guest_state
 
     if (shared := auth_mod._read_shared_nous_state()) and not is_guest_state(shared):
         try:
@@ -511,12 +511,12 @@ def auth_priority_command(args) -> None:
 
 def _free_tier_lines() -> tuple[str, str]:
     """The two-line free-tier rendering shared by every auth display surface (R-USR-1)."""
-    from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
+    from hermes_agent.hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
     return f"{FREE_TIER_LABEL} · {GUEST_MODEL}", UPGRADE_HINT
 
 
 def _is_free_tier_entry(entry) -> bool:
-    from hermes_cli.anon_auth import is_guest_state
+    from hermes_agent.hermes_cli.anon_auth import is_guest_state
     return is_guest_state(getattr(entry, "extra", None))
 
 
@@ -678,7 +678,7 @@ def auth_refresh_command(args) -> None:
 
 def _moved_auth_hint(action: str, provider: str) -> str:
     """``hermes auth status|logout spotify`` after Spotify left core for its plugin's own command."""
-    from hermes_cli.left_core_migration import moved_command_hint
+    from hermes_agent.hermes_cli.left_core_migration import moved_command_hint
     return moved_command_hint("hermes auth", provider, action)
 
 
@@ -712,7 +712,7 @@ def auth_status_command(args) -> None:
         if value:
             print(f"  {key}: {value}")
     if provider == "nous":
-        from hermes_cli.guest_handoff import drain, handoff_status, status_lines
+        from hermes_agent.hermes_cli.guest_handoff import drain, handoff_status, status_lines
         drain()   # a move left retrying gets its next try now
         for line in status_lines(handoff_status()):
             print(f"  {line}")
@@ -753,7 +753,7 @@ def _print_bedrock_status() -> None:
 def _print_azure_entra_status() -> None:
     """Show Azure Foundry Entra ID status when model.provider is azure-foundry with entra_id auth."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         cfg = load_config()
         model_cfg = cfg.get("model") if isinstance(cfg, dict) else None
         if not isinstance(model_cfg, dict) or (
@@ -894,7 +894,7 @@ def _interactive_strategy() -> None:
     except (ValueError, IndexError):
         print("Invalid choice.")
         return
-    from hermes_cli.config import load_config, save_config
+    from hermes_agent.hermes_cli.config import load_config, save_config
     cfg = load_config()
     pool_strategies = cfg.get("credential_pool_strategies")
     if not isinstance(pool_strategies, dict):
@@ -907,7 +907,7 @@ def _interactive_strategy() -> None:
 
 def auth_upgrade_command(args) -> None:
     """``hermes auth upgrade``: sign the free tier into a Nous account, keeping its connectors."""
-    from hermes_cli.anon_auth import upgrade_guest
+    from hermes_agent.hermes_cli.anon_auth import upgrade_guest
     code = upgrade_guest(args)
     if code:
         raise SystemExit(code)

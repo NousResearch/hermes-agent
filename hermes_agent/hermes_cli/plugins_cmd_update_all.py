@@ -1,11 +1,11 @@
 """``hermes plugins update`` with no name: update every installed plugin that has an update.
 
-The list comes from the read-only ``check-updates`` probe (:func:`hermes_cli.plugins_updates.run_checks`);
+The list comes from the read-only ``check-updates`` probe (:func:`hermes_agent.hermes_cli.plugins_updates.run_checks`);
 each plugin is then updated through the single-plugin
 path (:func:`~hermes_cli.plugins_cmd_update.update_one`), so catalog consent, the security scan and
 capability re-consent still apply per plugin.
 
-Sibling of :mod:`hermes_cli.plugins_cmd` (the facade is imported late, never at module level).
+Sibling of :mod:`hermes_agent.hermes_cli.plugins_cmd` (the facade is imported late, never at module level).
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def _pc():
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     return plugins_cmd
 
 
@@ -41,8 +41,8 @@ def plan_update_all(results: list[Any], installs: dict | None = None) -> UpdateP
     """Split ``run_checks`` rows into the plugins ``update`` can move and the ones it cannot (with why).
     *installs* (the install records the check ran against) lets a catalog install held with ``--ref``
     be skipped: only naming it (``hermes plugins update <name>``) moves it."""
-    from hermes_cli.plugins_auto_update import HELD_WITH_REF, held_with_ref
-    from hermes_cli.plugins_updates import held_for_newer_hermes
+    from hermes_agent.hermes_cli.plugins_auto_update import HELD_WITH_REF, held_with_ref
+    from hermes_agent.hermes_cli.plugins_updates import held_for_newer_hermes
     plan = UpdatePlan()
     installs = installs or {}
     for row in results:
@@ -74,8 +74,8 @@ def _update_one(row, console, *, interactive: bool) -> tuple[str, str]:
     """Run the single-plugin update for one plan row; return ``(status, detail)``, status being
     updated/current/failed. A refusal is printed like ``update <name>`` prints it, then recorded."""
     from rich.markup import escape
-    from hermes_cli.plugins_cmd_catalog import RepinConsentRequired
-    from hermes_cli.plugins_cmd_update import update_one
+    from hermes_agent.hermes_cli.plugins_cmd_catalog import RepinConsentRequired
+    from hermes_agent.hermes_cli.plugins_cmd_update import update_one
     target = _pc()._user_installed_plugin_dir(row.name)
     if target is None:
         return "failed", "no longer installed"
@@ -117,11 +117,11 @@ def cmd_update_all(*, yes: bool = False) -> None:
     in scripts. One failure does not stop the rest; exit 1 when any update failed.
     """
     from rich.markup import escape
-    from hermes_cli.plugins_updates import run_checks
+    from hermes_agent.hermes_cli.plugins_updates import run_checks
 
     console = _pc()._console()
     console.print("[dim]Checking installed plugins for updates...[/dim]")
-    from hermes_cli.plugins_cadence import snapshot_installs
+    from hermes_agent.hermes_cli.plugins_cadence import snapshot_installs
     plugins_dir = _pc()._plugins_dir()
     checked = snapshot_installs(plugins_dir)
     plan = plan_update_all(run_checks(plugins_dir), checked)

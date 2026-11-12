@@ -18,7 +18,7 @@ def _response(content="ok"):
 class TestSlotRuntimeApiMode:
     """_slot_runtime should include api_mode when resolve_runtime_provider returns it."""
 
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    @patch("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_slot_runtime_includes_api_mode(self, mock_resolve):
         """api_mode from resolve_runtime_provider is forwarded in output dict."""
         mock_resolve.return_value = {

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from hermes_cli.gateway_chat_view import GatewayChatView
+from hermes_agent.hermes_cli.gateway_chat_view import GatewayChatView
 from tests.waiting import async_wait_until
 
 
@@ -12,7 +12,7 @@ from tests.waiting import async_wait_until
 @pytest.mark.parametrize('before_ack', [False, True])
 @pytest.mark.parametrize('stream_json', [False, True])
 async def test_finite_follower_does_not_wait_forever_after_worker_loss(before_ack, stream_json, capsys):
-    from hermes_cli.stream_json import StreamJsonEmitter
+    from hermes_agent.hermes_cli.stream_json import StreamJsonEmitter
 
     rendered = asyncio.Event()
 

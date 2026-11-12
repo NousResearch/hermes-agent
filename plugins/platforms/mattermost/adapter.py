@@ -682,9 +682,9 @@ async def _standalone_send(pconfig, chat_id: str, message: str, *, thread_id: Op
 
 def interactive_setup() -> None:
     """Guide the user through Mattermost bot setup (URL + token, allowlist, home channel)."""
-    from hermes_cli.config import remove_env_value, save_env_value
-    from hermes_cli.cli_output import prompt, print_header, print_info, print_success
-    from hermes_cli.setup_platforms import declines_reconfigure
+    from hermes_agent.hermes_cli.config import remove_env_value, save_env_value
+    from hermes_agent.hermes_cli.cli_output import prompt, print_header, print_info, print_success
+    from hermes_agent.hermes_cli.setup_platforms import declines_reconfigure
 
     def info(*lines: str) -> None:
         for line in lines:

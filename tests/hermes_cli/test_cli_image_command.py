@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from cli import (
+from hermes_agent.cli import (
     HermesCLI,
     _collect_query_images,
     _format_image_attachment_badges,
@@ -25,7 +25,7 @@ class TestImageCommand:
         img = _make_image(tmp_path / "photo.png")
         cli_obj = _make_cli()
 
-        with patch("cli._cprint"):
+        with patch("hermes_agent.cli._cprint"):
             cli_obj._handle_image_command(f"/image {img}")
 
         assert cli_obj._attached_images == [img]
@@ -36,7 +36,7 @@ class TestImageCommand:
         helpers — this branch raised NameError before the lazy import existed."""
         cli_obj = _make_cli()
 
-        with patch("cli._cprint") as mock_print:
+        with patch("hermes_agent.cli._cprint") as mock_print:
             cli_obj._handle_image_command("/image")
 
         assert cli_obj._attached_images == []
@@ -48,7 +48,7 @@ class TestImageCommand:
         file_path.write_text("hello\n", encoding="utf-8")
         cli_obj = _make_cli()
 
-        with patch("cli._cprint") as mock_print:
+        with patch("hermes_agent.cli._cprint") as mock_print:
             cli_obj._handle_image_command(f"/image {file_path}")
 
         assert cli_obj._attached_images == []

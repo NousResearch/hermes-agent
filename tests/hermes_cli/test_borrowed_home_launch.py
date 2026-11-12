@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from hermes_cli import venv_sync
+from hermes_agent.hermes_cli import venv_sync
 from pm.environments import install_key, install_state_dir, owning_home_root, store_root
 
 # Every lane, Windows included: the owner check resolves the platform default root, which differs on Windows, so the
@@ -32,7 +32,7 @@ def _no_tool_downloads(monkeypatch):
 @pytest.fixture
 def completion_tail(monkeypatch):
     """Record the completion child instead of running it (the tail spawns via update_custody.run)."""
-    from hermes_cli import update_custody
+    from hermes_agent.hermes_cli import update_custody
 
     spawned: list = []
     monkeypatch.setattr(update_custody, "run", lambda command, **kw: spawned.append(command)
@@ -107,7 +107,7 @@ def test_a_borrower_holding_the_checkout_never_becomes_its_owner(tmp_path, monke
     import os
 
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     default = tmp_path / ".hermes"
     holder = tmp_path / "data" / "dir"
@@ -152,7 +152,7 @@ def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checko
     """The first launch under a temporary home: its own dependency generation, but no tail (products,
     maintenance, install stamp), no launcher publication and no owner marker touched."""
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root = _checkout(tmp_path, monkeypatch)
     _state(tmp_path / ".hermes", root)
@@ -193,7 +193,7 @@ def test_a_borrowing_launch_syncs_its_own_dependencies_and_nothing_of_the_checko
 def test_the_owner_still_owes_and_runs_its_tail(tmp_path, monkeypatch, completion_tail):
     """Unchanged for the owner: a stale environment syncs, arms and runs the tail."""
     import pm
-    from hermes_cli import _launchers
+    from hermes_agent.hermes_cli import _launchers
 
     root = _checkout(tmp_path, monkeypatch)
     facts = _state(tmp_path / ".hermes", root)

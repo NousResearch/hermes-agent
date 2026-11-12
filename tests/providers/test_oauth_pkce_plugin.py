@@ -11,10 +11,10 @@ from urllib.request import urlopen
 
 import pytest
 
-import hermes_cli.auth
+import hermes_agent.hermes_cli.auth
 from hermes_agent import providers
-from hermes_cli import auth_oauth_pkce_plugin as pkce
-from hermes_cli.auth_constants import AuthError
+from hermes_agent.hermes_cli import auth_oauth_pkce_plugin as pkce
+from hermes_agent.hermes_cli.auth_constants import AuthError
 from hermes_agent.providers import register_provider
 from hermes_agent.providers.base import ProviderProfile
 from tests.providers.fake_pkce_idp import FakeIdP
@@ -46,14 +46,14 @@ def test_pkce_handler_add_status_refresh_logout_against_fake_idp(idp, monkeypatc
     from hermes_agent.agent.credential_pool import load_pool
 
     monkeypatch.setattr(pkce.webbrowser, "open", _browser_hits)
-    monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
     cfg = _config(idp)
     handler, refresh = pkce.pkce_auth_handler(cfg), pkce.pkce_refresh_credential(cfg)
     # Registered like a real plugin so the credential pool finds ``refresh_credential`` through the seam.
     register_provider(ProviderProfile(name=PROVIDER, auth_type="oauth_external", base_url="https://example.invalid/v1",
                                       auth_handler=handler, refresh_credential=refresh))
     request.addfinalizer(lambda: (providers._REGISTRY.pop(PROVIDER, None),
-                                  hermes_cli.auth.PROVIDER_REGISTRY.pop(PROVIDER, None)))
+                                  hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY.pop(PROVIDER, None)))
     args = SimpleNamespace(provider=PROVIDER, no_browser=False)
 
     assert handler("add", args) is True
@@ -93,7 +93,7 @@ def test_pkce_handler_add_status_refresh_logout_against_fake_idp(idp, monkeypatc
 
 
 def test_token_url_off_authorize_allowlist_refused_before_any_request(idp, monkeypatch):
-    from hermes_cli.auth_constants import httpx
+    from hermes_agent.hermes_cli.auth_constants import httpx
 
     monkeypatch.setattr(httpx, "post", Mock(side_effect=AssertionError("token endpoint must not be contacted")))
     cfg = _config(idp, token_url="https://token.attacker.example/token")
@@ -112,14 +112,14 @@ def test_spent_refresh_token_is_grant_dead_and_marks_the_pool_row_dead(idp, monk
     from hermes_agent.agent.credential_pool import STATUS_DEAD, load_pool
 
     monkeypatch.setattr(pkce.webbrowser, "open", _browser_hits)
-    monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
     cfg = _config(idp)
     handler, refresh = pkce.pkce_auth_handler(cfg), pkce.pkce_refresh_credential(cfg)
     register_provider(ProviderProfile(name=PROVIDER, auth_type="oauth_external",
                                       base_url="https://example.invalid/v1",
                                       auth_handler=handler, refresh_credential=refresh))
     request.addfinalizer(lambda: (providers._REGISTRY.pop(PROVIDER, None),
-                                  hermes_cli.auth.PROVIDER_REGISTRY.pop(PROVIDER, None)))
+                                  hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY.pop(PROVIDER, None)))
     args = SimpleNamespace(provider=PROVIDER, no_browser=False)
     assert handler("add", args) is True
     rows = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"][PROVIDER]
@@ -144,7 +144,7 @@ def test_alias_login_stores_the_row_under_the_canonical_profile_name(idp, monkey
 
     alias = "example-pkce-alias"
     monkeypatch.setattr(pkce.webbrowser, "open", _browser_hits)
-    monkeypatch.setattr("hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
+    monkeypatch.setattr("hermes_agent.hermes_cli.auth_device_flow._can_open_graphical_browser", lambda: True)
     cfg = _config(idp)
     handler = pkce.pkce_auth_handler(cfg)
     register_provider(ProviderProfile(
@@ -154,8 +154,8 @@ def test_alias_login_stores_the_row_under_the_canonical_profile_name(idp, monkey
     request.addfinalizer(lambda: (
         providers._REGISTRY.pop(PROVIDER, None),
         providers._ALIASES.pop(alias, None),
-        hermes_cli.auth.PROVIDER_REGISTRY.pop(PROVIDER, None),
-        hermes_cli.auth.PROVIDER_REGISTRY.pop(alias, None)))
+        hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY.pop(PROVIDER, None),
+        hermes_agent.hermes_cli.auth.PROVIDER_REGISTRY.pop(alias, None)))
     args = SimpleNamespace(provider=alias, no_browser=False)
     assert handler("add", args) is True
     pool = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]

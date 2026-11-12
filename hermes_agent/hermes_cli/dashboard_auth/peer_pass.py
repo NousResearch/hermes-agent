@@ -3,7 +3,7 @@
 The route owns its prefix. A provider with ``supports_peer_pass`` verifies the bearer; a pass
 attaches ``request.state.peer_principal`` (also as ``token_principal``, with
 ``token_authenticated``, so the cookie gates stand aside) and the route then checks the pass's
-permissions per path (``hermes_cli.web_routers.peer``).
+permissions per path (``hermes_agent.hermes_cli.web_routers.peer``).
 Cookies, the session token and native tickets never open it, and nothing else reaches the shared
 token-auth seam's providers: a pass never authorises their routes, nor they this one. No pass
 provider registered (an agent not signed in through a provider that mints passes) is a 404.
@@ -17,10 +17,10 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from hermes_cli.dashboard_auth import TokenPrincipal, list_providers
-from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-from hermes_cli.dashboard_auth.base import ProviderError
-from hermes_cli.dashboard_auth.request_utils import client_ip, extract_bearer, unreachable_response
+from hermes_agent.hermes_cli.dashboard_auth import TokenPrincipal, list_providers
+from hermes_agent.hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
+from hermes_agent.hermes_cli.dashboard_auth.base import ProviderError
+from hermes_agent.hermes_cli.dashboard_auth.request_utils import client_ip, extract_bearer, unreachable_response
 
 _log = logging.getLogger(__name__)
 

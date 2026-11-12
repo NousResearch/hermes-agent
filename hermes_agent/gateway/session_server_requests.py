@@ -202,7 +202,7 @@ def _ask(events, session_id, method, params, *, cancelled, timeout, qids=None, r
     # Settled by a viewer (a response frame or the last ``clarify.lock``): every OTHER viewer still
     # shows the card, and a classic CLI is parked inside its modal callback. Withdraw it everywhere
     # with ``reason: resolved`` (``RequestCancelReason``) so each renderer closes the matching card and
-    # the CLI's connection thread releases its modal (``hermes_cli.gateway_agent``). No answer rides it.
+    # the CLI's connection thread releases its modal (``hermes_agent.hermes_cli.gateway_agent``). No answer rides it.
     with contextlib.suppress(Exception):
         events.publish(session_id, {"id": request_id, "method": method, "reason": "resolved"},
                        event_type="request.cancel")

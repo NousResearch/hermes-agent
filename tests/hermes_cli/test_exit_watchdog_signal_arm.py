@@ -23,7 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
-import cli
+from hermes_agent import cli
 
 
 @pytest.fixture(autouse=True)

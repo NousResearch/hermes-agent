@@ -21,7 +21,7 @@ def main():
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from hermes_agent.hermes_state import SessionDB
-        from hermes_cli.web_routers.sessions import manage_router
+        from hermes_agent.hermes_cli.web_routers.sessions import manage_router
 
         sid = "generated-tool-heavy"
         prompt_count = 600

@@ -14,11 +14,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 import plugins.dashboard_auth.basic as basic_plugin
-from hermes_cli import web_server
-from hermes_cli.config import read_raw_config
-from hermes_cli.dashboard_auth import clear_providers, register_provider
-from hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
-from hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
+from hermes_agent.hermes_cli import web_server
+from hermes_agent.hermes_cli.config import read_raw_config
+from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
+from hermes_agent.hermes_cli.dashboard_auth.cookies import SESSION_AT_COOKIE
+from hermes_agent.hermes_cli.dashboard_auth.routes import _reset_password_rate_limit
 
 HTTPS_REMOTE = "https://agent.example.com"
 PLAIN_HTTP_REMOTE = "http://192.168.50.220:9119"

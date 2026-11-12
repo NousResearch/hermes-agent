@@ -41,7 +41,7 @@ def _polluted_launch_env(monkeypatch, tmp_path):
     monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "alpha-shared")
     monkeypatch.setenv("TERMINAL_SSH_HOST", "10.10.0.103")
     monkeypatch.setattr("hermes_agent.agent.secret_scope.build_profile_secret_scope", lambda _h: {})
-    monkeypatch.setattr("hermes_cli.env_loader.hydrate_profile_secret_sources", lambda _h: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.env_loader.hydrate_profile_secret_sources", lambda _h: None)
     import hermes_agent.tools.terminal_tool as tt
 
     monkeypatch.setattr(tt, "_terminal_config_bridge_attempted", True)

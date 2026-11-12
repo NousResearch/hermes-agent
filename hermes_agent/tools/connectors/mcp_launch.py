@@ -288,14 +288,14 @@ def launch_target(url: Any, command: Any, args: Any, env: Any = None, cwd: Any =
 def launch_for(action: str, name: str) -> Optional[dict[str, Any]]:
     """The line for one MCP row; None when the name resolves to nothing readable."""
     if action == "install":
-        from hermes_cli.mcp_catalog import get_entry
+        from hermes_agent.hermes_cli.mcp_catalog import get_entry
 
         entry = get_entry(name)
         if entry is None:
             return None
         transport = entry.transport
         return launch_target(transport.url, transport.command, transport.args, transport.env)
-    from hermes_cli.mcp_catalog import installed_servers
+    from hermes_agent.hermes_cli.mcp_catalog import installed_servers
 
     cfg = installed_servers().get(name)
     if not isinstance(cfg, dict):

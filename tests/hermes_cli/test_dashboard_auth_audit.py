@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import pytest
 
-from hermes_cli.dashboard_auth.audit import audit_log, AuditEvent
+from hermes_agent.hermes_cli.dashboard_auth.audit import audit_log, AuditEvent
 
 
 @pytest.fixture
@@ -69,7 +69,7 @@ def test_audit_writes_jsonlines(profile_home):
 
 def test_audit_rotates_when_over_max_bytes(profile_home, monkeypatch):
     """Rotation is bounded: at most ``_BACKUP_COUNT`` ``.N`` files, current log under the cap."""
-    import hermes_cli.dashboard_auth.audit as audit_module
+    import hermes_agent.hermes_cli.dashboard_auth.audit as audit_module
 
     monkeypatch.setattr(audit_module, "_MAX_BYTES", 2000)
     monkeypatch.setattr(audit_module, "_BACKUP_COUNT", 3)
@@ -88,7 +88,7 @@ def test_audit_rotates_when_over_max_bytes(profile_home, monkeypatch):
 def test_audit_rotates_on_crossing_write(profile_home, monkeypatch):
     """A write that pushes the file to/past the cap must rotate BEFORE appending (the pending
     line's bytes count toward the threshold), not stay over the cap until the next event."""
-    import hermes_cli.dashboard_auth.audit as audit_module
+    import hermes_agent.hermes_cli.dashboard_auth.audit as audit_module
 
     monkeypatch.setattr(audit_module, "_MAX_BYTES", 200)
     monkeypatch.setattr(audit_module, "_BACKUP_COUNT", 3)

@@ -39,7 +39,7 @@ def readiness_failure(exc) -> dict:
     ``error_code`` rides along only for a failure provider setup cannot repair, so a client keeps
     the app open with the error instead of sending the user back through provider sign-in.
     """
-    from hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
+    from hermes_agent.hermes_cli.runtime_provider_custom import LocalRuntimeUnavailableError
     code = {'error_code': exc.error_code} if isinstance(exc, LocalRuntimeUnavailableError) else {}
     return {'ok': False, 'error': str(exc), **code}
 
@@ -48,7 +48,7 @@ def runtime_has_credentials(runtime) -> bool:
     """Whether a resolved runtime carries a credential a request can use: a usable secret, a key
     callable, an SDK/keyless placeholder (``aws-sdk``, ``no-key-required``) or an external-process
     ``command``. The one predicate session readiness and ``hermes fallback check`` share."""
-    from hermes_cli.auth import has_usable_secret
+    from hermes_agent.hermes_cli.auth import has_usable_secret
     api_key = runtime.get('api_key')
     if callable(api_key) or runtime.get('command'):
         return True
@@ -66,9 +66,9 @@ def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resol
     stays a strict single-provider check so onboarding can verify the provider just connected
     without another provider's fallback masking a failed connection. Both branches report the model.
     """
-    from hermes_cli.config import load_config
-    from hermes_cli.main import _has_any_provider_configured
-    from hermes_cli.runtime_provider import resolve_runtime_provider, resolve_runtime_with_fallback
+    from hermes_agent.hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.main import _has_any_provider_configured
+    from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider, resolve_runtime_with_fallback
 
     config = load_config()
     cfg_model = config.get('model')
@@ -99,7 +99,7 @@ def check_runtime_readiness(requested=None, *, strict_profile_scope=False, resol
         return fail('No Hermes provider is configured.', source)
     if not runtime_has_credentials(runtime):
         return fail(f'No usable credentials found for {blamed}.{missing_credentials_suffix(blamed)}', runtime.get('source'))
-    from hermes_cli.anon_auth import route_is_welcome_host
+    from hermes_agent.hermes_cli.anon_auth import route_is_welcome_host
     # free_tier_route is keyed on the SELECTED route (the welcome host serves only nous/welcome), not
     # on profile state: a paid Nous key beside a free-tier identity must not read as free.
     return {'ok': True, 'provider': runtime.get('provider'), 'model': model, 'source': runtime.get('source'),

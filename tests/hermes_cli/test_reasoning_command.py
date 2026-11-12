@@ -21,7 +21,7 @@ class TestParseReasoningConfig(unittest.TestCase):
     """Verify _parse_reasoning_config handles all effort levels."""
 
     def _parse(self, effort):
-        from cli import _parse_reasoning_config
+        from hermes_agent.cli import _parse_reasoning_config
         return _parse_reasoning_config(effort)
 
     def test_none_disables(self):
@@ -69,10 +69,10 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
     def test_effort_defaults_to_session_only(self):
         """Plain /reasoning <level> is session-scoped — no config write."""
-        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+        from hermes_agent.hermes_cli.cli_commands_mixin import CLICommandsMixin
 
         stub = self._make_cli(reasoning_config={"enabled": True, "effort": "medium"})
-        with patch("cli.save_config_value") as save_config, patch("cli._cprint"):
+        with patch("hermes_agent.cli.save_config_value") as save_config, patch("hermes_agent.cli._cprint"):
             CLICommandsMixin._handle_reasoning_command(stub, "/reasoning high")
 
         save_config.assert_not_called()
@@ -83,7 +83,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
     def test_new_session_clears_session_reasoning_override(self):
         """/new and /clear must not carry a session-only effort override forward."""
-        from cli import CLI_CONFIG, HermesCLI
+        from hermes_agent.cli import CLI_CONFIG, HermesCLI
 
         agent = SimpleNamespace(
             reasoning_config={"enabled": True, "effort": "high"},
@@ -110,7 +110,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
     def test_new_session_resets_service_tier_and_model_from_config(self):
         """/new re-derives service tier and model from config.yaml — session
         /fast and /model switches do not carry forward (#48055, #23131)."""
-        from cli import CLI_CONFIG, HermesCLI
+        from hermes_agent.cli import CLI_CONFIG, HermesCLI
 
         agent = SimpleNamespace(
             reasoning_config=None,
@@ -152,7 +152,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
             CLI_CONFIG,
             {"model": {"default": "config-default-model", "provider": "openrouter"}},
         ), patch(
-            "hermes_cli.model_switch.switch_model", return_value=fake_result
+            "hermes_agent.hermes_cli.model_switch.switch_model", return_value=fake_result
         ):
             HermesCLI.new_session(stub, silent=True)
 
@@ -189,7 +189,7 @@ class TestHandleReasoningCommand(unittest.TestCase):
 
 class TestReasoningPreviewBuffering(unittest.TestCase):
     def _make_cli(self):
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         cli = HermesCLI.__new__(HermesCLI)
         cli.verbose = True
@@ -198,7 +198,7 @@ class TestReasoningPreviewBuffering(unittest.TestCase):
         cli._invalidate = lambda *args, **kwargs: None
         return cli
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     def test_streamed_reasoning_chunks_wait_for_boundary(self, mock_cprint):
         cli = self._make_cli()
 
@@ -214,7 +214,7 @@ class TestReasoningPreviewBuffering(unittest.TestCase):
         rendered = mock_cprint.call_args[0][0]
         self.assertIn("[thinking] Let me think about this.", rendered)
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     def test_pending_reasoning_flushes_when_thinking_stops(self, mock_cprint):
         cli = self._make_cli()
 
@@ -237,7 +237,7 @@ class TestReasoningPreviewBuffering(unittest.TestCase):
 
 class TestReasoningDisplayModeSelection(unittest.TestCase):
     def _make_cli(self, *, show_reasoning=False, streaming_enabled=False, verbose=False):
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
 
         cli = HermesCLI.__new__(HermesCLI)
         cli.show_reasoning = show_reasoning
@@ -432,7 +432,7 @@ class TestReasoningShownThisTurnFlag(unittest.TestCase):
     was already shown during streaming in a tool-calling loop."""
 
     def _make_cli(self):
-        from cli import HermesCLI
+        from hermes_agent.cli import HermesCLI
         cli = HermesCLI.__new__(HermesCLI)
         cli.show_reasoning = True
         cli.streaming_enabled = True
@@ -449,7 +449,7 @@ class TestReasoningShownThisTurnFlag(unittest.TestCase):
         cli._reasoning_preview_buf = ""
         return cli
 
-    @patch("cli._cprint")
+    @patch("hermes_agent.cli._cprint")
     def test_streaming_reasoning_sets_turn_flag(self, mock_cprint):
         cli = self._make_cli()
         self.assertFalse(cli._reasoning_shown_this_turn)

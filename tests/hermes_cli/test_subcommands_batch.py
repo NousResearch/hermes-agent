@@ -12,8 +12,8 @@ from __future__ import annotations
 import argparse
 
 
-from hermes_cli.subcommands.config import build_config_parser
-from hermes_cli.subcommands.login import build_login_parser
+from hermes_agent.hermes_cli.subcommands.config import build_config_parser
+from hermes_agent.hermes_cli.subcommands.login import build_login_parser
 
 
 
@@ -52,7 +52,7 @@ def test_config_get_unset_subcommands_parse():
 # ── deprecated `hermes login` fails gracefully, not with argparse error ────
 #
 # `hermes login` is a removed command; its handler (`login_command` in
-# `hermes_cli/auth.py`) prints a deprecation notice pointing at `hermes auth` /
+# `hermes_agent/hermes_cli/auth.py`) prints a deprecation notice pointing at `hermes auth` /
 # `hermes model` and exits 0.  Two behavior contracts guard the UX:
 #   1. ANY `--provider <value>` (including ones the user actually wants, like
 #      `anthropic`) must parse and reach the handler — never crash in argparse

@@ -335,7 +335,7 @@ class TestScratchDirPermissionPolicy:
 def test_secure_file_skips_chmod_on_canonical_container_signal(tmp_path, monkeypatch):
     """_secure_file skips on the same canonical container signal that apply_secure_dir_policy /
     get_scratch_dir already honor (one policy implementation in hermes_constants)."""
-    from hermes_cli import config
+    from hermes_agent.hermes_cli import config
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     for var in ("HERMES_MANAGED", "HERMES_CONTAINER", "HERMES_SKIP_CHMOD"):
@@ -745,7 +745,7 @@ def test_prune_owner_lookup_survives_symlinked_scratch_and_drops_orphaned_mcp_he
     """#132401 review: the owning home comes from the configured scratch path even when it is a
     symlink onto another disk, and an MCP helper whose recorded spawner died is an orphan again
     (reaped, entry removed) while a live background worker keeps its entry."""
-    from hermes_cli import process_identity
+    from hermes_agent.hermes_cli import process_identity
     from hermes_agent.tools.process_registry import ProcessRegistry
 
     home = tmp_path / "home"
@@ -767,7 +767,7 @@ def test_prune_owner_lookup_survives_symlinked_scratch_and_drops_orphaned_mcp_he
     repo = str(Path(__file__).resolve().parents[1])
     spawner = subprocess.Popen(
         [sys.executable, "-c",
-         f"import sys; sys.path.insert(0, {repo!r}); from hermes_cli.process_identity import register_child; "
+         f"import sys; sys.path.insert(0, {repo!r}); from hermes_agent.hermes_cli.process_identity import register_child; "
          f"assert register_child({helper.pid}, 'mcp-helper'); import time; time.sleep(60)"],
         stdin=subprocess.DEVNULL, env={**os.environ, "HERMES_HOME": str(home)})
     wait_until(lambda: helper.pid in {e.get("pid") for e in process_identity.ledger_entries(all_installs=True)},

@@ -35,8 +35,8 @@ class TestPluginAPISecretScopeProductionMount:
 
         from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli import profiles
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_agent.hermes_cli import profiles
+        from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         default_home = get_hermes_home()
         monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", default_home / "state.db")
@@ -71,7 +71,7 @@ class TestPluginAPISecretScopeProductionMount:
             yield
         finally:
             set_multiplex_active(self._previous_multiplex)
-            from hermes_cli import plugins as plugins_mod
+            from hermes_agent.hermes_cli import plugins as plugins_mod
             for manager in list(plugins_mod._plugin_managers_by_home.values()):
                 host = getattr(manager, "_plugin_host_instance", None)
                 if host is not None:

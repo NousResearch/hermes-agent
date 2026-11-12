@@ -256,7 +256,7 @@ def _session_link(session_id: str, profile: str | None = None) -> str:
     emits, so it renders as a titled link. The profile segment is omitted when it
     can't be named confidently (a bare id still resolves, just not across profiles)."""
     def _active():
-        from hermes_cli.profiles import get_active_profile_name
+        from hermes_agent.hermes_cli.profiles import get_active_profile_name
         resolved = get_active_profile_name()
         return "" if resolved == "custom" else resolved
     name = (profile or "").strip() or _quiet(_active, "", "get_active_profile_name failed for session link")
@@ -435,7 +435,7 @@ def _resolve_profile_db(profile: str):
     """Another profile's ``state.db`` opened read-only (safe on a live DB); None = current."""
     if profile is None or not str(profile).strip():
         return None
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
     from hermes_agent.hermes_state import SessionDB
     canon = profiles_mod.normalize_profile_name(profile)
     profiles_mod.validate_profile_name(canon)

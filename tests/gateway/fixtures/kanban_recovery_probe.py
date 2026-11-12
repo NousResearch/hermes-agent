@@ -53,8 +53,8 @@ def main():
     for key in list(env):
         if key.startswith('HERMES_KANBAN_'):
             env.pop(key)
-    from hermes_cli import kanban_db as kb, kanban_db_dispatch as dispatch
-    from hermes_cli.kanban_db_connect import connect
+    from hermes_agent.hermes_cli import kanban_db as kb, kanban_db_dispatch as dispatch
+    from hermes_agent.hermes_cli.kanban_db_connect import connect
     os.environ['HERMES_KANBAN_CRASH_GRACE_SECONDS'] = '0'
     clients, receipt = [], {'mode': mode}
     original_popen = subprocess.Popen

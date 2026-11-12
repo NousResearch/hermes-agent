@@ -19,9 +19,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway_migrate as gm
-from hermes_cli import gateway_migrate_backends as gmb
-from hermes_cli import main_dashboard
+from hermes_agent.hermes_cli import gateway_migrate as gm
+from hermes_agent.hermes_cli import gateway_migrate_backends as gmb
+from hermes_agent.hermes_cli import main_dashboard
 from tests.waiting import wait_until
 
 _READ_ONLY_SYSTEMCTL = {"show", "list-unit-files"}
@@ -102,8 +102,8 @@ def host(monkeypatch, tmp_path):
                         lambda pid: iter([fake.cgroups[pid]] if pid in fake.cgroups else []))
     monkeypatch.setattr(main_dashboard, "_dashboard_cmdline_for_pid",
                         lambda pid: list(fake.procs[pid][1]) if pid in fake.procs else None)
-    monkeypatch.setattr("hermes_cli._startup_fast.is_container_startup_environment", lambda: False)
-    monkeypatch.setattr("hermes_cli.dashboard_procs._pid_environ", lambda pid: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli._startup_fast.is_container_startup_environment", lambda: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.dashboard_procs._pid_environ", lambda pid: None)
     monkeypatch.setattr(main_dashboard, "_loaded_launchd_backend_jobs", list)
     monkeypatch.delenv("HERMES_DESKTOP_CHILD_PID", raising=False)
     home = tmp_path / "hermes-home"
@@ -259,7 +259,7 @@ def test_nix_wait_for_launcher_job_is_reported_with_its_plist_home(host, nix_lau
     agents, label = nix_launcher_agent
     monkeypatch.setattr(main_dashboard, "_launchd_plist_dirs", lambda: [("agent", agents)])
     monkeypatch.setattr(gmb, "_nix_managed", lambda p: p == str(agents / f"{label}.plist"))
-    monkeypatch.setattr("hermes_cli.gateway._launchd_print_service_pid",
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway._launchd_print_service_pid",
                         lambda domain, lbl: (lbl == label, live_pid))
     if live_pid:  # the launcher `exec`s hermes, so launchd's live PID is the backend itself
         host.proc(live_pid, ["/nix/store/x-hermes/bin/hermes", "serve", "--host", "mac.local"], ppid=1)
@@ -275,7 +275,7 @@ def test_launchd_plists_are_ignored_off_macos(host, nix_launcher_agent, no_write
     """A leftover LaunchAgents plist on Linux or Windows is never scanned and never queried."""
     agents, _label = nix_launcher_agent
     monkeypatch.setattr(main_dashboard, "_launchd_plist_dirs", lambda: [("agent", agents)])
-    monkeypatch.setattr("hermes_cli.gateway._launchd_print_service_pid",
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway._launchd_print_service_pid",
                         lambda domain, lbl: pytest.fail("launchctl queried off macOS"))
 
     assert gmb.collect_backends() == []
@@ -296,7 +296,7 @@ def test_parent_launchd_is_not_reported_as_detached_on_macos(host, tmp_path, no_
 def test_home_ownership_is_reported_against_this_hermes_home(host, no_writes, monkeypatch):
     host.proc(4501, _argv("dashboard", "--port", "9119"), ppid=1)
     host.proc(4502, _argv("serve", "--port", "9120"), ppid=1)
-    monkeypatch.setattr("hermes_cli.dashboard_procs._hermes_home_for_pid",
+    monkeypatch.setattr("hermes_agent.hermes_cli.dashboard_procs._hermes_home_for_pid",
                         lambda pid: {4501: str(host.home), 4502: "/other/home"}[pid])
 
     items = {i.pid: i for i in gmb.collect_backends()}
@@ -349,7 +349,7 @@ def test_json_without_backends_is_an_argument_error(host):
 def test_parser_accepts_backends_dry_run_json():
     import argparse
 
-    from hermes_cli.subcommands.gateway import build_gateway_parser
+    from hermes_agent.hermes_cli.subcommands.gateway import build_gateway_parser
     parser = argparse.ArgumentParser()
     noop = lambda args: None
     build_gateway_parser(parser.add_subparsers(dest="command"), cmd_gateway=noop, cmd_proxy=noop,
@@ -411,7 +411,7 @@ def _wait_for_detached_prune(scratch, timeout=60.0):
 
 
 def _fresh_hermes(tmp_path, name, *cli):
-    """Run ``python -m hermes_cli.main <cli>`` in a fresh process with its own homes and shimmed tools."""
+    """Run ``python -m hermes_agent.hermes_cli.main <cli>`` in a fresh process with its own homes and shimmed tools."""
     root = tmp_path / name
     shims = root / "bin"
     shims.mkdir(parents=True)

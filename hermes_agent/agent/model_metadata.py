@@ -498,7 +498,7 @@ def _strip_openrouter_routing_variant(
 
     Only the id used for LOOKUP is rewritten. The suffixed id the caller holds
     stays on the wire, so the routing opt-in is preserved — the same rule
-    :func:`hermes_cli.models.validate_requested_model` applies. Sharing the
+    :func:`hermes_agent.hermes_cli.models.validate_requested_model` applies. Sharing the
     base's cache key is intentional: the window is identical, so a variant and
     its base must never disagree.
 
@@ -633,7 +633,7 @@ def _is_codex_route(provider: str, base_url: str, custom_providers: list | None)
     if not base_url:
         return False
     with contextlib.suppress(Exception):  # config unreadable → not a known Codex route
-        from hermes_cli.config import get_custom_provider_api_mode
+        from hermes_agent.hermes_cli.config import get_custom_provider_api_mode
         return get_custom_provider_api_mode(base_url, custom_providers) == "codex_responses"
     return False
 
@@ -1793,7 +1793,7 @@ def _codex_catalog_probe_allowed(access_token: str, base_url: str = "") -> bool:
     base = (base_url or "").strip() or CODEX_MODELS_CATALOG_ENDPOINT
     if not base_url_host_matches(base, "chatgpt.com"):
         return True
-    from hermes_cli.auth_constants import _decode_jwt_claims
+    from hermes_agent.hermes_cli.auth_constants import _decode_jwt_claims
     return bool(_decode_jwt_claims(access_token))
 
 
@@ -2107,9 +2107,9 @@ def _resolve_moa_context_length(model: str, custom_providers: list | None) -> Op
     """Step 0a: MoA virtual provider — ``model`` is a preset name, so every probe would miss. Resolve
     the aggregator's real provider+model (references are advisory). None on any failure."""
     try:
-        from hermes_cli.config import get_compatible_custom_providers, load_config
-        from hermes_cli.moa_config import resolve_moa_preset
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.config import get_compatible_custom_providers, load_config
+        from hermes_agent.hermes_cli.moa_config import resolve_moa_preset
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         config = load_config()
         if custom_providers is None:
             custom_providers = get_compatible_custom_providers(config)
@@ -2146,7 +2146,7 @@ def _config_override_context_length(model: str, base_url: str, provider: str, cu
     # helper self-resolves it from config (#69807).
     if base_url and model:
         with contextlib.suppress(Exception):  # fall through to probing
-            from hermes_cli.config import get_custom_provider_context_length
+            from hermes_agent.hermes_cli.config import get_custom_provider_context_length
             cp_ctx = get_custom_provider_context_length(model=model, base_url=base_url, custom_providers=custom_providers)
             if cp_ctx:
                 return cp_ctx
@@ -2248,7 +2248,7 @@ def get_model_context_length(
     # a user who pinned the fully-suffixed id keeps winning, and BEFORE every
     # cache/catalog lookup below so the base's real window is found instead of
     # a generic family default. Mirrors the validation path's base/suffix split
-    # in hermes_cli.models.validate_requested_model.
+    # in hermes_agent.hermes_cli.models.validate_requested_model.
     model = _strip_openrouter_routing_variant(model, base_url=base_url, provider=provider)
     # Endpoint-scoped metadata goes AHEAD of the persistent cache so a value learned on a
     # multiplexed provider's other endpoint cannot override it.

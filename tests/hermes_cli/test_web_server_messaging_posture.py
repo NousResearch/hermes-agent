@@ -43,7 +43,7 @@ def client(monkeypatch, _isolate_hermes_home):
     import hermes_constants
     import hermes_agent.gateway.status as _gw_status
     from hermes_constants import get_hermes_home
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     home = get_hermes_home()
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", home / "state.db")
@@ -154,7 +154,7 @@ def test_profile_scoped_posture_ignores_root_env_and_reports_profile_grants(
     Test must neither borrow the root's allowlist nor miss the profile's own.
     Regression for the false deny-all/false green in the #66055 review."""
     import hermes_agent.gateway.status as _gw_status
-    from hermes_cli import profiles as profiles_mod
+    from hermes_agent.hermes_cli import profiles as profiles_mod
     from hermes_constants import get_hermes_home
 
     default_home = get_hermes_home()

@@ -70,7 +70,7 @@ def _api_admissions(authority):
 
 @pytest.mark.asyncio
 async def test_headless_peer_dm_creates_the_bot_chat_through_its_owner(headless):
-    # The peer client's own creation path (hermes_cli/subcommands/peer.py::_ensure_bot_chat).
+    # The peer client's own creation path (hermes_agent/hermes_cli/subcommands/peer.py::_ensure_bot_chat).
     created = await headless.cli.post("/api/sessions", json={"title": "Bot Chat", "source": "bot_peer_dm"})
     assert created.status == 201, await created.text()
     session_id = (await created.json())["session"]["id"]

@@ -423,7 +423,7 @@ class TestHandleVisionAnalyzeFastPath:
         set_runtime_main("brand-new-provider", "llava-v1.6")
         try:
             with patch(
-                "hermes_cli.config.load_config",
+                "hermes_agent.hermes_cli.config.load_config",
                 return_value={"model": {"supports_vision": True}},
             ), patch(
                 "hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
@@ -448,7 +448,7 @@ class TestHandleVisionAnalyzeFastPath:
         set_runtime_main("brand-new-provider", "llava-v1.6")
         try:
             with patch(
-                "hermes_cli.config.load_config",
+                "hermes_agent.hermes_cli.config.load_config",
                 return_value={
                     "agent": {"image_input_mode": "text"},
                     "model": {"supports_vision": True},

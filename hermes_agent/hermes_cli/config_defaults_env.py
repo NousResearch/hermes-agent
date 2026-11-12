@@ -10,7 +10,7 @@ class OptionalEnvVars(dict):
     """``OPTIONAL_ENV_VARS``: a dict that runs one armed fill before it is first read.
 
     Some entries (provider profiles') are only known after work that must not run at import
-    (``hermes_cli.config_provider_env``). ``fill()`` returns the entries to add and may read
+    (``hermes_agent.hermes_cli.config_provider_env``). ``fill()`` returns the entries to add and may read
     config, so it runs holding no lock (concurrent first readers may each run it; the first to
     finish publishes, under a lock held only for that). Reads made by the fill itself see the
     table without them. A fill that raises publishes nothing and stays armed. Writes never fill."""

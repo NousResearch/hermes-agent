@@ -134,7 +134,7 @@ Arm (or re-arm, idempotently) exactly one one-shot for a job.
 This is the agent endpoint NAS calls in Endpoint 3 step 3. Two hops on hosted
 deployments:
 
-1. **Dashboard app** (`hermes_cli/web_server.py`) — the agent's only public
+1. **Dashboard app** (`hermes_agent/hermes_cli/web_server.py`) — the agent's only public
    HTTP surface (the Fly proxy exposes exactly one port, the dashboard's). It
    is in `PUBLIC_API_PATHS` so the dashboard cookie gate lets the bearer-JWT
    callback through to the verifier. The dashboard verifies the JWT, resolves

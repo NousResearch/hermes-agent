@@ -1,8 +1,8 @@
 """The Webapp's forwarding proxy reaches a saved gateway connection as an ordinary client.
 
 ``/api/relay/<connection id>/...`` on the serving gateway carries a signed-in browser's requests and
-sockets to a gateway saved in this machine's one connection list (``hermes_cli.gateway_connections``),
-keyed by that registry id, with the credential saved for it (``hermes_cli.webapp_relay_target``). The
+sockets to a gateway saved in this machine's one connection list (``hermes_agent.hermes_cli.gateway_connections``),
+keyed by that registry id, with the credential saved for it (``hermes_agent.hermes_cli.webapp_relay_target``). The
 other gateway sees what native Desktop sends it, so it needs nothing of its own. What it sends back
 never acts on the serving gateway's origin, and the browser's own credentials never reach it.
 """
@@ -21,7 +21,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from hermes_cli.web_routers import webapp_relay_proxy
+from hermes_agent.hermes_cli.web_routers import webapp_relay_proxy
 from tests.hermes_cli.test_webapp_socket_tickets import _SESSION, serve_webapp
 from tests.waiting import wait_until
 
@@ -73,7 +73,7 @@ def _other_gateway(seen: dict) -> Starlette:
 @pytest.fixture
 def webapp(tmp_path, monkeypatch):
     """The loopback Webapp; its machine's list saves the other gateway as ``other`` (token mode)."""
-    from hermes_cli import gateway_connections
+    from hermes_agent.hermes_cli import gateway_connections
 
     served = serve_webapp(tmp_path, monkeypatch)
     seen: dict = {}
@@ -170,7 +170,7 @@ def live_other(webapp, monkeypatch):
     that opens only with the saved token, and closes it with 4401 when told to."""
     import uvicorn
 
-    from hermes_cli import gateway_connections
+    from hermes_agent.hermes_cli import gateway_connections
 
     seen = {"cookies": [], "dials": []}
     stop = threading.Event()
@@ -229,7 +229,7 @@ def _relay_ticket(browser) -> str:
 
 
 def test_an_oauth_connection_sends_its_bearer_and_a_refused_one_earns_one_forced_refresh(live_other):
-    from hermes_cli import gateway_connections
+    from hermes_agent.hermes_cli import gateway_connections
 
     webapp, _connection_id, seen, _stop = live_other
     saved, _registry = gateway_connections.save_connection(
@@ -245,7 +245,7 @@ def test_an_oauth_connection_sends_its_bearer_and_a_refused_one_earns_one_forced
 
 
 def test_an_oauth_connection_with_no_sign_in_asks_for_one(webapp):
-    from hermes_cli import gateway_connections
+    from hermes_agent.hermes_cli import gateway_connections
 
     saved, _registry = gateway_connections.save_connection(
         {"kind": "remote", "label": "Unsigned", "url": "http://unsigned.lan:8000", "authMode": "oauth"})
@@ -307,7 +307,7 @@ def test_removing_a_connection_closes_its_relayed_socket(live_other):
 def test_a_connection_removed_while_its_socket_dials_does_not_keep_that_socket(live_other, monkeypatch):
     import websockets.asyncio.client
 
-    from hermes_cli import gateway_connections
+    from hermes_agent.hermes_cli import gateway_connections
 
     webapp, connection_id, _seen, _stop = live_other
     url = f"ws://localhost/api/relay/{connection_id}/api/audio/speak-stream?relay_ticket={_relay_ticket(webapp.browser)}"

@@ -142,7 +142,7 @@ def is_genuine_nous_rate_limit(
 def is_long_welcome_rate_limit(error_context: Any) -> bool:
     """True for a Nous welcome-tier ``rate_limited`` refusal whose reset is long enough to be an
     exhausted allowance (``WELCOME_LONG_WAIT_SECONDS``), as parsed into ``error_context``
-    (``welcome_refusal`` from ``hermes_cli.anon_auth.parse_welcome_refusal``). Capacity refusals
+    (``welcome_refusal`` from ``hermes_agent.hermes_cli.anon_auth.parse_welcome_refusal``). Capacity refusals
     (``at_capacity`` / ``admission_closed``) are never this: they are retried in place."""
     if not isinstance(error_context, dict):
         return False

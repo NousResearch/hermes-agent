@@ -1,4 +1,4 @@
-"""Per-task worker log rotation, split out of ``hermes_cli.kanban_db_dispatch``."""
+"""Per-task worker log rotation, split out of ``hermes_agent.hermes_cli.kanban_db_dispatch``."""
 
 from __future__ import annotations
 
@@ -17,13 +17,13 @@ def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, 
     """
     if kanban_cfg is None:
         try:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
 
             kanban_cfg = (load_config().get("kanban") or {})
         except Exception:
             kanban_cfg = {}
     kanban_cfg = kanban_cfg or {}
-    from hermes_cli.kanban_db_dispatch import _positive_int
+    from hermes_agent.hermes_cli.kanban_db_dispatch import _positive_int
     max_bytes = _positive_int(kanban_cfg.get("worker_log_rotate_bytes"), DEFAULT_LOG_ROTATE_BYTES, minimum=1)
     backup_count = _positive_int(kanban_cfg.get("worker_log_backup_count"), DEFAULT_LOG_BACKUP_COUNT, minimum=0)
     return max_bytes, backup_count
@@ -44,7 +44,7 @@ def rotate_worker_log(
     try:
         if not log_path.exists() or log_path.stat().st_size <= max_bytes:
             return
-        from hermes_cli.kanban_db_dispatch import _positive_int
+        from hermes_agent.hermes_cli.kanban_db_dispatch import _positive_int
         backup_count = _positive_int(backup_count, DEFAULT_LOG_BACKUP_COUNT, minimum=0)
         if backup_count == 0:
             log_path.unlink()

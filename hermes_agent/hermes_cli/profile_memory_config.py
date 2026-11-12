@@ -3,7 +3,7 @@
 ``--clone`` copies ``config.yaml`` — and with it ``memory.provider: hindsight`` — but the
 provider keeps its settings outside config.yaml, so the clone booted with the provider
 selected and silently unavailable. Providers store per-home config by convention (the same
-convention ``hermes_cli.web_routers.memory_providers`` reads): a ``<home>/<provider>/``
+convention ``hermes_agent.hermes_cli.web_routers.memory_providers`` reads): a ``<home>/<provider>/``
 directory (hindsight) or a flat ``<home>/<provider>.json`` (mem0, honcho, supermemory). Copying
 by convention keeps this free of plugin imports: the provider may live in the catalog, not in
 tree, so a hook the plugin must implement could not fix the reported case.
@@ -69,7 +69,7 @@ def clone_memory_provider_config(source_dir: Path, profile_dir: Path, provider: 
 def _load_config_dict(profile_dir: Path) -> Optional[dict]:
     """A profile's config.yaml mapping read through the config backend; None when absent or unreadable."""
     from hermes_yaml import YAMLError
-    from hermes_cli.config_backend import read_config_doc
+    from hermes_agent.hermes_cli.config_backend import read_config_doc
     try:
         data = read_config_doc(profile_dir / "config.yaml") or {}
     # FileNotFoundError included (no config). ValueError: the YAML constructors raise it bare for
@@ -83,9 +83,9 @@ def _names_external_provider(profile_dir: Path) -> bool:
     """Cheap pre-check before binding a profile's secrets: does its config.yaml, or the managed
     overlay, name a non-core ``memory.provider`` (a ``${VAR}`` selector counts)?"""
     from hermes_agent.agent.memory_provider import is_core_memory_provider
-    from hermes_cli import managed_scope
+    from hermes_agent.hermes_cli import managed_scope
 
-    from hermes_cli.config import cfg_get
+    from hermes_agent.hermes_cli.config import cfg_get
 
     for config in (_load_config_dict(profile_dir), managed_scope.load_managed_config()):
         name = cfg_get(config, "memory", "provider")
@@ -111,14 +111,14 @@ def notify_memory_provider(profile_dir: Path, call: Callable[[MemoryProvider], N
         if not _names_external_provider(profile_dir):
             return  # the common case: no provider, so no secret scope, effective config or load
         from hermes_agent.agent.secret_scope import build_profile_secret_scope, set_secret_scope
-        from hermes_cli.plugin_isolation import transient_plugin_host
+        from hermes_agent.hermes_cli.plugin_isolation import transient_plugin_host
         from plugins.memory import load_memory_provider, provider_registration_scope
         # Secrets first: the effective config (managed scope, ``${VAR}`` refs) expands through them.
         # Its configured secret sources too (1Password etc.); a brand-new profile was never hydrated.
-        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
         hydrate_profile_secret_sources(profile_dir)
         secret_token = set_secret_scope(build_profile_secret_scope(profile_dir), profile_home=str(profile_dir))
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         name = active_memory_provider(load_config_readonly())
         if not name:
             return

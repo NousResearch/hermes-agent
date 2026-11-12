@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli import main as hermes_main, update_cmd
+from hermes_agent.hermes_cli import main as hermes_main, update_cmd
 from tests.hermes_cli.test_update_target_identity import git, update_tree
 from datetime import UTC
 
@@ -116,7 +116,7 @@ def test_rescue_retention_uses_real_refs(tmp_path, monkeypatch, mode):
     ('paths', 'VALUE = 2\n', (), 'restored Python source discovery'),
 ])
 def test_restore_validates_real_stash_and_each_import(probe_root, monkeypatch, capsys, fault, body, modules, message):
-    import hermes_cli.update_cmd_stash as stash
+    import hermes_agent.hermes_cli.update_cmd_stash as stash
 
     tmp_path = probe_root
 
@@ -228,7 +228,7 @@ def test_update_parser_accepts_keep_stash():
     """The flag parses and defaults off."""
     import argparse
 
-    from hermes_cli.subcommands.update import build_update_parser
+    from hermes_agent.hermes_cli.subcommands.update import build_update_parser
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
@@ -274,7 +274,7 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
     marker = tmp_path / ".hermes-bootstrap-complete"
     marker.write_text("")
 
-    # Exact flags used by hermes update (hermes_cli/main.py).
+    # Exact flags used by hermes update (hermes_agent/hermes_cli/main.py).
     git("stash", "push", "--include-untracked", "-m", "hermes-update-autostash")
 
     assert marker.exists(), (
@@ -346,7 +346,7 @@ def test_stash_selector_is_a_bare_index_never_a_brace_selector(tmp_path):
     must be the bare index git accepts everywhere (#87542)."""
     import subprocess
 
-    import hermes_cli.update_cmd_stash as stash_mod
+    import hermes_agent.hermes_cli.update_cmd_stash as stash_mod
 
     def git(*args):
         return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True)
@@ -374,8 +374,8 @@ def test_restore_stays_parked_when_untracked_baseline_is_unknown(
     monkeypatch, tmp_path, capsys
 ):
     """Unknown cleanup scope must not turn into a destructive empty baseline."""
-    from hermes_cli import update_cmd
-    from hermes_cli import update_cmd_stash
+    from hermes_agent.hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import update_cmd_stash
 
     monkeypatch.setattr(update_cmd, "_git_untracked_paths", lambda *_args: None)
     monkeypatch.setattr(update_cmd_stash, "_git_untracked_paths", lambda *_args: None)
@@ -395,8 +395,8 @@ def test_reject_does_not_claim_cleanup_when_git_state_is_unknown(
     monkeypatch, tmp_path, capsys
 ):
     """Cleanup failures must not be reported as a restored clean tree."""
-    from hermes_cli import update_cmd
-    from hermes_cli import update_cmd_stash
+    from hermes_agent.hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import update_cmd_stash
 
     monkeypatch.setattr(update_cmd, "_git_untracked_paths", lambda *_args: None)
     monkeypatch.setattr(update_cmd_stash, "_git_untracked_paths", lambda *_args: None)
@@ -540,7 +540,7 @@ class _ReceiptProbe:
 
 @contextlib.contextmanager
 def _active_receipt(probe):
-    from hermes_cli import update_receipt
+    from hermes_agent.hermes_cli import update_receipt
 
     token = update_receipt._current.set(probe)
     try:
@@ -551,7 +551,7 @@ def _active_receipt(probe):
 
 def test_conflicted_restore_records_parked_step_in_receipt(monkeypatch, tmp_path):
     import subprocess
-    from hermes_cli import update_receipt
+    from hermes_agent.hermes_cli import update_receipt
 
     def git(*args, check=True):
         return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=check)
@@ -590,7 +590,7 @@ def test_conflicted_restore_records_parked_step_in_receipt(monkeypatch, tmp_path
 
 def test_clean_restore_records_restored_step_in_receipt(monkeypatch, tmp_path):
     import subprocess
-    from hermes_cli import update_receipt
+    from hermes_agent.hermes_cli import update_receipt
 
     def git(*args, check=True):
         return subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=check)
@@ -622,8 +622,8 @@ def test_clean_restore_records_restored_step_in_receipt(monkeypatch, tmp_path):
 
 def test_keep_stash_park_records_parked_step_in_receipt(capsys):
     probe = _ReceiptProbe()
-    import hermes_cli.update_cmd_stash as stash_mod
-    from hermes_cli import update_receipt
+    import hermes_agent.hermes_cli.update_cmd_stash as stash_mod
+    from hermes_agent.hermes_cli import update_receipt
 
     with _active_receipt(probe):
         stash_mod._park_stashed_changes("deadbeefcafe")
@@ -705,7 +705,7 @@ def test_untracked_file_the_update_does_not_track_is_never_reported_replaced(tmp
 def test_unrequested_park_is_never_reported_as_update_complete(monkeypatch, tmp_path):
     """A restore that conflicts leaves the patch parked: the completion line must say so (#122557);
     a park the user asked for (--keep-stash) stays a normal completion."""
-    import hermes_cli.update_cmd_stash as stash_mod
+    import hermes_agent.hermes_cli.update_cmd_stash as stash_mod
 
     monkeypatch.setattr(stash_mod, "_pending_autostash", None)
 

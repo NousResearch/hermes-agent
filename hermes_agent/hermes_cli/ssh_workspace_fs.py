@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Iterator
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_agent.hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_agent.tools.environments.ssh import SSHEnvironment
 
 

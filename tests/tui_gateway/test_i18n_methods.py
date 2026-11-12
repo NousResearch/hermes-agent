@@ -24,8 +24,8 @@ def _call(server, method, params):
 
 def test_languages_and_catalog_serve_pack_layers_per_surface(tmp_path, monkeypatch, clean_layers):
     from hermes_agent.tui_gateway import server
-    from hermes_cli.plugins import PluginContext, PluginManager
-    from hermes_cli.plugins_manifest import PluginManifest
+    from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager
+    from hermes_agent.hermes_cli.plugins_manifest import PluginManifest
 
     home = tmp_path / "home"
     (home / "locales").mkdir(parents=True)
@@ -82,7 +82,7 @@ def test_cold_gateway_serves_an_installed_pack_before_any_agent_exists(tmp_path,
     """The Desktop asks for ``i18n.languages`` / ``i18n.catalog`` right after connecting, before anything
     in the gateway has discovered plugins. An installed, enabled pack must already be in both answers."""
     from hermes_agent.tui_gateway import server
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     home = tmp_path / "home"
     plugin = home / "plugins" / "hermes-lang-ko"
@@ -115,7 +115,7 @@ def test_cold_gateway_serves_an_installed_pack_before_any_agent_exists(tmp_path,
 
 def test_failed_plugin_discovery_still_answers_with_bundled_languages(tmp_path, monkeypatch, clean_layers):
     from hermes_agent.tui_gateway import server
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
 
     def boom(force=False):
         raise RuntimeError("plugin loader broke")
@@ -136,7 +136,7 @@ def test_slow_plugin_discovery_does_not_hold_up_other_requests(method, tmp_path,
     import queue
     import threading
 
-    from hermes_cli import plugins as plugins_mod
+    from hermes_agent.hermes_cli import plugins as plugins_mod
     from hermes_agent.tui_gateway import server
 
     class Transport:

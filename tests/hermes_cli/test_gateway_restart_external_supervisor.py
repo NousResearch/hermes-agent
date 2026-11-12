@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.gateway import status as gateway_status
-from hermes_cli import gateway as gw
-from hermes_cli import gateway_supervised_restart as supervised
+from hermes_agent.hermes_cli import gateway as gw
+from hermes_agent.hermes_cli import gateway_supervised_restart as supervised
 
 SUPERVISED_ARGV = [
     "/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run", "--external-supervisor",
@@ -50,7 +50,7 @@ def restart_calls(monkeypatch):
     monkeypatch.setattr(gw, "_wait_for_gateway_exit", lambda **k: None)
     monkeypatch.setattr(gw, "run_gateway", lambda **k: calls.__setitem__("started", True))
     # Hermetic on Linux CI: the runner's own /proc + systemd must not make the gateway look service-owned.
-    monkeypatch.setattr("hermes_cli.main_dashboard._get_systemd_service_for_pid", lambda pid: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main_dashboard._get_systemd_service_for_pid", lambda pid: None)
     return calls
 
 
@@ -118,9 +118,9 @@ def test_service_managed_gateway_refuses_fallback_takeover(restart_calls, monkey
     """
     monkeypatch.setattr(gw, "_capture_gateway_argv",
                         lambda pid: ["/usr/bin/python", "-m", "hermes_cli.main", "gateway", "run"])
-    monkeypatch.setattr("hermes_cli.main_dashboard._get_systemd_service_for_pid",
+    monkeypatch.setattr("hermes_agent.hermes_cli.main_dashboard._get_systemd_service_for_pid",
                         lambda pid: "hermes.service" if pid == 4321 else None)
-    monkeypatch.setattr("hermes_cli.main_dashboard._get_pid_cgroup_path",
+    monkeypatch.setattr("hermes_agent.hermes_cli.main_dashboard._get_pid_cgroup_path",
                         lambda pid: cgroup if pid == 4321 else None)
     with pytest.raises(SystemExit) as exc:
         _run_restart()

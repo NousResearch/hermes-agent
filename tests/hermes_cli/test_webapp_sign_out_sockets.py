@@ -63,7 +63,7 @@ def sign_out(webapp, tmp_path):
 
 
 def test_signing_out_closes_the_terminal_and_streams_the_session_token_opened(webapp, sign_out):
-    from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
+    from hermes_agent.hermes_cli.dashboard_auth.ws_tickets import mint_ticket
 
     client, host = webapp.client, webapp.host
     other = mint_ticket(user_id="someone-else", provider="stub")
@@ -91,7 +91,7 @@ def test_signing_out_with_no_open_tabs_still_replaces_the_credential(webapp, sig
 def test_signing_out_ends_the_file_links_the_session_token_minted(webapp, sign_out, tmp_path, monkeypatch, route):
     """A media element's stream link is reusable for an hour and a download link for a few retries;
     after sign-out, with uses left, neither reads anything."""
-    from hermes_cli import web_server_file_tickets
+    from hermes_agent.hermes_cli import web_server_file_tickets
 
     client = webapp.client
     root = tmp_path / "files"
@@ -111,7 +111,7 @@ def test_signing_out_ends_the_file_links_the_session_token_minted(webapp, sign_o
 def test_a_media_link_minted_while_signing_out_streams_nothing(webapp, sign_out, tmp_path, monkeypatch):
     """The request asking for the link was admitted with the old credential, and the sign-out
     finished before the link was stored: the link ends with the credential that asked for it."""
-    from hermes_cli import web_server_file_tickets
+    from hermes_agent.hermes_cli import web_server_file_tickets
 
     client = webapp.client
     root = tmp_path / "files"
@@ -137,7 +137,7 @@ def test_a_file_link_another_credential_minted_keeps_working_after_sign_out(weba
                                                                           monkeypatch, route):
     """Signing out ends the links minted under the browser credential and no others: a link minted
     with another credential (a service token, a native client's grant) keeps working."""
-    from hermes_cli import web_server_file_tickets
+    from hermes_agent.hermes_cli import web_server_file_tickets
 
     client = webapp.client
     root = tmp_path / "files"
@@ -159,7 +159,7 @@ def test_a_socket_admitted_while_the_token_is_replaced_closes_at_once(monkeypatc
     before this one was tracked: tracking it closes it."""
     import asyncio
 
-    from hermes_cli import browser_credential, web_server, web_session_sockets
+    from hermes_agent.hermes_cli import browser_credential, web_server, web_session_sockets
 
     closed = []
 

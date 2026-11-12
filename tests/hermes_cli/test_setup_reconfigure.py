@@ -115,7 +115,7 @@ class TestExistingInstallDefault:
                 gateway="hermes_cli.setup.setup_gateway",
                 tools="hermes_cli.setup.setup_tools",
             )
-            from hermes_cli.setup import run_setup_wizard
+            from hermes_agent.hermes_cli.setup import run_setup_wizard
             run_setup_wizard(args)
 
         # No menu shown.
@@ -147,8 +147,8 @@ class TestQuickFlag:
                 gateway="hermes_cli.setup.setup_gateway",
                 tools="hermes_cli.setup.setup_tools",
             )
-            from hermes_cli.setup import run_setup_wizard
-            from hermes_cli import setup as setup_mod
+            from hermes_agent.hermes_cli.setup import run_setup_wizard
+            from hermes_agent.hermes_cli import setup as setup_mod
 
             section_indexes = []
             m["quick"].side_effect = lambda *_args: section_indexes.append(
@@ -179,8 +179,8 @@ class TestFreshInstall:
                 prompt=("hermes_cli.setup.prompt_choice", {"return_value": 0}),
                 first="hermes_cli.setup_quick._run_first_time_quick_setup",
             )
-            from hermes_cli.setup import run_setup_wizard
-            from hermes_cli import setup as setup_mod
+            from hermes_agent.hermes_cli.setup import run_setup_wizard
+            from hermes_agent.hermes_cli import setup as setup_mod
 
             section_indexes = []
             m["first"].side_effect = lambda *_args: section_indexes.append(
@@ -201,7 +201,7 @@ class TestFreshInstall:
                 prompt=("hermes_cli.setup.prompt_choice", {"return_value": 2}),
                 blank="hermes_cli.setup_quick._run_blank_slate_setup",
             )
-            from hermes_cli import setup as setup_mod
+            from hermes_agent.hermes_cli import setup as setup_mod
 
             section_indexes = []
             m["blank"].side_effect = lambda *_args: section_indexes.append(
@@ -218,11 +218,11 @@ class TestArgparse:
 
     def test_reconfigure_flag_reaches_cmd_setup(self, monkeypatch):
         import sys
-        from hermes_cli.main import main
+        from hermes_agent.hermes_cli.main import main
 
         captured = {}
         monkeypatch.setattr(
-            "hermes_cli.setup.run_setup_wizard",
+            "hermes_agent.hermes_cli.setup.run_setup_wizard",
             lambda args: captured.setdefault("args", args),
         )
         monkeypatch.setattr(sys, "argv", ["hermes", "setup", "--reconfigure"])

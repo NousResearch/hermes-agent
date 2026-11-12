@@ -1,6 +1,6 @@
 """Guards for CLI startup performance regression.
 
-``hermes_cli.main`` skips eager plugin discovery at argparse-setup time
+``hermes_agent.hermes_cli.main`` skips eager plugin discovery at argparse-setup time
 when the invocation is clearly targeting a known built-in subcommand.
 This saves 500-650ms on ``hermes --help``, ``hermes --version``,
 ``hermes logs``, etc., by not importing ``google.cloud.pubsub_v1``,
@@ -16,7 +16,7 @@ from __future__ import annotations
 import sys
 from unittest.mock import patch
 
-from hermes_cli.main import (
+from hermes_agent.hermes_cli.main import (
     _resolve_deferred_platform_cli_command,
 )
 
@@ -45,7 +45,7 @@ def test_deferred_platform_loader_registers_cli_command_before_parser_table():
     import argparse
 
     from hermes_agent.gateway.platform_registry import PlatformRegistry
-    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+    from hermes_agent.hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
     mgr = PluginManager()
     manifest = PluginManifest(name="fake-photon-platform")

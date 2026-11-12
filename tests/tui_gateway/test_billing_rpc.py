@@ -85,7 +85,7 @@ def test_billing_state_carries_keep_going_on_credits(monkeypatch):
 
 
 def test_keep_going_on_credits_patches_just_enabled(monkeypatch):
-    import hermes_cli.nous_billing as nb
+    import hermes_agent.hermes_cli.nous_billing as nb
     sent = []
     monkeypatch.setattr(nb, "patch_keep_going_on_credits", lambda **kw: sent.append(kw) or {})
     assert _call("billing.keep_going_on_credits", {"enabled": True}) == {"ok": True}
@@ -94,7 +94,7 @@ def test_keep_going_on_credits_patches_just_enabled(monkeypatch):
 
 
 def test_keep_going_on_credits_rejects_a_non_bool_without_calling_the_portal(monkeypatch):
-    import hermes_cli.nous_billing as nb
+    import hermes_agent.hermes_cli.nous_billing as nb
     monkeypatch.setattr(nb, "patch_keep_going_on_credits", lambda **kw: (_ for _ in ()).throw(AssertionError("called")))
     for params in ({}, {"enabled": "true"}, {"enabled": 1}):
         res = _call("billing.keep_going_on_credits", params)
@@ -102,7 +102,7 @@ def test_keep_going_on_credits_rejects_a_non_bool_without_calling_the_portal(mon
 
 
 def test_keep_going_on_credits_scope_denial_is_an_envelope(monkeypatch):
-    import hermes_cli.nous_billing as nb
+    import hermes_agent.hermes_cli.nous_billing as nb
 
     def deny(**_kw):
         raise nb.BillingScopeRequired("billing:manage required", status=403, error="insufficient_scope")

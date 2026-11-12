@@ -298,7 +298,7 @@ def _live_system_guard(request, monkeypatch):
                 low = cmd_str.lower()
                 # pkill -f pattern: catch hermes-themed patterns + a
                 # plain "python" -f which would catch the live gateway
-                # whose cmdline contains "python -m hermes_cli.main".
+                # whose cmdline contains "python -m hermes_agent.hermes_cli.main".
                 if (
                     "hermes" in low
                     or "gateway" in low
@@ -372,7 +372,7 @@ def _live_system_guard(request, monkeypatch):
                 "intentional."
             )
         # Block any subprocess that would run `hermes update` (or the
-        # equivalent `python -m hermes_cli.main update`).  These commands
+        # equivalent `python -m hermes_agent.hermes_cli.main update`).  These commands
         # run `git fetch origin + git pull` against the REAL checkout,
         # overwriting files like pyproject.toml mid-test-run and corrupting
         # every subsequent subprocess that reads them.  The corruption is
@@ -387,7 +387,7 @@ def _live_system_guard(request, monkeypatch):
             # hermes update / hermes update --gateway / setsid bash -c ... hermes update
             ("hermes" in low and "update" in low.split())
             or
-            # python -m hermes_cli.main update --gateway
+            # python -m hermes_agent.hermes_cli.main update --gateway
             ("hermes_cli" in low and "update" in low.split())
             or
             # venv/bin/hermes update  (absolute path variant used in tests)
@@ -406,7 +406,7 @@ def _live_system_guard(request, monkeypatch):
                 "needed (e.g. an integration test testing the update "
                 "flow against a dedicated throwaway repo)."
             )
-        # Block spawning a REAL gateway runtime (``python -m hermes_cli.main
+        # Block spawning a REAL gateway runtime (``python -m hermes_agent.hermes_cli.main
         # gateway run|start|restart``). ``_spawn_hermes_action`` launches it
         # with start_new_session=True, so it outlives the pytest worker; the
         # child inherits the pytest-tmp HERMES_HOME, resolves the DEVELOPER's

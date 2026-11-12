@@ -13,8 +13,8 @@ import os
 import time
 from pathlib import Path
 
-from hermes_cli.local_runtime.binaries import runtimes_root
-from hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
+from hermes_agent.hermes_cli.local_runtime.binaries import runtimes_root
+from hermes_agent.hermes_cli.local_runtime.gguf import SPLIT_PART_RE, model_id_from_stem
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def _detect_gpu_vendor() -> str | None:
     Preserve NVIDIA's detailed name when nvidia-smi is available, then use the
     platform host facts so Intel and AMD do not silently demote ``auto`` to CPU.
     """
-    from hermes_cli.local_runtime.hardware import _cached_nvidia_gpu_query
+    from hermes_agent.hermes_cli.local_runtime.hardware import _cached_nvidia_gpu_query
     from hermes_platform.host.facts import gpu_class
 
     query = _cached_nvidia_gpu_query()
@@ -146,7 +146,7 @@ def _presets_stale() -> bool:
     """True when a staged model has no section in the preset INI — it would autoload with stock
     fit instead of a policy decision."""
     with suppress(Exception):
-        from hermes_cli.local_runtime.presets import read_preset_decisions
+        from hermes_agent.hermes_cli.local_runtime.presets import read_preset_decisions
 
         known = read_preset_decisions()
         return any(mid not in known or (not known[mid].refusal and not (known[mid].keys or {}).get("model"))
@@ -159,14 +159,14 @@ def _stop_state_server() -> None:
     an orphan (recorded owner gone): a live owner's watchdog would respawn its router, so that one
     is left running and the replacement boots beside it, as it always has. The process comes from
     the identity-guarded reader, never a bare PID — the endpoint dict callers hold has none."""
-    from hermes_cli.local_runtime.recovery import (
+    from hermes_agent.hermes_cli.local_runtime.recovery import (
         _owner_is_dead,
         is_modern,
         legacy_recorded_process,
         read_state,
         recorded_process,
     )
-    from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+    from hermes_agent.hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
     state = read_state()
     if is_modern(state):
@@ -191,10 +191,10 @@ def refresh_local_runtime() -> bool:
     anything that changes the staged set while the server runs must bounce it."""
     global _SUPERVISOR
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         if _SUPERVISOR is None:
-            from hermes_cli.local_runtime.endpoint import _state_endpoint
+            from hermes_agent.hermes_cli.local_runtime.endpoint import _state_endpoint
 
             state = _state_endpoint()
             if state is None:
@@ -217,8 +217,8 @@ def _admitted_models_max(mdir: Path, configured: int, engine_tag: str | None = N
     block a boot. On Windows unified memory, free commit bounds the count too.
     """
     try:
-        from hermes_cli.local_runtime.hardware import probe_budget
-        from hermes_cli.local_runtime.presets import admitted_residency_count
+        from hermes_agent.hermes_cli.local_runtime.hardware import probe_budget
+        from hermes_agent.hermes_cli.local_runtime.presets import admitted_residency_count
 
         capacity = probe_budget(planning=True)
         live = _launch_budget(capacity) if capacity.uma else None
@@ -249,8 +249,8 @@ def _generate_presets(mdir: Path, preset_path: Path, residents: int = 1, *,
     ``residents`` is the router's model count, which splits the prompt-cache room on Windows
     unified memory.
     """
-    from hermes_cli.local_runtime.hardware import probe_budget
-    from hermes_cli.local_runtime.presets import generate_presets
+    from hermes_agent.hermes_cli.local_runtime.hardware import probe_budget
+    from hermes_agent.hermes_cli.local_runtime.presets import generate_presets
 
     try:
         capacity = probe_budget(planning=True)
@@ -273,7 +273,7 @@ def _generate_presets(mdir: Path, preset_path: Path, residents: int = 1, *,
 
 def _launch_budget(capacity, own_bytes: int = 0):
     """``hardware.launch_budget``, or None when the probe fails: a boot never waits on it."""
-    from hermes_cli.local_runtime.hardware import launch_budget
+    from hermes_agent.hermes_cli.local_runtime.hardware import launch_budget
 
     try:
         return launch_budget(capacity, own_bytes=own_bytes)
@@ -296,8 +296,8 @@ def refit_idle_presets(sup) -> bool:
     unloaded by the router and fails once; that gap is a few milliseconds, and only when a window
     changes.
     """
-    from hermes_cli.local_runtime.hardware import probe_budget
-    from hermes_cli.local_runtime.presets import plan_presets, render_presets
+    from hermes_agent.hermes_cli.local_runtime.hardware import probe_budget
+    from hermes_agent.hermes_cli.local_runtime.presets import plan_presets, render_presets
 
     path = sup.preset_path
     if path is None or not path.exists() or _any_holds_memory(sup):
@@ -436,7 +436,7 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
     # The state check and the spawn below run under a cross-process lock: two backends racing
     # to boot (#116682) must not both find no state file and both spawn a router on the stable
     # port — the loser waits here, then re-checks state and adopts the winner's server instead.
-    from hermes_cli.local_runtime.endpoint import _state_endpoint
+    from hermes_agent.hermes_cli.local_runtime.endpoint import _state_endpoint
 
     with _cross_process_boot_lock():
         state = _state_endpoint()
@@ -449,8 +449,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> object | None:
             _stop_state_server()
 
         try:
-            from hermes_cli.local_runtime.binaries import installed_engine
-            from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+            from hermes_agent.hermes_cli.local_runtime.binaries import installed_engine
+            from hermes_agent.hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
 
             engine = installed_engine(section.get("backend", "auto"))
             if engine is None:

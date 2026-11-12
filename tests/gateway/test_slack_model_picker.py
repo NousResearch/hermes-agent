@@ -662,7 +662,7 @@ class TestSlackModelPickerGatewayIntegration:
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
         monkeypatch.setattr(
-            "hermes_cli.model_switch_providers.list_picker_providers",
+            "hermes_agent.hermes_cli.model_switch_providers.list_picker_providers",
             lambda **kw: [{"slug": "openrouter", "name": "OR", "models": ["m1"], "total_models": 1}],
         )
 
@@ -713,7 +713,7 @@ class TestSlackModelPickerGatewayIntegration:
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
         monkeypatch.setattr(
-            "hermes_cli.model_switch_providers.list_authenticated_providers",
+            "hermes_agent.hermes_cli.model_switch_providers.list_authenticated_providers",
             lambda **kw: [],
         )
 

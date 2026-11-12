@@ -1,7 +1,7 @@
 """The interactive ``hermes plugins`` composite UI: general-plugin checkboxes (saved through the one
 admission authority) and the memory-provider / context-engine category pickers.
 
-Sibling of :mod:`hermes_cli.plugins_cmd` (the facade re-exports the names other modules use and is
+Sibling of :mod:`hermes_agent.hermes_cli.plugins_cmd` (the facade re-exports the names other modules use and is
 imported late here, never at module level).
 """
 
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def _pc():
     """The facade, read at call time: tests patch ``plugins_cmd.<name>`` and sibling calls must see it."""
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     return plugins_cmd
 
 
@@ -40,7 +40,7 @@ def _discover_context_engines() -> list[tuple[str, str]]:
     except Exception:
         pass
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_context_engine
+        from hermes_agent.hermes_cli.plugins import discover_plugins, get_plugin_context_engine
         discover_plugins()
         plugin_engine = get_plugin_context_engine()
         if plugin_engine and getattr(plugin_engine, "name", None):
@@ -64,7 +64,7 @@ def _configure_category_spec(spec) -> bool:
     """Radio picker for one ``_PROVIDER_CATEGORY_SPECS`` row: the built-in default first, then the
     discovered choices; a current value not among them is appended as ``(not found)``. Saves and
     returns True when the choice changed."""
-    from hermes_cli.curses_ui import curses_radiolist
+    from hermes_agent.hermes_cli.curses_ui import curses_radiolist
     title, default_label, default_name, current, discover, save = spec
     current = current()
     choices = discover()
@@ -119,7 +119,7 @@ def cmd_toggle() -> None:
 def _effective_plugin_selection(entries, enabled: set, disabled: set) -> set:
     """Row indices ticked on open: the load-time rule, not list membership — bundled platforms,
     backends and model providers are active without a ``plugins.enabled`` entry."""
-    from hermes_cli.plugins_cmd_listing import _entry_status
+    from hermes_agent.hermes_cli.plugins_cmd_listing import _entry_status
     active = _pc()._category_active_names()
     return {i for i, entry in enumerate(entries) if _entry_status(entry, enabled, disabled, active) == "enabled"}
 
@@ -153,7 +153,7 @@ def _persist_plugin_selection(plugin_keys, chosen, disabled, initial, *, expecte
 
 def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disabled, categories, console, *, expected_config=None):
     """Custom curses screen with checkboxes + category action rows."""
-    from hermes_cli.curses_ui import _addnstr, flush_stdin
+    from hermes_agent.hermes_cli.curses_ui import _addnstr, flush_stdin
     chosen = set(plugin_selected)
     n_plugins, n_categories = len(plugin_keys), len(categories)
     total_items = n_plugins + n_categories  # navigable rows (headers/separator are skipped)
@@ -261,7 +261,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
     curses.wrapper(_draw)
     flush_stdin()
 
-    from hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_agent.hermes_cli.plugins_admission import AdmissionRefused
 
     try:
         turned_on, turned_off = _persist_plugin_selection(plugin_keys, chosen, disabled, plugin_selected,
@@ -292,7 +292,7 @@ def _run_composite_ui(curses, plugin_keys, plugin_labels, plugin_selected, disab
 
 def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disabled, categories, console, *, expected_config=None):
     """Text-based fallback for the composite plugins UI."""
-    from hermes_cli.colors import Colors, color
+    from hermes_agent.hermes_cli.colors import Colors, color
     print(color("\n  Plugins", Colors.YELLOW))
     if plugin_keys:
         chosen = set(plugin_selected)
@@ -333,7 +333,7 @@ def _run_composite_fallback(plugin_keys, plugin_labels, plugin_selected, disable
 
 def _save_plugin_selection_fallback(plugin_keys, chosen, disabled, initial, *, expected_config=None) -> None:
     """The text fallback's save: same admission authority, refusal printed."""
-    from hermes_cli.plugins_admission import AdmissionRefused
+    from hermes_agent.hermes_cli.plugins_admission import AdmissionRefused
 
     try:
         _persist_plugin_selection(plugin_keys, chosen, disabled, initial, expected_config=expected_config)

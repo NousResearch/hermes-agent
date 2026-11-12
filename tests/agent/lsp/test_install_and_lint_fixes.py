@@ -95,7 +95,7 @@ def test_lsp_package_manager_config_selects_installer_argv_and_never_falls_back_
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     staging = str(install_mod.hermes_lsp_bin_dir().parent)
     cfg = {"lsp": {}}
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", lambda: cfg)
     runs = []
     monkeypatch.setattr(install_mod.subprocess, "run", lambda cmd, **kw: (runs.append(cmd), MagicMock(returncode=0, stderr=""))[1])
     present = {"npm": "/usr/bin/npm", "pnpm": "/usr/bin/pnpm", "yarn": "/usr/bin/yarn"}

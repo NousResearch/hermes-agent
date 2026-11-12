@@ -43,7 +43,7 @@ def file_home(tmp_path, monkeypatch):
 
 
 def test_remote_set_and_unset_name_remote_config_not_a_local_file(plane, capsys):
-    from hermes_cli.config import set_config_value, unset_config_value
+    from hermes_agent.hermes_cli.config import set_config_value, unset_config_value
 
     set_config_value("agent.max_turns", "7")
     unset_config_value("agent.max_turns")
@@ -56,7 +56,7 @@ def test_remote_set_and_unset_name_remote_config_not_a_local_file(plane, capsys)
 
 
 def test_file_set_and_unset_still_print_the_config_path(file_home, capsys):
-    from hermes_cli.config import set_config_value, unset_config_value
+    from hermes_agent.hermes_cli.config import set_config_value, unset_config_value
 
     set_config_value("agent.max_turns", "7")
     unset_config_value("agent.max_turns")

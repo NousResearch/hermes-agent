@@ -59,9 +59,9 @@ def _install_modal_test_modules(
 ):
     _reset_modules(("hermes_agent.tools", "hermes_cli", "modal"))
 
-    hermes_cli = types.ModuleType("hermes_cli")
+    hermes_cli = types.ModuleType("hermes_agent.hermes_cli")
     hermes_cli.__path__ = [str(REPO_ROOT / "hermes_cli")]  # type: ignore[attr-defined]
-    sys.modules["hermes_cli"] = hermes_cli
+    sys.modules["hermes_agent.hermes_cli"] = hermes_cli
     hermes_home = tmp_path / "hermes-home"
     os.environ["HERMES_HOME"] = str(hermes_home)
 
@@ -301,7 +301,7 @@ def test_snapshot_store_update_proceeds_when_the_lock_is_unavailable(tmp_path, m
     fallback deletes the failed snapshot id and then retries with the base image."""
     import contextlib
 
-    import hermes_cli.auth as auth_module
+    import hermes_agent.hermes_cli.auth as auth_module
     import hermes_agent.tools.environments.modal as modal_module
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))

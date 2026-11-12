@@ -11,8 +11,8 @@ from pathlib import Path
 
 from fastapi import WebSocket
 
-from hermes_cli import gateway_connections as store
-from hermes_cli.web_host_terminal_sessions import HostOwner, TerminalExpired
+from hermes_agent.hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli.web_host_terminal_sessions import HostOwner, TerminalExpired
 
 
 def _entry(path: Path, connection_id: str) -> dict | None:
@@ -48,15 +48,15 @@ def warm_tunnel(ws: WebSocket) -> None:
     """Dial before the registry's spawn lock: a cold connect would hold up every new terminal.
 
     The dial inside ``prepare_shell`` then takes the reuse path and keeps its fingerprint re-check."""
-    from hermes_cli.gateway_connections_ssh import ensure_tunnel
+    from hermes_agent.hermes_cli.gateway_connections_ssh import ensure_tunnel
 
     connection, path = ws.state.ssh_terminal
     ensure_tunnel(connection, root=path.parent)
 
 
 def prepare_shell(ws: WebSocket, identity: tuple[str, str]):
-    from hermes_cli.gateway_connections_ssh import interactive_shell_argv
-    from hermes_cli.web_host_terminal import resolve_argv
+    from hermes_agent.hermes_cli.gateway_connections_ssh import interactive_shell_argv
+    from hermes_agent.hermes_cli.web_host_terminal import resolve_argv
     from hermes_constants import get_process_hermes_home
 
     connection, path = ws.state.ssh_terminal
@@ -74,11 +74,11 @@ def prepare_shell(ws: WebSocket, identity: tuple[str, str]):
 
 async def serve_ssh_terminal(ws: WebSocket, connection_id: str, admitted: str) -> bool:
     """After relay admission, serve an SSH terminal; False leaves other transports to the relay."""
-    from hermes_cli.web_host_terminal import request_allowed
-    from hermes_cli.web_host_terminal_sessions import host_terminal
-    from hermes_cli.web_server_chat import _PTY_BRIDGE_AVAILABLE, PtyUnavailableError, _pty_fail
-    from hermes_cli.web_server_surface import policy
-    from hermes_cli.web_session_sockets import track
+    from hermes_agent.hermes_cli.web_host_terminal import request_allowed
+    from hermes_agent.hermes_cli.web_host_terminal_sessions import host_terminal
+    from hermes_agent.hermes_cli.web_server_chat import _PTY_BRIDGE_AVAILABLE, PtyUnavailableError, _pty_fail
+    from hermes_agent.hermes_cli.web_server_surface import policy
+    from hermes_agent.hermes_cli.web_session_sockets import track
 
     path = store.store_path()
     connection = await asyncio.to_thread(_entry, path, connection_id)

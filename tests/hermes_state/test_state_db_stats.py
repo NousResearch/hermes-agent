@@ -6,7 +6,7 @@ Covers:
   pending v23 FTS-rebuild bookkeeping).
 - ``hermes_agent.hermes_state_dbfile.count_db_holders``: best-effort probe for how many processes
   hold the DB file open (/proc on Linux, libproc on macOS; None elsewhere/on error).
-- ``hermes_cli.doctor_state._render_state_db_stats``: formatting/threshold helper
+- ``hermes_agent.hermes_cli.doctor_state._render_state_db_stats``: formatting/threshold helper
   the doctor state.db section prints from.
 """
 
@@ -93,7 +93,7 @@ def test_collect_and_render_stale_fts_holder_deferral(populated_db):
     assert stats["fts_rebuild_deferral"]["attempts"] == 4
     assert stats["fts_rebuild_deferral"]["holder_pids"] == [4242]
 
-    from hermes_cli.doctor_state import _render_state_db_stats
+    from hermes_agent.hermes_cli.doctor_state import _render_state_db_stats
 
     rendered = _render_state_db_stats(stats)
     warnings = [
@@ -188,7 +188,7 @@ def _base_stats(**overrides):
 
 
 def test_render_healthy_stats_no_warnings():
-    from hermes_cli.doctor_state import _render_state_db_stats
+    from hermes_agent.hermes_cli.doctor_state import _render_state_db_stats
 
     lines = _render_state_db_stats(_base_stats(), holders=2)
     kinds = [k for k, *_ in lines]
@@ -201,7 +201,7 @@ def test_render_healthy_stats_no_warnings():
 
 
 def test_render_warns_on_large_db():
-    from hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+    from hermes_agent.hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
 
     big = STATE_DB_SIZE_WARN_BYTES + 1
     lines = _render_state_db_stats(
@@ -215,7 +215,7 @@ def test_render_warns_on_large_db():
 
 
 def test_render_large_db_with_pending_rebuild_suggests_optimize():
-    from hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+    from hermes_agent.hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
 
     big = STATE_DB_SIZE_WARN_BYTES + 1
     lines = _render_state_db_stats(
@@ -227,7 +227,7 @@ def test_render_large_db_with_pending_rebuild_suggests_optimize():
 
 
 def test_render_large_db_legacy_trigram_suggests_optimize():
-    from hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
+    from hermes_agent.hermes_cli.doctor_state import STATE_DB_SIZE_WARN_BYTES, _render_state_db_stats
 
     big = STATE_DB_SIZE_WARN_BYTES + 1
     lines = _render_state_db_stats(
@@ -243,7 +243,7 @@ def test_render_large_db_legacy_trigram_suggests_optimize():
 
 
 def test_render_handles_all_none_stats():
-    from hermes_cli.doctor_state import _render_state_db_stats
+    from hermes_agent.hermes_cli.doctor_state import _render_state_db_stats
 
     empty = {k: None for k in _base_stats()}
     empty["fts_tables"] = None

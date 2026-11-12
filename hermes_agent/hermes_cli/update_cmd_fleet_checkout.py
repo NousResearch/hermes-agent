@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import subprocess
 
-from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
+from hermes_agent.hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +27,14 @@ def checkout_contains(sha: str) -> bool:
     image and the pending-restart catch-up printed "every gateway serves the checkout" and "still
     off the checkout code" in the same breath.
     """
-    from hermes_cli.build_info import get_code_identity
-    from hermes_cli.update_cmd import _m
+    from hermes_agent.hermes_cli.build_info import get_code_identity
+    from hermes_agent.hermes_cli.update_cmd import _m
     identity = get_code_identity() or {}
     if identity.get("source") == "build-file":
         stamped = str(identity.get("sha") or "")
         return bool(stamped) and (stamped == sha or stamped.startswith(sha) or sha.startswith(stamped))
     try:
-        from hermes_cli.update_custody import run_git
+        from hermes_agent.hermes_cli.update_custody import run_git
 
         result = run_git(
             ["git"], ["merge-base", "--is-ancestor", sha, "HEAD"],

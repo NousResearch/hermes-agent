@@ -85,7 +85,7 @@ def test_sandbox_status_offers_the_image_switch_instead_of_a_config_hint(monkeyp
     """A docker sandbox kept on the previous default image (no desktop stack) is the common
     upgraded-install case: the blocker becomes the switch offer and ``image_switch`` carries what
     the pane needs to approve it. Without a pending switch the plain image hint stands."""
-    from hermes_cli import sandbox_image_switch as sw
+    from hermes_agent.hermes_cli import sandbox_image_switch as sw
     from hermes_agent.tools.bot_desktop import sandbox_host
 
     monkeypatch.setattr(placement, "_setting", lambda: "auto")

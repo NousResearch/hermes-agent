@@ -33,7 +33,7 @@ from hermes_agent.cron.executions import list_executions
 from tests.cron.conftest import owner_execution_runner
 # Cron executes inside the profile's owner; run the owner's execution seam in-process.
 scheduler_authority.run_canonical_job = owner_execution_runner()
-from hermes_cli.plugins import get_plugin_manager
+from hermes_agent.hermes_cli.plugins import get_plugin_manager
 scheduler.tick(verbose=False, sync=True)
 ctx = get_plugin_manager()._plugins["cron-identity-probe"].module.CTX
 print(json.dumps({"outside": ctx.current_cron_execution(), "profile": ctx.profile_name,

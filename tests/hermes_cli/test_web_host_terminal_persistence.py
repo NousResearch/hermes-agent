@@ -8,9 +8,9 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from hermes_cli import web_host_terminal, web_server, web_server_chat
-from hermes_cli.web_routers.webapp import router
-from hermes_cli.web_session_sockets import HOST_TERMINAL_SOCKET
+from hermes_agent.hermes_cli import web_host_terminal, web_server, web_server_chat
+from hermes_agent.hermes_cli.web_routers.webapp import router
+from hermes_agent.hermes_cli.web_session_sockets import HOST_TERMINAL_SOCKET
 from tests.waiting import async_wait_until, wait_until
 
 
@@ -26,18 +26,18 @@ def host_app(tmp_path, monkeypatch):
     monkeypatch.setattr(web_server.app.state, "bound_host", "localhost", raising=False)
     monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
     # Do not run login scripts from the real user's shell.
-    from hermes_cli import web_host_terminal
+    from hermes_agent.hermes_cli import web_host_terminal
     monkeypatch.setattr(web_host_terminal, "shell_spec", lambda: (["/bin/sh", "-i"], "sh"))
     app = FastAPI()
     app.include_router(router)
-    from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
+    from hermes_agent.hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
     app.router.lifespan_context = host_terminal_lifespan
     yield app
 
 
 def url(extra=""):
     """A host-terminal URL with a fresh terminal ticket minted with this process's session token."""
-    from hermes_cli.web_routers.webapp import SESSION_TOKEN_OWNER, mint_socket_ticket
+    from hermes_agent.hermes_cli.web_routers.webapp import SESSION_TOKEN_OWNER, mint_socket_ticket
     ticket = mint_socket_ticket(SESSION_TOKEN_OWNER, HOST_TERMINAL_SOCKET, session_token=web_server._SESSION_TOKEN)
     return f"ws://localhost/api/host-terminal?ticket={ticket}{extra}"
 
@@ -322,7 +322,7 @@ def rejection(client, request, expected):
 
 def ticket_url(user="owner", extra=""):
     """A host-terminal URL with a fresh terminal ticket for a signed-in *user*."""
-    from hermes_cli.web_routers.webapp import mint_socket_ticket
+    from hermes_agent.hermes_cli.web_routers.webapp import mint_socket_ticket
     ticket = mint_socket_ticket({"user_id": user, "provider": "test-provider"}, HOST_TERMINAL_SOCKET)
     return f"ws://localhost/api/host-terminal?ticket={ticket}{extra}"
 
@@ -390,7 +390,7 @@ def test_a_shell_that_exits_while_detached_closes_the_redial_as_an_exit(host_app
     """A tab that redials after its shell exited (``exit`` while the tab was away) is told the
     shell exited, as an attached tab is, so it closes instead of offering a new shell. That holds
     before the reaper takes the dead shell and after."""
-    from hermes_cli import web_host_terminal_sessions
+    from hermes_agent.hermes_cli import web_host_terminal_sessions
     if not reaped:
         async def no_reaper(_registry, *, interval):
             await asyncio.Event().wait()
@@ -498,7 +498,7 @@ def test_ownership_checks_never_block_the_event_loop(host_app, fake_bridges, tmp
     every socket the process serves. Create, reattach, input and the reaper all
     check off-loop, and a deleted profile still loses its attached shell."""
     import asyncio
-    from hermes_cli.web_host_terminal_sessions import HostOwner
+    from hermes_agent.hermes_cli.web_host_terminal_sessions import HostOwner
     from hermes_constants import mark_named_profile_deleted
 
     profile = tmp_path / ".hermes" / "profiles" / "alpha"
@@ -540,7 +540,7 @@ def test_input_frames_that_arrive_together_share_ownership_checks(tmp_path, monk
     """A paste lands as many frames. Frames that arrived together share off-loop
     fenced writes, every byte lands in order, and a deleted home receives none."""
     from types import SimpleNamespace
-    from hermes_cli.web_host_terminal_sessions import HostOwner, _pump_input
+    from hermes_agent.hermes_cli.web_host_terminal_sessions import HostOwner, _pump_input
 
     frames = [f"line {i}\n".encode() for i in range(40)]
     checks = []
@@ -617,7 +617,7 @@ def test_cross_process_deletion_closes_attached_shell(host_app, fake_bridges, tm
 @pytest.mark.parametrize("failure", ["metadata", "replay"])
 def test_route_lost_initial_delivery_detaches_and_expires(host_app, fake_bridges, monkeypatch, failure):
     from starlette.websockets import WebSocket
-    from hermes_cli.pty_session import PtySession
+    from hermes_agent.hermes_cli.pty_session import PtySession
     original_start = PtySession.start
 
     async def start(session):

@@ -11,8 +11,8 @@ import hermes_agent.hermes_state_wal as hermes_state
 
 
 def _hint_for(method):
-    with patch("hermes_cli.config.detect_install_method", return_value=method), \
-         patch("hermes_cli.config.recommended_update_command_for_method",
+    with patch("hermes_agent.hermes_cli.config.detect_install_method", return_value=method), \
+         patch("hermes_agent.hermes_cli.config.recommended_update_command_for_method",
                return_value=f"CMD-{method}"):
         return hermes_state._wal_reset_repair_hint()
 
@@ -36,7 +36,7 @@ def test_nix_passes_through_recommended_command():
 
 
 def test_hint_falls_back_when_detection_fails():
-    with patch("hermes_cli.config.detect_install_method",
+    with patch("hermes_agent.hermes_cli.config.detect_install_method",
                side_effect=RuntimeError("boom")):
         hint = hermes_state._wal_reset_repair_hint()
     assert "SQLite 3.51.3+" in hint

@@ -14,7 +14,7 @@ same contract.
 import types
 
 import pytest
-import hermes_cli.web_server_profiles as _web_server_profiles
+import hermes_agent.hermes_cli.web_server_profiles as _web_server_profiles
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def client(_isolate_hermes_home):
         from starlette.testclient import TestClient
     except ImportError:
         pytest.skip("fastapi/starlette not installed")
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     client = TestClient(web_server.app)
     client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
@@ -114,7 +114,7 @@ class TestApprovalsSaveBroadcast:
         )
 
     def test_other_profile_save_does_not_broadcast(self, client, broadcast_calls, monkeypatch, tmp_path):
-        from hermes_cli import web_server
+        from hermes_agent.hermes_cli import web_server
 
         profile_dir = tmp_path / "profiles" / "other"
         profile_dir.mkdir(parents=True)

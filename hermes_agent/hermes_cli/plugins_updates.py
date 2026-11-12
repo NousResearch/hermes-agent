@@ -23,7 +23,7 @@ from typing import Any, Callable, Optional
 
 from packaging.version import InvalidVersion, Version
 
-from hermes_cli.plugins_provenance import (
+from hermes_agent.hermes_cli.plugins_provenance import (
     Provenance,
     ProvenanceClass,
     plugins_provenance,
@@ -135,7 +135,7 @@ def held_for_newer_hermes(result: CheckResult) -> Optional[str]:
     such an update, so listings name it as waiting on a Hermes update instead of offering it."""
     if not result.min_hermes:
         return None
-    from hermes_cli.plugins_manifest import requires_hermes_error, running_hermes_version
+    from hermes_agent.hermes_cli.plugins_manifest import requires_hermes_error, running_hermes_version
     if not requires_hermes_error({"requires_hermes": result.min_hermes}):
         return None
     return f"needs Hermes {result.min_hermes}; this is {running_hermes_version()}"
@@ -153,7 +153,7 @@ def check_provenanced(
     catalog: dict = catalog_value if isinstance(catalog_value, dict) else {}
     catalog_name = catalog.get("name") or row.get("catalog_name")
     if catalog_name:
-        from hermes_cli.plugin_catalog import find_removed, get_live_catalog_entry
+        from hermes_agent.hermes_cli.plugin_catalog import find_removed, get_live_catalog_entry
 
         result = CheckResult(name=prov.name, klass="catalog", current=row.get("revision"))
         removed = None if row.get("allow_removed") is True else (
@@ -400,7 +400,7 @@ def default_ls_remote(source: str) -> str:
     imports plugins_cmd (which lazily imports this module) — no import
     cycle at module load.
     """
-    from hermes_cli.plugins_cmd import _resolve_git_executable, _run_plugin_git
+    from hermes_agent.hermes_cli.plugins_cmd import _resolve_git_executable, _run_plugin_git
 
     # Through the plugin git runner, like clone and pull: no terminal and no ambient credential
     # helper (PM's PortableGit names a GUI chooser there, which outlives the timeout below), and a

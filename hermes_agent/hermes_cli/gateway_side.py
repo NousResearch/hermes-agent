@@ -18,7 +18,7 @@ _POLL_SECONDS = 1.0
 def connection_for(cli):
     """The CLI's gateway connection when its session is open, else None (not rewired). A hung-up
     connection is returned (its next call redials); only a final one is None."""
-    from hermes_cli.gateway_tools_notify import gateway_store
+    from hermes_agent.hermes_cli.gateway_tools_notify import gateway_store
     store = gateway_store(cli)
     if store is None or not getattr(cli, "_gateway_session_open", False) or store.connection.final:
         return None
@@ -42,7 +42,7 @@ def start(connection, session_id, verb, text):
                 except queue.Empty:
                     # The task lived on the socket that admitted it: hung up, or already redialed.
                     if connection.closed or connection.epoch != epoch:
-                        from hermes_cli.gateway_connection import DISCONNECTED
+                        from hermes_agent.hermes_cli.gateway_connection import DISCONNECTED
                         raise RuntimeError(DISCONNECTED) from None
                     continue
                 answer = str((payload or {}).get("text") or "")

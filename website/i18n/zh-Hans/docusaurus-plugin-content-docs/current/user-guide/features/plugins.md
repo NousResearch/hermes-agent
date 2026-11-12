@@ -190,7 +190,7 @@ hermes plugins disable <name>     # 从允许列表移除并添加到禁用列�
 
 ## 可用 hook
 
-插件可注册 `hermes_cli.plugins.VALID_HOOKS` 当前接受的 24 个生命周期事件。**[Event Hooks 目录](./hooks.md#已发布的-plugin-hook-目录)**是精确触发时机、返回值处理、payload 字段和隐私说明的 canonical reference。
+插件可注册 `hermes_agent.hermes_cli.plugins.VALID_HOOKS` 当前接受的 24 个生命周期事件。**[Event Hooks 目录](./hooks.md#已发布的-plugin-hook-目录)**是精确触发时机、返回值处理、payload 字段和隐私说明的 canonical reference。
 
 | 描述性类别 | 已发布 hook |
 |---|---|

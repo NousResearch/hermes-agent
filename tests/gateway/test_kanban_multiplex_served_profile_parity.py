@@ -14,10 +14,10 @@ import pytest
 from hermes_agent.agent.secret_scope import set_multiplex_active
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.run import GatewayRunner
-from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as kbc
-from hermes_cli import kanban_db_dispatch as kbd
-from hermes_cli import kanban_db_notify as kbn
+from hermes_agent.hermes_cli import kanban_db as kb
+from hermes_agent.hermes_cli import kanban_db_connect as kbc
+from hermes_agent.hermes_cli import kanban_db_dispatch as kbd
+from hermes_agent.hermes_cli import kanban_db_notify as kbn
 from hermes_constants import get_hermes_home
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from hermes_cli.kanban_workflow import ARCHIVED, DEFAULT_WORKFLOW
+from hermes_agent.hermes_cli.kanban_workflow import ARCHIVED, DEFAULT_WORKFLOW
 
 _DESC_TASK_ID_DEFAULT = (
     "Task id. If omitted, defaults to HERMES_KANBAN_TASK from the env — the "

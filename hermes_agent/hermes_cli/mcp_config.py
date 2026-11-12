@@ -8,7 +8,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_cli.config import (
+from hermes_agent.hermes_cli.config import (
     cfg_get,
     load_config,
     save_config,
@@ -16,9 +16,9 @@ from hermes_cli.config import (
     save_env_value,
     get_hermes_home,
 )
-from hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
-from hermes_cli.mcp_security import validate_mcp_server_entry
+from hermes_agent.hermes_cli.mcp_security import validate_mcp_server_entry
 from hermes_agent.tools.mcp_tool_config import _ENV_VAR_PATTERN
 from hermes_agent.tools.mcp_tool_common import _env_ref_name, mcp_server_enabled
 
@@ -405,7 +405,7 @@ def _resolve_mcp_server_config(config: dict) -> dict:
 
     if current_secret_scope() is None:
         try:
-            from hermes_cli.env_loader import load_hermes_dotenv
+            from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
             load_hermes_dotenv()
         except Exception:  # pragma: no cover — defensive
             pass
@@ -575,7 +575,7 @@ def _configure_http_auth(
             _success(f"{env_key}: already configured")
             server_config["headers"] = _bearer_auth_headers(name)
         else:
-            from hermes_cli.cli_output import prompt
+            from hermes_agent.hermes_cli.cli_output import prompt
             api_key = prompt("API key / Bearer token", default="", password=True)
             if api_key:
                 server_config["headers"] = _save_bearer_auth_token(name, api_key)
@@ -603,7 +603,7 @@ def _choose_tools(name: str, tools: list[tuple[str, str]], server_config: dict[s
         return None
     if choice not in {"s", "select"}:
         return len(tools)
-    from hermes_cli.curses_ui import curses_checklist
+    from hermes_agent.hermes_cli.curses_ui import curses_checklist
 
     labels = [f"{t[0]}  —  {t[1]}" for t in tools]
     chosen = curses_checklist(f"Select tools for '{name}'", labels, set(range(len(tools))))
@@ -619,7 +619,7 @@ def cmd_mcp_add(args):
     """Add a new MCP server with discovery-first tool selection."""
     name = args.name
     url = getattr(args, "url", None)
-    # --command uses dest="mcp_command" (see hermes_cli/main.py for why the dest is renamed).
+    # --command uses dest="mcp_command" (see hermes_agent/hermes_cli/main.py for why the dest is renamed).
     command = getattr(args, "mcp_command", None)
     cmd_args = getattr(args, "args", None) or []
     if cmd_args and cmd_args[0] == "--":
@@ -659,7 +659,7 @@ def cmd_mcp_add(args):
     def _record(saved: bool, failure_class: str = "config_rejected") -> None:
         # A save only fails on a suspicious configuration (_save_mcp_server returns False).
         if fresh:
-            from hermes_cli.mcp_catalog import record_mcp_install
+            from hermes_agent.hermes_cli.mcp_catalog import record_mcp_install
 
             record_mcp_install("url" if url else "local", None, "success" if saved else "failed",
                                failure_class=None if saved else failure_class)
@@ -798,7 +798,7 @@ def probe_failure_class(exc: BaseException) -> str:
     """Extension-install class for a failed MCP probe, from the exception TYPE (the same tests
     :func:`_probe_failure_next_step` uses), never its message. Never raises: an exception whose own
     attribute hooks raise reads ``connect_failed`` instead of replacing the user's error."""
-    from hermes_cli.observability.shared_metrics_fields import tagged_failure_class
+    from hermes_agent.hermes_cli.observability.shared_metrics_fields import tagged_failure_class
 
     if tagged := tagged_failure_class(exc):
         return tagged
@@ -1087,7 +1087,7 @@ def cmd_mcp_configure(args):
     _info(f"Currently {len(pre_selected)}/{total} tools enabled for '{name}'.")
     print()
 
-    from hermes_cli.curses_ui import curses_checklist
+    from hermes_agent.hermes_cli.curses_ui import curses_checklist
 
     labels = [f"{t[0]}  —  {t[1]}" for t in all_tools]
     chosen = curses_checklist(f"Select tools for '{name}'", labels, pre_selected)
@@ -1141,7 +1141,7 @@ def mcp_command(args):
     action = getattr(args, "mcp_action", None)
     if action in ("picker", "catalog", "install"):
         # Catalog subcommands live in mcp_picker / mcp_catalog; import lazily to keep this module cheap.
-        from hermes_cli import mcp_picker
+        from hermes_agent.hermes_cli import mcp_picker
 
         if action == "picker":
             mcp_picker.run_picker()
@@ -1162,7 +1162,7 @@ def mcp_command(args):
         # A handler's int return is the process exit code (``main()`` exits non-zero on it).
         return handler(args)
     # No subcommand — drop the user into the catalog picker (same UX as `hermes plugin`).
-    from hermes_cli.mcp_picker import run_picker
+    from hermes_agent.hermes_cli.mcp_picker import run_picker
     run_picker()
     print(color("  Commands:", Colors.CYAN))
     for line in _MCP_USAGE:

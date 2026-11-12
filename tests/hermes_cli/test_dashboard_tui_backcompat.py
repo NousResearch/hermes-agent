@@ -26,7 +26,7 @@ REPO_ROOT = os.path.abspath(
 
 
 def _run_cli(args, timeout=60):
-    """Invoke the real hermes_cli.main parser in a subprocess.
+    """Invoke the real hermes_agent.hermes_cli.main parser in a subprocess.
 
     Uses ``--status`` so the dashboard command exits immediately after parsing
     (it scans the process table and returns) instead of starting a server.

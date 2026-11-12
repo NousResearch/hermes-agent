@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_agent.hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
 

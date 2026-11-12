@@ -68,7 +68,7 @@ async def test_exact_create_retry_after_an_env_rotation_returns_the_original_ses
     from hermes_agent.gateway.run import _load_gateway_config
     from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.gateway.session_policy import restore_policy
-    from hermes_cli import model_switch
+    from hermes_agent.hermes_cli import model_switch
     from hermes_agent.hermes_state_local import local_receipt
     home = tmp_path / 'home'
     home.mkdir()
@@ -105,7 +105,7 @@ async def test_new_alias_session_uses_the_current_profile_env(tmp_path, monkeypa
     ``config.yaml`` edits."""
     from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.gateway.session_policy import restore_policy
-    from hermes_cli import model_switch
+    from hermes_agent.hermes_cli import model_switch
     from hermes_agent.hermes_state_local import local_receipt
     home = tmp_path / 'home'
     home.mkdir()

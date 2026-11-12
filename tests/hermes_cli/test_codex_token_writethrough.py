@@ -13,7 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from hermes_cli import auth, auth_codex
+from hermes_agent.hermes_cli import auth, auth_codex
 
 
 def _pair(prefix: str) -> dict:

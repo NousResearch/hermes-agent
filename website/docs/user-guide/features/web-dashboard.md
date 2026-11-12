@@ -186,7 +186,7 @@ Set a username and password, then run the dashboard bound to a reachable address
 ```ini
 [Service]
 EnvironmentFile=%h/.hermes/.env
-ExecStart=/path/to/venv/bin/python -m hermes_cli.main dashboard \
+ExecStart=/path/to/venv/bin/python -m hermes_agent.hermes_cli.main dashboard \
     --host 0.0.0.0 --port 9119 --no-open
 Restart=always
 RestartSec=10
@@ -1152,7 +1152,7 @@ To plug a non-Nous OAuth provider (e.g. Google, GitHub, custom OIDC), create a p
 
 ```python
 # ~/.hermes/plugins/dashboard-auth-myidp/__init__.py
-from hermes_cli.dashboard_auth import DashboardAuthProvider, Session, LoginStart
+from hermes_agent.hermes_cli.dashboard_auth import DashboardAuthProvider, Session, LoginStart
 
 class MyIdPProvider(DashboardAuthProvider):
     name = "myidp"

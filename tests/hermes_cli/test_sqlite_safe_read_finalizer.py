@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.sqlite_safe_read as sr
-from hermes_cli.sqlite_safe_read import (
+import hermes_agent.hermes_cli.sqlite_safe_read as sr
+from hermes_agent.hermes_cli.sqlite_safe_read import (
     LiveConnectionError,
     connect_tracked,
     has_live_connection,

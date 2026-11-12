@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import patch
 
-from hermes_cli.auth import resolve_provider, resolve_api_key_provider_credentials
+from hermes_agent.hermes_cli.auth import resolve_provider, resolve_api_key_provider_credentials
 from hermes_agent.agent.models_dev import list_agentic_models
 
 
@@ -50,7 +50,7 @@ class TestOllamaCloudCredentials:
 
     def test_runtime_ollama_cloud(self, monkeypatch):
         monkeypatch.setenv("OLLAMA_API_KEY", "ollama-key")
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
         result = resolve_runtime_provider(requested="ollama-cloud")
         assert result["provider"] == "ollama-cloud"
         assert result["api_mode"] == "chat_completions"
@@ -65,7 +65,7 @@ class TestOllamaCloudModelCatalog:
 
     def test_provider_model_ids_returns_dynamic_models(self, tmp_path, monkeypatch):
         """provider_model_ids('ollama-cloud') should call fetch_ollama_cloud_models()."""
-        from hermes_cli.models import provider_model_ids
+        from hermes_agent.hermes_cli.models import provider_model_ids
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
@@ -78,7 +78,7 @@ class TestOllamaCloudModelCatalog:
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
+        with patch("hermes_agent.hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
              patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = provider_model_ids("ollama-cloud", force_refresh=True)
 
@@ -91,7 +91,7 @@ class TestOllamaCloudModelCatalog:
 class TestOllamaCloudModelPicker:
     def test_ollama_cloud_shows_model_count(self, tmp_path, monkeypatch):
         """Ollama Cloud should show non-zero model count in provider picker."""
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
@@ -104,7 +104,7 @@ class TestOllamaCloudModelPicker:
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
+        with patch("hermes_agent.hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b"]), \
              patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             providers = list_authenticated_providers(current_provider="ollama-cloud")
 
@@ -114,7 +114,7 @@ class TestOllamaCloudModelPicker:
 
     def test_ollama_cloud_not_shown_without_creds(self, monkeypatch):
         """Ollama Cloud should not appear without credentials."""
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
 
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
 
@@ -128,7 +128,7 @@ class TestOllamaCloudModelPicker:
 class TestOllamaCloudMergedDiscovery:
     def test_merges_live_and_models_dev(self, tmp_path, monkeypatch):
         """Live API models appear first, models.dev additions fill gaps."""
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_agent.hermes_cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
@@ -142,7 +142,7 @@ class TestOllamaCloudMergedDiscovery:
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b", "glm-5"]), \
+        with patch("hermes_agent.hermes_cli.models.fetch_api_models", return_value=["qwen3.5:397b", "glm-5"]), \
              patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
@@ -155,7 +155,7 @@ class TestOllamaCloudMergedDiscovery:
 
     def test_falls_back_to_models_dev_without_api_key(self, tmp_path, monkeypatch):
         """Without API key, only models.dev results are returned."""
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_agent.hermes_cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
@@ -177,7 +177,7 @@ class TestOllamaCloudMergedDiscovery:
         live-only ids, and makes the next probing call serve the trimmed list for an hour."""
         import json
         import time
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_agent.hermes_cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
@@ -187,14 +187,14 @@ class TestOllamaCloudMergedDiscovery:
 
         mock_mdev = {"ollama-cloud": {"models": {"shared": {"tool_call": True}, "mdev-only": {"tool_call": True}}}}
         with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev), \
-             patch("hermes_cli.models.fetch_api_models", side_effect=AssertionError("network probe ran")):
+             patch("hermes_agent.hermes_cli.models.fetch_api_models", side_effect=AssertionError("network probe ran")):
             result = fetch_ollama_cloud_models(cache_only=True)
 
         assert result == ["live-only", "shared"]
         assert (cache.read_text(), cache.stat().st_mtime_ns) == before
 
         with patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev), \
-             patch("hermes_cli.models.fetch_api_models", return_value=["live-only", "shared", "new-live"]) as live:
+             patch("hermes_agent.hermes_cli.models.fetch_api_models", return_value=["live-only", "shared", "new-live"]) as live:
             assert fetch_ollama_cloud_models() == ["live-only", "shared", "new-live", "mdev-only"]
         assert live.called  # the stale cache still triggers a probe on the next non-cache_only call
 
@@ -228,7 +228,7 @@ class TestOllamaCloudModelsDev:
 class TestOllamaCloudProvidersNew:
 
     def test_alias_resolves(self):
-        from hermes_cli.providers import normalize_provider as np
+        from hermes_agent.hermes_cli.providers import normalize_provider as np
         assert np("ollama") == "custom"  # bare "ollama" = local
         assert np("ollama-cloud") == "ollama-cloud"
 
@@ -245,7 +245,7 @@ class TestOllamaCloudSuffixStripping:
 
     def test_no_duplicate_when_live_clean_and_mdev_suffixed(self, tmp_path, monkeypatch):
         """Live API returns clean ID; mdev has :cloud variant — result has exactly one entry."""
-        from hermes_cli.models import fetch_ollama_cloud_models
+        from hermes_agent.hermes_cli.models import fetch_ollama_cloud_models
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
@@ -258,7 +258,7 @@ class TestOllamaCloudSuffixStripping:
                 }
             }
         }
-        with patch("hermes_cli.models.fetch_api_models", return_value=["kimi-k2.6", "glm-5.1"]), \
+        with patch("hermes_agent.hermes_cli.models.fetch_api_models", return_value=["kimi-k2.6", "glm-5.1"]), \
              patch("hermes_agent.agent.models_dev.fetch_models_dev", return_value=mock_mdev):
             result = fetch_ollama_cloud_models(force_refresh=True)
 
@@ -270,7 +270,7 @@ class TestOllamaCloudSuffixStripping:
 
     def test_strip_suffix_helper(self):
         """Unit test for the _strip_ollama_cloud_suffix helper."""
-        from hermes_cli.models_local import _strip_ollama_cloud_suffix
+        from hermes_agent.hermes_cli.models_local import _strip_ollama_cloud_suffix
 
         assert _strip_ollama_cloud_suffix("kimi-k2.6:cloud") == "kimi-k2.6"
         assert _strip_ollama_cloud_suffix("glm-5.1:cloud") == "glm-5.1"

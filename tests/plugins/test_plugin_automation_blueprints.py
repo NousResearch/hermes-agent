@@ -15,8 +15,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_cli.web_models as _web_models
-import hermes_cli.web_routers.cron as _rt_cron
+import hermes_agent.hermes_cli.web_models as _web_models
+import hermes_agent.hermes_cli.web_routers.cron as _rt_cron
 
 _STANDUP = textwrap.dedent(
     """
@@ -53,7 +53,7 @@ def _write_plugin(home: Path, name: str, body: str, *, enable: bool = True) -> N
 @pytest.fixture()
 def homes(tmp_path, monkeypatch):
     """Default profile home (active) plus a second profile home, both isolated."""
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
 
     default_home = tmp_path / ".hermes"
     profiles_root = default_home / "profiles"
@@ -72,7 +72,7 @@ def _plugin_keys(entries):
 
 
 def test_plugin_blueprint_is_listed_by_slash_command_and_matches(homes):
-    from hermes_cli.blueprint_cmd import handle_blueprint_command, match_blueprint
+    from hermes_agent.hermes_cli.blueprint_cmd import handle_blueprint_command, match_blueprint
 
     _write_plugin(homes["default"], "teamtools", _STANDUP)
 
@@ -146,7 +146,7 @@ def test_plugin_cannot_shadow_builtin_and_bad_keys_are_rejected(homes, caplog):
     )
     _write_plugin(homes["default"], "teamtools", body)
 
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.plugins"):
         keys = [bp.key for bp in list_blueprints()]
     assert keys.count("morning-brief") == 1
     builtin, mine = get_blueprint("morning-brief"), get_blueprint("teamtools:morning-brief")
@@ -175,7 +175,7 @@ def test_malformed_plugin_blueprint_is_warned_and_ignored(homes, caplog, fields,
     base.update(fields)
     _write_plugin(homes["default"], "teamtools", f"def register(ctx):\n    ctx.register_automation_blueprint('bad', **{base!r})\n")
 
-    with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.plugins"):
         keys = [bp.key for bp in list_blueprints()]
     assert "teamtools:bad" not in keys
     assert "teamtools" in caplog.text and reason in caplog.text
@@ -184,7 +184,7 @@ def test_malformed_plugin_blueprint_is_warned_and_ignored(homes, caplog, fields,
 @pytest.mark.asyncio
 async def test_job_from_plugin_blueprint_survives_plugin_disable(homes):
     from hermes_agent.cron.jobs import load_jobs
-    from hermes_cli.plugins import _reset_plugin_managers_for_tests
+    from hermes_agent.hermes_cli.plugins import _reset_plugin_managers_for_tests
 
     _write_plugin(homes["default"], "teamtools", _STANDUP)
     created = await _rt_cron.instantiate_blueprint(

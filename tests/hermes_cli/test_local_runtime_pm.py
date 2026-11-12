@@ -3,7 +3,7 @@
 import pytest
 
 import pm
-from hermes_cli.local_runtime import binaries
+from hermes_agent.hermes_cli.local_runtime import binaries
 from pm import paths
 from pm.lock import Lockfile
 

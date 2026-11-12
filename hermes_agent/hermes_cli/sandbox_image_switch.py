@@ -35,7 +35,7 @@ def pending() -> Optional[PendingSwitch]:
     """The switch this profile still has to decide, or None: backend is docker, the image is the
     unpinned default, and a container labeled for this profile runs another image. ``docker`` is
     consulted (one ``ps``); any failure is "nothing pending"."""
-    from hermes_cli.config import load_config_readonly
+    from hermes_agent.hermes_cli.config import load_config_readonly
     from hermes_agent.tools.environments.docker import _container_identity, _docker_query, find_docker
 
     terminal = (load_config_readonly() or {}).get("terminal") or {}
@@ -71,7 +71,7 @@ def _image_pinned(terminal_cfg: dict) -> bool:
     (a routed profile: recomputed per turn, never the launch profile's ``os.environ``); else the
     launch env, where an operator's ``TERMINAL_DOCKER_IMAGE`` differing from the effective value
     is their choice."""
-    from hermes_cli.config import read_raw_config
+    from hermes_agent.hermes_cli.config import read_raw_config
     from hermes_agent.tools.terminal_scope import get_terminal_scope
     raw = read_raw_config().get("terminal")
     if isinstance(raw, dict) and "docker_image" in raw:
@@ -87,7 +87,7 @@ def decide(switch: PendingSwitch, approve: bool) -> str:
     """Pin ``terminal.docker_image`` to the target (approve) or the current image (keep) and
     re-bridge the live process so a long-running gateway/TUI backend acts on it without a
     restart. Returns the image now pinned."""
-    from hermes_cli.config import apply_terminal_config_to_env, load_config, save_config
+    from hermes_agent.hermes_cli.config import apply_terminal_config_to_env, load_config, save_config
     image = switch.target_image if approve else switch.current_image
     config = load_config()
     terminal = config.setdefault("terminal", {})

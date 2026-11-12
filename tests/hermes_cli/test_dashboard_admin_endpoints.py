@@ -8,9 +8,9 @@ visible to the CLI data layer), not specific catalog values.
 """
 
 import pytest
-import hermes_cli.config as _cfg_mod
-import hermes_cli.web_server_files as _web_server_files
-import hermes_cli.web_server_gateway as _web_server_gateway
+import hermes_agent.hermes_cli.config as _cfg_mod
+import hermes_agent.hermes_cli.web_server_files as _web_server_files
+import hermes_agent.hermes_cli.web_server_gateway as _web_server_gateway
 
 
 def _client():
@@ -20,7 +20,7 @@ def _client():
         pytest.skip("fastapi/starlette not installed")
     from hermes_agent import hermes_state
     from hermes_constants import get_hermes_home
-    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+    from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
@@ -89,7 +89,7 @@ class TestMcpEndpoints:
         assert response.status_code == 200
         assert response.json()["auth"] == "oauth"
 
-        from hermes_cli.mcp_config import _get_mcp_servers
+        from hermes_agent.hermes_cli.mcp_config import _get_mcp_servers
 
         assert _get_mcp_servers()["oauth-server"]["auth"] == "oauth"
 
@@ -157,8 +157,8 @@ class TestCredentialPoolEndpoints:
         source and suppress (provider, source).
         """
         from hermes_agent.agent.credential_pool import load_pool
-        from hermes_cli.auth import is_source_suppressed
-        from hermes_cli.config import save_env_value
+        from hermes_agent.hermes_cli.auth import is_source_suppressed
+        from hermes_agent.hermes_cli.config import save_env_value
 
         fake_key = "sk-or-" + "x" * 20  # constructed, never a real key shape
         save_env_value("OPENROUTER_API_KEY", fake_key)
@@ -186,8 +186,8 @@ class TestCredentialPoolEndpoints:
         silently blocked from env re-seeding.
         """
         from hermes_agent.agent.credential_pool import load_pool
-        from hermes_cli.auth import is_source_suppressed
-        from hermes_cli.config import save_env_value
+        from hermes_agent.hermes_cli.auth import is_source_suppressed
+        from hermes_agent.hermes_cli.config import save_env_value
 
         fake_key = "sk-or-" + "y" * 20
         save_env_value("OPENROUTER_API_KEY", fake_key)
@@ -272,7 +272,7 @@ class ScopedProvMemoryProvider(MemoryProvider):
         launch home's ``.env`` instead of rendering "unavailable" with no visible error
         (``probe_availability`` swallows the ``UnscopedSecretError``)."""
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server_dashboard import _invalidate_plugins_hub_cache
+        from hermes_agent.hermes_cli.web_server_dashboard import _invalidate_plugins_hub_cache
         from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
 
         home = get_hermes_home()
@@ -367,7 +367,7 @@ class TestWebhookEndpoints:
 
 
     def test_create_webhook_persists_script(self):
-        from hermes_cli.config import load_config, save_config
+        from hermes_agent.hermes_cli.config import load_config, save_config
 
         cfg = load_config()
         cfg.setdefault("platforms", {})["webhook"] = {
@@ -393,11 +393,11 @@ class TestWebhookEndpoints:
         # A re-POST is a general update, not an enable: an explicit disable must survive it.
         assert self.client.put("/api/webhooks/todoist/enabled", json={"enabled": False}).status_code == 200
         assert self.client.post("/api/webhooks", json={"name": "todoist", "deliver": "log"}).status_code == 200
-        from hermes_cli.webhook import _load_subscriptions
+        from hermes_agent.hermes_cli.webhook import _load_subscriptions
         assert _load_subscriptions()["todoist"]["enabled"] is False
 
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
         restart_calls = []
@@ -430,7 +430,7 @@ class TestWebhookEndpoints:
 
 
     def test_enable_platform_reuses_inflight_gateway_restart(self, monkeypatch):
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
 
@@ -464,7 +464,7 @@ class TestOpsEndpoints:
 
 
     def test_hooks_list_reads_config(self):
-        from hermes_cli.config import load_config, save_config
+        from hermes_agent.hermes_cli.config import load_config, save_config
 
         cfg = load_config()
         cfg["hooks"] = {
@@ -667,7 +667,7 @@ class TestOfficialSkillsCatalogEndpoint:
             lambda self: metas,
         )
         monkeypatch.setattr(
-            "hermes_cli.web_routers.skills._installed_hub_identifiers",
+            "hermes_agent.hermes_cli.web_routers.skills._installed_hub_identifiers",
             lambda profile=None: {"official/gifs/gif-search": {"name": "gif-search"}},
         )
         r = self.client.get("/api/skills/hub/official")
@@ -699,7 +699,7 @@ class TestSkillsHubPreviewEndpoint:
         bundle = _FakeBundle("github/owner/repo/x")
         meta = _FakeMeta("github/owner/repo/x")
         monkeypatch.setattr(
-            "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
+            "hermes_agent.hermes_cli.skills_hub._resolve_source_meta_and_bundle",
             lambda ident, sources: (meta, bundle, None),
         )
         r = self.client.get(
@@ -718,7 +718,7 @@ class TestSkillsHubPreviewEndpoint:
             "hermes_agent.tools.skills_hub_search.create_source_router", list
         )
         monkeypatch.setattr(
-            "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
+            "hermes_agent.hermes_cli.skills_hub._resolve_source_meta_and_bundle",
             lambda ident, sources: (None, None, None),
         )
         r = self.client.get("/api/skills/hub/preview?identifier=nope/x")
@@ -739,7 +739,7 @@ class TestSkillsHubScanEndpoint:
         )
         bundle = _FakeBundle("github/owner/repo/x", trust_level="community")
         monkeypatch.setattr(
-            "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
+            "hermes_agent.hermes_cli.skills_hub._resolve_source_meta_and_bundle",
             lambda ident, sources: (None, bundle, None),
         )
 
@@ -804,9 +804,9 @@ class TestUpdateCheckEndpoint:
 
         monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
         # Stub the shared checker so the contract is deterministic (no network).
-        from hermes_cli import banner
+        from hermes_agent.hermes_cli import banner
 
-        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {"behind": 5, "commits": []})
+        monkeypatch.setattr("hermes_agent.hermes_cli.source_check.check_for_updates", lambda **kw: {"behind": 5, "commits": []})
 
         r = self.client.get("/api/hermes/update/check")
         assert r.status_code == 200
@@ -831,7 +831,7 @@ class TestUpdateCheckEndpoint:
     @pytest.mark.parametrize("held", [True, False], ids=["held", "rollback"])
     def test_release_message_names_only_a_known_version(self, monkeypatch, version, held):
         monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
-        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {
+        monkeypatch.setattr("hermes_agent.hermes_cli.source_check.check_for_updates", lambda **kw: {
             "behind": 0 if held else -1, "held": "downgrade" if held else None,
             "rollback": not held, "sourceVersion": version, "channel": "preview", "commits": [],
         })
@@ -893,28 +893,28 @@ class TestDebugShareEndpoint:
 
 
     def test_redact_false_is_honored(self, monkeypatch):
-        import hermes_cli.debug as dbg
+        import hermes_agent.hermes_cli.debug as dbg
 
         monkeypatch.setattr(
             dbg, "upload_to_pastebin", lambda c, expiry_days=7: "https://paste.rs/x"
         )
         monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
-        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
+        monkeypatch.setattr("hermes_agent.hermes_cli.dump.run_dump", lambda a: None)
 
         r = self.client.post("/api/ops/debug-share", json={"redact": False})
         assert r.status_code == 200
         assert r.json()["redacted"] is False
 
     def test_default_body_redacts(self, monkeypatch):
-        import hermes_cli.debug as dbg
+        import hermes_agent.hermes_cli.debug as dbg
 
         monkeypatch.setattr(
             dbg, "upload_to_pastebin", lambda c, expiry_days=7: "https://paste.rs/x"
         )
         monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
-        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
+        monkeypatch.setattr("hermes_agent.hermes_cli.dump.run_dump", lambda a: None)
 
         # No JSON body at all — should default redact=True.
         r = self.client.post("/api/ops/debug-share")
@@ -922,7 +922,7 @@ class TestDebugShareEndpoint:
         assert r.json()["redacted"] is True
 
     def test_upload_failure_returns_502(self, monkeypatch):
-        import hermes_cli.debug as dbg
+        import hermes_agent.hermes_cli.debug as dbg
 
         monkeypatch.setattr(
             dbg,
@@ -931,7 +931,7 @@ class TestDebugShareEndpoint:
         )
         monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
-        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
+        monkeypatch.setattr("hermes_agent.hermes_cli.dump.run_dump", lambda a: None)
 
         r = self.client.post("/api/ops/debug-share", json={"redact": True})
         assert r.status_code == 502
@@ -947,7 +947,7 @@ class TestToolsConfigEndpoints:
 
 
     def test_save_env_writes_key_and_validates_allowlist(self):
-        from hermes_cli.config import get_env_value
+        from hermes_agent.hermes_cli.config import get_env_value
 
         cfg = self.client.get("/api/tools/toolsets/web/config").json()
         # Find a real env-var key from the visible provider matrix.
@@ -990,7 +990,7 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
     it, or the in-process restart-loop guard rejects the restart and it silently
     fails (#52470).
     """
-    import hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server as ws
 
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
     monkeypatch.setenv("OPENAI_API_KEY", "default-action-provider-key")
@@ -1030,8 +1030,8 @@ def test_spawn_hermes_action_retries_without_breakaway_when_job_denies(monkeypat
     must still spawn — retried without the flag — and the refusal must land in the action log,
     which otherwise shows a bare started-header and no reason (#139592).
     """
-    import hermes_cli.web_server as ws
-    from hermes_cli import _subprocess_compat
+    import hermes_agent.hermes_cli.web_server as ws
+    from hermes_agent.hermes_cli import _subprocess_compat
 
     monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
     monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
@@ -1065,7 +1065,7 @@ def test_spawn_hermes_action_retries_without_breakaway_when_job_denies(monkeypat
 def test_spawn_hermes_action_records_a_failed_spawn_and_reraises(monkeypatch, tmp_path):
     """A spawn that never happened leaves the reason in the action log (previously a bare
     started-header) and still raises to the endpoint (#139592)."""
-    import hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server as ws
 
     monkeypatch.setattr(_web_server_gateway, "_ACTION_LOG_DIR", tmp_path)
     monkeypatch.setattr(_web_server_gateway, "_ACTION_PROCS", {})
@@ -1090,8 +1090,8 @@ def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypat
     import sys
     from pathlib import Path
 
-    from hermes_cli import env_loader
-    import hermes_cli.web_server as ws
+    from hermes_agent.hermes_cli import env_loader
+    import hermes_agent.hermes_cli.web_server as ws
 
     user_home = tmp_path / "user"
     default_home = user_home / ".hermes"
@@ -1182,7 +1182,7 @@ def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypat
         [
             sys.executable, "-c",
             "import json, os; "
-            "from hermes_cli.env_loader import load_hermes_dotenv; "
+            "from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv; "
             "load_hermes_dotenv(hermes_home=os.environ['HERMES_HOME']); "
             "keys=['A2A_PORT','OPENAI_API_KEY','TARGET_ONLY_TOKEN','DISCORD_BOT_TOKEN',"
             "'API_SERVER_ENABLED','API_SERVER_KEY','BLUEBUBBLES_SERVER_URL','BLUEBUBBLES_PASSWORD',"
@@ -1216,7 +1216,7 @@ def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypat
 
 def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
     """A Desktop-owned gateway child must not survive its serve backend."""
-    import hermes_cli.web_server as ws
+    import hermes_agent.hermes_cli.web_server as ws
 
     calls = []
 
@@ -1246,8 +1246,8 @@ def test_desktop_lifespan_reaps_orphans_with_a_startup_grace(monkeypatch):
     Asserting only "the reaper ran" would not catch a revert to the bare
     ``_reap_unsupervised_gateway_orphans()`` call, which is exactly the regression.
     """
-    import hermes_cli.web_server as ws
-    from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
+    import hermes_agent.hermes_cli.web_server as ws
+    from hermes_agent.hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
 
     seen = {}
 
@@ -1259,7 +1259,7 @@ def test_desktop_lifespan_reaps_orphans_with_a_startup_grace(monkeypatch):
     monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
     monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
     monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
-    monkeypatch.setattr("hermes_cli.gateway._reap_unsupervised_gateway_orphans", _fake_reap)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway._reap_unsupervised_gateway_orphans", _fake_reap)
 
     client, _header = _client()
     with client:

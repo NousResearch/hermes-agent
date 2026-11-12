@@ -118,7 +118,7 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
 def test_provider_file_in_the_old_providers_folder_still_registers(tmp_path, monkeypatch):
     """``<repo>/providers/<name>.py`` is the documented legacy drop-in; the move must keep it loading."""
     import hermes_agent.providers as _pkg
-    import hermes_cli._startup_fast as startup_fast
+    import hermes_agent.hermes_cli._startup_fast as startup_fast
 
     (tmp_path / "providers").mkdir()
     (tmp_path / "providers" / "legacy_dropin.py").write_text(
@@ -144,7 +144,7 @@ def test_old_folder_module_imports_by_its_old_name_in_a_fresh_process(tmp_path):
     (tmp_path / "providers").mkdir()
     (tmp_path / "providers" / "legacy_direct.py").write_text("VALUE = 'loaded'\n")
     script = (
-        "import hermes_cli._startup_fast as startup_fast\n"
+        "import hermes_agent.hermes_cli._startup_fast as startup_fast\n"
         f"startup_fast.project_root_str = lambda: {str(tmp_path)!r}\n"
         "from providers.legacy_direct import VALUE\n"
         "print(VALUE)\n"

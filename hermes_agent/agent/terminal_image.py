@@ -76,7 +76,7 @@ def probe_vscode_images() -> bool | None:
 
     Run once before prompt_toolkit owns the tty (the reply is read from stdin). Skipped over SSH,
     where the reply often misses the deadline (the prompt's parser then drops it, see
-    ``hermes_cli.pt_input_extras``). Cached.
+    ``hermes_agent.hermes_cli.pt_input_extras``). Cached.
     """
     global _VSCODE_IMAGES
     if _VSCODE_IMAGES is not None or os.environ.get("TERM_PROGRAM", "").lower() != "vscode":

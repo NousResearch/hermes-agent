@@ -43,7 +43,7 @@ def test_an_in_place_revocation_in_one_tick_is_not_served_from_the_pairing_cache
 
 
 def test_a_key_rotated_in_place_in_one_tick_reaches_global_auth_store_readers(coarse_clock, tmp_path, monkeypatch):
-    import hermes_cli.auth as auth_mod
+    import hermes_agent.hermes_cli.auth as auth_mod
     path = tmp_path / "global-hermes" / "auth.json"
     path.parent.mkdir(parents=True)
     monkeypatch.setattr(auth_mod, "_global_auth_file_path", lambda: path)
@@ -108,7 +108,7 @@ def audit(event, args):
 sys.addaudithook(audit)
 from hermes_agent.agent import skill_utils
 from hermes_agent import providers
-from hermes_cli import free_tier_bootstrap, model_switch, profiles
+from hermes_agent.hermes_cli import free_tier_bootstrap, model_switch, profiles
 calls = {
     "skills": skill_utils.get_external_skills_dirs,
     "named_custom": lambda: providers._has_named_custom_provider("foo", home, "k"),

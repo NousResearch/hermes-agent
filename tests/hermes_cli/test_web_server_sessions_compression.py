@@ -21,7 +21,7 @@ class _SessionsCompressionEndpoints:
 
         from hermes_agent import hermes_state
         from hermes_constants import get_hermes_home
-        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+        from hermes_agent.hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
         monkeypatch.setattr(
             hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
@@ -83,7 +83,7 @@ class TestDeleteSessionCompressionChain(_SessionsCompressionEndpoints):
         from types import SimpleNamespace
 
         from hermes_agent.gateway.session_authority import LiveSession, SessionAuthority
-        from hermes_cli.web_server import app
+        from hermes_agent.hermes_cli.web_server import app
         from hermes_constants import get_hermes_home
         from hermes_agent.hermes_state import SessionDB
         from hermes_agent.hermes_state_runtime import begin_runtime_epoch

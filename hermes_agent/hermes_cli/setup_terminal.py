@@ -1,5 +1,5 @@
 """Terminal-backend setup wizard (local/docker/modal/daytona/vercel/ssh/plugin).
-setup.py names are resolved through the module object so test patches on ``hermes_cli.setup.<name>``
+setup.py names are resolved through the module object so test patches on ``hermes_agent.hermes_cli.setup.<name>``
 take effect; setup.py re-exports the public entry points."""
 
 import json
@@ -8,9 +8,9 @@ import os
 from pathlib import Path
 from hermes_agent.tools import tool_backend_helpers
 
-logger = logging.getLogger("hermes_cli.setup")
+logger = logging.getLogger("hermes_agent.hermes_cli.setup")
 
-from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as _SANDBOX_IMAGE, DEFAULT_VERCEL_IMAGE
+from hermes_agent.hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE as _SANDBOX_IMAGE, DEFAULT_VERCEL_IMAGE
 _RUN_KW = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
@@ -128,7 +128,7 @@ def _setup_backend_local(config: dict) -> None:
 
 
 def find_docker() -> str | None:
-    # Deferred: hermes_agent.tools.environments.docker is heavy and this module loads on every hermes_cli.setup import.
+    # Deferred: hermes_agent.tools.environments.docker is heavy and this module loads on every hermes_agent.hermes_cli.setup import.
     from hermes_agent.tools.environments.docker import find_docker as _find_docker
     return _find_docker()
 
@@ -163,7 +163,7 @@ def _setup_backend_modal(config: dict) -> None:
     _setup.print_info("Serverless cloud sandboxes. Each session gets its own container.")
     from hermes_agent.tools.managed_tool_gateway import is_managed_tool_gateway_ready
     from hermes_agent.tools.tool_backend_helpers import normalize_modal_mode
-    from hermes_cli import nous_subscription
+    from hermes_agent.hermes_cli import nous_subscription
     managed_modal_available = bool(
         tool_backend_helpers.managed_nous_tools_enabled()
         and nous_subscription.get_nous_subscription_features(config).nous_auth_present
@@ -287,7 +287,7 @@ def setup_terminal_backend(config: dict):
     # the wizard down.
     plugin_backend_names = []
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_agent.hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent — plugin state may not be loaded yet
         from hermes_agent.agent.terminal_env_registry import list_providers
         for provider in list_providers():
@@ -318,4 +318,4 @@ def setup_terminal_backend(config: dict):
     _setup.print_success(f"Terminal backend set to: {selected_backend}")
 
 
-import hermes_cli.setup as _setup
+import hermes_agent.hermes_cli.setup as _setup

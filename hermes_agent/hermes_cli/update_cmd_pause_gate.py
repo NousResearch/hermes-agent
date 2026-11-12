@@ -6,7 +6,7 @@ cleanup) to the pause record BEFORE git writes a file; ``update_cmd`` re-exports
 
 from contextlib import contextmanager
 
-from hermes_cli import update_pause_record as _pause_record
+from hermes_agent.hermes_cli import update_pause_record as _pause_record
 
 
 @contextmanager

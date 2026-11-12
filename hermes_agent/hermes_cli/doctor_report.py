@@ -1,4 +1,4 @@
-"""Doctor output primitives shared by every ``hermes_cli.doctor_*`` module."""
+"""Doctor output primitives shared by every ``hermes_agent.hermes_cli.doctor_*`` module."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import functools
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli.colors import Colors, color
 
 
 def _mark(glyph: str, col: str):

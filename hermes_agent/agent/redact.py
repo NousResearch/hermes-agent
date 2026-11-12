@@ -105,14 +105,14 @@ _SENSITIVE_QUERY_PARAMS = frozenset({
 # ON by default; `security.redact_secrets: false` bridges to this env var.
 # ON by default — secure default per issue #17691. Users who need raw credential values in tool output (e.g.
 # working on the redactor itself) can opt out via `security.redact_secrets: false` in config.yaml (bridged
-# to this env var in hermes_cli/main.py, hermes_agent/gateway/run.py, and cli.py) or `HERMES_REDACT_SECRETS=false` in
+# to this env var in hermes_agent/hermes_cli/main.py, hermes_agent/gateway/run.py, and cli.py) or `HERMES_REDACT_SECRETS=false` in
 # ~/.hermes/.env. An opt-out warning is logged at gateway and CLI startup so operators see the downgrade —
 # see `_log_redaction_status()` in hermes_agent/gateway/run.py and cli.py.
 _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "true").lower() in {"1", "true", "yes", "on"}
 
 # Routed multiplex profiles: the import-time snapshot above is the LAUNCH profile's policy. A profile
 # served under a HERMES_HOME override follows its own ``security.redact_secrets`` (its ``.env`` value
-# first, like the standalone bridge in hermes_cli/main.py). The formatter never reads config or files
+# first, like the standalone bridge in hermes_agent/hermes_cli/main.py). The formatter never reads config or files
 # for it (it runs under the logging handler's lock, per record): the values are recorded when that
 # profile's .env / config is loaded (``note_env_policy`` / ``note_config_policy``) or when log routing
 # is set up for it (``resolve_profile_policy``). Until then the profile redacts (the secure default).
@@ -134,7 +134,7 @@ def resolve_profile_policy(home) -> None:
     token = set_hermes_home_override(home)
     try:
         key = hermes_home_key()
-        from hermes_cli.config import load_config_readonly, load_env
+        from hermes_agent.hermes_cli.config import load_config_readonly, load_env
         note_env_policy(key, load_env().get("HERMES_REDACT_SECRETS"))
         note_config_policy(key, (load_config_readonly().get("security") or {}).get("redact_secrets"))
     except (Exception, SystemExit) as exc:  # health: allow BLE001 -- unreadable now: stays unknown, which redacts

@@ -88,8 +88,8 @@ async def _attach_while_loading(tmp_path, monkeypatch, *, during_load, purpose='
     while the handler fetch is pending. Returns (whether the handler ran, the ASGI messages sent)."""
     from hermes_agent.gateway.run_api import GatewayRuntimeAPI
     from hermes_agent.gateway.runtime_bootstrap import TicketStore
-    from hermes_cli import web_server as web
-    from hermes_cli import web_server_chat
+    from hermes_agent.hermes_cli import web_server as web
+    from hermes_agent.hermes_cli import web_server_chat
 
     tickets = TicketStore('owner', [str(tmp_path)])
     ticket = tickets.mint(profile_id=str(tmp_path), subject='human', purpose=purpose)

@@ -581,8 +581,8 @@ class InProcessSession:
     owns ``history`` and hands it back each turn; ``/compress`` goes through ``compress_now``."""
 
     def __init__(self, base_url: str, hermes_home: Path, sid: str, *, platform: str = "cli") -> None:
-        from hermes_cli.config import load_config
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.tools_config import _get_platform_tools
         from hermes_agent.hermes_state import SessionDB
         from hermes_agent.run_agent import AIAgent
 
@@ -605,7 +605,7 @@ class InProcessSession:
         return result
 
     def compress(self, args: str = "") -> Any:
-        """Mirror ``hermes_cli.cli_session_mixin`` ``/compress``: install ``after_messages``, follow a
+        """Mirror ``hermes_agent.hermes_cli.cli_session_mixin`` ``/compress``: install ``after_messages``, follow a
         rotated session id, re-flush the handoff on rotation, finalize the engine notification."""
         from hermes_agent.agent.conversation_compression import finalize_context_engine_compression_notification
         from hermes_agent.agent.conversation_compression_manual import compress_now, parse_compress_args

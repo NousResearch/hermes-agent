@@ -27,8 +27,8 @@ def _branches(repo):
 
 @pytest.mark.parametrize('case', ['clean', 'clean_with_history', 'dirty', 'pending_turn'])
 def test_tui_worktree_quit_removes_only_a_clean_idle_tree(tmp_path, monkeypatch, case):
-    from hermes_cli import main_tui_launch
-    from hermes_cli.worktree_ops import _setup_worktree
+    from hermes_agent.hermes_cli import main_tui_launch
+    from hermes_agent.hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
@@ -81,8 +81,8 @@ def test_tui_worktree_quit_removes_only_a_clean_idle_tree(tmp_path, monkeypatch,
 
 def _quit_with(tmp_path, monkeypatch, prepare):
     """Run ``hermes --tui -w`` whose Ink session ``prepare(db, cwd)`` shapes, then quit; the tree."""
-    from hermes_cli import main_tui_launch
-    from hermes_cli.worktree_ops import _setup_worktree
+    from hermes_agent.hermes_cli import main_tui_launch
+    from hermes_agent.hermes_cli.worktree_ops import _setup_worktree
     from hermes_constants import get_hermes_home
     from hermes_agent.hermes_state import SessionDB
 
@@ -113,13 +113,13 @@ def _scheduled(kind, status='active'):
     """The gateway's own per-session automation row, as /loop, /heartbeat and /goal store it."""
     import time
     if kind == 'loop':
-        from hermes_cli.loops import LoopState
+        from hermes_agent.hermes_cli.loops import LoopState
         return LoopState(prompt='run the tests', interval_seconds=600, next_due_at=time.time() + 600,
                          status=status, route={'platform': 'local', 'chat_id': 'tui-wt'}).to_json()
     if kind == 'heartbeat':
-        from hermes_cli.heartbeat import HeartbeatState
+        from hermes_agent.hermes_cli.heartbeat import HeartbeatState
         return HeartbeatState(prompt='check in', interval_seconds=600, status=status).to_json()
-    from hermes_cli.goals import GoalState
+    from hermes_agent.hermes_cli.goals import GoalState
     return GoalState(goal='ship it', status=status).to_json()
 
 

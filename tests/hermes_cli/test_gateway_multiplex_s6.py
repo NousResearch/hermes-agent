@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 
 import hermes_constants
-from hermes_cli import gateway as gw
-from hermes_cli import gateway_migrate as gm
-from hermes_cli import gateway_multiplex_mode as mode
-from hermes_cli import gateway_multiplex_s6 as s6
-from hermes_cli.container_boot import reconcile_profile_gateways
-from hermes_cli.service_manager import S6ServiceManager
+from hermes_agent.hermes_cli import gateway as gw
+from hermes_agent.hermes_cli import gateway_migrate as gm
+from hermes_agent.hermes_cli import gateway_multiplex_mode as mode
+from hermes_agent.hermes_cli import gateway_multiplex_s6 as s6
+from hermes_agent.hermes_cli.container_boot import reconcile_profile_gateways
+from hermes_agent.hermes_cli.service_manager import S6ServiceManager
 
 
 class _FakeS6:

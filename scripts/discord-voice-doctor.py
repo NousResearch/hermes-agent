@@ -176,7 +176,7 @@ def check_env_vars():
 
     # Load .env
     try:
-        from hermes_cli.env_loader import load_hermes_dotenv
+        from hermes_agent.hermes_cli.env_loader import load_hermes_dotenv
 
         load_hermes_dotenv(
             hermes_home=ENV_FILE.parent,

@@ -220,7 +220,7 @@ def _update_json_store(path: Path, update: Callable[[dict], None]) -> None:
     update: a sandbox lifecycle step (modal's restore fallback included) must not abort on it."""
     from contextlib import ExitStack
 
-    from hermes_cli.auth import _file_lock
+    from hermes_agent.hermes_cli.auth import _file_lock
 
     lock_path = path.with_name(f"{path.name}.lock")
     with ExitStack() as stack:

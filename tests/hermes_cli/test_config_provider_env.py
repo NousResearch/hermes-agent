@@ -11,9 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import config_provider_env as cpe
-from hermes_cli.config_backend import ConfigBackendUnavailable
-from hermes_cli.config_defaults_env import OptionalEnvVars
+from hermes_agent.hermes_cli import config_provider_env as cpe
+from hermes_agent.hermes_cli.config_backend import ConfigBackendUnavailable
+from hermes_agent.hermes_cli.config_defaults_env import OptionalEnvVars
 
 
 def _profile(name, *env_vars, auth_type="api_key"):
@@ -22,7 +22,7 @@ def _profile(name, *env_vars, auth_type="api_key"):
 
 
 def test_every_api_key_provider_var_is_declared_in_core():
-    import hermes_cli.config as cfg
+    import hermes_agent.hermes_cli.config as cfg
     from hermes_agent.providers import list_providers
 
     expected = {v for p in list_providers() if p.auth_type == "api_key" for v in p.env_vars}
@@ -44,7 +44,7 @@ def test_bundled_profiles_match_discovery_and_leave_the_registry_alone():
 
 
 def test_the_catalog_builds_under_a_backend_that_refuses_every_read(monkeypatch):
-    import hermes_cli.config_backend as cb
+    import hermes_agent.hermes_cli.config_backend as cb
 
     reads = []
 
@@ -89,7 +89,7 @@ def test_fill_runs_on_first_read_core_wins_provider_replaces_platform_first_prov
 def test_discovery_completion_adds_registered_plugin_providers(table, monkeypatch):
     from hermes_agent import providers
 
-    from hermes_cli import config_defaults
+    from hermes_agent.hermes_cli import config_defaults
 
     monkeypatch.setattr(providers, "bundled_profiles", lambda: [_profile("alpha", "ALPHA_API_KEY")])
     monkeypatch.setattr(config_defaults, "OPTIONAL_ENV_VARS", table)

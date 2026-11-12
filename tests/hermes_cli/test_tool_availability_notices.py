@@ -1,6 +1,6 @@
 """Invariants for the CLI startup 'some tools disabled' notice (tools-runtime-01 / -02)."""
 
-from hermes_cli.tool_availability_notices import filter_to_enabled_toolsets, tool_availability_warning_lines
+from hermes_agent.hermes_cli.tool_availability_notices import filter_to_enabled_toolsets, tool_availability_warning_lines
 
 _TERMINAL = {"name": "terminal", "env_vars": [], "tools": ["terminal", "process_manage"]}
 _WEB = {"name": "web", "env_vars": ["EXA_API_KEY", "TAVILY_API_KEY"], "tools": ["web_search"]}

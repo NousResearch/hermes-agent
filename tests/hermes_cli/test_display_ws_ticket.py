@@ -3,8 +3,8 @@ an expired ticket, or one for another provider is refused before any socket is d
 
 from __future__ import annotations
 
-from hermes_cli.dashboard_auth import ws_tickets
-from hermes_cli.web_routers import display
+from hermes_agent.hermes_cli.dashboard_auth import ws_tickets
+from hermes_agent.hermes_cli.web_routers import display
 
 
 class _Ws:
@@ -36,7 +36,7 @@ def test_a_bad_ticket_is_refused_with_a_close_frame_the_renderer_can_read(monkey
     from starlette.testclient import TestClient
     from starlette.websockets import WebSocketDisconnect
 
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     ws_tickets._reset_for_tests()
     prev = {k: getattr(web_server.app.state, k, None) for k in ("auth_required", "bound_host")}
@@ -68,7 +68,7 @@ def _viewer_app(monkeypatch):
     from fastapi import FastAPI
     from starlette.testclient import TestClient
 
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     async def watch(ws, _info):
         while (await ws.receive())["type"] != "websocket.disconnect":
@@ -92,7 +92,7 @@ def test_signing_out_closes_a_screen_viewer_a_browser_tab_opened(monkeypatch):
     """A viewer opened from a signed-in tab watches, and while it holds the lease drives, the agent's
     screen: it closes with the tab's other sockets when the browser signs out. A viewer a native
     client opened (no browser credential on its ticket) stays."""
-    from hermes_cli import browser_credential, web_server, web_session_sockets
+    from hermes_agent.hermes_cli import browser_credential, web_server, web_session_sockets
     from tests.hermes_cli.test_webapp_sign_out_sockets import _close_code
 
     ws_tickets._reset_for_tests()
@@ -109,7 +109,7 @@ def test_signing_out_closes_a_screen_viewer_a_browser_tab_opened(monkeypatch):
 
 
 def test_a_screen_viewer_ticket_from_a_signed_out_tab_opens_nothing(monkeypatch):
-    from hermes_cli import browser_credential, web_server
+    from hermes_agent.hermes_cli import browser_credential, web_server
     from tests.hermes_cli.test_webapp_sign_out_sockets import _close_code
 
     ws_tickets._reset_for_tests()

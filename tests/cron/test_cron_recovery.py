@@ -65,7 +65,7 @@ def test_lost_ack_reconciles_frozen_delivery_once(tmp_path, monkeypatch):
 
 
 def test_failed_manual_run_exits_nonzero(monkeypatch):
-    from hermes_cli import cron
+    from hermes_agent.hermes_cli import cron
     monkeypatch.setattr(cron, '_cron_api', lambda **kw: {'success': True, 'job': {'executed': True, 'execution_success': False}})
     assert cron._job_action('run', 'job', 'Triggered') == 1
 

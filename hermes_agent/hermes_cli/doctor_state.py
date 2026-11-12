@@ -1,25 +1,25 @@
 """HERMES_HOME state checks for hermes doctor: directories, memory files, state.db health, skills hub, memory provider, profiles.
-Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_cli.doctor.<name>`` keeps resolving (and monkeypatching)."""
+Split out of ``hermes_agent/hermes_cli/doctor.py``, which re-exports every name so ``hermes_agent.hermes_cli.doctor.<name>`` keeps resolving (and monkeypatching)."""
 
 from __future__ import annotations
 
 import os
 import subprocess
 from pathlib import Path
-from hermes_cli.doctor_report import (
+from hermes_agent.hermes_cli.doctor_report import (
     Finding, _fail_and_issue, _section, check_bool, check_info, check_ok, check_warn, doctor_check, ensure_dir,
     warn_on_error,
 )
-from hermes_cli.sizefmt import format_bytes as _human_bytes
+from hermes_agent.hermes_cli.sizefmt import format_bytes as _human_bytes
 from hermes_agent.hermes_state_holders import read_only_db_uri
 
 
 def _doctor_memory_config(hermes_home: Path | None = None) -> dict:
     """Return the effective memory section used by doctor diagnostics."""
-    from hermes_cli.config_backend import config_exists
-    from hermes_cli.doctor import HERMES_HOME
+    from hermes_agent.hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.doctor import HERMES_HOME
     try:
-        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_agent.hermes_cli.config_effective import load_user_config_effective
         config_path = (hermes_home if hermes_home is not None else HERMES_HOME) / "config.yaml"
         if not config_exists(config_path):
             return {}
@@ -122,17 +122,17 @@ def check_legacy_desktop_checkout() -> None:
     other client uses the tree or that every local commit is published,
     so the review-and-decide step belongs to the user.
     """
-    from hermes_cli.steward import STEWARD_DESKTOP, sealed_steward
+    from hermes_agent.hermes_cli.steward import STEWARD_DESKTOP, sealed_steward
 
     try:
-        from hermes_cli.main import PROJECT_ROOT
+        from hermes_agent.hermes_cli.main import PROJECT_ROOT
     except Exception:
         return
 
     if sealed_steward(Path(PROJECT_ROOT)) != STEWARD_DESKTOP:
         return
 
-    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from hermes_agent.hermes_cli.doctor import HERMES_HOME, _DHH
 
     checkout = HERMES_HOME / "hermes-agent"
     if not (checkout / ".git").exists():
@@ -190,7 +190,7 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
         check_legacy_desktop_checkout()
     except Exception:
         pass  # best-effort report; must never break the directory check
-    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from hermes_agent.hermes_cli.doctor import HERMES_HOME, _DHH
     hermes_home = HERMES_HOME
     ensure_dir(f, should_fix, hermes_home, f"{_DHH} directory exists", f"Created {_DHH} directory", f"{_DHH} not found")
     _memory_enabled, _user_profile_enabled = _memory_store_flags(hermes_home)
@@ -485,7 +485,7 @@ def _retired_wal_holders(f: Finding, state_db_path: Path, _DHH: str) -> bool:
 @doctor_check()
 def _check_state_db(should_fix: bool, f: Finding) -> None:
     """state.db session count, FTS write health, schema repair, stats snapshot, WAL size."""
-    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from hermes_agent.hermes_cli.doctor import HERMES_HOME, _DHH
     state_db_path = HERMES_HOME / "state.db"
     # A read-only connect on the new generation is itself another opener, so nothing below may run.
     if _retired_wal_holders(f, state_db_path, _DHH):
@@ -501,7 +501,7 @@ def _check_state_db(should_fix: bool, f: Finding) -> None:
 @doctor_check()
 def _check_cron_store(should_fix: bool, f: Finding) -> None:
     """The cron store accepts writes and its filesystem is not nearly full (jobs skip otherwise)."""
-    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from hermes_agent.hermes_cli.doctor import HERMES_HOME, _DHH
     from hermes_agent.cron.store_health import LOW_FREE_BYTES, free_bytes, probe_report
     cron_dir = HERMES_HOME / "cron"
     if (report := probe_report(cron_dir)) is not None:
@@ -525,8 +525,8 @@ def _check_checkpoint_store(should_fix: bool, f: Finding) -> None:
 
 def _plugin_provenance_rows(plugins_dir) -> list:
     """Report local provenance using the update checker's admission rules."""
-    from hermes_cli.plugins_provenance import ProvenanceClass, plugins_provenance
-    from hermes_cli.plugins_updates import check_local_provenance
+    from hermes_agent.hermes_cli.plugins_provenance import ProvenanceClass, plugins_provenance
+    from hermes_agent.hermes_cli.plugins_updates import check_local_provenance
 
     if plugins_dir is None or not Path(plugins_dir).is_dir():
         return [("info", "No plugins directory yet (nothing to check provenance for)", "")]
@@ -568,7 +568,7 @@ def _gh_authenticated() -> bool:
     launch failure (a Store/MSIX shim, a deleted binary) reads as "not authenticated" rather
     than crashing the Skills Hub check.
     """
-    from hermes_cli.doctor_tools import _safe_which
+    from hermes_agent.hermes_cli.doctor_tools import _safe_which
 
     if not _safe_which("gh"):
         return False
@@ -581,7 +581,7 @@ def _gh_authenticated() -> bool:
 
 @doctor_check()
 def _check_skills_hub(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.doctor import HERMES_HOME, _DHH
+    from hermes_agent.hermes_cli.doctor import HERMES_HOME, _DHH
     hub_dir = HERMES_HOME / "skills" / ".hub"
     if check_bool(hub_dir.exists(), "Skills Hub directory exists", ("Skills Hub directory not initialized", "(run: hermes skills list)")):
         lock_file = hub_dir / "lock.json"
@@ -594,7 +594,7 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
         q_count = sum(1 for d in quarantine.iterdir() if d.is_dir()) if quarantine.exists() else 0
         if q_count > 0:
             check_warn(f"{q_count} skill(s) in quarantine", "(pending review)")
-    from hermes_cli.config import get_env_value
+    from hermes_agent.hermes_cli.config import get_env_value
     if get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN"):
         check_ok("GitHub token configured", "(validity checked under API Connectivity)")
     else:
@@ -617,14 +617,14 @@ def _memory_provider_generic(name: str) -> None:
         check_warn(f"{name} configured but not available", "run: hermes memory status")
     else:
         from plugins.memory import find_provider_dir
-        from hermes_cli.memory_provider_migration import catalog_install_hint
+        from hermes_agent.hermes_cli.memory_provider_migration import catalog_install_hint
         hint = catalog_install_hint(name, category="memory") if find_provider_dir(name) is None else None
         check_warn(f"{name} plugin not found", f"run: {hint or 'hermes memory setup'}")
 
 
 @doctor_check()
 def _check_memory_provider(should_fix: bool, f: Finding) -> None:
-    from hermes_cli.doctor import HERMES_HOME
+    from hermes_agent.hermes_cli.doctor import HERMES_HOME
     from hermes_agent.agent.memory_provider import is_core_memory_provider
     name = _doctor_memory_config(HERMES_HOME).get("provider", "")
     if is_core_memory_provider(name):
@@ -650,7 +650,7 @@ def _check_memory_provider(should_fix: bool, f: Finding) -> None:
 @doctor_check("")  # best-effort: an unreadable config is the config check's finding
 def _check_plugins_disabled_by_update(should_fix: bool, f: Finding) -> None:
     """Plugins an update turned off (pm.plugin_eviction): every later update retries them."""
-    from hermes_cli.doctor import HERMES_HOME
+    from hermes_agent.hermes_cli.doctor import HERMES_HOME
     from pm.plugins_state import RECORD, read_home_selection
     plugins = (read_home_selection(HERMES_HOME) or {}).get("plugins") or {}
     record, disabled = plugins.get(RECORD), set(plugins.get("disabled") or ())
@@ -669,7 +669,7 @@ def _check_plugins_disabled_by_update(should_fix: bool, f: Finding) -> None:
 def _check_plugins_in_both_lists(should_fix: bool, f: Finding) -> None:
     """A plugin in both plugins.enabled and plugins.disabled loads nowhere (the disable wins). Older
     updates left plugins in that state when they had to turn them off. Judged by the loader's gate."""
-    from hermes_cli.plugins_discovery import plugins_in_both_lists
+    from hermes_agent.hermes_cli.plugins_discovery import plugins_in_both_lists
     both = plugins_in_both_lists()
     if not both:
         return
@@ -684,8 +684,8 @@ def _check_plugins_in_both_lists(should_fix: bool, f: Finding) -> None:
 @doctor_check("")  # best-effort: profile enumeration must never break doctor
 def _check_profiles(should_fix: bool, f: Finding) -> None:
     from hermes_constants import PROFILE_ID_RE
-    from hermes_cli.config_backend import config_exists
-    from hermes_cli.profiles import _wrapper_path, list_profiles, _get_wrapper_dir, profile_exists
+    from hermes_agent.hermes_cli.config_backend import config_exists
+    from hermes_agent.hermes_cli.profiles import _wrapper_path, list_profiles, _get_wrapper_dir, profile_exists
     import re as _re
     named_profiles = [p for p in list_profiles() if not p.is_default]
     if not named_profiles:
@@ -712,7 +712,7 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
                     check_warn(f"Orphan alias: {alias} → profile '{_m.group(1)}' no longer exists", f"(remove with: {fix})")
     # Same helper as the multiplex migration preflight, so doctor names the duplicates that make
     # `hermes gateway migrate --multiplex` refuse (and made pre-multiplex standalone gateways race).
-    from hermes_cli.gateway_migrate import duplicate_credential_findings
+    from hermes_agent.hermes_cli.gateway_migrate import duplicate_credential_findings
     for line in duplicate_credential_findings():
         check_warn("Duplicate platform credential across profiles", f"({line})")
         f.manual_issues.append(line)

@@ -4,7 +4,7 @@ from fastapi import HTTPException
 
 def admitted_for_sensitive_route(request) -> bool:
     """Preserve the normal guard's decision without changing unguarded plugin routes."""
-    from hermes_cli.web_server import _require_token
+    from hermes_agent.hermes_cli.web_server import _require_token
     try:
         _require_token(request)
     except HTTPException as exc:

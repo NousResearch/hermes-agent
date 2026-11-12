@@ -223,7 +223,7 @@ def _peers(root: Path) -> list[str]:
     """Registered peer gateway names (``hermes peer``) from config.yaml, read
     directly (no config-loader import; the section is absent on most installs). Never raises."""
     def _names() -> list[str]:
-        from hermes_cli.config_backend import read_config_doc_readonly
+        from hermes_agent.hermes_cli.config_backend import read_config_doc_readonly
         doc = read_config_doc_readonly(root / "config.yaml")
         peers = doc.get("bot_peers") if isinstance(doc, dict) else None
         return sorted(str(n) for n in peers if str(n).strip()) if isinstance(peers, dict) else []
@@ -401,7 +401,7 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         # Canonical loader (managed overlay + env expansion + normalization),
         # scoped to the bot's home via the override the loaders already honor.
         from hermes_agent.agent.skill_utils import parse_config_string_list
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         token = set_hermes_home_override(str(resolved))

@@ -22,14 +22,14 @@ def _skins_dir() -> Path:
 
 
 def _active_skin() -> str:
-    from hermes_cli.config import load_config
+    from hermes_agent.hermes_cli.config import load_config
     display = (load_config() or {}).get("display") or {}
     return str(display.get("skin") or "default")
 
 
 def _use(name: str) -> None:
     """Activate a skin (persists display.skin via the shared config writer)."""
-    from hermes_cli.config import config_command
+    from hermes_agent.hermes_cli.config import config_command
     config_command(argparse.Namespace(config_command="set", key="display.skin", value=name, force=True))
 
 
@@ -48,7 +48,7 @@ def _skin_set(key: str, value: str, skin: str | None) -> int:
     else:
         # Built-in (or missing): fork into an editable copy that keeps its full palette, under a
         # fresh name so the built-in stays intact for revert.
-        from hermes_cli.skin_engine import load_skin
+        from hermes_agent.hermes_cli.skin_engine import load_skin
         resolved = load_skin(name)
         target = f"{name}-custom"
         path = _skins_dir() / f"{target}.yaml"
@@ -71,7 +71,7 @@ def _skin_set(key: str, value: str, skin: str | None) -> int:
 
 
 def _skin_list() -> int:
-    from hermes_cli.skin_engine import list_skins
+    from hermes_agent.hermes_cli.skin_engine import list_skins
     active = _active_skin()
     for s in list_skins():
         mark = "*" if s["name"] == active else " "

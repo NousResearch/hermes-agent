@@ -92,7 +92,7 @@ providers:
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
 
     import importlib
-    from hermes_cli import timeouts as to_mod
+    from hermes_agent.hermes_cli import timeouts as to_mod
     importlib.reload(to_mod)
 
     agent = _make_agent(tmp_path)

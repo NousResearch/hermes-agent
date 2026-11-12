@@ -8,7 +8,7 @@ would send that old process down its pip fallback. New code must not use them.
 from pathlib import Path
 from typing import NoReturn
 
-from hermes_cli._old_updater import stop_for_relaunch
+from hermes_agent.hermes_cli._old_updater import stop_for_relaunch
 
 
 def _reload_hermes_constants() -> NoReturn:

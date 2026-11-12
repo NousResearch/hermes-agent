@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _bare_cli():

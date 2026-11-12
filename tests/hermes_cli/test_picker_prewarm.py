@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import hermes_cli.model_switch as ms
-from hermes_cli import model_switch_providers
+import hermes_agent.hermes_cli.model_switch as ms
+from hermes_agent.hermes_cli import model_switch_providers
 
 
 def _reset_guard():
@@ -41,7 +41,7 @@ def test_prewarm_warms_the_active_custom_endpoint_for_the_next_open(monkeypatch)
     ``PROVIDER_REGISTRY`` providers.
 
     The cache is keyed purely on ``base_url`` (see ``cached_fetch_api_models``
-    in ``hermes_cli/models.py``), so this is not specific to any named
+    in ``hermes_agent/hermes_cli/models.py``), so this is not specific to any named
     provider — the fixture below stands in for any OpenAI-compatible custom
     endpoint a user might configure (an LLM gateway, Kilo Code, Together AI,
     a self-hosted vLLM/SGLang server, ...).
@@ -60,8 +60,8 @@ def test_prewarm_warms_the_active_custom_endpoint_for_the_next_open(monkeypatch)
     ever probed live at most once, and every open after that first probe is
     served from the disk cache with zero additional network calls.
     """
-    import hermes_cli.inventory as inventory_mod
-    import hermes_cli.models as models_mod
+    import hermes_agent.hermes_cli.inventory as inventory_mod
+    import hermes_agent.hermes_cli.models as models_mod
 
     _reset_guard()
 

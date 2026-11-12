@@ -33,7 +33,7 @@ def cli(tmp_path, monkeypatch):
     cli._invalidate = MagicMock()
     cli._pending_input = MagicMock()
     printed = []
-    monkeypatch.setattr("cli._cprint", lambda text, *a, **k: printed.append(text))
+    monkeypatch.setattr("hermes_agent.cli._cprint", lambda text, *a, **k: printed.append(text))
     cli.printed = printed
     _terminal(monkeypatch, 100, 30)
     yield cli
@@ -190,7 +190,7 @@ def test_pager_shows_prompts_and_replies_with_markers(cli):
 
 @pytest.mark.parametrize("cols,rows", [(80, 24), (60, 16), (100, 30)])
 def test_pager_fits_the_terminal_in_cells_with_a_cjk_prompt(cli, monkeypatch, cols, rows):
-    from hermes_cli.cli_tui_mixin import _PANEL_RESERVED_BELOW
+    from hermes_agent.hermes_cli.cli_tui_mixin import _PANEL_RESERVED_BELOW
     _terminal(monkeypatch, cols, rows)
     prompt = "请帮我把这个函数重构成更小的部分，并解释每一步为什么这样做，同时保留原有的行为和测试。" * 3
     cli.conversation_history = [row for n in range(6) for row in (
@@ -240,7 +240,7 @@ def test_an_image_prompt_edits_as_typed_without_the_vision_note(cli):
 
 def test_scrolling_the_pager_never_rewraps_unchanged_history(cli, monkeypatch):
     """Repaints after a scroll or a ←/→ step reuse the wrapped rows of every unchanged turn."""
-    from hermes_cli import cli_backtrack_browse
+    from hermes_agent.hermes_cli import cli_backtrack_browse
     cli_backtrack_browse._block.cache_clear()
     calls = []
     real = cli_backtrack_browse._wrap_panel_text

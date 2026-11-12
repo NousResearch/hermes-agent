@@ -9,8 +9,8 @@ different provider depending on the network, and disagreed with the credential r
 
 import pytest
 
-from hermes_cli.auth import resolve_provider
-from hermes_cli.providers import resolve_provider_full
+from hermes_agent.hermes_cli.auth import resolve_provider
+from hermes_agent.hermes_cli.providers import resolve_provider_full
 
 
 def _entry(key: str, api: str) -> dict:
@@ -67,8 +67,8 @@ def home_with_meta_plugin(tmp_path, monkeypatch):
     import sys
 
     import hermes_agent.providers as providers  # noqa: PLR0402
-    from hermes_cli import auth_plugin_providers as app
-    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_agent.hermes_cli import auth_plugin_providers as app
+    from hermes_agent.hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     plugin = tmp_path / "plugins" / "model-providers" / "my-meta"

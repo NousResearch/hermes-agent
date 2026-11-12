@@ -1,7 +1,7 @@
 """Placeholder-first creation must not hide real CLI sessions (#138831)."""
 from hermes_agent.hermes_state import SessionDB
-from hermes_cli.gateway_session_store import SurfaceLabelReader
-from hermes_cli.session_listing import query_session_listing
+from hermes_agent.hermes_cli.gateway_session_store import SurfaceLabelReader
+from hermes_agent.hermes_cli.session_listing import query_session_listing
 
 
 def test_placeholder_creator_remains_visible_after_gateway_routing(tmp_path):

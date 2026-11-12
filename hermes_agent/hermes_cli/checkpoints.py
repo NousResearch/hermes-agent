@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from hermes_cli.sizefmt import format_bytes as _fmt_bytes
+from hermes_agent.hermes_cli.sizefmt import format_bytes as _fmt_bytes
 
 
 def _fmt_age(ts: Any) -> str:

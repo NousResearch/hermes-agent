@@ -3,8 +3,8 @@ Host validation, the auth-gate decision and the native WebSocket ticket subproto
 
 Import-light on purpose (no FastAPI): ``hermes_agent.gateway.run_api`` serves the native session WebSocket
 without importing the dashboard app (about 690 routes, ~0.6 s), and must apply the same
-DNS-rebinding Host check and gate decision. ``hermes_cli.web_server`` and
-``hermes_cli.web_server_chat`` re-export these names, so ``web_server.<name>`` keeps working.
+DNS-rebinding Host check and gate decision. ``hermes_agent.hermes_cli.web_server`` and
+``hermes_agent.hermes_cli.web_server_chat`` re-export these names, so ``web_server.<name>`` keeps working.
 """
 
 import os
@@ -32,7 +32,7 @@ def _dashboard_public_hosts() -> frozenset[str]:
     One source of truth for OAuth redirects, Host and WS Origin validation.
     Malformed or unset values fail closed as an empty set.
     """
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    from hermes_agent.hermes_cli.dashboard_auth.prefix import resolve_public_url
 
     return public_url_hosts(resolve_public_url())
 
@@ -227,7 +227,7 @@ def public_url_origins(public_url: str) -> frozenset[tuple[str, str, int]]:
 
 def _dashboard_public_origins() -> frozenset[tuple[str, str, int]]:
     """:func:`public_url_origins` of ``dashboard.public_url``."""
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    from hermes_agent.hermes_cli.dashboard_auth.prefix import resolve_public_url
 
     return public_url_origins(resolve_public_url())
 

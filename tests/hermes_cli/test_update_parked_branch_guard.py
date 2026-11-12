@@ -27,10 +27,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import main as hermes_main
-from hermes_cli import main_web_build
-from hermes_cli import main_install_repair
-from hermes_cli import update_cmd
+from hermes_agent.hermes_cli import main as hermes_main
+from hermes_agent.hermes_cli import main_web_build
+from hermes_agent.hermes_cli import main_install_repair
+from hermes_agent.hermes_cli import update_cmd
 
 
 GIT = ["git"]
@@ -84,7 +84,7 @@ def repo_pair(tmp_path):
 @pytest.fixture(autouse=True)
 def _no_config(monkeypatch):
     """Isolate the guard from the machine's real config.yaml."""
-    import hermes_cli.config as hermes_config
+    import hermes_agent.hermes_cli.config as hermes_config
 
     monkeypatch.setattr(hermes_config, "load_config", dict)
 
@@ -154,7 +154,7 @@ def test_equivalent_cherry_picked_commit_is_still_safe(repo_pair):
 def test_config_opt_out_blocks_auto_switch(repo_pair, monkeypatch):
     """updates.auto_switch_parked_branch: false disables auto-switch even
     when the branch is clean and merged."""
-    import hermes_cli.config as hermes_config
+    import hermes_agent.hermes_cli.config as hermes_config
 
     monkeypatch.setattr(
         hermes_config,
@@ -293,7 +293,7 @@ def test_parked_branch_guard_skips_cherry_on_a_partial_clone_when_git_ignores_no
     """Git before 2.44 ignores GIT_NO_LAZY_FETCH, so the no-lazy-fetch child alone would still
     fetch without bound there (#124767, git 2.43). A partial clone must not reach cherry at all:
     with the override emptied, as old git effectively sees it, the assessment starts no fetch."""
-    from hermes_cli import update_cmd_git
+    from hermes_agent.hermes_cli import update_cmd_git
     monkeypatch.setattr(update_cmd_git, "NO_LAZY_FETCH_ENV", {})
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -505,7 +505,7 @@ def test_update_updates_unmerged_branch_in_place_when_configured(
     origin/<target> instead of switched away from. The running code must
     advance (origin/main's files arrive) AND the local commits must survive,
     with the checkout never moving."""
-    import hermes_cli.config as hermes_config
+    import hermes_agent.hermes_cli.config as hermes_config
 
     monkeypatch.setattr(
         hermes_config,
@@ -557,7 +557,7 @@ def test_switch_branch_flag_overrides_in_place_strategy(
     in its history (#89507 review). The branch tip must be byte-identical
     afterwards, while the checkout ends up on the updated target.
     """
-    import hermes_cli.config as hermes_config
+    import hermes_agent.hermes_cli.config as hermes_config
 
     monkeypatch.setattr(
         hermes_config,

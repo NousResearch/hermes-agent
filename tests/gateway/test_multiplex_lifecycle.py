@@ -69,7 +69,7 @@ class TestNamedProfileMultiplexerGuard:
 
 
     def test_inert_when_no_default_gateway_running(self, monkeypatch, tmp_path):
-        from hermes_cli import gateway as gw
+        from hermes_agent.hermes_cli import gateway as gw
         monkeypatch.setattr(gw, "_profile_suffix", lambda: "coder")
         monkeypatch.setattr(
             "hermes_constants.get_default_hermes_root", lambda: tmp_path
@@ -79,7 +79,7 @@ class TestNamedProfileMultiplexerGuard:
 
     def _fake_running_default_gateway(self, monkeypatch, tmp_path):
         """Make the guard believe a live default gateway exists at tmp_path."""
-        from hermes_cli import gateway as gw
+        from hermes_agent.hermes_cli import gateway as gw
         from hermes_agent.gateway import status
 
         monkeypatch.setattr(gw, "_profile_suffix", lambda: "coder")
@@ -102,7 +102,7 @@ class TestNamedProfileMultiplexerGuard:
             encoding="utf-8",
         )
 
-        from hermes_cli import gateway as gw
+        from hermes_agent.hermes_cli import gateway as gw
 
         with pytest.raises(SystemExit) as excinfo:
             gw._guard_named_profile_under_multiplexer(force=False)
@@ -122,7 +122,7 @@ class TestNamedProfileMultiplexerGuard:
             "pid": os.getpid(), "hermes_home": str(tmp_path), "gateway_state": "running",
             "served_profiles": ["default", "worker"]}))
 
-        from hermes_cli import gateway as gw
+        from hermes_agent.hermes_cli import gateway as gw
 
         gw._guard_named_profile_under_multiplexer(force=False)
         assert gw.named_profile_served_by_running_multiplexer("worker") is True
@@ -134,7 +134,7 @@ class TestNamedProfileMultiplexerGuard:
             encoding="utf-8",
         )
 
-        from hermes_cli import gateway as gw
+        from hermes_agent.hermes_cli import gateway as gw
 
         gw._guard_named_profile_under_multiplexer(force=False)
 
@@ -145,7 +145,7 @@ class TestNamedProfileMultiplexerGuard:
             encoding="utf-8",
         )
 
-        from hermes_cli import gateway as gw
+        from hermes_agent.hermes_cli import gateway as gw
 
         assert gw.named_profile_served_by_running_multiplexer() is True
 

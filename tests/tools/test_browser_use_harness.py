@@ -39,7 +39,7 @@ def test_browser_exec_child_environment(tmp_path, monkeypatch):
                      "print('ok')\n",
                      encoding="utf-8")
     monkeypatch.setattr(bu, "_find_cli", lambda: [sys.executable, str(probe)])
-    monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", lambda: {"browser": {}})
+    monkeypatch.setattr("hermes_agent.hermes_cli.config_effective.load_user_config_effective", lambda: {"browser": {}})
     monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.get_cdp_override", lambda: "")
     monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.resolve_cdp_override", lambda url: url)
     monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.get_cloud_provider", lambda: None)

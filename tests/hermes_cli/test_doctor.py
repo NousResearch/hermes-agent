@@ -1,4 +1,4 @@
-"""Tests for hermes_cli.doctor."""
+"""Tests for hermes_agent.hermes_cli.doctor."""
 
 import importlib.util
 import os
@@ -13,18 +13,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import doctor
+from hermes_agent.hermes_cli import doctor
 import hermes_constants
-from hermes_cli import config as config_mod
-import hermes_cli.gateway as gateway_cli
-from hermes_cli import doctor as doctor_mod
-from hermes_cli.doctor_config import _has_provider_env_config
-from hermes_cli.doctor_report import Finding
+from hermes_agent.hermes_cli import config as config_mod
+import hermes_agent.hermes_cli.gateway as gateway_cli
+from hermes_agent.hermes_cli import doctor as doctor_mod
+from hermes_agent.hermes_cli.doctor_config import _has_provider_env_config
+from hermes_agent.hermes_cli.doctor_report import Finding
 import shutil
-from hermes_cli import doctor_tools
-from hermes_cli import doctor_state
-from hermes_cli import doctor_platform
-from hermes_cli import doctor_config
+from hermes_agent.hermes_cli import doctor_tools
+from hermes_agent.hermes_cli import doctor_state
+from hermes_agent.hermes_cli import doctor_platform
+from hermes_agent.hermes_cli import doctor_config
 
 
 @pytest.fixture(autouse=True)
@@ -103,7 +103,7 @@ class TestDoctorPlatformHints:
         assert "hermes update" not in hint
 
     def test_sqlite_upgrade_hint_preserves_nix_guidance_as_prose(self):
-        from hermes_cli.config import recommended_update_command_for_method
+        from hermes_agent.hermes_cli.config import recommended_update_command_for_method
 
         guidance = recommended_update_command_for_method("nix")
         hint = doctor_platform._sqlite_upgrade_hint("nix")
@@ -381,7 +381,7 @@ class TestDoctorMemoryProviderSection:
 
         # Stub auth checks to avoid real API calls
         try:
-            from hermes_cli import auth as _auth_mod
+            from hermes_agent.hermes_cli import auth as _auth_mod
             monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", dict)
             monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
             monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", dict)
@@ -484,7 +484,7 @@ def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, t
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", dict)
@@ -528,7 +528,7 @@ def test_run_doctor_accepts_stable_key_when_provider_name_differs(
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", dict)
@@ -570,7 +570,7 @@ def test_run_doctor_accepts_bare_custom_provider(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", dict)
@@ -609,7 +609,7 @@ def test_run_doctor_flags_missing_credentials_for_active_openrouter_provider(mon
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
 
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
@@ -661,7 +661,7 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", dict)
@@ -708,7 +708,7 @@ def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, 
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", dict)
@@ -764,7 +764,7 @@ def test_run_doctor_vendor_slug_policy_for_openai_api_endpoint(
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", dict)
@@ -807,7 +807,7 @@ def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_auth_status", lambda provider: {"logged_in": True})
@@ -848,7 +848,7 @@ def _doctor_env_for_browser(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", dict)
@@ -859,7 +859,7 @@ def _doctor_env_for_browser(monkeypatch, tmp_path):
 def test_run_doctor_reports_installed_chromium(monkeypatch, tmp_path):
     _doctor_env_for_browser(monkeypatch, tmp_path)
 
-    monkeypatch.setattr("hermes_cli.browser_runtime.chromium_executable", lambda **_kw: "/pm/chromium/chrome")
+    monkeypatch.setattr("hermes_agent.hermes_cli.browser_runtime.chromium_executable", lambda **_kw: "/pm/chromium/chrome")
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -872,11 +872,11 @@ def test_run_doctor_reports_installed_chromium(monkeypatch, tmp_path):
 
 
 def test_doctor_fix_does_not_claim_success_without_published_binary(monkeypatch, tmp_path):
-    from hermes_cli import doctor_tools
+    from hermes_agent.hermes_cli import doctor_tools
     _doctor_env_for_browser(monkeypatch, tmp_path)
 
-    monkeypatch.setattr("hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
-    monkeypatch.setattr("hermes_cli.doctor_tools._is_termux", lambda: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.doctor_tools._is_termux", lambda: False)
     monkeypatch.setattr("pm.ensure", lambda *a, **kw: None)
 
     buf = io.StringIO()
@@ -889,15 +889,15 @@ def test_doctor_fix_does_not_claim_success_without_published_binary(monkeypatch,
 
 
 def test_doctor_fix_reports_pm_install_failure(monkeypatch, tmp_path):
-    from hermes_cli import doctor_tools
+    from hermes_agent.hermes_cli import doctor_tools
     import pm
     _doctor_env_for_browser(monkeypatch, tmp_path)
 
     def refuse(*args, **kwargs):
         raise pm.InstallError("chromium", "offline")
 
-    monkeypatch.setattr("hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
-    monkeypatch.setattr("hermes_cli.doctor_tools._is_termux", lambda: False)
+    monkeypatch.setattr("hermes_agent.hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.doctor_tools._is_termux", lambda: False)
     monkeypatch.setattr(pm, "ensure", refuse)
 
     buf = io.StringIO()
@@ -916,12 +916,12 @@ def test_doctor_fix_reports_pm_install_failure(monkeypatch, tmp_path):
 ])
 def test_missing_chromium_is_info_when_config_needs_none(monkeypatch, tmp_path, browser_yaml, reason):
     """A CDP override, Lightpanda or a cloud provider runs no local Chromium: no warning row."""
-    from hermes_cli import doctor_tools
+    from hermes_agent.hermes_cli import doctor_tools
     from hermes_constants import get_hermes_home
 
     (get_hermes_home() / "config.yaml").write_text(browser_yaml, encoding="utf-8")
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
-    monkeypatch.setattr("hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.browser_runtime.chromium_executable", lambda **_kw: None)
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
@@ -952,7 +952,7 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", dict)
@@ -1001,7 +1001,7 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", dict)
@@ -1060,7 +1060,7 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
     try:
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
         monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", dict)
@@ -1102,7 +1102,7 @@ class TestGitHubTokenCheck:
         """gh 2.98+ dropped the `authenticated` field from `gh auth status --json`,
         so that invocation exits 1 even for a logged-in user. A logged-in user on
         such a gh must still be reported as authenticated."""
-        from hermes_cli import doctor_state
+        from hermes_agent.hermes_cli import doctor_state
 
         def gh_2_98(cmd, **kwargs):
             assert cmd[:3] == ["gh", "auth", "status"], cmd
@@ -1153,7 +1153,7 @@ def _run_doctor_with_healthy_oauth_fallback(
     )
     monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
-    from hermes_cli import auth as _auth_mod
+    from hermes_agent.hermes_cli import auth as _auth_mod
 
     monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": True})
     monkeypatch.setattr(_auth_mod, "get_codex_auth_status", dict)
@@ -1255,7 +1255,7 @@ class TestDoctorXaiOAuthStatus:
         )
         monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
@@ -1297,7 +1297,7 @@ class TestDoctorXaiOAuthStatus:
         )
         monkeypatch.setitem(sys.modules, "hermes_agent.model_tools", fake_model_tools)
 
-        from hermes_cli import auth as _auth_mod
+        from hermes_agent.hermes_cli import auth as _auth_mod
         monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {"logged_in": True})
         monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False})
         monkeypatch.setattr(_auth_mod, "get_minimax_oauth_auth_status", lambda: {"logged_in": False})
@@ -1529,7 +1529,7 @@ def test_docker_daemon_probe_uses_version_not_info(monkeypatch):
     """`docker info` needs the /info endpoint, which socket proxies commonly block, so doctor reported
     "daemon not running" against a working DOCKER_HOST (#72927). `docker version` (/version) is what the
     backend itself probes with."""
-    from hermes_cli import doctor_tools
+    from hermes_agent.hermes_cli import doctor_tools
 
     calls: list = []
     monkeypatch.setattr(doctor_tools, "find_docker", lambda: "/usr/bin/docker")
@@ -1545,7 +1545,7 @@ def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypat
     """A routed auxiliary.<task> block that the runtime resolver rejects is a doctor finding, not a
     silent fall-back to the main model (#116055); a resolvable one is not flagged."""
     import hermes_yaml as yaml
-    from hermes_cli import doctor_config
+    from hermes_agent.hermes_cli import doctor_config
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     cfg_file = tmp_path / "config.yaml"
@@ -1656,8 +1656,8 @@ def test_cron_store_check_reports_writability_and_low_space(
 def test_profile_alias_status_follows_the_wrapper_the_profile_really_has(monkeypatch, tmp_path):
     """#131753: doctor said "no alias" for every Windows profile (``.bat`` wrapper) and for any
     profile reachable only through a custom alias name; a bare (pre-``.bat`` on Windows) wrapper counts."""
-    import hermes_cli.gateway_migrate as gm
-    from hermes_cli import profiles
+    import hermes_agent.hermes_cli.gateway_migrate as gm
+    from hermes_agent.hermes_cli import profiles
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

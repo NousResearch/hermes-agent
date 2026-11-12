@@ -57,7 +57,7 @@ class TestIgnoreUserConfigEnvGate:
 
     def _reload_cli(self, monkeypatch, tmp_path):
         """Point cli._hermes_home at tmp_path and return a fresh load_cli_config."""
-        import cli
+        from hermes_agent import cli
         monkeypatch.setattr(cli, "_hermes_home", tmp_path)
         return cli.load_cli_config
 
@@ -116,8 +116,8 @@ class TestIgnoreUserConfigEnvGate:
         package.mkdir()
         for where in (root, package):  # the install root, and beside the loader where the fallback looked
             (where / "cli-config.yaml").write_text("model:\n  default: test-vendor/project-sentinel\n")
-        monkeypatch.setattr("hermes_cli.config.get_project_root", lambda: root)
-        monkeypatch.setattr("hermes_cli.cli_config_load.__file__", str(package / "cli_config_load.py"))
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.get_project_root", lambda: root)
+        monkeypatch.setattr("hermes_agent.hermes_cli.cli_config_load.__file__", str(package / "cli_config_load.py"))
 
         cfg = self._reload_cli(monkeypatch, home)()
 

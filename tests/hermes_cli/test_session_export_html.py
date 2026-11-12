@@ -1,6 +1,6 @@
 """Tests for the HTML session export renderer."""
 
-from hermes_cli.session_export_html import (
+from hermes_agent.hermes_cli.session_export_html import (
     generate_html_export,
 )
 

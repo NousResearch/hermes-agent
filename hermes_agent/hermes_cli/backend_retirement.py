@@ -57,7 +57,7 @@ class RetirementFence:
                 self.release()
 
     def prepare(self):
-        from hermes_cli.web_server_idle_proof import idle_proof
+        from hermes_agent.hermes_cli.web_server_idle_proof import idle_proof
 
         with self._lock:
             self._expire()

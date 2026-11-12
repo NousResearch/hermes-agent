@@ -31,7 +31,7 @@ def _offered_tier_overrides(tier: str, model: Any, provider: Any, base_url: Any,
                             access_token: Any = None) -> Optional[dict[str, Any]]:
     """Request overrides for *tier* on this route, or None when the route (or, for ultrafast, the route's own Codex
     account, ``access_token``) does not offer it. The same gates as ``/fast``."""
-    from hermes_cli.models import resolve_fast_mode_overrides
+    from hermes_agent.hermes_cli.models import resolve_fast_mode_overrides
     fast = resolve_fast_mode_overrides(model, provider=provider, base_url=base_url, tier=tier)
     if fast and tier == "ultrafast":
         from hermes_agent.agent.codex_service_tiers import ultrafast_offered

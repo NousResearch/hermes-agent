@@ -9,7 +9,7 @@ Both ``_handle_model_switch`` (typed ``/model <name>``) and
 persistence block wrote ``model.default``/``model.provider`` but never
 touched ``base_url``/``api_mode`` at all. Fix: sync both on every global
 switch, clearing to ``None`` when the resolved result doesn't need them — now the
-canonical ``hermes_cli.model_switch.persist_model_selection`` shape shared by every
+canonical ``hermes_agent.hermes_cli.model_switch.persist_model_selection`` shape shared by every
 surface.
 """
 
@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli.model_switch import ModelSwitchResult
+from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
 
 @pytest.fixture(autouse=True)
@@ -33,7 +33,7 @@ def model_config(tmp_path, monkeypatch):
 
 
 def _saved_model():
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     return {f"model.{key}": value for key, value in read_user_config_raw()["model"].items()}
 
 
@@ -59,7 +59,7 @@ class _StubCLI:
     """Minimum attrs/methods `_handle_model_switch` reads or calls on self."""
     def _stage_and_swap_model(self, result, old_model):
         # Staging + in-place swap lives in a helper; run the real one on this stub.
-        import cli as _cli_mod
+        import hermes_agent.cli as _cli_mod
         return _cli_mod.HermesCLI._stage_and_swap_model(self, result, old_model)
 
 
@@ -81,7 +81,7 @@ class _StubCLI:
     def _confirm_and_apply_cli_model_switch(
         self, result, persist_global, one_turn, custom_provs=None
     ):
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
 
         return cli_mod.HermesCLI._confirm_and_apply_cli_model_switch(
             self, result, persist_global, one_turn, custom_provs
@@ -92,12 +92,12 @@ class _StubCLI:
 
 
 def _run_switch(monkeypatch, result, cmd="/model MiniMax-M3 --global"):
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: result)
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", lambda **kw: result)
     monkeypatch.setattr(
-        "hermes_cli.inventory.load_picker_context",
+        "hermes_agent.hermes_cli.inventory.load_picker_context",
         lambda: (_ for _ in ()).throw(RuntimeError("no picker context in test")),
     )
     cli_mod.HermesCLI._handle_model_switch(_StubCLI(), cmd)
@@ -118,13 +118,13 @@ def test_global_switch_persists_base_url_and_api_mode(monkeypatch):
 def test_session_only_switch_does_not_touch_config(monkeypatch, model_config):
     """--session must not write config.yaml at all — persistence stays
     entirely in-memory."""
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
     original = model_config.read_bytes()
-    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: _make_result())
+    monkeypatch.setattr("hermes_agent.hermes_cli.model_switch.switch_model", lambda **kw: _make_result())
     monkeypatch.setattr(
-        "hermes_cli.inventory.load_picker_context",
+        "hermes_agent.hermes_cli.inventory.load_picker_context",
         lambda: (_ for _ in ()).throw(RuntimeError("no picker context in test")),
     )
 
@@ -139,7 +139,7 @@ def _run_apply(monkeypatch, result, persist_global=True):
     `test_apply_model_switch_result_context.py` (which only ever calls this
     method with `persist_global=False`), this exercises the `persist_global=True`
     branch that actually writes to config.yaml."""
-    import cli as cli_mod
+    import hermes_agent.cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "_cprint", lambda *a, **k: None)
     cli_mod.HermesCLI._apply_model_switch_result(_StubCLI(), result, persist_global)

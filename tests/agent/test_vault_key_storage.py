@@ -201,7 +201,7 @@ def test_cloned_and_renamed_keychain_vaults_never_share_or_overwrite_an_entry(ho
 def test_clone_all_owns_its_key_before_the_source_ever_migrates(home, keychain, tmp_path, monkeypatch):
     """A --clone-all copy gets its own keychain entry when it is created, so the source moving its key
     to a file (which deletes the source's entry) cannot strand a clone that was never opened."""
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -218,7 +218,7 @@ def test_clone_all_owns_its_key_before_the_source_ever_migrates(home, keychain, 
 
 def test_clone_all_without_a_reachable_keychain_is_refused_not_published_sharing_the_key(
         home, keychain, tmp_path, monkeypatch):
-    from hermes_cli.profiles import create_profile, get_profile_dir
+    from hermes_agent.hermes_cli.profiles import create_profile, get_profile_dir
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -231,8 +231,8 @@ def test_clone_all_without_a_reachable_keychain_is_refused_not_published_sharing
 
 
 def test_a_clone_that_fails_to_publish_leaves_no_keychain_entry_behind(home, keychain, tmp_path, monkeypatch):
-    from hermes_cli import profiles_initialization
-    from hermes_cli.profiles import create_profile, get_profile_dir
+    from hermes_agent.hermes_cli import profiles_initialization
+    from hermes_agent.hermes_cli.profiles import create_profile, get_profile_dir
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -253,8 +253,8 @@ def test_a_clone_that_fails_to_publish_leaves_no_keychain_entry_behind(home, key
 def test_a_clone_failing_before_custody_never_deletes_the_source_entry(home, keychain, tmp_path, monkeypatch):
     """Rollback deletes only the entry made for this clone, never one inferred from the source's files
     (here the source vault moves away mid-clone, and the copy still names the source's entry)."""
-    from hermes_cli import auth
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli import auth
+    from hermes_agent.hermes_cli.profiles import create_profile
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

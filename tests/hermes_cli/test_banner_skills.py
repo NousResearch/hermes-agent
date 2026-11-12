@@ -14,7 +14,7 @@ def _reset_skills_cache():
     """get_available_skills is memoized per-process (startup perf) — reset
     the cache around each test so patched find_all_skills results are
     actually observed."""
-    from hermes_cli import banner
+    from hermes_agent.hermes_cli import banner
     banner._available_skills_cache = None
     yield
     banner._available_skills_cache = None
@@ -22,7 +22,7 @@ def _reset_skills_cache():
 def test_get_available_skills_delegates_to_find_all_skills():
     """get_available_skills should call find_all_skills (which handles filtering)."""
     with patch("hermes_agent.tools.skills_tool.find_all_skills", return_value=list(_MOCK_SKILLS)):
-        from hermes_cli.banner import get_available_skills
+        from hermes_agent.hermes_cli.banner import get_available_skills
         result = get_available_skills()
 
     assert "tools" in result
@@ -34,7 +34,7 @@ def test_get_available_skills_null_category_becomes_general():
     """Skills with None category should be grouped under 'general'."""
     skills = [{"name": "orphan-skill", "description": "No cat", "category": None}]
     with patch("hermes_agent.tools.skills_tool.find_all_skills", return_value=skills):
-        from hermes_cli.banner import get_available_skills
+        from hermes_agent.hermes_cli.banner import get_available_skills
         result = get_available_skills()
 
     assert "general" in result

@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
-from hermes_cli import lifecycle
-from hermes_cli.observability import relay_shared_metrics
+from hermes_agent.hermes_cli import lifecycle
+from hermes_agent.hermes_cli.observability import relay_shared_metrics
 from tests.hermes_cli.test_relay_shared_metrics_runtime import (
     _stored_values,
     direct_runtime,
@@ -80,7 +80,7 @@ def test_every_emitted_tool_call_counts_once_with_its_issue(direct_runtime, tmp_
 
 
 def test_tool_call_quality_records_nothing_while_disabled(direct_runtime, tmp_path, monkeypatch):
-    monkeypatch.setattr("hermes_cli.config.read_raw_config_readonly", dict)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.read_raw_config_readonly", dict)
     _validate(_agent("openrouter", "anthropic/claude-sonnet"), [_tool_call("c1", "nope", "{")])
     assert not (tmp_path / "hermes-home" / "telemetry").exists() or not _stored_values(
         tmp_path, "hermes.model_tool_quality.count")
@@ -102,8 +102,8 @@ def _turn(session_id, task_id, model, result, *, usage=None, context_length=None
 def test_friction_is_attributed_to_the_model_that_produced_the_turn(direct_runtime, tmp_path):
     """After a /model switch the retry still blames the model whose turn is retried; interrupts and
     a quick exit after a failure count once; a session-close abort and delegated work never do."""
-    from hermes_cli.observability import shared_metrics_events as events
-    from hermes_cli.observability.shared_metrics_model import record_model_friction
+    from hermes_agent.hermes_cli.observability import shared_metrics_events as events
+    from hermes_agent.hermes_cli.observability.shared_metrics_model import record_model_friction
 
     _turn("s1", "t1", "model-a", {"completed": True})
     events.record_model_switch(from_provider="openrouter", to_provider="anthropic", surface="cli", from_model="model-a")

@@ -1,6 +1,6 @@
 """Harness for the messaging-adapter contract suite.
 
-``GatewayUnderTest`` runs the REAL ``hermes gateway run`` (``python -m hermes_cli.main gateway run``)
+``GatewayUnderTest`` runs the REAL ``hermes gateway run`` (``python -m hermes_agent.hermes_cli.main gateway run``)
 in a child process on a throwaway HOME/HERMES_HOME, with the real platform adapter plugin loaded and
 its SDK pointed at a local stand-in platform server (``tests/fakes/platforms``). The model is
 ``tests/fakes/fake_llm_provider.FakeLLMServer`` driven by a ``Director`` that answers per inbound

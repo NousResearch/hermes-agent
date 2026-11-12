@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 import hermes_constants
-from hermes_cli import doctor_state, gateway, gateway_migrate as gm
+from hermes_agent.hermes_cli import doctor_state, gateway, gateway_migrate as gm
 
 SECRET = "123456:shared-secret-value"
 

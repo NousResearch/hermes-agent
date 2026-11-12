@@ -24,7 +24,7 @@ from hermes_agent.tools.process_registry import (
 @pytest.fixture()
 def registry(monkeypatch):
     """A fresh ProcessRegistry. Fake Popen pids never reach the owner-death supervisor: a live pgid would start it."""
-    monkeypatch.setattr("hermes_cli.process_identity._update_supervised_pgids", lambda verb, pgids: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.process_identity._update_supervised_pgids", lambda verb, pgids: None)
     return ProcessRegistry()
 
 
@@ -1669,7 +1669,7 @@ class TestSigkillEscalation:
 
     def test_grace_reader_floors_at_zero(self, monkeypatch):
         """A negative configured grace is clamped to 0 (no escalation)."""
-        import hermes_cli.config as cfg_mod
+        import hermes_agent.hermes_cli.config as cfg_mod
         monkeypatch.setattr(cfg_mod, "read_raw_config",
                             lambda: {"terminal": {"daemon_term_grace_seconds": -5}})
         assert ProcessRegistry._daemon_term_grace_seconds() == 0.0
@@ -1831,7 +1831,7 @@ class TestHandleProcessTransformHook:
     def _setup(self, monkeypatch, output, *, hook):
         import hermes_agent.agent.redact as _r
         monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
+        monkeypatch.setattr("hermes_agent.hermes_cli.lifecycle.invoke_hook", hook)
         from hermes_agent.tools import process_registry as pr
         reg = ProcessRegistry()
         sess = _make_session(sid="proc_xform1", command="python app.py")

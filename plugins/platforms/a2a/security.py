@@ -42,7 +42,7 @@ def _configured_trusted_peers() -> frozenset[str]:
     if raw:
         return frozenset(p.strip() for p in raw.split(",") if p.strip())
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         peers = ((load_config() or {}).get("a2a") or {}).get("trusted_peers", [])
         if isinstance(peers, list):
             return frozenset(str(peer).strip() for peer in peers if str(peer).strip())

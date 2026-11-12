@@ -1,6 +1,6 @@
 """Notification subscriptions consumed by the gateway kanban-notifier: per-(task, platform, chat, thread) rows with delivery metadata, unseen-event cursors and purge of stale done-task subs.
 
-Split out of ``hermes_cli.kanban_db``; origin-resident helpers are reached
+Split out of ``hermes_agent.hermes_cli.kanban_db``; origin-resident helpers are reached
 late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 ``kanban_db.<name>`` keeps working.
 """
@@ -18,7 +18,7 @@ from typing import Optional
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from hermes_cli.kanban_db import Event
+    from hermes_agent.hermes_cli.kanban_db import Event
 
 
 # Notifier reaction to a terminal event: "notify" = passive adapter.send only
@@ -458,4 +458,4 @@ def rewind_notify_cursor(
 
 # Late-bound origin namespace (see module docstring); imported LAST so this
 # module is fully populated before ``kanban_db`` imports from it.
-from hermes_cli import kanban_db as _kb
+from hermes_agent.hermes_cli import kanban_db as _kb

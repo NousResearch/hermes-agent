@@ -1,7 +1,7 @@
 """Plugin profiles place themselves in the core provider tables through generic fields.
 
 ``picker_after`` / ``picker_group`` / ``catalog_aliases`` / ``aggregator`` feed the picker catalog
-(``sync_plugin_provider_catalog``); ``provider_overlay`` feeds ``hermes_cli.providers``;
+(``sync_plugin_provider_catalog``); ``provider_overlay`` feeds ``hermes_agent.hermes_cli.providers``;
 ``models_dev_id`` feeds the models.dev lookups at lookup time. Exercised with fake profiles only.
 """
 
@@ -13,7 +13,7 @@ from hermes_agent.providers.base import ProviderProfile
 @pytest.fixture
 def catalog(monkeypatch):
     """The picker tables as private copies, so admissions stay inside the test."""
-    import hermes_cli.models_catalog_static as cat
+    import hermes_agent.hermes_cli.models_catalog_static as cat
 
     monkeypatch.setattr(cat, "CANONICAL_PROVIDERS", list(cat.CANONICAL_PROVIDERS))
     monkeypatch.setattr(cat, "_canonical_slugs", set(cat._canonical_slugs))
@@ -68,7 +68,7 @@ def test_unplaced_profile_keeps_generic_admission(catalog, monkeypatch):
 
 
 def test_provider_overlay_defines_the_models_dev_keyed_provider(monkeypatch):
-    from hermes_cli import providers as prov
+    from hermes_agent.hermes_cli import providers as prov
 
     overlaid = ProviderProfile(
         name="zz-acp", aliases=("zz-acp-agent", "zz-acp-cli"), display_name="ZZ ACP", base_url="acp://zz",
@@ -94,8 +94,8 @@ def test_mirrored_alias_keys_keep_the_overlay_route(monkeypatch):
     an alias goes through the overlay (transport, base-URL env var), not the lossy-collapse registry rung."""
     from types import SimpleNamespace
 
-    from hermes_cli import auth
-    from hermes_cli import providers as prov
+    from hermes_agent.hermes_cli import auth
+    from hermes_agent.hermes_cli import providers as prov
 
     overlaid = ProviderProfile(
         name="zz-acp", aliases=("zz-acp-agent",), display_name="ZZ ACP", base_url="acp://zz",
@@ -129,8 +129,8 @@ def test_models_dev_keyed_overlay_row_keeps_the_profile_slug_and_label_offline(m
     """A profile whose overlay is keyed by its models.dev id lists under its own name and display_name
     when no models.dev catalog is at hand (offline, blocked): not under the catalog id."""
     import hermes_agent.agent.models_dev as md
-    from hermes_cli import providers as prov
-    from hermes_cli.model_switch import list_authenticated_providers
+    from hermes_agent.hermes_cli import providers as prov
+    from hermes_agent.hermes_cli.model_switch import list_authenticated_providers
 
     hosted = ProviderProfile(
         name="zz-hosted", aliases=("zz-hosted-alias",), display_name="ZZ Hosted", models_dev_id="zz-catalog",

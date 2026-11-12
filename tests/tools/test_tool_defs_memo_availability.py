@@ -218,7 +218,7 @@ def test_long_running_agent_bridge_recovers_after_mcp_reconnect(mail_state, cloc
 def direct_tools():
     """Tool Search off, so the MCP tools sit in tools[] itself. Written once: a config write
     moves the memo key on its own and would hide a stale entry."""
-    from hermes_cli.config import atomic_config_write, get_config_path
+    from hermes_agent.hermes_cli.config import atomic_config_write, get_config_path
 
     atomic_config_write(get_config_path(), {"tools": {"tool_search": {"enabled": "off"}}})
 
@@ -302,7 +302,7 @@ BRIDGE = {"tool_search", "tool_describe", "tool_call"}
 @pytest.fixture
 def tool_search_on():
     """Written once, before any agent is built (see ``direct_tools``)."""
-    from hermes_cli.config import atomic_config_write, get_config_path
+    from hermes_agent.hermes_cli.config import atomic_config_write, get_config_path
 
     atomic_config_write(get_config_path(), {"tools": {"tool_search": {"enabled": "on"}}})
 

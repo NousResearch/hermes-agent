@@ -57,7 +57,7 @@ class ResponseStore:
         if db_path is None:
             db_path = ":memory:"
             with suppress(Exception):
-                from hermes_cli.config import get_hermes_home
+                from hermes_agent.hermes_cli.config import get_hermes_home
                 db_path = str(get_hermes_home() / "response_store.db")
         self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
         try:
@@ -83,7 +83,7 @@ class ResponseStore:
         self._conn.execute('CREATE TABLE IF NOT EXISTS response_output_order '
             '(request_key TEXT NOT NULL, item_id TEXT NOT NULL, output_index INTEGER NOT NULL, '
             'PRIMARY KEY(request_key,item_id), UNIQUE(request_key,output_index))')
-        from hermes_cli.sqlite_util import add_column_if_missing
+        from hermes_agent.hermes_cli.sqlite_util import add_column_if_missing
         add_column_if_missing(self._conn, 'response_keys', 'model_json', 'model_json TEXT')
         add_column_if_missing(self._conn, 'response_keys', 'settled_at', 'settled_at REAL')
         add_column_if_missing(self._conn, 'response_keys', 'response_id', 'response_id TEXT')

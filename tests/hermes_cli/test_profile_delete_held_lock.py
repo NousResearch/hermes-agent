@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profiles, profiles_remove
+from hermes_agent.hermes_cli import profiles, profiles_remove
 
 _HOLDER = (
     "import sys\nfrom pathlib import Path\nfrom hermes_agent.gateway.runtime_ownership import process_ownership\n"

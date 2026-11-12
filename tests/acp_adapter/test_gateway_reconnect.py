@@ -11,7 +11,7 @@ from websockets.asyncio.server import serve
 
 import hermes_agent.acp_adapter.gateway_server as server
 from hermes_agent.acp_adapter.gateway_server import GatewayACPAgent
-from hermes_cli.gateway_client import GatewayClient
+from hermes_agent.hermes_cli.gateway_client import GatewayClient
 
 
 class Owner:

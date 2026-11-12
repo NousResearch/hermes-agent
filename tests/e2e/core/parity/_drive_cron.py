@@ -4,7 +4,7 @@ Follows the driver contract in ``_drive_cli``. ``hermes cron create`` writes the
 job (``--deliver local``: no platform; ``--workdir``: cron's documented
 per-job cwd/context channel, see ``hermes cron create --help``), then
 ``hermes cron run <id>`` executes it: the CLI waits synchronously
-(``hermes_cli/cron.py::_job_action`` forces the synchronous path) while the turn
+(``hermes_agent/hermes_cli/cron.py::_job_action`` forces the synchronous path) while the turn
 runs in the profile's gateway daemon (``hermes_agent.cron.scheduler_authority.run_canonical_job``
 → ``connect_gateway``, which spawns the daemon when none owns the profile) — the
 same agent build the ticker uses — and prints ``Ran now: succeeded.``. The job's

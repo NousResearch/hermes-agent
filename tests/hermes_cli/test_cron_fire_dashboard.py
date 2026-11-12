@@ -1,7 +1,7 @@
 """Tests for the Chronos cron-fire webhook ON THE DASHBOARD APP (web_server).
 
 Regression guard for the relocation bug: the fire webhook MUST live on the
-dashboard FastAPI app (`hermes_cli.web_server.app`) — the agent's public HTTP
+dashboard FastAPI app (`hermes_agent.hermes_cli.web_server.app`) — the agent's public HTTP
 surface on hosted deployments — not only on the aiohttp APIServerAdapter (which
 hosted agents don't expose). It must:
   - be a registered route on the dashboard app,
@@ -16,9 +16,9 @@ hosted agents don't expose). It must:
 
 from starlette.testclient import TestClient
 
-from hermes_cli import web_server
-import hermes_cli.config as _cfg_mod
-import hermes_cli.web_server_cron as _web_server_cron
+from hermes_agent.hermes_cli import web_server
+import hermes_agent.hermes_cli.config as _cfg_mod
+import hermes_agent.hermes_cli.web_server_cron as _web_server_cron
 
 
 def _client(auth_required: bool):

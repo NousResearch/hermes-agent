@@ -29,14 +29,14 @@ class TestAncestorDetectionGuard:
     def test_own_pid_is_ancestor(self):
         import os
 
-        from hermes_cli.gateway import _is_pid_ancestor_of_current_process
+        from hermes_agent.hermes_cli.gateway import _is_pid_ancestor_of_current_process
 
         assert _is_pid_ancestor_of_current_process(os.getpid()) is True
 
     def test_parent_pid_is_ancestor(self):
         import os
 
-        from hermes_cli.gateway import _is_pid_ancestor_of_current_process
+        from hermes_agent.hermes_cli.gateway import _is_pid_ancestor_of_current_process
 
         ppid = os.getppid()
         if ppid <= 1:
@@ -44,7 +44,7 @@ class TestAncestorDetectionGuard:
         assert _is_pid_ancestor_of_current_process(ppid) is True
 
     def test_unrelated_pid_is_not_ancestor(self):
-        from hermes_cli.gateway import _is_pid_ancestor_of_current_process
+        from hermes_agent.hermes_cli.gateway import _is_pid_ancestor_of_current_process
 
         # PID 0 / negative are never ancestors; a very high unlikely PID isn't
         # either. Use the documented zero/negative contract for determinism.
@@ -57,7 +57,7 @@ class TestSelfRestartFireAndForget:
     """_request_gateway_self_restart signals without waiting for exit."""
 
     def test_refuses_non_ancestor_pid(self):
-        from hermes_cli.gateway import _request_gateway_self_restart
+        from hermes_agent.hermes_cli.gateway import _request_gateway_self_restart
 
         # A non-ancestor must be refused — signalling an unrelated gateway
         # and returning immediately would skip its drain entirely.
@@ -68,7 +68,7 @@ class TestSelfRestartFireAndForget:
         import os
         import signal as _signal
 
-        from hermes_cli import gateway as gw
+        from hermes_agent.hermes_cli import gateway as gw
 
         sent = []
 
@@ -91,7 +91,7 @@ class TestSelfRestartFireAndForget:
         """Contrast: the non-ancestor path DOES drain-wait (unchanged)."""
         import signal as _signal
 
-        from hermes_cli import gateway as gw
+        from hermes_agent.hermes_cli import gateway as gw
 
         waited = []
 
@@ -109,7 +109,7 @@ class TestDrainOrSignalTriage:
     """_drain_or_signal_gateway_for_update routes the three cases correctly."""
 
     def _patched(self, monkeypatch, *, ancestor, wedged):
-        from hermes_cli import gateway as gw
+        from hermes_agent.hermes_cli import gateway as gw
 
         calls = {"self_restart": [], "escalate": [], "drain": []}
         monkeypatch.setattr(
@@ -138,7 +138,7 @@ class TestDrainOrSignalTriage:
 
     def test_ancestor_gateway_is_signalled_fire_and_forget(self, monkeypatch):
         """In-tree gateway (#100179): SIGUSR1 request, NO drain wait."""
-        from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
+        from hermes_agent.hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
 
         calls = self._patched(monkeypatch, ancestor=True, wedged=False)
         assert _drain_or_signal_gateway_for_update(1234, 900.0, "svc") is True
@@ -148,7 +148,7 @@ class TestDrainOrSignalTriage:
 
     def test_wedged_gateway_is_escalated(self, monkeypatch):
         """Provably-dead loop (#81642): bounded escalation, no drain wait."""
-        from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
+        from hermes_agent.hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
 
         calls = self._patched(monkeypatch, ancestor=False, wedged=True)
         assert _drain_or_signal_gateway_for_update(1234, 900.0, "svc") is True
@@ -158,7 +158,7 @@ class TestDrainOrSignalTriage:
 
     def test_live_out_of_tree_gateway_still_drain_waits(self, monkeypatch):
         """Normal out-of-tree update keeps the full graceful drain semantics."""
-        from hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
+        from hermes_agent.hermes_cli.update_cmd import _drain_or_signal_gateway_for_update
 
         calls = self._patched(monkeypatch, ancestor=False, wedged=False)
         assert _drain_or_signal_gateway_for_update(1234, 900.0, "svc") is True

@@ -1,7 +1,7 @@
 """Skill sync keeps user edits and tells the updater's user how to inspect them."""
 
 from hermes_agent.tools import skills_sync
-from hermes_cli.update_cmd_maint import _print_bundled_skills_sync_report
+from hermes_agent.hermes_cli.update_cmd_maint import _print_bundled_skills_sync_report
 
 
 def test_kept_skill_edits_have_an_actionable_update_report(tmp_path, monkeypatch, capsys):

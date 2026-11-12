@@ -1,4 +1,4 @@
-"""``hermes_cli.desktop_plugin_install``: cloning a desktop plugin onto the host that serves the Webapp.
+"""``hermes_agent.hermes_cli.desktop_plugin_install``: cloning a desktop plugin onto the host that serves the Webapp.
 
 Real local Git repositories behind an https identifier (only the clone's network leg is pointed at the
 local repository), a throwaway ``HERMES_HOME``: the folder lands where the Webapp's read routes serve
@@ -15,8 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import desktop_plugin_halves as halves
-from hermes_cli import desktop_plugin_install as install
+from hermes_agent.hermes_cli import desktop_plugin_halves as halves
+from hermes_agent.hermes_cli import desktop_plugin_install as install
 
 URL = "https://example.invalid/acme/gizmo.git"
 
@@ -49,7 +49,7 @@ def home(tmp_path, monkeypatch):
 @pytest.fixture()
 def repo(tmp_path, monkeypatch):
     """A local repository the https identifier clones from."""
-    from hermes_cli import plugins_cmd
+    from hermes_agent.hermes_cli import plugins_cmd
     path = tmp_path / "gizmo"
     path.mkdir()
     _git(path, "init", "-q", "-b", "main")
@@ -262,7 +262,7 @@ def test_a_package_named_like_a_windows_drive_path_is_refused(home, repo):
 
 
 def _catalog(monkeypatch, sha: str) -> None:
-    from hermes_cli import plugins_cmd_catalog
+    from hermes_agent.hermes_cli import plugins_cmd_catalog
     entry = SimpleNamespace(install_identifier=URL, sha=sha)
     monkeypatch.setattr(plugins_cmd_catalog, "get_live_catalog_entry", lambda name: entry if name == "gizmo" else None)
 

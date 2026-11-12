@@ -107,7 +107,7 @@ class GatewaySecondaryReconnectMixin:
         """Re-arm a failed plugin load for a queued platform, capped per queue entry, so the next attempt's
         import can succeed. The CALLER's runtime scope picks the plugin manager (one per profile home).
         Off the loop: the re-arm takes the manager's discovery lock, which a sweep or deferred load holds."""
-        from hermes_cli.plugins import get_plugin_manager
+        from hermes_agent.hermes_cli.plugins import get_plugin_manager
         rearms = info.get("load_rearms", 0)
         if rearms < _MAX_PLUGIN_LOAD_REARMS and await self._run_in_executor_with_context(
                 get_plugin_manager().rearm_failed_platform, platform.value):
@@ -218,8 +218,8 @@ class GatewaySecondaryReconnectMixin:
         from hermes_agent.gateway.platform_registry import platform_registry
         from hermes_agent.gateway.run import _platform_has_bot_credential, _profile_runtime_scope
         # Lazy + per-attempt: keeps test monkeypatches on these modules live.
-        from hermes_cli.profiles import get_profile_dir
-        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        from hermes_agent.hermes_cli.profiles import get_profile_dir
+        from hermes_agent.hermes_cli.env_loader import hydrate_profile_secret_sources
         from hermes_agent.gateway.config import load_gateway_config
         profile_home = get_profile_dir(profile_name)
         # Hydrate external secret sources off-loop so they cannot starve heartbeats.

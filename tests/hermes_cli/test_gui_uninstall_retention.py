@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import gui_uninstall, main
+from hermes_agent.hermes_cli import gui_uninstall, main
 from hermes_constants import get_hermes_home
 
 

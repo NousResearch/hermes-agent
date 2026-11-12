@@ -107,8 +107,8 @@ def _fail(*lines: str) -> None:
 
 def cmd_gateway_enroll(args) -> None:
     """Enroll this gateway with a relay connector; persist the auth creds to .env."""
-    from hermes_cli.auth import AuthError
-    from hermes_cli.config import is_managed, save_env_value
+    from hermes_agent.hermes_cli.auth import AuthError
+    from hermes_agent.hermes_cli.config import is_managed, save_env_value
 
     # Managed installs get GATEWAY_RELAY_* stamped in by the orchestrator; save_env_value refuses
     # to write there anyway.
@@ -189,7 +189,7 @@ def cmd_gateway_enroll(args) -> None:
         except Exception as exc:
             _fail(f"✗ Failed to write {key} to .env: {exc}")
 
-    from hermes_cli.config import get_env_path
+    from hermes_agent.hermes_cli.config import get_env_path
 
     print(f'✓ Enrolled gateway "{resolved_gateway_id}"' + (f" for tenant {tenant}" if tenant else ""))
     print()
@@ -215,7 +215,7 @@ def _warn_if_secondary_multiplex_profile() -> bool:
     will never read. Returns True when the warning fired (caller suppresses the restart text)."""
     try:
         from hermes_constants import get_default_hermes_root
-        from hermes_cli.config import get_hermes_home
+        from hermes_agent.hermes_cli.config import get_hermes_home
 
         default_root = Path(get_default_hermes_root()).resolve()
         home = Path(get_hermes_home()).resolve()
@@ -228,7 +228,7 @@ def _warn_if_secondary_multiplex_profile() -> bool:
         # wins, then a RAW read of the DEFAULT root's config.yaml — the active profile's
         # load_gateway_config() is the wrong owner and runs the full enablement pass, whose log output
         # has no place in enroll output). An unset flag is settled by the gateway at boot, not here.
-        from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+        from hermes_agent.hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
         if not default_gateway_multiplexes(default_root):
             return False
 

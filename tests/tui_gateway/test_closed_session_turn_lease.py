@@ -15,7 +15,7 @@ import types
 
 import pytest
 
-from hermes_cli.active_sessions import active_session_registry_snapshot
+from hermes_agent.hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_agent.tui_gateway import server
 
 SID = "closing-sid"

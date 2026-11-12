@@ -12,7 +12,7 @@ from hermes_agent.acp_adapter.session import SessionState
 
 def test_version_flag_displays_derived_version(monkeypatch, capsys):
     monkeypatch.setattr(
-        "hermes_cli.version_info.get_version_info",
+        "hermes_agent.hermes_cli.version_info.get_version_info",
         lambda: SimpleNamespace(base_version="1.2.3", derived_version="1.2.3+4.gabcdef0"),
     )
 
@@ -23,7 +23,7 @@ def test_version_flag_displays_derived_version(monkeypatch, capsys):
 
 def test_version_slash_command_displays_derived_version(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.version_info.get_version_info",
+        "hermes_agent.hermes_cli.version_info.get_version_info",
         lambda: SimpleNamespace(base_version="1.2.3", derived_version="1.2.3+4.gabcdef0"),
     )
 
@@ -35,7 +35,7 @@ def test_version_slash_command_displays_derived_version(monkeypatch):
 @pytest.mark.asyncio
 async def test_initialize_advertises_base_version(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.version_info.get_version_info",
+        "hermes_agent.hermes_cli.version_info.get_version_info",
         lambda: SimpleNamespace(base_version="1.2.3", derived_version="1.2.3+4.gabcdef0"),
     )
 

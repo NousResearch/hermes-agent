@@ -27,7 +27,7 @@ class TestMergeProfileTree:
         path case-folds even when the backend runs on POSIX, so this needs no
         monkeypatching — it exercises the real normalization.
         """
-        from hermes_cli.web_routers.profiles import _merge_profile_tree
+        from hermes_agent.hermes_cli.web_routers.profiles import _merge_profile_tree
 
         merged = {}
         proj_a = _make_project(path=r"C:\Users\me\Project", pid="p_a")
@@ -42,7 +42,7 @@ class TestMergeProfileTree:
 
     def test_windows_forward_slash_spelling_folds(self):
         """``C:/Users/me/Project`` and ``C:\\Users\\me\\Project`` are one folder."""
-        from hermes_cli.web_routers.profiles import _merge_profile_tree
+        from hermes_agent.hermes_cli.web_routers.profiles import _merge_profile_tree
 
         merged = {}
         proj_a = _make_project(path=r"C:\Users\me\Project", pid="p_a")
@@ -56,7 +56,7 @@ class TestMergeProfileTree:
     def test_accented_folder_nfd_nfc_spellings_fold(self):
         """The same accented folder may arrive NFC (typed) or NFD (macOS pickers) —
         one group (#65014 class)."""
-        from hermes_cli.web_routers.profiles import _merge_profile_tree
+        from hermes_agent.hermes_cli.web_routers.profiles import _merge_profile_tree
 
         merged = {}
         proj_a = _make_project(path="/home/me/café", pid="p_a")
@@ -69,7 +69,7 @@ class TestMergeProfileTree:
 
     def test_trailing_slash_does_not_duplicate(self):
         """A trailing separator doesn't create a second folder identity."""
-        from hermes_cli.web_routers.profiles import _merge_profile_tree
+        from hermes_agent.hermes_cli.web_routers.profiles import _merge_profile_tree
 
         merged = {}
         proj_a = _make_project(path="/home/me/proj", pid="p_a")
@@ -82,7 +82,7 @@ class TestMergeProfileTree:
 
     def test_different_paths_stay_separate(self):
         """Genuinely different folders must remain distinct groups."""
-        from hermes_cli.web_routers.profiles import _merge_profile_tree
+        from hermes_agent.hermes_cli.web_routers.profiles import _merge_profile_tree
 
         merged = {}
         proj_a = _make_project(path="/home/me/alpha", pid="p_a")
@@ -95,7 +95,7 @@ class TestMergeProfileTree:
 
     def test_id_fallback_when_path_is_none(self):
         """Projects without a path key on the project id instead."""
-        from hermes_cli.web_routers.profiles import _merge_profile_tree
+        from hermes_agent.hermes_cli.web_routers.profiles import _merge_profile_tree
 
         merged = {}
         proj_a = _make_project(path=None, pid="p_same")
@@ -108,7 +108,7 @@ class TestMergeProfileTree:
 
     def test_declared_project_wins_over_auto(self):
         """When a declared project meets an auto entry, declared wins identity."""
-        from hermes_cli.web_routers.profiles import _merge_profile_tree
+        from hermes_agent.hermes_cli.web_routers.profiles import _merge_profile_tree
 
         merged = {}
         auto = _make_project(path="/home/me/proj", pid="p_auto", is_auto=True, label="auto")

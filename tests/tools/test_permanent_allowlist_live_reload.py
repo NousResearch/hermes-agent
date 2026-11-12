@@ -9,8 +9,8 @@ import threading
 
 import pytest
 
-import hermes_cli.config as config_module
-from hermes_cli.config import get_config_path
+import hermes_agent.hermes_cli.config as config_module
+from hermes_agent.hermes_cli.config import get_config_path
 from hermes_agent.tools import approval
 from hermes_agent.tools.approval_floors import _command_matches_permanent_allowlist
 

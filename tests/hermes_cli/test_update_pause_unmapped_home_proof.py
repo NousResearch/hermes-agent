@@ -21,9 +21,9 @@ import psutil
 import pytest
 
 from hermes_agent.gateway.status import get_process_start_time
-from hermes_cli import dashboard_procs, gateway, process_identity, update_cmd_windows
-from hermes_cli import update_pause_record as pause_record
-from hermes_cli.update_cmd_windows import _pause_windows_gateways_for_update, _unmapped_ready_filter
+from hermes_agent.hermes_cli import dashboard_procs, gateway, process_identity, update_cmd_windows
+from hermes_agent.hermes_cli import update_pause_record as pause_record
+from hermes_agent.hermes_cli.update_cmd_windows import _pause_windows_gateways_for_update, _unmapped_ready_filter
 from tests.waiting import wait_until
 
 
@@ -64,7 +64,7 @@ def test_a_ledger_proven_unmapped_gateway_is_recorded_with_its_home(homes_and_sp
         a.pid, ct, "gateway", process_identity.install_id(), None, None, time.time(), "", hermes_home=home_a))
     real_environ = dashboard_procs._pid_environ
     monkeypatch.setattr(dashboard_procs, "_pid_environ", lambda pid: None if pid == a.pid else real_environ(pid))
-    from hermes_cli import main
+    from hermes_agent.hermes_cli import main
     monkeypatch.setattr(main, "_is_windows", lambda: True)
     monkeypatch.setattr(gateway, "find_gateway_pids", lambda all_profiles=False: [a.pid])
     monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda strict=False: [])

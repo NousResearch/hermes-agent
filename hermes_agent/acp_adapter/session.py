@@ -517,9 +517,9 @@ class SessionManager:
 
         from hermes_agent.run_agent import AIAgent
         from hermes_agent.agent.skill_utils import parse_config_string_list
-        from hermes_cli.config import load_config
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        from hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
+        from hermes_agent.hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.runtime_provider import resolve_runtime_provider
+        from hermes_agent.hermes_cli.tools_config import _get_platform_tools, enabled_mcp_server_names
         from hermes_constants import resolve_reasoning_config
 
         config = load_config()
@@ -577,7 +577,7 @@ class SessionManager:
         # Bounded by ``mcp_discovery_timeout`` (config.yaml, ~1.5s); late servers are
         # picked up by HermesACPAgent._schedule_mcp_late_refresh.
         try:
-            from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
+            from hermes_agent.hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
 
             ensure_mcp_discovery_before_agent_build(logger=logger, thread_name="acp-mcp-discovery")
         except Exception:

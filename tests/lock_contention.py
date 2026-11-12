@@ -12,11 +12,11 @@ import threading
 
 
 def watch_file_lock_contention(monkeypatch) -> threading.Event:
-    """An event set when any thread is refused by ``hermes_cli.auth._file_lock``.
+    """An event set when any thread is refused by ``hermes_agent.hermes_cli.auth._file_lock``.
 
     ``_file_lock`` retries a non-blocking ``_kernel_lock`` while another holder has the file, so the
     first contention error is the proof that a second writer is waiting."""
-    from hermes_cli import auth
+    from hermes_agent.hermes_cli import auth
 
     contended = threading.Event()
     real_kernel_lock = auth._kernel_lock

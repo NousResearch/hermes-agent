@@ -15,7 +15,7 @@ import time as _time
 import webbrowser
 
 from hermes_agent.agent.i18n import t
-from hermes_cli.callbacks import prompt_for_secret
+from hermes_agent.hermes_cli.callbacks import prompt_for_secret
 from typing import Optional
 
 _TIMED_OUT = object()  # sentinel returned by _poll_modal_queue when the deadline passes
@@ -42,7 +42,7 @@ def _approval_outcome_label(result) -> str:
 
 def _approval_gate_on(key: str) -> bool:
     """Read ``approvals.<key>`` (default on); any load failure keeps the prompt enabled."""
-    from cli import load_cli_config
+    from hermes_agent.cli import load_cli_config
     try:
         cfg = load_cli_config()
         approvals = cfg.get("approvals") if isinstance(cfg, dict) else None
@@ -62,7 +62,7 @@ def _gated_confirm(self, command, key, *, title, detail, choices, unchanged, alw
     ``persist_failed_msg`` is the full sentence printed when the opt-out could not be saved;
     ``once_verb`` is the legacy fragment spliced into the default sentence.
     """
-    from cli import save_config_value
+    from hermes_agent.cli import save_config_value
     if not _approval_gate_on(key):
         return "once"
     raw = self._prompt_text_input_modal(title=title, detail=detail, choices=choices)
@@ -93,7 +93,7 @@ class CLIModalMixin:
 
     def _open_external_editor(self, buffer=None) -> bool:
         """Open the active input buffer in an external editor."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         app = getattr(self, "_app", None)
         if not app:
             _cprint(f"{_DIM}{t('cli.editor.only_interactive')}{_RST}")
@@ -130,7 +130,7 @@ class CLIModalMixin:
         """Submit the draft an external editor left in ``buffer`` (Ctrl+G done-callback), mirroring
         the `enter` keybinding: empty save ignored, bang/slash dispatched, else queued. Runs on the
         prompt_toolkit loop, so it must stay cheap/non-blocking."""
-        from cli import _DIM, _RST, _cprint, _looks_like_slash_command
+        from hermes_agent.cli import _DIM, _RST, _cprint, _looks_like_slash_command
         try:
             text = (getattr(buffer, "text", "") or "").strip()
         except Exception:
@@ -187,7 +187,7 @@ class CLIModalMixin:
         machine); inlining before ``reset(append_to_history=True)`` also lets prompt_toolkit persist
         it. Sets ``_skip_paste_collapse`` so the ensuing text-change doesn't re-collapse it.
         """
-        from cli import logger
+        from hermes_agent.cli import logger
         try:
             existing = getattr(buffer, "text", "")
             expanded = self._expand_paste_references(existing)
@@ -211,7 +211,7 @@ class CLIModalMixin:
 
     def _prefill_input_buffer(self, text: str) -> None:
         """Place ``text`` in the active prompt_toolkit buffer, editable."""
-        from cli import logger
+        from hermes_agent.cli import logger
         app = getattr(self, "_app", None)
         if app is None:
             return
@@ -414,8 +414,8 @@ class CLIModalMixin:
         """Flat (command, category, desc) rows for the Ctrl+P palette: the COMMAND_REGISTRY behind
         /help filtered to this surface, plus installed skill commands. Selecting inserts the exact
         command string — never a fuzzy resolution."""
-        from cli import _session_skill_commands
-        from hermes_cli.commands import COMMANDS_BY_CATEGORY
+        from hermes_agent.cli import _session_skill_commands
+        from hermes_agent.hermes_cli.commands import COMMANDS_BY_CATEGORY
 
         entries: list[tuple[str, str, str]] = []
         for category, commands in COMMANDS_BY_CATEGORY.items():
@@ -489,7 +489,7 @@ class CLIModalMixin:
 
     def _handle_command_palette_selection(self) -> None:
         """Prefill the selected command into the composer — never auto-run (many take args)."""
-        from cli import logger
+        from hermes_agent.cli import logger
         state = self._command_palette_state
         if not state:
             return
@@ -561,8 +561,8 @@ class CLIModalMixin:
         flag = "bell_on_prompt" if prompt else "bell_on_complete"
         if not getattr(self, flag, False) or getattr(self, "_terminal_io_broken", False):
             return
-        from hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
-        from hermes_cli.terminal_notify import notification_sequence, write_tty
+        from hermes_agent.hermes_cli.cli_terminal_mixin import _run_on_app_loop, _write_terminal_sequence
+        from hermes_agent.hermes_cli.terminal_notify import notification_sequence, write_tty
         body = context or (t("cli.modal.bell_input_needed") if prompt else t("cli.modal.bell_turn_complete"))
         try:
             seq = "\a" + notification_sequence(
@@ -721,7 +721,7 @@ class CLIModalMixin:
         op_id = state["payload"].get("op_id")
 
         def _run() -> None:
-            from hermes_cli.gateway_client import GatewayClientError
+            from hermes_agent.hermes_cli.gateway_client import GatewayClientError
             try:
                 getattr(agent, call)(*args)
             except GatewayClientError as exc:  # the gateway refused or was unreachable: say so on the card
@@ -994,7 +994,7 @@ class CLIModalMixin:
         all questions, one active, and blocks until the key bindings lock every answer. Returns
         ``{"answers": {qid: raw | None}, "outcome"}`` (None = skipped): ``submitted`` when every
         question is locked, ``timed_out`` when the deadline expires, ``cancelled`` on an interrupt."""
-        from cli import CLI_CONFIG, _DIM, _RST, _cprint
+        from hermes_agent.cli import CLI_CONFIG, _DIM, _RST, _cprint
         from hermes_agent.tools.clarify_gateway import resolve_clarify_timeout
 
         timeout = resolve_clarify_timeout(CLI_CONFIG)
@@ -1045,7 +1045,7 @@ class CLIModalMixin:
     def _sudo_password_callback(self) -> str:
         """Prompt for a sudo password through the prompt_toolkit UI (agent thread); clarify-style
         state + queue answered by the Enter binding."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
 
         response_queue = queue.Queue()
         self._capture_modal_input_snapshot()
@@ -1078,7 +1078,7 @@ class CLIModalMixin:
         commands. ``_approval_lock`` serializes concurrent requests (parallel delegation subtasks)
         so the shared ``_approval_state`` / ``_approval_deadline`` aren't clobbered.
         """
-        from cli import CLI_CONFIG, _DIM, _RST, _cprint
+        from hermes_agent.cli import CLI_CONFIG, _DIM, _RST, _cprint
 
         with self._approval_lock:
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 300))
@@ -1151,7 +1151,7 @@ class CLIModalMixin:
     def _vault_unlock_callback(self, backend_name: str, display_name: str) -> str:
         """Masked master-password prompt for an external password manager (agent thread).
         Reuses the sudo panel state so rendering, Enter/ESC handling and interrupt cleanup are shared."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
 
         response_queue = queue.Queue()
         self._capture_modal_input_snapshot()
@@ -1174,7 +1174,7 @@ class CLIModalMixin:
     def _vault_save_login_callback(self, origin: str, site: str):
         """Two-step "save this login" prompt (identifier shown, password masked) on the sudo panel; the
         answer goes to the vault store, never to the model. None = declined."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
 
         answer: dict = {}
         for step in ("identifier", "password"):
@@ -1201,7 +1201,7 @@ class CLIModalMixin:
     def _vault_code_callback(self, site: str, hint: str) -> str:
         """One-time-code prompt (shown as typed; a 6-digit code is not a secret worth masking and users
         need to see typos) on the sudo panel. "" = declined/timed out."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
 
         response_queue = queue.Queue()
         self._capture_modal_input_snapshot()

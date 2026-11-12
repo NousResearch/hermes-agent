@@ -54,7 +54,7 @@ def test_the_stores_sit_at_the_top_of_the_profile_home(home):
 
 
 def test_the_shared_list_names_both_locations(home):
-    from hermes_cli.home_data_layout import LEGACY_SECRET_CACHE_PATHS, SECRET_CACHE_FILES, SECRET_CACHE_STORES
+    from hermes_agent.hermes_cli.home_data_layout import LEGACY_SECRET_CACHE_PATHS, SECRET_CACHE_FILES, SECRET_CACHE_STORES
 
     assert SECRET_CACHE_FILES == _current(home)
     assert LEGACY_SECRET_CACHE_PATHS == PREVIOUS_LOCATIONS
@@ -62,7 +62,7 @@ def test_the_shared_list_names_both_locations(home):
 
 
 def test_profile_credential_paths_list_both_locations(home):
-    from hermes_cli.profiles import PROFILE_CREDENTIAL_PATHS, profile_path_is_private
+    from hermes_agent.hermes_cli.profiles import PROFILE_CREDENTIAL_PATHS, profile_path_is_private
 
     for rel in _stores(home):
         assert rel in PROFILE_CREDENTIAL_PATHS, rel
@@ -95,14 +95,14 @@ def test_gateway_media_delivery_refuses_them(home, monkeypatch):
 
 
 def test_dashboard_files_api_hides_them(home):
-    from hermes_cli.web_routers.files import _is_sensitive_path
+    from hermes_agent.hermes_cli.web_routers.files import _is_sensitive_path
 
     for rel in _stores(home):
         assert _is_sensitive_path(home / rel), rel
 
 
 def test_backups_leave_them_out(home):
-    from hermes_cli.backup import _should_exclude
+    from hermes_agent.hermes_cli.backup import _should_exclude
 
     for rel in _current(home):
         assert _should_exclude(Path(rel)), rel

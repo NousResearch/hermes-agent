@@ -8,8 +8,8 @@ The loop now also runs on the ``-q`` path, driving follow-up turns through ``cli
 
 from __future__ import annotations
 
-from hermes_cli import kanban_db_dispatch as dispatch
-from hermes_cli.kanban_db import Task
+from hermes_agent.hermes_cli import kanban_db_dispatch as dispatch
+from hermes_agent.hermes_cli.kanban_db import Task
 
 def _task(**overrides) -> Task:
     base = dict(

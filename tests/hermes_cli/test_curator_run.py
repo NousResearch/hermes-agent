@@ -15,7 +15,7 @@ def _args(**kwargs):
 
 def test_run_defaults_to_synchronous(monkeypatch, capsys):
     import hermes_agent.agent.curator as curator_state
-    import hermes_cli.curator as curator_cli
+    import hermes_agent.hermes_cli.curator as curator_cli
 
     calls = []
     monkeypatch.setattr(curator_state, "is_enabled", lambda: True)

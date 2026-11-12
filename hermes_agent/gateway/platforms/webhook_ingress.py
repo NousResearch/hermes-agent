@@ -90,7 +90,7 @@ def _prefix_not_served(runner, profile):
     if not profile or getattr(runner, 'session_authorities', None) is None:
         return False
     from hermes_agent.gateway.session_authorities import authority_for_home
-    from hermes_cli.profiles import get_profile_dir
+    from hermes_agent.hermes_cli.profiles import get_profile_dir
     authority = authority_for_home(runner, get_profile_dir(profile))
     return authority is None or getattr(authority, 'retiring', False) is True
 
@@ -130,7 +130,7 @@ async def admit_producer(adapter, event):
     async with producer_scope(adapter, event) as authority:
         from hermes_agent.gateway.config import Platform
         from hermes_agent.gateway.run_inbound_consumer import POST_ADMISSION_HOOK
-        from hermes_cli.lifecycle import has_hook
+        from hermes_agent.hermes_cli.lifecycle import has_hook
         from hermes_agent.gateway.session_ingress_live_turn import may_answer_live_turn, was_consumed
         webhook = adapter.platform == Platform.WEBHOOK
         if not webhook and was_consumed(event):

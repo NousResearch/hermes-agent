@@ -13,8 +13,8 @@ from tests.waiting import async_wait_until
 
 
 def test_restore_refuses_live_authority_without_changing_data(tmp_path):
-    from hermes_cli.backup import create_quick_snapshot
-    from hermes_cli.update_cmd_maint import _restore_state_db_from_snapshot
+    from hermes_agent.hermes_cli.backup import create_quick_snapshot
+    from hermes_agent.hermes_cli.update_cmd_maint import _restore_state_db_from_snapshot
 
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -90,8 +90,8 @@ def test_restore_refuses_live_authority_without_changing_data(tmp_path):
 
 
 def test_corrupt_epoch_refuses_profile_sweep_with_separate_recovery(tmp_path, monkeypatch, capsys):
-    from hermes_cli import backup, update_cmd
-    from hermes_cli.session_recovery import recover_session_database
+    from hermes_agent.hermes_cli import backup, update_cmd
+    from hermes_agent.hermes_cli.session_recovery import recover_session_database
     from hermes_agent.hermes_state import SessionDB
 
     homes = [tmp_path / 'default', tmp_path / 'sibling']
@@ -127,8 +127,8 @@ def test_update_restore_excludes_startup_until_publication(tmp_path, monkeypatch
     import subprocess
     import sys
     from hermes_agent.gateway.runtime_ownership import ProfileOwnership
-    from hermes_cli import backup
-    from hermes_cli.update_cmd_maint import _restore_state_db_from_snapshot
+    from hermes_agent.hermes_cli import backup
+    from hermes_agent.hermes_cli.update_cmd_maint import _restore_state_db_from_snapshot
 
     home = tmp_path / 'state'
     home.mkdir()
@@ -150,7 +150,7 @@ def test_update_restore_excludes_startup_until_publication(tmp_path, monkeypatch
 
     # Pause only the actual database publication, with maintenance already held.
     arrived, release = threading.Event(), threading.Event()
-    from hermes_cli import backup_restore
+    from hermes_agent.hermes_cli import backup_restore
     publish = backup_restore._restore_db_pages
     def barrier(*args):
         arrived.set()

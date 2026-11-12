@@ -32,8 +32,8 @@ class TestExecuteToolCallsInterruptHook:
             hook_calls.append((hook_name, kwargs))
             return []
 
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", _capture_hook)
-        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr("hermes_agent.hermes_cli.lifecycle.invoke_hook", _capture_hook)
+        monkeypatch.setattr("hermes_agent.hermes_cli.lifecycle.has_hook", lambda name: True)
 
         with (
             patch("hermes_agent.model_tools.handle_function_call", side_effect=KeyboardInterrupt),

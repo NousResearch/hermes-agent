@@ -51,6 +51,6 @@ def test_lookalike_hosts_stay_unknown(url):
     ("https://openrouter.ai.attacker.invalid/api/v1", ""),
 ])
 def test_custom_endpoint_pricing_identity(url, expected):
-    from hermes_cli.models_pricing import resolve_pricing_provider
+    from hermes_agent.hermes_cli.models_pricing import resolve_pricing_provider
 
     assert resolve_pricing_provider("custom:x", base_url=url) == expected

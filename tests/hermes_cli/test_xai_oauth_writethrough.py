@@ -17,7 +17,7 @@ import json
 
 import pytest
 
-from hermes_cli import auth
+from hermes_agent.hermes_cli import auth
 
 
 def _write_store(path, store):

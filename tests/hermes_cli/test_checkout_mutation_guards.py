@@ -4,7 +4,7 @@ Regression tests for the pytest-guards on the checkout-root mutation paths.
 Before the guards, tests that drove ``cmd_update``/recovery without
 sandboxing ``PROJECT_ROOT`` left ``.lazy-refresh-incomplete`` at the real
 repo root (observed after full-suite runs), and — on a venv with genuinely
-broken packages — test-spawned subprocesses importing ``hermes_cli.main``
+broken packages — test-spawned subprocesses importing ``hermes_agent.hermes_cli.main``
 ran a REAL ``ensurepip`` + ``pip install --force-reinstall`` against the
 developer's executing environment mid-suite.
 
@@ -17,8 +17,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import hermes_cli.main as main_mod
-from hermes_cli import _early_recovery as er
+import hermes_agent.hermes_cli.main as main_mod
+from hermes_agent.hermes_cli import _early_recovery as er
 
 CHECKOUT_ROOT = Path(er.__file__).resolve().parent.parent
 

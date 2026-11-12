@@ -31,7 +31,7 @@ def test_is_zeroed_never_probes_special_files(tmp_path):
     import os
 
     import hermes_agent.hermes_state as hs
-    from hermes_cli.backup import is_zeroed_sqlite_file
+    from hermes_agent.hermes_cli.backup import is_zeroed_sqlite_file
 
     fifo = tmp_path / "state.db"
     os.mkfifo(fifo)
@@ -311,7 +311,7 @@ def test_live_connection_0_byte_not_quarantined_in_process(tmp_path, monkeypatch
     quarantined by is_zeroed_state_db / SessionDB.
     """
     import hermes_agent.hermes_state as hs
-    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_agent.hermes_cli.sqlite_safe_read import connect_tracked
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     db = tmp_path / "state.db"

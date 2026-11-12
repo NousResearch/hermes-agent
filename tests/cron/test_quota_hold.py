@@ -18,7 +18,7 @@ from hermes_agent.cron import quota_hold as qh
 from hermes_agent.cron.jobs import (
     _job_is_stale_error_recurring, create_job, get_due_jobs, get_job, mark_job_run, update_job,
 )
-from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
+from hermes_agent.hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
 
 QUOTA_MSG = "Codex provider quota exhausted (429); retry after 123518s. Credentials are still valid."
 
@@ -118,11 +118,11 @@ def _tick(job, home, deliveries, resolve):
     """One real scheduler tick (preflight ON) with the provider resolver replaced by *resolve*."""
     with patch("hermes_agent.cron.scheduler._hermes_home", home), \
          patch("hermes_agent.cron.scheduler_delivery._resolve_origin", return_value=None), \
-         patch("hermes_cli.env_loader.load_hermes_dotenv"), \
-         patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+         patch("hermes_agent.hermes_cli.env_loader.load_hermes_dotenv"), \
+         patch("hermes_agent.hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_agent.hermes_state_registry.acquire", return_value=MagicMock()), \
          patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
-         patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
+         patch("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
          patch("hermes_agent.cron.delivery_queue.enqueue",
                side_effect=lambda execution_id, jb, content, **kw: (
                    deliveries.append(content), {"status": "pending"})[1]), \

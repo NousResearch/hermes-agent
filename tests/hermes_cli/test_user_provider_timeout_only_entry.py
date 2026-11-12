@@ -7,7 +7,7 @@ bedrock_converse transport) instead of resolving to an empty ``openai_chat``/``a
 routes Bedrock through the generic custom-endpoint ``/models`` probe.
 """
 
-from hermes_cli.providers import resolve_provider_full, resolve_user_provider
+from hermes_agent.hermes_cli.providers import resolve_provider_full, resolve_user_provider
 
 
 def test_timeout_only_entry_does_not_resolve_as_a_custom_provider():

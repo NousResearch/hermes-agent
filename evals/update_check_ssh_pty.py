@@ -20,7 +20,7 @@ env = {'PATH': f'{BASE}/bin:/usr/bin:/bin', 'HOME': str(BASE/'home'),
 for name in ('home', 'hermes', 'bin'):
     (BASE/name).mkdir(exist_ok=True)
 sys.path.insert(0, str(REPO))
-from hermes_cli import source_check
+from hermes_agent.hermes_cli import source_check
 
 if len(sys.argv) > 1:
     os.environ.clear()

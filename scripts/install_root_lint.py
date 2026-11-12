@@ -5,7 +5,7 @@
   (``Path(__file__).resolve().parents[1]`` in ``hermes_cli/x.py``, ``os.path.dirname(__file__)`` in a
   root module). The climb counts ``.parent``, ``.parents[n]``, ``os.path.dirname`` and
   ``os.path.join(..., os.pardir)``; it reaches the root when it climbs as many levels as the file is
-  deep. ``hermes_cli._startup_fast.project_root_str()`` owns that answer.
+  deep. ``hermes_agent.hermes_cli._startup_fast.project_root_str()`` owns that answer.
 * **module_sys_path**: a ``sys.path`` edit that runs when the module is imported (module level, outside
   functions and the ``if __name__ == "__main__"`` block).
 

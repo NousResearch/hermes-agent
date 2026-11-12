@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Fail when anything but ``hermes_cli/profile_provision.py`` uses ``create_profile``.
+"""Fail when anything but ``hermes_agent/hermes_cli/profile_provision.py`` uses ``create_profile``.
 
 Flags any reference to the name (call, import, alias, attribute, string constant) in non-test Python;
-``hermes_cli/profiles.py`` may only define it. An unparseable file fails. Suppress with
+``hermes_agent/hermes_cli/profiles.py`` may only define it. An unparseable file fails. Suppress with
 ``# profile-create: ok — <why>`` on the flagged line.
 
 Usage: python3 scripts/check_profile_create_entry.py [paths...]

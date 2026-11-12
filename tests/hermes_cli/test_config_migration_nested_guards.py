@@ -48,7 +48,7 @@ def _read_config(tmp_path):
 )
 def test_malformed_nested_value_is_migrated_not_crashed(tmp_path, current_ver, config, path, expected):
     """Each cited step replaces the malformed slot and still lands the migrated value."""
-    from hermes_cli.config_migrations import run_migrations
+    from hermes_agent.hermes_cli.config_migrations import run_migrations
 
     _write_config(tmp_path, {"_config_version": current_ver, **config})
     results = {"env_added": [], "config_added": [], "warnings": []}
@@ -67,8 +67,8 @@ def test_failing_step_is_skipped_with_warning_and_config_still_migrates(tmp_path
     past a raising step, records the skip in ``warnings`` and stamps the latest version. The
     quiet path (profile creation, unattended update) discards ``results``, so the skip must
     also reach the log or it is silent and, once stamped, permanent."""
-    from hermes_cli import config_migrations
-    from hermes_cli.config import migrate_config
+    from hermes_agent.hermes_cli import config_migrations
+    from hermes_agent.hermes_cli.config import migrate_config
 
     def _boom(results, quiet):
         raise RuntimeError("boom")
@@ -77,7 +77,7 @@ def test_failing_step_is_skipped_with_warning_and_config_still_migrates(tmp_path
     ladder = tuple((v, _boom if v == 13 else fn) for v, fn in config_migrations.MIGRATIONS)
     with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}), \
             patch.object(config_migrations, "MIGRATIONS", ladder), \
-            caplog.at_level(logging.WARNING, logger="hermes_cli.config_migrations"):
+            caplog.at_level(logging.WARNING, logger="hermes_agent.hermes_cli.config_migrations"):
         results = migrate_config(interactive=False, quiet=True)
 
     assert any(w.startswith("config migration to v13 failed and was skipped") for w in results["warnings"])

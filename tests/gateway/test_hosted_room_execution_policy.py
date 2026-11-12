@@ -177,7 +177,7 @@ def test_room_agent_uses_target_policy_toolsets_and_turn_limit(monkeypatch):
     )
     monkeypatch.setattr("hermes_agent.gateway.run._current_max_iterations", lambda: 999)
     monkeypatch.setattr(
-        "hermes_cli.tools_config._get_platform_tools",
+        "hermes_agent.hermes_cli.tools_config._get_platform_tools",
         lambda *_: {"terminal", "file", "web"},
     )
     adapter = APIServerAdapter(PlatformConfig(enabled=True))
@@ -243,7 +243,7 @@ def _two_profile_homes(tmp_path, monkeypatch) -> None:
             f"agent:\n  max_turns: {turns}\napprovals:\n  mode: manual\n"
             "platform_toolsets:\n  api_server: [hermes-api-server, web]\n")
         (home / ".env").write_text("")
-    from hermes_cli import profiles
+    from hermes_agent.hermes_cli import profiles
     import hermes_agent.gateway.run as gateway_run
     alpha = root / "profiles" / "alpha"
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: root)

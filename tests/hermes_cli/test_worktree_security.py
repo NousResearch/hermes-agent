@@ -53,7 +53,7 @@ def _force_remove_worktree(info: dict | None) -> None:
 
 class TestWorktreeIncludeSecurity:
     def test_rejects_parent_directory_file_traversal(self, git_repo):
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
 
         outside_file = git_repo.parent / "sensitive.txt"
         outside_file.write_text("SENSITIVE DATA")
@@ -71,7 +71,7 @@ class TestWorktreeIncludeSecurity:
             _force_remove_worktree(info)
 
     def test_rejects_parent_directory_directory_traversal(self, git_repo):
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
 
         outside_dir = git_repo.parent / "outside-dir"
         outside_dir.mkdir()
@@ -92,7 +92,7 @@ class TestWorktreeIncludeSecurity:
 
     @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
     def test_rejects_symlink_that_resolves_outside_repo(self, git_repo):
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
 
         outside_file = git_repo.parent / "linked-secret.txt"
         outside_file.write_text("LINKED SECRET")
@@ -109,7 +109,7 @@ class TestWorktreeIncludeSecurity:
             _force_remove_worktree(info)
 
     def test_allows_valid_file_include(self, git_repo):
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
 
         (git_repo / ".env").write_text("SECRET=***\n")
         (git_repo / ".worktreeinclude").write_text(".env\n")
@@ -127,7 +127,7 @@ class TestWorktreeIncludeSecurity:
 
     @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
     def test_allows_valid_directory_include(self, git_repo):
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
 
         assets_dir = git_repo / ".venv" / "lib"
         assets_dir.mkdir(parents=True)
@@ -154,7 +154,7 @@ class TestWorktreeIncludeEncoding:
 
 
     def test_non_ascii_worktreeinclude_entry_copied(self, git_repo):
-        import cli as cli_mod
+        import hermes_agent.cli as cli_mod
 
         secret = git_repo / "секреты.env"
         secret.write_text("SECRET=***\n", encoding="utf-8")

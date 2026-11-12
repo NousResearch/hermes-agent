@@ -24,7 +24,7 @@ def isolated_hermes_home():
     fixture) as a Path, with the raw-config cache cleared around the test."""
     from pathlib import Path
 
-    import hermes_cli.config as config_mod
+    import hermes_agent.hermes_cli.config as config_mod
 
     home = Path(os.environ["HERMES_HOME"])
     home.mkdir(parents=True, exist_ok=True)
@@ -42,7 +42,7 @@ def _write_config(home, data):
 
 
 def test_freshness_after_config_edit(isolated_hermes_home):
-    from hermes_cli.config import read_raw_config_readonly
+    from hermes_agent.hermes_cli.config import read_raw_config_readonly
 
     cfg = _write_config(isolated_hermes_home, {"display": {"ephemeral_system_ttl": 1}})
     first = read_raw_config_readonly()
@@ -58,7 +58,7 @@ def test_freshness_after_config_edit(isolated_hermes_home):
 
 
 def test_missing_config_returns_empty(isolated_hermes_home):
-    from hermes_cli.config import read_raw_config_readonly
+    from hermes_agent.hermes_cli.config import read_raw_config_readonly
 
     cfg = isolated_hermes_home / "config.yaml"
     if cfg.exists():

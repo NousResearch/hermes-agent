@@ -12,7 +12,7 @@ from html import escape as html_escape
 import json
 from typing import Any, Dict, Iterable, Iterator, List, Literal, Optional, Tuple
 
-from hermes_cli.timefmt import coerce_epoch
+from hermes_agent.hermes_cli.timefmt import coerce_epoch
 
 
 ExportFormat = Literal["jsonl", "markdown"]
@@ -271,7 +271,7 @@ def normalize_save_format(fmt: Optional[str]) -> str:
 
 
 def _render_html_for_save(session: dict[str, Any]) -> str:
-    from hermes_cli.session_export_html import generate_html_export
+    from hermes_agent.hermes_cli.session_export_html import generate_html_export
 
     return generate_html_export(session)
 

@@ -1,6 +1,6 @@
 """Kanban worker transcripts must not resume as ordinary write-capable sessions (#68779).
 
-Behaviour tests for the centralized guard (`hermes_cli/kanban_resume_guard.py`) and the two
+Behaviour tests for the centralized guard (`hermes_agent/hermes_cli/kanban_resume_guard.py`) and the two
 CLI resume surfaces it protects: startup `--resume` (`_preload_resumed_session`) and mid-chat
 `/resume`. The gateway surface is covered in `tests/tui_gateway/test_kanban_resume_guard.py`.
 """
@@ -65,7 +65,7 @@ def test_branch_child_of_kanban_worker_is_not_owned(tmp_path):
 # ── the centralized guard ────────────────────────────────────────────
 
 def _refusal(db, sid):
-    from hermes_cli.kanban_resume_guard import kanban_resume_refusal
+    from hermes_agent.hermes_cli.kanban_resume_guard import kanban_resume_refusal
     return kanban_resume_refusal(db, sid)
 
 
@@ -103,8 +103,8 @@ def test_guard_fails_open_on_probe_error(tmp_path):
 # ── CLI startup --resume / -c ────────────────────────────────────────
 
 def _make_cli(resume=None):
-    from cli import HermesCLI
-    import cli as _cli_mod
+    from hermes_agent.cli import HermesCLI
+    import hermes_agent.cli as _cli_mod
 
     _clean_config = {
         "model": {"default": "anthropic/claude-opus-4.6", "base_url": "https://openrouter.ai/api/v1",
@@ -114,7 +114,7 @@ def _make_cli(resume=None):
         "terminal": {"env_type": "local"},
     }
     with (
-        patch("cli.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.cli.get_tool_definitions", return_value=[]),
         patch.dict("os.environ", {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}, clear=False),
         patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": _clean_config}),
     ):
@@ -164,7 +164,7 @@ def test_midchat_resume_refuses_kanban_target(tmp_path):
     cli.session_id = "chat-1"
     cli.conversation_history = [{"role": "user", "content": "hi"}]
     printed = []
-    with patch("cli._cprint", lambda line: printed.append(line)):
+    with patch("hermes_agent.cli._cprint", lambda line: printed.append(line)):
         cli._handle_resume_command("/resume worker-1")
 
     joined = "\n".join(str(p) for p in printed)

@@ -14,8 +14,8 @@ from datetime import datetime
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from hermes_cli.session_recovery import _quoted_columns, _table_columns
-from hermes_cli.session_lost_and_found import _is_session_id, map_lost_and_found_rows
+from hermes_agent.hermes_cli.session_recovery import _quoted_columns, _table_columns
+from hermes_agent.hermes_cli.session_lost_and_found import _is_session_id, map_lost_and_found_rows
 
 # Exactly as the minting sites build them (see module docstring for file/line).
 CRON_ID = "cron_0b36145ae5c7_20260626_100059"

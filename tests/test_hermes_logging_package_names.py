@@ -10,7 +10,7 @@ import logging
 
 import pytest
 
-from hermes_cli.logs import _line_matches_component
+from hermes_agent.hermes_cli.logs import _line_matches_component
 from hermes_logging import COMPONENT_PREFIXES, _ComponentFilter
 
 SAMPLES = {

@@ -46,7 +46,7 @@ def test_card_names_the_launch_target_and_the_model_result_does_not():
 
     with patch("hermes_agent.tools.connectors.mcp._catalog_names", return_value=["acme"]), \
          patch("hermes_agent.tools.connectors.mcp._configured_names", return_value=[]), \
-         patch("hermes_cli.mcp_catalog.get_entry", return_value=entry), \
+         patch("hermes_agent.hermes_cli.mcp_catalog.get_entry", return_value=entry), \
          patch("hermes_agent.tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         out = json.loads(manage_connections({"action": "install", "connectors": [{"name": "acme", "mcp": True}]},
                                             connection_callback=callback, session_id="s1", mcp_backend=_Backend()))
@@ -251,7 +251,7 @@ def test_enable_reads_env_and_cwd_from_the_configured_entry():
     from hermes_agent.tools.connectors.mcp_launch import launch_for
 
     cfg = {"acme": {"command": "node", "args": ["srv.js"], "env": {"NODE_OPTIONS": "--require /x.js"}, "cwd": "/w"}}
-    with patch("hermes_cli.mcp_catalog.installed_servers", return_value=cfg):
+    with patch("hermes_agent.hermes_cli.mcp_catalog.installed_servers", return_value=cfg):
         assert launch_for("enable", "acme") == {"kind": "stdio", "target": "node srv.js", "env": ["NODE_OPTIONS"],
                                                 "cwd": "/w"}
 

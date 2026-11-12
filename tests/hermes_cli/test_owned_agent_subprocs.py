@@ -17,7 +17,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from hermes_cli import process_identity
+from hermes_agent.hermes_cli import process_identity
 
 from tests.waiting import wait_until
 
@@ -177,7 +177,7 @@ def _sleeper() -> subprocess.Popen:
 @pytest.fixture
 def owned(monkeypatch):
     """In-process cases: record registrations instead of starting a real supervisor in pytest."""
-    from hermes_cli import process_identity
+    from hermes_agent.hermes_cli import process_identity
 
     groups: list = []
     monkeypatch.setattr(process_identity, "own_process_groups", lambda pgids: groups.extend(pgids))
@@ -248,7 +248,7 @@ def test_tts_command_owns_then_releases_its_group_after_success_and_idle_kill(mo
 
 
 def test_whatsapp_pairing_terminate_releases_the_process_it_stopped(monkeypatch):
-    from hermes_cli.web_routers import messaging
+    from hermes_agent.hermes_cli.web_routers import messaging
 
     released = []
     monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.append(list(pgids)))

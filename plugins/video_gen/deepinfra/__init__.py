@@ -27,7 +27,7 @@ class DeepInfraVideoGenProvider(OpenAICompatibleVideoGenProvider):
     def list_models(self) -> list[dict[str, Any]]:
         """``video-gen``-tagged models from the live catalog; empty when unreachable (nothing beats a retired model)."""
         try:
-            from hermes_cli.models import _fetch_deepinfra_models_by_tag
+            from hermes_agent.hermes_cli.models import _fetch_deepinfra_models_by_tag
         except Exception as exc:
             logger.debug("Cannot import _fetch_deepinfra_models_by_tag: %s", exc)
             return []

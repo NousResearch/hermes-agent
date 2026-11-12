@@ -19,7 +19,7 @@ def usage_mod(tmp_path, monkeypatch):
 
 
 def test_usage_report_lists_plugin_skills_with_their_counts(usage_mod, tmp_path, monkeypatch):
-    from hermes_cli import plugins
+    from hermes_agent.hermes_cli import plugins
     md = tmp_path / "plug" / "skills" / "model-3d" / "SKILL.md"
     md.parent.mkdir(parents=True)
     md.write_text("---\nname: model-3d\ndescription: d\n---\nbody\n")

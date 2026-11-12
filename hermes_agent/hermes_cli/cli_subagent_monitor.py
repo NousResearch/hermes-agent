@@ -10,8 +10,8 @@ import time
 from prompt_toolkit.utils import get_cwidth
 
 from hermes_agent.agent.i18n import t
-from hermes_cli import cli_process_dock as procs
-from hermes_cli import cli_session_dock as session_rows
+from hermes_agent.hermes_cli import cli_process_dock as procs
+from hermes_agent.hermes_cli import cli_session_dock as session_rows
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class SubagentMonitor:
     def subagents(self):
         """The subagent backend: the gateway session's view when its children run there (CLI-12),
         else this process's own registry; both answer the same ``subagent_*`` calls."""
-        from hermes_cli.gateway_tools import LocalSubagents, process_view
+        from hermes_agent.hermes_cli.gateway_tools import LocalSubagents, process_view
         view = process_view()
         if view is not None:
             return view
@@ -109,7 +109,7 @@ class SubagentMonitor:
         return changed
 
     def invalidate(self):
-        from hermes_cli.cli_terminal_mixin import _run_on_app_loop
+        from hermes_agent.hermes_cli.cli_terminal_mixin import _run_on_app_loop
 
         app = self.app
         if app is not None:
@@ -479,7 +479,7 @@ def build_monitor_application(monitor, **kwargs):
             update_tail()
 
     from prompt_toolkit.styles import Style
-    from hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
+    from hermes_agent.hermes_cli.skin_engine import get_prompt_toolkit_style_overrides
     kwargs.setdefault('style', Style.from_dict(get_prompt_toolkit_style_overrides()))
     app = Application(layout=layout, key_bindings=kb, full_screen=True, mouse_support=False,
                       before_render=before_render, **kwargs)

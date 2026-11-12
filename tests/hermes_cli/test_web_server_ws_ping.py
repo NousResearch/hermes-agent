@@ -11,7 +11,7 @@ import sys
 import pytest
 import uvicorn
 
-from hermes_cli import web_server
+from hermes_agent.hermes_cli import web_server
 
 
 def _stub_uvicorn(monkeypatch):
@@ -74,7 +74,7 @@ def _stub_uvicorn(monkeypatch):
 def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch, tmp_path):
     captured = _stub_uvicorn(monkeypatch)
     owner_watchdogs: list[dict] = []
-    monkeypatch.setattr("hermes_cli.web_server_owner_exit.start_owner_watchdog",
+    monkeypatch.setattr("hermes_agent.hermes_cli.web_server_owner_exit.start_owner_watchdog",
                         lambda server, **kw: owner_watchdogs.append(kw))
     lock_path = tmp_path / "backend.lock.json"
 
@@ -394,7 +394,7 @@ def test_gateway_listener_compresses_only_for_remote_peers(host, auth_required, 
     """``build_listener_server`` (the gateway's session WebSocket) compresses frames only when the
     client is remote. uvicorn runs permessage-deflate on the event loop for every frame, and the
     gateway sends one frame per streamed token of every running session."""
-    from hermes_cli.web_server_lifecycle import build_listener_server
+    from hermes_agent.hermes_cli.web_server_lifecycle import build_listener_server
 
     config, _server = build_listener_server(lambda scope, receive, send: None, host, 0,
                                             auth_required=auth_required)

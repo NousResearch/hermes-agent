@@ -1,7 +1,7 @@
 """Voice mode (recording, STT, TTS, full-duplex barge-in) and wake-word listener handlers for the interactive CLI
 
 Mixin split out of ``cli.py``; bound onto ``HermesCLI`` via the MRO. cli.py-internal
-symbols are imported LAZILY inside each method (``from cli import ...``) — the mixin
+symbols are imported LAZILY inside each method (``from hermes_agent.cli import ...``) — the mixin
 never imports ``cli`` at module load time (import cycle).
 """
 
@@ -27,7 +27,7 @@ def _config_section(name: str) -> dict:
     ``.get()``. Config load failures also yield {}.
     """
     try:
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
         section = load_config().get(name)
         return section if isinstance(section, dict) else {}
     except Exception:
@@ -61,7 +61,7 @@ class CLIVoiceMixin:
 
     def _voice_start_recording(self):
         """Start capturing audio from the microphone."""
-        from cli import _ACCENT, _DIM, _RST, _cprint
+        from hermes_agent.cli import _ACCENT, _DIM, _RST, _cprint
         if getattr(self, '_should_exit', False):
             return
         from hermes_agent.tools.voice_mode import create_audio_recorder, check_voice_requirements
@@ -174,7 +174,7 @@ class CLIVoiceMixin:
 
     def _voice_restart_recording_async(self) -> None:
         """Restart continuous-mode recording off-thread (start() can block)."""
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         def _restart_recording():
             try:
                 self._voice_start_recording()
@@ -190,7 +190,7 @@ class CLIVoiceMixin:
 
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
-        from cli import _DIM, _RST, _VoiceInputMessage, _cprint
+        from hermes_agent.cli import _DIM, _RST, _VoiceInputMessage, _cprint
         # Atomic guard; _voice_processing is set immediately so concurrent Ctrl+B presses
         # don't race into the START path while recorder.stop() holds its lock.
         with self._voice_lock:
@@ -294,7 +294,7 @@ class CLIVoiceMixin:
 
     def _voice_speak_response(self, text: str):
         """Speak the agent's response aloud using TTS (runs in background thread)."""
-        from cli import _DIM, _RST, _cprint, logger
+        from hermes_agent.cli import _DIM, _RST, _cprint, logger
         if not self._voice_tts:
             return
         self._voice_tts_done.clear()
@@ -356,7 +356,7 @@ class CLIVoiceMixin:
         Ctrl+C); playback phase: speech cuts TTS. Either way the captured utterance is
         submitted as the next message; the stop phrase ends the voice chat in BOTH phases.
         """
-        from cli import _DIM, _RST, _cprint, logger
+        from hermes_agent.cli import _DIM, _RST, _cprint, logger
         fd_active = getattr(self, "_voice_fd_active", None)
         if fd_active is None:
             fd_active = threading.Event()
@@ -365,7 +365,7 @@ class CLIVoiceMixin:
             return  # one listener owns the mic for this turn
         fd_active.set()
         try:
-            from hermes_cli.config import load_config
+            from hermes_agent.hermes_cli.config import load_config
             voice_cfg = load_config().get("voice") or {}
             if not (isinstance(voice_cfg, dict) and voice_cfg.get("barge_in", True)):
                 return
@@ -434,7 +434,7 @@ class CLIVoiceMixin:
 
     def _voice_submit_barge_utterance(self, wav_path: str) -> None:
         """Transcribe a barge-captured interruption and queue it as the next turn."""
-        from cli import _DIM, _RST, _VoiceInputMessage, _cprint, logger
+        from hermes_agent.cli import _DIM, _RST, _VoiceInputMessage, _cprint, logger
         submitted = False
         try:
             from hermes_agent.tools.voice_mode import transcribe_recording
@@ -479,7 +479,7 @@ class CLIVoiceMixin:
 
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""
-        from cli import _ACCENT, _BOLD, _DIM, _RST, _cprint
+        from hermes_agent.cli import _ACCENT, _BOLD, _DIM, _RST, _cprint
         if self._voice_mode:
             _cprint(f"{_DIM}{t('cli.voice.already_enabled')}{_RST}")
             return
@@ -538,7 +538,7 @@ class CLIVoiceMixin:
         Saying "stop" ends the voice chat (PR #73106); TYPING the same bare stop phrase while voice mode is
         on must behave identically instead of sending "stop" to the agent as a turn.
         """
-        from cli import _DIM, _RST, _cprint
+        from hermes_agent.cli import _DIM, _RST, _cprint
         if not isinstance(user_input, str):
             return False
         with self._voice_lock:
@@ -557,7 +557,7 @@ class CLIVoiceMixin:
 
     def _disable_voice_mode(self):
         """Disable voice mode, cancel any active recording, and stop TTS."""
-        from cli import _DIM, _RST, _cprint, logger
+        from hermes_agent.cli import _DIM, _RST, _cprint, logger
         with self._voice_lock:
             if self._voice_recording and self._voice_recorder:
                 self._voice_recorder.cancel()
@@ -602,7 +602,7 @@ class CLIVoiceMixin:
 
     def _start_wake_word_listener(self, announce: bool = False) -> bool:
         """Build + start the hotword detector. Returns True on success."""
-        from cli import _ACCENT, _DIM, _RST, _cprint
+        from hermes_agent.cli import _ACCENT, _DIM, _RST, _cprint
         say = _cprint if announce else (lambda *_a: None)
         try:
             from hermes_agent.tools.wake_word import (
@@ -637,7 +637,7 @@ class CLIVoiceMixin:
 
         self._wake_word_active = True
         self._wake_suspended = False
-        import cli as _cli
+        import hermes_agent.cli as _cli
         _cli._cli_wake_owner = self
         self._start_wake_watchdog()
         say(f"\n{_ACCENT}{t('cli.voice.wake_listening')}{_RST} "
@@ -646,8 +646,8 @@ class CLIVoiceMixin:
 
     def _stop_wake_word_listener(self, announce: bool = False):
         """Stop and tear down the hotword detector."""
-        from cli import _DIM, _RST, _cprint
-        import cli as _cli
+        from hermes_agent.cli import _DIM, _RST, _cprint
+        import hermes_agent.cli as _cli
         was_active = getattr(self, "_wake_word_active", False)
         self._wake_word_active = False
         self._wake_suspended = False
@@ -663,7 +663,7 @@ class CLIVoiceMixin:
 
     def _on_wake_word(self):
         """Fired after the detector hears the wake phrase."""
-        from cli import _ACCENT, _DIM, _RST, _cprint, logger
+        from hermes_agent.cli import _ACCENT, _DIM, _RST, _cprint, logger
         if getattr(self, "_should_exit", False):
             return
         # Ignore wake while a turn is in flight or the mic is already in use.
@@ -719,7 +719,7 @@ class CLIVoiceMixin:
 
     def _start_wake_watchdog(self):
         """Resume the paused detector when the CLI returns to a stable idle."""
-        from cli import logger
+        from hermes_agent.cli import logger
         if getattr(self, "_wake_watchdog_started", False):
             return
         self._wake_watchdog_started = True
@@ -760,7 +760,7 @@ class CLIVoiceMixin:
 
     def _show_wake_word_status(self):
         """Show current wake-word listener status."""
-        from cli import _ACCENT, _BOLD, _DIM, _RST, _cprint
+        from hermes_agent.cli import _ACCENT, _BOLD, _DIM, _RST, _cprint
         from hermes_agent.tools.wake_word import (
             audio_is_silent, check_wake_word_requirements, is_listening, load_wake_word_config,
             owns_listener)
@@ -791,7 +791,7 @@ class CLIVoiceMixin:
         Acquiring pre-loads the configured provider so the first reply starts hot; releasing
         lets the last-holder path unload resident local models. Never blocks or fails the toggle.
         """
-        from cli import logger
+        from hermes_agent.cli import logger
 
         def _run():
             try:
@@ -807,7 +807,7 @@ class CLIVoiceMixin:
 
     def _toggle_voice_tts(self):
         """Toggle TTS output for voice mode."""
-        from cli import _ACCENT, _DIM, _RST, _cprint
+        from hermes_agent.cli import _ACCENT, _DIM, _RST, _cprint
         if not self._voice_mode:
             _cprint(f"{_DIM}{t('cli.voice.enable_first_hint')}{_RST}")
             return
@@ -824,7 +824,7 @@ class CLIVoiceMixin:
 
     def _show_voice_status(self):
         """Show current voice mode status."""
-        from cli import _BOLD, _RST, _cprint
+        from hermes_agent.cli import _BOLD, _RST, _cprint
         from hermes_agent.tools.voice_mode import check_voice_requirements
 
         reqs = check_voice_requirements()

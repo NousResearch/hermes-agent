@@ -1,6 +1,6 @@
 """``hermes gui --setup-tcc-identity``: a persistent self-signed macOS code-signing identity.
 
-Split out of ``hermes_cli/main_desktop.py``. The facade's build/sign helpers are imported lazily
+Split out of ``hermes_agent/hermes_cli/main_desktop.py``. The facade's build/sign helpers are imported lazily
 inside the function that uses them (the facade late-imports this module from ``cmd_gui``).
 """
 
@@ -106,8 +106,8 @@ def _desktop_macos_setup_tcc_identity(identity: str = "Hermes Local Signing") ->
     ``desktop.macos_signing_identity`` at it and re-sign the packaged app. TCC grants follow the
     signing identity, so a certificate-anchored one is stable across rebuilds (the yabai/skhd
     mechanism). Idempotent; never raises."""
-    from hermes_cli.main import PROJECT_ROOT
-    from hermes_cli.main_desktop import _desktop_macos_relaunchable_fixup, _desktop_packaged_executable
+    from hermes_agent.hermes_cli.main import PROJECT_ROOT
+    from hermes_agent.hermes_cli.main_desktop import _desktop_macos_relaunchable_fixup, _desktop_packaged_executable
     if sys.platform != "darwin":
         print("  (--setup-tcc-identity is macOS-only; skipping)")
         return False
@@ -142,7 +142,7 @@ def _desktop_macos_setup_tcc_identity(identity: str = "Hermes Local Signing") ->
 
     # config.yaml, not .env — it's not a secret.
     try:
-        from hermes_cli.config import set_config_value
+        from hermes_agent.hermes_cli.config import set_config_value
         set_config_value("desktop.macos_signing_identity", identity)
         print(f"  → set desktop.macos_signing_identity = {identity!r}")
     except Exception as exc:

@@ -39,7 +39,7 @@ def home(tmp_path, monkeypatch) -> Path:
 
 
 def test_doctor_warns_when_the_desktop_copy_is_stale(home: Path) -> None:
-    from hermes_cli.plugin_dev import doctor_plugin
+    from hermes_agent.hermes_cli.plugin_dev import doctor_plugin
 
     plugin = _plugin(home)
     copy = _copy(home, plugin)
@@ -55,6 +55,6 @@ def test_doctor_warns_when_the_desktop_copy_is_stale(home: Path) -> None:
 
 
 def test_doctor_is_silent_without_a_desktop_copy(home: Path) -> None:
-    from hermes_cli.plugin_dev import doctor_plugin
+    from hermes_agent.hermes_cli.plugin_dev import doctor_plugin
 
     assert _stale_warnings(doctor_plugin(_plugin(home))) == []

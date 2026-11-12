@@ -2,7 +2,7 @@
 session is on the gateway; client-enforced state (/busy) is mirrored after the owner accepts."""
 from types import SimpleNamespace
 
-from hermes_cli import gateway_setting_commands
+from hermes_agent.hermes_cli import gateway_setting_commands
 
 
 class _Conn:
@@ -18,7 +18,7 @@ class _Conn:
 
 def test_busy_runs_on_the_gateway_and_mirrors_the_mode(monkeypatch, capsys):
     conn = _Conn()
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda cli: conn)
     cli = SimpleNamespace(session_id="local-s", busy_input_mode="interrupt")
     assert gateway_setting_commands.run(cli, "busy", "/busy queue") is True
     assert conn.calls == [("slash.exec", {"session_id": "local-s", "command": "busy queue"})]
@@ -31,7 +31,7 @@ def test_refine_and_review_run_on_the_gateway_sessions_agent(monkeypatch, capsys
     gateway's handler runs the reviewer beside the session's agent (as messaging does) and the CLI
     prints its reply; no reviewer runs in the CLI process."""
     conn = _Conn()
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda cli: conn)
 
     def local_review(*_a, **_k):
         raise AssertionError("the reviewer must not run in the CLI process")
@@ -53,7 +53,7 @@ def test_cron_writes_run_on_the_gateway_not_in_the_cli(monkeypatch, capsys):
         def call_until(self, method, wake, **params):
             calls.append((method, params, wake.is_set()))
             return {"type": "exec", "output": "(^_^)b Paused job: probe (probe)"}
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: _UntilConn())
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda cli: _UntilConn())
 
     def local_write(**_k):
         raise AssertionError("the CLI process must not write the cron store")
@@ -72,7 +72,7 @@ def test_ctrl_c_during_a_cron_wait_prints_the_stopped_line_and_propagates(monkey
     class _InterruptedConn(_Conn):
         def call_until(self, method, wake, **params):
             raise KeyboardInterrupt
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: _InterruptedConn())
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda cli: _InterruptedConn())
     cli = SimpleNamespace(session_id="local-s", _gateway_command_wait=None)
     with pytest.raises(KeyboardInterrupt):
         gateway_setting_commands.run(cli, "cron", "/cron run probe")
@@ -87,7 +87,7 @@ def test_cron_reads_keep_the_answer_deadline(monkeypatch, capsys):
         def call_until(self, method, wake, **params):
             raise AssertionError("a /cron read must keep the answer deadline")
     conn = _BoundedConn()
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda cli: conn)
     cli = SimpleNamespace(session_id="local-s", _gateway_command_wait=None)
     for typed in ("/cron", "/cron list", "/cron LIST -a", '/cron add "every 2h'):
         assert gateway_setting_commands.run(cli, "cron", typed) is True
@@ -105,7 +105,7 @@ def test_toolsets_is_the_gateway_sessions_report_printed_as_is(monkeypatch, caps
             self.calls.append((method, params))
             return {"type": "exec", "output": report}
     conn = _Reply()
-    monkeypatch.setattr("hermes_cli.gateway_side.connection_for", lambda cli: conn)
+    monkeypatch.setattr("hermes_agent.hermes_cli.gateway_side.connection_for", lambda cli: conn)
     assert gateway_setting_commands.run(SimpleNamespace(session_id="local-s"), "toolsets", "/toolsets") is True
     assert conn.calls == [("slash.exec", {"session_id": "local-s", "command": "toolsets"})]
     assert "\n  (*) mcp-zeta           [11 tools]" in capsys.readouterr().out

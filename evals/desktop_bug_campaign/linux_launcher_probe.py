@@ -41,15 +41,15 @@ def main():
     assert python.is_symlink() and python.resolve() != python
     install = (
         "import sys,json; from pathlib import Path; "
-        "from hermes_cli.linux_desktop_entry import install_desktop_entry; "
+        "from hermes_agent.hermes_cli.linux_desktop_entry import install_desktop_entry; "
         f"sys.argv[0]={str(repo / 'hermes')!r}; "
         f"p=install_desktop_entry(Path({str(repo)!r})); "
         "print(json.dumps({'path':str(p),'text':p.read_text(),'python':sys.executable}))"
     )
     rows: dict = {"source_sha": args.source_sha or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip(),
             "root": str(root), "lexical_python": str(python), "base_python": str(python.resolve())}
-    rows["venv_import"] = run([str(python), "-I", "-c", "import ruamel.yaml,hermes_cli.main; print(ruamel.yaml.__version__)"], env, "/")
-    rows["base_import_negative"] = run([str(python.resolve()), "-I", "-c", "import ruamel.yaml,hermes_cli.main"], env, "/")
+    rows["venv_import"] = run([str(python), "-I", "-c", "import ruamel.yaml,hermes_agent.hermes_cli.main; print(ruamel.yaml.__version__)"], env, "/")
+    rows["base_import_negative"] = run([str(python.resolve()), "-I", "-c", "import ruamel.yaml,hermes_agent.hermes_cli.main"], env, "/")
     rows["install"] = run([str(python), "-c", install], env, "/")
     assert rows["install"]["returncode"] == 0, rows["install"]
     installed = json.loads(rows["install"]["stdout"].splitlines()[-1])

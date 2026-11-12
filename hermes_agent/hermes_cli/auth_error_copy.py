@@ -97,7 +97,7 @@ def sign_in_failure_lines(
     exc: BaseException, *, service_host: str = "portal.nousresearch.com", retry_command: str = "hermes portal",
 ) -> list:
     """Lines to print when a device-code / browser sign-in fails for any non-timeout reason."""
-    from hermes_cli.observability.shared_metrics_setup import note_sign_in_failure
+    from hermes_agent.hermes_cli.observability.shared_metrics_setup import note_sign_in_failure
 
     note_sign_in_failure(exc)
     if isinstance(exc, SignInCopyError):
@@ -140,7 +140,7 @@ def provider_setup_failure_lines(exc: BaseException, *, retry_command: str = "he
 def unknown_provider_hint(provider_name: str) -> str:
     """Hint for an ``Unknown provider`` error from the resolver: the install line of a provider that left
     core for a plugin, the replacement for a removed provider, else the config issues that cause it."""
-    from hermes_cli.left_core_migration import provider_install_hint
+    from hermes_agent.hermes_cli.left_core_migration import provider_install_hint
     if moved := provider_install_hint(provider_name):
         return moved
     if str(provider_name or "").strip().lower() in {"opencode-free", "free", "opencode_free"}:
@@ -149,7 +149,7 @@ def unknown_provider_hint(provider_name: str) -> str:
                 "Switch to 'opencode-zen' (pay-as-you-go, OPENCODE_ZEN_API_KEY) or 'opencode-go' "
                 "($10/mo subscription, OPENCODE_GO_API_KEY) via 'hermes model'.")
     try:
-        from hermes_cli.config import validate_config_structure
+        from hermes_agent.hermes_cli.config import validate_config_structure
         issues = validate_config_structure()
         if not issues:
             return ""

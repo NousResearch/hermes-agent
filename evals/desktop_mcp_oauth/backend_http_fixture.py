@@ -305,7 +305,7 @@ def main():
     if args.cold_probe:
         sys.path.insert(0, str(repo))
         logging.disable(logging.CRITICAL)
-        from hermes_cli.mcp_config import _get_mcp_servers, _probe_single_server
+        from hermes_agent.hermes_cli.mcp_config import _get_mcp_servers, _probe_single_server
         from hermes_agent.tools.mcp_oauth import suppress_interactive_oauth
         with suppress_interactive_oauth():
             tools = _probe_single_server("positive", _get_mcp_servers()["positive"])

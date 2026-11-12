@@ -45,7 +45,7 @@ def _config_settings() -> tuple[bool, float, int, float]:
         # Read-only, no-deepcopy variant: this runs on EVERY trim attempt (before the
         # cooldown check), and a full-config deepcopy per attempt is exactly the
         # allocator garbage this module exists to release.
-        from hermes_cli.config import load_config_readonly
+        from hermes_agent.hermes_cli.config import load_config_readonly
         config = load_config_readonly() or {}
         context = config.get("context") if isinstance(config, dict) else None
         settings = context.get("memory_trim") if isinstance(context, dict) else None

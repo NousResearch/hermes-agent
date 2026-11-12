@@ -6,7 +6,7 @@ description: "Complete reference for interactive CLI and messaging slash command
 
 # Slash Commands Reference
 
-Hermes has two slash-command surfaces, both driven by a central `COMMAND_REGISTRY` in `hermes_cli/commands.py`:
+Hermes has two slash-command surfaces, both driven by a central `COMMAND_REGISTRY` in `hermes_agent/hermes_cli/commands.py`:
 
 - **Interactive CLI slash commands** — dispatched by `cli.py`, with autocomplete from the registry
 - **Messaging slash commands** — dispatched by `hermes_agent/gateway/run.py`, with help text and platform menus generated from the registry

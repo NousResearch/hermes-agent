@@ -13,29 +13,29 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_cli import gateway as gw
+from hermes_agent.hermes_cli import gateway as gw
 
 
 @pytest.fixture(autouse=True)
 def reset_restart_cooldown():
-    from hermes_cli import web_server
+    from hermes_agent.hermes_cli import web_server
 
     web_server._LAST_GATEWAY_RESTART = None
     yield
     web_server._LAST_GATEWAY_RESTART = None
 
 
-@patch("hermes_cli.web_server_gateway._gateway_subcommand", return_value=["gateway", "restart"])
-@patch("hermes_cli.web_server_gateway._spawn_hermes_action")
-@patch("hermes_cli.web_server_gateway._ACTION_PROCS", {})
+@patch("hermes_agent.hermes_cli.web_server_gateway._gateway_subcommand", return_value=["gateway", "restart"])
+@patch("hermes_agent.hermes_cli.web_server_gateway._spawn_hermes_action")
+@patch("hermes_agent.hermes_cli.web_server_gateway._ACTION_PROCS", {})
 def test_backend_spawns_restart_without_stopping_anything(mock_spawn, mock_subcmd):
     mock_proc = MagicMock(spec=subprocess.Popen)
     mock_proc.poll.return_value = None
     mock_spawn.return_value = mock_proc
 
-    from hermes_cli.web_server import _spawn_gateway_restart
+    from hermes_agent.hermes_cli.web_server import _spawn_gateway_restart
 
-    with patch("hermes_cli.gateway._reap_unsupervised_gateway_orphans") as reap:
+    with patch("hermes_agent.hermes_cli.gateway._reap_unsupervised_gateway_orphans") as reap:
         proc, reused = _spawn_gateway_restart()
 
     reap.assert_not_called()

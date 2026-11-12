@@ -95,7 +95,7 @@ class TestResolverPlumbing:
 
     def test_config_path_folds_in_the_session_surface(self, no_desktop_env):
         import hermes_agent.agent.coding_context as cc
-        import hermes_cli.config as config_mod
+        import hermes_agent.hermes_cli.config as config_mod
 
         no_desktop_env.setattr(cc, "coding_selection", lambda **_: None)
         no_desktop_env.setattr(
@@ -127,7 +127,7 @@ class TestExplicitEmptySelection:
     @staticmethod
     def _config(no_desktop_env, platform_toolsets):
         import hermes_agent.agent.coding_context as cc
-        import hermes_cli.config as config_mod
+        import hermes_agent.hermes_cli.config as config_mod
 
         no_desktop_env.setattr(cc, "coding_selection", lambda **_: None)
         no_desktop_env.setattr(

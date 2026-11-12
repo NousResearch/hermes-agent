@@ -9,7 +9,7 @@ exits the wizard early.
 
 from argparse import Namespace
 
-from hermes_cli.config import (
+from hermes_agent.hermes_cli.config import (
     DEFAULT_CONFIG,
     get_config_path,
     load_config,
@@ -60,7 +60,7 @@ class TestResetBackupOrdering:
         advertised as the recovery path captured the defaults that had just been
         written and the user's real config was unrecoverable.
         """
-        from hermes_cli.setup import run_setup_wizard
+        from hermes_agent.hermes_cli.setup import run_setup_wizard
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         config_path = _write_user_config(tmp_path)
@@ -83,7 +83,7 @@ class TestResetBackupOrdering:
         self, tmp_path, monkeypatch, capsys
     ):
         """--reset can exit early, so it must surface the backup path itself."""
-        from hermes_cli.setup import run_setup_wizard
+        from hermes_agent.hermes_cli.setup import run_setup_wizard
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _write_user_config(tmp_path)

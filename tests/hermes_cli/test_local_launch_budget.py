@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli.local_runtime import hardware
-from hermes_cli.local_runtime.estimator import HardwareBudget
+from hermes_agent.hermes_cli.local_runtime import hardware
+from hermes_agent.hermes_cli.local_runtime.estimator import HardwareBudget
 
 GIB = 1 << 30
 # The measured card: RTX 5090, 31.84 GiB total, capacity = total minus the 9% margin.
@@ -65,7 +65,7 @@ def test_launch_budget_subtracts_other_programs_plus_headroom(monkeypatch):
 def test_launch_budget_reads_free_memory_on_a_vulkan_card(monkeypatch, tmp_path):
     """Behind Vulkan/HIP (no nvidia-smi) the engine's own device probe reports free memory, and each
     launch asks again: the cached capacity probe predates programs that started since."""
-    from hermes_cli.local_runtime import devices
+    from hermes_agent.hermes_cli.local_runtime import devices
 
     held_gib = [0.0]
     monkeypatch.setattr(hardware, "_nvidia_vram", lambda: None)
@@ -110,7 +110,7 @@ def test_launch_budget_skips_unified_memory_and_failed_probes(monkeypatch):
 
 def _stage_27b(hermes_home, monkeypatch):
     """The real catalog entry (mmproj staged), priced from its catalog profile."""
-    from hermes_cli.local_runtime import bootstrap, catalog, presets
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, catalog, presets
 
     entry = catalog.catalog_by_id()["qwen3.8-27b"]
     variant = next(v for v in entry.variants if v.model_id == MODEL_ID)
@@ -141,7 +141,7 @@ def _stage_27b(hermes_home, monkeypatch):
     (8.5, 64),
 ])
 def test_27b_window_follows_other_programs(hermes_home, monkeypatch, others_gib, window_k):
-    from hermes_cli.local_runtime import presets
+    from hermes_agent.hermes_cli.local_runtime import presets
 
     _mdir, gguf = _stage_27b(hermes_home, monkeypatch)
     _card(monkeypatch, others_gib)
@@ -155,7 +155,7 @@ def test_27b_window_follows_other_programs(hermes_home, monkeypatch, others_gib,
 
 def test_busy_card_holds_the_floor_and_keeps_weights_on_the_gpu(hermes_home, monkeypatch):
     """A live reading may still include memory about to be freed; it never moves weights."""
-    from hermes_cli.local_runtime import presets
+    from hermes_agent.hermes_cli.local_runtime import presets
 
     _mdir, gguf = _stage_27b(hermes_home, monkeypatch)
     _card(monkeypatch, 14.0)
@@ -167,7 +167,7 @@ def test_busy_card_holds_the_floor_and_keeps_weights_on_the_gpu(hermes_home, mon
 
 def test_a_capacity_plan_that_spills_is_left_alone(hermes_home, monkeypatch):
     """Small cards spill by design; a live reading must not rearrange that placement."""
-    from hermes_cli.local_runtime import presets
+    from hermes_agent.hermes_cli.local_runtime import presets
 
     _mdir, gguf = _stage_27b(hermes_home, monkeypatch)
     small = HardwareBudget(usable_vram_bytes=10 * GIB, total_device_bytes=12 * GIB,
@@ -181,7 +181,7 @@ def test_a_capacity_plan_that_spills_is_left_alone(hermes_home, monkeypatch):
 
 def test_recommendations_still_price_against_capacity(hermes_home, monkeypatch):
     """The catalog and picker describe the card, not this minute's desktop."""
-    from hermes_cli.local_runtime import catalog
+    from hermes_agent.hermes_cli.local_runtime import catalog
 
     _card(monkeypatch, 8.5)
     entry = catalog.catalog_by_id()["qwen3.8-27b"]
@@ -193,7 +193,7 @@ def test_recommendations_still_price_against_capacity(hermes_home, monkeypatch):
 
 
 def test_boot_writes_the_launch_window(hermes_home, monkeypatch, capacity_probe):
-    from hermes_cli.local_runtime import bootstrap, presets
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, presets
 
     mdir, _gguf = _stage_27b(hermes_home, monkeypatch)
     _card(monkeypatch, 5.4)
@@ -204,7 +204,7 @@ def test_boot_writes_the_launch_window(hermes_home, monkeypatch, capacity_probe)
 
 def test_boot_keeps_capacity_when_the_probe_fails(hermes_home, monkeypatch, capacity_probe):
     """The probe is policy, not a prerequisite: a failure must never block a boot."""
-    from hermes_cli.local_runtime import bootstrap, presets
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, presets
 
     mdir, _gguf = _stage_27b(hermes_home, monkeypatch)
 
@@ -240,7 +240,7 @@ class _Router:
 
 
 def _booted(hermes_home, monkeypatch, others_gib):
-    from hermes_cli.local_runtime import bootstrap
+    from hermes_agent.hermes_cli.local_runtime import bootstrap
 
     mdir, _gguf = _stage_27b(hermes_home, monkeypatch)
     _card(monkeypatch, others_gib)
@@ -250,7 +250,7 @@ def _booted(hermes_home, monkeypatch, others_gib):
 
 
 def test_idle_router_gets_windows_for_the_current_desktop(hermes_home, monkeypatch, capacity_probe):
-    from hermes_cli.local_runtime import bootstrap, presets
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, presets
 
     path = _booted(hermes_home, monkeypatch, 6.5)
     assert presets.read_preset_decisions(path)[MODEL_ID].window == 96 * 1024
@@ -266,7 +266,7 @@ def test_idle_router_gets_windows_for_the_current_desktop(hermes_home, monkeypat
 def test_a_replan_keeps_the_draft_the_serving_engine_loads(hermes_home, monkeypatch, capacity_probe):
     """The idle re-plan decides for the engine the server runs, as boot did: a staged DFlash draft
     stays in the preset, not the MTP fallback an unknown engine gets."""
-    from hermes_cli.local_runtime import bootstrap, catalog
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, catalog
 
     mdir, _gguf = _stage_27b(hermes_home, monkeypatch)
     draft = catalog.catalog_by_id()["qwen3.8-27b"].draft
@@ -288,7 +288,7 @@ def test_a_replan_keeps_the_draft_the_serving_engine_loads(hermes_home, monkeypa
 @pytest.mark.parametrize("status", ["loaded", "loading", "sleeping"])
 def test_never_rewrites_while_a_model_holds_memory(hermes_home, monkeypatch, capacity_probe, status):
     """The router unloads a loaded model whose launch flags change on reload."""
-    from hermes_cli.local_runtime import bootstrap
+    from hermes_agent.hermes_cli.local_runtime import bootstrap
 
     path = _booted(hermes_home, monkeypatch, 6.5)
     before = path.read_text(encoding="utf-8-sig")
@@ -299,7 +299,7 @@ def test_never_rewrites_while_a_model_holds_memory(hermes_home, monkeypatch, cap
 
 
 def test_small_changes_in_free_memory_do_not_replan(hermes_home, monkeypatch, capacity_probe):
-    from hermes_cli.local_runtime import bootstrap, presets
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, presets
 
     path = _booted(hermes_home, monkeypatch, 5.4)
     router = _Router(path, {MODEL_ID: "unloaded"})
@@ -315,12 +315,12 @@ def test_small_changes_in_free_memory_do_not_replan(hermes_home, monkeypatch, ca
 def test_growth_counts_the_growing_model_as_free(hermes_home, monkeypatch, capacity_probe):
     """The grown instance loads after the current one exits. Counting the model's own memory as
     held would veto every rung."""
-    from hermes_cli.local_runtime import bootstrap, growth, presets
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, growth, presets
 
     mdir, gguf = _stage_27b(hermes_home, monkeypatch)
     monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(is_idle=lambda m: True))
     monkeypatch.setattr(growth, "is_managed_endpoint", lambda url: True)
-    from hermes_cli.local_runtime import estimator, gguf as gguf_mod
+    from hermes_agent.hermes_cli.local_runtime import estimator, gguf as gguf_mod
 
     monkeypatch.setattr(gguf_mod, "read_gguf_header", presets.read_gguf_header)
     monkeypatch.setattr(estimator, "profile_from_gguf", presets.profile_from_gguf)
@@ -341,12 +341,12 @@ def test_growth_counts_the_growing_model_as_free(hermes_home, monkeypatch, capac
 
 
 def test_growth_refuses_a_rung_other_programs_leave_no_room_for(hermes_home, monkeypatch, capacity_probe):
-    from hermes_cli.local_runtime import bootstrap, growth, presets
+    from hermes_agent.hermes_cli.local_runtime import bootstrap, growth, presets
 
     _mdir, gguf = _stage_27b(hermes_home, monkeypatch)
     monkeypatch.setattr(bootstrap, "get_supervisor", lambda: SimpleNamespace(is_idle=lambda m: True))
     monkeypatch.setattr(growth, "is_managed_endpoint", lambda url: True)
-    from hermes_cli.local_runtime import estimator, gguf as gguf_mod
+    from hermes_agent.hermes_cli.local_runtime import estimator, gguf as gguf_mod
 
     monkeypatch.setattr(gguf_mod, "read_gguf_header", presets.read_gguf_header)
     monkeypatch.setattr(estimator, "profile_from_gguf", presets.profile_from_gguf)
@@ -364,7 +364,7 @@ def test_growth_refuses_a_rung_other_programs_leave_no_room_for(hermes_home, mon
 def test_residency_cap_prices_capacity(hermes_home, monkeypatch, capacity_probe):
     """The residency cap is also decided before a server bounce. It swallows probe errors to keep
     boots unblocked, so the recorded call is the proof it priced capacity."""
-    from hermes_cli.local_runtime import bootstrap
+    from hermes_agent.hermes_cli.local_runtime import bootstrap
 
     mdir, _gguf = _stage_27b(hermes_home, monkeypatch)
     bootstrap._admitted_models_max(mdir, 4)

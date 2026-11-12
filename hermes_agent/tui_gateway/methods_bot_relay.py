@@ -84,7 +84,7 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
         # A logged-in client's sender fields are NOT trusted — but the delivery is not refused
         # either: the Desktop is itself a logged-in client on every gateway that requires sign-in
         # (it mints a ws-ticket carrying the signed-in {user_id, provider} —
-        # hermes_cli/dashboard_auth/routes.py), so refusing took cross-connection relay offline
+        # hermes_agent/hermes_cli/dashboard_auth/routes.py), so refusing took cross-connection relay offline
         # for exactly the auth-gated gateways it serves; only ``?internal=`` callers are
         # identity-exempt and the Desktop cannot present one. Nor is the author dropped: an
         # unattributed turn is the HUMAN's to the recipient's memory, so a bot DM must stay

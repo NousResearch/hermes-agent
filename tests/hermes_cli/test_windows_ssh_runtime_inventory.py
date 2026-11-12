@@ -6,7 +6,7 @@ import os
 import pytest
 
 import hermes_constants
-from hermes_cli.windows_ssh_runtime import dispatch
+from hermes_agent.hermes_cli.windows_ssh_runtime import dispatch
 
 
 def _roster(root):

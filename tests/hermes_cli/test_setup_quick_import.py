@@ -9,7 +9,7 @@ import pytest
 
 def _fake_import(_hermes_home):
     """What an agent import leaves behind: a model in config.yaml and its key in .env."""
-    from hermes_cli.config import load_config, save_config, save_env_value
+    from hermes_agent.hermes_cli.config import load_config, save_config, save_env_value
     config = load_config()
     config["model"] = {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.5"}
     save_config(config)
@@ -19,7 +19,7 @@ def _fake_import(_hermes_home):
 
 def _fake_nous_flow(config):
     """The real flow logs in and saves provider ``nous`` with a Portal model."""
-    from hermes_cli.config import save_config
+    from hermes_agent.hermes_cli.config import save_config
     config["model"] = {"provider": "nous", "default": "Hermes-4-405B"}
     save_config(config)
 
@@ -29,8 +29,8 @@ def _fake_nous_flow(config):
     (True, 1, {"provider": "nous", "default": "Hermes-4-405B"}),
 ])
 def test_quick_setup_keeps_imported_model_unless_user_switches(switch, nous_runs, expected_model):
-    from hermes_cli.config import get_env_value, load_config
-    from hermes_cli.setup import run_setup_wizard
+    from hermes_agent.hermes_cli.config import get_env_value, load_config
+    from hermes_agent.hermes_cli.setup import run_setup_wizard
 
     questions = []
 
@@ -42,14 +42,14 @@ def test_quick_setup_keeps_imported_model_unless_user_switches(switch, nous_runs
             return 1
         return default
 
-    with patch("hermes_cli.setup.is_interactive_stdin", return_value=True), \
-            patch("hermes_cli.setup.offer_agent_import", side_effect=_fake_import), \
-            patch("hermes_cli.setup.prompt_choice", side_effect=answer), \
-            patch("hermes_cli.model_setup_flows._model_flow_nous", side_effect=_fake_nous_flow) as nous, \
-            patch("hermes_cli.setup.setup_terminal_backend"), \
-            patch("hermes_cli.setup.setup_gateway") as gateway, \
-            patch("hermes_cli.setup._print_setup_summary"), \
-            patch("hermes_cli.setup._record_setup_completed"):
+    with patch("hermes_agent.hermes_cli.setup.is_interactive_stdin", return_value=True), \
+            patch("hermes_agent.hermes_cli.setup.offer_agent_import", side_effect=_fake_import), \
+            patch("hermes_agent.hermes_cli.setup.prompt_choice", side_effect=answer), \
+            patch("hermes_agent.hermes_cli.model_setup_flows._model_flow_nous", side_effect=_fake_nous_flow) as nous, \
+            patch("hermes_agent.hermes_cli.setup.setup_terminal_backend"), \
+            patch("hermes_agent.hermes_cli.setup.setup_gateway") as gateway, \
+            patch("hermes_agent.hermes_cli.setup._print_setup_summary"), \
+            patch("hermes_agent.hermes_cli.setup._record_setup_completed"):
         run_setup_wizard(Namespace(non_interactive=False, section=None, reset=False,
                                    reconfigure=False, quick=False))
 

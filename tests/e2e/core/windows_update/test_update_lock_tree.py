@@ -44,7 +44,7 @@ SURVIVAL_SECONDS = 30
 _OWNER = r"""
 import inspect, subprocess, sys, time
 sys.path.insert(0, sys.argv[1])
-from hermes_cli import update_lock as ul
+from hermes_agent.hermes_cli import update_lock as ul
 kw = {"install_root": sys.argv[1]} if "install_root" in inspect.signature(ul.UpdateLock).parameters else {}
 lock = ul.UpdateLock(**kw)
 assert lock.acquire(), "owner could not take the update lock"

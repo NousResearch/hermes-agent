@@ -21,7 +21,7 @@ def test_model_options_binds_requested_profile_home(monkeypatch, tmp_path):
         seen["home"] = Path(get_hermes_home())
         return {"providers": []}
 
-    monkeypatch.setattr("hermes_cli.inventory.build_model_options_payload", build_payload)
+    monkeypatch.setattr("hermes_agent.hermes_cli.inventory.build_model_options_payload", build_payload)
 
     response = server._methods["model.options"](1, {"profile": "fred-work"})
 

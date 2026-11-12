@@ -17,7 +17,7 @@ def _capture_registration(monkeypatch, hooks_cfg):
     seen: dict = {}
     import hermes_agent.agent.outbound_webhooks as ow
     import hermes_agent.agent.shell_hooks as sh
-    import hermes_cli.config as cfgmod
+    import hermes_agent.hermes_cli.config as cfgmod
 
     def fake_register_outbound(cfg):
         seen["targets"] = ow.iter_configured_targets(cfg)
@@ -57,7 +57,7 @@ def test_launch_profile_webhooks_register_signed_under_multiplex(tmp_path, monke
 
 def test_registration_failure_is_a_warning_not_debug(monkeypatch, caplog):
     """A dropped hook block must be visible: the swallow used to log at DEBUG."""
-    import hermes_cli.config as cfgmod
+    import hermes_agent.hermes_cli.config as cfgmod
 
     def boom():
         raise RuntimeError("config exploded")

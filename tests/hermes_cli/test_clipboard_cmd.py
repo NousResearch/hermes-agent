@@ -11,8 +11,8 @@ import sys
 
 import pytest
 
-from hermes_cli import clipboard
-from hermes_cli.main import _build_cli_parser, _plugin_cli_discovery_needed
+from hermes_agent.hermes_cli import clipboard
+from hermes_agent.hermes_cli.main import _build_cli_parser, _plugin_cli_discovery_needed
 
 _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 24
 

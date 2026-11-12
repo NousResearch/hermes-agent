@@ -11,7 +11,7 @@ the colon is a variant tag, not a vendor separator.
 import pytest
 from unittest.mock import patch
 
-from hermes_cli.model_switch import switch_model
+from hermes_agent.hermes_cli.model_switch import switch_model
 
 
 # Shared mock context — skip network calls, credential resolution, catalog lookups
@@ -20,14 +20,14 @@ _MOCK_VALIDATION = {"accepted": True, "persist": True, "recognized": True, "mess
 
 def _run_switch(raw_input: str, current_provider: str = "openrouter") -> str:
     """Run switch_model with mocked dependencies, return the resolved model name."""
-    with patch("hermes_cli.model_switch.resolve_alias", return_value=None), \
-         patch("hermes_cli.model_switch.list_provider_models", return_value=[]), \
-         patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+    with patch("hermes_agent.hermes_cli.model_switch.resolve_alias", return_value=None), \
+         patch("hermes_agent.hermes_cli.model_switch.list_provider_models", return_value=[]), \
+         patch("hermes_agent.hermes_cli.runtime_provider.resolve_runtime_provider",
                return_value={"api_key": "test", "base_url": "", "api_mode": "chat_completions"}), \
-         patch("hermes_cli.models_validate.validate_requested_model", return_value=_MOCK_VALIDATION), \
-         patch("hermes_cli.model_switch.get_model_info", return_value=None), \
-         patch("hermes_cli.model_switch.get_model_capabilities", return_value=None), \
-         patch("hermes_cli.models.detect_provider_for_model", return_value=None):
+         patch("hermes_agent.hermes_cli.models_validate.validate_requested_model", return_value=_MOCK_VALIDATION), \
+         patch("hermes_agent.hermes_cli.model_switch.get_model_info", return_value=None), \
+         patch("hermes_agent.hermes_cli.model_switch.get_model_capabilities", return_value=None), \
+         patch("hermes_agent.hermes_cli.models.detect_provider_for_model", return_value=None):
         result = switch_model(
             raw_input=raw_input,
             current_provider=current_provider,
@@ -62,11 +62,11 @@ class TestColonFormOffAggregators:
     current provider (#9748); an Ollama-style tag whose left side is not a provider is untouched."""
 
     def test_known_provider_colon_matches_slash_form(self):
-        with patch("hermes_cli.model_switch.resolve_provider_full", return_value=None):
+        with patch("hermes_agent.hermes_cli.model_switch.resolve_provider_full", return_value=None):
             colon = _run_switch("Alibaba:qwen3.6-plus", current_provider="alibaba")
             slash = _run_switch("Alibaba/qwen3.6-plus", current_provider="alibaba")
         assert colon == slash
 
     def test_non_provider_left_side_keeps_colon(self):
-        with patch("hermes_cli.model_switch.resolve_provider_full", return_value=None):
+        with patch("hermes_agent.hermes_cli.model_switch.resolve_provider_full", return_value=None):
             assert _run_switch("qwen3.5:4b", current_provider="alibaba") == "qwen3.5:4b"

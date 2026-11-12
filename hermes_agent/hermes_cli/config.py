@@ -4,8 +4,8 @@ validation, migration, and the ``hermes config`` command."""
 # Stale-module bridge — must run before ANY import below can bind a root-level symbol.
 # A pre-handoff updater purges only package prefixes after the pull, so a root module
 # (``utils``) stays cached from the OLD tree; the first fresh consumer of its new symbols
-# dies with ImportError before any later heal point is reached. See hermes_cli.stale_modules.
-from hermes_cli.stale_modules import drop_stale_root_modules
+# dies with ImportError before any later heal point is reached. See hermes_agent.hermes_cli.stale_modules.
+from hermes_agent.hermes_cli.stale_modules import drop_stale_root_modules
 
 drop_stale_root_modules()
 
@@ -30,12 +30,12 @@ from typing import Dict, Any, Literal, Optional, List, Tuple, Set
 
 import hermes_yaml as yaml
 
-from hermes_cli.cli_output import line_input
-from hermes_cli.colors import Colors, color
-from hermes_cli import managed_scope
-from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
-from hermes_cli.left_core_migration import profile_env_names as _left_core_profile_env
-from hermes_cli.secret_prompt import masked_secret_prompt
+from hermes_agent.hermes_cli.cli_output import line_input
+from hermes_agent.hermes_cli.colors import Colors, color
+from hermes_agent.hermes_cli import managed_scope
+from hermes_agent.hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
+from hermes_agent.hermes_cli.left_core_migration import profile_env_names as _left_core_profile_env
+from hermes_agent.hermes_cli.secret_prompt import masked_secret_prompt
 # Managed-mode, container and HERMES_UID/GID policy live in hermes_constants (import-safe);
 # re-exported here so existing callers/patch targets keep working.
 from hermes_constants import (
@@ -45,12 +45,12 @@ from hermes_constants import (
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
-from hermes_cli.config_issues import ConfigIssue, _issue
-from hermes_cli.config_backend import (
+from hermes_agent.hermes_cli.config_issues import ConfigIssue, _issue
+from hermes_agent.hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
     get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
     write_config_document)
-from hermes_cli.config_read_errors import (
+from hermes_agent.hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
     _yaml_error_location)
@@ -146,7 +146,7 @@ def validate_env_var_name_for_write(key: str) -> None:
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     policy_name = _env_var_policy_name(key)
-    from hermes_cli.auth_external_process import env_writer_launch_denylist as _launch_env  # ACP argv authority
+    from hermes_agent.hermes_cli.auth_external_process import env_writer_launch_denylist as _launch_env  # ACP argv authority
     if (policy_name in _ENV_VAR_NAME_DENYLIST or policy_name in map(_env_var_policy_name, _launch_env())
             or policy_name.startswith(_ENV_VAR_NAME_DENY_PREFIXES)):
         raise ValueError(
@@ -161,7 +161,7 @@ def validate_env_var_name_for_write(key: str) -> None:
 # C extension is not thread-safe for concurrent safe_load() on one file, and tool threads
 # (approval, browser, setup flows) load/save config concurrently during long agent runs.
 # RLock because callers hold it across a read-modify-write and then call save_config(), which
-# acquires it again (hermes_cli/plugins.py: `with ..., config_mod._CONFIG_LOCK:` then
+# acquires it again (hermes_agent/hermes_cli/plugins.py: `with ..., config_mod._CONFIG_LOCK:` then
 # read_user_config_raw() + save_config()). save_config itself no longer re-enters via
 # read_raw_config; it takes its raw mapping from require_readable_config_before_write.
 _CONFIG_LOCK = threading.RLock()
@@ -277,7 +277,7 @@ def detect_install_method(project_root: Optional[Path] = None) -> str:
     clone in a container still resolves via ``.git``, not container presence alone.
     See issue #34397.
     """
-    # The stamp is a property of the running code tree (parent of hermes_cli/), NOT of $HERMES_HOME,
+    # The stamp is a property of the running code tree (parent of hermes_agent/hermes_cli/), NOT of $HERMES_HOME,
     # so it survives two installs sharing a home.
     root = project_root if project_root is not None else get_project_root()
     method = _install_method_stamp(root / ".install_method")
@@ -346,7 +346,7 @@ def recommended_update_command() -> str:
         detect_install_method(get_project_root()))
 
 
-# Shared by ``cmd_update`` and ``_cmd_update_check`` (hermes_cli/main.py) so the wording never
+# Shared by ``cmd_update`` and ``_cmd_update_check`` (hermes_agent/hermes_cli/main.py) so the wording never
 # forks. The published image excludes ``.git``, so the git update path can never succeed there
 # and the generic "reinstall via install.sh" fallback would install a NEW host-side Hermes.
 _DOCKER_UPDATE_MESSAGE = """\
@@ -456,7 +456,7 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
             return
         parse_error = TypeError(f"top-level YAML value must be a mapping, got {type(data).__name__}")
 
-    from hermes_cli.config_backups import backup_config
+    from hermes_agent.hermes_cli.config_backups import backup_config
     backup_path = backup_config(config_path, "corrupt")
     where = _yaml_error_location(parse_error)
     message = (
@@ -476,7 +476,7 @@ def get_env_path() -> Path:
 
 
 def get_project_root() -> Path:
-    from hermes_cli._startup_fast import project_root_str
+    from hermes_agent.hermes_cli._startup_fast import project_root_str
     return Path(project_root_str())
 
 
@@ -579,16 +579,16 @@ def ensure_hermes_home():
     assert_named_profile_home_live(home)
     if key in _HERMES_HOME_ENSURED and home.is_dir():
         return
-    from hermes_cli.config_home import initialize_home
+    from hermes_agent.hermes_cli.config_home import initialize_home
     initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
 
 
 # ---- Config loading/saving ----
 
-from hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS
-from hermes_cli import config_provider_env as _config_provider_env
-from hermes_cli.config_provider_env import core_declared_env_names
-from hermes_cli.config_providers import (
+from hermes_agent.hermes_cli.config_defaults import DEFAULT_CONFIG, OPTIONAL_ENV_VARS
+from hermes_agent.hermes_cli import config_provider_env as _config_provider_env
+from hermes_agent.hermes_cli.config_provider_env import core_declared_env_names
+from hermes_agent.hermes_cli.config_providers import (
     _API_MODE_ALIASES, _CAMEL_ALIASES, _KNOWN_PROVIDER_KEYS, _PROVIDER_NORMALIZE_WARNED,
     _canonical_api_mode, _coerce_ssl_verify, _custom_provider_entry_to_provider_config,
     _entries_for_route, _normalize_custom_provider_entry, _normalize_provider_models,
@@ -600,17 +600,17 @@ from hermes_cli.config_providers import (
     get_custom_provider_session_affinity_header,
     get_custom_provider_tls_settings, is_provider_enabled, normalize_extra_headers,
     providers_dict_to_custom_providers, stringify_provider_map)
-# Back-compat re-exports — :mod:`hermes_cli.personality` owns personality/overlay semantics.
-from hermes_cli.personality import (
+# Back-compat re-exports — :mod:`hermes_agent.hermes_cli.personality` owns personality/overlay semantics.
+from hermes_agent.hermes_cli.personality import (
     NEUTRAL_PERSONALITY_NAMES as _NEUTRAL_PERSONALITY_NAMES,
     prompt_text as _prompt_text,
     render_personality_prompt,
     resolve_ephemeral_system_prompt as resolve_ephemeral_system_prompt_from_config)
 
 # ---- Config schema-version stamp ----  (moved into config_version_stamp; re-exported here
-# because callers and tests import these from hermes_cli.config)
+# because callers and tests import these from hermes_agent.hermes_cli.config)
 
-from hermes_cli.config_version_stamp import (
+from hermes_agent.hermes_cli.config_version_stamp import (
     check_config_version, note_first_stamp, read_config_version_stamp, stamp_missing_config)
 
 
@@ -899,7 +899,7 @@ def _format_config_get_value(value, *, as_json: bool) -> str:
 
 def get_missing_config_fields() -> list[dict[str, Any]]:
     """Check which config fields are missing or outdated (recursive)."""
-    from hermes_cli.moa_config import skip_deep_merge
+    from hermes_agent.hermes_cli.moa_config import skip_deep_merge
 
     missing = []
 
@@ -951,10 +951,10 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "mcp_servers",       # MCP server definitions written by setup/tools flows
     "image_gen",         # hermes_agent/agent/image_gen_registry.py
     "video_gen",         # hermes_agent/agent/video_gen_registry.py
-    "plugins",           # plugin enable/disable lists (hermes_cli/plugins_cmd.py)
+    "plugins",           # plugin enable/disable lists (hermes_agent/hermes_cli/plugins_cmd.py)
     "smart_model_routing",   # written by the setup wizard
     "platform_toolsets",     # written by the setup wizard
-    "known_plugin_toolsets", # hermes_cli/tools_config.py toolset-save flow
+    "known_plugin_toolsets", # hermes_agent/hermes_cli/tools_config.py toolset-save flow
     "known_builtin_toolsets",  # ditto — builtin toolsets a platform's checklist has offered
     "tool_gateway_declined_tools",  # per-tool Tool Gateway offer declines
     # Top-level forms read/bridged by hermes_agent/gateway/config.py:
@@ -1056,10 +1056,10 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
         try:
             config = load_config()
         except Exception as exc:
-            from hermes_cli.config_home import config_load_issue
+            from hermes_agent.hermes_cli.config_home import config_load_issue
             return [config_load_issue(exc)]
 
-    from hermes_cli.config_value_checks import (
+    from hermes_agent.hermes_cli.config_value_checks import (
         _validate_quoted_containers, _validate_timezone, _validate_voice, _validate_web_backends)
     issues: list[ConfigIssue] = []
     _validate_voice(config, issues)
@@ -1144,7 +1144,7 @@ def _persist_migration(config: dict[str, Any]) -> None:
     ON, no ``merge_existing``) so the invariant cannot regress one migration at a time. A migration
     is Hermes' own write, never a user turning a feature off. A backend without file tooling
     migrates in memory on read and never writes back (D12)."""
-    from hermes_cli.observability.shared_metrics_disabled import hermes_applied_write
+    from hermes_agent.hermes_cli.observability.shared_metrics_disabled import hermes_applied_write
 
     if not supports_file_tooling():
         get_config_backend().apply_in_memory(get_config_path().parent, config)
@@ -1194,7 +1194,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> dict[str, A
     # ancient install: it gets only the legacy-key steps and a version stamp.
     # Missing/unparseable files never trip the floor gate.
     # Imported lazily because the steps call back into this module.
-    from hermes_cli.config_migrations import (
+    from hermes_agent.hermes_cli.config_migrations import (
         SUPPORT_FLOOR_VERSION, run_migrations, support_floor_message)
 
     has_explicit_version = stamp is not None
@@ -1259,7 +1259,7 @@ def _disable_suspicious_mcp_servers(results: dict[str, Any], quiet: bool) -> Non
     if not isinstance(raw_mcp_servers, dict):
         return
     try:
-        from hermes_cli.mcp_security import validate_mcp_server_entry
+        from hermes_agent.hermes_cli.mcp_security import validate_mcp_server_entry
     except Exception:
         return
     mcp_touched = False
@@ -1283,7 +1283,7 @@ def _warn_invalid_platform_toolsets(results: dict[str, Any], quiet: bool) -> Non
     """Surface invalid toolset names in platform_toolsets: ``resolve_toolset()`` returns [] for an
     unknown name, silently disabling the affected tools. Best-effort; never blocks migration."""
     try:
-        from hermes_cli.toolset_validation import saved_toolset_resolver, validate_platform_toolsets
+        from hermes_agent.hermes_cli.toolset_validation import saved_toolset_resolver, validate_platform_toolsets
 
         config = read_raw_config()
         for w in validate_platform_toolsets(config.get("platform_toolsets"), saved_toolset_resolver(config)):
@@ -1936,7 +1936,7 @@ def _write_config_state(
     if not allow_omissions:
         # A guard read, not the caller's read: *data* came from the caller's own earlier read, so a
         # Remote Config save must still be diffed against THAT read, not a poll that landed since.
-        from hermes_cli.config_backend import keeping_read_base
+        from hermes_agent.hermes_cli.config_backend import keeping_read_base
         existing = keeping_read_base(lambda: require_readable_config_before_write(config_path))
         omitted = _omitted_config_paths(existing, data)
         if omitted:
@@ -2142,8 +2142,8 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
         # fall back to the newest byte-exact copy the last successful parse left in backups/config/.
         # It holds the raw file (``${VAR}`` templates intact), so it goes through the same
         # canonicalize -> expand -> managed-overlay pipeline as a normal load.
-        from hermes_cli.config_backups import load_newest_good_backup
-        from hermes_cli.moa_config import apply_user_moa_presets
+        from hermes_agent.hermes_cli.config_backups import load_newest_good_backup
+        from hermes_agent.hermes_cli.moa_config import apply_user_moa_presets
         raw_good = load_newest_good_backup(config_path)
         if raw_good is not None:
             merged_good = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), raw_good)
@@ -2260,12 +2260,12 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
                     user_config.pop("max_turns", None)
 
                 config = _deep_merge(config, user_config)
-                from hermes_cli.moa_config import apply_user_moa_presets
+                from hermes_agent.hermes_cli.moa_config import apply_user_moa_presets
                 apply_user_moa_presets(config, user_config)
                 # A copy of the file that just parsed is what a FRESH process falls back to when the
                 # next edit breaks the YAML (see _last_known_good_fallback). backup_config() skips
                 # byte-identical repeats and keeps a bounded count, so steady-state loads cost one stat.
-                from hermes_cli.config_backups import backup_config
+                from hermes_agent.hermes_cli.config_backups import backup_config
                 backup_config(config_path, "good")
             except Exception as e:
                 lkg_copy = _last_known_good_fallback(config_path, path_key, cache_sig, e)
@@ -2386,9 +2386,9 @@ def save_config(
         # fail-closed read is the single authority here: ``read_raw_config()`` is cached and
         # swallows transient stat/open errors into ``{}``, and a ``{}`` at this point makes the
         # strip pass drop every user section whose value matches a default (#113301).
-        from hermes_cli.config_backend import keeping_read_base
+        from hermes_agent.hermes_cli.config_backend import keeping_read_base
         _raw_for_paths = keeping_read_base(lambda: require_readable_config_before_write(config_path))
-        from hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
+        from hermes_agent.hermes_cli.config_worker_save import rebase_for_save  # frozen-worker writes + merge_existing
         config = rebase_for_save(config, _raw_for_paths, merge_existing)
 
         normalized = current_normalized = _canonicalize_config(config)
@@ -2407,7 +2407,7 @@ def save_config(
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
-    from hermes_cli.observability.shared_metrics_disabled import record_config_saved
+    from hermes_agent.hermes_cli.observability.shared_metrics_disabled import record_config_saved
     record_config_saved(_raw_for_paths, current_normalized)
 
 
@@ -2437,7 +2437,7 @@ def _note_policy(setter: str, raw: Any) -> None:
 def _parse_env_value(raw_value: str) -> str:
     """Frozen compat surface name (tests/compat/old_updater_surface.json).
 
-    Pre-PM updaters lazy-import ``hermes_cli.config._parse_env_value`` after the
+    Pre-PM updaters lazy-import ``hermes_agent.hermes_cli.config._parse_env_value`` after the
     checkout swap. The tokenizer moved to ``hermes_agent.agent.secret_scope._parse_env_value``
     (c849bc383a), so this forwards there — behavior-preserving by construction.
     """
@@ -2514,9 +2514,9 @@ def _env_write_lock(env_path: Path):
     snapshot the pre-write file and the loser's replace silently drops the
     winner's key. ``_CONFIG_LOCK`` cannot help: it guards in-memory config only.
 
-    Reuses ``hermes_cli.auth._file_lock`` (fcntl flock / msvcrt byte lock,
+    Reuses ``hermes_agent.hermes_cli.auth._file_lock`` (fcntl flock / msvcrt byte lock,
     cross-process, reentrant per thread) rather than growing a second kernel-lock
-    implementation. The import is call-time: ``hermes_cli.auth`` imports this
+    implementation. The import is call-time: ``hermes_agent.hermes_cli.auth`` imports this
     module at import time, so a module-level import would be circular. Nothing
     under this lock takes other locks, and the only nesting direction that exists
     (credential_lifecycle takes ``_auth_store_lock`` around its own auth-store
@@ -2524,7 +2524,7 @@ def _env_write_lock(env_path: Path):
     On a filesystem without flock the helper degrades to a depth-only guard
     (same behavior as auth's locks), never to a crash.
     """
-    from hermes_cli.auth import _file_lock
+    from hermes_agent.hermes_cli.auth import _file_lock
 
     with _file_lock(
         env_path.with_name(env_path.name + ".lock"),
@@ -2770,7 +2770,7 @@ def save_anthropic_api_key(value: str, save_fn=None):
 def save_env_value_secure(key: str, value: str) -> dict[str, Any]:
     """Save via the unified credential lifecycle (also refreshes any config.yaml mirror of the old
     value and lifts a prior env-source suppression)."""
-    from hermes_cli.credential_lifecycle import save_provider_env_credential
+    from hermes_agent.hermes_cli.credential_lifecycle import save_provider_env_credential
 
     # Route through the unified credential lifecycle so a rotation via the secret-capture path also
     # refreshes any config.yaml mirror of the old value and lifts a prior env-source suppression (#62269 fix
@@ -2782,7 +2782,7 @@ def save_env_value_secure(key: str, value: str) -> dict[str, Any]:
 def reload_env() -> int:
     """Re-read ~/.hermes/.env into os.environ; returns count of vars changed. Removes deleted vars only when
     known to Hermes (OPTIONAL_ENV_VARS and _EXTRA_ENV_KEYS), and none while the .env exists but is unreadable."""
-    from hermes_cli.env_loader import dotenv_unreadable
+    from hermes_agent.hermes_cli.env_loader import dotenv_unreadable
     env_vars = load_env()
     count = 0
     for key, value in env_vars.items():
@@ -2981,7 +2981,7 @@ def _validate_config_key(key: str) -> tuple[bool, Optional[str]]:
     known, suggestion = _validate_schema_key(key)
     if known or not key:
         return known, suggestion
-    from hermes_cli.config_runtime_keys import is_runtime_read_key
+    from hermes_agent.hermes_cli.config_runtime_keys import is_runtime_read_key
     return (True, None) if is_runtime_read_key(_split_key_path(key)) else (False, suggestion)
 
 
@@ -2993,7 +2993,7 @@ def _validate_schema_key(key: str) -> tuple[bool, Optional[str]]:
     segments = _split_key_path(key)
     top = segments[0]
     # A leading ``_`` on the FIRST segment only marks an internal key (``agent._max_turns`` is caught).
-    from hermes_cli.left_core_migration import LEFT_CORE_TERMINAL_KEYS
+    from hermes_agent.hermes_cli.left_core_migration import LEFT_CORE_TERMINAL_KEYS
     if top.startswith("_") or top in _PLATFORM_CONTAINER_KEYS or key in LEFT_CORE_TERMINAL_KEYS:
         return True, None
 
@@ -3286,7 +3286,7 @@ def _exit_invalid(msg: str) -> None:
 def _write_user_config(config_path: Path, user_config: dict[str, Any]) -> None:
     """Write only the user's raw config back (never the merged defaults)."""
     ensure_hermes_home()
-    from hermes_cli.observability.shared_metrics_disabled import recording_raw_config_write
+    from hermes_agent.hermes_cli.observability.shared_metrics_disabled import recording_raw_config_write
     recording_raw_config_write(config_path, user_config, atomic_config_replace)
 
 
@@ -3326,7 +3326,7 @@ def set_config_value(key: str, value: str, force: bool = False):
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
     if _is_env_config_key(key):
-        from hermes_cli.credential_lifecycle import save_provider_env_credential
+        from hermes_agent.hermes_cli.credential_lifecycle import save_provider_env_credential
 
         # Unified lifecycle: also rotates any config.yaml mirror of the old value so a stale
         # higher-precedence copy can't win (#62269).
@@ -3336,7 +3336,7 @@ def set_config_value(key: str, value: str, force: bool = False):
             _exit_invalid(f"✗ {exc}")
         print(f"✓ Set {key} in {get_env_path()}")
         return
-    from hermes_cli.config_env_routing import is_env_setting_key, save_env_setting
+    from hermes_agent.hermes_cli.config_env_routing import is_env_setting_key, save_env_setting
 
     if is_env_setting_key(key):
         # Every UPPER_SNAKE name is an environment setting: same file the platform setup flows and
@@ -3361,11 +3361,11 @@ def set_config_value(key: str, value: str, force: bool = False):
     # seeded default. Refuse only the positive wrong-prefix case from #112003; other unknown
     # paths keep the post-write warning so valid runtime settings remain configurable.
     if not is_known and not force and _is_wrong_prefix_suggestion(key, suggestion):
-        from hermes_cli.config_key_notices import unknown_subkey_refusal
+        from hermes_agent.hermes_cli.config_key_notices import unknown_subkey_refusal
         _exit_invalid(unknown_subkey_refusal(key, suggestion))
 
     if key == "display.language":
-        from hermes_cli.config_language import display_language_error
+        from hermes_agent.hermes_cli.config_language import display_language_error
         language_error = display_language_error(value)
         if language_error:
             _exit_invalid(language_error)
@@ -3379,7 +3379,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     _model_val = user_config.get("model")
     if key.strip().lower().startswith("model.") and isinstance(_model_val, str) and _model_val:
         user_config["model"] = {"default": _model_val}
-    from hermes_cli.config_section_guard import _guard_section_overwrite
+    from hermes_agent.hermes_cli.config_section_guard import _guard_section_overwrite
     key = _guard_section_overwrite(key, value, user_config, force)
     value = _refuse_container_type_mismatch(key, value, user_config, force)
     _old_provider = _model_val.get("provider") if isinstance(_model_val, dict) else None
@@ -3397,7 +3397,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     _route_notice = ""
     _old_provider = str(_old_provider or "").strip() or "the previous provider"
     if key == "model.provider" and _old_provider.lower() != str(value).strip().lower():
-        from hermes_cli.route_identity import drop_stale_model_route
+        from hermes_agent.hermes_cli.route_identity import drop_stale_model_route
         _popped, _unverified = drop_stale_model_route(user_config.get("model"), value, user_config)
         if _popped:
             _route_notice = (
@@ -3417,7 +3417,7 @@ def set_config_value(key: str, value: str, force: bool = False):
         user_config = _normalize_root_model_keys(user_config)
         key = "model.base_url"
         print("  (note: 'api_base' is an alias — saved as model.base_url)")
-    from hermes_cli.config_backend import pinning_keys
+    from hermes_agent.hermes_cli.config_backend import pinning_keys
     with pinning_keys(key):  # an explicit set is stored even when it equals the inherited value
         _write_user_config(config_path, user_config)
 
@@ -3451,7 +3451,7 @@ def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
     """Print a resolved configuration value. Credentials are masked unless ``--raw`` or
     ``security.redact_secrets: false``: ``print`` bypasses the log redactor, and the agent runs
     this command from sessions whose transcripts persist (#84106, #110758)."""
-    from hermes_cli.config_env_routing import is_env_setting_key, read_env_setting
+    from hermes_agent.hermes_cli.config_env_routing import is_env_setting_key, read_env_setting
 
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
@@ -3508,7 +3508,7 @@ def unset_config_value(key: str):
     if _is_env_config_key(key):
         # Unified lifecycle: also prunes env-seeded credential_pool entries and model-cache rows so
         # the provider is fully removed instead of left resurrectable (#51071).
-        from hermes_cli.credential_lifecycle import remove_provider_env_credential
+        from hermes_agent.hermes_cli.credential_lifecycle import remove_provider_env_credential
 
         try:
             found = remove_provider_env_credential(key.upper()).get("found")
@@ -3518,7 +3518,7 @@ def unset_config_value(key: str):
             _exit_invalid(f"Config key not set: {key}")
         print(f"✓ Unset {key} from {get_env_path()}")
         return
-    from hermes_cli.config_env_routing import is_env_setting_key, remove_env_setting
+    from hermes_agent.hermes_cli.config_env_routing import is_env_setting_key, remove_env_setting
 
     if is_env_setting_key(key):
         # Also drops a stale top-level config.yaml copy left by older `config set` runs (#111848).
@@ -3543,7 +3543,7 @@ def unset_config_value(key: str):
     if legacy_key:
         removed = _unset_nested(user_config, legacy_key) or removed
 
-    from hermes_cli.left_core_migration import LEFT_CORE_TERMINAL_KEYS
+    from hermes_agent.hermes_cli.left_core_migration import LEFT_CORE_TERMINAL_KEYS
     env_var = terminal_config_env_var_for_key(key) or LEFT_CORE_TERMINAL_KEYS.get(key)
     if env_var and key != "terminal.cwd":
         removed = remove_env_value(env_var) or removed
@@ -3689,7 +3689,7 @@ def _cmd_config_check(args):
         print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
         print("    Run 'hermes config migrate' to add them")
 
-    from hermes_cli.config_check_diagnostics import config_check_diagnostics
+    from hermes_agent.hermes_cli.config_check_diagnostics import config_check_diagnostics
 
     diagnostics = config_check_diagnostics(read_raw_config_readonly(), get_env_value)
     if diagnostics:
@@ -3702,7 +3702,7 @@ def _cmd_config_check(args):
 
 
 def _cmd_config_show() -> None:
-    from hermes_cli.config_show import show_config
+    from hermes_agent.hermes_cli.config_show import show_config
     show_config()
 
 

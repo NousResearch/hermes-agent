@@ -37,7 +37,7 @@ def spawn_prune(scratch: Path) -> None:
     if sys.pycache_prefix:  # a sealed payload must never get __pycache__ writes
         argv += ["-X", f"pycache_prefix={sys.pycache_prefix}"]
     argv += ["-c", _CHILD, os.fspath(scratch), _encode_lineage(rules.lineage_with_start_times()), *sys.path]
-    from hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
+    from hermes_agent.hermes_cli._subprocess_compat import windows_detach_flags_without_breakaway, windows_detach_popen_kwargs
 
     stdio = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
     try:

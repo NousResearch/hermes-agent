@@ -21,7 +21,7 @@ def _list(worktree_gc, repo_root: str, args) -> int:
     records = worktree_gc.audit_worktrees(repo_root, older_than_days=older_than)
     external = worktree_gc.audit_external_trees(repo_root)
     branch_records = worktree_gc.audit_branches(repo_root)
-    from hermes_cli.worktree_archive import list_archives
+    from hermes_agent.hermes_cli.worktree_archive import list_archives
     archives = list_archives(repo_root)
     if getattr(args, "json", False):
         print(json.dumps({
@@ -86,13 +86,13 @@ def _sweep_lines(plan) -> list[str]:
 def _sweep(repo_root: str, dry_run: bool, older_than: Optional[float] = None) -> tuple[list, list[str]]:
     """The automatic sweep's plan for this repo (applied unless *dry_run*) -> (plan, actions).
     *older_than* (days) bounds what the plan may archive or remove before anything runs."""
-    from hermes_cli import worktree_sweep
+    from hermes_agent.hermes_cli import worktree_sweep
     settings = worktree_sweep.sweep_settings()
     plan = worktree_sweep.plan_sweep(repo_root, settings=settings, older_than_days=older_than)
     if dry_run or worktree_sweep.classic_mode(settings):
         return plan, []
     _, _, archived = worktree_sweep.execute_plan(repo_root, plan, settings)
-    from hermes_cli.worktree_archive import prune_expired_archives
+    from hermes_agent.hermes_cli.worktree_archive import prune_expired_archives
     expired = prune_expired_archives(repo_root, settings["archive_retention_days"])
     from hermes_agent.agent.i18n import t
     saved = [t("cli.worktree.sweep_archived_removed", ref=ref) if removed
@@ -104,7 +104,7 @@ def _sweep(repo_root: str, dry_run: bool, older_than: Optional[float] = None) ->
 def _attended_records(records, plan) -> list:
     """The attended reclaim's records minus trees the sweep already decided (archived, removed,
     kanban) and minus any tree a live process works in: those are never touched here either."""
-    from hermes_cli.worktree_sweep import classic_mode, live_process_pids, sweep_settings
+    from hermes_agent.hermes_cli.worktree_sweep import classic_mode, live_process_pids, sweep_settings
     if classic_mode(sweep_settings()):
         return records
     owned = {d.path for d in plan if d.action != "skip-young"}
@@ -157,7 +157,7 @@ def _prune(worktree_gc, repo_root: str, args) -> int:
 
 
 def _restore(_worktree_gc, repo_root: str, args) -> int:
-    from hermes_cli.worktree_archive import ArchiveError, restore_archive
+    from hermes_agent.hermes_cli.worktree_archive import ArchiveError, restore_archive
     name = getattr(args, "name", None)
     if not name:
         print("Usage: hermes worktree restore <name> [--path DIR]")
@@ -182,10 +182,10 @@ _ACTIONS = {"list": _list, "prune": _prune, "restore": _restore}
 
 
 def cmd_worktree(args) -> int:
-    from hermes_cli import worktree_gc
+    from hermes_agent.hermes_cli import worktree_gc
     repo_root = getattr(args, "repo", None)
     if not repo_root:
-        import cli as _cli
+        import hermes_agent.cli as _cli
         repo_root = _cli._git_repo_root()
     if not repo_root:
         print("Not inside a git repository (or pass --repo <path>).")

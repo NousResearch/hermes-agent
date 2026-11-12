@@ -19,7 +19,7 @@ import urllib.request
 
 
 def backend(port):
-    from hermes_cli.web_server import app, start_server
+    from hermes_agent.hermes_cli.web_server import app, start_server
     from hermes_agent.tui_gateway import server as gw
 
     work = {}

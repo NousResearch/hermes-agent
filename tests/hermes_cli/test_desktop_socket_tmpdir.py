@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import main_desktop
+from hermes_agent.hermes_cli import main_desktop
 
 
 def _launch_env(tmp_path) -> dict:

@@ -291,7 +291,7 @@ _SMS_MARKDOWN_SUBS = (
 # #3823) Added when the SMS (Twilio) adapter moved from gateway/platforms/sms.py into this bundled plugin.
 # register() exposes the platform via the registry, replacing the Platform.SMS elif in hermes_agent/gateway/run.py, the
 # _PLATFORM_CONNECTED_CHECKERS entry in hermes_agent/gateway/config.py, the _PLATFORMS["sms"] static dict in
-# hermes_cli/gateway.py, and the _send_sms dispatch in hermes_agent/tools/send_message_tool.py. TWILIO_*
+# hermes_agent/hermes_cli/gateway.py, and the _send_sms dispatch in hermes_agent/tools/send_message_tool.py. TWILIO_*
 # env→PlatformConfig seeding lives in this plugin's gateway_env.py.
 # ──────────────────────────────────────────────────────────────────────────
 def _strip_markdown_for_sms(message: str) -> str:

@@ -10,7 +10,7 @@ def test_aux_vision_route_follows_a_config_change_without_restart(monkeypatch):
     cfg = {"agent": {"image_input_mode": "native"}}
     monkeypatch.setattr("hermes_agent.agent.auxiliary_client._read_main_provider", lambda: "anthropic")
     monkeypatch.setattr("hermes_agent.agent.auxiliary_client._read_main_model", lambda: "claude-opus-4-5")
-    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr("hermes_agent.hermes_cli.config.load_config_readonly", lambda: cfg)
     monkeypatch.setattr("hermes_agent.agent.image_routing._lookup_supports_vision", lambda *a, **k: True)
     monkeypatch.setattr("hermes_agent.tools.vision_tools._profile_rejects_tool_media", lambda *a, **k: False)
 

@@ -37,7 +37,7 @@ def server(monkeypatch):
     httpd.daemon_threads = True
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
-    from hermes_cli import models
+    from hermes_agent.hermes_cli import models
     monkeypatch.setattr(models, "NOUS_RECOMMENDED_MODELS_MIRROR", f"http://127.0.0.1:{httpd.server_port}/dynamic")
     yield state
     release.set()
@@ -50,7 +50,7 @@ def server(monkeypatch):
     ("https://portal.staging-nousresearch.com/", "portal.staging-nousresearch.com"),
 ])
 def test_recommendations_come_from_the_portal_hosts_mirror(server, portal, host):
-    from hermes_cli.models import fetch_nous_recommended_models
+    from hermes_agent.hermes_cli.models import fetch_nous_recommended_models
 
     assert fetch_nous_recommended_models(portal, force_refresh=True) == PAYLOAD
     assert server["seen"] == [f"/dynamic/{host}/api/nous/recommended-models"]
@@ -58,7 +58,7 @@ def test_recommendations_come_from_the_portal_hosts_mirror(server, portal, host)
 
 @pytest.mark.parametrize("mirror_stalls", [False, True], ids=["mirror-404", "mirror-stalls"])
 def test_a_portal_the_mirror_cannot_serve_is_asked_directly(server, monkeypatch, mirror_stalls):
-    from hermes_cli import models
+    from hermes_agent.hermes_cli import models
 
     server["mirror_stalls"] = mirror_stalls
     monkeypatch.setattr(models, "is_loopback_host", lambda _host: False)  # treat the local server as remote
@@ -80,7 +80,7 @@ def test_a_portal_the_mirror_cannot_serve_is_asked_directly(server, monkeypatch,
     (None, "sk-nous-test", "portal.nousresearch.com"),
 ], ids=["no-account", "guest", "signed-in", "pooled", "api-key-env"])
 def test_gateway_refresh_fetches_recommendations_only_for_a_nous_account(server, monkeypatch, auth_store, env_key, host):
-    from hermes_cli import model_catalog, models
+    from hermes_agent.hermes_cli import model_catalog, models
 
     monkeypatch.setattr(model_catalog, "get_catalog", lambda **_kw: {})
     monkeypatch.setattr(models, "fetch_openrouter_models", lambda **_kw: [])

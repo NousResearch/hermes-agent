@@ -205,7 +205,7 @@ class TestFallbackEvictionHonorsChannelOverrides:
     @pytest.mark.parametrize("global_model", ["nous/welcome", "default/model"])
     def test_the_welcome_host_pins_its_model_over_the_channel_model(self, monkeypatch, global_model):
         """AIAgent.__init__ runs a welcome-host agent on ``nous/welcome`` whatever the chat configured."""
-        from hermes_cli.anon_auth import pin_model_for_route
+        from hermes_agent.hermes_cli.anon_auth import pin_model_for_route
 
         agent_model = pin_model_for_route("nous", self._WELCOME, "chan/model")
         assert agent_model == "nous/welcome"
@@ -307,7 +307,7 @@ class TestOneTurnNeverPersisted:
 
         import hermes_agent.gateway.run as gateway_run
         from hermes_agent.gateway.run import GatewayRunner
-        from hermes_cli.model_switch import ModelSwitchResult
+        from hermes_agent.hermes_cli.model_switch import ModelSwitchResult
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -320,7 +320,7 @@ class TestOneTurnNeverPersisted:
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr("hermes_agent.agent.models_dev.fetch_models_dev", dict)
         monkeypatch.setattr(
-            "hermes_cli.model_switch.switch_model",
+            "hermes_agent.hermes_cli.model_switch.switch_model",
             lambda **kw: ModelSwitchResult(
                 success=True,
                 new_model="gpt-5.5",
@@ -334,7 +334,7 @@ class TestOneTurnNeverPersisted:
             ),
         )
         monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: hermes_home)
-        monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
+        monkeypatch.setattr("hermes_agent.hermes_cli.config.get_hermes_home", lambda: hermes_home)
 
         runner = object.__new__(GatewayRunner)
         runner.adapters = {}

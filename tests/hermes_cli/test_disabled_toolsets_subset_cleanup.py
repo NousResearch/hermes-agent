@@ -2,8 +2,8 @@
 enabling `web` via `hermes tools` left it there, silently stripping web_search."""
 from unittest.mock import patch
 
-from hermes_cli.setup_quick import _blank_slate_minimal_toolsets
-from hermes_cli.tools_config import _get_platform_tools, _save_platform_tools, toolsets_partially_stripped
+from hermes_agent.hermes_cli.setup_quick import _blank_slate_minimal_toolsets
+from hermes_agent.hermes_cli.tools_config import _get_platform_tools, _save_platform_tools, toolsets_partially_stripped
 
 
 def test_blank_slate_list_excludes_search_but_keeps_kanban():
@@ -28,7 +28,7 @@ def test_legacy_search_entry_is_reported_then_cleared_by_enabling_web():
         "web": (["web_search"], ["search"], "run `hermes tools enable web` to restore"),
     }
 
-    with patch("hermes_cli.tools_config.save_config"):
+    with patch("hermes_agent.hermes_cli.tools_config.save_config"):
         _save_platform_tools(config, "cli", set(enabled))
     assert config["agent"]["disabled_toolsets"] == ["browser", "memory"]
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)

@@ -7,7 +7,7 @@ processes), so it returned CONTINUE and each nudge bought a status recap (19 API
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from hermes_cli import goals
+from hermes_agent.hermes_cli import goals
 
 
 def _resp(content):

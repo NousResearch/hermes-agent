@@ -13,7 +13,7 @@ through a thin wrapper that mirrors the real dispatch shape.
 
 from unittest.mock import patch
 
-from cli import HermesCLI
+from hermes_agent.cli import HermesCLI
 
 
 def _make_cli():

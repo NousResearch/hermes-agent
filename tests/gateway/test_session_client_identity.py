@@ -194,7 +194,7 @@ async def test_a_named_create_and_resume_return_snapshots_that_match_their_contr
 def test_the_classic_clis_new_does_not_repeat_another_clients_name():
     """``/new`` copies the frozen launch request; the creating client's label is not the terminal's."""
     import asyncio
-    from hermes_cli import gateway_chat_commands
+    from hermes_agent.hermes_cli import gateway_chat_commands
     sent = {}
 
     async def rpc(method, **params):
@@ -217,7 +217,7 @@ async def test_each_profile_home_sees_only_its_own_sessions_client(tmp_path, mon
     """Multiplexed homes: two owners' turns run side by side; each plugin read answers for its own."""
     from hermes_agent.agent.system_prompt import _plugin_session_info
     from hermes_agent.gateway.session_policy import policy_scope
-    from hermes_cli.plugin_session import session_client
+    from hermes_agent.hermes_cli.plugin_session import session_client
     (tmp_path / 'a').mkdir()
     (tmp_path / 'b').mkdir()
     home_a, home_b = _home(tmp_path / 'a'), _home(tmp_path / 'b')

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import curses_ui
+from hermes_agent.hermes_cli import curses_ui
 
 
 class Screen:

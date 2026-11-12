@@ -8,7 +8,7 @@ reuse detection: the middleware MUST persist ``Session.refresh_token`` back to t
 every refresh or the next refresh replays a rotated token and revokes the whole session.
 
 While the gateway serves the Webapp, its sign-in uses the client Web Access registered for the
-Webapp instead of the configured one (``hermes_cli.dashboard_auth.listener_client``).
+Webapp instead of the configured one (``hermes_agent.hermes_cli.dashboard_auth.listener_client``).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from hermes_cli.dashboard_auth import (
+from hermes_agent.hermes_cli.dashboard_auth import (
     InvalidCodeError, LoginStart, ProviderError, Session, TokenPrincipal, listener_client)
 from plugins.dashboard_auth._shared import (
     DEFAULT_TOKEN_LEEWAY_SECONDS,
@@ -203,7 +203,7 @@ def register(ctx) -> None:
 def _swap_provider() -> Callable[[], None]:
     """Put a provider on the listener's own client (``listener_client.use`` has made it current) in
     place of the registered one; the returned undo puts that one, or none, back."""
-    from hermes_cli.dashboard_auth.registry import (
+    from hermes_agent.hermes_cli.dashboard_auth.registry import (
         register_global_provider, restore_registration, snapshot_registration)
 
     previous = snapshot_registration(NousDashboardAuthProvider.name)

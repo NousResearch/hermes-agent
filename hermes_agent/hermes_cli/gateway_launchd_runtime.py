@@ -102,7 +102,7 @@ def start_gateway_job(command: list[str], *, env: dict[str, str], cwd: str | Pat
     """Run ``command`` as a one-off job in this user's GUI launchd domain. ``None`` when launchd
     cannot take it (no GUI session, e.g. over SSH): the caller starts it as a plain child instead.
     ``deadline`` (monotonic) bounds every launchctl call, here and in the job's ``poll()``."""
-    from hermes_cli.gateway_launchd import launchd_program_arguments
+    from hermes_agent.hermes_cli.gateway_launchd import launchd_program_arguments
     _remove_finished_jobs(deadline)
     label = f"{LABEL_PREFIX}{uuid.uuid4().hex[:12]}"
     target = f"gui/{os.getuid()}/{label}"  # windows-footgun: ok — macOS-only module

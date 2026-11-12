@@ -22,7 +22,7 @@ import ast
 from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Set, Tuple
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 from hermes_agent.compat.moves import MOVES
 

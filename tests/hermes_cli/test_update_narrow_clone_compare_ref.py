@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import update_cmd_check
+from hermes_agent.hermes_cli import update_cmd_check
 
 git_cmd = ["git"]
 
@@ -90,10 +90,10 @@ def test_detached_narrow_clone_counts_from_the_pre_checkout_head(narrow_clone: P
     """A narrow clone is detached with no local branch, so the updater runs ``checkout -B main
     origin/main``, which lands ON the target. Counting ``HEAD..origin/main`` afterwards read 0 and
     the update finished as "Already up to date!" with dependencies and migrations skipped."""
-    from hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import update_cmd
 
     monkeypatch.setattr(update_cmd._m(), "PROJECT_ROOT", narrow_clone)
-    monkeypatch.setattr("hermes_cli.source_check._github_compare_behind", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_agent.hermes_cli.source_check._github_compare_behind", lambda *a, **k: None)
     pinned = _run(narrow_clone, "rev-parse", "HEAD").stdout.strip()
 
     def plan():

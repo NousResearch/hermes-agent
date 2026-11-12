@@ -32,7 +32,7 @@ def test_live_firer_journal_survives_until_its_execution_can_settle(tmp_path, mo
             @asynccontextmanager
             async def connect():
                 yield Peer()
-            monkeypatch.setattr('hermes_cli.gateway_client.connect_gateway', connect)
+            monkeypatch.setattr('hermes_agent.hermes_cli.gateway_client.connect_gateway', connect)
             for _ in range(2):
                 scheduler_authority.reconcile_pending()
             assert journal.exists(), 'the live firer left running execution without its recovery receipt'

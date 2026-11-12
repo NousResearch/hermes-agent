@@ -78,7 +78,7 @@ class BackendItem:
 
 def _systemctl_query(scope: Optional[str], *args: str) -> Optional[str]:
     """stdout of a read-only ``systemctl [--user] <args>``; None when unavailable or non-zero."""
-    from hermes_cli.main_dashboard import _SYSTEMCTL_ERRORS, _run_probe
+    from hermes_agent.hermes_cli.main_dashboard import _SYSTEMCTL_ERRORS, _run_probe
     cmd = ["systemctl", *(["--user"] if scope == "user" else []), *args]
     try:
         result = _run_probe(cmd, timeout=10)
@@ -143,7 +143,7 @@ def _launchd_plists() -> dict[str, tuple[str, Optional[str], list[str]]]:
     import plistlib
     from xml.parsers.expat import ExpatError
 
-    from hermes_cli.main_dashboard import _launchd_plist_dirs
+    from hermes_agent.hermes_cli.main_dashboard import _launchd_plist_dirs
     found: dict[str, tuple[str, Optional[str], list[str]]] = {}
     for _kind, plist_dir in _launchd_plist_dirs():
         try:
@@ -168,8 +168,8 @@ def _nix_launcher_jobs(plists) -> list[tuple[str, str, list[str], Optional[int]]
     """Loaded jobs running the Nix ``backend.waitFor`` launcher (``nix/moduleCommon.nix``
     ``backendLauncher``), which ``exec``s hermes but names no hermes command, so
     ``_loaded_launchd_backend_jobs`` skips it."""
-    from hermes_cli.gateway import _launchd_print_service_pid
-    from hermes_cli.main_dashboard import _SYSTEMCTL_ERRORS
+    from hermes_agent.hermes_cli.gateway import _launchd_print_service_pid
+    from hermes_agent.hermes_cli.main_dashboard import _SYSTEMCTL_ERRORS
     jobs: list[tuple[str, str, list[str], Optional[int]]] = []
     for label, (_path, _home, argv) in plists.items():
         if len(argv) != 1 or not os.path.basename(argv[0]).endswith("-hermes-backend-launch"):
@@ -186,8 +186,8 @@ def _nix_launcher_jobs(plists) -> list[tuple[str, str, list[str], Optional[int]]
 
 def _s6_slot(pid: int) -> Optional[tuple[str, str]]:
     """``(slot, service_dir)`` when an ancestor of *pid* is ``s6-supervise <dir>``."""
-    from hermes_cli.dashboard_procs import _process_ancestors
-    from hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
+    from hermes_agent.hermes_cli.dashboard_procs import _process_ancestors
+    from hermes_agent.hermes_cli.main_dashboard import _dashboard_cmdline_for_pid
     for ancestor in _process_ancestors(pid):
         argv = _dashboard_cmdline_for_pid(ancestor) or []
         if argv and os.path.basename(argv[0]) == "s6-supervise":
@@ -197,12 +197,12 @@ def _s6_slot(pid: int) -> Optional[tuple[str, str]]:
 
 
 def _container_cgroup(pid: int) -> bool:
-    from hermes_cli.main_dashboard import _pid_unified_cgroup_entries
+    from hermes_agent.hermes_cli.main_dashboard import _pid_unified_cgroup_entries
     return any(m in entry for entry in _pid_unified_cgroup_entries(pid) for m in _CONTAINER_CGROUP_MARKERS)
 
 
 def _in_container() -> bool:
-    from hermes_cli._startup_fast import is_container_startup_environment
+    from hermes_agent.hermes_cli._startup_fast import is_container_startup_environment
     return is_container_startup_environment()
 
 
@@ -211,8 +211,8 @@ def _in_container() -> bool:
 
 def _running_backends() -> list[tuple[int, str]]:
     """``(pid, command)`` of every live serve/dashboard (argv scan only, never the spawn ledger)."""
-    from hermes_cli.dashboard_procs import _iter_process_table
-    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    from hermes_agent.hermes_cli.dashboard_procs import _iter_process_table
+    from hermes_agent.hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     try:
         rows = _iter_process_table()
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):  # same failures the update sweep tolerates
@@ -223,9 +223,9 @@ def _running_backends() -> list[tuple[int, str]]:
 
 def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids, desktop_pids,
                       seen_units: set[str]) -> BackendItem:
-    from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
-    from hermes_cli.dashboard_procs import _is_desktop_local_serve_cmdline, _process_ancestors, _process_ppid
-    from hermes_cli.main_dashboard import (
+    from hermes_agent.hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+    from hermes_agent.hermes_cli.dashboard_procs import _is_desktop_local_serve_cmdline, _process_ancestors, _process_ppid
+    from hermes_agent.hermes_cli.main_dashboard import (
         _dashboard_cmdline_for_pid,
         _launchd_job_owning_backend,
         _systemd_owner_for_pid,
@@ -267,14 +267,14 @@ def _classify_running(pid: int, command: str, *, launchd_jobs, plists, ssh_pids,
         orphan = ppid is not None and ppid <= 1 and os_family() != "darwin"
         item.supervisor = "detached" if orphan else ("manual" if ppid and ppid > 1 else "unknown")
     with contextlib.suppress(Exception):
-        from hermes_cli.dashboard_procs import _hermes_home_for_pid
+        from hermes_agent.hermes_cli.dashboard_procs import _hermes_home_for_pid
         item.hermes_home = _hermes_home_for_pid(pid) or item.hermes_home
     return item
 
 
 def _finish(item: BackendItem, own_home: str) -> BackendItem:
-    from hermes_cli.dashboard_procs import _normalized_home_for_compare
-    from hermes_cli.update_cmd_fleet import _is_serve_or_dashboard_unit
+    from hermes_agent.hermes_cli.dashboard_procs import _normalized_home_for_compare
+    from hermes_agent.hermes_cli.update_cmd_fleet import _is_serve_or_dashboard_unit
     item.not_applied = _NOT_APPLIED
     item.notes.append(_OWNERSHIP[item.supervisor])
     if item.hermes_home:
@@ -289,8 +289,8 @@ def _finish(item: BackendItem, own_home: str) -> BackendItem:
 
 def collect_backends() -> list[BackendItem]:
     """Every serve/dashboard backend on this machine (running, or installed and enabled). Read-only."""
-    from hermes_cli.dashboard_procs import _exclude_pids_from_env, _lock_owned_serve_pids
-    from hermes_cli.main_dashboard import _loaded_launchd_backend_jobs
+    from hermes_agent.hermes_cli.dashboard_procs import _exclude_pids_from_env, _lock_owned_serve_pids
+    from hermes_agent.hermes_cli.main_dashboard import _loaded_launchd_backend_jobs
     from hermes_constants import get_hermes_home
     own_home = str(get_hermes_home())
     launchd_jobs = _loaded_launchd_backend_jobs()  # empty off macOS

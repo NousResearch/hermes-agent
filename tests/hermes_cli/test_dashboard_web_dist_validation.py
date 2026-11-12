@@ -18,7 +18,7 @@ import pytest
 
 @pytest.fixture()
 def main_mod():
-    from hermes_cli import main
+    from hermes_agent.hermes_cli import main
     return main
 
 
@@ -38,7 +38,7 @@ def _args(**over):
 
 def _wire_common(main_mod, monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        "hermes_agent.hermes_cli.profiles.get_active_profile_name", lambda: "default"
     )
     monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
     monkeypatch.setitem(sys.modules, "fastapi", types.SimpleNamespace())
@@ -50,11 +50,11 @@ def _wire_common(main_mod, monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.plugins",
+        "hermes_agent.hermes_cli.plugins",
         types.SimpleNamespace(discover_plugins=lambda: None),
     )
     monkeypatch.setattr(
-        "hermes_cli.mcp_startup.start_background_mcp_discovery",
+        "hermes_agent.hermes_cli.mcp_startup.start_background_mcp_discovery",
         lambda **_k: None,
     )
 
@@ -70,12 +70,12 @@ def test_env_dist_without_index_exits(main_mod, monkeypatch, tmp_path, capsys):
     started = []
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.web_server",
+        "hermes_agent.hermes_cli.web_server",
         types.SimpleNamespace(start_server=lambda **k: started.append(k)),
     )
     builds = []
     monkeypatch.setattr(
-        "hermes_cli.main_web_build._build_web_ui", lambda *a, **k: builds.append(a) or True
+        "hermes_agent.hermes_cli.main_web_build._build_web_ui", lambda *a, **k: builds.append(a) or True
     )
 
     with pytest.raises(SystemExit) as exc:
@@ -112,7 +112,7 @@ def test_skip_build_missing_dist_attempts_one_recovery_build(
     started = []
     monkeypatch.setitem(
         sys.modules,
-        "hermes_cli.web_server",
+        "hermes_agent.hermes_cli.web_server",
         types.SimpleNamespace(start_server=lambda **k: started.append(k)),
     )
 
@@ -123,7 +123,7 @@ def test_skip_build_missing_dist_attempts_one_recovery_build(
         (dist / "index.html").write_text("<html></html>", encoding="utf-8")
         return True
 
-    monkeypatch.setattr("hermes_cli.main_web_build._build_web_ui", fake_build)
+    monkeypatch.setattr("hermes_agent.hermes_cli.main_web_build._build_web_ui", fake_build)
 
     main_mod.cmd_dashboard(_args(skip_build=True))
 

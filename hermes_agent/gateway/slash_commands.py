@@ -30,9 +30,9 @@ from hermes_agent.gateway.slash_commands_model import GatewayModelCommandsMixin
 from hermes_agent.gateway.slash_commands_session import GatewaySessionCommandsMixin
 from hermes_agent.gateway.slash_commands_login import GatewayLoginCommandsMixin
 from hermes_agent.gateway.slash_commands_status import GatewayStatusCommandsMixin, history_unreadable
-from hermes_cli.config import atomic_config_write, cfg_get
+from hermes_agent.hermes_cli.config import atomic_config_write, cfg_get
 from utils import atomic_json_write, is_truthy_value
-from hermes_cli._startup_fast import project_root_str
+from hermes_agent.hermes_cli._startup_fast import project_root_str
 
 logger = logging.getLogger("hermes_agent.gateway.run")
 
@@ -93,7 +93,7 @@ def _nested_dict(root: dict, *keys: str) -> dict:
 def _write_raw_config_leaf(config_path: Path, keys: tuple, value) -> None:
     """Set one leaf through a strict raw round-trip. The behavioral read is fail-open (``{}``) and
     expanded, so writing it back wipes the file after a read error and persists ``${VAR}`` values."""
-    from hermes_cli.config import read_user_config_raw
+    from hermes_agent.hermes_cli.config import read_user_config_raw
     raw = read_user_config_raw(config_path)
     *parents, leaf = keys
     _nested_dict(raw, *parents)[leaf] = value
@@ -106,7 +106,7 @@ def _preview(text: str, limit: int = 60) -> str:
 
 def _execute(command: str, **ctx_kwargs):
     """Run *command* through the shared slash executor on the gateway surface."""
-    from hermes_cli.slash_exec import CommandContext, execute_command
+    from hermes_agent.hermes_cli.slash_exec import CommandContext, execute_command
     return execute_command(command, CommandContext(surface="gateway", **ctx_kwargs))
 
 
@@ -136,10 +136,10 @@ def _spawn_detached_update(hermes_cmd, output_path, exit_code_path) -> None:
     import shutil
     import subprocess
     if sys.platform == "win32":
-        from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+        from hermes_agent.hermes_cli._subprocess_compat import windows_detach_popen_kwargs
         subprocess.Popen(
             [sys.executable, "-c", _WINDOWS_UPDATE_HELPER, str(output_path), str(exit_code_path),
-             sys.executable, "-m", "hermes_cli.main", "update", "--gateway"],
+             sys.executable, "-m", "hermes_agent.hermes_cli.main", "update", "--gateway"],
             # detached-spawn: ok — /update runs `hermes update`, which must outlive the gateway it restarts
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **windows_detach_popen_kwargs())
         return
@@ -255,7 +255,7 @@ class GatewaySlashCommandsMixin(
         from hermes_agent.gateway.run import _gateway_config_home
         # Persist to config (default) unless --session opted out, mirroring the text /model command path
         # above so a picked model survives across sessions like a typed one (#49066).
-        from hermes_cli.config import read_user_config_raw
+        from hermes_agent.hermes_cli.config import read_user_config_raw
         config_path = _gateway_config_home() / "config.yaml"
         session_key = self._session_key_for_source(event.source)
 
@@ -353,7 +353,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_kanban_command(self, event: MessageEvent) -> str:
         """Handle /kanban — delegate to the shared kanban CLI (DB work in a thread pool). Allowed
         while an agent runs: the board is profile-agnostic and never touches agent state."""
-        from hermes_cli.kanban import run_slash
+        from hermes_agent.hermes_cli.kanban import run_slash
 
         # Strip the leading "/kanban" (with or without slash), leaving args.
         text = (event.text or "").strip().lstrip("/")
@@ -408,9 +408,9 @@ class GatewaySlashCommandsMixin(
             return False
 
         def _sub():
-            from hermes_cli import kanban_db as _kb
-            from hermes_cli import kanban_db_connect as _kbc
-            from hermes_cli import kanban_db_notify as _kbn
+            from hermes_agent.hermes_cli import kanban_db as _kb
+            from hermes_agent.hermes_cli import kanban_db_connect as _kbc
+            from hermes_agent.hermes_cli import kanban_db_notify as _kbn
             conn = _kbc.connect(board=requested_board)
             try:
                 _kbn.add_notify_sub(
@@ -603,7 +603,7 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_autoprune_command(self, event: MessageEvent) -> str:
         """Handle /autoprune — the low-disk auto-prune decision (same text as the CLI)."""
-        from hermes_cli.prune_advisor import answered
+        from hermes_agent.hermes_cli.prune_advisor import answered
         reply = _execute("autoprune", args=event.get_command_args()).text
         if event.get_command_args().strip() and answered():  # a failed save or `status` keeps it
             from hermes_agent.gateway.run_housekeeping_disk import clear_local_auto_prune_notice
@@ -670,7 +670,7 @@ class GatewaySlashCommandsMixin(
             return t("gateway.set_home.save_failed", error=e)
         # Preserve legacy home env vars for existing cron/setup consumers.
         try:
-            from hermes_cli.config import save_env_value
+            from hermes_agent.hermes_cli.config import save_env_value
             save_env_value(_home_target_env_var(platform_name), str(chat_id))
             save_env_value(_home_thread_env_var(platform_name), str(thread_id or ""))
         except Exception as e:
@@ -909,7 +909,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_memory_command(self, event: MessageEvent) -> str:
         """Handle /memory — review pending memory writes + toggle the approval gate. Entries are small
         enough to review inline, so the full flow works on every platform."""
-        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from hermes_agent.hermes_cli.write_approval_commands import handle_pending_subcommand
         from hermes_agent.tools import write_approval as wa
         from hermes_agent.tools.memory_tool import load_on_disk_store
         # Apply approved writes against a fresh on-disk store (the gateway has no long-lived agent;
@@ -923,7 +923,7 @@ class GatewaySlashCommandsMixin(
         """Handle /skills on the gateway — pending skill-write review only (hub stays CLI-only). Gated
         by ``skills.write_approval`` but still answers when staged writes exist after the gate is off
         (never stranded). ``diff`` is truncated for chat."""
-        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from hermes_agent.hermes_cli.write_approval_commands import handle_pending_subcommand
         from hermes_agent.tools import write_approval as wa
         args = event.get_command_args().strip().split()
         sub = args[0].lower() if args else ""
@@ -945,7 +945,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_approvals_command(self, event: MessageEvent) -> str:
         """Show or persist the profile-wide dangerous-command approval mode."""
         from hermes_agent.gateway.slash_access import policy_for_runner_source
-        from hermes_cli.approval_mode import run_approval_mode_command
+        from hermes_agent.hermes_cli.approval_mode import run_approval_mode_command
         requested = event.get_command_args().strip() or None
         # This mutates profile-wide security policy. The central slash gate can allow selected
         # commands to non-admin users, so enforce admin again at this side-effect boundary.
@@ -1019,7 +1019,7 @@ class GatewaySlashCommandsMixin(
             return EphemeralReply(t("gateway.busy.unknown_mode", arg=arg))
 
         # Persist before mutate
-        from cli import save_config_value
+        from hermes_agent.cli import save_config_value
         if not save_config_value("display.busy_input_mode", arg):
             return EphemeralReply(t("gateway.busy.save_failed"))
         if live is not None:
@@ -1105,7 +1105,7 @@ class GatewaySlashCommandsMixin(
             if choice == "always":
                 # Persist the opt-out and run the reload.
                 try:
-                    from cli import save_config_value
+                    from hermes_agent.cli import save_config_value
                     save_config_value("approvals.mcp_reload_confirm", False)
                     logger.info("User opted out of /reload-mcp confirmation (session=%s)", session_key)
                 except Exception as exc:
@@ -1271,7 +1271,7 @@ class GatewaySlashCommandsMixin(
         context so the profile's skills tree and curator state are the ones read and written."""
         import io
         from contextlib import redirect_stderr, redirect_stdout
-        from hermes_cli.curator import cli_main
+        from hermes_agent.hermes_cli.curator import cli_main
         tokens = shlex.split(event.get_command_args() or "") or ["status"]
 
         def _run() -> str:
@@ -1290,10 +1290,10 @@ class GatewaySlashCommandsMixin(
     async def _handle_debug_command(self, event: MessageEvent) -> str:
         """Handle /debug — upload ONLY the summary (system info + log tails), never full logs, to
         protect privacy; ``hermes debug share`` from the CLI does full uploads."""
-        from hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
+        from hermes_agent.hermes_cli.debug import (_GATEWAY_PRIVACY_NOTICE, _best_effort_sweep_expired_pastes,
                                       _capture_dump, _is_dpaste_url, _schedule_auto_delete,
                                       collect_debug_report, upload_to_pastebin)
-        from hermes_cli.debug_redaction import redact_debug_support_text
+        from hermes_agent.hermes_cli.debug_redaction import redact_debug_support_text
 
         wants_local = "local" in {w.lower() for w in (event.get_command_args() or "").split()}
         if wants_local and getattr(event.source, "platform", None) != Platform.LOCAL:
@@ -1304,7 +1304,7 @@ class GatewaySlashCommandsMixin(
             # A local session's `/debug local` (main's CLI form) asks for the report on this machine:
             # return the redacted report for the client to show, with no network call at all (not
             # even the expired-paste sweep). Uploading stays on the explicit `/debug` form (T7).
-            from hermes_cli.debug import collect_share_bundle
+            from hermes_agent.hermes_cli.debug import collect_share_bundle
 
             def _collect_local():
                 return collect_share_bundle(log_lines=200)["report"]
@@ -1340,7 +1340,7 @@ class GatewaySlashCommandsMixin(
         import json
         from hermes_agent.gateway.approval_actor import opener_authority
         from hermes_agent.gateway.run import _hermes_home, _resolve_hermes_bin
-        from hermes_cli.config import is_managed, format_managed_message
+        from hermes_agent.hermes_cli.config import is_managed, format_managed_message
         # Block non-messaging platforms (API server, webhooks, ACP); plugin platforms with
         # allow_update_command=True are also allowed.
         src = event.source
@@ -1361,7 +1361,7 @@ class GatewaySlashCommandsMixin(
         # with the steward's own update mechanism instead of git-pulling a
         # tree `hermes update` does not own.
         try:
-            from hermes_cli.config import (
+            from hermes_agent.hermes_cli.config import (
                 detect_install_method,
                 recommended_update_command_for_method,
             )

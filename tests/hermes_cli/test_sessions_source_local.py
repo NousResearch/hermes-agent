@@ -10,8 +10,8 @@ def test_list_includes_a_compression_tip_whose_root_has_no_created_source(tmp_pa
     The page hides compression children and paints the root as the tip, so the usage
     write that heals the tip also stamps the NULL ancestors of that chain.
     """
-    from hermes_cli.gateway_session_store import SurfaceLabelReader
-    from hermes_cli.sessions_cmd import _cmd_list, _cmd_stats
+    from hermes_agent.hermes_cli.gateway_session_store import SurfaceLabelReader
+    from hermes_agent.hermes_cli.sessions_cmd import _cmd_list, _cmd_stats
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session("chain-root", source="local")
@@ -45,7 +45,7 @@ def test_list_includes_a_compression_tip_whose_root_has_no_created_source(tmp_pa
 def test_reader_on_a_read_only_store_from_before_the_column_and_the_runtime_tables(tmp_path):
     """A read-only open does not migrate. A store without ``created_source`` still counts its
     source=cli rows, and one without ``session_admissions`` still resolves ``-c`` by messages."""
-    from hermes_cli.gateway_session_store import SurfaceLabelReader
+    from hermes_agent.hermes_cli.gateway_session_store import SurfaceLabelReader
 
     path = tmp_path / "old.db"
     writer = SessionDB(db_path=path)

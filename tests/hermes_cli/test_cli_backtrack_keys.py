@@ -13,7 +13,7 @@ from tests.waiting import async_wait_until
 
 @pytest.fixture
 def cli(monkeypatch):
-    from cli import HermesCLI
+    from hermes_agent.cli import HermesCLI
 
     monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
     cli = HermesCLI(model="fixture", provider="openai-compat", api_key="fixture",

@@ -1242,7 +1242,7 @@ def test_interrupted_draft_schema_migration_rolls_back_atomically(
 
 
 def test_gateway_event_budget_leaves_pre_update_snapshot_headroom():
-    from hermes_cli import update_cmd
+    from hermes_agent.hermes_cli import update_cmd
 
     # SQLite stores room ids and index entries beyond the logical payload
     # accounting, while session data shares the same file. Keep at least an

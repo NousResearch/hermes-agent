@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from hermes_cli import _launchers, doctor, doctor_platform
+from hermes_agent.hermes_cli import _launchers, doctor, doctor_platform
 from pm.environments import install_state_dir, site_packages
 
 

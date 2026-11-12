@@ -329,8 +329,8 @@ def tool_frame(call_id, name, args, *result):
 
 
 def execute(frame, channel):
-    # The owner RPC below imports hermes_agent/gateway/config modules (hermes_cli.config, providers,
-    # hermes_cli.plugins) transitively; the policy must already be frozen when they load.
+    # The owner RPC below imports hermes_agent/gateway/config modules (hermes_agent.hermes_cli.config, providers,
+    # hermes_agent.hermes_cli.plugins) transitively; the policy must already be frozen when they load.
     bind_worker_policy(frame)
     from hermes_agent.agent.runtime_session_store import RuntimeSessionStore, WorkerRPC
     scope = dict(frame['scope'])
@@ -445,7 +445,7 @@ def hello():
     the ancestor chain it observes. Launchers (uv's venv python.exe) put the owner's Popen
     handle one or two hops above; the owner, never this process, decides whether they match."""
     import psutil
-    from hermes_cli.process_identity import worker_birth
+    from hermes_agent.hermes_cli.process_identity import worker_birth
     me = psutil.Process()
     return {'pid': me.pid, 'birth': worker_birth(me), 'ancestors': [p.pid for p in me.parents()[:3]]}
 

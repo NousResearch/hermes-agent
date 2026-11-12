@@ -13,13 +13,13 @@ import time
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 
-from hermes_cli._subprocess_compat import (
+from hermes_agent.hermes_cli._subprocess_compat import (
     NO_LAZY_FETCH_ENV,
     bounded_probe_run,
     noninteractive_git_env,
     windows_hide_flags,
 )
-from hermes_cli.update_custody import run_git
+from hermes_agent.hermes_cli.update_custody import run_git
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ def _git_proc_running() -> bool:
             pass
         else:
             return _psutil_git_running(psutil)
-    from hermes_cli._early_recovery import _git_program
+    from hermes_agent.hermes_cli._early_recovery import _git_program
 
     try:
         # One shared spawn for both probes: the argv is the platform fork, the
@@ -89,7 +89,7 @@ def _git_proc_running() -> bool:
 
 
 def _psutil_git_running(psutil) -> bool:
-    from hermes_cli._early_recovery import _git_program
+    from hermes_agent.hermes_cli._early_recovery import _git_program
 
     try:
         for proc in psutil.process_iter():
@@ -212,7 +212,7 @@ def release_dead_fetch_locks(repo_root: Path) -> list[str]:
 
 
 def _release_killed_update_locks(root: Path, candidates: Callable[[Path], Iterable[Path]]) -> list[str]:
-    from hermes_cli._early_recovery import _git_dir, _release_dead_lock, interrupted_pull_marker
+    from hermes_agent.hermes_cli._early_recovery import _git_dir, _release_dead_lock, interrupted_pull_marker
 
     git_dir = _git_dir(root)
     if interrupted_pull_marker(root).exists():
@@ -247,7 +247,7 @@ def _killed_update_owns(lock: Path) -> bool:
     """
     import json
 
-    from hermes_cli import update_receipt
+    from hermes_agent.hermes_cli import update_receipt
 
     try:
         written = lock.stat().st_mtime
@@ -293,7 +293,7 @@ def _windows_git_in_checkout(root: Path) -> bool | None:
     the checkout: a system-wide check would keep the lock whenever any editor or terminal elsewhere
     runs git, which on Windows is most of the time. A git whose cwd cannot be read keeps the lock.
     """
-    from hermes_cli._early_recovery import _NEVER_LOCKS, _checkout_places, _git_dir, _git_program, \
+    from hermes_agent.hermes_cli._early_recovery import _NEVER_LOCKS, _checkout_places, _git_dir, _git_program, \
         _git_subcommand_of, git_works_in
 
     try:
@@ -896,7 +896,7 @@ def convert_treeless_checkout_first(repo_root: Path) -> None:
     downloads trees again (#129514: 434 GB, disk full mid-update). Runs in the dependency-free
     bootstrap interpreter.
     """
-    from hermes_cli._subprocess_compat import no_prompt_git_kwargs
+    from hermes_agent.hermes_cli._subprocess_compat import no_prompt_git_kwargs
 
     try:
         if convert_treeless_checkout(repo_root, **no_prompt_git_kwargs()):

@@ -1,7 +1,7 @@
 """Kimi Code and Z.AI endpoint auto-detection, LM Studio base-URL normalization.
 
-Re-exported from ``hermes_cli/auth.py`` (patch targets unchanged); origin helpers are imported
-lazily per function so ``hermes_cli.auth.<helper>`` patches still intercept and no cycle forms.
+Re-exported from ``hermes_agent/hermes_cli/auth.py`` (patch targets unchanged); origin helpers are imported
+lazily per function so ``hermes_agent.hermes_cli.auth.<helper>`` patches still intercept and no cycle forms.
 """
 
 from __future__ import annotations
@@ -10,9 +10,9 @@ import logging
 import hashlib
 import time
 from typing import Dict, Optional
-from hermes_cli.auth_constants import httpx
+from hermes_agent.hermes_cli.auth_constants import httpx
 
-logger = logging.getLogger("hermes_cli.auth")
+logger = logging.getLogger("hermes_agent.hermes_cli.auth")
 
 # In-process negative cache for Z.AI endpoint detection, keyed by key hash: a failed probe is not
 # retried for this long (a success persists to auth.json instead).
@@ -107,7 +107,7 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     The detected endpoint is cached in provider state (auth.json) keyed on a hash of the API key so
     subsequent starts skip the probe.
     """
-    from hermes_cli.auth import _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store, _store_provider_state, detect_zai_endpoint
+    from hermes_agent.hermes_cli.auth import _auth_store_lock, _load_auth_store, _load_provider_state, _save_auth_store, _store_provider_state, detect_zai_endpoint
     if env_override:
         return env_override
     # No key -> don't probe (N×M 401s); auxiliary-client auto-detection hits this for everyone.

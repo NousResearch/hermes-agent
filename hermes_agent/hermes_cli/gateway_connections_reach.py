@@ -6,11 +6,11 @@ registry entry, exactly the credentials native Desktop sends for that auth mode:
 - token-mode remote/cloud: ``X-Hermes-Session-Token`` (``electron/main.ts`` fetchJson), plus the
   entry's extra headers (Cloudflare Access and the like);
 - oauth-mode remote/cloud: ``Authorization: Bearer <access token>``, refreshed through the remote's
-  ``/auth/native/refresh`` when at/near expiry (:mod:`hermes_cli.gateway_connections_oauth`), plus
+  ``/auth/native/refresh`` when at/near expiry (:mod:`hermes_agent.hermes_cli.gateway_connections_oauth`), plus
   the extra headers. After the remote answers 401, call again with ``rejected_token`` to force one
   rotation (``oauth-rest-request.ts``: only a structured 401 earns it);
 - ssh: the tunnel's forwarded ``http://127.0.0.1:<port>`` and the owned serve's session token
-  (:mod:`hermes_cli.gateway_connections_ssh` ensures the tunnel; it blocks, so call it off the loop).
+  (:mod:`hermes_agent.hermes_cli.gateway_connections_ssh` ensures the tunnel; it blocks, so call it off the loop).
 
 :func:`mint_ws_ticket` mints the remote's one-use socket ticket for an oauth-mode entry the way
 Desktop does (``POST /api/auth/ws-ticket`` with the bearer). Token-mode and ssh sockets carry the
@@ -23,8 +23,8 @@ from typing import Optional
 
 import httpx
 
-from hermes_cli import gateway_connections as store
-from hermes_cli import gateway_connections_oauth as oauth
+from hermes_agent.hermes_cli import gateway_connections as store
+from hermes_agent.hermes_cli import gateway_connections_oauth as oauth
 
 SESSION_TOKEN_HEADER = "X-Hermes-Session-Token"
 _TICKET_TIMEOUT_S = 8.0
@@ -54,7 +54,7 @@ def _remote_target(entry: dict, rejected_token: str) -> tuple[str, dict[str, str
 
 
 def _ssh_target(entry: dict, _rejected_token: str) -> tuple[str, dict[str, str]]:
-    from hermes_cli import gateway_connections_ssh as ssh
+    from hermes_agent.hermes_cli import gateway_connections_ssh as ssh
 
     tunnel = ssh.ensure_tunnel(entry)
     return tunnel.base_url, {SESSION_TOKEN_HEADER: tunnel.token}
@@ -118,7 +118,7 @@ def _ticket_target(connection_id: str, rejected_token: str, for_base_url: Option
 def forget(connection_id: str) -> None:
     """Drop what reaching *connection_id* holds on this machine: its SSH tunnel (and the owned
     remote serve) and its sign-in. For the store's remove path."""
-    from hermes_cli import gateway_connections_ssh as ssh
+    from hermes_agent.hermes_cli import gateway_connections_ssh as ssh
 
     ssh.disconnect(connection_id)
     oauth.cancel_sign_in(connection_id)

@@ -7,9 +7,9 @@ from pathlib import Path
 import pytest
 
 from hermes_agent.gateway import status
-from hermes_cli.observability import shared_metrics_contract as contract
-from hermes_cli.observability.shared_metrics import SharedMetricsStore
-from hermes_cli.observability.shared_metrics_update import update_receipt_fields
+from hermes_agent.hermes_cli.observability import shared_metrics_contract as contract
+from hermes_agent.hermes_cli.observability.shared_metrics import SharedMetricsStore
+from hermes_agent.hermes_cli.observability.shared_metrics_update import update_receipt_fields
 from scripts import smoke_nemo_relay_shared_metrics as smoke
 
 # The smoke spawns a real chat and is not run by CI; these pin its expectations to the contract, so a

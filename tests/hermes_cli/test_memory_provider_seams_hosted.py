@@ -8,7 +8,7 @@ import os
 import hermes_yaml as yaml
 import pytest
 
-from hermes_cli import plugins as plugins_mod
+from hermes_agent.hermes_cli import plugins as plugins_mod
 
 _INIT = """
 import json
@@ -111,8 +111,8 @@ def hosted_home(request, tmp_path, monkeypatch):
 @pytest.mark.platforms("any")  # the host is a child process
 def test_a_refused_save_crosses_the_host_as_a_400_with_no_secret_saved(hosted_home):
     from starlette.testclient import TestClient
-    from hermes_cli.config import load_env
-    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+    from hermes_agent.hermes_cli.config import load_env
+    from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
 
     (hosted_home / "hostedprov.json").write_text("{not json", encoding="utf-8")
     client = TestClient(app, headers={_SESSION_HEADER_NAME: _SESSION_TOKEN})
@@ -127,7 +127,7 @@ def test_a_refused_save_crosses_the_host_as_a_400_with_no_secret_saved(hosted_ho
 
 @pytest.mark.platforms("any")
 def test_a_profile_hook_runs_in_the_host_and_its_host_is_stopped(hosted_home):
-    from hermes_cli.profiles import create_profile
+    from hermes_agent.hermes_cli.profiles import create_profile
 
     work = create_profile("work", clone_config=True, no_alias=True)
 
@@ -137,7 +137,7 @@ def test_a_profile_hook_runs_in_the_host_and_its_host_is_stopped(hosted_home):
     assert not any(h is not None and h.alive for h in hosts)
     # Everything the hook-only load registered proxied into the stopped host: hook, tool,
     # middleware, session env and RPC method are all gone from the new profile's manager.
-    from hermes_cli.plugins_session_env import _REGISTRATIONS
+    from hermes_agent.hermes_cli.plugins_session_env import _REGISTRATIONS
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_agent.tools.registry import registry
     assert (work / "registered.json").exists()
@@ -159,12 +159,12 @@ def test_a_host_already_running_for_that_profile_is_left_alone(hosted_home):
     """Rename fires the hook too: a host the dashboard already runs for that profile keeps running."""
     from unittest.mock import patch
 
-    from hermes_cli.profiles import create_profile, rename_profile
+    from hermes_agent.hermes_cli.profiles import create_profile, rename_profile
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     create_profile("work", clone_config=True, no_alias=True)
 
-    from hermes_cli import profile_memory_config as pmc  # rename late-imports notify from here
+    from hermes_agent.hermes_cli import profile_memory_config as pmc  # rename late-imports notify from here
     calls = []
     original = pmc.notify_memory_provider
 
@@ -179,7 +179,7 @@ def test_a_host_already_running_for_that_profile_is_left_alone(hosted_home):
         original(profile_dir, call)
 
     with patch.object(pmc, "notify_memory_provider", notify_with_host_up), \
-            patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            patch("hermes_agent.hermes_cli.profiles.check_alias_collision", return_value="skip"):
         play = rename_profile("work", "play")
 
     (manager, pid), = calls

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import gateway_runtime
+from hermes_agent.hermes_cli import gateway_runtime
 import hermes_constants
 
 
@@ -65,7 +65,7 @@ def test_served_secondary_uses_multiplexer_control_home(monkeypatch, tmp_path):
 
         monkeypatch.setattr(windows_bootstrap, "query_runtime_control", query_runtime_control)
     else:
-        import hermes_cli.gateway_runtime_discovery as discovery
+        import hermes_agent.hermes_cli.gateway_runtime_discovery as discovery
 
         stream = io.BytesIO(reply)
 
@@ -104,7 +104,7 @@ def test_served_secondary_uses_multiplexer_control_home(monkeypatch, tmp_path):
 
 def _bootstrap_failure(monkeypatch, root, error):
     """The line the script's ``__main__`` prints (``str(exc)``, exit 1) when the ticket mint raises ``error``."""
-    import hermes_cli.gateway_runtime_discovery as discovery
+    import hermes_agent.hermes_cli.gateway_runtime_discovery as discovery
 
     module = _load_bootstrap()
     endpoint = SimpleNamespace(profile_id=str(root), instance_id="owner", api_origin="http://127.0.0.1:1234",
@@ -126,7 +126,7 @@ def _bootstrap_failure(monkeypatch, root, error):
 def test_a_refused_mint_prints_its_repair_command(monkeypatch, tmp_path):
     """The control home's refusal reaches the TUI as the verdict `hermes gateway attach` prints: each
     line a `gateway inaccessible:` verdict Ink echoes inline, the last ending in the repair command."""
-    from hermes_cli.gateway_runtime_discovery import _open_mode
+    from hermes_agent.hermes_cli.gateway_runtime_discovery import _open_mode
 
     root = tmp_path.resolve()
     assert _bootstrap_failure(monkeypatch, root, _open_mode(root / "control", 0o755, 0o700)) == (
@@ -139,7 +139,7 @@ def test_a_refused_mint_prints_its_repair_command(monkeypatch, tmp_path):
 def test_a_mint_socket_error_still_prints_only_its_class(monkeypatch, tmp_path, refusal):
     """Raw socket text (paths, peer data) stays out, and a refusal with no repair hint (the owner
     answered ``ok: false``) still names its code under the ``ticket_unavailable`` head."""
-    from hermes_cli.gateway_runtime_discovery import DiscoveryError
+    from hermes_agent.hermes_cli.gateway_runtime_discovery import DiscoveryError
 
     error = DiscoveryError(refusal) if refusal else ConnectionResetError("peer /secret/path")
     assert _bootstrap_failure(monkeypatch, tmp_path.resolve(), error) == (

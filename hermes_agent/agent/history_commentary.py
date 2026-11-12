@@ -162,7 +162,7 @@ def project_history_commentary(messages: list[dict], *, home: Any = None) -> lis
     ):
         return messages
     with _owning_home(home):
-        from hermes_cli.config import load_config
+        from hermes_agent.hermes_cli.config import load_config
 
         try:
             display = load_config().get("display") or {}

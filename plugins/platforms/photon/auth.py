@@ -103,7 +103,7 @@ def _pool_first(auth: dict[str, Any], key: str) -> Any:
 
 def _store_pool_record(key: str, record: dict[str, Any]) -> None:
     """Replace ``credential_pool.<key>`` with ``[record]`` under the cross-process lock."""
-    from hermes_cli.auth import _auth_store_lock
+    from hermes_agent.hermes_cli.auth import _auth_store_lock
     with _auth_store_lock():
         auth = _load_auth()
         auth.setdefault("credential_pool", {})[key] = [record]
@@ -204,7 +204,7 @@ def _persist_runtime_env(spectrum_project_id: str, project_secret: str) -> None:
     """Write the SDK creds to ``~/.hermes/.env`` (secret never bound to a printable local
     in a caller — CodeQL clean flow)."""
     try:
-        from hermes_cli.config import save_env_value
+        from hermes_agent.hermes_cli.config import save_env_value
     except ImportError:
         logger.warning("photon: hermes_cli.config unavailable — skipping .env write")
         return
@@ -700,7 +700,7 @@ def _configured_operator_phone() -> Optional[str]:
 
 def _get_config_env_value(key: str) -> Optional[str]:
     try:
-        from hermes_cli.config import get_env_value
+        from hermes_agent.hermes_cli.config import get_env_value
     except Exception:
         return os.getenv(key)
     return get_env_value(key)

@@ -88,3 +88,78 @@ def test_a_real_error_past_the_stderr_cap_is_not_read_as_permission_only(monkeyp
     assert "No such file or directory" in text
     assert omitted[0] == 4  # permission lines past the cap
     assert not file_operations_search._is_permission_only_error(text)
+
+
+@pytest.mark.parametrize("engine", ["rg", "no-rg"])
+@pytest.mark.parametrize("target", ["files", "content"])
+def test_an_unreadable_root_is_an_error_not_an_empty_readable_part(tmp_path, monkeypatch, engine, target):
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    (locked / "a.log").write_text("needle\n")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+    if engine == "rg" and not ops._has_command("rg"):
+        pytest.skip("needs ripgrep")
+    if engine == "no-rg":
+        real_has = ops._has_command
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: False if cmd == "rg" else real_has(cmd))
+    locked.chmod(0)
+    try:
+        result = ops.search("*.log" if target == "files" else "needle", path="locked", target=target)
+    finally:
+        locked.chmod(0o755)
+    assert result.error == ("Search root is not readable (permission denied): locked. "
+                            "Fix its permissions or search a readable path.")
+    assert result.total_count == 0
+
+
+@pytest.mark.parametrize("child_name", ["foo\\..", " "])
+@pytest.mark.parametrize("engine", ["rg", "no-rg"])
+def test_an_unreadable_child_whose_name_could_pass_for_the_root_is_not_the_root(tmp_path, monkeypatch, engine, child_name):
+    # On POSIX foo\.. and " " are ordinary directory names, not "foo/.." or the
+    # root itself: skipping one is a partial search under ".", not an unreadable root.
+    child = tmp_path / child_name
+    child.mkdir()
+    (tmp_path / "a.log").write_text("hay\n")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+    if engine == "rg" and not ops._has_command("rg"):
+        pytest.skip("needs ripgrep")
+    if engine == "no-rg":
+        real_has = ops._has_command
+        monkeypatch.setattr(ops, "_has_command", lambda cmd: False if cmd == "rg" else real_has(cmd))
+    child.chmod(0)
+    try:
+        result = ops.search("needle", path=".", target="content")
+    finally:
+        child.chmod(0o755)
+    assert result.error is None
+    assert [os.path.basename(p) for p in result.skipped_paths] == [child_name]
+    assert result.total_count == 0
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("find: r/': Permission denied", "r/'"),  # BSD find: bare path ending in a quote
+    ("find: \u2018r/x\u2019: Permission denied", "r/x"),  # GNU find, UTF-8 quotes
+    ("find: 'r/x': Permission denied", "r/x"),  # GNU find, C locale
+])
+def test_find_skip_path_unwraps_only_a_matched_quote_pair(line, expected):
+    assert file_operations_search._extract_unreadable_paths(line) == [expected]
+
+
+def test_an_unreadable_child_named_a_lone_quote_is_not_the_root(tmp_path, monkeypatch):
+    # BSD find prints the skipped path bare (``r/'``); stripping that trailing quote
+    # as if it closed a quote pair turned it into ``r/``, i.e. the root itself.
+    root = tmp_path / "r"
+    child = root / "'"
+    child.mkdir(parents=True)
+    (root / "a.txt").write_text("hay\n")
+    ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
+    real_has = ops._has_command
+    monkeypatch.setattr(ops, "_has_command", lambda cmd: False if cmd == "rg" else real_has(cmd))
+    child.chmod(0)
+    try:
+        result = ops.search("*.nomatch", path="r", target="files")
+    finally:
+        child.chmod(0o755)
+    assert result.error is None
+    assert len(result.skipped_paths) == 1
+    assert result.total_count == 0

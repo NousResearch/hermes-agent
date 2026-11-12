@@ -1,7 +1,7 @@
 name: chat-tree
 title: Chat Tree
 repo: https://github.com/Ronitron007/hermes-chat-tree
-sha: "e9c1d79bd9f7081dba850d7395d6fbb1f417a92d"
+sha: "55c1c4d0448cb529962f58402f55c1c04c30efd7"
 subdir: chat-tree
 description: >-
   One window for branching chats in Hermes Desktop. A side pane draws the open
@@ -18,11 +18,10 @@ description: >-
   typed for a branch, and for Merge as-is, which sends the merge text as a
   message in the ancestor chat that you picked. Digest puts its text into the
   composer of the ancestor chat as a draft (host.composer.setDraft) and never
-  sends it. config.set sets the model that you picked for a branch. A node click sends the app event hermes:timeline-reveal to the
-  main chat viewport and scrolls the exchange into view. It finds the
-  viewport and the exchange through app markup (data-session-anchor,
-  data-slot, data-message-id). This is outside the Desktop SDK surface
-  (catalog rule 8), because the SDK has no scroll API. The pane keeps its
+  sends it. For a new branch, it calls session.resume once and then config.set
+  to set the model and reasoning level that you picked. It calls
+  session.active_list to show which chats in the tree run now. A node click
+  opens that chat with host.openSession. The pane keeps its
   branch ids and digests in its plugin storage. It also shares
   its list of branch ids with the side-chat plugin (localStorage key __hermesSideChatBranchIds).
   The Python half serves two plugin RPC methods.
@@ -52,14 +51,6 @@ readme: true
 platforms: []
 known_issues:
   - Requires Hermes Desktop.
-  - >-
-    A node click scrolls the main chat to that exchange through the app event
-    hermes:timeline-reveal and the app markup (data-session-anchor, data-slot,
-    data-message-id, data-chat-surface, data-session-switching). Neither is
-    Desktop SDK surface (catalog rule 8), and hermes plugins validate warns
-    about the markup selectors. We chose this on
-    purpose, because the SDK has no scroll API. A Desktop update can break it
-    without notice. Then a click only opens the chat of the node.
   - Digests and stored histories need hermes plugins enable chat-tree and a gateway restart.
 capabilities:
   provides_tools: []

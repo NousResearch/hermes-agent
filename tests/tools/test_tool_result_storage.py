@@ -178,6 +178,12 @@ class TestResolveStorageDir:
     def test_defaults_to_storage_dir_without_env(self):
         assert _resolve_storage_dir(None) == STORAGE_DIR
 
+    def test_fallback_is_a_sandbox_posix_path_on_every_host(self):
+        # The fallback is written through the environment's POSIX shell, so it must not follow the
+        # host's temp dir: on Windows that was a quoted backslash path the sandbox could not use.
+        assert STORAGE_DIR == "/tmp/hermes-results"  # no-tmp: ok — asserting the sandbox-side default
+        assert _resolve_storage_dir(None) == STORAGE_DIR
+
     def test_uses_env_temp_dir_when_available(self):
         env = MagicMock()
         env.get_temp_dir.return_value = "/var/host/tmp"

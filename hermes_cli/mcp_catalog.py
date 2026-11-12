@@ -23,7 +23,7 @@ from hermes_cli.config import load_config, save_config, get_env_value, save_env_
 from hermes_cli.cli_output import prompt as _prompt_input
 from utils import rmtree_readonly
 
-_MANIFEST_VERSION = 1
+_MANIFEST_VERSION = 2
 
 # Substituted at install time inside `transport.command` / `transport.args`.
 _INSTALL_DIR_VAR = "${INSTALL_DIR}"
@@ -118,6 +118,8 @@ class CatalogEntry:
     post_install: str = ""
     suggest: Optional[SuggestSpec] = None
     manifest_path: Path = field(default_factory=Path)
+    trust: Optional[str] = None
+    approval_policy: Optional[str] = None
 
 
 class CatalogError(Exception):
@@ -319,7 +321,7 @@ def _parse_manifest(path: Path) -> CatalogEntry:
         raise CatalogError(f"{path}: manifest must be a mapping")
 
     mv = data.get("manifest_version")
-    if mv != _MANIFEST_VERSION:
+    if type(mv) is not int or mv not in (1, _MANIFEST_VERSION):
         raise CatalogError(
             f"{path}: manifest_version {mv!r} unsupported "
             f"(this Hermes understands version {_MANIFEST_VERSION})"
@@ -338,10 +340,24 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     suggest = _parse_suggest(path, data.get("suggest"))
     connector_slug = _parse_connector_slug(path, data.get("connector_slug"))
     install = _parse_install(path, data.get("install"))
+    trust = data.get("trust")
+    if "trust" in data:
+        if mv < 2:
+            raise CatalogError(f"{path}: 'trust' requires manifest_version 2")
+        if not isinstance(trust, str) or trust not in ("full", "untrusted"):
+            raise CatalogError(f"{path}: 'trust' must be 'full' or 'untrusted'")
+    approval_policy = data.get("approval_policy")
+    if "approval_policy" in data:
+        if mv < 2:
+            raise CatalogError(f"{path}: 'approval_policy' requires manifest_version 2")
+        if approval_policy not in ("scoped", "per_call"):
+            raise CatalogError(f"{path}: 'approval_policy' must be 'scoped' or 'per_call'")
     return CatalogEntry(
         name=name, description=description, source=str(data.get("source") or "").strip(),
         transport=transport, auth=auth, connector_slug=connector_slug, tools=tools, install=install,
         post_install=str(data.get("post_install") or ""), suggest=suggest, manifest_path=path,
+        trust=trust,
+        approval_policy=approval_policy,
     )
 
 
@@ -539,6 +555,10 @@ def _inline_non_secret_value(obj: Any, name: str, value: str) -> Any:
 def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> dict:
     """Translate a manifest into the ``mcp_servers.<name>`` block format used by hermes_cli/mcp_config.py."""
     cfg: dict = {}
+    if entry.trust is not None:
+        cfg["trust"] = entry.trust
+    if entry.approval_policy is not None:
+        cfg["approval_policy"] = entry.approval_policy
     t = entry.transport
     if t.type == "stdio":
         cfg["command"] = _expand_install_dir(t.command or "", install_dir)

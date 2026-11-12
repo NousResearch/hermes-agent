@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ Hata ayıklama raporu yüklenemedi: {error}"
     header: "**Hata ayıklama raporu yüklendi:**"
     auto_delete: "⏱ Paste'ler 6 saat içinde otomatik olarak silinecek."
-    full_logs_hint: "Tam günlük yüklemeleri için CLI'dan `hermes debug share` kullanın."
+    full_logs_hint: "Tam günlük yüklemeleri için CLI'dan `hermes debug share --nous` kullanın."
     share_hint: "Destek için bu bağlantıları Hermes ekibiyle paylaşın."
     report_label: "Rapor"
     local_refused: "`/debug local` raporu Hermes'in çalıştığı makinede tutar, bu yüzden sohbetten kullanılamaz. Özet raporu yüklemek için `/debug upload` gönderin."

@@ -1451,7 +1451,7 @@ export default function SystemPage() {
           </CardContent>
         </Card>
 
-        {/* Debug share — uploads a redacted report + logs, returns shareable
+        {/* Debug share — uploads the allowlisted public summary, returns shareable
             links. Separated from the buttons above because its output is
             persistent, copyable URLs, not a fire-and-forget log tail. */}
         <Card>
@@ -1462,9 +1462,9 @@ export default function SystemPage() {
                 <div className="flex flex-col">
                   <span className="text-sm font-medium">Share debug report</span>
                   <span className="text-xs text-muted-foreground max-w-prose">
-                    Uploads system info + logs to a public paste service and
-                    returns links to send the Hermes team. Pastes auto-delete
-                    after 6 hours.
+                    Uploads a summary (versions, config key names, error counts; no log lines or message text)
+                    to a public paste and returns a link for the Hermes team. Pastes auto-delete after 6 hours.
+                    Full logs go only to private storage via <code>hermes debug share --nous</code>.
                   </span>
                 </div>
               </div>

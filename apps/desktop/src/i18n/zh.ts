@@ -2409,10 +2409,10 @@ export const zhOverrides = {
       backup: '创建备份',
       backupDesc: '打包配置、记忆、技能与会话',
       debugShare: '调试分享',
-      debugShareDesc: '上传脱敏报告与日志，获取可分享链接（6 小时后自动删除）',
+      debugShareDesc: '上传摘要（版本、配置键名、错误计数；不含日志文本），获取可分享链接（6 小时后自动删除）',
       debugShareConfirm: '将调试报告上传到公开粘贴服务？',
       debugShareConfirmDesc:
-        '将系统信息和完整日志上传到公开粘贴服务。密钥会被脱敏，但你最近的消息、工具输出、文件路径和文件名仍保留在日志中，任何持有链接的人都能查看。粘贴内容 6 小时后自动删除；若 paste.rs 不可用，备用的 dpaste.com 会将其公开保留 1 天，且无法提前删除。',
+        '将摘要上传到公开粘贴服务：Hermes、Python 和操作系统版本，已连接平台与工具集名称，配置键名（不含值），以及警告/错误计数。不包含任何日志行或消息文本。粘贴内容 6 小时后自动删除；若 paste.rs 不可用，备用的 dpaste.com 会将其公开保留 1 天，且无法提前删除。',
       debugShareRunning: '正在上传调试报告…',
       debugShareLinks: '分享链接',
       debugShareFailed: '调试分享失败',

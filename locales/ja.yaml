@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ デバッグレポートのアップロードに失敗しました: {error}"
     header: "**デバッグレポートをアップロードしました:**"
     auto_delete: "⏱ ペーストは 6 時間後に自動削除されます。"
-    full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share` を使用してください。"
+    full_logs_hint: "完全なログのアップロードには、CLI から `hermes debug share --nous` を使用してください。"
     share_hint: "サポートを受けるには、このリンクを Hermes チームに共有してください。"
     report_label: "レポート"
     local_refused: "`/debug local` はレポートを Hermes を実行しているマシン上に保持するため、チャットからは使えません。要約レポートをアップロードするには `/debug upload` を送信してください。"

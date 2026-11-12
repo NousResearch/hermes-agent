@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ Falha ao carregar relatório de depuração: {error}"
     header: "**Relatório de depuração carregado:**"
     auto_delete: "⏱ Os pastes serão eliminados automaticamente em 6 horas."
-    full_logs_hint: "Para enviar logs completos, usa `hermes debug share` a partir da CLI."
+    full_logs_hint: "Para enviar logs completos, usa `hermes debug share --nous` a partir da CLI."
     share_hint: "Partilha estes links com a equipa do Hermes para obter suporte."
     report_label: "Relatório"
     local_refused: "`/debug local` mantém o relatório na máquina que executa o Hermes, por isso não está disponível num chat. Envie `/debug upload` para enviar o relatório resumido."

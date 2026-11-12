@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ Kon nie ontfoutverslag oplaai nie: {error}"
     header: "**Ontfoutverslag opgelaai:**"
     auto_delete: "⏱ Plakke sal outomaties oor 6 uur uitgevee word."
-    full_logs_hint: "Vir volledige loglae, gebruik `hermes debug share` vanaf die CLI."
+    full_logs_hint: "Vir volledige loglae, gebruik `hermes debug share --nous` vanaf die CLI."
     share_hint: "Deel hierdie skakels met die Hermes-span vir ondersteuning."
     report_label: "Verslag"
     local_refused: "`/debug local` hou die verslag op die masjien waarop Hermes loop, so dit is nie vanuit 'n klets beskikbaar nie. Stuur `/debug upload` om die opsommingsverslag op te laai."

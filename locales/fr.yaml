@@ -190,7 +190,7 @@ gateway:
     upload_failed: "✗ Échec de l'envoi du rapport de débogage : {error}"
     header: "**Rapport de débogage envoyé :**"
     auto_delete: "⏱ Les pastes s'effaceront automatiquement dans 6 heures."
-    full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share` depuis la CLI."
+    full_logs_hint: "Pour envoyer les journaux complets, utilisez `hermes debug share --nous` depuis la CLI."
     share_hint: "Partagez ces liens avec l'équipe Hermes pour obtenir de l'aide."
     report_label: "Rapport"
     local_refused: "`/debug local` garde le rapport sur la machine qui exécute Hermes ; il n'est donc pas disponible depuis une discussion. Envoyez `/debug upload` pour téléverser le rapport de synthèse."

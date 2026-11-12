@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ 無法上傳除錯報告：{error}"
     header: "**除錯報告已上傳：**"
     auto_delete: "⏱ 貼上的內容將於 6 小時後自動刪除。"
-    full_logs_hint: "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share`。"
+    full_logs_hint: "如需上傳完整紀錄，請在 CLI 中使用 `hermes debug share --nous`。"
     share_hint: "請將這些連結分享給 Hermes 團隊以取得支援。"
     report_label: "報告"
     local_refused: "`/debug local` 會把報告留在執行 Hermes 的機器上，因此無法在聊天中使用。傳送 `/debug upload` 可上傳摘要報告。"

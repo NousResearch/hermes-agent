@@ -910,19 +910,24 @@ class TestDebugShareEndpoint:
         (logs / "gateway.log").write_text("gw line\n")
 
 
-    def test_redact_false_is_honored(self, monkeypatch):
+    def test_redact_false_cannot_publish_log_text(self, monkeypatch):
+        """The public paste is an allowlisted summary (#46006): redact=false has no log text to
+        leave raw, so the endpoint reports redacted and the upload carries no log line."""
         import hermes_cli.debug as dbg
 
+        uploaded = []
         monkeypatch.setattr(
-            dbg, "upload_to_pastebin", lambda c, expiry_days=7: "https://paste.rs/x"
-        )
+            dbg, "upload_to_pastebin",
+            lambda c, expiry_days=7: uploaded.append(c) or "https://paste.rs/x")
         monkeypatch.setattr(dbg, "_schedule_auto_delete", lambda *a, **k: None)
         monkeypatch.setattr(dbg, "_best_effort_sweep_expired_pastes", lambda: None)
-        monkeypatch.setattr("hermes_cli.dump.run_dump", lambda a: None)
 
         r = self.client.post("/api/ops/debug-share", json={"consent": True, "redact": False})
         assert r.status_code == 200
-        assert r.json()["redacted"] is False
+        assert r.json()["redacted"] is True
+        assert list(r.json()["urls"]) == ["Report"]
+        assert len(uploaded) == 1
+        assert "agent line" not in uploaded[0] and "err line" not in uploaded[0]
 
     def test_default_body_redacts(self, monkeypatch):
         import hermes_cli.debug as dbg

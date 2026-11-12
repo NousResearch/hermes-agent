@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ فشل رفع تقرير التصحيح: {error}"
     header: "**تم رفع تقرير التصحيح:**"
     auto_delete: "⏱ ستُحذف اللصقات تلقائيًا خلال 6 ساعات."
-    full_logs_hint: "لرفع السجلات الكاملة، استخدم `hermes debug share` من واجهة الأوامر."
+    full_logs_hint: "لرفع السجلات الكاملة، استخدم `hermes debug share --nous` من واجهة الأوامر."
     share_hint: "شارك هذه الروابط مع فريق Hermes للحصول على الدعم."
     report_label: "تقرير"
     local_refused: "يُبقي `/debug local` التقرير على الجهاز الذي يشغّل Hermes، لذا فهو غير متاح من المحادثة. أرسل `/debug upload` لرفع التقرير الموجز."

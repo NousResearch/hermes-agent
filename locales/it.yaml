@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ Caricamento del report di debug non riuscito: {error}"
     header: "**Report di debug caricato:**"
     auto_delete: "⏱ I paste verranno eliminati automaticamente tra 6 ore."
-    full_logs_hint: "Per il caricamento dei log completi, usa `hermes debug share` dalla CLI."
+    full_logs_hint: "Per il caricamento dei log completi, usa `hermes debug share --nous` dalla CLI."
     share_hint: "Condividi questi link con il team Hermes per ricevere supporto."
     report_label: "Report"
     local_refused: "`/debug local` mantiene il report sulla macchina che esegue Hermes, quindi non è disponibile da una chat. Invia `/debug upload` per caricare il report riepilogativo."

@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ 디버그 보고서 업로드 실패: {error}"
     header: "**디버그 보고서가 업로드되었습니다:**"
     auto_delete: "⏱ 페이스트는 6시간 후 자동 삭제됩니다."
-    full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share`를 사용하세요."
+    full_logs_hint: "전체 로그 업로드는 CLI에서 `hermes debug share --nous`를 사용하세요."
     share_hint: "지원을 받으려면 이 링크를 Hermes 팀과 공유하세요."
     report_label: "리포트"
     local_refused: "`/debug local`은 보고서를 Hermes가 실행 중인 컴퓨터에만 보관하므로 채팅에서는 사용할 수 없습니다. 요약 보고서를 업로드하려면 `/debug upload`를 보내세요."

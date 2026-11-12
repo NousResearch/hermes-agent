@@ -164,7 +164,7 @@ gateway:
     upload_failed: "✗ Theip ar uaslódáil tuairisce dífhabhtaithe: {error}"
     header: "**Tuairisc dhífhabhtaithe uaslódáilte:**"
     auto_delete: "⏱ Scriosfar na pastes go huathoibríoch i 6 huaire."
-    full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share` ón CLI."
+    full_logs_hint: "Le haghaidh uaslódálacha logála iomlána, úsáid `hermes debug share --nous` ón CLI."
     share_hint: "Roinn na naisc seo le foireann Hermes le haghaidh tacaíochta."
     report_label: "Tuairisc"
     local_refused: "Coinníonn `/debug local` an tuarascáil ar an meaisín a ritheann Hermes, mar sin níl sé ar fáil ó chomhrá. Seol `/debug upload` chun an achoimre a uaslódáil."

@@ -354,7 +354,8 @@ def _speak_text_with_barge(text: str) -> None:
             done.set()
             with _fd_listener_lock:
                 _fd_speak_pipelines.discard((stop, done))
-    threading.Thread(target=_speak, daemon=True).start()
+    from agent.memory_provider import spawn_context_thread
+    spawn_context_thread(_speak, name="voice-tts-speak").start()
     _arm_barge_listener_if_enabled()
 
 

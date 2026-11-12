@@ -1,7 +1,7 @@
 name: shadow
 title: Shadow
 repo: https://github.com/salch-cred/shadow
-sha: 5820ff2a01a715a47f6f1aebeb1d1c2dbc352e63
+sha: 0a55597f09623903ff175e5a697b2fea9fb6c416
 description: >-
   Find out which model is better at your work, from your real prompts. After a
   plain chat turn, the same conversation goes in the background to a second
@@ -15,7 +15,7 @@ tier: community
 category: models
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/salch-cred/shadow
-version: "0.1.0"
+version: "0.1.1"
 
 capabilities:
   provides_tools: []

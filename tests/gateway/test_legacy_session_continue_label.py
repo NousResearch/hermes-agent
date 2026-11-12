@@ -17,7 +17,7 @@ async def test_a_turn_on_an_adopted_legacy_row_keeps_its_source(tmp_path, monkey
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
     from gateway.session_authority import initialize_session_authority
-    from gateway.session_contract import Principal
+    from gateway.session_contract import SessionActor
     from gateway.session_local_title import resolve_titled_session
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
@@ -28,7 +28,7 @@ async def test_a_turn_on_an_adopted_legacy_row_keeps_its_source(tmp_path, monkey
     db.set_session_title('old', title)
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='first')
-    native = Principal('native', str(tmp_path), frozenset({'session:read', 'session:create'}), 'socket')
+    native = SessionActor('native', str(tmp_path), frozenset({'session:read', 'session:create'}), 'socket')
     authority._native_legacy_transports = {native.transport_id: native}
     try:
         ref = resolve_titled_session(authority, native, title)

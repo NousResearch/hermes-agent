@@ -1,0 +1,19 @@
+name: boxcompute
+title: BoxCompute
+repo: https://github.com/boxcompute/hermes-plugin
+sha: de27f5719372905686474f8a7650c591c63e899c
+description: "Give Hermes its own cloud Linux VMs through the hosted BoxCompute MCP server (Streamable HTTP, OAuth 2.1 + DCR): create and start VMs, run commands and background processes, read and edit files under /workspace, and open one-hour public preview links, with the sandboxes workflow skill bundled. Portable Agent Plugins v1 package (skills/ only; the server is added by the sign-in command below). Disclosure — hosted-only connector with no local code: every tool call goes to the vendor's remote MCP server at mcp.boxcompute.ai, and commands and files run in the user's BoxCompute VMs, not on their machine. A running VM spends the user's BoxCompute credit per minute until it stops (it stops itself 30 minutes after its last command, file or preview call); preview_create makes a URL anyone can open for one hour; sandbox_delete permanently removes a VM and its files; email_send emails only the account owner's own address. Hermes itself does not prompt before these tools unless you set `trust: untrusted` on the boxcompute MCP server. No telemetry. The server and its OAuth sign-in are added with `hermes mcp add boxcompute --url https://mcp.boxcompute.ai/mcp --auth oauth --connect-timeout 300`."
+maintainer: BoxCompute
+tier: community
+category: tools
+version: "0.1.1"
+docs_url: https://github.com/boxcompute/hermes-plugin#readme
+image: https://raw.githubusercontent.com/boxcompute/hermes-plugin/de27f5719372905686474f8a7650c591c63e899c/assets/banner.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+- "Sign-in needs one extra command after install, because a portable plugin cannot declare an OAuth MCP server: hermes mcp add boxcompute --url https://mcp.boxcompute.ai/mcp --auth oauth --connect-timeout 300"

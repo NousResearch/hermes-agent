@@ -10,6 +10,7 @@ import {
   MAX_AUTO_DRAIN_ATTEMPTS,
   noteQueuedPromptDrainFailure,
   type QueuedPromptEntry,
+  queuedSubmissionId,
   removeQueuedPrompt,
   resolveQueuedPromptTransport,
   shouldAutoDrain,
@@ -194,7 +195,7 @@ export function useBackgroundQueueDrain({
             attachments: liveEntry.attachments,
             ...(resolved.displayText ? { displayText: resolved.displayText } : {}),
             fromQueue: true,
-            submission_id: liveEntry.id,
+            submission_id: queuedSubmissionId(liveEntry),
             sessionId: runtimeSessionId,
             storedSessionId: sessionKey
           })

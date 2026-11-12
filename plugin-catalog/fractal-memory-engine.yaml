@@ -1,0 +1,28 @@
+name: fractal-memory-engine
+repo: https://github.com/pCwOrM/hermes-fractal-memory
+sha: 40fc72cc82da6d33df0c10d0262cb18f2b6d3d4f
+version: "1.0.2"
+description: >-
+  Hierarchical vectorless episodic memory, procedural attractor clustering,
+  and O(1) complex coordinate anchoring for Hermes Agent. Eliminates external
+  vector database and embedding model overhead via 3-ring orbital resonance
+  decay and local JSON state persistence under HERMES_HOME/plugin-data.
+maintainer: pCwOrM
+tier: community
+category: memory
+requires_hermes: ">=0.21.0"
+docs_url: https://github.com/pCwOrM/hermes-fractal-memory#readme
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools:
+    - fractal_remember
+    - fractal_recall
+    - fractal_consolidate
+    - fractal_memory_inspect
+    - fractal_memory_wipe
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

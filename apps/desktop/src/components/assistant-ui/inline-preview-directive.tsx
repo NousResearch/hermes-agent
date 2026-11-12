@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
+import { PreviewDocumentFrame } from '@/components/ui/preview-document-frame'
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
 import { isReadFileErrorResult, readDesktopFileText } from '@/lib/desktop-fs'
 import { localPreviewTarget } from '@/lib/local-preview'
@@ -17,14 +18,16 @@ import { localPreviewTarget } from '@/lib/local-preview'
  * from a bridge file read, so single-file HTML (what agents generate) is
  * fully live; relative sibling assets don't resolve in an opaque origin.
  *
- * SIZE IS CONTENT-DRIVEN. The opaque origin means the parent can't measure
- * the document, but we own the srcdoc string — an injected script posts the
- * content's size up via postMessage (tagged with a per-mount token). Height
- * tracks live within the clamp band; width adopts ONCE from the first
- * report, so a fixed-size widget shrink-wraps and sits left in the message
- * flow like an image, while a fluid page measures the full viewport and
- * stays column-wide. A `height="480"` attribute only sets the starting
- * height — measurement always wins.
+ * HEIGHT IS CONTENT-DRIVEN, WIDTH IS THE COLUMN'S. The opaque origin means
+ * the parent can't measure the document, but we own the srcdoc string: an
+ * injected script posts the content's height up via postMessage (tagged with
+ * a per-mount token), and height tracks live within the clamp band. The frame
+ * always spans the transcript column, up to MAX_FRAME_WIDTH, and follows it
+ * on resize: a fluid page reflows to whatever width it is given, so a measured
+ * width would only echo the frame back. Frame and document are transparent,
+ * so a narrow widget laid out from the left edge reads as a small card beside
+ * the message text; a centered one sits mid-column. A `height="480"`
+ * attribute only sets the starting height; measurement always wins.
  *
  * NATIVE BY DEFAULT. A theme prelude injects first: the app's resolved
  * theme tokens under friendly names (--foreground, --muted-foreground,
@@ -50,8 +53,10 @@ import { localPreviewTarget } from '@/lib/local-preview'
 const MIN_HEIGHT = 120
 const MAX_HEIGHT = 1200
 const DEFAULT_HEIGHT = 280
-/** The transcript column cap the frame renders inside (`max-w-160` = 40rem). */
-const MAX_COLUMN_WIDTH = 640
+/** The frame fills the column up to this many pixels. Kept under
+ *  MAX_HEIGHT so a square graphic drawn at full width still fits the height
+ *  band instead of scrolling inside the frame. */
+export const MAX_FRAME_WIDTH = 960
 /** Ignore sub-pixel/rounding churn so a vh-sized page can't oscillate. */
 const RESIZE_TOLERANCE = 4
 
@@ -260,26 +265,19 @@ export function themePrelude(vars: Record<string, string>, font: string, colorSc
   )
 }
 
-/** The script injected into the srcdoc that reports content size to the
- *  parent. Runs inside the opaque origin, so postMessage is its only door —
- *  it can say "I am N pixels" and nothing else. Height is the document
- *  scrollHeight; width is the union of the body children's boxes (intrinsic
- *  content width — the document itself always fills the viewport, so
- *  scrollWidth would just echo the frame back). */
+/** The script injected into the srcdoc that reports content height to the
+ *  parent. Runs inside the opaque origin, so postMessage is its only door:
+ *  it can say "I am N pixels tall" and nothing else. Height is the document
+ *  scrollHeight. */
 export function measurementScript(token: string): string {
   return (
     '<script>(function(){var t=' +
     JSON.stringify(token) +
-    ';var lastH=0,lastW=0;function post(){var d=document.documentElement;var b=document.body;' +
+    ';var lastH=0;function post(){var d=document.documentElement;var b=document.body;' +
     'var h=Math.max(d?d.scrollHeight:0,b?b.scrollHeight:0);' +
-    'var w=0;if(b){var kids=b.children;var L=Infinity,R=0;for(var i=0;i<kids.length;i++){' +
-    'var r=kids[i].getBoundingClientRect();if(r.width===0&&r.height===0)continue;' +
-    'if(r.left<L)L=r.left;if(r.right>R)R=r.right}' +
-    'if(R>L)w=R-L}' +
-    'w=Math.ceil(w);' +
-    'if(Math.abs(h-lastH)>1||Math.abs(w-lastW)>1){lastH=h;lastW=w;parent.postMessage({type:' +
+    'if(Math.abs(h-lastH)>1){lastH=h;parent.postMessage({type:' +
     JSON.stringify(SIZE_MESSAGE_TYPE) +
-    ',token:t,height:h,width:w},"*")}}' +
+    ',token:t,height:h},"*")}}' +
     'if(typeof ResizeObserver==="function"){var ro=new ResizeObserver(post);' +
     'ro.observe(document.documentElement);if(document.body)ro.observe(document.body)}' +
     'addEventListener("load",post);post()})()</script>'
@@ -299,21 +297,18 @@ export function withInlineChrome(doc: string, token: string, prelude: string): s
 
 export interface FrameSizeReport {
   height: number
-  /** Intrinsic content width, 0 when unmeasurable. */
-  width: number
 }
 
 /** Parse a size report from the frame. Null unless it is OUR message type,
  *  carries OUR token, and holds a sane finite height — anything inside the
  *  sandbox can postMessage, so everything is validated before it moves the
- *  layout. Height clamped to the band; width sanitized but uncapped (the
- *  frame caps it against the column at render). */
+ *  layout. Height clamped to the band. */
 export function frameSizeFromMessage(data: unknown, token: string): FrameSizeReport | null {
   if (typeof data !== 'object' || data === null) {
     return null
   }
 
-  const message = data as { type?: unknown; token?: unknown; height?: unknown; width?: unknown }
+  const message = data as { type?: unknown; token?: unknown; height?: unknown }
 
   if (message.type !== SIZE_MESSAGE_TYPE || message.token !== token || typeof message.height !== 'number') {
     return null
@@ -323,15 +318,7 @@ export function frameSizeFromMessage(data: unknown, token: string): FrameSizeRep
     return null
   }
 
-  const width =
-    typeof message.width === 'number' && Number.isFinite(message.width) && message.width > 0
-      ? Math.round(message.width)
-      : 0
-
-  return {
-    height: Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.round(message.height))),
-    width
-  }
+  return { height: Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.round(message.height))) }
 }
 
 const HTML_FILE_RE = /\.(?:html?|xhtml)$/i
@@ -379,7 +366,6 @@ function InlineHtmlFrame({
   const [doc, setDoc] = useState<string | null>(null)
   const [failed, setFailed] = useState(false)
   const [measured, setMeasured] = useState<number | null>(null)
-  const [contentWidth, setContentWidth] = useState<number | null>(null)
 
   // One token per mount: the message listener only trusts reports from the
   // document THIS mount injected, so two previews in one transcript (or a
@@ -474,14 +460,6 @@ function InlineHtmlFrame({
       setMeasured(prev =>
         Math.abs(next.height - (prev ?? initialHeight ?? DEFAULT_HEIGHT)) > RESIZE_TOLERANCE ? next.height : prev
       )
-
-      // Width adopts ONCE, from the first report — measured at full column
-      // width, so it is the content's intrinsic span. Tracking width live
-      // would feedback-loop: %-width children reflow narrower every time
-      // the frame shrinks, spiraling toward zero.
-      if (next.width > 0) {
-        setContentWidth(prev => prev ?? next.width)
-      }
     }
 
     window.addEventListener('message', onMessage)
@@ -507,24 +485,17 @@ function InlineHtmlFrame({
   }
 
   const height = measured ?? initialHeight ?? DEFAULT_HEIGHT
-  // Left-aligned in the message flow, like an image: the frame is only as
-  // wide as its content (capped at the column). Fluid pages measure the
-  // full viewport and stay full-bleed.
-  const width = contentWidth !== null ? Math.min(contentWidth, MAX_COLUMN_WIDTH) : undefined
 
   return (
-    <span className="my-2 block w-full max-w-160">
+    <span className="my-2 block w-full" style={{ maxWidth: MAX_FRAME_WIDTH }}>
       {framedDoc === null ? (
         <span
           className="block w-full animate-pulse rounded-md bg-[color-mix(in_srgb,currentColor_4%,transparent)]"
           style={{ height }}
         />
       ) : (
-        <span
-          className="relative block max-w-full transition-[height] duration-200"
-          style={{ height, width: width ?? '100%' }}
-        >
-          <iframe
+        <span className="relative block w-full transition-[height] duration-200" style={{ height }}>
+          <PreviewDocumentFrame
             className="absolute inset-0 size-full border-0 bg-transparent"
             loading="lazy"
             sandbox="allow-scripts"

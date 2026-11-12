@@ -28,7 +28,6 @@ def _make_runner(recovered_thread_id=None):
     runner.session_store = None
     runner._session_db = None
     runner._session_model_overrides = {}
-    runner._session_reasoning_overrides = {}
     runner._agent_cache = {}
     runner._agent_cache_lock = threading.Lock()
     # Stub topic recovery: returns the bound topic id for a lobby message,

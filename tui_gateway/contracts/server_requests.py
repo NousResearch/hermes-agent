@@ -266,6 +266,14 @@ server_request("window.read", params=EmptyRequestParams, result=ValueResult,
                doc="Enumerate the native window below the app (JSON text answer).")
 
 
+class PreviewVaultOperation(Params):
+    """Internal vault transport, never arguments exposed to the model."""
+
+    operation: Literal["open", "evaluate", "close"]
+    target: str | None = None
+    expression: str | None = None
+
+
 class PreviewActRequestParams(ServerRequestParams):
     """``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets."""
 
@@ -280,6 +288,7 @@ class PreviewActRequestParams(ServerRequestParams):
     amount: int | None = None
     max: int | None = None
     allow_shortcut: bool | None = None
+    vault: PreviewVaultOperation | None = None
 
 
 server_request("preview.act", params=PreviewActRequestParams, result=ValueResult,

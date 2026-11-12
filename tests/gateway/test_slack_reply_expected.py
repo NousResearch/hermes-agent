@@ -31,8 +31,17 @@ def _message(text, ts, **extra):
     ({"free_response_channels": CHANNEL_ID}, _message("side chatter", "1.6"), False),
     ({"free_response_channels": CHANNEL_ID, "reply_in_thread": False}, _message("any update?", "1.7"), None),
     ({}, _message(f"<@{OTHER_USER_ID}> and <@{BOT_USER_ID}|hermes> both look", "1.8", thread_ts=THREAD), True),
+    ({"thread_followup_silence": True}, _message("done?", "1.9", thread_ts=THREAD), False),
+    ({"thread_followup_silence": False}, _message("done?", "1.10", thread_ts=THREAD), None),
+    ({"thread_followup_silence": True}, _message(f"<@{BOT_USER_ID}> done?", "1.11", thread_ts=THREAD), True),
+    ({"thread_followup_silence": True}, _message("hi", "1.12", channel="D0001", channel_type="im",
+                                                 thread_ts=THREAD), True),
+    ({"thread_followup_silence": True, "free_response_channels": CHANNEL_ID, "reply_in_thread": False},
+     _message("any update?", "1.13"), None),
 ], ids=["dm", "mention", "reaction", "thread-followup", "peer-addressed", "free-channel-top-level",
-        "flat-channel-followup", "peer-led-but-mentions-bot"])
+        "flat-channel-followup", "peer-led-but-mentions-bot", "thread-followup-silence-on",
+        "thread-followup-silence-off", "thread-followup-silence-on-mention", "thread-followup-silence-on-dm",
+        "thread-followup-silence-on-flat-channel"])
 async def test_admitted_message_carries_whether_it_was_addressed(adapter, extra, event, expected):
     adapter.config.extra.update(extra)
     adapter._mentioned_threads.add(THREAD)

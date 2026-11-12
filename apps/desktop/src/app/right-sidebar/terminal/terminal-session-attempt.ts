@@ -2,9 +2,11 @@ import type { Terminal } from '@xterm/xterm'
 import type { RefObject } from 'react'
 
 import type { HermesTerminalSession } from '@/global'
-import { isBrowserHostedDesktop } from '@/lib/platform'
+import { translateNow } from '@/i18n'
+import { hostHas } from '@/lib/host-capabilities'
 
-import { $terminals, markTerminalPersistent, removeExitedTerminal } from './terminals'
+import { defaultTerminalGateway, runsOverSsh, terminalGatewayOf } from './terminal-gateway'
+import { $terminals, adoptTerminalGateway, markTerminalPersistent, removeExitedTerminal } from './terminals'
 
 type TerminalApi = Window['hermesDesktop']['terminal']
 
@@ -19,6 +21,11 @@ const TERMINAL_EXIT_MESSAGES: Record<string, string> = {
   capacity: 'Terminal capacity reached. Close another terminal, then press Enter to retry.',
   'signed-out': 'Signed out of Hermes. Sign this browser in again, then press Enter to reconnect.'
 }
+
+const TERMINAL_UNAVAILABLE_KEYS = {
+  missing: 'rightSidebar.terminalGatewayRemovedBody',
+  'no-shell': 'rightSidebar.terminalGatewayNoShellBody'
+} as const
 
 // True once the page/app is tearing down (Cmd+Q, Alt+F4, window close, reload).
 // App quit kills the PTYs from the main process, which fires onExit in the
@@ -128,10 +135,48 @@ export function createSessionAttemptController(
       term.write(`${message}\r\n`)
     }
 
+    const showUnavailable = (reason: keyof typeof TERMINAL_UNAVAILABLE_KEYS) => {
+      restoreHistory()
+      setStatus('closed')
+      term.write(`\r\n${translateNow(TERMINAL_UNAVAILABLE_KEYS[reason])}\r\n`)
+    }
+
+    // The tab's own gateway; a tab from an older Desktop takes the one picked
+    // in Sessions (never the window-backend route, which a pick doesn't move)
+    // and records it BEFORE the start, so a failed start retries on it too.
+    const tab = $terminals.get().find(entry => entry.id === id)
+
+    if (tab?.gatewayRemoved) {
+      showUnavailable('missing')
+
+      return
+    }
+
+    const gateway = terminalGatewayOf(tab) ?? defaultTerminalGateway()
+
+    if (gateway) {
+      adoptTerminalGateway(id, gateway)
+    }
+
     void terminalApi
       // Prefer the last observed cwd so retry/relaunch stays in the same directory.
-      .start({ cols: term.cols, cwd: resolveCwd(), rows: term.rows, restoreKey: id, resumeOnly })
+      .start({ cols: term.cols, cwd: resolveCwd(), restoreKey: id, resumeOnly, rows: term.rows, ...gateway })
       .then(async session => {
+        // No registry to pick from (Webapp, early boot): main routed it.
+        if (!gateway && session.connectionId) {
+          adoptTerminalGateway(id, { connectionId: session.connectionId })
+        }
+
+        if (session.unavailable) {
+          // The gateway is gone or has no shell: an exited tab, never a
+          // local shell under the remote's name.
+          if (!isDisposed() && current) {
+            showUnavailable(session.unavailable)
+          }
+
+          return
+        }
+
         persistent = Boolean(session.persistent)
         resumeOnly = persistent
 
@@ -184,7 +229,7 @@ export function createSessionAttemptController(
             }
 
             if (exit.signal === 'disconnected') {
-              armRetry('\r\nTerminal disconnected. Press Enter to start a new shell; scrollback is preserved.')
+              armRetry(`\r\n${translateNow('rightSidebar.terminalDisconnectedBody')}`)
 
               return
             }
@@ -252,10 +297,12 @@ export function createSessionAttemptController(
         } else if (signal === 'expired') {
           resumeOnly = false
           armRetry(TERMINAL_EXIT_MESSAGES.expired)
-        } else if (isBrowserHostedDesktop()) {
+        } else if (hostHas('retryTerminalSpawn') || runsOverSsh(gateway)) {
+          // A browser host or an SSH gateway can come back (host offline,
+          // tunnel still connecting): Enter tries again.
           armRetry(`Terminal failed to start: ${message}. Press Enter to retry.`)
         } else {
-          // Native Desktop spawns a local shell: a failed spawn shows its error
+          // A local shell on native Desktop: a failed spawn shows its error
           // and the tab stays closed, as on main. Retrying it fails the same way.
           setStatus('closed')
           term.write(`Terminal failed to start: ${message}\r\n`)

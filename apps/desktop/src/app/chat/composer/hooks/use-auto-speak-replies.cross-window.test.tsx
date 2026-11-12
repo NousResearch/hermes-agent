@@ -1,3 +1,13 @@
+// Loaded once at collection, outside every test's budget: vi.resetModules() keeps each module's
+// transformed code, so the fresh copy a test imports only re-evaluates it. Without this the first
+// test pays the cold transform of the whole graph and times out on a loaded runner.
+import '@/lib/chat-messages'
+import '@/lib/spoken-reply'
+import '@/store/voice-playback'
+import '@/store/voice-prefs'
+import '../scope'
+import './use-auto-speak-replies'
+
 import { act, cleanup, renderHook } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, expect, it, vi } from 'vitest'

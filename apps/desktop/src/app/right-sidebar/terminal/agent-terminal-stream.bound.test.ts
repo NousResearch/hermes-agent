@@ -26,6 +26,23 @@ function runFinishedProc(id: string, chunks = 6): void {
 }
 
 describe('agent terminal retention is bounded', () => {
+  it('enforces the cold budget when mounted writers close without another output event', () => {
+    const stops = Array.from({ length: 40 }, (_, index) => registerAgentTerminalWriter(`closed-${index}`, () => {}))
+
+    for (let index = 0; index < stops.length; index++) {
+      runFinishedProc(`closed-${index}`)
+    }
+
+    for (const stop of stops) {
+      stop()
+    }
+
+    const retained = stops.map((_, index) => replay(`closed-${index}`))
+
+    expect(retained.reduce((chars, output) => chars + output.length, 0)).toBeLessThanOrEqual(2_000_000)
+    expect(retained.at(-1)).toBe(CHUNK.repeat(4))
+  })
+
   it('a finished process does not pin its backlog for the life of the renderer', () => {
     // 200 background commands, none mounted — the shape that grew to ~93 MB.
     for (let i = 0; i < 200; i++) {

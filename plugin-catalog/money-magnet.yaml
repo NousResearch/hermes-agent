@@ -1,0 +1,22 @@
+name: money-magnet
+repo: https://github.com/Whydiriki700/money-magnet
+sha: e9c7c72567d9b5a5d6d7d7b74634d2960e793b74
+title: Money Magnet
+description: 'Finance tracker and money magnet for Hermes Agent: record income and expenses, set a monthly budget and watch it fill, value a crypto portfolio against live prices, and scan for price gaps between exchanges. Transactions and budget live in local JSON under $HERMES_HOME/money-magnet/. Disclosure: the portfolio and arbitrage tools query the public CoinGecko and Binance price APIs (no account or API key; only coin symbols are sent). The tracker tools work fully offline.'
+maintainer: Whydiriki700
+tier: community
+category: tools
+version: "1.0.1"
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Whydiriki700/money-magnet
+platforms: []
+capabilities:
+  provides_tools:
+    - finance_add
+    - finance_list
+    - finance_budget
+    - finance_portfolio
+    - finance_arbitrage
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -1,0 +1,17 @@
+name: hermes-tag
+repo: https://github.com/DanielLi202/hermes-tag
+sha: 75e1931da6b89e857020f1539a2bffa669dfc6d1
+description: "Feishu platform override with per-chat Tier-0/Tier-1 context, standing work, and privacy lifecycle controls. Disclosure — replaces Hermes' bundled Feishu, Slack and DingTalk platform registrations with wrapped adapters; in chats listed in enabled_chats it stores every received group message (text and attachments, including from members who never talk to the bot) plus each @-mention question and reply in a plaintext SQLite file under the plugin's data directory (Tier-0 kept up to 24 h / 500 rows, Tier-1 memories with no time limit), answers /tag commands itself before Hermes' gateway admission (state-changing ones limited to the configured admins), and lets admins create Hermes cron jobs that post to the chat."
+maintainer: DanielLi202
+tier: community
+category: platform
+requires_hermes: ">=0.22.5"
+docs_url: https://github.com/DanielLi202/hermes-tag#readme
+version: "0.5.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - FEISHU_APP_ID
+  - FEISHU_APP_SECRET

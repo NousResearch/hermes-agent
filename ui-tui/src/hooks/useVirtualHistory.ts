@@ -56,6 +56,20 @@ const NOOP = () => {}
 const validVirtualItemHeight = (value: number): boolean =>
   Number.isFinite(value) && value > 0 && value <= MAX_VIRTUAL_ITEM_HEIGHT
 
+// A laid-out row may really be empty (a hidden trail, an image the gateway
+// answered `off` for), so a measurement or a cached measurement may be 0.
+// Estimates keep the positive floor above: an unmeasured row is never 0.
+const validMeasuredHeight = (value: number): boolean =>
+  Number.isFinite(value) && value >= 0 && value <= MAX_VIRTUAL_ITEM_HEIGHT
+
+// The row's laid-out height, or NaN when there is no Yoga node to read (a
+// missing node is "not measured", never "0 rows").
+const measuredHeight = (node: unknown): number => {
+  const read = (node as MeasuredNode | undefined)?.yogaNode?.getComputedHeight
+
+  return read ? Math.ceil(read.call((node as MeasuredNode).yogaNode)) : Number.NaN
+}
+
 const safeUnsignedGeometry = (value: number, fallback = 0): number =>
   Number.isFinite(value) && value >= 0 && value <= MAX_VIRTUAL_GEOMETRY ? value : fallback
 
@@ -66,7 +80,7 @@ export const pruneVirtualHeightCache = (cache: Map<string, number>, items: reado
   const active = new Set(items.map(item => item.key))
 
   for (const key of cache.keys()) {
-    if (!active.has(key) || !validVirtualItemHeight(cache.get(key)!)) {
+    if (!active.has(key) || !validMeasuredHeight(cache.get(key)!)) {
       cache.delete(key)
     }
   }
@@ -119,7 +133,7 @@ export const ensureVirtualItemHeight = (
 ) => {
   const cached = heights.get(key)
 
-  if (cached !== undefined && validVirtualItemHeight(cached)) {
+  if (cached !== undefined && validMeasuredHeight(cached)) {
     return Math.floor(cached)
   }
 
@@ -222,7 +236,7 @@ export function useVirtualHistory(
     for (const [k, h] of heights.current) {
       const scaled = Math.round(h * ratio)
 
-      if (validVirtualItemHeight(scaled)) {
+      if (validMeasuredHeight(scaled)) {
         heights.current.set(k, scaled)
       } else {
         heights.current.delete(k)
@@ -511,11 +525,10 @@ export function useVirtualHistory(
           // the final height before WASM release. Without this, items
           // scrolled out during fast pan keep a stale estimate in heightCache
           // and offset math drifts until the next mount/remount cycle.
-          const existing = nodes.current.get(key) as MeasuredNode | undefined
-          const h = Math.ceil(existing?.yogaNode?.getComputedHeight?.() ?? 0)
+          const h = measuredHeight(nodes.current.get(key))
           const previousHeight = heights.current.get(key)
 
-          if (validVirtualItemHeight(h) && previousHeight !== h) {
+          if (validMeasuredHeight(h) && previousHeight !== h) {
             const s = scrollRef.current
             const measuredBottom = measuredBottoms.current.get(key)
 
@@ -621,10 +634,10 @@ export function useVirtualHistory(
           continue
         }
 
-        const h = Math.ceil((nodes.current.get(k) as MeasuredNode | undefined)?.yogaNode?.getComputedHeight?.() ?? 0)
+        const h = measuredHeight(nodes.current.get(k))
         const previousHeight = heights.current.get(k)
 
-        if (validVirtualItemHeight(h) && previousHeight !== h) {
+        if (validMeasuredHeight(h) && previousHeight !== h) {
           // Keep the same content at the same screen row when estimates above
           // the committed viewport converge. Rows intersecting or below the
           // viewport intentionally retain the current scrollTop.

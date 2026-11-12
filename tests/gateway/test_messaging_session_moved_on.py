@@ -38,7 +38,7 @@ async def test_an_unviewed_superseded_mount_is_not_listed_live(tmp_path):
         'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
         'capabilities': ['session:read']})
     resumed = await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'old'}})
-    assert cold.authority.sessions['old'].superseded, resumed
+    assert cold.authority.sessions['old'].detached, resumed
     listed = await connection.dispatch({'id': 2, 'method': 'session.list', 'params': {}})
     assert 'old' in {row['id'] for row in listed['result']['sessions']}, 'a viewed historic mount stays listed'
 
@@ -61,8 +61,9 @@ async def test_an_old_messaging_conversation_can_be_deleted_from_the_picker(tmp_
         'provider': 'local', 'user_id': 'viewer', 'profile_id': 'fixture', 'instance_id': 'cold',
         'capabilities': ['session:read', 'session:control']})
     resumed = await connection.dispatch({'id': 1, 'method': 'session.resume', 'params': {'session_id': 'old'}})
-    assert cold.authority.sessions['old'].superseded, resumed
-    cold.authority.runner._evict_cached_agent = lambda key, **kw: pytest.fail('evicted the chat route')
+    assert cold.authority.sessions['old'].detached, resumed
+    lane = cold.store._generate_session_key(successor.origin)
+    cold.authority.runner._evict_cached_agent = lambda key, **kw: key != lane or pytest.fail('evicted the chat route')
 
     deleted = await connection.dispatch({'id': 2, 'method': 'session.mutate', 'params': {
         'session_id': 'old', 'request_id': 'delete-old', 'operation': 'delete', 'payload': {},
@@ -76,7 +77,7 @@ async def test_an_old_messaging_conversation_can_be_deleted_from_the_picker(tmp_
 
 
 @pytest.mark.asyncio
-async def test_an_old_messaging_conversation_still_refuses_every_other_write(tmp_path):
+async def test_an_old_messaging_conversation_takes_every_other_write(tmp_path):
     from gateway.session_controls import AuthorityConnection
     cold, _successor = await _superseded(tmp_path)
     connection = AuthorityConnection(cold.authority, object(), {
@@ -86,7 +87,7 @@ async def test_an_old_messaging_conversation_still_refuses_every_other_write(tmp
     renamed = await connection.dispatch({'id': 2, 'method': 'session.mutate', 'params': {
         'session_id': 'old', 'request_id': 'rename-old', 'operation': 'rename', 'payload': {'title': 'x'},
         'expected_revision': resumed['result']['revision']}})
-    assert renamed.get('error', {}).get('message') == 'session_superseded', renamed
+    assert 'result' in renamed, renamed  # Teknium's ruling: the apps keep a chat's old conversation
 
 
 @pytest.mark.asyncio

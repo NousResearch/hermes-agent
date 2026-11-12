@@ -1021,11 +1021,10 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
   it("#93937: the Sessions switcher never publishes the new source while the previous backend's runtime id is still bound", async () => {
     // Real stores end to end: real useGatewayBoot, real gateway registry, real
     // selectConnection, fake sockets. Boot on the primary VPS with a transcript
-    // open (its runtime id was minted by THAT backend), then switch sources
-    // through the sidebar door. Before the fix that door activated the new
-    // socket first and wiped the bindings after an IPC round-trip, so the
-    // renderer sat on "gateway B + runtime id from A" and B answered every
-    // session RPC with "session not found".
+    // open (its runtime id was minted by THAT backend), then pick another
+    // gateway in the sidebar. Before #93937 that door activated the new socket
+    // and unbound the old runtime after an IPC round-trip, so the renderer sat
+    // on "gateway B + runtime id from A" and B answered "session not found".
     const registryConnections: DesktopConnectionsRegistry = {
       connections: [
         { id: 'primary-vps', kind: 'remote', label: 'VPS', tokenPreview: '...t', tokenSet: true },
@@ -1038,7 +1037,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
 
     const desktop = fakeDesktop() as ReturnType<typeof fakeDesktop> & Record<string, unknown>
     const setLastUsed = vi.fn(async (id: string) => ({ ok: true, registry: { ...registryConnections, lastUsed: id } }))
-    let bindingAtDial: null | string = null
+    let dials = 0
 
     desktop.api = vi.fn(async ({ path }: { path: string }) =>
       path === '/api/profiles/active' ? { active: 'default', current: 'default' } : { profiles: [] }
@@ -1050,8 +1049,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       registryScoped: true
     }))
     desktop.getGatewayWsUrlFor = vi.fn(async () => {
-      // Phase 1 (the dial) runs with the previous source still fully bound.
-      bindingAtDial = $activeSessionId.get()
+      dials += 1
 
       return coderConn.wsUrl
     })
@@ -1078,6 +1076,8 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       }
     })
 
+    await vi.waitFor(() => expect(dials).toBeGreaterThan(0)) // connected before any pick
+    const dialsBeforePick = dials
     const switching = selectConnection('coder-remote')
     await flushAsync()
     await flushAsync()
@@ -1085,13 +1085,13 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await switching
     off()
 
-    // The previous backend's runtime id was already gone — and the barrier up —
-    // at every publication of the new source. (Pre-fix: the first publication
-    // carried activeSessionId 'a93bb39d' with the barrier down.)
+    // The previous backend's runtime id was already gone at every publication
+    // of the new source (pre-fix the first one carried 'a93bb39d'). A gateway
+    // pick is a live activation: no switch barrier, no machine-context reset.
     expect(published.length).toBeGreaterThan(0)
-    expect(published).toEqual(published.map(() => ({ activeSessionId: null, switching: true })))
-    expect(bindingAtDial).toBe('a93bb39d')
-    expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
+    expect(published).toEqual(published.map(() => ({ activeSessionId: null, switching: false })))
+    expect(dials).toBe(dialsBeforePick) // the pick dials nothing
+    expect(beforeConnectionSwitch).not.toHaveBeenCalled()
     expect($connection.get()?.connectionId).toBe('coder-remote')
     expect(isActivePrimary()).toBe(false)
     expect($activeSessionId.get()).toBeNull()

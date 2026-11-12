@@ -593,38 +593,70 @@ export function preserveLocalAssistantErrors(
 }
 
 /**
- * Re-graft trailing client-local `system` notices (the fallback-switch notice
- * from status.update): refreshes rebuild from stored rows, which never carry
- * them, so the notice vanished on the next refresh (#126422). Stored rows own
- * a `rowId` and are left to the page. Idempotent by id and text.
+ * A transcript line only this window drew, never stored: every renderer-made
+ * `system` row (slash output and the /btw and /bg echoes, the btw.complete and
+ * background.complete answers, fallback-switch, deferred-compress,
+ * approval-timeout and self-improvement review notices). A stored row owns a
+ * `rowId`, so no page read can bring one of these back.
+ */
+export function isLocalSystemNotice(message: ChatMessage): boolean {
+  return message.role === 'system' && message.rowId === undefined
+}
+
+/** Index in `messages` of the row `held` is, by id or stored row. */
+function heldRowIndex(messages: ChatMessage[], held: ChatMessage): number {
+  return messages.findIndex(
+    message => message.id === held.id || (held.rowId !== undefined && message.rowId === held.rowId)
+  )
+}
+
+/**
+ * Re-graft client-local `system` notices (see `isLocalSystemNotice`):
+ * refreshes rebuild from stored rows, which never carry them, so the notice
+ * vanished on the next refresh (#126422). A notice keeps its place in front of
+ * the next row the refreshed transcript still holds, so a /btw answer that
+ * landed mid-turn survives the steer that puts later rows below it. Trailing
+ * notices go at the end; one whose later rows the refresh no longer holds at
+ * all (compaction, rewind) goes with them. Idempotent by id and text.
  */
 export function preserveLocalSystemNotices(nextMessages: ChatMessage[], currentMessages: ChatMessage[]): ChatMessage[] {
-  const trailing: ChatMessage[] = []
-
-  for (let index = currentMessages.length - 1; index >= 0; index -= 1) {
-    const message = currentMessages[index]
-
-    if (message.role !== 'system') {
-      break
-    }
-
-    if (message.rowId === undefined) {
-      trailing.unshift(message)
-    }
-  }
-
-  if (!trailing.length) {
-    return nextMessages
-  }
-
   const nextIds = new Set(nextMessages.map(message => message.id))
   const nextTexts = new Set(nextMessages.map(message => chatMessageText(message).trim()))
 
-  const unstored = trailing.filter(
-    message => !nextIds.has(message.id) && !nextTexts.has(chatMessageText(message).trim())
-  )
+  const missing = (message: ChatMessage) =>
+    isLocalSystemNotice(message) && !nextIds.has(message.id) && !nextTexts.has(chatMessageText(message).trim())
 
-  return unstored.length ? [...nextMessages, ...unstored] : nextMessages
+  if (!currentMessages.some(missing)) {
+    return nextMessages
+  }
+
+  const merged = [...nextMessages]
+  let pending: ChatMessage[] = []
+  // Leading part of `pending` already followed by a row the refresh dropped.
+  let orphaned = 0
+
+  for (const message of currentMessages) {
+    if (missing(message)) {
+      pending.push(message)
+
+      continue
+    }
+
+    const at = pending.length ? heldRowIndex(merged, message) : -1
+
+    if (at >= 0) {
+      merged.splice(at, 0, ...pending)
+      pending = []
+      orphaned = 0
+    } else if (message.role !== 'system') {
+      orphaned = pending.length
+    }
+  }
+
+  const trailing = pending.slice(orphaned)
+  const preserved = trailing.length ? [...merged, ...trailing] : merged
+
+  return preserved.length === nextMessages.length ? nextMessages : preserved
 }
 
 export function branchGroupForUser(userMessage: ChatMessage): string {

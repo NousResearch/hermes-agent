@@ -1,11 +1,14 @@
 """Resolve explicit model changes using the existing source model switch pipeline."""
 import asyncio
 import json
+import logging
 from dataclasses import asdict, replace
 from typing import NamedTuple
 
 from gateway.session_route_identity import ROUTE_BOUND_KEYS
 from hermes_state_runtime import RuntimeStoreError
+
+logger = logging.getLogger(__name__)
 
 
 class _Route(NamedTuple):
@@ -23,8 +26,8 @@ def _current_route(authority, live, old):
     runtime's whole tuple (``tui_gateway.model_switch._current_model_runtime``). The provider is
     the configured name: a named ``providers:`` entry resolves to the bare ``custom`` class, and a
     pick on the same entry must not read as a route change. Only the session's own route counts:
-    a fallback is where a turn lands, not what the user switches from. A route that cannot
-    authenticate here must not block leaving it: like main's agent-less ``--provider`` path, the
+    a fallback is where a turn lands, not what the user switches from. A route that cannot be
+    resolved here must not block leaving it: like main's agent-less ``--provider`` path, the
     pick then switches from the configured provider alone and resolves its own target.
     """
     from gateway.session_policy import profile_read_scope
@@ -35,7 +38,11 @@ def _current_route(authority, live, old):
         try:
             model, runtime = authority.runner._resolve_session_agent_runtime(
                 source=live.source, session_key=live.route, fallback=False)
-        except AuthError:
+        except (AuthError, ValueError) as exc:
+            # A stopped local model server raises ValueError here. The session still has to be
+            # able to leave that route (#146253).
+            logger.debug("session model switch: current route unresolvable (%s); switching from "
+                         "the configured provider instead", exc)
             return config, _Route(block.get('provider') or '', old.current_model(authority) or '',
                                   block.get('base_url') or '', '')
     return config, _Route(block.get('provider') or runtime.get('provider') or '', model or '',
@@ -49,6 +56,11 @@ async def prepare_model(authority, live, payload, prepared):
     from hermes_cli.config import get_compatible_custom_providers
     old = restore_policy(prepared['snapshot']['receipt']['policy'])
     config, current = _current_route(authority, live, old)
+    reset = is_model_reset(payload)
+    if reset:
+        payload = await asyncio.to_thread(_reset_payload, authority, old, current)
+        if 'status' in payload:
+            return payload
     # A pick is an explicit user action: it resolves against the owning profile's CURRENT named
     # providers, as CLI/TUI ``/model`` do (#139740). A following session's ``config`` already is
     # the profile's current read; every other session keeps ``config`` for its own route below.
@@ -65,7 +77,9 @@ async def prepare_model(authority, live, payload, prepared):
         custom_providers=get_compatible_custom_providers(resolution))
     if not result.success:
         raise RuntimeStoreError('model_resolution_failed')
-    refusal = await _selection_guard_refusal(authority, live, payload, prepared['snapshot'], current, result)
+    # The configured default is the user's own choice: a reset is never held behind a cost ask.
+    refusal = None if reset else await _selection_guard_refusal(
+        authority, live, payload, prepared['snapshot'], current, result)
     if refusal is not None:
         return refusal
     frozen = old.config()
@@ -144,6 +158,45 @@ async def prepare_model(authority, live, payload, prepared):
     policy = bind_launch_key(authority, prepared['snapshot']['receipt']['session_id'], policy, key,
                              config_secrets=secrets)
     return dict(prepared, policy=asdict(policy))
+
+
+def is_model_reset(payload):
+    """``/model reset`` as a ``model`` mutation; with any other selection field it is refused, as on
+    every surface (``parse_model_switch_args``)."""
+    from hermes_cli.model_switch import (
+        MODEL_SWITCH_ERR_RESET_WITH_FLAGS, MODEL_SWITCH_ERROR_TEXT, MODEL_SWITCH_RESET_TOKEN)
+    if payload['model'].strip().lower() != MODEL_SWITCH_RESET_TOKEN:
+        return False
+    if set(payload) - {'model', 'confirm'}:
+        raise RuntimeStoreError('invalid_params', field='payload',
+                                detail=MODEL_SWITCH_ERROR_TEXT[MODEL_SWITCH_ERR_RESET_WITH_FLAGS])
+    return True
+
+
+def configured_default(authority):
+    """``(model, provider)`` the owning profile's config.yaml names now (``auto`` reads as no provider)."""
+    from gateway.run import _resolve_gateway_model
+    from gateway.session_policy import profile_config
+    profile = profile_config(authority)
+    block = profile.get('model')
+    if not block:
+        return '', ''
+    provider = str(block.get('provider') or '') if isinstance(block, dict) else ''
+    return _resolve_gateway_model(profile), '' if provider.lower() == 'auto' else provider
+
+
+def _reset_payload(authority, old, current):
+    """``/model reset``: the pick becomes the owning profile's configured model, read fresh, so the
+    session runs (and, when following, keeps following) its profile again; history is kept. Returns a
+    ``noop`` report when the session already runs that model. A safe-mode session never read the
+    profile, so it has no configured default to return to."""
+    from agent.i18n import t
+    model, provider = ('', '') if old.ignore_user_config else configured_default(authority)
+    if not model:
+        raise RuntimeStoreError('invalid_params', field='payload.model', detail=t('cli.model.reset_no_default'))
+    if model == current.model and provider in ('', current.provider):
+        return {'status': 'noop', 'model': model, 'note': t('cli.model.reset_none', model=model)}
+    return {'model': model, **({'provider': provider} if provider else {})}
 
 
 def _provider_resolution_config(authority, config, bypass=False):

@@ -12,12 +12,13 @@ import time
 import urllib.parse
 from fastapi import APIRouter
 from hermes_cli.web_routers._common import (
-    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
-    redacted_credential_preview, scoped_to_thread,
+    REDACTED_CREDENTIAL_WRITE_DETAIL, config_scoped_to_thread, http_failure,
+    is_redacted_credential_preview, redacted_credential_preview, scoped_to_thread,
 )
-from hermes_cli.web_deps import LateState, late
+from hermes_cli.config_backend import CONFIG_MUTATION_LOCK, refusing_locked_omissions
+from hermes_cli.web_deps import late
 from hermes_cli.web_server_config import (
-    _apply_main_model_assignment, _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
+    _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
     _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
@@ -43,7 +44,6 @@ load_env = late("load_env", "hermes_cli.config")
 remove_env_value = late("remove_env_value", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 save_env_value = late("save_env_value", "hermes_cli.config")
-_CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: list[float] = []
@@ -100,9 +100,12 @@ async def get_defaults():
 async def get_schema(profile: Optional[str] = None):
     # Discovery-driven provider options (voice command providers + memory
     # provider plugins) are merged per-request so providers added after server
-    # start still show up, scoped to the requested profile's config.
-    with _config_profile_scope(profile):
-        fields = _schema_with_dynamic_provider_options()
+    # start still show up, scoped to the requested profile's config. That merge
+    # walks the schema and scans plugin dirs on disk, so it runs on a worker
+    # thread: on the event loop it froze every other request — including
+    # /api/ws — for as long as the scan took. asyncio.to_thread copies the
+    # contextvar context, so the profile override stays scoped to the worker.
+    fields = await config_scoped_to_thread(profile, _schema_with_dynamic_provider_options)
     return {"fields": fields, "category_order": _CATEGORY_ORDER}
 
 
@@ -110,8 +113,9 @@ async def get_schema(profile: Optional[str] = None):
 async def get_egress_status(profile: Optional[str] = None):
     """Dashboard/Desktop-readable egress proxy status and remediation text."""
     from hermes_cli.proxy_cli import format_status_text
-    with _config_profile_scope(profile):  # reads the profile's ``proxy:`` config block
-        return {"text": format_status_text()}
+    # Reads the profile's ``proxy:`` config block from disk; on the event loop
+    # that read stalled every other dashboard request for its duration.
+    return {"text": await config_scoped_to_thread(profile, format_status_text)}
 
 
 @router.put("/api/config")
@@ -125,7 +129,7 @@ async def update_config(
             # schema (``custom_providers``, ``agent.personalities``, ...) are not
             # in the PUT body, so deep-merge incoming over disk rather than
             # full-replace — the frontend can only overwrite what it sends.
-            with _CONFIG_MUTATION_LOCK:
+            with CONFIG_MUTATION_LOCK:
                 # Strict read: the merge below builds a new dict, so a swallowed read error here
                 # would save the PUT body alone over the whole file.
                 existing = require_readable_config_before_write()
@@ -716,13 +720,18 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     cfg["providers"] = providers
 
     if body.make_default:
+        from hermes_cli.model_assignment import apply_main_model_assignment, drop_model_key
         result = _validated_main_model_selection(cfg, endpoint_id, model, base_url)
-        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
+        cfg["model"] = apply_main_model_assignment(cfg.get("model", {}), result)
         if entry.get("key_env") and isinstance(cfg["model"], dict):
             cfg["model"]["key_env"] = entry["key_env"]
-            cfg["model"].pop("api_key", None)
+            drop_model_key(cfg["model"], "api_key")
 
     return endpoint_id, entry
+
+
+# Sections a custom-endpoint default assignment writes together: the route and its provider entry.
+_ROUTE_SECTIONS = ("model", "providers", "custom_providers")
 
 
 @router.get("/api/providers/custom-endpoints")
@@ -743,15 +752,18 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = 
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     with http_failure("POST /api/providers/custom-endpoints failed", 500, detail="Failed to save custom endpoint"):
         # Sync-def endpoints run on worker threads: the load→mutate→save span
-        # holds _CONFIG_MUTATION_LOCK so a concurrent config autosave cannot
+        # holds CONFIG_MUTATION_LOCK so a concurrent config autosave cannot
         # drop this write (or vice versa).
-        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
+        with _config_profile_scope(profile), CONFIG_MUTATION_LOCK:
             cfg = load_config()
             providers = cfg.get("providers")
             created = _resolve_custom_endpoint_entry(
                 providers if isinstance(providers, dict) else {}, body.id or body.name)[1] is None
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
-            save_config(cfg)
+            # make_default: the model route and the provider definition it names are one change,
+            # so a lock on either refuses both (never a model.provider naming an omitted entry).
+            with refusing_locked_omissions(*_ROUTE_SECTIONS) if body.make_default else contextlib.nullcontext():
+                save_config(cfg)
             response = _custom_endpoint_response(cfg)
             from hermes_constants import get_hermes_home
             home = get_hermes_home()
@@ -772,11 +784,12 @@ def _record_custom_endpoint_setup(home: Any) -> None:
 @router.post("/api/providers/custom-endpoints/{endpoint_id}/activate")
 def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Set a configured custom endpoint as the default model provider."""
+    from hermes_cli.model_assignment import apply_main_model_assignment, drop_model_key
     with http_failure(
         f"POST /api/providers/custom-endpoints/{endpoint_id}/activate failed", 500,
         detail="Failed to activate custom endpoint",
     ):
-        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
+        with _config_profile_scope(profile), CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
             stored_key, entry = _resolve_custom_endpoint_entry(cfg.get("providers"), endpoint_id)
             if entry is None:
@@ -800,11 +813,11 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
             if not model or not base_url:
                 raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
 
-            model_cfg = _apply_main_model_assignment(
+            model_cfg = apply_main_model_assignment(
                 cfg.get("model", {}), _validated_main_model_selection(cfg, provider_key, model, base_url))
             if entry.get("key_env"):
                 model_cfg["key_env"] = entry["key_env"]
-                model_cfg.pop("api_key", None)
+                drop_model_key(model_cfg, "api_key")
             elif entry.get("api_key"):
                 # `cfg` is env-expanded, so a raw `${VAR}` api_key would land as
                 # plaintext; copy the raw template when that's what's on disk.
@@ -817,7 +830,8 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 else:
                     model_cfg["api_key"] = entry["api_key"]
             cfg["model"] = model_cfg
-            save_config(cfg)
+            with refusing_locked_omissions(*_ROUTE_SECTIONS):
+                save_config(cfg)
         return {"ok": True, "provider": provider_key, "model": model}
 
 
@@ -828,7 +842,7 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         f"DELETE /api/providers/custom-endpoints/{endpoint_id} failed", 500,
         detail="Failed to delete custom endpoint",
     ):
-        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
+        with _config_profile_scope(profile), CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
             providers = cfg.get("providers")
             stored_key, entry = _resolve_custom_endpoint_entry(providers, endpoint_id)

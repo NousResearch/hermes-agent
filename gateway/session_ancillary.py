@@ -234,20 +234,41 @@ async def read(connection, ref, params, *, kind):
     if ref.session_id not in authority.sessions:
         raise RuntimeStoreError('not_found')
     authorize(connection, ref, params, 'session:read')
-    live = authority.sessions[ref.session_id]
+    # In a worker thread (it inherits the dispatch's owner scope): the projection takes the session's
+    # event lock, which every streamed token takes too, reads state.db (compression lineage, local
+    # receipt, control meta) and the process registry under its lock. Clients poll these every 1-5 s per
+    # open session, so on the loop they were a large share of loop time with many sessions running.
+    return await asyncio.to_thread(locked_projection, authority, authority.sessions[ref.session_id], ref,
+                                   partial(_project, authority, ref, params, kind))
+
+
+def locked_projection(authority, live, ref, project):
+    """``project()`` under the session's event lock, off the loop (``session.transcript`` reads a
+    ``subagent_id``'s roster here)."""
     with live.event_stream.lock:
-        if kind == 'control':
-            # Persisted per session id, never the route's live objects: readable after a messaging
-            # route moved on to another conversation.
-            return {'control': control_snapshot(authority, ref)}
-        _require_current_route(authority, ref)
-        agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
-        if kind == 'subagents':
-            return {'subagents': [{key: record.get(key) for key in _SUBAGENT_FIELDS}
-                                  for record in records], 'delegations': []}
-        if kind == 'tail':
-            return subagent_tail(records, params['subagent_id'])
-        return {'processes': process_snapshot(authority, ref, agent, records)}
+        try:
+            return project()
+        except KeyError:
+            # Popped from authority.sessions before or during the projection (retire_live_sessions runs
+            # on the loop without this lock): the projection re-indexes the map, and a popped session is
+            # not_found.
+            if authority.sessions.get(ref.session_id) is not live:
+                raise RuntimeStoreError('not_found') from None
+            raise
+
+
+def _project(authority, ref, params, kind):
+    if kind == 'control':
+        # Persisted per session id, never the route's live objects: readable after a messaging
+        # route moved on to another conversation.
+        return {'control': control_snapshot(authority, ref)}
+    _require_current_route(authority, ref)
+    agent, records = _owner_objects(authority, ref, include_fallback_evicted=kind == 'subagents')
+    if kind == 'subagents':
+        return {'subagents': [subagent_row(record) for record in records], 'delegations': []}
+    if kind == 'tail':
+        return subagent_tail(records, params['subagent_id'])
+    return {'processes': process_snapshot(authority, ref, agent, records)}
 
 
 def _owned_targets(connection, ref, params, *, select):
@@ -517,10 +538,24 @@ def subagent_records(parent, session_id=None, *, session_db=None, route=None, in
     # A rotating /compress moves the conversation to a new stored id; an evicted parent keeps its earlier one.
     target_sids = _compression_lineage(expected_db, target_sid)
     with registry._active_subagents_lock:
-        return [dict(record) for record in registry._active_subagents.values()
-                if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
-                or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)
-                or _owned_by_lineage(record, target_sids, expected_db)]
+        records = list(registry._active_subagents.values())
+        owned = {id(record): record for record in records
+                 if (parent is not None and registry._is_descendant_of(record.get('agent'), parent))
+                 or _has_fallback_evicted_ancestor(record.get('agent'), target_sids, expected_db, effective_route, registry)
+                 or _owned_by_lineage(record, target_sids, expected_db)}
+        return [dict(record) for record in records
+                if id(record) in owned or _below_owned(record, owned.values(), expected_db, registry)]
+
+
+def _below_owned(record, owned, expected_db, registry):
+    """A worker of a child this roster already owns, in the same session database file. After a parent
+    rebuild or eviction the orchestrator is found by its durable owner id, but its worker's owner id names the
+    orchestrator and its spawn ancestry runs through the old parent, so only the orchestrator links it."""
+    expected_path = getattr(expected_db, 'db_path', None)
+    child_path = getattr(getattr(record.get('agent'), '_session_db', None), 'db_path', None)
+    if expected_path is None or child_path is None or str(child_path) != str(expected_path):
+        return False
+    return any(registry._is_descendant_of(record.get('agent'), r.get('agent')) for r in owned)
 
 
 def _owned_by_lineage(record, target_sids, expected_db):
@@ -552,6 +587,14 @@ def _compression_lineage(db, session_id):
     lineage = getattr(db, 'get_compression_lineage', None)
     found = lineage(session_id) if callable(lineage) else None
     return frozenset(found if isinstance(found, (list, tuple)) else ()) | ids
+
+
+def subagent_row(record):
+    """One ``subagent.list`` row; ``child_session_id`` is the child's own stored session, the one
+    ``session.transcript`` reads for its ``subagent_id``."""
+    child = getattr(record.get('agent'), 'session_id', None)
+    return {**{key: record.get(key) for key in _SUBAGENT_FIELDS},
+            'child_session_id': child if isinstance(child, str) and child else None}
 
 
 def subagent_tail(records, subagent_id):

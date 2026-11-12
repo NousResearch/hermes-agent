@@ -1,0 +1,19 @@
+name: saascity
+title: SaaSCity
+repo: https://github.com/nyyhao/saascity-mcp
+sha: cba6b8a6faa38a9f92b73128f727923d1d139d25
+subdir: plugin
+version: "1.0.0"
+description: "Plan a SaaS, AI or developer-tool launch through SaaSCity's MCP server (Streamable HTTP at https://saascity.io/api/mcp, no sign-in, no keys in config): audit a homepage the way directory scrapers see it, pick launch directories from 1,600+ with Ahrefs DR, link type and price, research products listed on SaaSCity, run SaaS metric calculators, and draft a SaaSCity listing for the user to review. Bundles one workflow skill, launch-plan. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — hosted-only connector with no local code; every tool call goes to saascity.io, which runs SaaSCity. check_launch_readiness, check_badge and check_backlink make saascity.io fetch the URL the user gives. submit_project sends the approved product details to SaaSCity and stores them as an inert draft, with the caller's IP for rate limits, that expires after 7 days unless the user claims it; nothing is published or charged unless the user opens the claim link and pays on saascity.io. Every tool is annotated read-only except submit_project; the package marks the server untrusted, so Hermes asks before it runs and refuses it in unattended runs. saascity.io is not available in every region (HTTP 451 there). The tool set is served by the remote server at runtime and is not covered by the pinned sha."
+maintainer: SaaSCity
+tier: community
+category: tools
+docs_url: https://saascity.io/mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

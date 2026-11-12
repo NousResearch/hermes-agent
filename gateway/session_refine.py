@@ -52,6 +52,7 @@ async def refine_local_session(runner, source, focus):
         return t('gateway.refine.started', focus_suffix=tail)
     task_id = f'refine_{uuid.uuid4().hex[:6]}'
     holder = [None]
+    loop = asyncio.get_running_loop()
 
     def publish(message):
         current = authority.sessions.get(ref.session_id)
@@ -63,6 +64,9 @@ async def refine_local_session(runner, source, focus):
             review_body()
         finally:  # whatever raised first, the session's guard is released
             finish_background_review_run(live.review, run)
+            from gateway.session_retirement import retire_after_review
+            with contextlib.suppress(RuntimeError):  # the loop already closed
+                loop.call_soon_threadsafe(retire_after_review, authority, ref, live)
         return ''  # the summary (if any) was published above; an empty review.summary draws nothing
 
     def review_body():

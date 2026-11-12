@@ -22,10 +22,6 @@
       inputs.pyproject-nix.follows = "pyproject-nix";
       inputs.uv2nix.follows = "uv2nix";
     };
-    npm-lockfile-fix = {
-      url = "github:jeslie0/npm-lockfile-fix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     # Used only by nix/checks.nix, to evaluate homeManagerModules.default
     # against the real Home Manager module system rather than a stub of it.
     # Consuming the module does not require this input — import it from your

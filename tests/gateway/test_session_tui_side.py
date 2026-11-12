@@ -5,7 +5,10 @@ answer lands later on the parent session as ``background.complete`` / ``btw.comp
 canonical owner answered ``unknown_method``, so Ink refused both commands on the shared gateway.
 """
 import asyncio
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import sqlite3
+import threading
 
 import pytest
 
@@ -56,6 +59,66 @@ def test_background_prompt_runs_a_detached_agent_and_reports_on_the_session(tmp_
                 resumed = (await rpc(ws, 'session.resume', session_id=sid))['result']
                 assert not resumed['messages'], resumed['messages']
         asyncio.run(probe())
+
+
+class DelegatingModel(BaseHTTPRequestHandler):
+    """The /bg prompt delegates in the background; the child answers CHILD_DONE; the parent's
+    follow-up reports whether the tool result carried the child's answer or a detached dispatch."""
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+        last = (body.get('messages') or [{}])[-1]
+        message = {'role': 'assistant', 'content': 'CHILD_DONE'}
+        if last.get('role') == 'tool':
+            message['content'] = 'JOINED' if 'CHILD_DONE' in str(last.get('content')) else 'DETACHED'
+        elif 'DELEGATE_BG' in str(last.get('content')):
+            message = {'role': 'assistant', 'content': None, 'tool_calls': [{
+                'id': 'bg-delegate', 'type': 'function', 'function': {
+                    'name': 'delegate_task', 'arguments': json.dumps({'goal': 'CHILD_GOAL', 'background': True})}}]}
+        finish = 'tool_calls' if message.get('tool_calls') else 'stop'
+        payload = json.dumps({'id': 'bg', 'choices': [{'index': 0, 'message': message, 'finish_reason': finish}],
+                              'usage': {'prompt_tokens': 10, 'completion_tokens': 5, 'total_tokens': 15}}).encode()
+        kind = 'application/json'
+        if body.get('stream'):
+            delta = dict(message, tool_calls=[dict(c, index=0) for c in message.get('tool_calls') or []] or None)
+            payload = ('data: ' + json.dumps({'id': 'bg', 'choices': [{'index': 0, 'delta': delta,
+                       'finish_reason': finish}]}) + '\n\ndata: [DONE]\n\n').encode()
+            kind = 'text/event-stream'
+        self.send_response(200)
+        self.send_header('Content-Type', kind)
+        self.send_header('Content-Length', str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+@pytest.mark.platforms("linux")
+def test_background_prompt_joins_its_background_delegation(tmp_path):
+    """#140569: a /bg task replies once and its bg_* session never gets another turn, so a
+    background delegate_task inside it must join in the run, not leave an undrained ledger row."""
+    model = ThreadingHTTPServer(('127.0.0.1', 0), DelegatingModel)
+    threading.Thread(target=model.serve_forever, daemon=True).start()
+    url = f'http://127.0.0.1:{model.server_port}/v1'
+    try:
+        with owner(tmp_path, {'model': {'provider': 'custom', 'default': 'bg-fixture', 'base_url': url}}) as (
+                home, _peer, desc):
+            async def probe():
+                async with websocket(home, desc) as ws:
+                    sid = (await rpc(ws, 'session.create', request_id='bgd', source='tui',
+                                     toolsets=['delegation']))['result']['session_id']
+                    reply, event = await call_and_await_event(ws, 'prompt.background', 'background.complete',
+                                                              session_id=sid, text='DELEGATE_BG')
+                    assert event['payload']['text'] == 'JOINED', (reply, event)
+            asyncio.run(probe())
+            with sqlite3.connect(f'file:{home / "state.db"}?mode=ro', uri=True) as db:
+                tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                detached = list(db.execute('SELECT * FROM async_delegations')) if 'async_delegations' in tables else []
+            assert not detached, detached
+    finally:
+        model.shutdown()
+        model.server_close()
 
 
 @pytest.mark.platforms("linux")

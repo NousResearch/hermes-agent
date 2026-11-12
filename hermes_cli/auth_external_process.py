@@ -10,6 +10,13 @@ import os
 from typing import Optional
 
 
+def external_process_command(profile) -> str:
+    """The command a launch uses: the first set ``process_command_env_vars`` override, else the profile's
+    ``process_command``. ``profile`` may be None."""
+    overrides = (os.getenv(var, "").strip() for var in (getattr(profile, "process_command_env_vars", ()) or ()))
+    return next((v for v in overrides if v), "") or str(getattr(profile, "process_command", "") or "")
+
+
 def resolve_external_process_command(command: str) -> Optional[str]:
     """Absolute path of the provider CLI ``command``, or ``None`` when nothing executable matches."""
     if not command:

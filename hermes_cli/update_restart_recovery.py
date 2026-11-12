@@ -107,8 +107,9 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
 
     One updater environment relaunches EVERY profile, so a child for another profile would inherit
     this process's authorization gates (``DISCORD_ALLOWED_CHANNELS``, ``GATEWAY_ALLOW_ALL_USERS`` ...)
-    and enforce them as its own — its ``.env`` only overwrites the keys it defines (#113270). Gates are
-    dropped when *profile* is not the launch profile; a same-profile child keeps an operator export.
+    and enforce them as its own — its ``.env`` only overwrites the keys it defines (#113270) — and the
+    launch profile's bot tokens, so an API-only sibling polled the root bot (#135792). A sibling's env is
+    the one the normal restart watcher gets; a same-profile child keeps an operator export.
 
     Restarting the host multiplexer from a named profile does not copy this process's environ: the
     child is ``host_gateway_child_env`` (``served_profile_child_env`` for the default root) so the
@@ -118,12 +119,16 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
     target = profile if profile is not None else launch
     if target == "default" and launch != "default":
         from tools.environments.local import host_gateway_child_env
+        _adopt_parent_provenance()
         env = host_gateway_child_env()
     else:
-        env = os.environ.copy()
+        env = None
         if profile is not None and profile != launch:
-            from tools.environments.local_env_policy import strip_profile_gate_env
-            strip_profile_gate_env(env)
+            from hermes_cli.gateway_restart_env import profile_gateway_restart_env
+            _adopt_parent_provenance()
+            from hermes_cli.profiles import get_profile_dir
+            env = profile_gateway_restart_env(str(get_profile_dir(profile)))
+        env = os.environ.copy() if env is None else env
     for marker in _GATEWAY_MARKERS:
         env.pop(marker, None)
     env[_RECOVERY_ENV] = "1"
@@ -136,6 +141,7 @@ def _run_profile_restart(profile: str, *, run: Callable[..., Any]) -> bool:
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
     else:
+        # detached-spawn: ok — awaited with a timeout; the gateway restart it runs must not share the updater's group
         kwargs["start_new_session"] = True
     # `--interrupt`: the update owns this restart (drain-first, 31637312899); a live session must not
     # strand the profile on pre-update code the way a refusal would. `--detach`: this bounded call
@@ -389,10 +395,34 @@ def restart_serve_units(
     }
 
 
+# The updater's env provenance (which names its secret sources and dotenvs supplied), from the payload.
+_parent_provenance: dict[str, list[str]] = {}
+
+
+def _read_env_provenance(raw) -> None:
+    """Keep the updater's env provenance: this interpreter inherited the values only, and a sibling's
+    env is stripped by provenance. An older updater sends none; a malformed block is refused."""
+    if raw is None:
+        return
+    if not isinstance(raw, dict) or any(
+        not isinstance(names, list) or any(not isinstance(name, str) for name in names) for names in raw.values()
+    ):
+        raise ValueError("recovery env_provenance block is invalid")
+    _parent_provenance.update(raw)
+
+
+def _adopt_parent_provenance() -> None:
+    """Record the updater's provenance as this process's own, right before a routed child env is built
+    (only then: a same-profile restart imports no Hermes code)."""
+    from hermes_cli.env_loader import adopt_env_provenance
+    adopt_env_provenance(_parent_provenance)
+
+
 def _parse_payload(stream) -> tuple[list[str], dict[str, str], bool, list[str]]:
     payload = json.load(stream)
     if not isinstance(payload, dict):
         payload = {}
+    _read_env_provenance(payload.get("env_provenance"))
     profiles = payload.get("profiles")
     if not isinstance(profiles, list):
         raise ValueError("recovery payload must contain a profiles list")

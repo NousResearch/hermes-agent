@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 
 
 @pytest.mark.asyncio
@@ -29,7 +29,7 @@ async def test_adopted_acp_thread_keeps_its_saved_route_and_workspace(tmp_path, 
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='fixture')
-    actor = Principal('uid:1000', str(tmp_path), frozenset({'session:read', 'session:create'}), 'native')
+    actor = SessionActor('uid:1000', str(tmp_path), frozenset({'session:read', 'session:create'}), 'native')
     bind_native_transport(authority, actor, {'provider': 'local', 'profile_id': str(tmp_path),
                                              'instance_id': 'fixture'})
     workspace = tmp_path / 'workspace'
@@ -69,7 +69,7 @@ async def test_adopted_legacy_tui_session_keeps_saved_route_and_runtime_settings
     runner = SimpleNamespace(session_store=store, _session_db=store._db, adapters={}, _draining=False,
                              _cached_agent_for=lambda route: None, _adapter_for_source=lambda source: None)
     authority = await initialize_session_authority(runner, profile_id=str(tmp_path), instance_id='fixture')
-    actor = Principal('uid:1000', str(tmp_path), frozenset({'session:read', 'session:create'}), 'native')
+    actor = SessionActor('uid:1000', str(tmp_path), frozenset({'session:read', 'session:create'}), 'native')
     bind_native_transport(authority, actor, {'provider': 'local', 'profile_id': str(tmp_path),
                                              'instance_id': 'fixture'})
     authority.db.create_session('old-tui-session', source='tui', model='gpt-6.1-sol-900k', model_config={

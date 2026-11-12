@@ -11,12 +11,16 @@ from __future__ import annotations
 
 from typing import Literal
 
+from pydantic import Field
+
 from .base import JsonValue, Params, Result
-from .common import McpServerStatus, OpenModel, PlanGauge, ProjectRef
+from .common import McpServerStatus, OpenModel, PlanGauge, ProfileParams, ProjectRef, Usage
 from .events import SkinPayload
-from .groups_bot_relay import RoomParams, RoomTaskReceipt
+from .groups_bot_relay import (
+    GroupsPeerInviteResult, GroupsPeerRegisterResult, GroupsPeerRevokeResult, RoomParams, RoomTaskReceipt,
+)
 from .prompt_voice import ClarifyLockParams, ClarifyLockResult
-from .registry import canonical_method
+from .registry import canonical_method, canonical_namespace, method
 
 # ── admissions ────────────────────────────────────────────────────────────────────────────────
 
@@ -170,6 +174,15 @@ class SessionInventoryFields(Result):
     # Classic CLI surface (``source: cli``) only: main's startup lines under the banner (Rich markup).
     tool_availability_warnings: list[str] | None = None
     unknown_toolsets: list[str] | None = None  # main's "Unknown toolsets" warning, judged by the gateway
+    # The resident agent's status-bar usage (``gateway/session_usage.py::snapshot_usage``); absent agentless.
+    usage: Usage | None = None
+
+
+class CanonicalClientLabel(Result):
+    """The client a session's creator declared itself as (``session.create`` ``client``)."""
+
+    name: str
+    version: str | None = None
 
 
 class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
@@ -185,12 +198,16 @@ class CanonicalSessionInfo(SessionInventoryFields, OpenModel):
     # An ACP session's edit approval policy (``session.mutate edit_policy``): ask / workspace_session / session.
     edit_approval_policy: Literal["ask", "workspace_session", "session"] | None = None
     launch_request: dict[str, JsonValue] | None = None
+    # The creator's self-declared client; absent when it sent none. A label, never a grant.
+    client: CanonicalClientLabel | None = None
     reasoning_effort: str | None = None
     reasoning_effort_wire: str | None = None
     service_tier: str | None = None
     fast: bool | None = None
     # What main's classic CLI read off itself (/status, status bar, exit summary).
     title: str | None = None
+    # SQLite stores 0/1; the wire is a JSON boolean so Desktop's ``archived === true`` probe matches.
+    archived: bool | None = None
     started_at: float | None = None
     last_active_at: float | None = None
     yolo: bool | None = None
@@ -352,6 +369,21 @@ canonical_method("runtime.describe", params=RuntimeDescribeParams, result=Runtim
                  doc="Owner identity and the canonical capabilities a client may rely on.")
 
 
+class PluginRpcParams(Params):
+    """Open: the plugin's handler owns every other key. ``session_id`` names the session the call
+    acts in and passes that session's authorization first."""
+
+    model_config = Params.model_config | {"extra": "allow"}
+    session_id: str | None = None
+
+
+canonical_namespace("plugin.{plugin_id}.{name}", prefix="plugin.", capability="plugin-rpc-v1",
+                    params=PluginRpcParams,
+                    doc="A method a loaded plugin registered with ctx.register_rpc; the result is its handler's "
+                        "JSON value. With plugin-rpc-v1 in runtime.describe, -32601 means that plugin method is "
+                        "not loaded; without plugin-rpc-v1, clients must not assume plugin RPC is supported.")
+
+
 class ClarifyRespondParams(Params):
     session_id: str
     execution_generation: int
@@ -510,7 +542,7 @@ canonical_method("worker.persist", params=WorkerPersistParams, result=WorkerPers
                  doc="Sequence-fenced typed persistence write from an adopted worker.")
 
 
-# ── hosted rooms (canonical-only verbs) ───────────────────────────────────────────────────────
+# ── hosted rooms ─────────────────────────────────────────────────────────────────────────────────
 
 
 class GroupsAttachmentUploadParams(RoomParams):
@@ -534,8 +566,12 @@ class RoomAttachment(OpenModel):
     event_id: str | None = None
 
 
+_UPLOAD_DOC = "Store one attachment for a later groups.send manifest (idempotent per upload_id)."
+# Both routes serve the room byte verbs with one wire, so a group composer attaches files the same
+# way whichever backend owns the room; the canonical table keeps its closed-set key check.
 canonical_method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=RoomAttachment,
-                 doc="Store one attachment for a later groups.send manifest (idempotent per upload_id).")
+                 doc=_UPLOAD_DOC)
+method("groups.attachment.upload", params=GroupsAttachmentUploadParams, result=RoomAttachment, doc=_UPLOAD_DOC)
 
 
 class GroupsAttachmentDownloadParams(RoomParams):
@@ -547,8 +583,11 @@ class RoomAttachmentBytes(RoomAttachment):
     data_base64: str
 
 
+_DOWNLOAD_DOC = "Read one committed attachment for a live room viewer."
 canonical_method("groups.attachment.download", params=GroupsAttachmentDownloadParams,
-                 result=RoomAttachmentBytes, doc="Read one committed attachment for a live room viewer.")
+                 result=RoomAttachmentBytes, doc=_DOWNLOAD_DOC)
+method("groups.attachment.download", params=GroupsAttachmentDownloadParams, result=RoomAttachmentBytes,
+       doc=_DOWNLOAD_DOC)
 
 
 class GroupsDiscardParams(RoomParams):
@@ -562,9 +601,53 @@ class GroupsDiscardResult(Result):
     task: RoomTaskReceipt
 
 
-canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult,
-                 doc="Discard one indeterminate room task after explicit user confirmation.")
+_DISCARD_DOC = "Discard one indeterminate room task after explicit user confirmation."
+canonical_method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult, doc=_DISCARD_DOC)
+# The standalone route forwards it to the room's owning gateway (#145960), like the byte verbs.
+method("groups.discard", params=GroupsDiscardParams, result=GroupsDiscardResult, doc=_DISCARD_DOC)
+
+
+# Cross-gateway members: the shared names, with the keys the gateway accepts. Grant ids are the
+# target's to choose, and the room's home derives a route's trace and cancellation identity itself
+# (``gateway/session_group_peers.py``).
+
+
+class CanonicalGroupsPeerInviteParams(RoomParams):
+    home_install_id: str
+    authority_gateway_id: str
+    authority_epoch: int
+    member_id: str
+    ttl_seconds: float = 3600
+    #: How long the home may renew the grant (``ttl_seconds`` to 30 days); absent, ``ttl_seconds``.
+    #: Never null, like ``ttl_seconds``, so the schema publishes no default. Advertised by the
+    #: ``peer_renewal_horizon`` feature.
+    status_ttl_seconds: float = Field(default=None, json_schema_extra=lambda schema: schema.pop('default', None))
+
+
+canonical_method("groups.peer.invite", params=CanonicalGroupsPeerInviteParams, result=GroupsPeerInviteResult,
+                 doc="Operator only: mint one room grant for a member of another gateway's room.")
+
+
+class CanonicalGroupsPeerRevokeParams(ProfileParams):
+    grant: str
+
+
+canonical_method("groups.peer.revoke", params=CanonicalGroupsPeerRevokeParams, result=GroupsPeerRevokeResult,
+                 doc="Operator only: revoke one grant this gateway issued, by its exact room scope.")
+
+
+class CanonicalGroupsPeerRegisterParams(RoomParams):
+    member_id: str
+    target_url: str
+    target_profile: str
+    grant: str
+    catalog: dict[str, JsonValue]  # a RoomLinkCatalog mapping; ``GatewayRoomCatalog.from_mapping`` is exact
+
+
+canonical_method("groups.peer.register", params=CanonicalGroupsPeerRegisterParams,
+                 result=GroupsPeerRegisterResult,
+                 doc="Bind a target grant to the room's pinned peer member after a live scoped probe.")
 
 
 # Shared-name overrides load after the authority-only value shapes above.
-from . import canonical_sessions, canonical_projections
+from . import canonical_sessions, canonical_projections, canonical_stored_reads

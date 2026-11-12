@@ -62,8 +62,12 @@ export const ERROR_CODE_KEYS = [
   // The API key this chat started with changed or was removed (gateway: a chat never switches keys
   // on its own): Retry repeats it; a new chat runs on the current key.
   'launch_credentials_unavailable',
+  // The managed local model server is down (starting, or switched off): named as itself, not as
+  // the custom-server endpoint copy, and with no Desktop-only pane (the Webapp shares this card).
+  'local_runtime_unavailable',
   // The owner did not confirm a forwarded send in time; it may already be queued: no Retry.
   'SESSION_OWNER_UNCONFIRMED',
+  'agent_init_failed',
   'disk_full',
   // Raised by the desktop, never by the backend: the backend reported a turn
   // over after its events stopped, and no reply reached this window.
@@ -216,26 +220,6 @@ export function formatResetClock(resetsAt: number): string {
   return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
 }
 
-/** "HH:mm (in 1h 05m)" for a provider reset moment, or null once it has passed
- *  (a Retry then simply works, so the hint disappears). `now` is injectable for tests. */
-export function formatLimitReset(resetsAt: number | undefined, now: number = Date.now()): null | string {
-  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) {
-    return null
-  }
-
-  const remainingMinutes = Math.ceil((resetsAt * 1000 - now) / 60_000)
-
-  if (remainingMinutes <= 0) {
-    return null
-  }
-
-  const hours = Math.floor(remainingMinutes / 60)
-  const minutes = remainingMinutes % 60
-  const wait = hours > 0 ? `${hours}h ${String(minutes).padStart(2, '0')}m` : `${minutes}m`
-
-  return `${formatResetClock(resetsAt)} (in ${wait})`
-}
-
 /** Browsers clamp `setTimeout` delays to a signed 32-bit millisecond count and
  *  fire anything larger immediately — a reset that far out gets no schedule
  *  button at all rather than an instant (and pointless) retry. */
@@ -298,116 +282,24 @@ export function errorCardKey(surface: ErrorSurface | null | undefined): ErrorCar
     return { layer: 'generic' }
   }
 
+  // A custom/local model server gets the endpoint copy ("Can't reach your
+  // model server"), not the hosted-provider copy that says to check the internet.
+  if (surface.layer === 'endpoint' && (surface.code === 'timeout' || surface.code === 'ssl_cert_verification')) {
+    return { layer: 'endpoint' }
+  }
+
   return (ERROR_CODE_KEYS as readonly string[]).includes(surface.code)
     ? { code: surface.code as ErrorCodeKey }
     : { layer: surface.layer }
 }
 
-/** Which recovery buttons the error card offers for a failure. Every flag
- *  maps to an EXISTING handler in the app; the card only decides visibility. */
-export interface ErrorRecoveryPlan {
-  /** assistant-ui reload of the failed turn. */
-  retry: boolean
-  /** Open the model picker (model_not_found). */
-  chooseModel: boolean
-  /** Run /compress on this session (context too long). */
-  compress: boolean
-  /** requestFreshSession — when this session cannot continue as-is. */
-  startNewSession: boolean
-  /** Open the preceding user message in the edit composer (safety refusal). */
-  editMessage: boolean
-  /** Reveal the Hermes data folder so the user can free space (disk_full). */
-  openHermesFolder: boolean
-  /** Settings → Keys deep link (auth, api_key). */
-  updateApiKey: boolean
-  /** Re-run the provider's OAuth sign-in (auth, oauth). */
-  signInAgain: boolean
-  /** Open the free-tier sign-in dialog (free_tier_* codes): signing in is free and lifts the refusal. */
-  signInFreeTier: boolean
-  /** Open the live session model menu (switches THIS session via
-   *  model.switch); Settings → Models deep link fallback when no chat surface
-   *  is on screen. */
-  switchProvider: boolean
-  /** Settings → Billing (usage_window: turn on Keep going, add credits). */
-  openBilling: boolean
-  /** usage_window: one-click "Switch to <recommended model>" (this session),
-   *  then re-run the turn. Shown only when the backend named a model. */
-  switchToModel: boolean
-  /** usage_window: "Use credits" — turns on Keep going, then re-runs the turn. */
-  useCredits: boolean
-  /** Open logs / Send diagnostics / Copy details. Off for a plan limit: it is
-   *  not a fault, and those buttons would bury the two that fix it. */
-  diagnostics: boolean
-}
-
-// Layers where the fix is provider/endpoint/auth config, not a retry.
+// Layers where another provider can be the fix (the provider side failed, not the gateway or disk).
 const SWITCH_PROVIDER_LAYERS: readonly ErrorSurfaceLayer[] = ['auth', 'billing', 'endpoint', 'provider']
 
-// Per-code overrides on top of the layer defaults. `retry: false` here means
-// the classifier may call the failure retryable at the transport level, but
-// an unchanged retry is known to reproduce it for the user (too long a
-// conversation, a blocked prompt, a chat another surface owns).
-const CODE_PLANS: Partial<Record<ErrorCodeKey, Partial<ErrorRecoveryPlan>>> = {
-  SESSION_NOT_OWNED: { retry: false, startNewSession: true },
-  SESSION_OWNER_BUSY: { retry: true, startNewSession: false },
-  SESSION_OWNER_UNCONFIRMED: { retry: false, startNewSession: false },
-  cron_session_read_only: { retry: false, startNewSession: true },
-  session_read_only: { retry: false, startNewSession: true },
-  // Retry is the next click once the folder is back or the chat was moved (Move to project).
-  workspace_unavailable: { retry: true, startNewSession: true },
-  launch_credentials_unavailable: { retry: false, startNewSession: true },
-  content_policy_blocked: { editMessage: true, retry: false },
-  context_overflow: { compress: true, retry: false, startNewSession: true },
-  disk_full: { openHermesFolder: true, retry: true },
-  loop_error: { startNewSession: true },
-  model_not_found: { chooseModel: true, retry: false },
-  payload_too_large: { compress: true, retry: false, startNewSession: true },
-  // A window plan's limit: the two ways on, one click each — switch to the
-  // plan's recommended model, or spend credits (Use credits when Keep going is
-  // off and there is a balance, else Add credits via Billing). Retry at the
-  // reset stays. Switch provider is not the fix (the provider is fine).
-  usage_window: { diagnostics: false, openBilling: true, retry: true, switchProvider: false }
-}
-
-export function errorRecoveryPlan(surface: ErrorSurface | null | undefined): ErrorRecoveryPlan {
-  const oauthReauth = isOAuthReauthSurface(surface)
-  const apiKeyRejected = isApiKeyRejectedSurface(surface)
-
-  const base: ErrorRecoveryPlan = {
-    chooseModel: false,
-    compress: false,
-    editMessage: false,
-    openHermesFolder: false,
-    // Retry re-runs the failed prompt in place. Suppressed when the classifier
-    // says the failure is deterministic — except for a credential rejection,
-    // where fixing the credential changes the outcome and Retry is the
-    // natural second click.
-    retry: !surface || surface.retryable || oauthReauth || apiKeyRejected,
-    signInAgain: oauthReauth,
-    signInFreeTier: isFreeTierSurface(surface),
-    startNewSession: false,
-    switchProvider: surface != null && SWITCH_PROVIDER_LAYERS.includes(surface.layer),
-    openBilling: false,
-    switchToModel: false,
-    useCredits: false,
-    diagnostics: true,
-    updateApiKey: apiKeyRejected
-  }
-
-  const key = errorCardKey(surface)
-  const plan = { ...base, ...('code' in key ? CODE_PLANS[key.code] : undefined) }
-
-  if (surface?.code === 'usage_window') {
-    const limit = surface.usageLimit
-    plan.switchToModel = Boolean(limit?.suggestions.length)
-    plan.useCredits = limit?.credits === 'use_credits'
-    // Use credits replaces Open billing; Add credits is Open billing.
-    plan.openBilling = !plan.useCredits
-    // An older backend (no structured limit): keep the menu so there is still a way on.
-    plan.switchProvider = !limit
-  }
-
-  return plan
+/** Open logs / Send diagnostics / Copy details. Off for a plan limit: it is not a fault,
+ *  and those links would bury the actions that fix it. */
+export function errorCardShowsDiagnostics(surface: ErrorSurface | null | undefined): boolean {
+  return surface?.code !== 'usage_window'
 }
 
 /** Plain-text error-details blob for the error card's "Copy error details". */
@@ -439,4 +331,215 @@ export function formatErrorDiagnostics(input: {
   ]
 
   return lines.filter((line): line is string => Boolean(line)).join('\n')
+}
+
+// ── Error card v2: one primary action, at most one text link ─────────────
+//
+// The Error System Overhaul (Plan tab): every failure gets exactly ONE
+// primary button that fixes the cause, plus at most one text link for a
+// backup fix the body already names. Diagnostics (copy / logs / send) live
+// inside the collapsed details block, never in the action row.
+
+export type ErrorActionId =
+  | 'retry'
+  | 'retry_at_reset'
+  | 'update_api_key'
+  | 'sign_in_again'
+  | 'sign_in_free_tier'
+  | 'switch_provider'
+  | 'choose_model'
+  | 'compress'
+  | 'start_new_session'
+  | 'edit_message'
+  | 'open_hermes_folder'
+  | 'continue'
+  | 'open_provider_settings'
+  | 'open_setup_guide_tls'
+  | 'open_setup_guide_local'
+  | 'open_model_settings'
+  | 'switch_to_model'
+  | 'use_credits'
+  | 'open_billing'
+
+export interface ErrorCardActions {
+  primary: ErrorActionId | null
+  secondary?: ErrorActionId
+}
+
+export const ERROR_SETUP_GUIDE_URLS = {
+  tls: 'https://hermes-agent.nousresearch.com/docs/user-guide/security#tls-certificate-trust',
+  local: 'https://hermes-agent.nousresearch.com/docs/user-guide/local-models#using-your-own-llama-server'
+} as const
+
+/** Provider pages where the user fixes an account-level routing/privacy block. */
+const PROVIDER_SETTINGS_URLS: Record<string, string> = {
+  openrouter: 'https://openrouter.ai/settings/privacy',
+  nous: 'https://portal.nousresearch.com'
+}
+
+/** The provider's own settings page (privacy/data policy), when Hermes knows one. */
+export function providerSettingsUrl(surface?: ErrorSurface | null): string | undefined {
+  return PROVIDER_SETTINGS_URLS[(surface?.provider || '').toLowerCase()]
+}
+
+// One main action + at most one second option per code (Error System Overhaul).
+const CODE_ACTIONS: Partial<Record<ErrorCodeKey, ErrorCardActions>> = {
+  billing: { primary: 'open_billing', secondary: 'switch_provider' },
+  content_policy_blocked: { primary: 'edit_message' },
+  context_overflow: { primary: 'compress', secondary: 'start_new_session' },
+  disk_full: { primary: 'open_hermes_folder', secondary: 'retry' },
+  free_tier_at_capacity: { primary: 'sign_in_free_tier', secondary: 'retry' },
+  format_error: { primary: 'switch_provider', secondary: 'start_new_session' },
+  free_tier_outage: { primary: 'retry' },
+  model_not_found: { primary: 'choose_model' },
+  payload_too_large: { primary: 'compress', secondary: 'start_new_session' },
+  provider_policy_blocked: { primary: 'open_provider_settings', secondary: 'choose_model' },
+  SESSION_NOT_OWNED: { primary: 'start_new_session' },
+  ssl_cert_verification: { primary: 'open_setup_guide_tls' },
+  truncated: { primary: 'continue' },
+  upstream_blocked: { primary: 'switch_provider' },
+  agent_init_failed: { primary: 'retry', secondary: 'open_model_settings' },
+  SESSION_OWNER_BUSY: { primary: 'retry' },
+  // It may already be queued: re-sending could run it twice, so no action.
+  SESSION_OWNER_UNCONFIRMED: { primary: null },
+  cron_session_read_only: { primary: 'start_new_session' },
+  session_read_only: { primary: 'start_new_session' },
+  workspace_unavailable: { primary: 'retry', secondary: 'start_new_session' },
+  launch_credentials_unavailable: { primary: 'start_new_session' },
+  loop_error: { primary: 'retry', secondary: 'start_new_session' }
+}
+
+// A window plan's limit: switch to the plan's recommended model, else spend credits
+// (Use credits when Keep going is off with a balance, else Add credits via Billing).
+// An older backend sends no structured limit: Billing, or another model.
+// Once the reset has passed the allowance is back, so a plain Retry replaces the scheduled one.
+function usageWindowActions(surface: ErrorSurface): ErrorCardActions {
+  const limit = surface.usageLimit
+  const credits: ErrorActionId = limit?.credits === 'use_credits' ? 'use_credits' : 'open_billing'
+
+  if (limit?.suggestions.length) {
+    return { primary: 'switch_to_model', secondary: credits }
+  }
+
+  if (!limit) {
+    return { primary: credits, secondary: 'choose_model' }
+  }
+
+  if (surface.resetsAt === undefined) {
+    return { primary: credits }
+  }
+
+  if (surface.resetsAt * 1000 <= Date.now()) {
+    return { primary: credits, secondary: 'retry' }
+  }
+
+  // Still ahead: Retry at the reset, unless it is too far off for a browser timer (a monthly window).
+  return scheduledRetryDelayMs(surface.resetsAt) === null
+    ? { primary: credits }
+    : { primary: credits, secondary: 'retry_at_reset' }
+}
+
+/** Actions for a model server the user runs (custom endpoint or the managed local runtime). */
+function endpointActions(surface: ErrorSurface, key: ErrorCardKey): ErrorCardActions | null {
+  // The managed local model server is down: another model is the fix the card can offer, and a
+  // server that is still starting (retryable) is worth one more try.
+  if (surface.code === 'local_runtime_unavailable') {
+    return surface.retryable ? { primary: 'retry', secondary: 'switch_provider' } : { primary: 'switch_provider' }
+  }
+
+  // errorCardKey routes a custom/local server's timeout or TLS failure to the endpoint copy.
+  if ('layer' in key && key.layer === 'endpoint') {
+    return surface.code === 'timeout'
+      ? { primary: 'retry', secondary: 'open_setup_guide_local' }
+      : { primary: 'open_setup_guide_local' }
+  }
+
+  return null
+}
+
+export function errorCardActions(surface: ErrorSurface | null | undefined): ErrorCardActions {
+  if (!surface) {
+    return { primary: 'retry' }
+  }
+
+  // Fixing the credential changes the outcome, so Retry stays as the follow-up click.
+  if (surface.layer === 'auth') {
+    return {
+      primary: surface.authKind === 'oauth' && surface.provider ? 'sign_in_again' : 'update_api_key',
+      secondary: 'retry'
+    }
+  }
+
+  const key = errorCardKey(surface)
+  const endpoint = endpointActions(surface, key)
+
+  if (endpoint) {
+    return endpoint
+  }
+
+  if (surface.code === 'usage_window') {
+    return usageWindowActions(surface)
+  }
+
+  const byCode = 'code' in key ? CODE_ACTIONS[key.code] : undefined
+
+  // A provider without a known settings page: choosing another model is the fix left.
+  if (surface.code === 'provider_policy_blocked' && !providerSettingsUrl(surface)) {
+    return { primary: 'choose_model' }
+  }
+
+  if (byCode) {
+    return byCode
+  }
+
+  // Signing in is free and lifts the refusal; a transient one (rate limit) can also just be retried.
+  if (isFreeTierSurface(surface)) {
+    return surface.retryable ? { primary: 'sign_in_free_tier', secondary: 'retry' } : { primary: 'sign_in_free_tier' }
+  }
+
+  if (
+    (surface.code === 'rate_limit' || surface.code === 'upstream_rate_limit') &&
+    scheduledRetryDelayMs(surface.resetsAt) !== null
+  ) {
+    return { primary: 'retry_at_reset', secondary: 'retry' }
+  }
+
+  if (surface.retryable) {
+    return { primary: 'retry' }
+  }
+
+  // Another provider only helps when the provider side failed (not the gateway or the disk).
+  return { primary: SWITCH_PROVIDER_LAYERS.includes(surface.layer) ? 'switch_provider' : null }
+}
+
+/** Whether the card for this failure offers `action` (as its main action or second option). */
+export function errorCardOffers(surface: ErrorSurface | null | undefined, action: ErrorActionId): boolean {
+  const { primary, secondary } = errorCardActions(surface)
+
+  return primary === action || secondary === action
+}
+
+/**
+ * Card severity (Error System Overhaul, Figma "Error handling" frame):
+ * - blocking: the user can't keep chatting until they act. Rust tint, rust icon.
+ * - degraded: chat still works (a retry, a continue, or a fallback model), something needs
+ *   attention. White card, muted icon, dismissible.
+ * Severity only changes the icon colour and the tint; the layout and buttons are shared.
+ */
+export type ErrorCardSeverity = 'blocking' | 'degraded'
+
+const DEGRADED_ACTIONS: ReadonlySet<ErrorActionId> = new Set(['retry', 'retry_at_reset', 'continue'])
+
+export function errorCardSeverity(surface: ErrorSurface | null | undefined): ErrorCardSeverity {
+  if (surface?.code === 'free_tier_model_not_free') {
+    return 'degraded'
+  }
+
+  if (surface?.code === 'agent_init_failed') {
+    return 'blocking'
+  }
+
+  const { primary } = errorCardActions(surface)
+
+  return primary && DEGRADED_ACTIONS.has(primary) ? 'degraded' : 'blocking'
 }

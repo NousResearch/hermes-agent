@@ -40,7 +40,6 @@
         # `prev.extraDependencyGroups` worked before the shipped groups moved to
         # defaultDependencyGroups, and an argument default never lands in `prev`.
         extraDependencyGroups = [ ];
-        npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
         inherit pmPackages;
         inherit
           rev
@@ -80,7 +79,6 @@
       packages = {
         node-gyp =
           (pkgs.callPackage ./lib.nix {
-            inherit (pkgs) npm-lockfile-fix;
             inherit pmPackages;
           }).node-gyp;
         default = full;
@@ -98,9 +96,13 @@
 
         tui = full.hermesTui;
         web = full.hermesWeb;
+        webapp = full.hermesWebapp;
         desktop = full.hermesDesktop;
 
-        update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;
+        # The fixed-output pnpm store every frontend installs from; its hash
+        # lives in nix/pnpm-deps-hash (`nix run .#update-pnpm-lockfile`).
+        pnpm-deps = full.hermesNpmLib.pnpmDeps;
+        update-pnpm-lockfile = full.hermesNpmLib.updatePnpmLockfile;
       }
       # Every pm lockfile tool as its own installable derivation:
       # `nix build .#pm-ripgrep`, `nix build .#pm-gh`, ...

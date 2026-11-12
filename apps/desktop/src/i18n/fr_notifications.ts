@@ -35,6 +35,19 @@ export const frNotifications = {
       description: 'Un plugin desktop a envoyé une notification pendant que Hermes était en arrière-plan.'
     }
   },
+  browserPermission: {
+    title: 'Notifications du navigateur',
+    allow: 'Autoriser',
+    states: {
+      default:
+        "Affiche des alertes de ce navigateur quand l'onglet est en arrière-plan. Tant que vous ne l'autorisez pas, seul le titre de l'onglet clignote.",
+      granted:
+        "Autorisé. Les alertes s'affichent quand cet onglet est en arrière-plan ; le titre de l'onglet clignote aussi.",
+      denied: "Bloqué dans les paramètres du site de ce navigateur. Le titre de l'onglet clignote quand même.",
+      insecure: "Nécessite HTTPS, par exemple Tailscale serve. En HTTP simple, seul le titre de l'onglet clignote.",
+      unsupported: "Ce navigateur ne peut pas afficher de notifications. Le titre de l'onglet clignote quand même."
+    }
+  },
   test: 'Envoyer une notification de test',
   testTitle: 'Hermes',
   testBody: 'Les notifications fonctionnent.',

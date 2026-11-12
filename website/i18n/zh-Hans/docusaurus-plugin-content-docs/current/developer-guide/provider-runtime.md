@@ -147,9 +147,7 @@ Codex 使用独立的 Responses API 路径：
 辅助任务包括：
 
 - 视觉
-- 网页提取摘要
 - 上下文压缩摘要
-- skills hub 操作
 - MCP 辅助操作
 - 记忆刷新
 

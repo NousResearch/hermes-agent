@@ -1,7 +1,7 @@
 """Regression for #139227: adopted local chats stay visible in the bot roster."""
 from types import SimpleNamespace
 
-from gateway.session_contract import Principal
+from gateway.session_contract import SessionActor
 from gateway.session_group_controls import _profiles
 from hermes_state import SessionDB
 from hermes_state_local_migration import bind_legacy_target
@@ -10,7 +10,7 @@ from hermes_state_local_migration import bind_legacy_target
 def test_adopted_hidden_bot_chat_is_canonical_but_not_recent(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     sid = '20261006_105832_fixture'
-    actor = Principal('fixture-owner', str(tmp_path), frozenset({'session:read'}), 'fixture')
+    actor = SessionActor('fixture-owner', str(tmp_path), frozenset({'session:read'}), 'fixture')
     with SessionDB(tmp_path / 'state.db') as db:
         db.create_session(sid, source='cli')
         db.set_session_title(sid, 'Bot Chat')
@@ -32,11 +32,11 @@ def test_adopted_hidden_bot_chat_is_canonical_but_not_recent(tmp_path, monkeypat
         assert db._conn.total_changes == before, 'discovery must remain read-only'
         assert db.get_session(sid)['chat_id'] == sid
 
-        foreign = Principal('other-owner', str(tmp_path), actor.capabilities, 'other')
+        foreign = SessionActor('other-owner', str(tmp_path), actor.capabilities, 'other')
         denied = _profiles(authority, foreign, tmp_path, {})['profiles'][0]
         assert denied['canonical_session'] is None
         assert denied['last_session'] is None
-        operator = Principal('operator', str(tmp_path), actor.capabilities | {'session:operator'}, 'op')
+        operator = SessionActor('operator', str(tmp_path), actor.capabilities | {'session:operator'}, 'op')
         assert _profiles(authority, operator, tmp_path, {})['profiles'][0]['canonical_session']['id'] == sid
         light = _profiles(authority, actor, tmp_path, {'include_sessions': False})['profiles'][0]
         assert 'canonical_session' not in light
@@ -49,7 +49,7 @@ def test_adopted_hidden_bot_chat_is_canonical_but_not_recent(tmp_path, monkeypat
 
 def test_unbound_native_chat_is_not_a_local_bot_chat(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
-    actor = Principal('owner', str(tmp_path), frozenset({'session:read', 'session:operator'}), 'fixture')
+    actor = SessionActor('owner', str(tmp_path), frozenset({'session:read', 'session:operator'}), 'fixture')
     with SessionDB(tmp_path / 'state.db') as db:
         authority = SimpleNamespace(db=db, profile_id=str(tmp_path))
         empty = _profiles(authority, actor, tmp_path, {})['profiles'][0]

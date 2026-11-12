@@ -1,5 +1,6 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import {
   type ClipboardEvent,
   type FC,
@@ -9,6 +10,7 @@ import {
   type DragEvent as ReactDragEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState
 } from 'react'
@@ -48,6 +50,7 @@ import {
   RICH_INPUT_SLOT
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, openDirectiveScope, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
+import { composerTextEntryProps, touchTapFocusHandlers } from '@/app/chat/composer/touch-text-entry'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
 import { isRedoShortcut, isUndoShortcut } from '@/app/chat/composer/undo-history'
 import { chipTypedUrlOnSpace, linkifyUrls } from '@/app/chat/composer/url-refs'
@@ -76,7 +79,7 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2Icon } from '@/lib/icons'
-import { isMacPlatform } from '@/lib/platform'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { notify, notifyError, readableError } from '@/store/notifications'
@@ -100,6 +103,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const textDirection = useForcedTextDirection()
   const rootRef = useRef<HTMLDivElement | null>(null)
   const editorRef = useRef<HTMLDivElement | null>(null)
+  const touchPointer = useStore($touchPointer)
+  const tapFocus = useMemo(() => (touchPointer ? touchTapFocusHandlers() : undefined), [touchPointer])
   // Capture the original draft immediately before the first edit. The runtime
   // may hydrate composer.text after this component's first render, so taking a
   // mount-time snapshot can incorrectly classify every later blur as dirty.
@@ -900,9 +905,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
           >
             <div
               aria-label={copy.editMessage}
-              autoCapitalize="off"
-              // Match the main composer: allow macOS replacements, not spellcheck.
-              autoCorrect={isMacPlatform() ? 'on' : 'off'}
+              // The main composer's text entry: off on desktop, the platform's on touch.
+              {...composerTextEntryProps(touchPointer)}
+              {...tapFocus}
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none overflow-y-auto bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
                 '**:data-ref-text:cursor-default',
@@ -933,7 +938,6 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               onPaste={handlePaste}
               ref={editorRef}
               role="textbox"
-              spellCheck={false}
               suppressContentEditableWarning
             />
             <ComposerDirectiveActions editorRef={editorRef} />

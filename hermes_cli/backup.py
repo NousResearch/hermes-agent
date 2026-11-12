@@ -23,14 +23,17 @@ from hermes_constants import (
 )
 from hermes_state_dbfile import RETIRED_GENERATION_DIR_SUFFIX
 from hermes_state_holders import read_only_db_uri
+from hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection, read_header_bytes_preopen
 
 from agent.provider_media import GENERATED_SUBDIR
 from hermes_cli.archive_safe import normalize_archive_parts
 from hermes_cli.backup_sqlite import _close_quietly, _safe_copy_db
-from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, profile_root_entry
+from hermes_cli.config_backend import require_file_tooling, supports_file_tooling
+from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS, SECRET_CACHE_FILES, profile_root_entry
 from hermes_cli.sizefmt import format_bytes as _format_size
 
 from hermes_cli.backup_restore import (
+    _count_cron_jobs,
     _count_session_rows,
     _default_new_file_mode,
     _detect_prefix,
@@ -96,10 +99,10 @@ _EXCLUDED_DIRS = {
 # a deeper directory of the same name (such as a skill's models/) is user data.
 _EXCLUDED_ROOT_DIRS = LOCAL_RUNTIME_ROOT_DIRS | (PM_RUNTIME_ROOT_DIRS - {"cache"})
 
-# Browser Use CLI profile dir (browser.backend: browser-use): Chromium user-data with Login Data
-# / Cookies. Root-scoped like models/ — a skill's own browser_profiles/ is user data. Backup-only:
-# do not fold into LOCAL_RUNTIME_ROOT_DIRS (clone-all identity contract).
-_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles"})
+# Browser Use CLI profile dir (browser.backend: browser-use): Chromium user-data with Login Data / Cookies;
+# the secret caches and Photon sidecar token. Root-scoped like models/ — a skill's own browser_profiles/ is
+# user data. Backup-only: do not fold into LOCAL_RUNTIME_ROOT_DIRS (clone-all identity contract).
+_EXCLUDED_BACKUP_ROOT_DIRS = frozenset({"browser_profiles", *SECRET_CACHE_FILES})
 
 # ``cache/`` at those same roots mixes regenerable state (model/plugin catalogs, stamps, browser
 # profiles with locked SQLite, tool-output spill) with durable artifacts nothing can rebuild: media
@@ -364,7 +367,7 @@ def _query_ro_sqlite(path: Path, fn):
     """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
     conn = None
     try:
-        conn = sqlite3.connect(read_only_db_uri(path), uri=True, timeout=1.0)
+        conn = connect_tracked(read_only_db_uri(path), uri=True, timeout=1.0, tracking_path=path)
         return fn(conn), None
     except Exception as exc:
         return None, exc
@@ -386,7 +389,6 @@ def is_zeroed_sqlite_file(path: Path, *, probe_bytes: int = 100, force: bool = F
             return False
     except OSError:
         return False
-    from hermes_cli.sqlite_safe_read import has_live_connection, read_header_bytes_preopen
     if not force and has_live_connection(path):
         return False
 
@@ -426,7 +428,6 @@ def verify_sqlite_integrity(
     if check_header:
         # Refused when a live connection exists (close() would cancel this process's POSIX locks
         # — see sqlite_safe_read); verification targets offline snapshots/backup artifacts anyway.
-        from hermes_cli.sqlite_safe_read import read_header_bytes_preopen
         head = read_header_bytes_preopen(path, length=len(_SQLITE_HEADER))
         if head is None:
             return _done("cannot read header", size=size)
@@ -597,6 +598,7 @@ def run_backup(args) -> bool:
     the caller turns False into exit status 1 so a cron/systemd timer never publishes a "successful"
     archive that is missing state.db. Hard failures keep raising ``SystemExit``.
     """
+    require_file_tooling("`hermes backup`")
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
@@ -733,6 +735,7 @@ def _import_member_rel(member: str, prefix: str) -> tuple[str, bool]:
 
 def run_import(args) -> Optional[int]:
     """Restore a Hermes backup; return 1 on damaged archives or incomplete restores."""
+    require_file_tooling("`hermes import`")
     zip_path = Path(args.zipfile).expanduser().resolve()
 
     if not zip_path.is_file():
@@ -760,7 +763,6 @@ def run_import(args) -> Optional[int]:
 
         print(f"Backup contains {file_count} files")
         print(f"Target: {display_hermes_home()}")
-
         if prefix:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
 
@@ -1540,6 +1542,7 @@ def restore_quick_snapshot(
     was not refused or skipped.
     """
     from gateway.runtime_ownership import OwnershipConflict, exclusive_maintenance
+    require_file_tooling("Snapshot restore")
     home = hermes_home or get_hermes_home()
     try:
         with exclusive_maintenance([home]):
@@ -1670,37 +1673,6 @@ def _restore_quick_snapshot_exclusive(snapshot_id: str, home: Path) -> bool:
 
     logger.info("Restored %d files from snapshot %s", restored, snapshot_id)
     return restored > 0 and not auth_restore_failed
-
-
-def _count_cron_jobs(path: Path) -> Optional[int]:
-    """Return the number of cron jobs stored in ``path``.
-
-    The canonical on-disk shape is ``{"jobs": [...]}`` (see ``cron/jobs.py``).
-    A legacy bare-list shape (``[...]``) is also honoured.
-
-    Returns:
-        The job count for any *valid, readable* JSON document, or ``None`` if
-        the file is missing or cannot be parsed. ``None`` means "unknown" —
-        callers must not treat it as "zero jobs", because acting on an
-        unreadable file could mask a real corruption the user needs to see.
-    """
-    if not path.is_file():
-        return None
-    try:
-        # utf-8-sig: same dialect as cron/jobs.load_jobs — Windows editors
-        # may leave a UTF-8 BOM that plain utf-8 json.load rejects. Without
-        # it a BOM'd jobs.json counts as "unreadable" (None) and the
-        # post-update cron-loss auto-restore safety net silently disables.
-        with open(path, "r", encoding="utf-8-sig") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if isinstance(data, dict):
-        jobs = data.get("jobs", [])
-        return len(jobs) if isinstance(jobs, list) else None
-    if isinstance(data, list):
-        return len(data)
-    return None
 
 
 def restore_cron_jobs_if_emptied(
@@ -1903,6 +1875,8 @@ def restore_config_model_settings_if_rewritten(
         "snapshot_id": ...}`` so the caller can warn the user.
     """
     if not snapshot_id:
+        return None
+    if not supports_file_tooling():  # Remote Config: never write a LOCAL snapshot's values to the plane
         return None
 
     home = hermes_home or get_hermes_home()

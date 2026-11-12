@@ -67,7 +67,9 @@ async function startSession() {
     activeSshTerminalTarget: () => null,
     sshBinary: () => '/usr/bin/ssh',
     ensureBackend: async () => undefined,
-    getSshConnectionState: () => undefined
+    getSshConnectionState: () => undefined,
+    gatewayTarget: () => 'local',
+    ensureGatewayBackend: async () => undefined
   })
 
   const sender = makeSender(7)

@@ -239,12 +239,16 @@ def _(rid, params: dict) -> dict:
 @method("display.lease.acquire")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
-    from tools.bot_desktop import lease as _bd_lease
+    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     viewer_id = str(params.get("viewer_id") or "").strip()
     if not viewer_id:
         return _err(rid, _DISPLAY_ERR, "viewer_id required")
     if (refused := _foreign_viewer_id(rid, viewer_id)) is not None:
         return refused
+    # A takeover is use, stamped before the lease is written: an idle check (here or in the screen's launcher)
+    # that reads the new lease against the old stamp takes it for an abandoned one and stops the screen under
+    # the human who just took it.
+    _bd_runtime.touch_activity()
     lease = _bd_lease.acquire(viewer_id, reason=str(params.get("reason") or ""))
     return _ok(rid, {"lease": _bd_lease.public_view(lease)})
 

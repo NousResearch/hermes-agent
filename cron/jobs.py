@@ -2392,10 +2392,22 @@ def note_fire_forward_failure(job_id: str, detail: str) -> bool:
 
 def _record_run_outcome(
     job: dict[str, Any], success: bool, error: Optional[str], delivery_error: Optional[str],
-    status: Optional[str], now: str,
+    status: Optional[str], now: str, *, suppressed: bool = False,
 ) -> None:
     """Stamp one completed run onto *job*: status fields, failure streak, alert markers, claims."""
     job["last_run_at"] = now
+    if suppressed:
+        # (#140178) Agent-less tick: leave failure_streak/last_status/last_error and the
+        # alert-dedup markers exactly as they are — an unchanged monitor tick says nothing
+        # about the job's health, so it must not reset the streak that gates repeat-failure
+        # alerts. Only the per-fire machinery below is released.
+        job.pop("manual_run_at", None)
+        job.pop("manual_run_prompt", None)
+        job["fire_claim"] = None
+        job.pop("pending_slot", None)
+        if job.get("run_claim") is not None:  # keep key absence for legacy records
+            job["run_claim"] = None
+        return
     job.pop("manual_run_at", None)
     job.pop("manual_run_restore_at", None)
     # The transient manual-run context is single-fire: the run that just completed consumed it.
@@ -2494,6 +2506,7 @@ def mark_job_run(
     ladder_rung: bool = False,
     quota_hold_seconds: Optional[float] = None,
     recover_consumed_fire: bool = False,
+    suppressed: bool = False,
 ) -> bool:
     """Mark a job as run: update last_run_at/last_status, bump completed, recompute next_run_at,
     and retire the record as a terminal completion when the repeat limit is reached. A manual run
@@ -2516,6 +2529,10 @@ def mark_job_run(
     it on every tick. ``recover_consumed_fire`` lets a scheduled sparse cron recover its
     consumed fire when the provider reopens; manual runs retain the natural schedule
     (cron/quota_hold.py, #89376).
+
+    ``suppressed``: agent-less tick (monitor no_change / wake-gate skip, #140178). The
+    outcome is not recovery evidence: ``failure_streak``, ``last_status``, ``last_error``
+    and the alert-dedup markers are left untouched so alert-once gating stays intact.
     """
     def apply(jobs, _i, job):
         if execution_id is not None and execution_id in job.get("canonical_completions", []):
@@ -2530,7 +2547,7 @@ def mark_job_run(
         now = _hermes_now().isoformat()
         extra = extra_fire.is_extra(job)  # read before the outcome clears the claim
         held = extra_fire.held_markers(job) if extra else {}
-        _record_run_outcome(job, success, error, delivery_error, status, now)
+        _record_run_outcome(job, success, error, delivery_error, status, now, suppressed=suppressed)
         job.update(held)  # a run-now queued mid-run is its own fire, not this one
         if execution_id is not None:  # retire ids recovery can no longer replay; latest stays last
             from cron.scheduler_authority import replayable_completions as live

@@ -1224,6 +1224,8 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> Optional
     """--clone-all: full copytree minus infrastructure/history, then strip runtime files
     and cloned single-use OAuth grants."""
     _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
+    from hermes_cli.profile_ui_archive import stage_profile_ui_pair
+    stage_profile_ui_pair(source_dir, profile_dir)
     materialized = _materialize_symlinked_files(profile_dir)
     if materialized:
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
@@ -2125,22 +2127,14 @@ def export_profile(name: str, output_path: str, extra_files: Optional[dict[str, 
     # Archive base name without extension (.tar.gz appended by the writer).
     base = str(Path(output_path)).removesuffix(".tar.gz").removesuffix(".tgz")
 
-    # The default profile IS ~/.hermes (dir name ".hermes"), so both paths stage a filtered
-    # copy under a temp dir named after the canonical id: root allow-list for default,
-    # credential exclusion for named profiles.
-    def _ignore_credentials(directory: str, contents: list) -> set:
-        ignored = _non_exportable_entries(directory, contents)
-        ignored.update(_export_credential_entries(directory, contents))
-        rel = Path(directory).relative_to(profile_dir).parts
-        ignored.update(e for e in contents if profile_path_is_private((*rel, e)))
-        if Path(directory) == profile_dir:
-            ignored |= PM_RUNTIME_ROOT_DIRS & set(contents)
-        return ignored
-
-    ignore = _default_export_ignore(profile_dir) if canon == "default" else _ignore_credentials
+    from hermes_cli.profile_ui_archive import named_profile_export_ignore
+    ignore = _default_export_ignore(profile_dir) if canon == "default" else named_profile_export_ignore(profile_dir)
     with tempfile.TemporaryDirectory() as tmpdir:
         staged = Path(tmpdir) / canon
         shutil.copytree(profile_dir, staged, symlinks=True, ignore=ignore)
+        if canon != "default":
+            from hermes_cli.profile_ui_archive import stage_profile_ui_pair
+            stage_profile_ui_pair(profile_dir, staged)
         for rel, content in (extra_files or {}).items():
             target = staged.joinpath(*normalize_archive_parts(rel))
             target.parent.mkdir(parents=True, exist_ok=True)

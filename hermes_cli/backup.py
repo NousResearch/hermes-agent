@@ -506,36 +506,6 @@ def _zip_sqlite_snapshot(zf: zipfile.ZipFile, abs_path: Path, rel_path: Path, ou
         tmp_db.unlink(missing_ok=True)
 
 
-def _write_zip_entries(
-    zf: zipfile.ZipFile, files_to_add: list[tuple[Path, Path]], out_path: Path,
-    *, on_db_failure, on_error, on_progress, track_bytes: bool) -> int:
-    """Add every ``(abs_path, rel_path)`` to *zf*, WAL-safe for ``*.db``; return bytes archived.
-
-    ``on_db_failure(rel_path)`` runs when a SQLite snapshot fails (may raise to abort);
-    ``on_error(rel_path, exc)`` records a read failure; ``on_progress(i)`` fires every 500 files;
-    ``track_bytes`` stats plain files for the size total.
-    """
-    total_bytes = 0
-    for i, (abs_path, rel_path) in enumerate(files_to_add, 1):
-        try:
-            if abs_path.suffix == ".db":
-                size = _zip_sqlite_snapshot(zf, abs_path, rel_path, out_path)
-                if size is None:
-                    on_db_failure(rel_path)
-                    continue
-                total_bytes += size
-            else:
-                _write_zip_file(zf, abs_path, str(rel_path))
-                if track_bytes:
-                    total_bytes += abs_path.stat().st_size
-        except (PermissionError, OSError, ValueError) as exc:
-            on_error(rel_path, exc)
-            continue
-        if i % 500 == 0:
-            on_progress(i)
-    return total_bytes
-
-
 def _print_capped(header: str, lines: list[str], indent: str) -> None:
     """Print *header*, then at most 10 of *lines* (each prefixed by *indent*) and a "... and N more" tail."""
     print(header)
@@ -621,6 +591,8 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
     print(f"Scanning {display_hermes_home()} ...")
     skipped_dirs: set = set()
     files_to_add: list[tuple[Path, Path]] = list(_iter_backup_files(hermes_root, out_path, skipped_dirs))
+    from hermes_cli.profile_ui_archive import capture_backup_ui_pairs
+    ui_snapshots = capture_backup_ui_pairs(files_to_add)
     external_to_add, skipped_external = _collect_external_entries()
     if not files_to_add and not external_to_add:
         logger.info("backup phase=scan status=empty duration_ms=%.1f", (time.monotonic() - scan_started) * 1000)
@@ -639,10 +611,11 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
         print(f"  {i}/{file_count} files ...")
         logger.info("backup phase=archive status=progress completed=%d total=%d", i, file_count)
 
+    from hermes_cli.backup_archive import write_zip_entries
     with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
             archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        total_bytes = _write_zip_entries(
-            zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
+        total_bytes = write_zip_entries(
+            zf, files_to_add, out_path, on_progress=_progress, track_bytes=True, ui_snapshots=ui_snapshots,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
             on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"))
         # External memory-provider state never includes ``.db`` files in practice, so no
@@ -2063,6 +2036,8 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     logger.info("automatic backup phase=scan status=started")
     try:
         files_to_add = list(_iter_backup_files(hermes_root, out_path))
+        from hermes_cli.profile_ui_archive import capture_backup_ui_pairs
+        ui_snapshots = capture_backup_ui_pairs(files_to_add)
     except OSError as exc:
         logger.warning("Full-zip backup: walk failed: %s", exc)
         return None
@@ -2099,12 +2074,13 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
             published = salvage_path
         return published
 
+    from hermes_cli.backup_archive import write_zip_entries
     archive_started = time.monotonic()
     try:
         with _atomic_output_path(out_path, _publish_path) as archive_path, zipfile.ZipFile(
                 archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-            _write_zip_entries(
-                zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
+            write_zip_entries(
+                zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False, ui_snapshots=ui_snapshots,
                 on_error=lambda rel, exc: errors.append(f"{rel}: {exc}"),
                 on_progress=lambda i: logger.info(
                     "automatic backup phase=archive status=progress completed=%d total=%d", i, len(files_to_add)))

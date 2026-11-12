@@ -1,3 +1,5 @@
+# ABOUTME: Cache roster fields by the metadata and runtime files they depend on.
+# ABOUTME: Invalidate group chat projections when their separate state file changes.
 """Memos for ``profiles.list``'s per-profile fields, each keyed on the file(s) it derives from.
 
 The Bots roster polls ``profiles.list`` every 5s PER CONNECTION, and two groups of fields on every
@@ -5,14 +7,14 @@ row are recomputed from disk each time even though nothing has changed:
 
 - the **session fields** (``last_session`` / ``worker_session`` / ``canonical_session``) — a
   read-only ``state.db`` open plus a listing query plus the canonical-title lookup, per profile;
-- the **ui_meta fields** (``ui_meta`` / ``ui_meta_revisions``) — a second parse of that profile's
-  ``profile.yaml``, which the listing body already parsed once for description/display_name.
+- the **ui_meta fields** (``ui_meta`` / ``ui_meta_revisions``) — the profile's ``profile.yaml``
+  plus the separate ``state/group-chat.yaml`` snapshot and revision.
 
 Both are pure functions of the files they read, so while those files have not moved there is
 nothing to recompute: an idle fleet re-derived identical rows every five seconds for every bot.
 
 Signatures carry each file's ``(mtime_ns, size)`` so a write landing inside one mtime tick still
-invalidates; ``profile.yaml`` also carries its inode, because the atomic writers rename a temp file
+invalidates; metadata and group state also carry their inode, because atomic writers rename a temp file
 into place. A profile missing the file a memo keys on is never cached — reading it costs nothing,
 and one written later must be picked up.
 
@@ -84,8 +86,12 @@ def store_signature(profile_path: str | Path) -> Optional[tuple]:
 
 
 def profile_yaml_signature(profile_dir: str | Path) -> Optional[tuple]:
-    """``(name, mtime_ns, size, inode)`` of the profile's ``profile.yaml``, or None when absent."""
-    return _file_parts(Path(profile_dir) / "profile.yaml", with_inode=True)
+    """Signatures of profile metadata and the separately stored group chat snapshot."""
+    from tui_gateway.group_chat_storage import GROUP_CHAT_STATE
+    base = Path(profile_dir)
+    parts = tuple(_file_parts(base / name, with_inode=True)
+                  for name in (Path("profile.yaml"), GROUP_CHAT_STATE))
+    return parts if any(part is not None for part in parts) else None
 
 
 def cached_session_fields(profile_path: str | Path, compute: Callable[[], dict]) -> dict[str, Any]:
@@ -101,7 +107,7 @@ def cached_reader_session_fields(profile_path: str | Path, reader: tuple,
 
 
 def cached_ui_meta_fields(profile_dir: str | Path, compute: Callable[[], dict]) -> dict[str, Any]:
-    """``compute()``'s fields, reused while the profile's ``profile.yaml`` has not changed.
+    """``compute()``'s fields, reused while metadata and group chat state have not changed.
 
     Copied deeply: ``ui_meta`` is a nested mapping the caller hands to a client.
     """

@@ -176,6 +176,38 @@ Use the **Move up** and **Move down** arrows beside a room to choose its positio
 - **Plugins can watch members work.** The durable room log records `turn.started` and `turn.settled`; what a member does in between (tools, approvals, streamed text) is projected to plugins through the [`on_room_member_activity`](./features/hooks.md#on_room_member_activity) hook with room, member and turn coordinates, so community clients can build tool cards and live member status on top of Group Chat without reading Hermes internals.
 - **What a member says outside the room still reaches it.** Each member's room session is an ordinary Hermes session (titled `Group: <room> · <thread>`), so you can resume it from the CLI, a routine can post into it, or the Bot's own tools can write to it. When you open the room, and again each time the room drives that member, whatever those writers added since the room last looked — your questions and the member's answers — is posted into the room log under that member's name, once, in the thread the session belongs to; a window restart does not repeat it. The room's own turn prompts and their replies are never duplicated this way, and neither are the agent's housekeeping rows (context compaction notes, routine deliveries, delegation results) or the member's reactions to them. The room starts watching a session the first time it sees it: what was already in that session by then is not replayed, so a room restored on a second Desktop does not re-post its members' history.
 
+### Group chat sync storage
+
+The Desktop's bounded group chat sync snapshot and its concurrency revision are stored in
+`state/group-chat.yaml` inside each receiving profile's home. `profile.yaml` keeps Bot appearance
+and other profile metadata; group chat updates do not rewrite it. Existing snapshots embedded
+under `ui_meta.hermes-bots-groups` remain readable and move to the separate file on the next UI
+metadata write. Restart backends after upgrading so older processes cannot keep writing the
+legacy location. This changes the sync snapshot's storage, not the full Desktop room history
+or the gateway-managed room database described above.
+
+When one UI metadata request changes both files, the atomic `state/group-chat.yaml` write
+also records the changed metadata namespaces and their revisions in a temporary
+`pending_ui_meta` journal. That write commits the whole UI update: roster reads project the
+journal even if writing `profile.yaml` is temporarily blocked. A later metadata write or
+migration materializes the committed changes and clears the journal without increasing the
+revisions again. Roster reads do not rewrite either data file. Do not downgrade backends
+while a journal is pending.
+
+Recovery preserves unrelated metadata edits. If a journal-owned namespace has been edited
+outside the transaction to a value other than its recorded before/after value, recovery
+refuses to overwrite it; repair that conflict before making further UI metadata changes.
+An unreadable group-state file does not hide other profiles from the roster and is never
+silently reset by a write. Named-profile exports and full backups still include this runtime
+state: separating it from `profile.yaml` does not make an entire archive safe to publish or
+remove conversation content from existing Git history or backups.
+
+Named-profile exports, `--clone-all`, and full backups capture `profile.yaml` and the group
+state as a coherent pair, including a pending journal. A continuously changing pair fails
+capture rather than producing an unrecoverable mix of transactions. This is not a whole-profile
+filesystem snapshot; other files retain their existing archive semantics. Symlinked UI state
+files or a symlinked `state/` directory are rejected by this capture path rather than followed.
+
 ## Bot-to-bot messaging
 
 Bots message each other with attribution, and you can hand work off from any chat:

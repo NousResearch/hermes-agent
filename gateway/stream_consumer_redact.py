@@ -5,9 +5,11 @@ the redactor has seen in full context. Everything the consumer emits mid-stream 
 draft/native frames, sealed overflow heads, split points) therefore stops at a *settled* boundary:
 text after it could still be, or still complete, a secret — the token being typed, an
 ``Authorization:``/``Bearer``/``password:`` label whose value has not arrived, an open quote after
-such a label, a ``-----BEGIN`` block without its END, a PuTTY ``Private-Lines:`` body, a key
+such a label, a private-key ``-----BEGIN`` block without its END, a PuTTY ``Private-Lines:`` body, a key
 fragment the next line may continue. Withholding it keeps frames prefix-stable (a partial key is
-never shown, then re-masked) and keeps a cut from separating a label from its value.
+never shown, then re-masked) and keeps a cut from separating a label from its value. The boundary
+never moves back within a message: settled text has been emitted, and a frame that drops it is
+not a prefix of the one before (stream-is-the-message drafts re-append the whole snapshot).
 
 The settled text is redacted in place, incrementally: only the newly settled text plus a bounded
 lookback is re-redacted per tick, so a long reply costs linear redaction work, not quadratic.
@@ -45,6 +47,11 @@ _OPEN_TAIL_RE = re.compile(
     re.IGNORECASE,
 )
 _PEM_END_RE = re.compile(r"-----END[A-Z0-9 ]*-----")
+_PEM_BEGIN = "-----BEGIN"
+_PEM_HEADER_CHARS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")  # an END line's own dashes
+# A BEGIN header still being typed, or a closed one naming a block the redactor masks (PEM and
+# PGP private keys). A certificate or public key header releases the hold.
+_PEM_HOLD_RE = re.compile(r"-----BEGIN(?:[A-Z0-9 ]*-{0,4}\Z|[A-Z0-9 ]*PRIVATE KEY[A-Z ]*-----)")
 _PPK_OPEN_RE = re.compile(
     r"Private-Lines:[ \t]*\d*[ \t]*"
     r"(?:(?:\r?\n|\\r\\n|\\n)[ \t]*(?:\d+[|:\t][ \t]*)?[A-Za-z0-9+/=]*[ \t]*)*")
@@ -66,6 +73,20 @@ def _token_may_be_secret(context: str, token: str) -> bool:
     base = redact_for_egress(context + token)
     return (base != context + token and not base.endswith(token)) or any(
         redact_for_egress(context + token + c) != base + c for c in _CONTINUATIONS)
+
+
+def _open_key_block(text: str, lo: int, end: int) -> int:
+    """Start of the earliest key block past ``lo`` whose END is not settled by ``end`` (or of a
+    trailing partial ``-----BEGIN``), else -1: a cut inside the block leaves both halves raw."""
+    for m in _PEM_HOLD_RE.finditer(text, lo):
+        if m.start() >= end:
+            break
+        close = _PEM_END_RE.search(text, m.end())
+        if close is None or close.end() > end:
+            return m.start()
+    tail = text[-len(_PEM_BEGIN):]
+    return next((len(text) - k for k in range(len(tail), 0, -1) if _PEM_BEGIN.startswith(tail[-k:])
+                 and (k == len(text) or text[-k - 1] not in _PEM_HEADER_CHARS)), -1)
 
 
 def _probe_start(text: str, token_start: int) -> int:
@@ -94,9 +115,6 @@ def settled_end(text: str) -> int:
     if m := _OPEN_TAIL_RE.search(text, max(0, n - _TAIL_SCAN)):
         end = min(end, m.start())
     block_lo = max(0, n - _BLOCK_SCAN)
-    begin = text.rfind("-----BEGIN", block_lo)
-    if begin >= 0 and not _PEM_END_RE.search(text, begin):
-        end = min(end, begin)
     ppk = text.rfind("Private-Lines:", block_lo)
     if ppk >= 0 and _PPK_OPEN_RE.fullmatch(text, ppk):
         end = min(end, ppk)
@@ -104,6 +122,9 @@ def settled_end(text: str) -> int:
         run = m.group(0)
         if redact_for_egress(run + _PROBE) != redact_for_egress(run) + _PROBE:
             end = m.start()
+    # Last: a key block must not be cut by any boundary the rules above chose.
+    if (begin := _open_key_block(text, block_lo, end)) >= 0:
+        end = min(end, begin)
     return end
 
 
@@ -122,12 +143,22 @@ def redact_settled(text: str, redacted_prefix: str, *, done: bool) -> tuple[str,
     """Redact ``text`` up to its settled boundary (all of it when ``done``); returns the new text
     and where its settled part ends. ``redacted_prefix`` is the settled part returned last time:
     while ``text`` still starts with it, only the new text plus a bounded lookback is redacted."""
-    settled = len(text) if done else settled_end(text)
-    upto = min(settled, len(redacted_prefix)) if text.startswith(redacted_prefix) else 0
+    upto = len(redacted_prefix) if text.startswith(redacted_prefix) else 0
+    # Monotonic: once settled, text stays settled. A hold rule that fires on a later character
+    # (``https://a`` may start ``am_…``) only holds what follows, so frames stay prefix-stable.
+    settled = len(text) if done else max(settled_end(text), upto)
     if upto == settled and redacted_prefix:
         return text, settled
     start = _lookback_start(text, upto)
     if settled <= start:
         return text, settled
     redacted = redact_for_egress(text[start:settled])
+    if not done and not redacted.startswith(emitted := text[start:upto]):
+        # The lookback would rewrite emitted text. The redactor re-masks its own masks
+        # (``Bearer abcd...wxyz`` -> ``Bearer ***``): keep the emitted text and take only what the
+        # new text redacts to. Otherwise new text changes how emitted text redacts: hold it.
+        again = redact_for_egress(emitted)
+        if not redacted.startswith(again):
+            return text, upto
+        redacted = emitted + redacted[len(again):]
     return text[:start] + redacted + text[settled:], start + len(redacted)

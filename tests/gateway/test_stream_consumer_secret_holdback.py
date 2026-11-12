@@ -159,3 +159,53 @@ async def test_reply_and_finish_drained_in_one_tick_is_sent_redacted_whole():
     await consumer.run()
     shown = _on_screen(adapter)
     assert list(shown.values()) == [f"Your key is sk-pro...{_KEY[-4:]} - keep it safe."]
+
+
+def _draft_adapter(frames: list):
+    async def send_draft(*, chat_id, draft_id, content, metadata=None):
+        frames.append(content)
+        return SimpleNamespace(success=True)
+
+    return _adapter(draft_stream_is_message=True, send_draft=send_draft,
+                    supports_draft_streaming=lambda chat_type=None, metadata=None, **kw: True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", [
+    "See https://github.com/NousResearch/hermes-agent/pull/123 for details",
+    'Config: {"api_key": 1, "x": 2} ok',
+    "Use https://bob:" + _TOKEN + "@example.com/v1 to log in",
+], ids=["url", "json-key", "url-userinfo"])
+async def test_draft_frames_stay_prefix_stable_while_a_url_streams_char_by_char(reply):
+    # A half-typed URL can look like the start of a key or of user:pass@host; the settled
+    # boundary must never move back over text already sent, or the connector re-appends it.
+    from agent.redact import redact_for_egress
+
+    frames = []
+    adapter = _draft_adapter(frames)
+    await _stream(adapter, *reply, transport="auto", chat_type="dm")
+    assert len(frames) >= 2
+    assert all(later.startswith(earlier) for earlier, later in pairwise(frames)), frames
+    assert not _raw_runs(frames, _TOKEN)
+    assert [content for _op, _id, content in adapter.ops] == [redact_for_egress(reply)]
+
+
+@pytest.mark.asyncio
+async def test_a_certificate_header_does_not_stall_the_preview():
+    # Only private-key blocks are masked whole; a certificate header is ordinary text.
+    adapter = _adapter()
+    head = "Pin this:\n-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIU\n"
+    await _stream(adapter, head, "more text " * 5, "and the end.")
+    previews = [content for _op, _id, content in adapter.ops[:-1]]
+    assert any("more text more text" in p for p in previews), previews
+
+
+@pytest.mark.asyncio
+async def test_pem_header_typed_char_by_char_holds_the_block():
+    # Each header char is its own tick: a hold that releases on a partial "-----BEGIN" would
+    # settle the header before the hold could see it, and the body would stream raw.
+    adapter = _adapter()
+    block = _PEM_BEGIN + "\n" + "\n".join(_PEM_LINES) + "\n" + _PEM_END
+    await _stream(adapter, "Here: ", *block[:40], block[40:], " done.")
+    for line in _PEM_LINES:
+        assert not _raw_runs([content for _op, _id, content in adapter.ops], line, width=16), line

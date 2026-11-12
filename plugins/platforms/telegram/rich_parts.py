@@ -359,8 +359,11 @@ async def edit_rich_parts(
                 outcome = SendResult(success=False, error="rich_part_missing_message_id", retryable=False)
             failure = _partial_failure(outcome, sent, len(parts))
             # This is an edit, so the stream consumer needs the actually delivered
-            # prefix for a tail-only fallback. It must not resend the edited head.
-            prefix = _BLOCK_SEPARATOR.join(parts[:len(sent)])
+            # prefix for a tail-only fallback. It must not resend the edited head, nor a part
+            # whose receipt timed out after Telegram may have accepted it (``delivery_uncertain``):
+            # that part counts as shown and only the parts after it are sent again.
+            in_flight = bool(failure.raw_response.get("delivery_uncertain"))
+            prefix = _BLOCK_SEPARATOR.join(parts[:len(sent) + in_flight])
             if content.startswith(prefix):
                 failure.raw_response["delivered_prefix"] = prefix
             return failure

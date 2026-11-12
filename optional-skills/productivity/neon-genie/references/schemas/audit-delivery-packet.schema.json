@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Audit Delivery Packet",
+  "type": "object",
+  "required": [
+    "current_state",
+    "observed_gaps",
+    "cost_of_inaction",
+    "target_state",
+    "intervention_sequence",
+    "validation_gates",
+    "evidence_manifest",
+    "authority_boundaries"
+  ],
+  "properties": {
+    "current_state": {},
+    "observed_gaps": {},
+    "cost_of_inaction": {},
+    "target_state": {},
+    "intervention_sequence": {},
+    "validation_gates": {},
+    "evidence_manifest": {},
+    "authority_boundaries": {},
+    "implementation_offer": {},
+    "roadmap": {},
+    "offer_map": {},
+    "not_computable_fields": {}
+  },
+  "additionalProperties": true
+}

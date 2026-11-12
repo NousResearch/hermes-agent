@@ -1,0 +1,12 @@
+{
+  "input": {
+    "packet_type": "opportunity",
+    "has_completion_proof": true,
+    "completion_proof": "first paid diagnostic invoice within 14 days",
+    "promotion_state": "TESTABLE"
+  },
+  "expected": {
+    "status": "PASS",
+    "gate": "PROOF"
+  }
+}

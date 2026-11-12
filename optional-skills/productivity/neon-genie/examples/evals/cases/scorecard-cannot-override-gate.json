@@ -1,0 +1,12 @@
+{
+  "input": {
+    "composite_score": 0.99,
+    "mandatory_gate": "FAIL",
+    "gate_name": "affected_user_absent"
+  },
+  "expected": {
+    "status": "GATE_FAIL",
+    "promotion_blocked": true,
+    "reason": "Composite score cannot override mandatory gate failure"
+  }
+}

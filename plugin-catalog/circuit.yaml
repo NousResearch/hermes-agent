@@ -3,10 +3,7 @@ title: Circuit
 repo: https://github.com/odtboun/hermes-circuit
 sha: da20db3ca15193ece9fec49eff8f6be0a803b0da
 subdir: circuit
-description: Design real PCBs by talking to your agent — a two-layer board compiler with a
-  part library, deterministic placement, autorouting, an independent DRC, and a fabrication
-  package (RS-274X Gerbers, Excellon drills, KiCad 8 project, STEP AP214), rendered in 2D and
-  3D in the desktop UI.
+description: "Design real PCBs by talking to your agent — a two-layer board compiler with a part library, deterministic placement, autorouting, an independent DRC, and a fabrication package (RS-274X Gerbers, Excellon drills, KiCad 8 project, STEP AP214), rendered in 2D and 3D in the desktop UI. Disclosure — circuit_samples downloads KiCad demo boards from gitlab.com and circuit_import url=… downloads a .kicad_pcb from any public web URL the agent is given (private, loopback and cloud-metadata addresses are refused); the generated shopping list links to Digi-Key, Mouser, LCSC and Octopart searches."
 maintainer: odtboun
 tier: community
 category: tools

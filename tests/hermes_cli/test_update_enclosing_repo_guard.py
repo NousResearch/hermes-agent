@@ -107,6 +107,41 @@ def test_pinned_feed_update_refuses_a_plugin_dir_git_resolves_to_an_enclosing_re
     assert _foreign_checkout_error('git', plugin) == ''
 
 
+def test_update_plugin_to_a_feed_commit_refuses_a_plugin_dir_git_resolves_to_an_enclosing_repo(
+        tmp_path, monkeypatch):
+    """The pinned-feed path inspects and checks out with git -C <plugin>; from a damaged plugin
+    .git that is the git-managed home, so update_plugin must stop before touching it."""
+    import json
+
+    import hermes_cli.plugins_updates as updates
+    from hermes_cli.plugins_cmd import PluginOperationError
+    from hermes_cli.plugins_transaction import update_plugin
+
+    home = tmp_path / 'home'
+    plugin = home / 'plugins' / 'demo'
+    plugin.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(tmp_path / 'git-config'))
+    monkeypatch.setenv('GIT_CONFIG_NOSYSTEM', '1')
+    feed = 'https://feed.example/demo.yml'
+    (plugin / 'plugin.yaml').write_text(f'name: demo\nupdate_url: {feed}\n', encoding='utf-8')
+    (home / 'plugins' / '.install-metadata.json').write_text(json.dumps(
+        {'demo': {'source': 'https://git.example/demo.git', 'update_url': feed}}), encoding='utf-8')
+    git(home, 'init', '-q', '-b', 'main')
+    git(home, 'add', '--all')
+    git(home, '-c', 'user.name=H', '-c', 'user.email=h@example.invalid', '-c', 'commit.gpgsign=false',
+        'commit', '-qm', 'home')
+    head = git(home, 'rev-parse', 'HEAD')
+    (plugin / '.git').mkdir()  # an empty/broken plugin .git: git walks up to the home repo
+    monkeypatch.setattr(updates, 'default_fetch', lambda url: 'version: 2.0.0\nartifacts:\n  git: ' + 'a' * 40 + '\n')
+
+    with pytest.raises(PluginOperationError, match='not its own git checkout'):
+        update_plugin(plugin)
+
+    assert git(home, 'rev-parse', 'HEAD') == head
+    assert git(home, 'stash', 'list') == ''
+
+
 def test_plugin_guard_ignores_an_inherited_git_dir(tmp_path, monkeypatch):
     """GIT_DIR disables discovery, so the toplevel would be the plugin dir even when git acts on another repo."""
     from hermes_cli.plugins_cmd_git import _foreign_checkout_error

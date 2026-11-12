@@ -1,21 +1,22 @@
 name: stagehands
 repo: https://github.com/Peetbog69/hermes-stagehands
-sha: "576b7306ae19d8aaa4f71ed52a81dfe73101fd5b"
+sha: "ec5aacc6fb01588eefb2fb97934fab74b857b5ef"
 title: "Sovereign & Stagehands"
 description: >-
   Typed backstage subagent delegation provider (scout, librarian, code_monkey,
   adversary, briefer) and deterministic 48k/120k context-sanitation janitor that
   keep bulky tool gravel out of the frontier parent session. Disclosure: registers
   a DelegationProvider via ctx.register_delegation_provider, one system prompt
-  routing section, one context reference, and the /stagehands CLI command. No
-  network calls, background daemons, telemetry, or credential reads in plugin
-  code; optional /stagehands janitor backups and SQLite hygiene run locally only
-  when explicitly invoked by the operator.
+  routing section, one context reference, and the /stagehands CLI command. Reads
+  the active profile's state.db read-only for stats and telemetry. Explicit on/off
+  commands update delegation.backend; janitor commands update compression settings
+  using Hermes's atomic config writer, without a separate backup. Plugin code makes
+  no network calls of its own and stores no credentials.
 maintainer: Peetbog69
 tier: community
 category: models
 requires_hermes: ">=0.22.5"
-docs_url: https://github.com/Peetbog69/hermes-stagehands/blob/576b7306ae19d8aaa4f71ed52a81dfe73101fd5b/README.md
+docs_url: https://github.com/Peetbog69/hermes-stagehands/blob/ec5aacc6fb01588eefb2fb97934fab74b857b5ef/README.md
 version: "1.0.0"
 readme: true
 capabilities:

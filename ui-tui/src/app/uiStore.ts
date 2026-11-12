@@ -38,6 +38,7 @@ const buildUiState = (): UiState => ({
   storedSid: null,
   statusBarFields: null,
   streaming: true,
+  terminalProgress: true,
   timestamps: false,
   // Last session's resolved theme paints frame one (flash-free boot, like
   // the desktop's hermes-boot-* keys); DEFAULT_THEME only on first launch.

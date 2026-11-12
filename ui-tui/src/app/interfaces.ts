@@ -387,6 +387,8 @@ export interface UiState {
   // the default set).
   statusBarFields: null | ReadonlySet<string>
   streaming: boolean
+  // `display.terminal_progress` — OSC 9;4 tab progress while a turn runs.
+  terminalProgress: boolean
   theme: Theme
   // `display.timestamps` — dim [HH:MM] labels on user/assistant transcript
   // rows, the same config key the classic CLI honors (#41531).

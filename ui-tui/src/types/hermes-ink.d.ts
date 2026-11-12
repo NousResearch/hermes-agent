@@ -111,12 +111,14 @@ declare module '@hermes/ink' {
   export const TextInput: React.ComponentType<any>
   export const colorize: (str: string, color: string | undefined, type: 'foreground' | 'background') => string
   export const stringWidth: (s: string) => number
+  export function isProgressReportingAvailable(): boolean
   export function isXtermJs(): boolean
   export function onTerminalBackground(listener: (hex: string) => void): void
   export function terminalBackgroundHex(): string | undefined
   export function onTerminalForeground(listener: (hex: string) => void): void
   export function terminalForegroundHex(): string | undefined
   export function parseOscColor(data: string): string | undefined
+  export function wrapForMultiplexer(sequence: string): string
 
   export type ScrollFastPathStats = {
     captured: number

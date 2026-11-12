@@ -12,6 +12,7 @@ import { t } from '../i18n/runtime.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
+import { terminalProgress } from '../lib/terminalProgress.js'
 import {
   boundedLiveRenderText,
   estimateTokensRough,
@@ -414,6 +415,7 @@ class TurnController {
     }
 
     this.interrupted = true
+    terminalProgress.settle({ failed: false })
 
     this.closeReasoningSegment()
 
@@ -680,6 +682,7 @@ class TurnController {
     // streaming tail) — unlike recordMessageComplete, which must keep the tail
     // (#61520), and interruptTurn, which preserves it as `partial`.
     this.idle()
+    terminalProgress.settle({ failed: true })
     this.clearReasoning()
     this.clearStatusTimer()
     this.pendingSegmentTools = []
@@ -794,6 +797,7 @@ class TurnController {
     }
 
     this.idle()
+    terminalProgress.settle({ failed: payload.status === 'error' })
     this.clearReasoning()
     this.turnTools = []
     this.persistedToolLabels.clear()
@@ -1027,6 +1031,7 @@ class TurnController {
     this.clearReasoning()
     this.clearStatusTimer()
     this.idle()
+    terminalProgress.settle({ failed: false })
     this.bufRef = ''
     this.interrupted = false
     this.sealedInterrupt = null
@@ -1087,6 +1092,7 @@ class TurnController {
   }
 
   startMessage() {
+    terminalProgress.start(getUiState().terminalProgress)
     this.endReasoningPhase()
     this.clearReasoning()
     this.activeTools = []

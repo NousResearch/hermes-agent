@@ -2058,6 +2058,13 @@ display:
   #   false: Silent (default)
   bell_on_prompt: false
 
+  # TUI (hermes --tui): native tab/title-bar progress indicator (OSC 9;4) while the agent works:
+  # pulses during a turn, clears when it finishes, turns red on a failed turn.
+  # Shown by Ghostty 1.2+, iTerm2 3.6.6+ and ConEmu; nothing is sent elsewhere.
+  #   true:  Show progress (default)
+  #   false: Never send progress sequences
+  terminal_progress: true
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

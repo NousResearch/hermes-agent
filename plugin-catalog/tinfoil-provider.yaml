@@ -1,8 +1,8 @@
 name: tinfoil-provider
 title: Tinfoil
 repo: https://github.com/counterposition/tinfoil-hermes-provider
-sha: 0fae2f27535b71dacb68afbb4159f226d318b43b
-description: "Tinfoil confidential inference as a Hermes model provider. Open-weight models from Tinfoil's live catalog (Kimi, GLM, gpt-oss and others) run in attested hardware enclaves that neither the cloud host nor Tinfoil can read. Hermes reaches them only through Tinfoil's local tinfoil-proxy, which verifies the enclave's attestation and pins its TLS key before forwarding anything; there is no fallback to an unverified connection. The proxy starts on demand. Disclosure — Hermes sends requests, including a /v1/models read for the model list, only to the local proxy (127.0.0.1:3301, or TINFOIL_BASE_URL); the proxy is what contacts Tinfoil. When nothing listens on the proxy's port, the plugin starts the user's installed tinfoil-proxy binary in its own session and leaves it running after Hermes exits, logging to proxy.log in the plugin's data directory; it never downloads a binary, and TINFOIL_PROXY_AUTOSTART=0 turns this off. The proxy is started without any environment variable ending in _API_KEY, _TOKEN, _SECRET, _PASSWORD or _ADMIN_KEY. TINFOIL_API_KEY is read through Hermes' provider profile and sent to the proxy as the request's bearer token. The plugin writes catalog.json (the last model list it saw) and proxy.log under its plugin-data directory, registers no tools, hooks or middleware, and sends no telemetry."
+sha: 6b17328e404619d9133752a0482a0e8a44e8535b
+description: "Tinfoil confidential inference as a Hermes model provider. Open-weight models from Tinfoil's live catalog (Kimi, GLM, gpt-oss and others) run in attested hardware enclaves that neither the cloud host nor Tinfoil can read. Hermes reaches them only through Tinfoil's local tinfoil-proxy, which verifies the enclave's attestation and pins its TLS key before forwarding anything; there is no fallback to an unverified connection. The proxy starts on demand. Disclosure — Hermes sends requests, including a /v1/models read for the model list, only to the local proxy (127.0.0.1:3301, or TINFOIL_BASE_URL); the proxy is what contacts Tinfoil. When nothing listens on the proxy's port, the plugin starts the user's installed tinfoil-proxy binary in its own session and leaves it running after Hermes exits, logging to proxy.log in the plugin's data directory; it never downloads a binary, and TINFOIL_PROXY_AUTOSTART=0 turns this off. The proxy inherits only an allowlist of the environment (PATH, home, temp and user, locale and time zone, SSL_CERT_FILE/SSL_CERT_DIR, HTTP(S)_PROXY/NO_PROXY, and Windows system directories); every other variable, including all TINFOIL_* variables, is withheld. TINFOIL_API_KEY is read through Hermes' provider profile and sent to the proxy as the request's bearer token. The plugin writes catalog.json (the last model list it saw) and proxy.log under its plugin-data directory, registers no tools, hooks or middleware, and sends no telemetry."
 maintainer: counterposition
 tier: community
 category: models
@@ -10,7 +10,7 @@ requires_hermes: ">=0.23.1"
 version: "2.0.0"
 docs_url: https://github.com/counterposition/tinfoil-hermes-provider#readme
 screenshots:
-  - https://raw.githubusercontent.com/counterposition/tinfoil-hermes-provider/0fae2f27535b71dacb68afbb4159f226d318b43b/docs/install.gif
+  - https://raw.githubusercontent.com/counterposition/tinfoil-hermes-provider/6b17328e404619d9133752a0482a0e8a44e8535b/docs/install.gif
 capabilities:
   provides_tools: []
   provides_hooks: []

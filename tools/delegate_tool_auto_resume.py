@@ -70,10 +70,15 @@ def notice_line(sid: str, auto: dict[str, Any]) -> str:
             "you start in the same repository also cancels it.")
 
 
-def boot_notice(sids: list[str], records: dict[str, dict[str, Any]]) -> str:
-    """Boot recovery's sentence for crashed children the scheduler will continue ('' when none will)."""
-    lines = [notice_line(sid, auto) for sid in sids if (record := records.get(sid)) and record.get("unit_id")
-             and not record.get("auto_off") and (auto := promise({**record, "resume_mode": AUTO_ON_BOOT}))]
+def boot_notice(conn, sids: list[str], records: dict[str, dict[str, Any]]) -> str:
+    """Boot recovery's sentence for crashed children the scheduler will continue ('' when none will); each promised
+    record is stamped ``auto_promised`` on boot recovery's own connection."""
+    promised = {sid: auto for sid in sids if (record := records.get(sid)) and record.get("unit_id")
+                and not record.get("auto_off") and (auto := promise({**record, "resume_mode": AUTO_ON_BOOT}))}
+    for sid in promised:
+        conn.execute("UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_promised', json('true'))"
+                     " WHERE subagent_id=?", (sid,))
+    lines = [notice_line(sid, auto) for sid, auto in promised.items()]
     return (" " + " ".join(lines)) if lines else ""
 
 
@@ -211,6 +216,8 @@ def _blocked(record: dict[str, Any]) -> Optional[str]:
                 f"{record.get('failure_reason') or record.get('outcome') or 'unknown'}); continue it by hand")
     if record.get("pin_paths") and not record.get("pinned"):
         return "its worktree pin was dropped (delegation.max_resumable)"
+    if not record.get("auto_promised"):  # its stop notice told the parent to continue it by hand (or re-dispatch)
+        return "its stop never promised an automatic resume; continue it by hand"
     return None
 
 
@@ -241,7 +248,7 @@ def _claim(record: dict[str, Any], parent_sid: str) -> tuple[Optional[dict[str, 
     def do(conn):
         _begin_immediate(conn)
         row = _row(conn, sid)
-        if (not row or row.get("state") != "resumable" or row.get("auto_off")
+        if (not row or row.get("state") != "resumable" or row.get("auto_off") or not row.get("auto_promised")
                 or int(row.get("auto_attempts") or 0) != attempts or attempts >= MAX_AUTO_ATTEMPTS):
             return None, None
         if reason := superseded_reason(conn, row, parent_sid):

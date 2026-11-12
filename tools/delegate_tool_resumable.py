@@ -401,6 +401,7 @@ def stamp_entry(run: Any, entry: dict[str, Any]) -> None:
             from tools.delegate_tool_auto_resume import promise
             if auto := promise({**durable["auto"], "resume_mode": mode, "next_attempt_at": next_at}):
                 entry["auto_resume"] = auto
+                durable["promised"] = True  # only a stop that promised a resume may be resumed automatically
 
 
 def record_stop(run: Any, entry: Optional[dict[str, Any]]) -> None:
@@ -419,6 +420,7 @@ def record_stop(run: Any, entry: Optional[dict[str, Any]]) -> None:
         record = _row(conn, sid) or {}
         if isinstance(session_id, str) and session_id:
             record["session_id"] = session_id
+        record["auto_promised"] = bool(durable.get("promised"))
         _finish(conn, sid, record, entry, live_cause or record.get("stop_cause"), cwd=cwd)
 
     with durable["lock"]:

@@ -333,7 +333,7 @@ def recover_abandoned_delegations() -> int:
             if continuable := continuable_of(conn, delegation_id):
                 diagnostics["resumable_subagent_ids"] = continuable
                 from tools.delegate_tool_auto_resume import boot_notice
-                error += boot_notice(continuable, recovered_records) or (
+                error += boot_notice(conn, continuable, recovered_records) or (
                     " Its subagents can be continued on their own conversation and worktree: "
                     "delegate_task(action='continue', subagent_id=..., message=...); check git state and the "
                     "last tool before re-running side effects.")

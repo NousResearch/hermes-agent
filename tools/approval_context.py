@@ -60,7 +60,7 @@ def _call_approval_hook(hook_name: str, **kwargs) -> list:
     """
     try:
         from hermes_cli.lifecycle import invoke_hook
-    except Exception:
+    except ImportError:
         return []  # plugin system unavailable (bare tool-only imports, minimal tests)
     try:
         kwargs.setdefault("turn_id", _approval_turn_id.get())
@@ -70,7 +70,7 @@ def _call_approval_hook(hook_name: str, **kwargs) -> list:
         return invoke_hook(hook_name, **kwargs) or []
     except Exception as exc:
         # invoke_hook() swallows per-callback errors; this is the dispatch layer itself failing.
-        logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
+        logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc, exc_info=True)
         return []
 
 

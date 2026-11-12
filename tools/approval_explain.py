@@ -222,9 +222,18 @@ def _call_with_deadline(fn: Callable[[], Any], deadline: float) -> Any:
         try:
             result["value"] = fn()
         except BaseException as exc:  # re-raised in the caller's thread
+            logger.debug("explainer call raised", exc_info=True)
             result["error"] = exc
 
-    thread = threading.Thread(target=_target, name="approval-explain", daemon=True)
+    try:
+        # ContextVars (the profile/home scope) do not cross a bare Thread, and the aux client
+        # resolves config from them.
+        from agent.memory_provider import spawn_context_thread
+
+        thread = spawn_context_thread(_target, name="approval-explain")
+    except ImportError:
+        thread = threading.Thread(target=_target, name="approval-explain", daemon=True)
+    thread.daemon = True
     thread.start()
     thread.join(deadline)
     if thread.is_alive():

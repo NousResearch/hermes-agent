@@ -8,8 +8,9 @@ verifies it against a committed digest (``sha256sum -c``), and only then extract
 streamed the cua-driver release asset into ``tar`` and published the result as the default
 terminal sandbox (#126942). This guard keeps that shape out of every tracked Dockerfile.
 
-Backslash continuations are joined first, so a ``curl ... \\`` / ``| tar`` split over two
-physical lines is still caught.
+Lines are joined the way BuildKit parses them (backslash continuations, dropping comment lines
+and blank lines inside a continuation), so a ``curl ... \\`` / ``| tar`` split over several
+physical lines is still caught; ``| /bin/tar`` counts the same as ``| tar``.
 
     python scripts/ci/check_dockerfile_downloads.py [--root DIR]
 
@@ -27,7 +28,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 _DOCKERFILES = ("Dockerfile", "*.Dockerfile", "**/Dockerfile", "**/*.Dockerfile")
 _STREAMED = re.compile(
-    r"\b(?:curl|wget)\b[^|;&]*\|\s*(?:sudo\s+)?"
+    r"\b(?:curl|wget)\b[^|;&]*\|\s*(?:sudo\s+)?(?:\S*/)?"
     r"(?:tar|bsdtar|unzip|gunzip|gzip|xz|zstd|bzip2|sh|bash|dash|zsh|python3?|perl|node)\b"
 )
 
@@ -45,6 +46,8 @@ def _logical_lines(text: str) -> list[tuple[int, str]]:
     joined: list[tuple[int, str]] = []
     start, parts = 0, []
     for lineno, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith("#") or (parts and not line.strip()):
+            continue  # BuildKit drops comment lines, and blank lines inside a continuation
         if not parts:
             start = lineno
         stripped = line.rstrip()
@@ -66,7 +69,7 @@ def offenders(root: Path) -> list[str]:
         if not path.is_file():
             continue
         for lineno, line in _logical_lines(path.read_text(encoding="utf-8-sig", errors="replace")):
-            if not line.lstrip().startswith("#") and _STREAMED.search(line):
+            if _STREAMED.search(line):
                 found.append(f"{rel}:{lineno}")
     return found
 

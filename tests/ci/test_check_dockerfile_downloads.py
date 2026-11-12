@@ -49,6 +49,29 @@ def test_a_download_streamed_into_tar_across_a_continuation_fails(tmp_path, caps
     assert "  Dockerfile:" not in out
 
 
+def test_comment_and_blank_lines_inside_a_continuation_do_not_hide_the_pipe(tmp_path, capsys):
+    # BuildKit runs each of these as `curl ... | tar` / `curl ... | sh`.
+    files = {
+        "a.Dockerfile": "FROM a\nRUN curl -fsSL u \\\n    # unpack\n    | tar -xz -C /opt\n",
+        "b.Dockerfile": "FROM a\nRUN curl -fsSL u \\\n\n    | tar -xz -C /opt\n",
+        "c.Dockerfile": "FROM a\n# fetch the installer \\\nRUN curl -fsSL u | sh\n",
+    }
+    assert cdd.main(["--root", str(_repo(tmp_path, files))]) == 1
+    out = capsys.readouterr().out
+    assert all(f"{rel}:" in out for rel in files), out
+
+
+def test_downloads_piped_into_absolute_executable_paths_fail(tmp_path, capsys):
+    files = {
+        "a.Dockerfile": "FROM a\nRUN curl -fsSL u | /bin/tar -xz -C /opt\n",
+        "b.Dockerfile": "FROM a\nRUN wget -qO- u | /usr/bin/sh\n",
+        "c.Dockerfile": "FROM a\nRUN curl -fsSL u | sudo /usr/local/bin/bash\n",
+    }
+    assert cdd.main(["--root", str(_repo(tmp_path, files))]) == 1
+    out = capsys.readouterr().out
+    assert all(f"{rel}:2" in out for rel in files), out
+
+
 def test_fetch_verify_extract_passes_and_so_does_the_repo(tmp_path):
     repo = _repo(tmp_path, {"Dockerfile": _VERIFIED, "x/y.Dockerfile": "FROM a\nRUN wget -qO- u | sh\n"})
     assert cdd.main(["--root", str(repo)]) == 1

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -105,6 +106,8 @@ async def test_with_warnings_hidden_the_tail_is_dropped_without_a_notice():
     sends = _sends(adapter)
     assert len(sends) <= adapter.MAX_SPLIT_MESSAGES
     assert not any("truncated" in s for s in sends)
+    for part in re.findall(r"\\\((\d+)/(\d+)\\\)", "".join(sends)):  # an (N/M) marker never reads N > M
+        assert int(part[0]) <= int(part[1])
     assert consumer.delivered_final_matches(text) is True
 
 

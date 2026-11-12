@@ -180,7 +180,7 @@ class StreamCeilingMixin:
             return None
         source, base = self._accumulated, len(self._stream_ledger) - len(self._accumulated)
         self._ceiling_cut(base)
-        sent, reply_to, total = "", self._initial_reply_to_id, remaining
+        sent, reply_to, total = "", self._initial_reply_to_id, self._reply_cap  # parts of the whole reply
         while self._ceiling_remaining() > reserve and self._ceiling_notice_id is None and len(sent) < len(source):
             rest = source[len(sent):]
             cut = self._ceiling_head(rest)

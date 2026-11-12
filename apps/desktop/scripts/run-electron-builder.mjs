@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
+import { pathToFileURL } from 'node:url'
 import { isMain } from './utils.mjs'
 import { readPackagingInputs, preparationRequired } from './prepared-packaging.mjs'
 import { readNativeInputs } from './prepared-native-deps.mjs'
@@ -149,7 +150,8 @@ export function runElectronBuilder(args, { spawn = spawnSync } = {}) {
   pinnedPackageRoot(source, 'app-builder-lib')
   const require = createRequire(path.join(builder, 'package.json'))
   const bin = require(path.join(builder, 'package.json')).bin['electron-builder']
-  const preloads = []
+  // --import reads a bare Windows path's drive letter as a URL scheme.
+  const preloads = ['--import', pathToFileURL(path.join(import.meta.dirname, 'patch-electron-builder-copy.mjs')).href]
   if (process.platform === 'darwin') {
     preloads.push('--import', path.join(import.meta.dirname, 'patch-electron-builder-mac-binary.mjs'))
     preloads.push('--require', path.join(import.meta.dirname, 'dmgbuild-diagnostics.cjs'))

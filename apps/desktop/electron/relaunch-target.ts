@@ -223,6 +223,22 @@ function withoutMountEntries(env: NodeJS.ProcessEnv, execPath: string): NodeJS.P
   return cleaned
 }
 
+/** A child run from outside the AppImage mount (the payload copy) outlives it, so it must not load from it. */
+export function mountFreeEnv(
+  env: NodeJS.ProcessEnv,
+  command: string,
+  execPath: string = process.execPath
+): NodeJS.ProcessEnv {
+  const appDir = env.APPIMAGE ? mountRoot(execPath, env) : undefined
+  const resolved = posix.resolve(command)
+
+  if (!appDir || resolved === appDir || resolved.startsWith(`${appDir}/`)) {
+    return env
+  }
+
+  return withoutMountEntries(env, execPath)
+}
+
 /**
  * Start `target` with `args` once this process is gone, as an ordinary
  * detached child: Electron's relauncher execs with PR_SET_NO_NEW_PRIVS, which

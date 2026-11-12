@@ -6,7 +6,7 @@ import path from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { ownAppImage, spawnRelaunch } from './relaunch-target'
+import { mountFreeEnv, ownAppImage, spawnRelaunch } from './relaunch-target'
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof childProcess>()
@@ -268,5 +268,24 @@ describe('spawnRelaunch', () => {
       fs.closeSync(fd)
       fs.rmSync(dir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('mountFreeEnv', () => {
+  const env = {
+    APPIMAGE: '/home/x/Hermes.AppImage',
+    APPDIR: '/tmp/.mount_HermesAb12',
+    LD_LIBRARY_PATH: '/tmp/.mount_HermesAb12/usr/lib',
+    PATH: '/tmp/.mount_HermesAb12:/usr/bin'
+  }
+
+  it('keeps the env whole for a command that still runs from the mount', () => {
+    expect(mountFreeEnv(env, '/tmp/.mount_HermesAb12/resources/agent-payload/bin/hermes')).toBe(env)
+  })
+
+  it('keeps the env whole outside an AppImage', () => {
+    const plain = { PATH: '/tmp/.mount_x:/usr/bin', LD_LIBRARY_PATH: '/opt/lib' }
+
+    expect(mountFreeEnv(plain, '/home/x/.local/share/hermes/bundles/k/agent-payload/bin/hermes')).toBe(plain)
   })
 })

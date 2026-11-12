@@ -48,6 +48,23 @@ export interface MessagingPlatform {
   env_vars: MessagingPlatformEnvVar[];
 }
 
+export interface MessagingPlatformsResponse {
+  env_path: string;
+  gateway_start_command: string;
+  platforms: MessagingPlatform[];
+  /** Set when Team Gateway owns messaging: channels are configured in Nous Portal (absent on older backends). */
+  team_gateway?: TeamGatewayInfo | null;
+}
+
+export interface TeamGatewayInfo {
+  /** The Portal's Manage Agents page, where this agent's channels are configured. */
+  portal_url: string;
+  /** Platforms the shared Team Gateway bots carry for this agent. */
+  platforms: string[];
+  /** Non-messaging surfaces Team Gateway leaves running (API server, webhooks): set up here. */
+  direct_platforms?: string[];
+}
+
 export interface RelayLinkedAccount {
   platformUserId: string;
   handle?: string;

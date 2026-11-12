@@ -30,6 +30,7 @@ import type {
   MessagingPlatform,
   MessagingPlatformEnvVar,
   MessagingPlatformUpdate,
+  TeamGatewayInfo,
   TelegramOnboardingStartResponse,
   WhatsAppOnboardingStartResponse,
 } from "@/lib/api";
@@ -40,6 +41,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
 import { RelayLinkPanel } from "./ChannelsRelayLink";
+import { TeamGatewayChannels } from "./ChannelsTeamGateway";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -157,6 +159,7 @@ function normalizeWhatsAppMode(mode: unknown): "bot" | "self-chat" | null {
 
 export default function ChannelsPage() {
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
+  const [teamGateway, setTeamGateway] = useState<TeamGatewayInfo | null>(null);
   const [envPath, setEnvPath] = useState("~/.hermes/.env");
   const [gatewayStartCommand, setGatewayStartCommand] = useState(
     "hermes gateway start",
@@ -189,6 +192,7 @@ export default function ChannelsPage() {
       .getMessagingPlatforms()
       .then((res) => {
         setPlatforms(res.platforms);
+        setTeamGateway(res.team_gateway ?? null);
         setEnvPath(res.env_path || "~/.hermes/.env");
         setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
       })
@@ -337,10 +341,15 @@ export default function ChannelsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [setEnd, restarting]);
 
-  const configured = useMemo(
-    () => platforms.filter((p) => p.configured).length,
-    [platforms],
+  // Under Team Gateway only the surfaces its rule leaves running keep their setup here.
+  const shown = useMemo(
+    () =>
+      teamGateway
+        ? platforms.filter((p) => (teamGateway.direct_platforms ?? []).includes(p.id))
+        : platforms,
+    [platforms, teamGateway],
   );
+  const configured = useMemo(() => shown.filter((p) => p.configured).length, [shown]);
 
   if (loading) {
     return (
@@ -382,7 +391,7 @@ export default function ChannelsPage() {
           <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
             <WifiOff className="h-4 w-4 shrink-0" />
             <span>
-              The gateway is not running. Configure channels here, then start the
+              The gateway is not running. {teamGateway ? "Start" : "Configure channels here, then start"} the
               gateway with <code className="font-courier">{gatewayStartCommand}</code>{" "}
               (or the Restart button above).
             </span>
@@ -390,8 +399,10 @@ export default function ChannelsPage() {
         </Card>
       )}
 
+      {teamGateway && <TeamGatewayChannels platforms={platforms} teamGateway={teamGateway} />}
+
       <p className="text-xs text-muted-foreground">
-        {configured} of {platforms.length} channels configured. Credentials are
+        {configured} of {shown.length} {teamGateway ? "other surfaces" : "channels"} configured. Credentials are
         written to <code className="font-courier">{envPath}</code>; the
         gateway connects each enabled channel on its next restart.
       </p>
@@ -592,7 +603,7 @@ export default function ChannelsPage() {
 
       {/* Platform list */}
       <div className="grid gap-3">
-        {platforms.map((platform) => {
+        {shown.map((platform) => {
           // Under an exclusive relay the direct bot never runs: setup is the shared-bot link below.
           const viaRelay = Boolean(platform.relay_exclusive);
           const badge = platformBadge(platform);

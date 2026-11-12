@@ -255,3 +255,28 @@ it('commits a consistent clock snapshot when busy views render across the stall 
   const view = render(<><Probe cross /><Probe /></>)
   expect([...view.container.querySelectorAll('[data-clock-view]')].map(node => node.textContent)).toEqual(['stalled', 'stalled'])
 })
+
+it('synchronises existing busy views when another mounts across a second boundary', async () => {
+  const { MemberStatusChip } = await import('./group-room-ui')
+  const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+  const start = 5_000_000
+  vi.setSystemTime(new Date((start + 119.9) * 1000))
+
+  const props = { avatar: null, name: 'Ops', labels: CANONICAL_GROUP_LOCALES.en as never,
+    status: { kind: 'working' as const, startedAt: start, lastSignAt: start } }
+
+  const first = render(<ul><MemberStatusChip {...props} /></ul>)
+
+  await act(async () => { vi.advanceTimersByTime(200) })
+  // A separate root leaves the first view untouched by this render; the interval has not fired.
+  const second = render(<ul><MemberStatusChip {...props} /></ul>)
+  const chips = [first, second].map(view => view.container.querySelector('li'))
+  expect(chips.map(chip => chip?.getAttribute('data-member-status'))).toEqual(['stalled', 'stalled'])
+  expect(chips[0]?.textContent).toBe(chips[1]?.textContent)
+  expect(vi.getTimerCount()).toBe(1)
+  first.rerender(<ul><MemberStatusChip {...props} status={{ kind: 'idle' }} /></ul>)
+  expect(vi.getTimerCount()).toBe(1)
+  second.rerender(<ul><MemberStatusChip {...props} status={{ kind: 'queued' }} /></ul>)
+  expect(vi.getTimerCount()).toBe(0)
+})

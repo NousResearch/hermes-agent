@@ -66,6 +66,8 @@ const clockSeconds = () => Math.floor(Date.now() / 1000)
 const subscribeClock = (listener: () => void) => {
   clock.listeners.add(listener)
   clock.timer ??= setInterval(() => { clock.listeners.forEach(notify => notify()) }, 1000)
+  // A newly busy view can read a newer second before the interval fires; bring existing views with it.
+  clock.listeners.forEach(notify => notify())
 
   return () => {
     clock.listeners.delete(listener)

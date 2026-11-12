@@ -135,6 +135,8 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
             if name in servers:
                 raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
             if bearer_token is not None:
+                from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
+                refuse_ignored_whole_file_save()
                 server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
             return _save_mcp_server(name, server_config)
 
@@ -509,6 +511,8 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     if body.env:
         def _write_env():
             with _profile_scope(effective_profile):
+                from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
+                refuse_ignored_whole_file_save()
                 for spec in entry.auth.env or []:
                     value = (body.env or {}).get(spec.name)
                     if spec.secret and value:

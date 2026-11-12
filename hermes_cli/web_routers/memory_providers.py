@@ -298,6 +298,9 @@ def _update_memory_provider_config(provider: ProviderConfigSchema, values: dict[
     writer = _STORAGE_WRITERS.get(provider.storage)
     if writer is None:  # an unknown kind must not fall back to writing a stray flat file
         raise ValueError(f"Memory provider {provider.name} declares unsupported config storage {provider.storage!r}")
+    from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
+    if _memory_section(load_config()).get("provider") != provider.name:
+        refuse_ignored_whole_file_save()
     writer(provider, values)
     with CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave
         config = load_config()
@@ -558,6 +561,8 @@ async def update_memory_provider_config(
         provider = _load_memory_provider(name)
         if provider is None:
             raise _unknown_provider(name)
+        from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
+        refuse_ignored_whole_file_save()
         _write_memory_provider_config_values(name, provider, values)
         _require_memory_provider_ready(name)
         with CONFIG_MUTATION_LOCK:  # RMW span vs. the dashboard's config autosave

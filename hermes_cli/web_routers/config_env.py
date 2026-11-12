@@ -30,6 +30,8 @@ from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_en
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
+
 _log = logging.getLogger("hermes_cli.web_server")
 config_router = APIRouter()
 router = APIRouter()
@@ -133,7 +135,6 @@ async def update_config(
                 # Strict read: the merge below builds a new dict, so a swallowed read error here
                 # would save the PUT body alone over the whole file.
                 from hermes_cli.config import get_config_path
-                from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
                 refuse_ignored_whole_file_save(get_config_path(), merge_existing=False)
                 existing = require_readable_config_before_write()
                 incoming = _denormalize_config_from_web(body.config)
@@ -702,17 +703,20 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
         # sentinel and legacy masks. Either one is display-only, current or stale.
         if _ENV_REF_RE.fullmatch(submitted_key) or is_redacted_credential_preview(submitted_key):
             raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
+        refuse_ignored_whole_file_save()
         save_env_value(env_var, submitted_key)
         entry["key_env"] = env_var
         entry.pop("api_key", None)
     elif submitted_key is not None:
         # Blank field means "clear the key", not "leave it alone".
+        refuse_ignored_whole_file_save()
         remove_env_value(env_var)
         entry.pop("key_env", None)
         entry.pop("api_key", None)
     elif str(entry.get("api_key") or "").strip() and not _config_api_key_is_env_ref(endpoint_id):
         # Migrate a plaintext key an earlier release wrote, on the next save,
         # without the user having to re-enter it.
+        refuse_ignored_whole_file_save()
         save_env_value(env_var, entry["api_key"].strip())
         entry["key_env"] = env_var
         entry.pop("api_key", None)
@@ -859,6 +863,7 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 if _pop_legacy_custom_provider(cfg, provider_key) is None:
                     raise HTTPException(status_code=404, detail="custom endpoint not found")
             _detach_main_model_from_provider(cfg, provider_key, entry)
+            refuse_ignored_whole_file_save()
             remove_env_value(custom_endpoint_key_env(provider_key))
             save_config(cfg)
             response = _custom_endpoint_response(cfg)

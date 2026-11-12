@@ -104,6 +104,14 @@ def config_failure_http(exc: ConfigWriteError) -> HTTPException:
     return HTTPException(status_code=500, detail="Internal server error")
 
 
+async def config_write_error_response(request, exc):
+    """Host app exception adapter, including mounted dashboard plugin routers."""
+    from starlette.responses import JSONResponse
+
+    failure = config_failure_http(exc)
+    return JSONResponse(status_code=failure.status_code, content={"detail": failure.detail})
+
+
 @contextlib.contextmanager
 def http_failure(log_msg: str, status: int, prefix: Optional[str] = None, *, detail: Optional[str] = None):
     """Map unexpected exceptions to an ``HTTPException``.

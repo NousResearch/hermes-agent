@@ -230,7 +230,7 @@ def test_kanban_mounted_route_uses_host_handler(ignored_home, monkeypatch, caplo
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     app = FastAPI()
-    app.add_exception_handler(ConfigWriteError, web_server._config_write_error_response)
+    app.add_exception_handler(ConfigWriteError, web_server.app.exception_handlers[ConfigWriteError])
     app.include_router(module.router, prefix="/api/plugins/kanban")
     def fail(*args, **kwargs):
         raise ConfigWriteError("backend-private-detail", code=code)
@@ -285,3 +285,53 @@ def test_post_create_step_preserves_actionable_refusals(ignored_home, monkeypatc
         assert "backend-private-detail" not in result.warnings[0]
     else:
         assert str(error) in result.warnings[0]
+
+
+@pytest.mark.parametrize("key", ["", "replacement-value"])
+def test_refused_endpoint_edit_does_not_touch_existing_credentials(ignored_home, client, key):
+    from hermes_cli.config import save_env_value
+    from hermes_cli.web_routers.config_env import custom_endpoint_key_env
+    save_env_value(custom_endpoint_key_env("probe-endpoint"), "original-value")
+    env_path, config_path = ignored_home / ".env", ignored_home / "config.yaml"
+    before = env_path.read_bytes(), config_path.read_bytes()
+    response = client.post("/api/providers/custom-endpoints", json={
+        "id": "probe-endpoint", "name": "Probe endpoint", "model": "probe-model",
+        "base_url": "https://example.invalid/v1", "api_key": key,
+    })
+    assert response.status_code == 409, response.text
+    assert (env_path.read_bytes(), config_path.read_bytes()) == before
+
+
+def test_refused_mcp_add_does_not_store_a_bearer_token(ignored_home, client):
+    env = ignored_home / ".env"
+    env.write_text("OTHER_KEY=keep\n")
+    before = env.read_bytes()
+    response = client.post("/api/mcp/servers", json={
+        "name": "probe", "url": "https://example.invalid/mcp", "auth": "header",
+        "bearer_token": "replacement-value",
+    })
+    assert response.status_code == 409, response.text
+    assert env.read_bytes() == before
+
+
+def test_refused_declared_memory_selection_does_not_write_provider_fields(ignored_home, monkeypatch):
+    from hermes_cli.web_routers import memory_providers
+    from plugins.memory.config_schema import ProviderConfigSchema, STORAGE_FLAT_JSON
+    writes = []
+    monkeypatch.setitem(memory_providers._STORAGE_WRITERS, STORAGE_FLAT_JSON,
+                        lambda provider, values: writes.append(values))
+    provider = ProviderConfigSchema(name="probe", label="Probe")
+    with pytest.raises(ConfigWriteError):
+        memory_providers._update_memory_provider_config(provider, {})
+    assert writes == []
+
+
+def test_refused_messaging_toggle_does_not_clear_a_live_token(ignored_home, client):
+    env = ignored_home / ".env"
+    env.write_text("TELEGRAM_BOT_TOKEN=original-value\n")
+    before = env.read_bytes()
+    response = client.put("/api/messaging/platforms/telegram", json={
+        "enabled": True, "clear_env": ["TELEGRAM_BOT_TOKEN"],
+    })
+    assert response.status_code == 409, response.text
+    assert env.read_bytes() == before

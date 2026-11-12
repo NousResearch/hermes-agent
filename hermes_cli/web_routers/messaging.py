@@ -1088,6 +1088,9 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
                 _validate_messaging_env_value(env_value_rules, key, trimmed)
                 updates[key] = trimmed
 
+            if body.enabled is not None:
+                from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
+                refuse_ignored_whole_file_save()
             for key in body.clear_env:
                 remove_env_value(key)
             for key, value in updates.items():

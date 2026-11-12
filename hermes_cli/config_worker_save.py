@@ -38,7 +38,7 @@ def saving_raw_file() -> Iterator[None]:
         _SAVING_RAW_FILE.reset(token)
 
 
-def refuse_ignored_whole_file_save(config_path: Path, merge_existing: bool) -> None:
+def refuse_ignored_whole_file_save(config_path: Path | None = None, merge_existing: bool = False) -> None:
     """Under ``--ignore-user-config`` ``load_config()`` serves defaults, not the file, so a
     whole-file save would replace the user's file: refuse it before the file is even read (a
     malformed file gets the same refusal). A frozen worker rebases onto the live file instead."""
@@ -48,6 +48,7 @@ def refuse_ignored_whole_file_save(config_path: Path, merge_existing: bool) -> N
         return
     from hermes_cli.config_backend import ConfigWriteError, config_exists
 
+    config_path = config_path if config_path is not None else _config.get_config_path()
     if _config._worker_config_snapshot() is not None or not config_exists(config_path):
         return
     raise ConfigWriteError(USER_CONFIG_IGNORED_MESSAGE, code=USER_CONFIG_IGNORED)

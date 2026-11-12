@@ -475,7 +475,7 @@ def _extract_docx(path: str) -> str:
     with _open_zip(path, "DOCX") as zf:
         root = _zip_xml(zf, "word/document.xml")
     w = f"{{{_NS_W}}}"
-    breaks = {f"{w}tab": "\t", f"{w}br": "\n", f"{w}cr": "\n"}
+    breaks = {f"{w}tab": "\t", f"{w}br": "\n", f"{w}cr": "\n", f"{w}noBreakHyphen": "-"}
     lines: list[str] = []
     for para in root.iter(f"{w}p"):
         # w:rt is the ruby (phonetic) guide over w:rubyBase; it annotates the text, it is not text.

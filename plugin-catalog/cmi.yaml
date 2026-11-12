@@ -1,6 +1,6 @@
 name: cmi
 repo: https://github.com/jeremiebergel/context-manager-intelligence
-sha: 0d097032c9621a20bfad90e4dec4153f64a20ea5
+sha: 807439cba979de33710d92ea6c0d3de2896b3bf5
 subdir: cmi
 version: "1.12.2"
 title: CMI — Context Manager Intelligence
@@ -9,13 +9,13 @@ maintainer: jeremiebergel
 tier: community
 category: memory
 requires_hermes: ">=0.21"
-docs_url: https://github.com/jeremiebergel/context-manager-intelligence/blob/0d097032c9621a20bfad90e4dec4153f64a20ea5/README.md
-image: https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/0d097032c9621a20bfad90e4dec4153f64a20ea5/docs/catalog/banner.png
+docs_url: https://github.com/jeremiebergel/context-manager-intelligence/blob/807439cba979de33710d92ea6c0d3de2896b3bf5/README.md
+image: https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/807439cba979de33710d92ea6c0d3de2896b3bf5/docs/catalog/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/0d097032c9621a20bfad90e4dec4153f64a20ea5/docs/catalog/shot-problem.png
-  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/0d097032c9621a20bfad90e4dec4153f64a20ea5/docs/catalog/shot-fold.png
-  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/0d097032c9621a20bfad90e4dec4153f64a20ea5/docs/catalog/shot-results.png
-  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/0d097032c9621a20bfad90e4dec4153f64a20ea5/docs/catalog/shot-memory.png
+  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/807439cba979de33710d92ea6c0d3de2896b3bf5/docs/catalog/shot-problem.png
+  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/807439cba979de33710d92ea6c0d3de2896b3bf5/docs/catalog/shot-fold.png
+  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/807439cba979de33710d92ea6c0d3de2896b3bf5/docs/catalog/shot-results.png
+  - https://raw.githubusercontent.com/jeremiebergel/context-manager-intelligence/807439cba979de33710d92ea6c0d3de2896b3bf5/docs/catalog/shot-memory.png
 known_issues:
   - "Imports private Hermes core helpers (token estimator, tool-summary helper, ContextCompressor, pricing) that can break on a Hermes release; public seams requested in NousResearch/hermes-agent#152139."
 capabilities:

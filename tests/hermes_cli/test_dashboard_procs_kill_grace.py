@@ -24,6 +24,74 @@ import pytest
 
 from hermes_cli import dashboard_procs
 
+
+def test_root_reused_during_grace_is_never_escalated(monkeypatch):
+    from gateway import status
+    births = {123456: 42}
+    signals = []
+    monkeypatch.setattr(status, "get_process_start_time", lambda pid: births.get(pid))
+    monkeypatch.setattr(dashboard_procs, "_posix_descendants", lambda pids: {})
+    def wait(pids, seconds):
+        births[123456] = 43
+        return pids
+    monkeypatch.setattr(dashboard_procs, "_wait_gone", wait)
+    monkeypatch.setattr(dashboard_procs.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    killed, failed = [], []
+    dashboard_procs._kill_pids_posix([123456], killed, failed)
+    assert signals == [(123456, signal.SIGTERM)]
+    assert killed == []
+    assert failed and failed[0][0] == 123456
+
+
+def test_unknown_root_birth_refuses_even_sigterm(monkeypatch):
+    from gateway import status
+    signals = []
+    monkeypatch.setattr(status, "get_process_start_time", lambda pid: None)
+    monkeypatch.setattr(dashboard_procs, "_posix_descendants", lambda pids: {})
+    monkeypatch.setattr(dashboard_procs.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    killed, failed = [], []
+    dashboard_procs._kill_pids_posix([123456], killed, failed)
+    assert signals == []
+    assert killed == []
+    assert failed and failed[0][0] == 123456
+
+
+@pytest.mark.parametrize("root_birth,root_error", [(None, None), (42, PermissionError("denied"))])
+def test_unproven_root_never_authorizes_descendant_sweep(monkeypatch, root_birth, root_error):
+    from gateway import status
+    signals = []
+    monkeypatch.setattr(status, "get_process_start_time",
+                        lambda pid: root_birth if pid == 123456 else 88)
+    monkeypatch.setattr(dashboard_procs, "_posix_descendants",
+                        lambda pids: {123457: (123456, 88)})
+    def send(pid, sig):
+        signals.append((pid, sig))
+        if pid == 123456 and root_error is not None:
+            raise root_error
+    monkeypatch.setattr(dashboard_procs.os, "kill", send)
+    killed, failed = [], []
+    dashboard_procs._kill_pids_posix([123456], killed, failed)
+    assert not any(pid == 123457 for pid, _ in signals)
+    assert failed and failed[0][0] == 123456
+
+
+def test_descendant_reused_during_grace_is_never_escalated(monkeypatch):
+    from gateway import status
+    births = {123456: 42, 123457: 88}
+    signals = []
+    monkeypatch.setattr(status, "get_process_start_time", lambda pid: births.get(pid))
+    monkeypatch.setattr(dashboard_procs, "_posix_descendants", lambda pids: {123457: (123456, 88)})
+    def wait(pids, seconds):
+        if seconds == dashboard_procs._POSIX_DESCENDANT_GRACE_SECONDS:
+            births[123457] = 89
+        return pids
+    monkeypatch.setattr(dashboard_procs, "_wait_gone", wait)
+    monkeypatch.setattr(dashboard_procs.os, "kill", lambda pid, sig: signals.append((pid, sig)))
+    killed, failed = [], []
+    dashboard_procs._kill_pids_posix([123456], killed, failed)
+    assert (123457, signal.SIGTERM) in signals
+    assert (123457, signal.SIGKILL) not in signals
+
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal semantics only")
 
 _IGNORING_CHILD = textwrap.dedent(

@@ -75,3 +75,30 @@ def test_a_late_record_write_never_recreates_a_removed_profile_and_stays_owner_o
         assert stat.S_IMODE(live.stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize("independent", [True, False], ids=["independent-units", "one-unit"])
+def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_them(independent):
+    from hermes_constants import get_hermes_home
+    from tools import async_delegation as ad
+    from tools.delegate_tool import delegate_task
+    (get_hermes_home() / "config.yaml").write_text(json.dumps({"delegation": {"independent_completions": independent}}))
+    parent, model = _parent(), _ScriptedModel()
+    with patch("run_agent.AIAgent", side_effect=model):
+        out = json.loads(delegate_task(tasks=[{"goal": "write the first parser"}, {"goal": "write the second parser"}],
+                                       background=True, parent_agent=parent))
+        units = [u["delegation_id"] for u in out["units"]] if independent else [out["delegation_id"]]
+        assert len(units) == (2 if independent else 1), out
+        _completions(units)
+    with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
+        # The owner died before either ledger row or child record turned terminal.
+        conn.execute("UPDATE async_delegations SET state='running', owner_pid=?, owner_started_at=NULL, "
+                     "result_json=NULL", (_DEAD_PID,))
+        conn.execute("UPDATE resumable_subagents SET state='running', owner_pid=?, owner_started_at=NULL",
+                     (_DEAD_PID,))
+
+    assert ad.recover_abandoned_delegations() == len(units)
+
+    with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
+        events = {d: json.loads(raw) for d, raw in conn.execute("SELECT delegation_id, event_json FROM async_delegations")}
+    named = sorted(sid for evt in events.values() for sid in evt.get("resumable_subagent_ids") or ())
+    assert all(events[u].get("resumable_subagent_ids") for u in units), events
+    assert named == sorted(out["subagent_ids"])

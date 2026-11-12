@@ -226,6 +226,8 @@ def record_start(run: Any) -> None:
         owners.discard("")
         record = {**prev, **spec, **_owner_identity(), "subagent_id": sid,
                   "delegation_id": getattr(child, "_delegation_id", None), "owners": sorted(owners),
+                  # The async unit whose ledger row reports this run (``<call>-k`` with independent completions).
+                  "unit_id": getattr(child, "_delegation_unit_id", None),
                   "start_cwd": prev.get("start_cwd") or cwd, "cwd": cwd, "worktree": prev.get("worktree")
                   or run.worktree_info, "outcome": "running", "resume_mode": None,
                   # Kept across continues: a tree the child made in an earlier run is still its own.
@@ -407,7 +409,7 @@ def recover_abandoned(conn, plan: dict[str, tuple[Any, Any, list[str]]]) -> dict
             continue
         entry, cause = _abandoned_entry(record)
         _finish(conn, sid, record, entry, cause, cwd=record.get("cwd"), pins=pins)
-        recovered.setdefault(str(record.get("delegation_id") or ""), []).append(sid)
+        recovered.setdefault(str(record.get("unit_id") or record.get("delegation_id") or ""), []).append(sid)
     return recovered
 
 

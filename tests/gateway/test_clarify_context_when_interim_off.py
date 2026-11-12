@@ -114,7 +114,7 @@ async def test_clarify_card_posts_when_its_explanation_send_never_returns(monkey
     import gateway.run_turn_runner_clarify_delivery as delivery
     from gateway.run_turn_runner import TurnRunner
 
-    monkeypatch.setattr(delivery, "CARD_WAITS_FOR_CONTEXT", 0.2)
+    monkeypatch.setattr(delivery, "SEND_ACK_WINDOW", 0.2)
     order: list[str] = []
 
     async def send_clarify(**_kwargs):
@@ -125,3 +125,65 @@ async def test_clarify_card_posts_when_its_explanation_send_never_returns(monkey
                              _approval_owner=None, _clarify_context_send=concurrent.futures.Future())
     await asyncio.wait_for(TurnRunner._send_shared_clarify(runner, entry=None), 5)
     assert order == ["card"]
+
+
+@pytest.mark.asyncio
+async def test_a_question_cancelled_while_its_explanation_sends_posts_no_card():
+    """/new or a cancel lands while the card waits for its explanation: the withdrawn card stays unsent."""
+    from gateway.run_turn_runner import TurnRunner
+    from tools import clarify_gateway
+
+    cards: list[dict] = []
+
+    async def send_clarify(**kwargs):
+        cards.append(kwargs)
+        return SimpleNamespace(success=True)
+
+    explanation = concurrent.futures.Future()
+    runner = SimpleNamespace(_ctx=SimpleNamespace(_status_adapter=SimpleNamespace(send_clarify=send_clarify),
+                                                  _run_still_current=lambda: True),
+                             _approval_owner=None, _clarify_context_send=explanation)
+    entry = clarify_gateway.register("cid-withdrawn", "sess-withdrawn", "Send it?", ["yes", "no"])
+    card = asyncio.ensure_future(TurnRunner._send_shared_clarify(runner, entry, session_key="sess-withdrawn"))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    clarify_gateway.clear_session("sess-withdrawn")
+    explanation.set_result(True)
+    result = await asyncio.wait_for(card, 5)
+
+    assert cards == []
+    assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_the_card_waits_only_for_what_is_left_of_the_explanation_budget(monkeypatch):
+    """The agent thread and the card share one explanation budget, not 15 s plus another wait."""
+    import gateway.run_turn_runner_clarify_delivery as delivery
+    from gateway.run_turn_runner import TurnRunner
+
+    monkeypatch.setattr(delivery, "SEND_ACK_WINDOW", 0.3)
+    hung = concurrent.futures.Future()
+
+    async def send_clarify(**_kwargs):
+        return SimpleNamespace(success=True)
+
+    async def send(*_a, **_kw):
+        return await asyncio.wrap_future(hung)
+
+    loop = asyncio.get_running_loop()
+    adapter = SimpleNamespace(send=send, send_clarify=send_clarify)
+    runner = SimpleNamespace(
+        _approval_owner=None,
+        _ctx=SimpleNamespace(_status_adapter=adapter, _status_chat_id="1", _status_thread_metadata={},
+                             _run_still_current=lambda: True,
+                             source=SimpleNamespace(platform="telegram", is_bot=False)),
+        _schedule=lambda coro, _msg: asyncio.run_coroutine_threadsafe(coro, loop))
+    monkeypatch.setattr("gateway.run_turn_progress.local_viewer_turn", lambda _r: False)
+    monkeypatch.setattr("gateway.bot_peer_notices.automatic_notices_allowed", lambda _s: True)
+    sink = delivery.clarify_context_sink(runner)
+    started = loop.time()
+    await asyncio.to_thread(sink, "Draft: hello")
+    await asyncio.wait_for(TurnRunner._send_shared_clarify(runner, None), 5)
+    hung.set_result(SimpleNamespace(success=True))
+
+    assert loop.time() - started < 0.5

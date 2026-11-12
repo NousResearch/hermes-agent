@@ -3,7 +3,7 @@ title: TruthGate
 version: "0.2.0"
 repo: https://github.com/cyberNoman/hermes-truthgate
 sha: 9fd8c071371721006d9b7254d624481fe49cd02d
-description: "Deterministic final-turn verification for newly introduced Python stubs and common embedded-secret patterns, using pre-edit baselines and at most two corrective continuations. Standard-library-only, fail-open, and no network, subprocess, LLM, approval-bypass, or core-patching behavior. Disclosure -- reads only changed-file paths supplied by Hermes (including an absolute changed path outside the session directory), persists sanitized finding metadata in Hermes's profile-scoped plugin data without raw secrets or source text, and can produce false positives or false negatives."
+description: "Deterministic final-turn verification for newly introduced Python stubs and common embedded-secret patterns, using pre-edit baselines and at most two corrective continuations. Standard-library-only, fail-open, and no network, subprocess, LLM, approval-bypass, or core-patching behavior. Disclosure -- reads only changed-file paths supplied by Hermes (including an absolute changed path outside the session directory), persists sanitized finding metadata in Hermes's profile-scoped plugin data without raw secrets or source text, and can produce false positives or false negatives. Disclosure — reads every file the agent edits (including paths outside the working directory) to compare it with a pre-edit snapshot, can make the agent continue up to two extra times per turn (extra model cost), and stores finding metadata (file path, line, kind; no source or secret values) in its plugin data directory."
 maintainer: cyberNoman
 tier: community
 category: tools

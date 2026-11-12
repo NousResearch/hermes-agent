@@ -12,7 +12,8 @@ import os
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from hermes_cli.providers import custom_provider_aliases, custom_provider_slug
-from agent.custom_entry_pool import custom_entry_for_endpoint, entry_declares_credential, entry_scoped_pool
+from agent.custom_entry_pool import (
+    custom_entry_for_endpoint, entry_declares_credential, entry_scoped_pool, origin_scoped_pool)
 from agent.secret_scope import get_secret_str
 from utils import base_url_hostname
 
@@ -577,7 +578,8 @@ def _try_resolve_from_custom_pool(
     base_url: str, provider_label: str, api_mode_override: Optional[str] = None, provider_name: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Runtime dict from the first credential pool that owns this custom endpoint, else None. A pool
-    the owning entry shares with a same-named built-in yields only the entry's rows (entry_scoped_pool)."""
+    the owning entry shares with a same-named built-in yields only the entry's rows (entry_scoped_pool),
+    and only rows recorded for this endpoint's origin (origin_scoped_pool)."""
     rp = _rp()
     try:
         # A frozen route's entry owns the pool, never the live one (a live URL edit would drop it).
@@ -591,7 +593,8 @@ def _try_resolve_from_custom_pool(
     candidates = list(dict.fromkeys(k for k in (str(key or "").strip().lower() for key in raw_keys) if k))
     for pool_key in candidates:
         try:
-            if (pool := entry_scoped_pool(rp.load_pool(pool_key), pool_key, owner)) is None:
+            pool = origin_scoped_pool(entry_scoped_pool(rp.load_pool(pool_key), pool_key, owner), base_url)
+            if pool is None:
                 continue
             entry = pool.select() if pool.has_credentials() else None
             pool_api_key = rp._pool_entry_api_key(entry) if entry is not None else ""

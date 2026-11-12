@@ -216,3 +216,38 @@ def test_desktop_move_of_a_legacy_custom_providers_row_keeps_its_key_home(_isola
     assert "sk-leg...ture" not in (get_env_path().read_text(encoding="utf-8-sig")
                                    if get_env_path().exists() else "")
     assert not (load_config().get("providers") or {}).get("legacyep")
+
+
+@pytest.mark.parametrize("pool_key", ["myep", "custom:myep"])
+def test_desktop_move_never_resolves_a_pooled_key_recorded_for_the_old_origin(_isolate_hermes_home, pool_key):
+    """A ``hermes auth add myep`` row lives in auth.json with the origin it was added for; after the
+    entry moves, neither ``custom:myep`` nor a bare ``custom`` route may pick it at the new host."""
+    from starlette.testclient import TestClient
+
+    from agent.credential_pool import AUTH_TYPE_API_KEY, SOURCE_MANUAL, PooledCredential, load_pool
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+
+    old, new, pooled = "https://llm.old.example/v1", "https://llm.new.example/v1", "sk-pooled-old-secret"
+    cfg = load_config()
+    cfg["providers"] = {"myep": {"name": "myep", "base_url": old, "model": "m", "models": {"m": {}}}}
+    save_config(cfg)
+    load_pool(pool_key).add_entry(PooledCredential(
+        provider=pool_key, id="row1", label="k", auth_type=AUTH_TYPE_API_KEY, priority=0,
+        source=SOURCE_MANUAL, access_token=pooled, base_url=old))
+    # On its own origin the pooled key is the entry's credential.
+    assert resolve_runtime_provider(requested="custom:myep")["api_key"] == pooled
+
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    assert client.post("/api/providers/custom-endpoints", json={
+        "id": "myep", "name": "myep", "base_url": new, "model": "m", "make_default": False}).status_code == 200
+
+    named = resolve_runtime_provider(requested="custom:myep")
+    assert named["base_url"] == new and named.get("api_key") != pooled
+    cfg = load_config()
+    cfg["model"] = {"provider": "custom", "base_url": new, "default": "m"}
+    save_config(cfg)
+    bare = resolve_runtime_provider()
+    assert bare["base_url"] == new and bare.get("api_key") != pooled

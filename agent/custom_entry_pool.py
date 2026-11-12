@@ -56,6 +56,28 @@ def entry_scoped_pool(pool: Any, pool_key: str, entry: Optional[dict[str, Any]])
     return view
 
 
+def origin_scoped_pool(pool: Any, base_url: Optional[str]) -> Any:
+    """``pool`` without the ``hermes auth add`` rows recorded for another origin (scheme/host/port)
+    than ``base_url``, so a key added for an endpoint never follows the entry to a new host. Only
+    manual rows record where the key was entered; seeded rows carry the provider's default URL and,
+    like rows with no recorded base_url, are kept. The pool itself when nothing is dropped, a view
+    sharing its token baselines otherwise, None when no row is left."""
+    from agent.credential_pool import CredentialPool, _is_manual_source
+    from utils import same_base_url_origin
+    if not isinstance(pool, CredentialPool) or not base_url:
+        return pool
+    rows = pool.entries()
+    kept = [row for row in rows if not _is_manual_source(str(row.source or ""))
+            or not (url := str(row.base_url or "").strip()) or same_base_url_origin(url, base_url)]
+    if len(kept) == len(rows):
+        return pool
+    if not kept:
+        return None
+    view = CredentialPool(pool.provider, kept)
+    view._persisted_token_pairs = pool._persisted_token_pairs
+    return view
+
+
 def custom_entry_for_endpoint(
     base_url: Optional[str], provider_name: Optional[str] = None, config: Optional[dict] = None,
 ) -> Optional[tuple[str, dict[str, Any]]]:

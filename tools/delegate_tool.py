@@ -254,10 +254,23 @@ def _build_child_agent(
     # as auxiliary.review.
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+    _workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
-        goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
+        goal, context, workspace_path=_workspace_hint, role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
     )
+    # The child's operative prompt is composed here and passed as ephemeral_system_prompt,
+    # which is never persisted -- so without this record two children given different
+    # contracts are indistinguishable in state.db (measured 2026-11-02, deleg_01e48cbc).
+    # Fail-open by design: a recorder must never break delegation.
+    with _quiet("delegate: ephemeral prompt record failed", exc_info=True):
+        from tools.delegate_tool_prompt_record import record_child_prompt as _record_child_prompt
+        _record_child_prompt(
+            goal=goal, context=context, child_prompt=child_prompt,
+            subagent_id=subagent_id, task_index=task_index,
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            workspace_path=_workspace_hint,
+        )
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")

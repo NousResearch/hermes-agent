@@ -205,6 +205,15 @@ class GatewayProcessView:
         return {"error": failure.format(sid=subagent_id)}
 
 
+def _child_session_ids():
+    """subagent_id -> the live child's stored session id (as ``subagent.list`` names it)."""
+    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    with _active_subagents_lock:
+        agents = {sid: record.get("agent") for sid, record in _active_subagents.items()}
+    return {sid: child for sid, agent in agents.items()
+            if isinstance(child := getattr(agent, "session_id", None), str) and child}
+
+
 class LocalSubagents:
     """This process's own subagent registry behind the view's ``subagent_*`` surface, for a CLI that
     runs its agent in-process: the dock and monitor talk to one backend shape either way."""
@@ -220,9 +229,12 @@ class LocalSubagents:
         # The scoped control-plane snapshot supplies authority and transcript paths; the public
         # lifecycle record supplies start time and the latest observed tool (as subagent.list does).
         live = {r["subagent_id"]: r for r in list_active_subagents()} if entries else {}
+        children = _child_session_ids() if entries else {}
         for row in entries:
             record = live.get(row["subagent_id"], {})
             row["started_at"], row["last_tool"] = record.get("started_at"), record.get("last_tool") or ""
+            row["child_session_id"] = children.get(row["subagent_id"])
+            row["depth"] = record.get("depth")  # 0 = a direct child, as subagent.list reports it
         self._paths = {row["subagent_id"]: row.get("live_transcript") for row in entries}
         return entries
 

@@ -21,6 +21,23 @@ SECRET_STORES = (
 )
 WRITABLE_CONTROL_FILES = ("auth.json", "config.yaml", "webhook_subscriptions.json")
 
+# Every sibling profile home under <root>/profiles/<name> is a full parallel store:
+# its own .env (bot tokens, API keys), vault/ (key + ciphertext), mcp-tokens/,
+# browser-profile/ cookies, session history and cron store. Only the ACTIVE home and
+# the root were guarded, so the file tools could overwrite any of them.
+SIBLING_DENIED = (
+    ".env", ".anthropic_oauth.json", "auth/google_oauth.json", "vault/vault.key",
+    "mcp-tokens/gh.json", "browser-profile/Default/Cookies", "state.db",
+    "sessions/s.jsonl", os.path.join("cron", "jobs.json"),
+)
+# #45947 still frees the control files, and the deny is a strict subtree: a lookalike
+# name next to a guarded one must not be swept up.
+SIBLING_STILL_WRITABLE = (
+    "auth.json", "config.yaml", "webhook_subscriptions.json", "SOUL.md",
+    "memories/MEMORY.md", "workspace/notes.md", "skills/foo/SKILL.md",
+    "state.db.backup", "cron-notes.md",
+)
+
 
 @pytest.fixture()
 def hermes_layout(tmp_path, monkeypatch):
@@ -56,6 +73,28 @@ def test_control_files_and_lookalikes_outside_home_stay_writable(hermes_layout, 
             assert fs.is_write_denied(str(_touch(base, rel))) is False, f"#45947 regression: {rel}"
     assert fs.is_write_denied(str(_touch(tmp_path / "myproject", "cache/bws_cache.json"))) is False
     assert fs.is_write_denied(str(_touch(tmp_path / "myproject", "vault/vault.key"))) is False
+
+
+def test_sibling_profile_stores_are_write_denied(hermes_layout):
+    """A box running several profiles keeps a FULL store per profile, and only the active
+    home and the root were guarded — another profile's ``.env`` (its bot tokens), ``vault/``
+    (key + ciphertext), ``mcp-tokens/``, cookies, ``state.db`` and ``cron/jobs.json`` were
+    all writable through ``write_file`` / ``patch``."""
+    root, _active = hermes_layout
+    sibling = root / "profiles" / "ops"
+    for rel in SIBLING_DENIED:
+        path = _touch(sibling, rel)
+        assert fs.get_write_denied_error(str(path)), f"sibling profile write allowed: {path}"
+
+
+def test_sibling_profile_ordinary_files_stay_writable(hermes_layout):
+    """The widening is a per-store rule, not profile isolation (retired in #97165): a
+    sibling's notes, skills and freed control files stay writable."""
+    root, _active = hermes_layout
+    sibling = root / "profiles" / "ops"
+    for rel in SIBLING_STILL_WRITABLE:
+        path = _touch(sibling, rel)
+        assert fs.is_write_denied(str(path)) is False, f"over-blocked sibling write: {path}"
 
 
 class TestProfileHomeProcessHome:

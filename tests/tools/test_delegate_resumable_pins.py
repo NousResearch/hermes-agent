@@ -58,6 +58,28 @@ def _backdate(*paths):
         os.utime(p, (old, old))
 
 
+def test_a_tree_the_child_made_stays_pinned_after_it_leaves_that_repository(tmp_path):
+    from tools import delegate_tool_resumable as r
+    parent = _parent()
+    repo, other = _repo(tmp_path / "repo"), _repo(tmp_path / "other")
+    run = _run(parent, "sa-left")
+    with patch.object(r, "_child_cwd", return_value=str(repo)):
+        r.record_start(run)
+    made = repo / ".worktrees" / "subagent-made"
+    _git("worktree", "add", "-qb", "made", str(made), cwd=repo)  # made without cd-ing into it
+    for cwd in (other, tmp_path):  # then into another repository, then outside any
+        with patch.object(r, "_child_cwd", return_value=str(cwd)):
+            r.checkpoint(run)
+    other_made = other / ".worktrees" / "subagent-other"
+    _git("worktree", "add", "-qb", "o", str(other_made), cwd=other)
+
+    record = r._write(r._db_path_for(parent), lambda conn: r._row(conn, "sa-left"))
+    pins = r._pin_paths(record)
+
+    assert os.path.realpath(made) in pins and os.path.realpath(other_made) in pins
+    assert os.path.realpath(repo) not in pins and os.path.realpath(other) not in pins  # main trees were there before
+
+
 def test_a_late_record_write_never_recreates_a_removed_profile_and_stays_owner_only(tmp_path):
     from hermes_constants import get_hermes_home, profile_tombstone_path
     from tools import delegate_tool_resumable as r

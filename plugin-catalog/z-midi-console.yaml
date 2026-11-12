@@ -1,23 +1,20 @@
-# plugin-catalog/z-midi-console.yaml — DRAFT for PR (re-pinned to final polished HEAD).
-# If the fresh EDIT-mode screenshot lands as a new commit, re-pin sha + image
-# URLs to that commit before opening the PR (rule 4).
 name: z-midi-console
 repo: https://github.com/zorroukk/z-midi-console
-sha: aae9c17b0957efed41da32438deb0d6034b82445
+sha: 99c79706d23eeaeb9911e4431e98b1426717a1c4
 subdir: ""
 description: Universal MIDI control-surface builder — any USB/MIDI synth as live on-screen controls in Hermes Desktop, MIDI-learn bindings, multi-synth deck, spectrum analyzers, software mod matrix, .mid export, seven agent tools. Zero Python dependencies.
 maintainer: zorroukk
 tier: community
 category: tools
-requires_hermes: ">=0.23"
+requires_hermes: ">=0.23.1"
 docs_url: ""
-version: "0.1.0"
-image: https://raw.githubusercontent.com/zorroukk/z-midi-console/aae9c17b0957efed41da32438deb0d6034b82445/docs/banner.png
+version: "0.2.0"
+image: https://raw.githubusercontent.com/zorroukk/z-midi-console/99c79706d23eeaeb9911e4431e98b1426717a1c4/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/zorroukk/z-midi-console/aae9c17b0957efed41da32438deb0d6034b82445/docs/screenshots/01-surface.png
-  - https://raw.githubusercontent.com/zorroukk/z-midi-console/aae9c17b0957efed41da32438deb0d6034b82445/docs/screenshots/02-editor.png
-  - https://raw.githubusercontent.com/zorroukk/z-midi-console/aae9c17b0957efed41da32438deb0d6034b82445/docs/screenshots/04-chat.png
-  - https://raw.githubusercontent.com/zorroukk/z-midi-console/aae9c17b0957efed41da32438deb0d6034b82445/docs/screenshots/05-matrix.png
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/99c79706d23eeaeb9911e4431e98b1426717a1c4/docs/screenshots/01-surface.png
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/99c79706d23eeaeb9911e4431e98b1426717a1c4/docs/screenshots/02-editor.png
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/99c79706d23eeaeb9911e4431e98b1426717a1c4/docs/screenshots/04-chat.png
+  - https://raw.githubusercontent.com/zorroukk/z-midi-console/99c79706d23eeaeb9911e4431e98b1426717a1c4/docs/screenshots/05-matrix.png
 readme: true
 platforms: []          # loads everywhere; MIDI engine is Windows (honest 'none' elsewhere)
 title: "Z's MIDI Console"

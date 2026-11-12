@@ -91,5 +91,9 @@ def forget_turn_cwd(runner, session_key: str) -> None:
     """Drop the chat's saved cwd along with its record (a workspace move): the next turn must start in
     the new binding's directory, not restore the old one."""
     entry = _routing_entry(runner, session_key)
-    if entry is not None and entry.metadata.get(_METADATA_KEY) is not None:
+    if entry is None or entry.metadata.get(_METADATA_KEY) is None:
+        return
+    try:  # the in-memory entry drops it before the save, so this process never restores it
         runner.session_store.set_session_metadata(session_key, _METADATA_KEY, None)
+    except Exception as exc:  # health: allow BLE001 -- runs after the policy commit: a failed save must not strand its publication
+        logger.warning("Could not clear the saved terminal cwd of %s: %s", session_key, exc)

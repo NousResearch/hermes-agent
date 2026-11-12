@@ -1731,8 +1731,8 @@ def _context_cwd_path(cwd: Optional[str]) -> Optional[Path]:
     longer exists (``os.getcwd()`` raises on a deleted cwd)."""
     try:
         return Path(cwd if cwd is not None else os.getcwd()).resolve()
-    except OSError as exc:
-        logger.warning("skipping project-context discovery: working directory is unavailable (%s)", exc)
+    except OSError:
+        logger.warning("skipping project-context discovery: working directory is unavailable")
         return None
 
 

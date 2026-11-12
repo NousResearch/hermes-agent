@@ -1061,3 +1061,19 @@ class TestContextFileReadTimeout:
 
         with pytest.raises(FileNotFoundError):
             _read_text_with_timeout(tmp_path / "missing.md", timeout=1.0)
+
+
+def test_unavailable_cwd_warning_omits_exception(monkeypatch, caplog):
+    import logging
+    from agent import prompt_builder
+
+    secret = "synthetic_secret_xyz987"
+
+    def fail():
+        raise OSError(secret)
+
+    monkeypatch.setattr(prompt_builder.os, "getcwd", fail)
+    with caplog.at_level(logging.WARNING, logger=prompt_builder.__name__):
+        assert prompt_builder._context_cwd_path(None) is None
+    assert "working directory is unavailable" in caplog.text
+    assert secret not in caplog.text

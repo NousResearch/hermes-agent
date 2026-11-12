@@ -1,6 +1,6 @@
 name: claim-receipts
 repo: https://github.com/gwelby/claim-receipts
-sha: d2e41bb74b4b80c59c90b3fae95d197c5face002
+sha: 46421a8b76255f15b54f1f71bb65d4e2af64e383
 title: "Claim Receipts: what the agent said vs what it did"
 description: "Records the file changes and commands a session's hooks observe, then gives each prose claim in the session one of four verdicts against that record: backed, unbacked, unverifiable, contradicted. Compares a claim with a capture; does not prove it true. Disclosure — reads Hermes's own session database (~/.hermes/state.db) read-only at session end; writes an append-only ledger under the plugin data dir; records file paths and terminal command strings; runs no shell commands; no network."
 maintainer: gwelby

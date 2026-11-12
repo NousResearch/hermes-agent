@@ -37,7 +37,7 @@ from agent.conversation_compression import (
     COMPRESSION_REFUSED_WOULD_GROW_WARNING, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
-from gateway.run_status_filter import _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
+from gateway.run_status_filter import EMPTY_LADDER_STATUS_PATTERN, _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
@@ -100,7 +100,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
-    r"|retrying\s+in\s+\d"
+    rf"|retrying(?:\s+\(\d+/\d+\))?\s+in\s+\d|{EMPTY_LADDER_STATUS_PATTERN}"  # + counted '(1/3) in 6s'
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"
@@ -1793,32 +1793,17 @@ def _profile_runtime_scope(
     ``set_hermes_home_override`` is a contextvar (reaches the agent worker via ``copy_context()``);
     ``set_secret_scope`` makes the profile ``.env`` the credential source without mutating
     ``os.environ``, so subprocesses never inherit cross-profile secrets."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from agent.secret_scope import set_secret_scope, reset_secret_scope
+    from agent.runtime_scope import bind_state, scope_for_profile
 
-    home_token = secret_token = None
+    # One bind: the runtime scope first, then home override, secrets (hydrated under that home
+    # unless the caller prepared them off-loop) and the profile's COMPLETE terminal policy, never
+    # ambient TERMINAL_* a prior turn set (first-writer-wins backend leak; #68559).
+    tokens = bind_state(scope_for_profile(profile_home), secrets=prepared_secret_scope,
+                        hydrate_secrets=hydrate_secrets, terminal_policy=prepared_terminal_scope)
     try:
-        home_token = set_hermes_home_override(str(profile_home))
-        if prepared_secret_scope is not None:
-            secrets = prepared_secret_scope
-        elif hydrate_secrets:
-            secrets = _load_profile_secret_scope(Path(profile_home))
-        else:
-            from tui_gateway.launch_profile_policy import owner_secret_scope  # caller already hydrated off-loop
-            secrets = owner_secret_scope(Path(profile_home))
-        secret_token = set_secret_scope(secrets, profile_home=str(profile_home))
-        # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
-        # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
-        # pinned (first-writer-wins backend leak; #68559).
-        from tools.terminal_scope import install_and_reset_profile_terminal_scope
-
-        with install_and_reset_profile_terminal_scope(Path(profile_home), prepared=prepared_terminal_scope):
-            yield
+        yield
     finally:
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
-        if home_token is not None:
-            reset_hermes_home_override(home_token)
+        tokens.reset()
 
 
 @_asynccontextmanager
@@ -2637,9 +2622,8 @@ def _reap_gateway_turn_processes(
     return killed
 
 
-_TURN_STACK_DUMP_FRAME_MARKERS = (
-    "run_conversation", "run_sync", "_run_sync_with_timeout_lifecycle",
-    "finalize_turn", "end_turn", "run_in_session")
+_TURN_STACK_DUMP_FRAME_MARKERS = ("run_conversation", "run_sync", "_run_sync_with_timeout_lifecycle", "finalize_turn",
+    "end_turn", "run_in_session", "_hmwa_resolve_session", "_hmwa_prepare_turn", "_handle_message_with_agent")
 
 
 def _dump_wedged_turn_stacks(task_id: str) -> None:
@@ -3029,6 +3013,7 @@ def _format_gateway_process_notification(evt: dict) -> str | None:
 def _drain_gateway_watch_events(completion_queue) -> list[dict]:
     """Drain gateway-owned watch events without spinning on requeued events.
     Foreign events requeued inside ``while not queue.empty()`` never terminate: detach, then requeue."""
+    from tools.environments.sandbox_scope import event_visible
     watch_events: list[dict] = []
     requeue: list[dict] = []
     while not completion_queue.empty():
@@ -3037,12 +3022,11 @@ def _drain_gateway_watch_events(completion_queue) -> list[dict]:
         except Exception:
             break
         evt_type = evt.get("type", "completion")
-        if evt_type in {
-            "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
-            "heartbeat"}:
+        if not event_visible(evt) or evt_type == "async_delegation":
+            requeue.append(evt)  # hosted: only its own scope may deliver it; async_delegation: its own watcher does
+        elif evt_type in {"watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
+                          "heartbeat"}:
             watch_events.append(evt)
-        elif evt_type == "async_delegation":
-            requeue.append(evt)
         # else: process completion events are handled by the watcher task
     for evt in requeue:
         completion_queue.put(evt)

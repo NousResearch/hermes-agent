@@ -332,6 +332,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — 会话以未命名方式启动。"
     title_empty_untitled: "\n⚠️ 清理后标题为空 — 会话以未命名方式启动。"
     tip: "\n✦ 提示：{tip}"
+    paused_left: "\n⚠️ 上一个对话暂停期间你发送的 {count} 条消息仍保存在上一个对话中，尚未回复。要运行它们：/resume {session_id}，然后 {discard}。"
   restart:
     in_progress: "⏳ 网关重启已在进行中……"
     restarting: "♻ 正在重启网关。如果 60 秒内没有收到通知，请在控制台运行 `hermes gateway restart` 重启。"
@@ -746,6 +747,8 @@ gateway:
     reject_loop: "代理正在运行——运行中可使用 /loop status / pause / stop，或先 /stop 再设置新循环。"
     draining_maintenance: "⏳ 此代理正在为维护操作排空任务，目前不接受新的回合。稍后即会恢复——请稍等片刻后重新发送。"
     another_turn_running: "⏳ 此会话上还有另一回合仍在运行。为保护对话记录，这条消息未被处理。请等待当前回合结束后重新发送。"
+    setup_timeout: "⏳ 本轮准备工作卡住且代理无任何活动，已取消。请重新发送你的消息。"
+    setup_waiting: "⏳ 本轮仍在启动中（{minutes} 分钟，代理尚无活动）。你的消息已排队。使用 /stop 可取消本轮及队列中的全部消息。"
     behavior_queue_short: "排队至下一回合"
     behavior_queue_long: "Hermes 忙碌时，消息将排队至下一回合处理。"
     behavior_steer_short: "引导至当前运行（下一次工具调用后）"

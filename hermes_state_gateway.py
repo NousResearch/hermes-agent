@@ -39,6 +39,23 @@ _COMPRESSION_LINEAGE_CTE = f"""
                     )
                 """
 
+# Gateway routing recovery must never land on a delegate child. The create path already refuses to
+# inherit the routing columns into one (#92859/#116322), but a row that predates that guard, a
+# restored/imported DB, or any writer that set them explicitly keeps the poison live, and the
+# recovery query then hands the user's thread to the subagent (#138210). Anchored on the lineage
+# marker, not the ``source`` label: a delegate child built on a gateway turn is stamped with the
+# parent's source. A ``/branch`` child (``_branched_from``) is NOT excluded: it is a user-facing
+# conversation that owns its route, and its routing columns are written at create on purpose so a
+# crash before ``switch_session`` still recovers it.
+# A row that also carries ``_reset_from`` is a /new continuation of the chat whose config picked up a
+# delegate marker (#109073), and one carrying ``_chat_adopted`` is a delegate row the user explicitly
+# switched the chat onto: both ARE the conversation, so they keep their route.
+_DELEGATE_CHILD_EXCLUSION_SQL = (
+    f"AND (COALESCE({_sql_json_extract('s.model_config', '$._delegate_from')}, '') = ''"
+    f" OR {_sql_json_extract('s.model_config', '$._reset_from')} IS NOT NULL"
+    f" OR {_sql_json_extract('s.model_config', '$._chat_adopted')} IS NOT NULL)"
+)
+
 # Projection shared by both peer-recovery queries (exact key, then peer tuple).
 _PEER_SELECT_HEAD = """
                 SELECT s.*,
@@ -49,6 +66,7 @@ _PEER_SELECT_HEAD = """
                        )) AS _has_messages
                 FROM sessions s
                 LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
+                WHERE 1=1
 """
 # A row a *completed handoff* owns stays recoverable whatever end_reason it carries: the source
 # interface's teardown runs AFTER ownership moved to the destination and can stamp a terminal reason
@@ -58,8 +76,9 @@ _PEER_SELECT_HEAD = """
 # blocks recovery (the NOT EXISTS below). ``pending``/``failed``/NULL handoffs are untouched, so this
 # is strictly "ownership was transferred", never "a handoff was attempted".
 _HANDOFF_OWNED_ROW_SQL = "(s.handoff_state = 'completed')"
-_PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = ?
+_PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                  AND s.session_key = ?
                   AND s.source = ?
+                  {_DELEGATE_CHILD_EXCLUSION_SQL}
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
                        OR {_HANDOFF_OWNED_ROW_SQL})
                   AND NOT EXISTS (
@@ -75,11 +94,12 @@ _PEER_BY_KEY_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.session_key = 
                          COALESCE(s.last_activity_at, s.started_at) DESC
                 LIMIT 1
                 """
-_PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                WHERE s.source = ?
+_PEER_BY_TUPLE_SQL = f"""{_PEER_SELECT_HEAD}                  AND s.source = ?
                   AND COALESCE(s.user_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_id, '') = COALESCE(?, '')
                   AND COALESCE(s.chat_type, '') = COALESCE(?, '')
                   AND COALESCE(s.thread_id, '') = COALESCE(?, '')
+                  {_DELEGATE_CHILD_EXCLUSION_SQL}
                   AND (? IS NULL OR COALESCE(s.profile_name, ?) = ?)
                   AND (s.ended_at IS NULL OR s.end_reason IN ({_RECOVERABLE_END_REASONS_SQL})
                        OR {_HANDOFF_OWNED_ROW_SQL})

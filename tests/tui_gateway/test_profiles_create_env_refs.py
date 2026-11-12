@@ -40,3 +40,17 @@ def test_new_bot_config_keeps_launch_env_refs_not_their_values(tmp_path, monkeyp
     written = (home / "profiles" / "scout" / "config.yaml").read_text(encoding="utf-8")
     assert {ref: f"${{{ref}}}" in written for ref in _SECRETS} == dict.fromkeys(_SECRETS, True)
     assert [value for value in _SECRETS.values() if value in written] == []
+
+
+def test_a_full_clone_of_the_active_profile_gets_no_bundled_skills(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    seeded: list[Path] = []
+    monkeypatch.setattr("hermes_cli.profiles.seed_profile_skills", lambda path, **_kw: seeded.append(path) or {})
+
+    _ok("profiles.create", {"name": "copy", "clone_all": True, "no_alias": True})
+    _ok("profiles.create", {"name": "fresh", "no_alias": True})
+    assert seeded == [home / "profiles" / "fresh"]

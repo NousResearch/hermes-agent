@@ -1178,6 +1178,27 @@ The bundled first consumer is the **drain** provider (`plugins/dashboard_auth/dr
 
 Custom providers can implement `supports_token`/`verify_token` the same way to expose their own machine-authable endpoints.
 
+### Peer passes (`/api/peer`)
+
+A provider can also accept **peer passes** (`supports_peer_pass = True` + `verify_peer_pass(token=...)`): short-lived tokens minted for one agent that let another Hermes agent call this agent's API server through the dashboard, without the agent's `API_SERVER_KEY`.
+
+- `/api/peer/<path>` forwards to the gateway API server on loopback and adds the API server key on the way; `/api/peer/p/<profile>/<path>` reaches one profile, named as the API server's `/p/<profile>/` prefix names it (`hermes` is the default profile unless a profile has that name).
+- Each path needs a permission the pass carries.
+  `agents:message` covers what `hermes peer` uses, in the agent's Bot Chat only (the one session every peer message lands in): health, capabilities, finding and creating the Bot Chat, reading it, chat turns (plain and streaming), runs in it (start, status, events, stop).
+  Each turn runs with the agent's tools, terminal included, so a messaging pass lets its holder have the agent carry out tasks.
+  A messaging turn carries only its message (and, for a run, the Bot Chat's session id); choosing the model, the system prompt or the history needs `agents:control`.
+  `agents:control` includes messaging in any session and adds the rest of the user-facing API: run approvals, clarify, steer and resolve-unknown; session listing, fork, messages, model, rename and delete; scheduled jobs, which keep running after the pass expires; models, skills and toolsets; chat completions and responses.
+  Only `agents:control` may set or receive `X-Hermes-Session-Key`, which picks the API server's memory scope.
+- Every chat turn and run is credited to the pass holder: the turn author's id is set to the verified holder, whatever the request body says.
+- Any other path is never forwarded, including `/api/cron/fire`, platform event intake, RoomLink grants and `/health/detailed`.
+- A gateway that is asleep or restarting answers 503 with `Retry-After`. A request the gateway dropped after receiving it answers 502 `peer_gateway_dropped` with no retry hint, because it may have run.
+- Only a peer pass opens `/api/peer`. It is checked apart from `verify_token`, so a pass never authorises another provider's token routes, and a pass without the dashboard scope never opens a dashboard session.
+- `/api/status` reports `peer_access`: the peer-pass contract this agent takes (currently `1`), or `0` when no registered provider takes peer passes. A pass issuer should mint passes only for agents that report it, because an agent without `/api/peer` reads a pass as a dashboard sign-in.
+- Control actions are written to `logs/dashboard-auth.log` as `peer_control` events with the pass holder, and jobs created through the route record the holder as `peer_principal` in their origin.
+
+The bundled Nous provider verifies peer passes with the same Portal keys and audience as dashboard sign-ins; dashboard sign-ins carry `agent_dashboard:access`, peer passes carry only the peer permissions.
+A Portal token without `agent_dashboard:access`, including one with no `scope` claim at all, never opens a dashboard session.
+
 ### Verifying the gate is on
 
 ```bash

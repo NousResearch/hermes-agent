@@ -262,7 +262,7 @@ def managed_environment(destination: Path, *, python: Path | None = None,
                         cache: Path | None = None, env: Mapping[str, str] | None = None,
                         offline: bool = False, explicit: bool = False,
                         output: TextIO | None = None, realize: bool = True) -> PythonEnvironment:
-    from pm._uv import _toolchain
+    from pm._uv import _toolchain  # noqa: TID251
     from pm.packages import uv_cache_dir
 
     tools = _toolchain(explicit=explicit, realize=realize)

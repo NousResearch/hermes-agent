@@ -1,0 +1,29 @@
+name: session-cassettes
+title: Session Cassettes
+repo: https://github.com/eightyFJ/session-cassettes
+sha: "2f52d486367ea2a7a6ab5f4c67a59bd3902baa0d"
+description: "Record one good session's read-only tool results as a cassette, pin the facts a good answer must contain, then replay the same request against another model, prompt or skill: tool_execution middleware answers every tool call of the replayed turn from the recording (exact hit, or a search/slice of a snapshot of the workspace files the session's results named; anything else gets a cassette-miss error) and never calls the real tool; the verdict is PASS, FAIL, DIVERGED or INVALID from the pins, with no judge model. Disclosure — cassettes are plain JSON in the plugin data folder and hold the request, the answer and the full results of recorded tools (file contents, search hits, web search results and extracts, skill text, session-search results, output of a fixed list of read-only terminal commands) plus the redacted text of workspace files those results named; at the end of a recorded turn the plugin reads those files from the session's working directory (hidden paths and secret-looking names such as key files, credentials, auth.json and token.json skipped by file name, Hermes's redact_sensitive_text applied to the rest, which does nothing if the user has switched Hermes's redaction off); `hermes cassette run` starts two `hermes chat -Q` children (argument list, no shell, no -z, no --yolo, HERMES_YOLO_MODE removed from the child, run refused when the gateway's environment has HERMES_YOLO_MODE set at ping time, which is not Hermes's own startup yolo flag; the child's output is held in two temporary files in the system temp folder until the child exits) and the replay's model call goes to whatever model/provider the user names, so a cloud model is sent the request and the recorded results; if no session claims the replay its turn runs live with real tools under the user's own approval settings and is graded INVALID afterwards; the middleware sees every session's tool calls and passes unbound sessions through, keeping only an in-memory count of them so a late claim can be marked INVALID; the pre_llm_call and post_llm_call hooks are called for every turn of every session with the message and the answer, and keep nothing for a session the plugin has not bound; it registers the /cassette slash command and the `hermes cassette` CLI command; no network calls of its own, no telemetry, no self-update, no third-party dependencies."
+maintainer: eightyFJ
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+version: "0.1.0"
+platforms: []
+readme: true
+known_issues:
+  - "Tested only on native Windows 11 with Hermes 0.23.1 and local Ollama models; macOS, Linux and cloud providers are untested."
+  - "plugins.isolation: host is untested, and by the Hermes source the hermes cassette CLI is not registered in that mode, so replay would not work there."
+  - "A replay whose arm no session claims runs live with real tools and is graded INVALID only after it ends; a ping before each run refuses the common causes."
+  - "The replay's model call is real: with a cloud model, the request and the recorded tool results go to that provider."
+  - "Recording was tested through hermes chat -Q; recording from the desktop app or an interactive session is untested. Do not record through hermes -z, which auto-approves."
+  - "Replays are not deterministic: a model can go outside the recording and come up DIVERGED."
+  - "Through the current replay child, only the model has been varied. A skill under test must be preloaded with --skill, because skill_view and skills_list are answered from the recording. A prompt change has not been run."
+  - "Unmatched searches are answered by a Python re search of the snapshot, an approximation of ripgrep."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - post_llm_call
+  provides_middleware:
+    - tool_execution
+  requires_env: []

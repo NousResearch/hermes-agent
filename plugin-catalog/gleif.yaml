@@ -1,0 +1,21 @@
+name: gleif
+repo: https://github.com/TakeshiTGAL/hermes-plugin-gleif
+sha: 41f0099f5634d52f59e9182b9afae54347afb2b8
+description: 'lei_lookup, lei_parents, lei_children, lei_search, and lei_isin return LEI records, ISINs, or name candidates. A parent is an official record, a reporting exception, or an explicit miss. Disclosure — sends the LEI, legal name, or ISIN you type to api.gleif.org (GLEIF) over HTTPS with no key, and does not follow redirects or use an HTTP proxy; tools stay on for every surface, including an empty gateway allowlist; the opt-in 08:00 job spends 0 tokens and does not fire until a scheduler serves this profile; local delivery keeps a line under cron/output and empty stdout sends nothing; removal leaves the cron job, scripts/gleif-watch.py, and plugin-data/gleif/watch.json; no GLEIF logo.'
+maintainer: TakeshiTGAL
+tier: community
+category: tools
+docs_url: https://github.com/TakeshiTGAL/hermes-plugin-gleif#readme
+version: 0.1.0
+image: https://raw.githubusercontent.com/TakeshiTGAL/hermes-plugin-gleif/41f0099f5634d52f59e9182b9afae54347afb2b8/assets/catalog-banner.png
+requires_hermes: '>=0.21.4'
+platforms: []
+title: LEI Record
+capabilities:
+  provides_tools:
+  - lei_lookup
+  - lei_parents
+  - lei_children
+  - lei_search
+  - lei_isin
+  provides_hooks: []

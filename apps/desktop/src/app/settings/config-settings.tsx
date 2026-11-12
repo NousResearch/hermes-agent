@@ -32,6 +32,7 @@ import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
 import { $settingsRequestProfile } from '@/store/settings-scope'
+import { setAutoSpeakReplies } from '@/store/voice-prefs'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
 import { hermesConfigCacheWriter, useHermesConfigRecord } from '../hooks/use-config-record'
@@ -541,7 +542,11 @@ function ConfigSettingsInner({
             <div className="scroll-mt-6 rounded-lg" id={`setting-field-${key}`} key={key}>
               {key === 'delegation.model' ? (
                 <SubagentModelGate scope={writeScope ?? scopeProfile}>
-                  <DelegationRouteRow config={config} onConfigChange={updateConfig} scope={writeScope ?? scopeProfile} />
+                  <DelegationRouteRow
+                    config={config}
+                    onConfigChange={updateConfig}
+                    scope={writeScope ?? scopeProfile}
+                  />
                 </SubagentModelGate>
               ) : (
                 <ConfigField
@@ -555,7 +560,16 @@ function ConfigSettingsInner({
                       ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
                       : enumOptionsFor(key, getNested(config, key), config)
                   }
-                  onChange={value => updateConfig(setConfigField(config, key, value))}
+                  onChange={value => {
+                    updateConfig(setConfigField(config, key, value))
+
+                    // Flipping "Read Responses Aloud" here is a choice for this app too, not only
+                    // the messaging gateway; a config refresh still never overrides the composer's
+                    // toggle (#119885).
+                    if (key === 'voice.auto_tts') {
+                      void setAutoSpeakReplies(value === true)
+                    }
+                  }}
                   optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                   schema={field}
                   schemaKey={key}

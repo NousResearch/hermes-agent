@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 
 import type * as ConfigApi from '@/api/config'
 import { $settingsRequestProfile } from '@/store/settings-scope'
+import { $autoSpeakReplies, setAutoSpeakReplies } from '@/store/voice-prefs'
 
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
 
@@ -151,5 +152,19 @@ describe('ConfigSettings autosave', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('the Settings "Read Responses Aloud" switch also turns Desktop read-aloud on and off', async () => {
+    await setAutoSpeakReplies(true)
+    getHermesConfigRecord.mockResolvedValue({ voice: { auto_tts: true } })
+    getHermesConfigSchema.mockResolvedValue({ fields: { 'voice.auto_tts': { type: 'boolean' } } })
+
+    renderConfigSettings('voice')
+
+    ;(await screen.findByRole('switch')).click()
+    await vi.waitFor(() => expect($autoSpeakReplies.get()).toBe(false))
+
+    ;(await screen.findByRole('switch')).click()
+    await vi.waitFor(() => expect($autoSpeakReplies.get()).toBe(true))
   })
 })

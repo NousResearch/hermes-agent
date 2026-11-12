@@ -5,18 +5,19 @@ description: >-
   with user-configured models and schema-validated mappings. Disclosure: paid
   predictions send prompts, text and uploaded audio to Replicate and its model
   providers; outputs are downloaded into the active profile cache. Requires a
-  Replicate API token. No streaming voice or native image editing.
+  Replicate API token. Video defaults to Pruna P-Video's 5-second 720p draft
+  preview, without audio. No streaming voice or native image editing.
 repo: https://github.com/jacebenson/hermes-replicate
-sha: cb5013512612e69cccad7447d5d9b7d556197881
-version: "1.1.0"
+sha: 3b3548eecebaf9613e4ad4e214a7443adbccffdc
+version: "1.1.1"
 maintainer: jacebenson
 tier: community
 category: models
 requires_hermes: ">=0.23.1"
 docs_url: https://github.com/jacebenson/hermes-replicate#readme
-image: https://raw.githubusercontent.com/jacebenson/hermes-replicate/cb5013512612e69cccad7447d5d9b7d556197881/docs/assets/banner-1200.png
+image: https://raw.githubusercontent.com/jacebenson/hermes-replicate/3b3548eecebaf9613e4ad4e214a7443adbccffdc/docs/assets/banner-1200.png
 screenshots:
-  - https://raw.githubusercontent.com/jacebenson/hermes-replicate/cb5013512612e69cccad7447d5d9b7d556197881/docs/assets/model-showcase.png
+  - https://raw.githubusercontent.com/jacebenson/hermes-replicate/3b3548eecebaf9613e4ad4e214a7443adbccffdc/docs/assets/model-showcase.png
 readme: true
 known_issues:
   - Nonstandard model schemas may require explicit input/output mappings and extra inputs.

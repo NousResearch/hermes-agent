@@ -1,8 +1,8 @@
 name: snooze
 title: Snooze
 repo: https://github.com/AIverflow/hermes-snooze
-sha: 65f4128edcb93812af9edab94740a909276cda9b
-version: "0.3.1"
+sha: c462b01330674cdc02663e2308ef7664cc463e32
+version: "0.3.2"
 description: >-
   A reminder that repeats in your chat (Telegram, Discord) until you answer it exactly: Ok, your word, an emoji,
   a Telegram reaction, or one of several choices; reply later to postpone. A wrong answer gets the list of valid
@@ -12,11 +12,16 @@ description: >-
   Disclosure — no network call of its own, no subprocess, no credentials, no telemetry. A timer task runs in the
   gateway (every 15 s) and sends due reminders through Hermes's send path to the snooze's chat or home channel.
   Hook pre_gateway_dispatch sees every inbound gateway text message before the agent; it acts only in the chat of
-  a running snooze: an answer, or a message that replies to a reminder or comes first after one, is handled by the
-  plugin and does not reach the agent (an answer with a follow-up is rewritten into the follow-up prompt); everything
-  else passes untouched. Hook gateway_platform_event reads Telegram reactions on
-  reminder messages. A follow-up after a reaction or /snooze ok is queued with ctx.inject_message, which needs the
-  user's allow_gateway_injection. Reads its own settings (ctx.get_config), the session env (HERMES_SESSION_*), TZ,
+  a running snooze that has an owner (the user who created it), and only on that user's messages: an answer, or a
+  message that replies to a reminder or comes first after one, is handled by the plugin and does not reach the agent
+  (an answer with a follow-up is rewritten into the follow-up prompt); everything else passes untouched. Hook
+  post_gateway_admission handles snoozes with no known user (created from the CLI for a channel or group): it only
+  sees senders Hermes has already admitted, and consumes only an answer, a reply to a reminder or the first message
+  after one. Hook gateway_platform_event reads Telegram reactions on reminder messages. A follow-up after a reaction,
+  /snooze ok or an answer seen by post_gateway_admission is queued with ctx.inject_message, which needs the user's
+  allow_gateway_injection. Every reminder shows its follow-up (Then: ...). In a cron run, snooze_create refuses a
+  follow-up unless cron.allow_agent_scheduling is true. The timer is cancelled on unload (ctx.on_unload).
+  Reads its own settings (ctx.get_config), cron.allow_agent_scheduling, the session env (HERMES_SESSION_*), TZ,
   the Hermes pause flag, the gateway liveness and the profile's home channels, read-only. Writes its setting
   notification_platform with ctx.set_config (/snooze platform) and, in the plugin data dir, snoozes.json and two
   lock files. Private Hermes names: tools.send_message_tool.send_message_tool (send without an LLM turn) and
@@ -27,7 +32,7 @@ category: automation
 requires_hermes: ">=0.22.7"
 docs_url: https://github.com/AIverflow/hermes-snooze#readme
 screenshots:
-  - https://raw.githubusercontent.com/AIverflow/hermes-snooze/65f4128edcb93812af9edab94740a909276cda9b/docs/snooze-diagram.png
+  - https://raw.githubusercontent.com/AIverflow/hermes-snooze/c462b01330674cdc02663e2308ef7664cc463e32/docs/snooze-diagram.png
 readme: true
 platforms: [linux, macos]
 known_issues:
@@ -39,6 +44,7 @@ capabilities:
     - snooze_create
   provides_hooks:
     - pre_gateway_dispatch
+    - post_gateway_admission
     - gateway_platform_event
   provides_middleware: []
   requires_env: []

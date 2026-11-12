@@ -458,8 +458,13 @@ class SignalAdapter(BasePlatformAdapter):
         reply_to_author = self._extract_quote_author(quote_data)
         attachments_data = data_message.get("attachments", [])
         media_urls, media_types = [], []
+        # Gate attachment download on sender authorization for DMs
+        # dm_allow_from mirrors run.py's SIGNAL_ALLOWED_USERS for hooks that fire before auth gate
         if attachments_data and not getattr(self, "ignore_attachments", False):
-            media_urls, media_types = await self._collect_attachments(attachments_data)
+            if is_group or sender in self.dm_allow_from:
+                media_urls, media_types = await self._collect_attachments(attachments_data)
+            else:
+                logger.debug("Signal: skipping attachments for unauthorized DM sender %s", redact_phone(sender))
         # Skip contentless envelopes (profile key updates, empty messages) that still carry a
         # dataMessage wrapper — otherwise msg='' triggers a full agent turn.
         if (not text or not text.strip()) and not media_urls:

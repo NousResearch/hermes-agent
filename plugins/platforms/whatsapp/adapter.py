@@ -1306,26 +1306,41 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             try:
                 async with self._bridge_req("get", "messages", 30) as resp:
                     if resp.status == 200:
+                        # The bridge has already spliced this batch out of its queue, so one
+                        # message that raises must not drop the ones after it.
                         for msg_data in await resp.json():
-                            if msg_data.get("event") == "delivery_status":
-                                self._log_delivery_status(msg_data)
-                                continue
-                            event = await self._build_message_event(msg_data)
-                            if event:
-                                # Fire-and-forget: a slow bridge /read must not delay dispatch.
-                                asyncio.create_task(self._send_read_receipt(msg_data))
-                                if event.message_type == MessageType.TEXT:
-                                    self._enqueue_text_event(event)
-                                else:
-                                    await self.handle_message(event)
+                            await self._dispatch_polled_message(msg_data)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 if await self._report_bridge_exit():
                     break
-                print(f"[{self.name}] Poll error: {e}")
+                print(f"[{self.name}] Poll error: {e!r}")
+                logger.warning("[%s] Poll error: %r", self.name, e, exc_info=True)
                 await asyncio.sleep(5)
             await asyncio.sleep(1)  # Poll interval
+
+    async def _dispatch_polled_message(self, msg_data: dict[str, Any]) -> None:
+        """Route one message from a polled batch; a failure is logged and confined to it."""
+        try:
+            if msg_data.get("event") == "delivery_status":
+                self._log_delivery_status(msg_data)
+                return
+            event = await self._build_message_event(msg_data)
+            if event:
+                # Fire-and-forget: a slow bridge /read must not delay dispatch.
+                receipt = asyncio.create_task(self._send_read_receipt(msg_data))
+                self._background_tasks.add(receipt)
+                receipt.add_done_callback(self._background_tasks.discard)
+                if event.message_type == MessageType.TEXT:
+                    self._enqueue_text_event(event)
+                else:
+                    await self.handle_message(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("[%s] Inbound message %s dropped: %r", self.name,
+                           msg_data.get("messageId", "?"), e, exc_info=True)
 
     def _log_delivery_status(self, data: dict[str, Any]) -> None:
         """One gateway.log line per delivery/read status change of a message Hermes sent (Baileys

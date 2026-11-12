@@ -1512,9 +1512,10 @@ def _deliver_standalone(
         # Not inside an except block — the error comes from the result dict, no traceback.
         err = f"delivery error: {result['error']} (target {t.where})"
         logger.error("Job '%s': %s", job["id"], err)
-        # A sender's failure dict may follow a delivered (or partly delivered) payload: only its
-        # explicit ``retryable`` (nothing reached the chat) makes a replay safe.
-        t.standalone_in_flight = t.standalone_in_flight or result.get("retryable") is not True
+        # A sender's failure dict may follow a delivered (or partly delivered) payload: only the
+        # contract's NONE (``gateway.platforms._shared.delivery_state``) makes a replay safe.
+        from gateway.platforms._shared import NONE, delivery_state
+        t.standalone_in_flight = t.standalone_in_flight or delivery_state(result) != NONE
     if err is not None:
         target_errors.append(err)
         delivery_errors.extend(target_errors)

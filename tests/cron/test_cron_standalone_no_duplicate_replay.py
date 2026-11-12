@@ -178,7 +178,7 @@ def test_chunked_send_drops_nothing_sent_once_a_chunk_landed():
         return asyncio.run(_send_chunks(["one", "two"], send_one))
 
     assert run("one") == {"error": "connect refused", "retryable": True}
-    assert run("two") == {"error": "connect refused"}
+    assert run("two") == {"error": "connect refused", "delivery": "partial"}
 
 
 def test_retryable_live_failure_after_a_post_is_not_queued(monkeypatch, loop):
@@ -262,3 +262,47 @@ def test_rich_send_that_never_left_is_queued(monkeypatch, loop):
     _telegram_bot(monkeypatch, Bot())
     rows = _queued_rows(_target(loop, extra={"rich_messages": True}), "| a | b |\n|---|---|\n| 1 | 2 |")
     assert len(rows) == 1
+
+
+def _server_error_then_connect_error():
+    from telegram.error import NetworkError
+    raised = []
+
+    async def send_message(**kw):
+        raised.append(kw["text"])
+        if len(raised) == 1:
+            raise NetworkError("Internal Server Error")  # Telegram's own 5xx: may follow a committed send
+        raise _connect_error()
+    return raised, send_message
+
+
+@pytest.mark.parametrize("platform", ["telegram", "qqbot"])
+def test_a_maybe_delivered_attempt_is_never_erased_by_a_later_connect_failure(monkeypatch, loop, platform):
+    """One logical send: an attempt answered with a 5xx (the server may have committed the message)
+    is retried, and the retry cannot connect. The final error proves only that the LAST request
+    never left; the payload may be on screen from the first, so nothing is queued for a replay."""
+    if platform == "telegram":
+        pytest.importorskip("telegram")
+        attempts, send_message = _server_error_then_connect_error()
+        _telegram_bot(monkeypatch, type("Bot", (), {"send_message": staticmethod(send_message)})())
+        from tools.send_message_senders import _plugin_standalone_sender
+        mod = sys.modules[_plugin_standalone_sender("telegram")[0].__module__]
+        monkeypatch.setattr(mod, "_telegram_retry_delay", lambda exc, attempt: 0)  # the real retry policy, no sleep
+        t = _target(loop)
+    else:
+        attempts = []
+
+        async def fake_post(self, url, *a, **kw):
+            req = httpx.Request("POST", url)
+            if "getAppAccessToken" in str(url):
+                return httpx.Response(200, json={"access_token": "x"}, request=req)
+            attempts.append(url)
+            if len(attempts) == 1:
+                return httpx.Response(500, json={"message": "failed after accepting"}, request=req)
+            raise httpx.ConnectError("connection refused", request=req)
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+        t = _target(loop, platform=Platform("qqbot"), name="qqbot", extra={"app_id": "1"}, token="s")
+    assert _queued_rows(t, "the report") == []
+    assert len(attempts) >= 2  # the 5xx attempt went out, then the connect failure
+    assert t.standalone_in_flight is True

@@ -865,3 +865,25 @@ def test_dm_card_click_admits_operator_allowlisted_by_union_id(monkeypatch):
     adapter = _reaction_adapter(group_policy="open")
     adapter._allowed_group_users = frozenset({"on_union"})
     assert len(_run_card_click(adapter, "ou_x", chat_id="oc_dm", chat_mode="p2p", union_id="on_union")) == 1
+
+@pytest.mark.parametrize("event_kind", ["reaction", "card_click"])
+def test_synthetic_group_drop_warns_once_for_empty_default_allowlist(event_kind, caplog):
+    """Rejected reactions and clicks explain the untouched allowlist default, like text."""
+    adapter = _reaction_adapter()  # production defaults: group allowlist + empty FEISHU_ALLOWED_USERS
+
+    def drop():
+        if event_kind == "reaction":
+            return _run_reaction(adapter, "ou_nonmember", chat_id="oc_unconfigured")
+        return _run_card_click(adapter, "ou_nonmember", chat_id="oc_unconfigured")
+
+    with caplog.at_level("WARNING", logger="plugins.platforms.feishu.adapter"):
+        assert drop() == []
+        assert drop() == []
+
+    warnings = [
+        record.getMessage() for record in caplog.records
+        if record.name == "plugins.platforms.feishu.adapter" and record.levelname == "WARNING"
+    ]
+    assert len(warnings) == 1
+    assert "FEISHU_ALLOWED_USERS is empty" in warnings[0]
+    assert "oc_unconfigured" in warnings[0]

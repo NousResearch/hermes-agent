@@ -158,4 +158,7 @@ class FeishuSyntheticEventsMixin:
         """
         sender = SimpleNamespace(sender_type="user", sender_id=user_id_obj)
         message = SimpleNamespace(chat_type=chat_type, chat_id=chat_id, mentions=None, content="", message_type="text")
-        return self._admit(sender, message, require_mention=False)
+        reject = self._admit(sender, message, require_mention=False)
+        if reject == "group_policy_rejected":
+            self._warn_once_empty_allowlist_deny(chat_id)
+        return reject

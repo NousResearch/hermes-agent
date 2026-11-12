@@ -1630,8 +1630,8 @@ DEFAULT_CONFIG = {
 
     "matrix": {
         "require_mention": True,  # require @mention to respond in rooms
-        "free_response_rooms": "",  # comma-separated room IDs answered without mention
-        "allowed_rooms": "",  # if set, ONLY respond in these room IDs (whitelist)
+        "free_response_rooms": "", "allowed_rooms": "",  # comma-separated room IDs: no mention needed / ONLY these
+        "thread_backfill_limit": 20, "room_backfill_limit": 20,  # earlier thread/room events read as context; 0 = off
     },
     # Approvals for dangerous commands.
     # mode: manual (always prompt) | smart (aux LLM auto-approves low-risk) | off (= --yolo)

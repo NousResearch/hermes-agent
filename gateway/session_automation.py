@@ -829,7 +829,7 @@ async def _reset_and_retarget_local(authority, runner, session_key, old_session_
     return entry
 
 
-async def reset_and_rehome_messages(runner, session_key, old_session_id):
+async def reset_and_rehome_messages(runner, session_key, old_session_id, *, source=None):
     """The compression-exhaustion auto-reset: rotate the route to a fresh session and move the old
     owner's still-queued native ``messaging:*`` rows onto it, same order and request ids. Left
     behind they pause the old FIFO (``admission_conflict``) and never run, while a later message
@@ -840,7 +840,8 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     ordered with native admissions, not atomically across the two stores: a redelivery that
     resolves the route to the fresh session commits after the move and dedupes onto the moved row,
     and one that reserved the old route before the rotation is retargeted at commit
-    (``_admit_native_write``). Returns ``(entry, release)``. Until the caller runs ``release()``
+    (``_admit_native_write``). *source*, when given, refreshes the fresh origin's chat and user names
+    (``SessionStore.reset_session``). Returns ``(entry, release)``. Until the caller runs ``release()``
     (once, after its conversation cleanup and topic binding sync, also on failure) the fresh
     session's ``claim_gate`` is held, so no scheduler (a redelivery, a moved route wake, this
     move) starts a turn there against stale state; ``release()`` then schedules its FIFO."""
@@ -852,7 +853,7 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     if local is not None:
         return await _reset_and_retarget_local(authority, runner, session_key, old_session_id, local), lambda: None
     if live is None:
-        return await runner.async_session_store.reset_session(session_key), lambda: None
+        return await runner.async_session_store.reset_session(session_key, source=source), lambda: None
     import asyncio
     from gateway.session_authority import LiveSession
     from gateway.session_runtime_workers import tracked_write
@@ -862,7 +863,7 @@ async def reset_and_rehome_messages(runner, session_key, old_session_id):
     chat_source = lane_source(live.source)  # the rotation detaches the old conversation off the route
 
     def rotate_and_move():
-        entry = runner.session_store.reset_session(session_key)
+        entry = runner.session_store.reset_session(session_key, source=source)
         if entry is None:
             return None, None, []
         new = SessionRef(authority.profile_id, authority.logical_owner(entry.session_id))

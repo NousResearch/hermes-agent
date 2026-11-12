@@ -423,7 +423,12 @@ class GatewayTurnPersistenceMixin:
                 response = f"{response}\n\n{guidance}" if response else guidance
         elif agent_result.get("compression_exhausted") and session_entry and session_key:
             if not self._hmwa_defer_exhaustion_reset(session_entry, session_key, source):
-                session_entry = await self._hmwa_rotate_exhausted_session(session_entry, session_key, source)
+                # An internal event's source has routing fields only, so its empty chat and user
+                # names must not replace the origin's.
+                session_entry = await self._hmwa_rotate_exhausted_session(
+                    session_entry, session_key, source,
+                    origin_source=None if event is None or event.internal else source,
+                )
                 self._hmwa_replay_exhausted_request(event, agent_result, session_entry, session_key, source)
             response = (response or "") + t("gateway.session.auto_reset_context_exhausted")
         return response, session_entry
@@ -491,12 +496,14 @@ class GatewayTurnPersistenceMixin:
             session_entry, session_key, source)
         return True
 
-    async def _hmwa_rotate_exhausted_session(self, session_entry, session_key, source):
-        """The compression-exhaustion auto-reset itself; returns the route's (fresh) entry."""
+    async def _hmwa_rotate_exhausted_session(self, session_entry, session_key, source, *, origin_source=None):
+        """The compression-exhaustion auto-reset itself; returns the route's (fresh) entry. With
+        *origin_source*, the fresh origin takes its chat name, topic and user name."""
         logger.info("Auto-resetting session %s after compression exhaustion.", session_entry.session_id)
         from gateway.session_automation import move_route_wakes, reset_and_rehome_messages
         # Messages queued behind the exhausted turn still run, on the fresh session (unlike /new).
-        new_entry, release_fresh = await reset_and_rehome_messages(self, session_key, session_entry.session_id)
+        new_entry, release_fresh = await reset_and_rehome_messages(
+            self, session_key, session_entry.session_id, source=origin_source)
         try:
             await move_route_wakes(self, session_key, session_entry.session_id)
             self._evict_cached_agent(session_key)

@@ -7259,6 +7259,7 @@ def register(ctx) -> None:
         max_message_length=2000,
         emoji="🎮",
         allow_update_command=True,
+        reads_non_conversational_mark=True,
         platform_hint=PLATFORM_HINT,
         display_tier="high",
         # "-# " subtext reads as metadata.

@@ -6044,22 +6044,82 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """The mixin's batching key (topic recovery included) plus the sender, so two observed-group members never merge."""
         return super()._text_batch_key(event) + shared_sender_suffix(event)
 
+    @staticmethod
+    def _text_batch_reply_context(event: MessageEvent) -> tuple:
+        """Return every reply field whose meaning would spread across a batch."""
+        return (
+            event.reply_to_message_id,
+            event.reply_to_text,
+            event.reply_to_author_id,
+            event.reply_to_author_name,
+            bool(event.reply_to_is_own_message),
+        )
+
+    @classmethod
+    def _text_batch_has_reply_context(cls, event: MessageEvent) -> bool:
+        return any(
+            value not in (None, "", False)
+            for value in cls._text_batch_reply_context(event)
+        )
+
+    def _text_batch_context_compatible(
+        self,
+        existing: MessageEvent,
+        incoming: MessageEvent,
+    ) -> bool:
+        """Return whether coalescing preserves the reply/quote semantics.
+
+        Telegram may attach reply metadata only to the first near-limit chunk
+        of a client-split long message. A following metadata-free chunk can
+        inherit that first chunk's reply context.
+        """
+        if self._text_batch_reply_context(existing) == self._text_batch_reply_context(
+            incoming
+        ):
+            return True
+
+        existing_last_len = getattr(
+            existing,
+            "_last_chunk_len",
+            len(existing.text or ""),
+        )
+        return (
+            existing_last_len >= self._SPLIT_THRESHOLD
+            and not self._text_batch_has_reply_context(incoming)
+        )
+
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text chunk, or hold it while delayed delivery must be dropped."""
         self._note_arrival(event)
         if self._should_drop_delayed_delivery():
             self._hold_inbound_event(event, where="text-enqueue")
             return
-        existing = self._pending_text_batches.get(self._text_batch_key(event))
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        if existing is not None and not self._text_batch_context_compatible(existing, event):
+            prior_task = self._pending_text_batch_tasks.pop(key, None)
+            if prior_task and not prior_task.done():
+                prior_task.cancel()
+            self._pending_text_batches.pop(key, None)
+            # Flush it now, but behind any batch of this chat still dispatching (order_key).
+            boundary_key = f"{key}|reply-boundary|{id(existing)}"
+            self._pending_text_batches[boundary_key] = existing
+            self._pending_text_batch_tasks[boundary_key] = asyncio.create_task(self._flush_buffered(
+                self._pending_text_batches, self._pending_text_batch_tasks, boundary_key, 0, "text",
+                lambda ev: logger.info("[Telegram] Flushing text batch %s before incompatible reply context", key),
+                order_key=key))
+            existing = None
         before, merged = getattr(existing, "text", None), merged_typed_text(existing, event)
         super()._enqueue_text_event(event)
         if merged is not None and existing.text != before:  # merged (not dropped)
             record_typed_text(existing, merged)
         self._accept_update()
 
-    async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None, pause=None) -> None:
+    async def _flush_buffered(self, pending: dict, tasks: dict, key: str, delay: float, where: str, log_fn=None, pause=None,
+                              order_key: Optional[str] = None) -> None:
         """Shared delayed-flush body: sleep (or ``pause(delay)``), pop, hold if teardown started, else dispatch.
-        A cancel after the pop but before durable dispatch re-holds the event (never lose it)."""
+        A cancel after the pop but before durable dispatch re-holds the event (never lose it). Dispatch waits
+        for the earlier batch with the same ``order_key`` (default ``key``)."""
         current_task = asyncio.current_task()
         committed = self.__dict__.setdefault("_committed_flush_tasks", {})
         event = None
@@ -6076,8 +6136,9 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             # Committed: leave the per-key slot so a newer chunk re-arms without cancelling this
             # dispatch mid-flight (e.g. during a root-DM createForumTopic, whose ID would be lost).
             tasks.pop(key, None)
-            prior = committed.get((where, key))
-            committed[(where, key)] = current_task
+            slot = (where, order_key or key)
+            prior = committed.get(slot)
+            committed[slot] = current_task
             if prior is not None and not prior.done():
                 await asyncio.wait({prior})  # dispatch in order, after the earlier batch settles
             if self._should_drop_delayed_delivery():
@@ -6093,8 +6154,8 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 self._hold_inbound_event(event, where=f"{where}-flush-cancelled")
             raise
         finally:
-            if committed.get((where, key)) is current_task:
-                committed.pop((where, key), None)
+            if committed.get((where, order_key or key)) is current_task:
+                committed.pop((where, order_key or key), None)
             if tasks.get(key) is current_task:
                 tasks.pop(key, None)
 

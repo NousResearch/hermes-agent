@@ -295,7 +295,7 @@ class GatewaySessionCommandsMixin:
         _old_sid = old_entry.session_id if old_entry else None
         from gateway.session_automation import move_route_wakes, route_owner_lock
         async with route_owner_lock(self, _old_sid):
-            new_entry = await self.async_session_store.reset_session(session_key)
+            new_entry = await self.async_session_store.reset_session(session_key, source=source)
             await move_route_wakes(self, session_key, _old_sid)  # main #114456: a parked wake survives /new
             paused_count = await paused_followers(self, _old_sid)
         await self._fire_session_reset_hooks(source, session_key, _old_sid,

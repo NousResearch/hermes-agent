@@ -10,239 +10,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageType
 
 
-def _make_fake_mautrix():
-    """Create a lightweight set of fake ``mautrix`` modules.
-
-    The adapter does ``from mautrix.api import HTTPAPI``,
-    ``from mautrix.client import Client``, ``from mautrix.types import ...``
-    at import time and inside methods.  We provide just enough stubs for
-    tests that need to mock the mautrix import chain.
-
-    Use via ``patch.dict("sys.modules", _make_fake_mautrix())``.
-    """
-    # --- mautrix (root) ---
-    mautrix = types.ModuleType("mautrix")
-
-    # --- mautrix.api ---
-    mautrix_api = types.ModuleType("mautrix.api")
-
-    class HTTPAPI:
-        def __init__(self, base_url="", token="", **kwargs):
-            self.base_url = base_url
-            self.token = token
-            self.session = MagicMock()
-            self.session.close = AsyncMock()
-
-    mautrix_api.HTTPAPI = HTTPAPI
-    mautrix.api = mautrix_api
-
-    # --- mautrix.types ---
-    mautrix_types = types.ModuleType("mautrix.types")
-
-    class EventType:
-        ROOM_MESSAGE = "m.room.message"
-        REACTION = "m.reaction"
-        ROOM_ENCRYPTED = "m.room.encrypted"
-        ROOM_NAME = "m.room.name"
-
-    class UserID(str):
-        pass
-
-    class RoomID(str):
-        pass
-
-    class EventID(str):
-        pass
-
-    class ContentURI(str):
-        pass
-
-    class SyncToken(str):
-        pass
-
-    class RoomCreatePreset:
-        PRIVATE = "private_chat"
-        PUBLIC = "public_chat"
-        TRUSTED_PRIVATE = "trusted_private_chat"
-
-    class PresenceState:
-        ONLINE = "online"
-        OFFLINE = "offline"
-        UNAVAILABLE = "unavailable"
-
-    class TrustState:
-        UNVERIFIED = 0
-        VERIFIED = 1
-
-    class PaginationDirection:
-        BACKWARD = "b"
-        FORWARD = "f"
-
-    mautrix_types.EventType = EventType
-    mautrix_types.UserID = UserID
-    mautrix_types.RoomID = RoomID
-    mautrix_types.EventID = EventID
-    mautrix_types.ContentURI = ContentURI
-    mautrix_types.SyncToken = SyncToken
-    mautrix_types.RoomCreatePreset = RoomCreatePreset
-    mautrix_types.PresenceState = PresenceState
-    mautrix_types.TrustState = TrustState
-    mautrix_types.PaginationDirection = PaginationDirection
-    mautrix.types = mautrix_types
-
-    # --- mautrix.client ---
-    mautrix_client = types.ModuleType("mautrix.client")
-
-    class Client:
-        def __init__(self, mxid=None, device_id=None, api=None,
-                     state_store=None, sync_store=None, **kwargs):
-            self.mxid = mxid
-            self.device_id = device_id
-            self.api = api
-            self.state_store = state_store
-            self.sync_store = sync_store
-            self.crypto = None
-            self._event_handlers = {}
-
-        def add_event_handler(self, event_type, handler, **kwargs):
-            self._event_handlers.setdefault(event_type, []).append(handler)
-
-        def add_dispatcher(self, dispatcher_type):
-            pass
-
-    class InternalEventType:
-        INVITE = "internal.invite"
-
-    mautrix_client.Client = Client
-    mautrix_client.InternalEventType = InternalEventType
-    mautrix.client = mautrix_client
-
-    # --- mautrix.client.dispatcher ---
-    mautrix_client_dispatcher = types.ModuleType("mautrix.client.dispatcher")
-
-    class MembershipEventDispatcher:
-        pass
-
-    mautrix_client_dispatcher.MembershipEventDispatcher = MembershipEventDispatcher
-
-    # --- mautrix.client.state_store ---
-    mautrix_client_state_store = types.ModuleType("mautrix.client.state_store")
-
-    class MemoryStateStore:
-        async def get_member(self, room_id, user_id):
-            return None
-
-        async def get_members(self, room_id):
-            return []
-
-        async def get_member_profiles(self, room_id):
-            return {}
-
-    class MemorySyncStore:
-        def __init__(self):
-            self.next_batch = None
-
-        async def get_next_batch(self):
-            return self.next_batch
-
-        async def put_next_batch(self, token):
-            self.next_batch = token
-
-    mautrix_client_state_store.MemoryStateStore = MemoryStateStore
-    mautrix_client_state_store.MemorySyncStore = MemorySyncStore
-
-    # --- mautrix.crypto ---
-    mautrix_crypto = types.ModuleType("mautrix.crypto")
-
-    class OlmMachine:
-        def __init__(self, client=None, crypto_store=None, state_store=None):
-            self.share_keys_min_trust = None
-            self.send_keys_min_trust = None
-
-        async def load(self):
-            pass
-
-        async def share_keys(self):
-            pass
-
-        async def decrypt_megolm_event(self, event):
-            return event
-
-    mautrix_crypto.OlmMachine = OlmMachine
-
-    # --- mautrix.crypto.store ---
-    mautrix_crypto_store = types.ModuleType("mautrix.crypto.store")
-
-    class MemoryCryptoStore:
-        def __init__(self, account_id="", pickle_key=""):
-            self.account_id = account_id
-            self.pickle_key = pickle_key
-
-    mautrix_crypto_store.MemoryCryptoStore = MemoryCryptoStore
-
-    # --- mautrix.crypto.attachments ---
-    mautrix_crypto_attachments = types.ModuleType("mautrix.crypto.attachments")
-
-    def encrypt_attachment(data):
-        encrypted_file = MagicMock()
-        encrypted_file.serialize.return_value = {
-            "key": {"k": "testkey"}, "iv": "testiv",
-            "hashes": {"sha256": "testhash"}, "v": "v2",
-        }
-        return (b"ciphertext_" + data, encrypted_file)
-
-    mautrix_crypto_attachments.encrypt_attachment = encrypt_attachment
-
-    # --- mautrix.crypto.store.asyncpg ---
-    mautrix_crypto_store_asyncpg = types.ModuleType("mautrix.crypto.store.asyncpg")
-
-    class PgCryptoStore:
-        upgrade_table = MagicMock()
-
-        def __init__(self, account_id="", pickle_key="", db=None):
-            self.account_id = account_id
-            self.pickle_key = pickle_key
-            self.db = db
-            self._device_id = ""
-
-        async def open(self):
-            pass
-
-        async def put_device_id(self, device_id):
-            self._device_id = device_id
-
-    mautrix_crypto_store_asyncpg.PgCryptoStore = PgCryptoStore
-
-    # --- mautrix.util ---
-    mautrix_util = types.ModuleType("mautrix.util")
-
-    # --- mautrix.util.async_db ---
-    mautrix_util_async_db = types.ModuleType("mautrix.util.async_db")
-
-    class Database:
-        @classmethod
-        def create(cls, url, upgrade_table=None):
-            db = MagicMock()
-            db.start = AsyncMock()
-            db.stop = AsyncMock()
-            return db
-
-    mautrix_util_async_db.Database = Database
-
-    return {
-        "mautrix": mautrix,
-        "mautrix.api": mautrix_api,
-        "mautrix.types": mautrix_types,
-        "mautrix.client": mautrix_client,
-        "mautrix.client.dispatcher": mautrix_client_dispatcher,
-        "mautrix.client.state_store": mautrix_client_state_store,
-        "mautrix.crypto": mautrix_crypto,
-        "mautrix.crypto.attachments": mautrix_crypto_attachments,
-        "mautrix.crypto.store": mautrix_crypto_store,
-        "mautrix.crypto.store.asyncpg": mautrix_crypto_store_asyncpg,
-        "mautrix.util": mautrix_util,
-        "mautrix.util.async_db": mautrix_util_async_db,
-    }
+from tests.gateway.matrix_helpers import _sync_error, make_fake_mautrix as _make_fake_mautrix
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +18,7 @@ def _make_fake_mautrix():
 # ---------------------------------------------------------------------------
 
 class TestMatrixConfigLoading:
+
 
     def test_apply_env_overrides_with_password(self, monkeypatch):
         monkeypatch.delenv("MATRIX_ACCESS_TOKEN", raising=False)
@@ -367,15 +136,10 @@ class TestMatrixDmDetection:
         self.adapter = _make_adapter()
 
 
-
-
     @pytest.mark.asyncio
     async def test_named_two_member_dm_is_dm(self):
-        """A named two-member room in m.direct is a DM (not a room).
-
-        Most Matrix clients auto-name DM rooms (e.g. "Alice & Bot"), so the
-        old `not has_explicit_name` override misclassified them as rooms.
-        """
+        """An explicit room name does not change a two-person chat's policy."""
+        self.adapter._user_id = "@bot:ex.org"
         self.adapter._joined_rooms = {"!named_dm:ex.org"}
         self.adapter._dm_rooms = {"!named_dm:ex.org": True}
         self.adapter._client = MagicMock()
@@ -385,6 +149,7 @@ class TestMatrixDmDetection:
             else (_ for _ in ()).throw(Exception("no alias"))
         )
         self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.has_full_member_list = AsyncMock(return_value=True)
         self.adapter._client.state_store.get_members = AsyncMock(
             return_value=["@bot:ex.org", "@alice:ex.org"]
         )
@@ -400,7 +165,6 @@ class TestMatrixDmDetection:
 # ---------------------------------------------------------------------------
 # Reply fallback stripping
 # ---------------------------------------------------------------------------
-
 
 
 # ---------------------------------------------------------------------------
@@ -530,7 +294,6 @@ class TestMatrixBangCommandAlias:
 # ---------------------------------------------------------------------------
 
 
-
 # ---------------------------------------------------------------------------
 # Format message
 # ---------------------------------------------------------------------------
@@ -597,10 +360,12 @@ class TestMatrixRenderingPayloads:
         assert result.success is True
         contents = self._sent_contents()
         assert len(contents) > 1
-        for content in contents:
+        for index, content in enumerate(contents):
             assert content["m.relates_to"]["rel_type"] == "m.thread"
             assert content["m.relates_to"]["event_id"] == "$root"
-            assert content["m.relates_to"]["m.in_reply_to"] == {"event_id": "$root"}
+            assert content["m.relates_to"]["m.in_reply_to"] == {
+                "event_id": "$root" if index == 0 else "$evt",
+            }
             assert content["body"].count("```") % 2 == 0
 
 
@@ -629,7 +394,6 @@ class TestMatrixMarkdownToHtml:
         assert "<code>" in result
 
 
-
     def test_matrix_markdown_preserves_table_structure(self):
         table = "\n".join(
             [
@@ -654,11 +418,9 @@ class TestMatrixMarkdownToHtml:
 # ---------------------------------------------------------------------------
 
 
-
 # ---------------------------------------------------------------------------
 # Requirements check
 # ---------------------------------------------------------------------------
-
 
 
 class TestMatrixRequirements:
@@ -1142,14 +904,6 @@ class TestMatrixDeviceIdConfig:
         assert mc.extra.get("device_id") == "HERMES_BOT"
 
 
-def _sync_error(message, **attrs):
-    """Shape of mautrix's MatrixRequestError: message text + structured attrs."""
-    exc = Exception(message)
-    for k, v in attrs.items():
-        setattr(exc, k, v)
-    return exc
-
-
 class TestMatrixSyncLoop:
 
     @pytest.mark.asyncio
@@ -1208,6 +962,7 @@ class TestMatrixSyncLoop:
         fake_client.sync_store = mock_sync_store
         fake_client.get_state_event = AsyncMock(side_effect=Exception("no state"))
         fake_client.state_store = MagicMock()
+        fake_client.state_store.has_full_member_list = AsyncMock(return_value=True)
         fake_client.state_store.get_members = AsyncMock(return_value=["@bot:example.org", "@alice:example.org"])
         fake_client.state_store.get_member = AsyncMock(return_value=None)
 
@@ -1336,6 +1091,7 @@ class TestMatrixSyncLoop:
         )
         mock_client.get_state_event = AsyncMock(side_effect=Exception("no state"))
         mock_client.state_store = MagicMock()
+        mock_client.state_store.has_full_member_list = AsyncMock(return_value=True)
         mock_client.state_store.get_members = AsyncMock(return_value=["@bot:example.org", "@alice:example.org"])
         mock_client.state_store.get_member = AsyncMock(return_value=None)
         mock_client.add_event_handler = MagicMock()
@@ -1660,6 +1416,9 @@ class TestMatrixEncryptedEventHandler:
         assert "m.room.message" in waited_types
         assert "m.reaction" in waited_types
         assert "internal.invite" in waited_types
+        assert "m.room.name" in waited_types
+        assert "m.room.topic" in waited_types
+        assert "m.room.redaction" in waited_types
 
         await adapter.disconnect()
 
@@ -2075,7 +1834,6 @@ class TestMatrixImageOnlyMediaNormalization:
         assert signed_url not in sent_text
 
 
-
 # ---------------------------------------------------------------------------
 # Message redaction
 # ---------------------------------------------------------------------------
@@ -2116,7 +1874,6 @@ class TestMatrixRoomManagement:
 # ---------------------------------------------------------------------------
 # Presence
 # ---------------------------------------------------------------------------
-
 
 
 # ---------------------------------------------------------------------------
@@ -2424,7 +2181,7 @@ class TestMatrixDmAutoThread:
         )
 
         assert ctx is not None
-        _body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        _body, _is_dm, _chat_type, thread_id, _display, _requires_mention, _source = ctx
         assert thread_id == "$ev1"
 
 
@@ -3243,3 +3000,5 @@ class TestCryptoPickleKeyMigration:
         # start still sees a legacy-key account and retries the migration.
         store.put_account.assert_not_awaited()
         assert "retried on the next start" in caplog.text
+
+

@@ -42,6 +42,7 @@ from agent.context_compressor_tail import (
 )
 from agent.context_compressor_telemetry import CompressionTelemetryMixin
 from agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
+from agent.message_metadata import keep_newest_channel_state_on_summary
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
@@ -1371,7 +1372,7 @@ def _content_text_for_contains(content: Any) -> str:
 # stripped, which over-counts the request and keeps the conservative anchor.
 _GATEWAY_REPLY_POINTER_RE = re.compile(
     r'\A(?:\[Triggering message id: [^\n]*\]\n\n)?'
-    r'\[Replying to(?: your previous message| an earlier scheduled cron delivery \([^)\n]*\))?: ".*?"\]\n\n',
+    r'\[Replying to(?: your previous message| an earlier scheduled cron delivery \([^)\n]*\)| [^\n]*?)?: (?:\[unverified\] )?".*?"\]\n\n',
     re.DOTALL,
 )
 
@@ -5498,9 +5499,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         compressed = self._assemble_head(messages, compress_start)
         tail_messages = self._assemble_tail(messages, compress_end, scan.tail_start, scan.summary_indices)
         summary, compressed, tail_messages = with_skill_safety_rule(summary, compressed, tail_messages)
-        summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = (
-            self._summary_placement(compressed, tail_messages, compress_start)
-        )
+        summary_role, merge_into_tail, force_user_leading, first_tail_visible_idx = self._summary_placement(
+            compressed, tail_messages, compress_start)
         if not merge_into_tail:
             # End marker stops weak models treating the quoted summary as fresh input (#11475) or
             # regurgitating it (#33256).
@@ -5520,7 +5520,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             if merge_into_tail and tail_idx == merge_target_idx:
                 self._merge_summary_into_tail_row(msg, summary, summary_role, force_user_leading)
             compressed.append(msg)
-        return compressed
+        return keep_newest_channel_state_on_summary(messages, compressed, COMPRESSED_SUMMARY_METADATA_KEY)
 
 
 def is_compaction_summary_message(message: Any) -> bool:

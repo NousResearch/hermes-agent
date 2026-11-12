@@ -316,6 +316,42 @@ def message_identity(msg: MutableMapping[str, Any], *, with_tool_uids: bool = Fa
     return identity
 
 
+# The ``display_metadata`` entry in which the gateway saves a snapshot of the chat (its name, topic and
+# similar state) on a user row. The newest row with one is the snapshot that the conversation has
+# acknowledged, so a rewrite that removes that row must record the snapshot on a row that it keeps.
+CHANNEL_STATE_METADATA_KEY = "channel_state"
+
+
+def _channel_state(msg: Any) -> Optional[dict]:
+    metadata = msg.get("display_metadata") if isinstance(msg, Mapping) else None
+    state = metadata.get(CHANNEL_STATE_METADATA_KEY) if isinstance(metadata, Mapping) else None
+    return state if isinstance(state, dict) else None
+
+
+def newest_channel_state(messages: list[Any]) -> Optional[dict]:
+    """The channel state saved on the newest row of *messages* that has one."""
+    return next((state for msg in reversed(messages) if (state := _channel_state(msg)) is not None), None)
+
+
+def keep_newest_channel_state(
+    original: list[Any], rewritten: list[Any], carrier: MutableMapping[str, Any],
+) -> None:
+    """Record the newest channel state of *original* on *carrier* when *rewritten* no longer has it as
+    its newest. *carrier* is the row of *rewritten* that replaces the removed rows (a compaction summary
+    or a merge survivor), and every row after it in *rewritten* must be a row of *original*."""
+    state = newest_channel_state(original)
+    if state is None or newest_channel_state(rewritten) == state:
+        return
+    carrier["display_metadata"] = {**(carrier.get("display_metadata") or {}), CHANNEL_STATE_METADATA_KEY: state}
+
+
+def keep_newest_channel_state_on_summary(original: list[Any], compacted: list[Any], summary_key: str) -> list[Any]:
+    """``keep_newest_channel_state`` for a compaction: the carrier is the newest row of *compacted* that
+    holds the summary (marked by *summary_key*); the rows after it are kept tail rows. Returns *compacted*."""
+    carrier = next((row for row in reversed(compacted) if isinstance(row, MutableMapping) and row.get(summary_key)), None)
+    if carrier is not None:
+        keep_newest_channel_state(original, compacted, carrier)
+    return compacted
 def _is_empty_content(content: Any) -> bool:
     """Nothing to fold: any part (an image too) is content, unlike ``is_content_blank``'s text-only test."""
     return content is None or content == [] or (isinstance(content, str) and not content.strip())
@@ -333,8 +369,10 @@ def record_absorbed_message(
     A dict without a uid (unflushed, scaffolding, engine-authored) contributes nothing; an empty result
     leaves the survivor untouched. The survivor's typed-ask stamp goes when *dropped* brought content (the row
     now holds more than that one ask, so ``previous_message`` reads it as before stamps existed); an empty
-    turn leaves the content, and so the stamp, as they were.
+    turn leaves the content, and so the stamp, as they were. The survivor also keeps the newest channel state
+    of the two constituents.
     """
+    keep_newest_channel_state([dropped, survivor] if dropped_leads else [survivor, dropped], [survivor], survivor)
     if not _is_empty_content(dropped.get("content")):
         drop_typed_ask(survivor)
     survivor_uid = message_uid_or_none(survivor)

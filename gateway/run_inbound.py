@@ -21,13 +21,14 @@ from pathlib import Path
 
 from agent.i18n import t
 from gateway.config import Platform
-from gateway.inbound_reply_context import reply_pointer
+from gateway.inbound_reply_context import reply_author, reply_pointer
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType, clean_attachment_filename
 from gateway.run_busy import approval_input_words
 from gateway.run_inbound_media import rehome_inbound_media
 from gateway.run_inbound_hooks import GatewayInboundHooksMixin
 from gateway.run_inbound_transcription import GatewayInboundTranscriptionMixin
+from gateway.run_inbound_turn_context import prepend_turn_context_note
 from gateway.run_plugin_injection import GatewayPluginInjectionMixin
 from gateway.run_turn_setup_guard import cancel_preagent_setup, pending_setup_busy_notice
 from gateway.run_inbound_unauthorized import (
@@ -1706,7 +1707,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             reply_text = event.reply_to_text
             own = bool(getattr(event, "reply_to_is_own_message", False))
             replied_to = (source.platform, source.chat_id, event.reply_to_message_id)
-            message_text = f"{reply_pointer(str(reply_text), own_message=own, replied_to=replied_to)}\n\n{message_text}"
+            author = reply_author(event, source.platform)
+            pointer = reply_pointer(str(reply_text), own_message=own, replied_to=replied_to, author=author,
+                                    unverified=event.reply_to_author_authorized is False)
+            message_text = f"{pointer}\n\n{message_text}"
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is
@@ -1827,7 +1831,9 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             return None
         # After expansion: the quoted reply is someone else's text and stays literal — an
         # ``@file:`` inside it must never read a local file on the replier's behalf.
-        return self._prepend_inbound_reply_context(event, source, message_text)
+        message_text = self._prepend_inbound_reply_context(event, source, message_text)
+        return await prepend_turn_context_note(
+            self, event=event, source=source, session_key=session_key, history=history, message_text=message_text)
 
     async def _prepare_profile_scoped_inbound_message_text(
         self, *, event: MessageEvent, source: SessionSource, history: list[dict[str, Any]],

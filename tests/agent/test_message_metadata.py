@@ -1,8 +1,8 @@
 import pytest
 
 from agent.message_metadata import (
-    INFLIGHT_TASK_RESTATEMENT, TYPED_ASK, append_message, is_compaction_scaffolding, replay_metadata_fields,
-    stamp_message_timestamp,
+    INFLIGHT_TASK_RESTATEMENT, TYPED_ASK, append_message, is_compaction_scaffolding, record_absorbed_message,
+    replay_metadata_fields, stamp_message_timestamp,
 )
 
 
@@ -26,6 +26,24 @@ def test_append_stamps_same_mapping_at_append_time(monkeypatch):
     assert result is message
     assert messages == [message]
     assert message["timestamp"] == 456.0
+
+
+@pytest.mark.parametrize("survivor_metadata,dropped_metadata,dropped_leads,expected", [
+    ({"channel_state": {"topic": "old"}, "model_only": True}, {"channel_state": {"topic": "new"}}, False,
+     {"channel_state": {"topic": "new"}, "model_only": True}),
+    (None, {"channel_state": {"topic": "old"}}, True, {"channel_state": {"topic": "old"}}),
+    ({"channel_state": {"topic": "new"}}, {"channel_state": {"topic": "old"}}, True,
+     {"channel_state": {"topic": "new"}}),
+], ids=["later-row-dropped", "earlier-row-dropped", "later-row-survives"])
+def test_fold_keeps_the_later_rows_channel_state(survivor_metadata, dropped_metadata, dropped_leads, expected):
+    survivor = {"role": "user", "content": "survivor"}
+    if survivor_metadata is not None:
+        survivor["display_metadata"] = survivor_metadata
+    dropped = {"role": "user", "content": "dropped", "display_metadata": dropped_metadata}
+
+    record_absorbed_message(survivor, dropped, dropped_leads=dropped_leads)
+
+    assert survivor.get("display_metadata") == expected
 
 
 def test_replay_keeps_a_user_rows_typed_ask_beside_the_scaffolding_flag():

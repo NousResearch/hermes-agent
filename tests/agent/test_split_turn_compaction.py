@@ -288,7 +288,10 @@ def test_active_request_survives_repeated_compaction_and_restart(tmp_path) -> No
 _LONG_QUOTE = "Earlier assistant answer. " * 80
 
 
-def _gateway_reply(text: str, *, own: bool = False, discord_id: str | None = None) -> str:
+def _gateway_reply(
+    text: str, *, own: bool = False, discord_id: str | None = None, author: str | None = None,
+    authorized: bool | None = None,
+) -> str:
     """Build the row exactly as the gateway does, so a pointer format change fails here."""
     from gateway.config import Platform
     from gateway.platforms.event import MessageEvent
@@ -300,6 +303,7 @@ def _gateway_reply(text: str, *, own: bool = False, discord_id: str | None = Non
     event = MessageEvent(
         text=text, source=source, message_id=discord_id,
         reply_to_message_id="7", reply_to_text=_LONG_QUOTE, reply_to_is_own_message=own,
+        reply_to_author_name=author, reply_to_author_authorized=authorized,
     )
     with patch("gateway.session._discord_tools_loaded", return_value=True):
         return GatewayRunner._prepend_inbound_reply_context(event, source, text)
@@ -307,8 +311,9 @@ def _gateway_reply(text: str, *, own: bool = False, discord_id: str | None = Non
 
 @pytest.mark.parametrize(
     "gateway_kwargs",
-    [{}, {"own": True}, {"discord_id": "42"}],
-    ids=["reply", "own-reply", "discord-note"],
+    [{}, {"own": True}, {"discord_id": "42"}, {"author": "Alice: B", "authorized": True},
+     {"authorized": False}],
+    ids=["reply", "own-reply", "discord-note", "named-author", "unverified-author"],
 )
 def test_reply_pointer_does_not_count_toward_the_request_size(gateway_kwargs: dict[str, Any]) -> None:
     """A short reply to a long answer must still split, and the snapshot must keep the request

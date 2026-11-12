@@ -22,6 +22,7 @@ from hermes_dir_acl import make_user_dir, unusable_dir_remedy
 from gateway.platforms.base_log_safety import describe_proxy_error, env_proxy_for_redaction, safe_proxy_url_for_log, safe_url_for_log
 from gateway.platforms.base_image_sniff import _looks_like_image
 from gateway.platforms.base_media_flags import pad_inline_flags
+from gateway.platforms.base_text_debounce import TextDebounceMixin, TextDebounceState
 from gateway.runtime_footer import footer_onto_photo_caption, send_footer_unless_captioned
 from gateway.platforms.session_model import _SessionModelSettingsMixin
 from utils import normalize_proxy_url, unlink_files_older_than
@@ -444,7 +445,7 @@ from gateway.platforms.base_exec_approval import (
     card_shows_whole_command, render_exec_approval)
 from gateway.platforms.base_streaming_tts import (
     AudioFormat, StreamingTTSHandle, streaming_tts_should_skip_whole_file, streaming_tts_turn_key)
-from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome, TurnContextUpdate
 from gateway.warning_notifications import diagnostic_wake_muted
 from hermes_cli.observability.shared_metrics_gateway import records_delivery, stop_reply_clock
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -1518,19 +1519,6 @@ async def cache_media_bytes_async(
     )
 
 
-@dataclass
-class TextDebounceState:
-    event: MessageEvent
-    task: asyncio.Task | None
-    first_ts: float
-    last_ts: float
-
-    def cancel_timer(self, *, unless: asyncio.Task | None = None) -> None:
-        """Cancel the pending flush timer (if live and not ``unless``)."""
-        if self.task is not None and self.task is not unless and not self.task.done():
-            self.task.cancel()
-
-
 def _append_text(existing: Optional[str], new: Optional[str]) -> str:
     """``existing\\nnew`` when both non-empty; the non-empty one otherwise."""
     return f"{existing}\n{new}" if existing else new
@@ -1717,6 +1705,8 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
                 existing.media_text_inlined.extend(incoming_inline_flags)
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            existing.absorb_message_ids(event)
+            existing.absorb_reply_context(event)
             existing.absorb_turn_input(event)
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
@@ -1732,6 +1722,8 @@ def merge_pending_message_event(pending_messages: dict[str, MessageEvent], sessi
         if merge_text and both_text:
             if event.text:
                 existing.text = _append_text(existing.text, event.text)
+            existing.absorb_message_ids(event)
+            existing.absorb_reply_context(event)
             existing.absorb_turn_input(event)
             return
     pending_messages[session_key] = event
@@ -1802,7 +1794,7 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
-class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
+class BasePlatformAdapter(_SessionModelSettingsMixin, TextDebounceMixin, ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
@@ -2483,6 +2475,8 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
             if event.media_urls:
                 existing.media_text_inlined = pad_inline_flags(existing) + pad_inline_flags(event)
                 existing.extend_media(event)
+            existing.absorb_message_ids(event)
+            existing.absorb_reply_context(event)
             existing.absorb_turn_input(event)
         existing._last_chunk_len = len(event.text or "")  # type: ignore[attr-defined]
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -3403,6 +3397,25 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
     _OK_EMOJI: Optional[str] = None
     _FAIL_EMOJI: Optional[str] = None
 
+    async def prepare_turn_context(
+        self, event: MessageEvent, *, origin: Optional[SessionSource],
+        acknowledged_state: Optional[dict[str, Any]], first_turn: bool,
+    ) -> Optional[TurnContextUpdate]:
+        """Report context for this turn: changes to the chat since the conversation last
+        acknowledged its state, and earlier messages that a new session has not seen.
+
+        The gateway calls this while it prepares every inbound turn. ``origin`` is the session's
+        origin source, or ``None`` before the session exists. ``acknowledged_state`` is the
+        ``channel_state`` saved with the most recent transcript row that has one.
+        ``first_turn`` is true when the session transcript is empty. Return ``None`` to add no note
+        and leave the saved state unchanged.
+
+        For an adapter that overrides this hook, the session-context prompt keeps the chat name,
+        topic and user name from the session origin, so a rename does not rewrite the system prompt
+        of a running conversation. An override must therefore report name and topic changes in its
+        note."""
+        return None
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
@@ -3682,115 +3695,6 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         if new_text.strip() in [c.strip() for c in existing_text.split("\n\n")]:
             return existing_text
         return f"{existing_text}\n\n{new_text}".strip()
-
-    def _text_debounce_store(self) -> dict[str, TextDebounceState]:
-        return _lazy_attr(self, "_text_debounce", dict)
-
-    def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
-        """Return True for normal text eligible for queue-mode debounce."""
-        result = (
-            getattr(self, "_busy_text_mode", "interrupt") == "queue"
-            and event.message_type == MessageType.TEXT and not getattr(event, "internal", False)
-            and not event.is_command() and bool((event.text or "").strip()))
-        if result:
-            logger.debug("[%s] Queue-text debounce candidate accepted: session=%s text_len=%d",
-                         self.name, getattr(event, "session_key", "?"), len(event.text or ""))
-        return result
-
-    def _can_merge_text_debounce_events(self, existing: MessageEvent, event: MessageEvent) -> bool:
-        """Return True when two text debounce events came from the same sender."""
-
-        def _identity(candidate: MessageEvent) -> tuple[str, ...] | None:
-            source = getattr(candidate, "source", None)
-            if source is None:
-                return None
-            platform = _platform_name(getattr(source, "platform", None))
-            sender = getattr(source, "user_id_alt", None) or getattr(source, "user_id", None)
-            if sender:
-                return (platform, str(sender))
-            if getattr(source, "chat_type", None) in {"dm", "private"} and getattr(source, "chat_id", None):
-                return (platform, "dm", str(source.chat_id))
-            return None
-        existing_sender = _identity(existing)
-        return existing_sender is not None and existing_sender == _identity(event)
-
-    def _text_debounce_delay(self, session_key: str) -> float:
-        """Return bounded busy-text debounce delay for ``session_key``."""
-        state = self._text_debounce_store().get(session_key)
-        if state is None:
-            return 0.0
-        deadline = min(state.last_ts + self._busy_text_debounce_seconds,
-                       state.first_ts + self._busy_text_hard_cap_seconds)
-        return max(0.0, deadline - time.monotonic())
-
-    async def _queue_text_debounce(self, session_key: str, event: MessageEvent) -> None:
-        """Buffer normal queue-mode busy text and schedule a bounded flush."""
-        store = self._text_debounce_store()
-        state = store.get(session_key)
-        if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-            # Preserve sender attribution: flush the buffer as the next turn, new sender starts
-            # fresh.
-            await self._flush_text_debounce_now(session_key)
-            state = store.get(session_key)
-            if state is not None and not self._can_merge_text_debounce_events(state.event, event):
-                existing_pending = self._pending_messages.get(session_key)
-                if existing_pending is not None and self._can_merge_text_debounce_events(existing_pending, event):
-                    merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
-                return
-        now = time.monotonic()
-        if state is None:
-            state = TextDebounceState(event=event, task=None, first_ts=now, last_ts=now)
-            store[session_key] = state
-        else:
-            if event.text:
-                state.event.text = _append_text(state.event.text, event.text)
-            state.event.absorb_reply_expected(event)
-            latest_message_id = getattr(event, "message_id", None)
-            latest_anchor = latest_message_id or getattr(event, "reply_to_message_id", None)
-            if latest_message_id is not None:
-                state.event.message_id = str(latest_message_id)
-            if latest_anchor is not None and hasattr(state.event, "reply_to_message_id"):
-                state.event.reply_to_message_id = str(latest_anchor)
-            state.last_ts = now
-        state.cancel_timer()
-        delay = self._text_debounce_delay(session_key)
-        state.task = asyncio.create_task(self._flush_text_debounce(session_key, delay))
-
-    async def _flush_text_debounce(self, session_key: str, delay: float) -> None:
-        """Timer task that flushes the debounced text buffer."""
-        try:
-            await asyncio.sleep(delay)
-            await self._flush_text_debounce_now(session_key)
-        except asyncio.CancelledError:
-            return
-        finally:
-            current = asyncio.current_task()
-            state = self._text_debounce_store().get(session_key)
-            if state is not None and state.task is current:
-                state.task = None
-
-    async def _flush_text_debounce_now(self, session_key: str) -> bool:
-        """Force-flush one debounced busy-text burst into the pending slot."""
-        store = self._text_debounce_store()
-        state = store.get(session_key)
-        if state is None:
-            return False
-        state.cancel_timer(unless=asyncio.current_task())
-        state.task = None
-        pending = self._pending_messages.get(session_key)
-        if pending is not None and not self._can_merge_text_debounce_events(pending, state.event):
-            return False
-        store.pop(session_key, None)
-        merge_pending_message_event(self._pending_messages, session_key, state.event, merge_text=True)
-        return True
-
-    def _discard_text_debounce(self, session_key: str) -> None:
-        """Cancel and drop pending text debounce state for control commands."""
-        state = self._text_debounce_store().pop(session_key, None)
-        if state is not None:
-            state.cancel_timer()
-        from gateway.session_ingress_burst import discard_busy_burst
-        discard_busy_burst(self, session_key)
 
     # ── Session task + guard ownership helpers: paired with the _session_tasks owner map so
     # reconciliation is deterministic across completion, /stop /new /reset, and stale-lock heal.

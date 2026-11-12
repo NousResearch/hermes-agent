@@ -777,7 +777,8 @@ class GatewayTurnPrepareMixin:
         if source.platform != Platform.LOCAL and _reuse_pins and session_key:
             await self._rehydrate_prompt_pins(session_key, session_entry.session_id)
         context_prompt = "" if source.platform == Platform.LOCAL else \
-            self._pinned_session_context_prompt(context, _redact_pii, session_key, internal=_reuse_pins)
+            self._pinned_session_context_prompt(
+                self._prompt_session_context(context, session_entry), _redact_pii, session_key, internal=_reuse_pins)
 
         # Per-turn notes ride the user message via the api_content sidecar, NOT context_prompt
         # (appending to the ephemeral system prompt forced a full agent rebuild).

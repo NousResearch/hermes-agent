@@ -10,7 +10,18 @@ import time
 
 import pytest
 
+import hermes_dir_acl
 from hermes_cli.gateway_runtime_service import remaining
+
+_REAL_PROCESS_IS_ELEVATED = hermes_dir_acl.process_is_elevated
+
+
+@pytest.fixture(autouse=True)
+def _non_elevated_client(monkeypatch):
+    """Every start here is a normal client's. An elevated one is refused before any spawn
+    (client_elevated, test_gateway_runtime_elevated_client.py), and hosted Windows runners are elevated."""
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", lambda: False)
+
 
 def test_unmanaged_runtime_drops_session_config_bypass_flags(tmp_path, monkeypatch):
     from types import SimpleNamespace
@@ -285,7 +296,10 @@ def test_reserved_profile_without_pid_or_control_is_never_absent(tmp_path):
 
 
 @pytest.mark.platforms("windows")
-def test_native_windows_discovery_uses_same_user_pipe(tmp_path):
+def test_native_windows_discovery_uses_same_user_pipe(tmp_path, monkeypatch):
+    # The pipe server below runs on this process's own token, so both sides of the identity check
+    # read its real elevation: a pinned non-elevated client refuses its own elevated server.
+    monkeypatch.setattr(hermes_dir_acl, "process_is_elevated", _REAL_PROCESS_IS_ELEVATED)
     from gateway.runtime_bootstrap_windows import NativeControlServer
     from hermes_cli.gateway_runtime import discover_gateway_endpoint
     home = tmp_path.resolve()
@@ -319,6 +333,53 @@ def test_native_windows_spawn_never_retries_without_breakaway(tmp_path, monkeypa
         start.spawn_unmanaged_gateway(tmp_path, deadline=time.monotonic()+5)
     assert len(calls) == 1
     assert calls[0]["creationflags"] == windows_detach_flags()
+
+
+def _absent_owner_home(tmp_path, monkeypatch):
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_service as service
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    monkeypatch.setattr(runtime, "discover_gateway_endpoint", lambda *a, **k: runtime.GatewayDiscovery("absent"))
+    monkeypatch.setattr(service, "discover_existing_gateway_service", lambda *a, **k: None)
+    return home
+
+
+@pytest.mark.platforms("windows")
+def test_breakaway_refusal_names_the_winerror(tmp_path, monkeypatch):
+    """A job that forbids breakaway reaches the client with the OS's own refusal, not a bare code."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_start as start
+    home = _absent_owner_home(tmp_path, monkeypatch)
+    def denied(argv, **kwargs):
+        raise OSError(13, "Access is denied", None, 5)  # CreateProcess in a job without BREAKAWAY_OK
+    monkeypatch.setattr(start.subprocess, "Popen", denied)
+    result = runtime.ensure_gateway_runtime(home, timeout=5)
+    assert (result.state, result.reason_code, result.detail) == (
+        "inaccessible", "windows_breakaway_unavailable", "WinError 5: Access is denied")
+
+
+def test_unopenable_stdio_log_is_not_a_breakaway_refusal(tmp_path, monkeypatch):
+    """Only CreateProcess's refusal is the job's verdict: a start that cannot open its log says so."""
+    from hermes_cli import gateway_runtime as runtime, gateway_runtime_start as start
+    home = _absent_owner_home(tmp_path, monkeypatch)
+    (home / "logs" / "gateway-stdio.log").mkdir(parents=True)  # a directory: open("ab") fails on every host
+    spawned = []
+    # macOS tries a launchd job first; this test is about the direct spawn on every host.
+    monkeypatch.setattr(start, "start_gateway_job", lambda *a, **k: None)
+    monkeypatch.setattr(start.subprocess, "Popen", lambda *a, **k: spawned.append(a))
+    result = runtime.ensure_gateway_runtime(home, timeout=5)
+    assert (result.state, result.reason_code) == ("inaccessible", "stdio_log_unavailable")
+    assert result.detail and not spawned
+
+
+def test_detached_restart_reports_a_spent_budget(monkeypatch, capsys, tmp_path):
+    """`gateway restart --detach` prints the deadline verdict, not a TimeoutError traceback, when its
+    budget runs out mid-start (spawn_unmanaged_gateway lets TimeoutError through for ensure)."""
+    from hermes_cli import gateway_runtime_start as start
+    def spent(*args, **kwargs):
+        raise TimeoutError
+    monkeypatch.setattr(start, "spawn_unmanaged_gateway", spent)
+    assert start.start_detached_replacement(tmp_path) == 1
+    assert "Could not start the gateway in the background: deadline" in capsys.readouterr().err
 
 
 @pytest.mark.platforms("macos")

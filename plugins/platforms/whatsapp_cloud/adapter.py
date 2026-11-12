@@ -936,7 +936,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         _, approval_id, choice = parts
         from gateway.approval_actor import approval_refusal
         if await self._refused_tap(to, approval_refusal(self._exec_approval_state.get(approval_id) or "", to, extra=self.config.extra,
-                                                        request_id=self._approval_request_ids().get(approval_id))):
+                                                        request_id=self._approval_request_ids().get(approval_id), choice=choice)):
             return True
         session_key = self._pop_tap_state(
             self._exec_approval_state, approval_id,

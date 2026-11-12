@@ -84,6 +84,7 @@ _lark_import_lock = threading.Lock()
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
 
+from gateway.approval_actor import approval_refusal, refusal_text, update_prompt_refusal
 from gateway.config import Platform, PlatformConfig
 from agent.i18n import t
 from gateway.platforms.base import (
@@ -2314,9 +2315,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
-        from gateway.approval_actor import approval_refusal, refusal_text
         # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
-        if requester := approval_refusal(state["session_key"], user_id or open_id, extra=self.config.extra, request_id=state.get("request_id")):
+        if requester := approval_refusal(state["session_key"], user_id or open_id, extra=self.config.extra,
+                                         request_id=state.get("request_id"), choice=choice):
             return self._card_toast(refusal_text(requester))  # only the clicker sees it; card unchanged
         if not self._submit_on_loop(loop, self._resolve_approval(
                 approval_id=approval_id, choice=choice, user_name=user_name, open_id=open_id, chat_id=chat_id,
@@ -2342,9 +2343,9 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         if checked is None:
             return self._card_response()
         open_id, chat_id, user_name, user_id, union_id = checked
-        coro = self._resolve_update_prompt(
-            prompt_id, answer, user_name, open_id=open_id, chat_id=chat_id, user_id=user_id, union_id=union_id,
-        )
+        if requester := update_prompt_refusal(user_id or open_id, extra=self.config.extra):
+            return self._card_toast(refusal_text(requester))  # not the /update sender or an admin: card stays open
+        coro = self._resolve_update_prompt(prompt_id, answer, user_name, open_id=open_id, chat_id=chat_id, user_id=user_id, union_id=union_id)
         if not self._submit_on_loop(loop, coro):
             return self._card_response()
         return self._card_response(self._build_resolved_update_prompt_card(answer=answer, user_name=user_name))
@@ -2784,21 +2785,21 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         return await cache_image_from_url(image_url, ext=ext)
 
     async def _download_remote_document(self, file_url: str, *, default_ext: str, preferred_name: str) -> tuple[str, str]:
-        from gateway.platforms.base import ssrf_redirect_guard
+        from gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
         from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         if not is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
         async with create_ssrf_safe_async_client(
             timeout=30.0, follow_redirects=True, event_hooks={"response": [ssrf_redirect_guard]},
         ) as client:
-            response = await client.get(
-                file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
-            )
-            response.raise_for_status()
-            # Snapshot headers + body inside the context so pooled connections fully release.
-            # See #18451.
-            content_type_hdr = str(response.headers.get("Content-Type", ""))
-            body = response.content
+            async with client.stream(
+                "GET", file_url, headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": "*/*"},
+            ) as response:
+                response.raise_for_status()
+                # Snapshot headers + body inside the context so pooled connections fully release.
+                # See #18451.
+                content_type_hdr = str(response.headers.get("Content-Type", ""))
+                body = await read_httpx_body_with_limit(response, media_type="document")
         filename = self._derive_remote_filename(
             file_url, content_type=content_type_hdr, default_name=preferred_name, default_ext=default_ext,
         )

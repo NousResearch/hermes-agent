@@ -115,11 +115,15 @@ async def _send_chunk(adapter: Any, chat_id: str, media: list, opened: list, met
                 fh.seek(0)
 
     async def send(meta: Optional[dict]) -> None:
+        from plugins.platforms.telegram.adapter import _MEDIA_SEND_DEADLINE
+        from plugins.platforms.telegram.telegram_media_budget import scaled_budgets
         _, kwargs = adapter._media_send_kwargs(chat_id, None, meta)
+        budget, deadline = scaled_budgets(opened, _MEDIA_SEND_DEADLINE, kwargs["read_timeout"])  # the chunk's on-disk bytes
         for attempt in range(kinds.SAME_REQUEST_ATTEMPTS):
             try:
                 await adapter._send_with_dm_topic_reply_anchor_retry(
-                    adapter._bot.send_media_group, {**kwargs, "media": media}, meta, "media group", reset_media=reset)
+                    adapter._bot.send_media_group, {**kwargs, **budget, "media": media}, meta, "media group",
+                    reset_media=reset, deadline=deadline)
                 return
             except Exception as err:
                 if (kinds.send_error_kind(err) != kinds.SERVER_ERROR

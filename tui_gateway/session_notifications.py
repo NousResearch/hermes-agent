@@ -670,7 +670,8 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     ``_session_owns_notification_event`` (the post-turn safety net), so lineage resolves once."""
     queue = registry.completion_queue
     evt_type, is_delegation = evt.get("type", "completion"), evt.get("type") == "async_delegation"
-    if not owned and _notification_event_belongs_elsewhere(sid, session, evt):
+    from tools.environments.sandbox_scope import event_visible
+    if not event_visible(evt) or not owned and _notification_event_belongs_elsewhere(sid, session, evt):
         if deferred is not None:
             deferred.append(evt)
         else:  # otherwise a process started in session A surfaces in whichever poller wakes first

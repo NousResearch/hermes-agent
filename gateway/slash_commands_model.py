@@ -478,6 +478,8 @@ class GatewayModelCommandsMixin:
             providers = []
         if not providers:
             return False
+        from gateway.approval_actor import opener_authority
+        on_model_selected.prompt_authority = opener_authority(event)  # only its opener (or an admin) taps it
         result = await adapter.send_model_picker(
             chat_id=source.chat_id, providers=providers,
             current_model=listing_kwargs["current_model"],
@@ -622,6 +624,12 @@ class GatewayModelCommandsMixin:
         ctx.read_config()
         if request.is_reset:
             return await self._handle_model_reset(event, ctx)
+        # Turn precedence: session /model > channel_overrides > config.yaml.
+        # The channel's full route as the turn resolves it, so a config-backed endpoint (custom) survives.
+        from gateway.session_info_route import channel_override_route
+        _ch_model, _ch_route, _ch_forced = await asyncio.to_thread(channel_override_route, getattr(self, "config", None), source)
+        if _ch_model:
+            ctx.apply_override({"model": _ch_model, **(_ch_route or ({"provider": _ch_forced} if _ch_forced else {}))})
         ctx.apply_override(self._session_model_overrides.get(session_key, {}))
         if not request.target and not request.explicit_provider:
             return await self._model_listing_reply(event, ctx, profile_home)
@@ -939,6 +947,8 @@ class GatewayModelCommandsMixin:
         adapter = self._delivery_adapter_for(event.source)
         if adapter is None or getattr(type(adapter), "send_choice_picker", None) is None:
             return False
+        from gateway.approval_actor import opener_authority
+        on_choice_selected.prompt_authority = opener_authority(event)  # only its opener (or an admin) taps it
         try:
             result = await adapter.send_choice_picker(
                 chat_id=event.source.chat_id, title=title, choices=choices, session_key=session_key,

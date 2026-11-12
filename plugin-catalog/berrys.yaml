@@ -1,0 +1,18 @@
+name: berrys
+title: Berrys AI
+repo: https://github.com/BerryAILABS/berrys-mcp
+sha: 9ee346843a525117ebea6dafae09e471af31c310
+version: "0.3.5"
+description: "Turn one product photo into on-brand listing images, campaign visuals and short product videos through Berrys AI's hosted MCP server (Streamable HTTP at https://app.berrys.io/api/mcp, OAuth sign-in, no keys in config). The agent plans the work on Berrys' visual canvas — hero, lifestyle and detail shots for a storefront, coordinated image sets and copy variants for a campaign, or a storyboarded multi-shot clip that keeps the product identical across cuts by seeding each shot from the previous frame — and the results stay on a shared canvas the user can edit, undo or restore. Uses Berrys' curated multi-model image and video stack, so there is no provider key to configure. Bundles the Berrys workflow skill. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Berrys' hosted server (app.berrys.io) and acts on the user's own Berrys account and credits; the tool set and the playbooks it loads are served by that server at runtime and are not covered by the pinned sha. Generation spends Berrys credits: the server quotes a price first and every paid generation requires explicit approval in the conversation before it runs. Nothing is published to a marketplace or storefront on the user's behalf — assets are produced on the canvas for the user to download or use. The server signs in with OAuth (Berrys account). The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: BerryAILABS
+tier: community
+category: tools
+docs_url: https://github.com/BerryAILABS/berrys-mcp
+requires_hermes: ">=0.21.6"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -765,9 +765,16 @@ def provenance(skill_name: str) -> str:
 
 
 def usage_report() -> list[dict[str, Any]]:
-    """Usage rows for EVERY skill on disk (built-ins and hub included); ``curated_report()`` is the managed subset."""
-    if not (base := _skills_dir()).exists():
-        return []
+    """Usage rows for EVERY skill on disk (built-ins and hub included) plus the enabled plugins' skills;
+    ``curated_report()`` is the managed subset."""
     data = load_usage()
-    return [_report_row(n, data.get(n), provenance=provenance(n), _persisted=n in data)
-            for n in sorted({name for name, _md in _iter_skill_mds(base, local_only=False)})]
+    names = ({name for name, _md in _iter_skill_mds(base, local_only=False)}
+             if (base := _skills_dir()).exists() else set())
+    rows = [_report_row(n, data.get(n), provenance=provenance(n), _persisted=n in data) for n in names]
+    # Plugin skills live in the plugin's own directory and are counted under their qualified name
+    # ("meshy:meshy-3d"), so a walk of the skills directory never sees them.
+    from hermes_cli.plugins import discover_plugins, get_plugin_manager
+    discover_plugins()
+    rows += [_report_row(n, data.get(n), provenance="plugin", _persisted=n in data)
+             for n in (meta["name"] for meta in get_plugin_manager().list_plugin_skill_metadata()) if n not in names]
+    return sorted(rows, key=lambda r: r["name"])

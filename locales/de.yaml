@@ -514,6 +514,7 @@ gateway:
     not_git_repo: "✗ Kein Git-Repository — Update nicht möglich."
     hermes_cmd_not_found: "✗ Der Befehl `hermes` konnte nicht gefunden werden. Hermes läuft, aber der Update-Befehl konnte das ausführbare Programm weder im PATH noch über den aktuellen Python-Interpreter finden. Versuchen Sie, `hermes update` manuell im Terminal auszuführen."
     start_failed: "✗ Update konnte nicht gestartet werden: {error}"
+    already_running: "⏳ Es läuft bereits ein Update; seine Rückfragen beantwortet nur, wer es gestartet hat. Warte, bis es fertig ist, und versuche /update dann erneut."
     starting: "☤ Hermes-Update wird gestartet… Ich streame den Fortschritt hier."
     reply_failed: "✗ Antwort an den Update-Prozess konnte nicht gesendet werden: {error}"
     reply_sent: "✓ `{label}` an den Update-Prozess gesendet."

@@ -1265,4 +1265,5 @@ registry.register(
     check_fn=check_cronjob_requirements,
     emoji="⏰",
     dynamic_schema_overrides=_cronjob_schema_overrides,
+    compat_args=(*_HANDLER_FORWARDED_ARGS, "include_disabled", "monitor_script", "monitor_url"),
 )

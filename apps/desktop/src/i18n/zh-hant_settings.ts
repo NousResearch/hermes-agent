@@ -1218,6 +1218,8 @@ export const zhHantSettings = {
       updateTitle: '引擎有可用更新',
       updateDetail: (next, current) =>
         `新的 llama.cpp 組建（${next}）可以安裝——目前為 ${current}。下載期間模型仍可正常使用。`,
+      updateSameBuildDetail: tag =>
+        `Hermes 現在為 llama.cpp ${tag} 附帶執行所需的檔案。更新會重新下載引擎，下載期間模型仍可正常使用。`,
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',

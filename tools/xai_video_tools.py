@@ -122,4 +122,5 @@ for _name, _schema, _handler in (
     registry.register(
         name=_name, toolset="video_gen", schema=_schema, handler=_handler,
         check_fn=_check_xai_video_requirements, requires_env=[], is_async=False, emoji="video",
+        self_checked_args=("video_url",),  # the handler says where a usable URL comes from
     )

@@ -1,26 +1,26 @@
 name: skill-court
 title: Skill Court
 repo: https://github.com/saatvik333/hermes-skill-court
-sha: de53842858cf41a1437eda30ff553d21cbf578f2
+sha: acaef68123bf574c1f19b0a89878a93abfb80172
 subdir: skill-court
-version: "1.1.1"
+version: "1.2.1"
 requires_hermes: ">=0.23.0"
-description: "Puts every skill your agent writes on trial: replays real tasks with and without the skill in paired Docker sandboxes, scores each pair with the task's check or a blind pairwise judge, and gives a verdict per model. A skill that hurts is hidden from that model only (skill index, skills_list, skill_view), with the cause and the SKILL.md line behind it; an appeal drafts a fix, proves it on the same tasks and writes it only when you apply it (undo restores the original). Optional automatic trials after the agent creates or patches a skill. CLI (hermes court trial/report/appeal/auto/tasks/quarantine/release/list) plus a Desktop page. Disclosure: trials run hermes and docker/podman commands, create and delete two replay profiles cloned from yours (config, API keys, SOUL, memory, skills; never messaging channels) and spend model tokens with your provider (per-trial budget, default $3; automatic trials: daily $2 and 300,000 judge tokens). Replays are single-query sessions with approvals denied, never -z. The judge (your own provider, via ctx.llm) sees task text, both runs' answers and sandbox files, and for a cause a transcript excerpt and the skill. Automatic trials start a background `hermes court trial --auto`; verdicts are posted with ctx.post_message to the conversation that changed the skill, never into the model's context. A live SKILL.md is written only by `hermes court appeal apply` or Apply fix."
+description: "Skill Court tests the skills your agent writes. With automatic trials turned on (opt-in: `hermes court auto on` or the Desktop page's Turn on switch), after the agent writes or changes a skill, and the first time each agent-written skill's current version is used on a model, it replays that skill's real tasks with and without it in the background, in Docker sandboxes when Docker answers or answer-only (skills, todo and web tools only, judged on final answers) when it does not; `hermes court trial` runs one on demand. Each pair is scored by the task's check or a blind pairwise judge; a skill that hurts is hidden from that model only (skill index, skills_list, skill_view), and the next turn shows the verdict, the cause and the SKILL.md line behind it. An appeal drafts a fix, proves it on the same tasks and writes it only when you apply it (undo restores the original). Usage evidence per skill and model from recent sessions, read-only. CLI (hermes court trial/report/appeal/auto/tasks/quarantine/release/list) plus a Desktop page. Disclosure: automatic trials are off until the user turns them on (the first turn after install and after-install.md say how; `hermes court auto off` stops them), within $1.00 a day of provider-reported replay spend plus 300,000 judge tokens (runs already under way finish). Trials run hermes and docker/podman commands, create and delete two replay profiles cloned from yours (config, API keys, SOUL, memory, skills; never messaging channels; no MCP, other plugins, context engine, shell hooks or inline shell). Replays are single-query sessions with approvals denied, never -z. The judge (your provider, via ctx.llm) sees task text, both runs' answers and sandbox files, and for a cause a transcript excerpt and the skill. Verdicts are posted with ctx.post_message to the conversation that changed or used the skill, never into the model's context. A live SKILL.md is written only by `hermes court appeal apply` or Apply fix."
 maintainer: saatvik333
 tier: community
 category: tools
-docs_url: https://github.com/saatvik333/hermes-skill-court/tree/de53842858cf41a1437eda30ff553d21cbf578f2/skill-court
-image: https://raw.githubusercontent.com/saatvik333/hermes-skill-court/de53842858cf41a1437eda30ff553d21cbf578f2/docs/banner.png
+docs_url: https://github.com/saatvik333/hermes-skill-court/tree/acaef68123bf574c1f19b0a89878a93abfb80172/skill-court
+image: https://raw.githubusercontent.com/saatvik333/hermes-skill-court/acaef68123bf574c1f19b0a89878a93abfb80172/docs/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/saatvik333/hermes-skill-court/de53842858cf41a1437eda30ff553d21cbf578f2/docs/loop.png
-  - https://raw.githubusercontent.com/saatvik333/hermes-skill-court/de53842858cf41a1437eda30ff553d21cbf578f2/docs/desktop.png
+  - https://raw.githubusercontent.com/saatvik333/hermes-skill-court/acaef68123bf574c1f19b0a89878a93abfb80172/docs/loop.png
+  - https://raw.githubusercontent.com/saatvik333/hermes-skill-court/acaef68123bf574c1f19b0a89878a93abfb80172/docs/desktop.png
 readme: true
 platforms: [linux, macos]
 known_issues:
-  - "Needs Docker or Podman reachable by the Hermes gateway (a docker CLI on PATH with a working default context, or HERMES_DOCKER_BINARY)."
+  - "Without a reachable Docker or Podman, trials run answer-only: they test what a skill makes the agent say or decide, not procedures that need terminal or file tools."
   - "In codex_app_server mode only quarantines set for every model apply."
   - "Appeals import Hermes' skill frontmatter parser and skills_guard scan, which are not in the published plugin API yet (issue #150975); without them an appeal refuses to draft or apply."
-  - "Rapid replay-profile create/delete can trigger a Hermes core race that leaks a hosted-room poller (repeating 'state.db was replaced' log lines until a gateway restart); fix proposed in #150937."
+  - "Rapid replay-profile create/delete can trigger a Hermes core race that leaks a hosted-room poller (repeating 'state.db was replaced' log lines until a gateway restart); fix offered in #150937 was closed unmerged."
 capabilities:
   provides_tools: []
   provides_hooks:

@@ -1,0 +1,28 @@
+name: wiro
+title: Wiro AI
+repo: https://github.com/wiroai/Wiro-Hermes
+sha: ac9cd5f347edfb106c0370921322d9c4df6bd101
+subdir: wiro
+description: >-
+  Wiro AI as a Hermes model provider (`--provider wiro`, or Wiro AI in `hermes model`): one
+  OpenAI-compatible API and one key for GPT, Claude, Gemini, DeepSeek, GLM, Kimi and Grok models,
+  paid as you go from the Wiro wallet. The listed models declare their context window, tool calling
+  and image input, `/reasoning` is sent as the gateway's `reasoning_effort` (models that cannot
+  switch reasoning off get their lowest level), and openai/gpt-6-luna handles background tasks and
+  image description. Disclosure: registers one model provider at import and nothing else (no tools,
+  hooks, middleware, commands, background work or file access). Prompts, tool schemas and results,
+  attached images and the GET /v1/models catalog request go to https://llm.wiro.ai/v1 through
+  Hermes' own client with WIRO_API_KEY, which Hermes reads; usage is paid from the user's Wiro
+  wallet; the plugin itself opens no connections and sends no telemetry.
+maintainer: wiroai
+tier: community
+category: models
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/wiroai/Wiro-Hermes#readme
+version: "1.0.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - WIRO_API_KEY

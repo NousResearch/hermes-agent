@@ -2000,12 +2000,12 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         from gateway.relay.prompt_resolvers import prompt_refusal
         actor = None
         if pending.get("kind") in ("exec_approval", "slash_confirm", "clarify"):
-            from gateway.approval_actor import runner_admin_ids
+            from gateway.approval_actor import runner_answer_policy
             # Identity first: this answer is consumed before handle_message, and without the transport
             # identity the admin lookup read the routed runtime profile instead of the bot-owning one.
             self._canonicalize(event.source)
-            actor = {"actor_id": getattr(event.source, "user_id", ""), "admin_ids": runner_admin_ids(event.source)}
-        if actor and (refusal := prompt_refusal(pending, actor)):
+            actor = {"actor_id": getattr(event.source, "user_id", ""), "admin_ids": runner_answer_policy(event.source)}
+        if actor and (refusal := prompt_refusal(pending, actor, option_id)):
             # Left pending: only the requester (or an approver) can consume it.
             self._send_lifecycle_ack(str(pending.get("chat_id") or getattr(event.source, "chat_id", "")),
                                      refusal, self._prompt_reply_metadata(event))

@@ -28,7 +28,7 @@ from agent.skills_index_delta import stage_skills_index_note
 from agent.prompt_refresh import refresh_warm_prompt
 from agent.message_metadata import (
     PERSISTENCE_ONLY_MESSAGE_FIELDS, PRE_LLM_BLOCK_WITHHELD_PROMPT, append_message, stamp_message_timestamp,
-    TYPED_ASK, stamp_typed_ask, typed_ask_fields, typed_ask_text,
+    TYPED_ASK, stamp_typed_ask, typed_ask_fields, typed_ask_text, REQUEST_REASONING_TOKENS, stamped_reasoning_tokens,
 )
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
@@ -1466,6 +1466,9 @@ def build_api_messages(
         _api_content = api_msg.pop("api_content", None)
         for key in PERSISTENCE_ONLY_MESSAGE_FIELDS:
             api_msg.pop(key, None)
+        # display_metadata just went; keep its replay price for the request estimate (popped after it).
+        if isinstance(api_msg, dict) and (_replay_tokens := stamped_reasoning_tokens(msg)):
+            api_msg[REQUEST_REASONING_TOKENS] = _replay_tokens
 
         # Inject ephemeral context (memory prefetch + pre_llm_call user hooks)
         # at API time only; `messages` is untouched beyond the api_content stamp.

@@ -958,7 +958,7 @@ cron:
   media_send_timeout_seconds: 600   # 10 minutes per attachment
 ```
 
-Or set the `HERMES_CRON_MEDIA_SEND_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 300s default. A timed-out attachment is recorded in the job's run status as a partial delivery failure (the text still delivers).
+Or set the `HERMES_CRON_MEDIA_SEND_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 300s default. Each attachment's timeout then grows by 1.5x the time the file takes to upload at 128 KB/s (at most one hour), because a platform answers an upload only once the whole file has arrived. A timed-out attachment is recorded in the job's run status as a partial delivery failure (the text still delivers).
 
 ## Bot Chat delivery completion
 
@@ -973,6 +973,8 @@ When the live gateway adapter cannot deliver (or no gateway is running), a targe
 cron:
   standalone_send_timeout_seconds: 120
 ```
+
+A delivery that carries attachments gets that timeout plus 1.5x the time its files take to upload at 128 KB/s (at most one hour), so a large file on a slow link is not reported as failed while it is still uploading. Text-only sends keep the configured value.
 
 A timed-out send is recorded in `last_delivery_error` as `standalone send to <target> timed out after Ns`; the message may still land if the adapter had already accepted it.
 

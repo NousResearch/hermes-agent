@@ -14,7 +14,7 @@ import re
 from types import SimpleNamespace
 
 from agent.redact import redact_sensitive_text
-from plugins.platforms.telegram.telegram_markdown import _MD_CODE_RE
+from plugins.platforms.telegram.rich_code_regions import strip_code
 from plugins.platforms.telegram.telegram_send_errors import SAME_REQUEST_ATTEMPTS, is_entity_parse_error
 from pm import install_hint
 
@@ -236,6 +236,10 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                 thumb_path = await asyncio.to_thread(_video_thumbnail_jpeg, media_path, geometry.get("duration"))
                 if thumb_path:
                     media_kwargs["thumbnail"] = thumb_path
+    from plugins.platforms.telegram.telegram_media_budget import scaled_budgets
+    # The adapter's media budgets (#133164): the Bot's 20s read timeout cuts off Telegram's
+    # post-upload processing, so a delivered file came back "Timed out" and got resent.
+    media_kwargs.update(scaled_budgets([media_path, thumb_path], 0.0)[0])
     try:
         with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
             try:
@@ -307,7 +311,7 @@ def _telegram_format(message):
     ``format_message``."""
     from telegram.constants import ParseMode
     # A tag shown as Markdown code (any backtick width, as the MarkdownV2 path reads it) is an example.
-    if _TELEGRAM_HTML_TAG_RE.search(_MD_CODE_RE.sub("", message)):
+    if _TELEGRAM_HTML_TAG_RE.search(strip_code(message)):
         return _escape_non_telegram_markup(message), ParseMode.HTML, True
     mdv2 = _telegram_mdv2(message)
     return (message if mdv2 is None else mdv2), ParseMode.MARKDOWN_V2, False  # None: send as-is
@@ -409,7 +413,9 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
             except Exception as e:
-                warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}"))
+                from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
+                maybe = " (Telegram may still deliver it; do not resend)" if may_have_delivered(e) else ""
+                warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}{maybe}"))
                 logger.error(warnings[-1])
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}

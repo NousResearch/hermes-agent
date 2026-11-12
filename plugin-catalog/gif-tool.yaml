@@ -1,0 +1,27 @@
+name: gif-tool
+repo: https://github.com/tuancookiez-hub/hermes-gif-tool
+sha: 0c3cdbdfe81886bdbeab30855225f9b4701cd766
+title: GIF Tool
+description: "Show, edit and compress GIFs in Hermes. `gif_open` turns any GIF, animated WebP, APNG, PNG or JPEG (a file path or an https link) into a card in Hermes Desktop where you add exact captions, change speed, reverse, boomerang, trim, drop frames and crop with a live preview; the original file is never changed. `gif_export` and the card's export buttons compress for Discord (10 MB), Discord emoji (256 KB), Telegram, X (5 MB), under 1 MB, animated WebP or a size you name, shrinking until the file fits and reporting before and after sizes (pure Pillow: shared palette, frame differencing, size-targeted ladder). `gif_edit` gives the agent the same edits. `gif_create` makes a four-frame meme GIF from a prompt. A GIF Studio tab lists every GIF in the profile and takes a dropped file or a pasted link. Disclosure — editing, previews and compression are local; opening a link downloads that one https URL (no cookies or credentials; private, local and link-local addresses refused, redirects and the connected peer re-checked; a GIPHY or Tenor page is followed once to its og:image); `gif_create` sends only the text prompt to chatgpt.com/backend-api/codex/images/generations through Hermes' credentialed_provider_request with the user's OpenAI Codex sign-in, using one image from the user's ChatGPT plan per call, via an undocumented endpoint; projects and rendered files are stored under the profile's plugin-data/gif-tool and cache/generated/images."
+maintainer: tuancookiez-hub
+tier: community
+category: desktop
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/tuancookiez-hub/hermes-gif-tool/blob/0c3cdbdfe81886bdbeab30855225f9b4701cd766/README.md
+version: "1.0.1"
+image: https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/0c3cdbdfe81886bdbeab30855225f9b4701cd766/assets/card-caption.png
+screenshots:
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/0c3cdbdfe81886bdbeab30855225f9b4701cd766/assets/card-caption.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/0c3cdbdfe81886bdbeab30855225f9b4701cd766/assets/card-export.png
+  - https://raw.githubusercontent.com/tuancookiez-hub/hermes-gif-tool/0c3cdbdfe81886bdbeab30855225f9b4701cd766/assets/studio.png
+platforms: []
+known_issues:
+  - "Restart Hermes once after installing: the card's backend routes mount at startup."
+  - "The card needs a Hermes Desktop with tool-media renderers; older Desktops and other surfaces show the plain GIF."
+  - "gif_create needs an OpenAI Codex sign-in in Hermes and uses an undocumented Codex image endpoint that can change without notice; every other feature works without it."
+  - "Not yet exercised inside a running Hermes Desktop by the author: the card and backend were tested headlessly against the real plugin code with a stand-in for the plugin SDK."
+capabilities:
+  provides_tools: [gif_open, gif_edit, gif_export, gif_create]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

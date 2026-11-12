@@ -964,8 +964,8 @@ def _send_media_via_adapter(
                     job_ref, f"cannot send media {media_path}: gateway loop unavailable", errors)
                 return errors
             try:
-                # Large attachments can exceed 30s; configurable via _get_media_send_timeout().
-                result = future.result(timeout=_script._get_media_send_timeout())
+                # Large attachments can exceed 30s: _get_media_send_timeout(), widened by file size.
+                result = future.result(timeout=_script._media_send_timeout_for(media_path))
             except TimeoutError:
                 future.cancel()
                 raise
@@ -1568,7 +1568,7 @@ def _standalone_send(
     job = t.job
     shutdown_msg = f"delivery to {t.where} skipped — interpreter is shutting down"
 
-    send_timeout = _get_standalone_send_timeout()
+    send_timeout = _script._media_scaled_timeout(base_timeout := _get_standalone_send_timeout(), media_files)
 
     async def _send():
         # The bound lives inside the coroutine: the running-loop fallback below closes ``coro``
@@ -1601,7 +1601,7 @@ def _standalone_send(
     except TimeoutError:
         # The send may still complete on the gateway loop (the dispatch shield keeps an in-flight
         # send un-cancelled); the run is released instead of waiting on it unbounded (#115469).
-        msg = (f"standalone send to {t.where} timed out after {send_timeout}s "
+        msg = (f"standalone send to {t.where} timed out after {send_timeout:g}s "
                "(the send may still be in flight)")
         logger.error("Job '%s': %s", job["id"], msg)
         return None, msg
@@ -1617,7 +1617,7 @@ def _standalone_send(
                 # A fresh thread does NOT inherit the profile ContextVars (home override + secret
                 # scope); run in the active context or the sender reads the default bot token.
                 return pool.submit(contextvars.copy_context().run, asyncio.run, _send()).result(
-                    timeout=30), None
+                    timeout=30 + send_timeout - base_timeout), None
             finally:
                 pool.shutdown(wait=False)
         except Exception as e:

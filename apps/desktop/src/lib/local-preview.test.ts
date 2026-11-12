@@ -40,6 +40,7 @@ describe('isLoopbackPreviewUrl', () => {
 const remoteTarget = {
   kind: 'file' as const,
   label: 'report.html',
+  language: 'html',
   path: '/srv/report.html',
   previewKind: 'html' as const,
   source: '/srv/report.html',

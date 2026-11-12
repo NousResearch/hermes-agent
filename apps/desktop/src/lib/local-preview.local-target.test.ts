@@ -6,15 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // be previewed. A remote backend's paths are not on this machine, so remote
 // mode keeps the fabricated fallback the gateway read resolves later.
 
-const { isDesktopFsRemoteMode } = vi.hoisted(() => ({
-  isDesktopFsRemoteMode: vi.fn(() => false)
+const { isDesktopFsRemoteMode, readDesktopFileText } = vi.hoisted(() => ({
+  isDesktopFsRemoteMode: vi.fn(() => false),
+  readDesktopFileText: vi.fn()
 }))
 
 vi.mock('@/lib/desktop-fs', () => ({
   isDesktopFsRemoteMode,
   readDesktopDir: vi.fn(),
   readDesktopFileDataUrl: vi.fn(),
-  readDesktopFileText: vi.fn()
+  readDesktopFileText
 }))
 
 import { normalizeOrLocalPreviewTarget } from './local-preview'
@@ -69,20 +70,25 @@ describe('normalizeOrLocalPreviewTarget non-previewable results', () => {
     await expect(normalizeOrLocalPreviewTarget('/work/nope.md')).resolves.toBeNull()
   })
 
-  it('keeps the gateway-backed fallback for remote-backend directories', async () => {
+  it('resolves remote-backend paths without the local normalizer', async () => {
     isDesktopFsRemoteMode.mockReturnValue(true)
+    readDesktopFileText.mockResolvedValue({ language: 'markdown' })
+
+    // What the main process answers on Windows when this host also has WSL.
     stubNormalization({
       kind: 'file',
-      label: 'srv',
-      path: '/srv/reports',
-      previewKind: 'directory',
-      source: '/srv/reports',
-      url: 'file:///srv/reports'
+      label: 'notes.md',
+      path: '\\\\wsl.localhost\\Ubuntu\\srv\\notes.md',
+      previewKind: 'text',
+      source: '/srv/notes.md',
+      url: 'file://wsl.localhost/Ubuntu/srv/notes.md'
     })
 
-    const fabricated = await normalizeOrLocalPreviewTarget('/srv/reports')
-
-    expect(fabricated?.kind).toBe('file')
-    expect(fabricated?.path).toBe('/srv/reports')
+    await expect(normalizeOrLocalPreviewTarget('/srv/notes.md')).resolves.toMatchObject({
+      path: '/srv/notes.md',
+      url: 'file:///srv/notes.md'
+    })
+    expect(window.hermesDesktop.normalizePreviewTarget).not.toHaveBeenCalled()
+    expect(readDesktopFileText).toHaveBeenCalledWith('/srv/notes.md', undefined)
   })
 })

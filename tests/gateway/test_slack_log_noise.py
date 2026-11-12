@@ -212,7 +212,7 @@ class TestClarifyLogPrivacy:
 
     @pytest.mark.asyncio
     async def test_clarify_resolution_logs_index_not_text_at_info(self, caplog):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         secret_choice = "migrate the production database tonight"
         with cm._lock:

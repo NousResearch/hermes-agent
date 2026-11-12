@@ -958,7 +958,7 @@ def _warm_turn_machinery_sync() -> int:
     metadata (#105986) — a catalog HTTP probe that must not sit between the first inbound turn and its
     inference request. Context files remain lazy because they need the active turn's agent."""
     import run_agent  # heavy import graph, cached in sys.modules
-    import model_tools
+    from hermes_agent import model_tools
 
     # Warm the schemas the turn will actually build: the profile's own toolsets (`video`, `image_gen`
     # and friends rebuild their schema from a vendor catalog over the network; ``None`` = every
@@ -978,7 +978,7 @@ def _warm_turn_machinery_sync() -> int:
     if not isinstance(agent_cfg, dict) or agent_cfg.get("environment_probe", True):
         # The resolver owns remote-backend omission, the single worker, its cache and the bounded
         # wait; calling it here is what the first prompt build would otherwise do on the hot path.
-        from tools.env_probe import get_environment_probe_line
+        from hermes_agent.tools.env_probe import get_environment_probe_line
 
         get_environment_probe_line()
     try:
@@ -1764,7 +1764,7 @@ def _terminal_scope_cwd(default: str = "") -> str:
     """Scope-aware TERMINAL_CWD read for footer/context surfaces. Only an import failure falls back:
     an active refusal scope must raise, not use the launch cwd."""
     try:
-        from tools.terminal_scope import terminal_env as _ts_env
+        from hermes_agent.tools.terminal_scope import terminal_env as _ts_env
     except ImportError:
         return os.environ.get("TERMINAL_CWD", default)
     return _ts_env("TERMINAL_CWD", default)
@@ -1810,7 +1810,7 @@ def _profile_runtime_scope(
         # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
         # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
         # pinned (first-writer-wins backend leak; #68559).
-        from tools.terminal_scope import install_and_reset_profile_terminal_scope
+        from hermes_agent.tools.terminal_scope import install_and_reset_profile_terminal_scope
 
         with install_and_reset_profile_terminal_scope(Path(profile_home), prepared=prepared_terminal_scope):
             yield
@@ -1884,8 +1884,8 @@ async def _discover_gateway_mcp_tools(config: object) -> None:
     same gate the CLI's background discovery uses. An expired token then parks the server with an
     actionable ``hermes mcp login`` warning instead of opening an authorize tab.
     """
-    from tools.mcp_oauth import suppress_interactive_oauth
-    from tools.mcp_tool_discovery import discover_mcp_tools
+    from hermes_agent.tools.mcp_oauth import suppress_interactive_oauth
+    from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
     loop = asyncio.get_running_loop()
     with suppress_interactive_oauth():
         if not getattr(config, "multiplex_profiles", False):
@@ -2622,7 +2622,7 @@ def _reap_gateway_turn_processes(
                 "is_still_current check failed for turn %s (%s); reaping anyway",
                 task_id, source, exc_info=True)
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     try:
         killed = process_registry.kill_started_since(task_id, process_baseline, source=source)
     except Exception:
@@ -2800,7 +2800,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     """Hint when a command matches a skill that is disabled or optional-install only; else None."""
     normalized = command_name.lower().replace("_", "-")
     try:
-        from tools.skills_tool import _get_disabled_skill_names
+        from hermes_agent.tools.skills_tool import _get_disabled_skill_names
         from agent.skill_utils import get_all_skills_dirs, is_excluded_skill_path
         disabled = _get_disabled_skill_names()
 
@@ -3020,7 +3020,7 @@ def _format_gateway_process_notification(evt: dict) -> str | None:
         return text
 
     if evt_type in ("async_delegation", "heartbeat"):
-        from tools.process_registry_notifications import format_process_notification
+        from hermes_agent.tools.process_registry_notifications import format_process_notification
         return format_process_notification(evt)
 
     return None
@@ -4418,7 +4418,7 @@ def _housekeeping_checkpoint_prune() -> None:
     """Checkpoint store retention + size cap on a live timer; ``auto_prune_from_config`` gates on
     ``checkpoints.auto_prune`` and the 24h ``.last_prune`` marker. Off the startup path because its
     ``git gc`` can block for tens of seconds on a large store."""
-    from tools.checkpoint_maintenance import auto_prune_from_config
+    from hermes_agent.tools.checkpoint_maintenance import auto_prune_from_config
     auto_prune_from_config()
 
 
@@ -4591,8 +4591,8 @@ async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0, config: Any = 
     pass_timeout = max(1.0, timeout / (len(profile_homes) + 1))
 
     def _do() -> None:
-        from tools.mcp_tool_common import _core
-        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        from hermes_agent.tools.mcp_tool_common import _core
+        from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
         for profile_name, profile_home in profile_homes:
             try:
                 with _profile_runtime_scope(Path(profile_home), hydrate_secrets=False):

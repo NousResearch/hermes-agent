@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from openai.types.chat import ChatCompletionMessage, ChatCompletionMessageToolCall
 
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 
 def test_registered_deadline_survives_sequential_execution_and_bridge(tmp_path):

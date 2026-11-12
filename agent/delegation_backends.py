@@ -6,7 +6,7 @@ row), because that schema (a backend's per-task parameters) is cached prompt: a 
 changes nothing in a running chat and applies from its next session (``/new``). ``apply_now`` opts into
 rebuilding the calling session's tools at its next turn instead, so routing and schema switch together there:
 one prompt-cache break, the rule every slash command that changes prompt state follows (``--now``). A task
-carrying parameters its session's backend does not declare is still refused (``tools/delegate_tool_routes.py``).
+carrying parameters its session's backend does not declare is still refused (``hermes_agent/tools/delegate_tool_routes.py``).
 
 Session keys are the ``session_key`` a plugin command handler receives: the gateway/TUI route key, or the
 session id on the classic in-process CLI. A turn resolves the same key from its session context, else from the
@@ -65,7 +65,7 @@ def list_backends() -> list[BackendInfo]:
 
 def saved_backend() -> str:
     """``delegation.backend`` as config.yaml has it now: what a tool build reads."""
-    from tools.delegate_tool_config import _load_config
+    from hermes_agent.tools.delegate_tool_config import _load_config
     return configured_backend(_load_config())
 
 
@@ -136,7 +136,7 @@ def apply_requested_tool_rebuild(agent: Any) -> bool:
             return False
         _rebuild_requests.discard(key)
     from hermes_cli.observability.shared_metrics_efficiency import record_cache_break
-    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
     before = getattr(agent, "tools", None)
     refresh_agent_mcp_tools(agent, quiet_mode=True, content_aware=True)  # adopts the saved backend, re-pins a change
     if agent.tools is before:

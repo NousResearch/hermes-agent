@@ -105,7 +105,7 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
             scopes.secret = set_secret_scope(secrets, profile_home=str(home) if profile_home else None)
         # Same terminal policy the gateway binds per turn: a docker-configured profile
         # must never resolve the launch process's pinned env. Failure → refusal scope.
-        from tools.terminal_scope import install_profile_terminal_scope
+        from hermes_agent.tools.terminal_scope import install_profile_terminal_scope
         scopes.terminal = install_profile_terminal_scope(home, env_overlay=overlay)
         return scopes
     except Exception:
@@ -122,7 +122,7 @@ def _release_profile_runtime_scope_tokens(scopes: _TurnScopes | None) -> None:
     every scope has been released."""
     if scopes is None:
         return
-    from tools.terminal_scope import reset_terminal_scope
+    from hermes_agent.tools.terminal_scope import reset_terminal_scope
     first_error: BaseException | None = None
     for token, reset in ((scopes.terminal, reset_terminal_scope), (scopes.secret, reset_secret_scope),
                          (scopes.home, reset_hermes_home_override)):
@@ -475,7 +475,7 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
             title = str((db.get_session_title(key) if (db and key) else None) or "").strip()
         if title != "Bot Chat":
             return
-        from tools.bot_mode_probe import capability_fingerprint
+        from hermes_agent.tools.bot_mode_probe import capability_fingerprint
         current = capability_fingerprint(session.get("profile_home") or None)
         if current == "unavailable":
             return

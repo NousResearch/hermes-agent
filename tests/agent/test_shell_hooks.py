@@ -173,7 +173,7 @@ class TestCallbackSubprocess:
             seen.append((tool_name, reason, kwargs.get("rule_key")))
             return {"approved": False, "message": "denied by human"}
 
-        monkeypatch.setattr("tools.approval.request_tool_approval", _gate)
+        monkeypatch.setattr("hermes_agent.tools.approval.request_tool_approval", _gate)
         assert plugins.resolve_pre_tool_block("terminal", {"command": "rm"}) == "denied by human"
         assert seen == [("terminal", "risky", "terminal:rm")]
 

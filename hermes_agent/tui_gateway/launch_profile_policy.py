@@ -198,7 +198,7 @@ def launch_profile_runtime_scope(launch_home: str | Path) -> Iterator[None]:
     (``hermes_agent/gateway/run.py::_profile_runtime_scope``); the launch profile is a tenant like any other."""
     from agent.secret_scope import reset_secret_scope, set_secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from hermes_agent.tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
 
     home = Path(launch_home)
     home_token = secret_token = terminal_token = None
@@ -227,7 +227,7 @@ def profile_config_scope(home: str | Path, *, launch_home: str | Path | None = N
     """
     from agent.secret_scope import build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope, set_terminal_scope
+    from hermes_agent.tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope, set_terminal_scope
 
     home = Path(home)
     launch = Path(launch_home if launch_home is not None else get_process_hermes_home())

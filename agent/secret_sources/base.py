@@ -56,7 +56,7 @@ def source_child_env() -> dict[str, str]:
     ONLY the per-fetch view under multiplex, so no sibling profile's secrets leak."""
     source_env = get_source_environment()
     if source_env is os.environ:
-        from tools.environments.local import build_subprocess_env
+        from hermes_agent.tools.environments.local import build_subprocess_env
 
         return build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
     return dict(source_env)
@@ -203,7 +203,7 @@ class SecretSource(ABC):
 
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# Deliberately NOT tools.ansi_strip.strip_ansi: the optional terminator here
+# Deliberately NOT hermes_agent.tools.ansi_strip.strip_ansi: the optional terminator here
 # also strips *unterminated* OSC sequences (a CLI killed mid-write), which
 # strip_ansi leaves untouched.
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?)")

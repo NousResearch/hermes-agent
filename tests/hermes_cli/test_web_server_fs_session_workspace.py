@@ -32,8 +32,8 @@ def client():
 
 
 def _workspace_sandbox(sandbox: Path, cwd: Path) -> Path:
-    from tools.environments.path_utils import sanitize_task_id_for_path
-    from tools.terminal_tool import workspace_key_for
+    from hermes_agent.tools.environments.path_utils import sanitize_task_id_for_path
+    from hermes_agent.tools.terminal_tool import workspace_key_for
 
     name = sanitize_task_id_for_path(f"default:ws:{workspace_key_for(str(cwd))}")
     workspace = sandbox / "docker" / name / "workspace"
@@ -337,7 +337,7 @@ def bound(request, cwd_mount):
         yield cwd_mount
         return
     from hermes_agent.gateway.session_policy import unbind_turn_workspace
-    from tools.terminal_tool import register_task_env_overrides, workspace_key_for
+    from hermes_agent.tools.terminal_tool import register_task_env_overrides, workspace_key_for
 
     workspace = str(cwd_mount["workspace"])
     register_task_env_overrides("sess-ws", {
@@ -372,7 +372,7 @@ def test_a_session_on_a_shared_container_never_reads_or_saves_its_unmounted_work
     which mounts the cwd of the session that created it (P), so ``sess-ws``'s own W is not its
     ``/workspace``. Nothing records P, so reads keep the profile cwd and Save refuses."""
     from hermes_agent.gateway.session_policy import unbind_turn_workspace
-    from tools.terminal_tool import _resolve_container_task_id, register_task_env_overrides, workspace_key_for
+    from hermes_agent.tools.terminal_tool import _resolve_container_task_id, register_task_env_overrides, workspace_key_for
 
     monkeypatch.setenv("TERMINAL_DOCKER_SHARED_CONTAINER_KEY", "team")
     first = str(bound["profile_cwd"])

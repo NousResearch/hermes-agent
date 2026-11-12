@@ -49,7 +49,7 @@ def install_transport(monkeypatch):
             return httpx.AsyncClient(**kwargs, transport=httpx.MockTransport(handler), trust_env=False)
         # MockTransport has no TCP backend to DNS-pin. Replace only the factory;
         # httpx redirect/header handling and the production response hook stay real.
-        monkeypatch.setattr("tools.url_safety.create_ssrf_safe_async_client", client)
+        monkeypatch.setattr("hermes_agent.tools.url_safety.create_ssrf_safe_async_client", client)
     return install
 
 

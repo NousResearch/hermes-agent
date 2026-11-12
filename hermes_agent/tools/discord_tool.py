@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.secret_scope import get_secret
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 

@@ -22,9 +22,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import ShellFileOperations
-from tools.tool_output_limits import get_max_line_length
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import ShellFileOperations
+from hermes_agent.tools.tool_output_limits import get_max_line_length
 
 
 @pytest.fixture

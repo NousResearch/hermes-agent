@@ -10,7 +10,7 @@ put in an ordinary snapshot and then removed stays removed.
 Ordinary path: ``build_policy`` on the raw file, then ``_worker_config``, bound with
 ``_bind_worker_config``. Bypass path: ``_bypass_policy`` then ``_worker_config``, bound
 with ``_bind_safe_worker_policy`` the way the worker bootstrap binds it. Always goes
-through ``tools.approval._persist_choice``.
+through ``hermes_agent.tools.approval._persist_choice``.
 """
 import json
 import subprocess

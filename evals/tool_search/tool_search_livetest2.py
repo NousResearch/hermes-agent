@@ -67,7 +67,7 @@ def run_one(scenario: dict[str, Any], mode: str, rep: int, out_dir: Path) -> dic
     base.FIXTURE_NOTES.parent.mkdir(parents=True, exist_ok=True)
     base.FIXTURE_NOTES.write_text("Hello from the test fixture.\n", encoding="utf-8")
 
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     original_dispatch = registry.dispatch
 
     tool_call_log: list[dict[str, Any]] = []

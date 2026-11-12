@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Fail when tracked production code imports the tools.lazy_deps stub.
+"""Fail when tracked production code imports the hermes_agent.tools.lazy_deps stub.
 
-``tools/lazy_deps.py`` survives only as an old-updater stub that raises or
+``hermes_agent/tools/lazy_deps.py`` survives only as an old-updater stub that raises or
 stops for relaunch; pm.extras (available / ensure_import / ensure_and_bind)
 is the only lazy-install surface. A production import of the stub never
 gets its dependencies, so this guard blocks the migration from silently
@@ -12,8 +12,8 @@ re-opening.
   by scanning nothing: an inventory that cannot be built (not a repo,
   git failure) or that contains no ``*.py`` files at all FAILS (exit 2).
 - **AST import analysis.** Matches real import statements only:
-  ``import tools.lazy_deps`` and dotted variants, ``from tools import
-  lazy_deps``, ``from tools.lazy_deps...`` and the relative forms
+  ``import hermes_agent.tools.lazy_deps`` and dotted variants, ``from tools import
+  lazy_deps``, ``from hermes_agent.tools.lazy_deps...`` and the relative forms
   (``from . import lazy_deps``, ``from .lazy_deps import ...``) resolved
   inside the tracked ``tools/`` package. Comments, docstrings, and other
   prose mentions are ignored by construction.
@@ -103,7 +103,7 @@ def _relative_target(relpath: str, node: ast.ImportFrom) -> str | None:
 
 
 def _import_sites(tree: ast.AST, relpath: str) -> list[str]:
-    """``relpath:line: <description>`` for every tools.lazy_deps import, under its old or new name."""
+    """``relpath:line: <description>`` for every hermes_agent.tools.lazy_deps import, under its old or new name."""
     sites: list[str] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):

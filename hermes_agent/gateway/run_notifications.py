@@ -79,7 +79,7 @@ def _refusal_retry_at(step: int) -> float:
         step, base_delay=_WATCH_INJECTION_RETRY_BASE_DELAY,
         max_delay=_COMPLETION_INJECTION_RETRY_MAX_DELAY, jitter_ratio=0.0)
 
-# Durable async-delegation claim transitions: kind -> (tools.async_delegation function, failure log).
+# Durable async-delegation claim transitions: kind -> (hermes_agent.tools.async_delegation function, failure log).
 _DURABLE_CLAIM_OPS = {
     "drop": ("drop_completion_delivery", "Could not drop durable completion claim"),
     "release": ("release_completion_delivery", "Could not release durable completion claim"),
@@ -141,7 +141,7 @@ def _local_completion_card(evt: dict) -> dict[str, str]:
     completion or async delegation (a gateway-side ``/review`` reports as one), and a liveness tick's
     one-line receipt. The claim's ``message.start`` carries it, and an idle classic CLI only opens a
     turn that has one. ``{}`` for a watch match."""
-    from tools.process_registry_notifications import (
+    from hermes_agent.tools.process_registry_notifications import (
         PROCESS_COMPLETE_DISPLAY_KIND, async_delegation_display_text, process_completion_display_text)
     evt_type = evt.get("type", "completion")
     if evt_type == "completion":
@@ -153,7 +153,7 @@ def _local_completion_card(evt: dict) -> dict[str, str]:
         # The wake stays machinery (no bubble, and a quiet tick may end in silence); the receipt lets an
         # idle CLI open the turn with one line and show the agent's reply.
         from hermes_agent.gateway.response_filters import INTERNAL_NOTIFICATION_DISPLAY_KIND
-        from tools.process_registry_notifications import heartbeat_display_text
+        from hermes_agent.tools.process_registry_notifications import heartbeat_display_text
         return {"display_kind": INTERNAL_NOTIFICATION_DISPLAY_KIND, "display_text": heartbeat_display_text(evt)}
     return {}
 
@@ -177,7 +177,7 @@ def _watch_notification_metadata(evt: dict, source) -> dict[str, Any]:
         # A local completion persists as the async-result card the in-process TUI wrote, and a tick
         # carries its CLI receipt; messaging rows stay internal_notification, as on main.
         metadata.update(_local_completion_card(evt))
-        from tools.process_registry_notifications import delegation_wakes_parent
+        from hermes_agent.tools.process_registry_notifications import delegation_wakes_parent
         if delegation_wakes_parent(evt):
             metadata["completion_wakes_parent"] = True
     proven_session_id = str(evt.get("proven_session_id") or "").strip()
@@ -765,7 +765,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 completion_queue.put(evt)
                 continue
             async with self._completion_event_scope(evt):
-                from tools.process_registry_notifications import should_surface_notification
+                from hermes_agent.tools.process_registry_notifications import should_surface_notification
                 if not should_surface_notification(evt):
                     continue
                 if self._load_background_notifications_mode() == "off":
@@ -1151,7 +1151,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Best-effort ``drop``/``release`` of a durable completion claim."""
         fn_name, fail_msg = _DURABLE_CLAIM_OPS[kind]
         try:
-            import tools.async_delegation as _ad
+            import hermes_agent.tools.async_delegation as _ad
             getattr(_ad, fn_name)(delegation_id, claim_id)
         except Exception:
             logger.log(logging.WARNING if kind == "complete" else logging.DEBUG, fail_msg, exc_info=True)
@@ -1213,7 +1213,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
             claim.delegation_id = str(evt.get("delegation_id") or "")
             if claim.delegation_id:
                 try:
-                    from tools.async_delegation import claim_completion_delivery
+                    from hermes_agent.tools.async_delegation import claim_completion_delivery
                     claim.claim_id = f"gateway:{id(self)}:{__import__('uuid').uuid4().hex}"
                     if not claim_completion_delivery(claim.delegation_id, claim.claim_id):
                         claim.proceed = False
@@ -1262,7 +1262,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         event is the default profile's or the scope is already installed).
 
         The pre-flight (``_classify_completion_target`` → ``_session_db``) and every durable-ledger op
-        (``tools.async_delegation`` → ``get_hermes_home()/state.db``) resolve from the ambient scope.
+        (``hermes_agent.tools.async_delegation`` → ``get_hermes_home()/state.db``) resolve from the ambient scope.
         The supervised ``_async_delegation_watcher`` and startup-recovered process watchers run under
         the ROOT scope, so a secondary profile's completion was looked up in the DEFAULT profile's
         state.db — classified ``terminal`` and dropped, its ledger row stranded ``pending`` forever."""
@@ -1315,7 +1315,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     ) -> Optional[bool]:
         from hermes_agent.gateway.session_local_recovery import restore_completion_route
         from hermes_agent.gateway.wake import WakeNotAccepted
-        from tools.process_registry_notifications import should_surface_notification
+        from hermes_agent.tools.process_registry_notifications import should_surface_notification
         if not should_surface_notification(evt):
             return None  # Suppressed noise is terminal, not a consumed process result.
         restore_completion_route(self, str(evt.get("session_key") or ""))
@@ -1436,7 +1436,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
                 entries_to_deliver = entries
             synth_text = (entries_to_deliver[0][0] if len(entries_to_deliver) == 1
                           else self._format_coalesced_process_completions(entries_to_deliver))
-            from tools.process_registry_notifications import process_completion_display_text
+            from hermes_agent.tools.process_registry_notifications import process_completion_display_text
             display_text = process_completion_display_text([evt for _text, evt, _future in entries_to_deliver])
             # A duplicate primary returns None from the dedupe seam; try the next identity so a fresh
             # sibling is never discarded with it.
@@ -1498,7 +1498,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         # Filter each event before it can contaminate (or suppress) a foreground batch.
         # The shared queue may be drained outside the owning profile's runtime scope.
         async with self._completion_event_scope(evt):
-            from tools.process_registry_notifications import should_surface_notification
+            from hermes_agent.tools.process_registry_notifications import should_surface_notification
             if not should_surface_notification(evt):
                 return None
         # Lazy defaults: lifecycle tests build GatewayRunner via object.__new__.
@@ -1557,7 +1557,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     async def _deliver_async_delegation_group_scoped(self, group: list[dict]) -> Optional[bool]:
         from hermes_agent.gateway.run import _format_gateway_process_notification
         from hermes_agent.gateway.session_local_recovery import restore_completion_route
-        from tools.process_registry import process_registry as _pr
+        from hermes_agent.tools.process_registry import process_registry as _pr
         restore_completion_route(self, str(group[0].get("session_key") or ""))
         # API delivery does not start a model turn, so there is nothing to coalesce.
         # Keep each unit's stable identity with its row across partial delivery/retry.
@@ -1597,7 +1597,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         for evt, _text in deliverable:
             if not await self._completion_delivery_ready(evt):
                 return False
-        from tools.async_delegation import claim_event_delivery
+        from hermes_agent.tools.async_delegation import claim_event_delivery
         primary_evt, primary_text = deliverable[0]
         blocks = [primary_text]
         siblings: list[tuple[dict, str]] = []
@@ -1619,7 +1619,7 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         consolidated = "\n\n".join([header, *blocks])
         if getattr(self, 'session_authority', None) is not None:
             from hermes_agent.gateway.session_automation import producer_identity
-            from tools.process_registry_notifications import delegation_wakes_parent
+            from hermes_agent.tools.process_registry_notifications import delegation_wakes_parent
             primary_evt = dict(primary_evt, _automation_identities=[
                 producer_identity(self, event) for event in [primary_evt, *(e for e, _ in siblings)]],
                 # One admission carries the whole batch: a failed sibling wakes the parent too.
@@ -1637,8 +1637,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Re-queue undelivered async completions from every SECONDARY profile's ledger. The process
         registry's ``restore_completions()`` covers only the launch profile's ``state.db``; a
         secondary's rows would otherwise never be replayed after a restart."""
-        from tools.async_delegation import restore_undelivered_completions
-        from tools.process_registry import process_registry as _pr
+        from hermes_agent.tools.async_delegation import restore_undelivered_completions
+        from hermes_agent.tools.process_registry import process_registry as _pr
         self._each_secondary_ledger(profile_homes, lambda: restore_undelivered_completions(_pr.completion_queue),
                                     "Restored")
 
@@ -1646,8 +1646,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Offer completions whose owner process died while this gateway runs (#97202): the launch
         ledger in the launch scope, each served secondary under its own. Startup replay only covers
         owners that were already gone when the gateway started."""
-        from tools.async_delegation import sweep_orphaned_completions
-        from tools.process_registry import process_registry as _pr
+        from hermes_agent.tools.async_delegation import sweep_orphaned_completions
+        from hermes_agent.tools.process_registry import process_registry as _pr
         sweep = lambda: sweep_orphaned_completions(_pr.completion_queue)
         with _log_suppressed(logging.DEBUG, "Orphaned async completion sweep failed: %s"):
             if count := sweep():
@@ -1678,8 +1678,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         consumer; both must progress without a later foreground turn.
         """
         await asyncio.sleep(3)  # let platforms finish connecting
-        from tools.async_delegation import ORPHAN_SWEEP_INTERVAL_S
-        from tools.process_registry import process_registry as _pr
+        from hermes_agent.tools.async_delegation import ORPHAN_SWEEP_INTERVAL_S
+        from hermes_agent.tools.process_registry import process_registry as _pr
         last_orphan_sweep = None
         while self._running:
             with _log_suppressed(logging.DEBUG, "Async delegation watcher error: %s"):
@@ -1740,8 +1740,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
     def _redacted_output_tail(session, limit: int) -> str:
         """Last ``limit`` chars of process output through the secret redactors (unconditional floor)."""
         from hermes_agent.gateway.run import _redact_gateway_user_facing_secrets
-        from tools.ansi_strip import strip_ansi
-        from tools.process_registry import transform_process_output
+        from hermes_agent.tools.ansi_strip import strip_ansi
+        from hermes_agent.tools.process_registry import transform_process_output
         new_output = strip_ansi(session.output_buffer[-limit:]) if session.output_buffer else ""
         if new_output:
             from agent.redact import redact_terminal_output
@@ -1780,8 +1780,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         """Build the synthetic ``completion`` event for an agent-notify watcher."""
         from hermes_agent.gateway.run import _redact_gateway_user_facing_secrets
         from agent.redact import redact_terminal_output
-        from tools.ansi_strip import strip_ansi
-        from tools.process_registry import transform_process_output
+        from hermes_agent.tools.ansi_strip import strip_ansi
+        from hermes_agent.tools.process_registry import transform_process_output
         _command = getattr(session, "command", "") or ""
         _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
         _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
@@ -1874,8 +1874,8 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         (``display.background_process_notifications``): concise (default one-liner; failures append
         the output tail) / all (running updates + final raw) / result (final raw) / error (final raw
         if exit != 0) / off."""
-        from tools.process_registry import process_registry
-        from tools.process_registry_notifications import format_process_notification, should_surface_notification
+        from hermes_agent.tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry_notifications import format_process_notification, should_surface_notification
         session_id = watcher["session_id"]
         interval = watcher["check_interval"]
         platform_name = watcher.get("platform", "")

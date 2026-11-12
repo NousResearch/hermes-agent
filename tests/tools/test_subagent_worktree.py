@@ -1,4 +1,4 @@
-"""Tests for opt-in subagent worktree isolation (tools/subagent_worktree.py).
+"""Tests for opt-in subagent worktree isolation (hermes_agent/tools/subagent_worktree.py).
 
 Inspired by Muse Code's --subagent-worktree-isolation (clean-room
 implementation from documented behavior).
@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from tools import subagent_worktree as sw
+from hermes_agent.tools import subagent_worktree as sw
 
 
 def _git(args, cwd, check=True):

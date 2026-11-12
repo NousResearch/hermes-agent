@@ -65,7 +65,7 @@ def standalone(monkeypatch: pytest.MonkeyPatch, tmp_path):
 
     def run(message, *, config="", extra=None, notify=None, media_files=None, thread_id=None):
         from hermes_agent.gateway.config import Platform, PlatformConfig
-        from tools.send_message_tool import _send_to_platform
+        from hermes_agent.tools.send_message_tool import _send_to_platform
         (tmp_path / "config.yaml").write_text(config, encoding="utf-8")
         pconfig = PlatformConfig(enabled=True, token="tok", extra=extra or {})
         return asyncio.run(_send_to_platform(Platform.TELEGRAM, pconfig, "123", message, notify=notify,

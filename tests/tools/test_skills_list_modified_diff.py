@@ -16,8 +16,8 @@ clears the modified state so the two stay consistent.
 from contextlib import ExitStack
 from unittest.mock import patch
 
-from tools.skills_sync import sync_skills
-from tools.skills_sync_bundled_ops import (
+from hermes_agent.tools.skills_sync import sync_skills
+from hermes_agent.tools.skills_sync_bundled_ops import (
     reset_bundled_skill,
     list_user_modified_bundled_skills,
     diff_bundled_skill,
@@ -37,16 +37,16 @@ def _make_bundled(tmp_path):
 def _patches(bundled, skills_dir, manifest_file):
     stack = ExitStack()
     stack.enter_context(
-        patch("tools.skills_sync._get_bundled_dir", return_value=bundled)
+        patch("hermes_agent.tools.skills_sync._get_bundled_dir", return_value=bundled)
     )
     stack.enter_context(
         patch(
-            "tools.skills_sync._get_optional_dir",
+            "hermes_agent.tools.skills_sync._get_optional_dir",
             return_value=bundled.parent / "optional-skills",
         )
     )
-    stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
-    stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+    stack.enter_context(patch("hermes_agent.tools.skills_sync.SKILLS_DIR", skills_dir))
+    stack.enter_context(patch("hermes_agent.tools.skills_sync.MANIFEST_FILE", manifest_file))
     return stack
 
 

@@ -1,4 +1,4 @@
-"""Tests for edge cases in tools/file_operations.py.
+"""Tests for edge cases in hermes_agent/tools/file_operations.py.
 
 Covers:
 - ``_is_likely_binary()`` content-analysis branch (dead-code removal regression guard)
@@ -11,8 +11,8 @@ import sys
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tools.file_operations import ShellFileOperations
-from tools.file_operations_search import _parse_search_context_line
+from hermes_agent.tools.file_operations import ShellFileOperations
+from hermes_agent.tools.file_operations_search import _parse_search_context_line
 
 
 # =========================================================================
@@ -118,7 +118,7 @@ def test_local_js_lint_runs_pm_node_never_the_users(tmp_path, monkeypatch):
     """Hermes's own post-write lint uses PM's Node even when the user's node sorts first on
     PATH, and skips (never falls back to the user's) when PM has no Node."""
     import hermes_constants
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     def node_stand_in(directory, label):
         directory.mkdir()
@@ -180,7 +180,7 @@ class TestCheckLintInproc:
 def test_json_write_refuses_only_introduced_nonstandard_constants(tmp_path, token):
     """NaN/Infinity are refused when the write introduces them (strict JSON
     consumers reject them), but a file already holding one still takes edits."""
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
     clean = tmp_path / "clean.json"
@@ -280,7 +280,7 @@ class TestNoTrailingNewlineTotalLines:
 
     @pytest.fixture()
     def ops(self):
-        from tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.environments.local import LocalEnvironment
 
         return ShellFileOperations(LocalEnvironment())
 

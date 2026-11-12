@@ -1,4 +1,4 @@
-"""Tests for the MCP elicitation handler in tools.mcp_tool_sampling.
+"""Tests for the MCP elicitation handler in hermes_agent.tools.mcp_tool_sampling.
 
 These tests exercise ElicitationHandler in isolation -- the underlying
 approval system and the MCP transport layer are mocked, so no real MCP
@@ -18,7 +18,7 @@ pytest.importorskip("mcp.types")
 
 from mcp.types import ElicitResult
 
-from tools.mcp_tool_sampling import ElicitationHandler
+from hermes_agent.tools.mcp_tool_sampling import ElicitationHandler
 
 
 def _form_params(message="please confirm", schema=None):
@@ -56,7 +56,7 @@ class TestElicitationHandlerFormMode:
             {"properties": {"approved": {"type": "boolean"}}},
         )
 
-        with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept"):
+        with patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", return_value="accept"):
             result = asyncio.run(handler(context=None, params=params))
 
         assert isinstance(result, ElicitResult)
@@ -75,7 +75,7 @@ class TestElicitationHandlerFormMode:
         handler = ElicitationHandler("pay", {"timeout": 5})
         params = _form_params()
 
-        with patch("tools.approval_prompt.request_elicitation_consent", return_value="cancel"):
+        with patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", return_value="cancel"):
             result = asyncio.run(handler(context=None, params=params))
 
         assert result.action == "cancel"
@@ -90,7 +90,7 @@ class TestElicitationHandlerFailureModes:
         # If the handler tried to prompt, this would raise AssertionError
         # because the side_effect treats the call as a test failure.
         with patch(
-            "tools.approval_prompt.request_elicitation_consent",
+            "hermes_agent.tools.approval_prompt.request_elicitation_consent",
             side_effect=AssertionError("URL mode must not prompt"),
         ):
             result = asyncio.run(handler(context=None, params=params))
@@ -103,7 +103,7 @@ class TestElicitationHandlerFailureModes:
         params = _form_params()
 
         with patch(
-            "tools.approval_prompt.request_elicitation_consent",
+            "hermes_agent.tools.approval_prompt.request_elicitation_consent",
             side_effect=RuntimeError("approval system blew up"),
         ):
             result = asyncio.run(handler(context=None, params=params))
@@ -129,7 +129,7 @@ class TestElicitationHandlerFailureModes:
             _t.sleep(2)
             return "accept"
 
-        with patch("tools.approval_prompt.request_elicitation_consent", side_effect=stall):
+        with patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", side_effect=stall):
             result = asyncio.run(handler(context=None, params=params))
 
         assert result.action == "cancel"
@@ -175,7 +175,7 @@ class TestElicitationHandlerContextBridge:
         handler = ElicitationHandler("pay", {"timeout": 5}, call_context=lambda: captured)
         params = _form_params()
 
-        with patch("tools.approval_prompt.request_elicitation_consent", side_effect=fake_consent):
+        with patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", side_effect=fake_consent):
             result = asyncio.run(handler(context=None, params=params))
 
         assert result.action == "accept"
@@ -192,7 +192,7 @@ class TestElicitationHandlerContextBridge:
         handler = ElicitationHandler("pay", {"timeout": 5})
         params = _form_params()
 
-        with patch("tools.approval_prompt.request_elicitation_consent", return_value="accept") as m:
+        with patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", return_value="accept") as m:
             result = asyncio.run(handler(context=None, params=params))
 
         assert result.action == "accept"
@@ -205,7 +205,7 @@ class TestElicitationHandlerContextBridge:
         handler = ElicitationHandler("pay", {"timeout": 5}, call_context=lambda: None)
         params = _form_params()
 
-        with patch("tools.approval_prompt.request_elicitation_consent", return_value="decline"):
+        with patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", return_value="decline"):
             result = asyncio.run(handler(context=None, params=params))
 
         assert result.action == "decline"
@@ -251,7 +251,7 @@ class TestRequestedSchemaFieldName:
             )
             return "decline"
 
-        with patch("tools.approval_prompt.request_elicitation_consent", _capture):
+        with patch("hermes_agent.tools.approval_prompt.request_elicitation_consent", _capture):
             asyncio.run(handler(context=None, params=params))
 
         # An empty schema renders the generic "Approval requested by ..."

@@ -195,7 +195,7 @@ class TestUpdateContextFrom:
 
     def test_update_adds_context_from_to_existing_job(self, cron_env):
         from hermes_agent.cron.jobs import create_job, get_job
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         import json
 
         job_a = create_job(prompt="Find news", schedule="every 1h")
@@ -294,7 +294,7 @@ class TestContinuityFlag:
 
 
     def test_create_continuity_false_is_noop(self, cron_env):
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         from hermes_agent.cron.jobs import get_job
         import json
 
@@ -309,7 +309,7 @@ class TestContinuityFlag:
 
     def test_create_continuity_combines_with_context_from(self, cron_env):
         from hermes_agent.cron.jobs import create_job, get_job
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         import json
 
         upstream = create_job(prompt="Collect", schedule="every 1h")
@@ -327,7 +327,7 @@ class TestContinuityFlag:
 
     def test_update_continuity_true_adds_self(self, cron_env):
         from hermes_agent.cron.jobs import create_job, get_job
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         import json
 
         job = create_job(prompt="Scan", schedule="every 1h")
@@ -341,7 +341,7 @@ class TestContinuityFlag:
 
     def test_update_continuity_false_removes_self_preserves_others(self, cron_env):
         from hermes_agent.cron.jobs import create_job, get_job
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         import json
 
         upstream = create_job(prompt="Collect", schedule="every 1h")
@@ -360,7 +360,7 @@ class TestContinuityFlag:
 
     def test_update_continuity_true_idempotent(self, cron_env):
         from hermes_agent.cron.jobs import create_job, get_job
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         import json
 
         job = create_job(prompt="Scan", schedule="every 1h", context_from="self")
@@ -374,7 +374,7 @@ class TestContinuityFlag:
 
     def test_continuity_job_gets_previous_output(self, cron_env):
         """End-to-end: a continuity-created job injects its own prior output."""
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         from hermes_agent.cron.jobs import get_job, OUTPUT_DIR
         from hermes_agent.cron.scheduler import _build_job_prompt
         import json

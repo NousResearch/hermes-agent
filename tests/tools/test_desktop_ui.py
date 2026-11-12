@@ -2,7 +2,7 @@
 
 import pytest
 
-from tools import desktop_ui
+from hermes_agent.tools import desktop_ui
 
 
 @pytest.fixture(autouse=True)

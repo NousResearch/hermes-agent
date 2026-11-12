@@ -14,11 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from tools.binary_extensions import (
+from hermes_agent.tools.binary_extensions import (
     has_opaque_document_extension,
     is_pdf_path,
 )
-from tools.file_tools import patch_tool, write_file_tool
+from hermes_agent.tools.file_tools import patch_tool, write_file_tool
 
 
 def _make_minimal_docx(path: Path) -> None:

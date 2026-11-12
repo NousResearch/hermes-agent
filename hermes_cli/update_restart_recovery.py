@@ -117,12 +117,12 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
     launch = _launch_profile()
     target = profile if profile is not None else launch
     if target == "default" and launch != "default":
-        from tools.environments.local import host_gateway_child_env
+        from hermes_agent.tools.environments.local import host_gateway_child_env
         env = host_gateway_child_env()
     else:
         env = os.environ.copy()
         if profile is not None and profile != launch:
-            from tools.environments.local_env_policy import strip_profile_gate_env
+            from hermes_agent.tools.environments.local_env_policy import strip_profile_gate_env
             strip_profile_gate_env(env)
     for marker in _GATEWAY_MARKERS:
         env.pop(marker, None)

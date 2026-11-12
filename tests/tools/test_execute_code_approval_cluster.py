@@ -2,14 +2,14 @@
 
 Covers the canonical fix for issues #4146, #27303, #30882, #33057:
 
-  1. tools.thread_context.propagate_context_to_thread — propagates the agent
+  1. hermes_agent.tools.thread_context.propagate_context_to_thread — propagates the agent
      turn's ContextVars AND thread-local approval/sudo callbacks into worker
      threads, and clears the callbacks on teardown.
   2. Local and remote file-RPC carry the cell's authority in real processes.
-  3. tools.approval.check_execute_code_guard — the entry-point guard decision
+  3. hermes_agent.tools.approval.check_execute_code_guard — the entry-point guard decision
      matrix (isolated backends, yolo/off, cron-deny, headless-local,
      gateway approve/deny/timeout/missing-notify, smart mode).
-  4. tools.code_execution_env._scrub_child_env — broad HERMES_ prefix dropped,
+  4. hermes_agent.tools.code_execution_env._scrub_child_env — broad HERMES_ prefix dropped,
      operational allowlist kept, DSN/WEBHOOK blocked, passthrough precedence.
 """
 
@@ -22,11 +22,11 @@ import threading
 
 import pytest
 
-from tools import approval as A
-from tools import approval_detection
-from tools import approval_context
-from tools import approval_smart
-from tools.thread_context import propagate_context_to_thread
+from hermes_agent.tools import approval as A
+from hermes_agent.tools import approval_detection
+from hermes_agent.tools import approval_context
+from hermes_agent.tools import approval_smart
+from hermes_agent.tools.thread_context import propagate_context_to_thread
 from hermes_agent.gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
 from tests.tools._child_env_fixtures import child_env
 
@@ -36,7 +36,7 @@ from tests.tools._child_env_fixtures import child_env
 # ---------------------------------------------------------------------------
 
 def test_helper_propagates_contextvar_and_approval_callback():
-    from tools import terminal_tool as TT
+    from hermes_agent.tools import terminal_tool as TT
 
     probe: contextvars.ContextVar[str] = contextvars.ContextVar(
         "cluster_probe", default="unset"
@@ -64,7 +64,7 @@ def test_helper_propagates_contextvar_and_approval_callback():
 def test_helper_clears_callbacks_on_teardown():
     """A recycled worker thread must not retain the propagated callback after
     the wrapped target finishes (mirrors the GHSA-qg5c-hvr5-hjgr teardown)."""
-    from tools import terminal_tool as TT
+    from hermes_agent.tools import terminal_tool as TT
 
     sentinel = object()
     TT.set_approval_callback(sentinel)
@@ -91,10 +91,10 @@ def test_helper_clears_callbacks_on_teardown():
 @pytest.mark.parametrize("transport", ["local", "remote-file"])
 def test_rpc_carries_authority_to_real_dispatch(child_env, monkeypatch, transport):
     import time
-    import model_tools
+    from hermes_agent import model_tools
     from tests.tools._child_env_fixtures import RunToCompletionEnv, run_code
-    from tools import terminal_tool
-    from tools.code_execution_tool import _run_remote_per_call
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.code_execution_tool import _run_remote_per_call
 
     witness = child_env / "authority.txt"
 
@@ -428,7 +428,7 @@ def test_execute_code_smart_deny_pending_payload_is_one_operation(gw_session, mo
 
 
 def test_terminal_serializes_smart_deny_pending_capabilities(monkeypatch):
-    from tools import terminal_tool as terminal_module
+    from hermes_agent.tools import terminal_tool as terminal_module
 
     monkeypatch.setattr(
         terminal_module,
@@ -465,7 +465,7 @@ def test_guard_session_yolo_bypasses(gw_session):
 # ---------------------------------------------------------------------------
 
 def test_env_scrub_hermes_allowlist_and_secret_blocks():
-    from tools.code_execution_env import _scrub_child_env
+    from hermes_agent.tools.code_execution_env import _scrub_child_env
 
     env = {
         # operational allowlist → kept
@@ -499,7 +499,7 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
 def test_env_scrub_passthrough_overrides_secret_block():
     """A skill/config-declared passthrough var is an explicit user opt-in and
     passes even if it matches a secret substring (precedence is intentional)."""
-    from tools.code_execution_env import _scrub_child_env
+    from hermes_agent.tools.code_execution_env import _scrub_child_env
 
     env = {"MY_SERVICE_DSN": "value"}
     out = _scrub_child_env(env, is_passthrough=lambda k: k == "MY_SERVICE_DSN",

@@ -5,8 +5,8 @@ commit a choice between the poll giving up and the entry leaving the queue. The 
 choice committed under the approval lock — the client was acked ``ok`` for it — never "timeout".
 """
 
-from tools import approval as mod
-from tools import approval_gateway_wait as wait_mod
+from hermes_agent.tools import approval as mod
+from hermes_agent.tools import approval_gateway_wait as wait_mod
 
 
 SESSION_KEY = "approval-late-choice"
@@ -119,7 +119,7 @@ def test_gateway_approval_captures_routed_profiles_timeout(tmp_path, monkeypatch
 
 
 def test_coalesced_follower_waits_the_leaders_captured_timeout(monkeypatch):
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     _clear()
     monkeypatch.setattr(wait_mod._ctx, "_get_approval_timeout", lambda: 300)  # edited since the leader prompted

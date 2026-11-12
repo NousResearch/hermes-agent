@@ -104,7 +104,7 @@ def fetch_manifest(*, timeout: float = _DEFAULT_TIMEOUT, force: bool = False) ->
     except ImportError as exc:  # pragma: no cover - httpx is a core dep
         raise ManifestError("httpx is required to fetch the petdex manifest") from exc
     try:
-        from tools.url_safety import create_ssrf_safe_client, is_safe_url
+        from hermes_agent.tools.url_safety import create_ssrf_safe_client, is_safe_url
 
         if not is_safe_url(MANIFEST_URL):
             raise ManifestError(f"Pet manifest URL failed the SSRF safety check: {MANIFEST_URL}")

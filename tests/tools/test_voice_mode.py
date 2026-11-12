@@ -1,4 +1,4 @@
-"""Tests for tools.voice_mode -- all mocked, no real microphone or API calls."""
+"""Tests for hermes_agent.tools.voice_mode -- all mocked, no real microphone or API calls."""
 
 import os
 import struct
@@ -35,7 +35,7 @@ def temp_voice_dir(tmp_path, monkeypatch):
     """Redirect _TEMP_DIR to a temporary path."""
     voice_dir = tmp_path / "hermes_voice"
     voice_dir.mkdir()
-    monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(voice_dir))
+    monkeypatch.setattr("hermes_agent.tools.voice_mode._TEMP_DIR", str(voice_dir))
     return voice_dir
 
 
@@ -51,8 +51,8 @@ def mock_sd(monkeypatch):
     def _fake_import_audio():
         return mock, real_np
 
-    monkeypatch.setattr("tools.voice_mode._import_audio", _fake_import_audio)
-    monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio", _fake_import_audio)
+    monkeypatch.setattr("hermes_agent.tools.voice_mode._audio_available", lambda: True)
     return mock
 
 
@@ -90,14 +90,14 @@ class _FakeTime:
 def fake_clock(monkeypatch):
     """Give voice_mode a hand-driven clock.
 
-    Patches the name ``time`` inside ``tools.voice_mode`` rather than
+    Patches the name ``time`` inside ``hermes_agent.tools.voice_mode`` rather than
     ``time.monotonic`` itself -- ``voice_mode.time`` *is* the stdlib module,
     so setting the attribute on it would swap the clock out from under every
     other importer for the duration of the test.
     """
     import time as real_time
 
-    from tools import voice_mode
+    from hermes_agent.tools import voice_mode
 
     clock = _FakeTime(real_time)
     monkeypatch.setattr(voice_mode, "time", clock)
@@ -123,7 +123,7 @@ class TestPulseSocketReachable:
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
         monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
-        from tools.voice_mode import _pulse_socket_reachable
+        from hermes_agent.tools.voice_mode import _pulse_socket_reachable
         assert _pulse_socket_reachable() is False
 
     def test_listening_socket_reachable_via_xdg_runtime(self, monkeypatch, tmp_path):
@@ -139,7 +139,7 @@ class TestPulseSocketReachable:
             monkeypatch.delenv("PULSE_SERVER", raising=False)
             monkeypatch.delenv("PULSE_RUNTIME_PATH", raising=False)
             monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime_dir))
-            from tools.voice_mode import _pulse_socket_reachable
+            from hermes_agent.tools.voice_mode import _pulse_socket_reachable
             assert _pulse_socket_reachable() is True
         finally:
             server.close()
@@ -151,11 +151,11 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
         monkeypatch.setattr("hermes_constants.is_container", lambda: False)
-        monkeypatch.setattr("tools.voice_mode._import_audio",
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
-        monkeypatch.setattr("tools.voice_mode.is_wsl", lambda: False)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.is_wsl", lambda: False)
 
-        from tools.voice_mode import detect_audio_environment
+        from hermes_agent.tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
         assert result["available"] is True
         assert result["warnings"] == []
@@ -165,11 +165,11 @@ class TestDetectAudioEnvironment:
         monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 54321 22")
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
-        monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: False)
-        monkeypatch.setattr("tools.voice_mode._import_audio",
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._pulse_socket_reachable", lambda: False)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
 
-        from tools.voice_mode import detect_audio_environment
+        from hermes_agent.tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
         assert result["available"] is False
         assert any("SSH" in w for w in result["warnings"])
@@ -179,11 +179,11 @@ class TestDetectAudioEnvironment:
         monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 54321 22")
         monkeypatch.setenv("PULSE_SERVER", "unix:/run/user/1002/pulse/native")
         monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
-        monkeypatch.setattr("tools.voice_mode._import_audio",
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
-        monkeypatch.setattr("tools.voice_mode.is_wsl", lambda: False)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.is_wsl", lambda: False)
 
-        from tools.voice_mode import detect_audio_environment
+        from hermes_agent.tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
         assert result["available"] is True
         assert result["warnings"] == []
@@ -196,13 +196,13 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
         monkeypatch.delenv("PULSE_SERVER", raising=False)
-        monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: False)
-        monkeypatch.setattr("tools.voice_mode._import_audio",
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._pulse_socket_reachable", lambda: False)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
 
-        monkeypatch.setattr("tools.voice_mode.is_wsl", lambda: True)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.is_wsl", lambda: True)
 
-        from tools.voice_mode import detect_audio_environment
+        from hermes_agent.tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
 
         assert result["available"] is False
@@ -220,9 +220,9 @@ class TestDetectAudioEnvironment:
 
         sd = MagicMock()
         sd.query_devices.return_value = []
-        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (sd, MagicMock()))
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio", lambda: (sd, MagicMock()))
 
-        from tools.voice_mode import detect_audio_environment
+        from hermes_agent.tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
 
         assert result["available"] is True
@@ -236,12 +236,12 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
-        monkeypatch.setattr("tools.voice_mode._pulse_socket_reachable", lambda: False)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._pulse_socket_reachable", lambda: False)
         monkeypatch.setattr("hermes_constants.is_container", lambda: True)
-        monkeypatch.setattr("tools.voice_mode._import_audio",
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
 
-        from tools.voice_mode import detect_audio_environment
+        from hermes_agent.tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
 
         assert result["available"] is False
@@ -256,14 +256,14 @@ class TestNativeSttLabelSync:
     """Every native STT built-in must have a CLI voice-gate label.
 
     ``BUILTIN_STT_PROVIDERS`` and ``agent.transcription_registry._BUILTIN_NAMES``
-    are kept in sync by TestBuiltinSync, but ``tools.voice_mode._NATIVE_STT_LABELS``
+    are kept in sync by TestBuiltinSync, but ``hermes_agent.tools.voice_mode._NATIVE_STT_LABELS``
     is a third copy of the same list; without this test a new built-in transcribes
     fine on the gateway while the CLI voice gate reports it as MISSING.
     """
 
     def test_every_native_stt_builtin_has_voice_mode_label(self):
-        from tools.transcription_common import BUILTIN_STT_PROVIDERS
-        from tools.voice_mode import _NATIVE_STT_LABELS
+        from hermes_agent.tools.transcription_common import BUILTIN_STT_PROVIDERS
+        from hermes_agent.tools.voice_mode import _NATIVE_STT_LABELS
 
         missing = BUILTIN_STT_PROVIDERS - set(_NATIVE_STT_LABELS)
         assert not missing, (
@@ -276,12 +276,12 @@ class TestNativeSttLabelSync:
 
 class TestCheckVoiceRequirements:
     def test_all_requirements_met(self, monkeypatch):
-        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
-        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.detect_audio_environment",
                             lambda: {"available": True, "warnings": []})
-        monkeypatch.setattr("tools.transcription_tools._get_provider", lambda cfg: "openai")
+        monkeypatch.setattr("hermes_agent.tools.transcription_tools._get_provider", lambda cfg: "openai")
 
-        from tools.voice_mode import check_voice_requirements
+        from hermes_agent.tools.voice_mode import check_voice_requirements
 
         result = check_voice_requirements()
         assert result["available"] is True
@@ -292,11 +292,11 @@ class TestCheckVoiceRequirements:
 
     def test_plugin_stt_provider(self, monkeypatch):
         """Plugin STT provider is recognized."""
-        monkeypatch.setattr("tools.voice_mode._audio_available", lambda: True)
-        monkeypatch.setattr("tools.voice_mode.detect_audio_environment",
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._audio_available", lambda: True)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.detect_audio_environment",
                             lambda: {"available": True, "warnings": []})
         monkeypatch.setattr(
-            "tools.transcription_tools._load_stt_config",
+            "hermes_agent.tools.transcription_tools._load_stt_config",
             lambda: {"enabled": True, "provider": "my-plugin-stt"},
         )
         plugin_provider = MagicMock()
@@ -310,7 +310,7 @@ class TestCheckVoiceRequirements:
             lambda force=False: None,
         )
 
-        from tools.voice_mode import check_voice_requirements
+        from hermes_agent.tools.voice_mode import check_voice_requirements
 
         result = check_voice_requirements()
         assert result["available"] is True
@@ -324,9 +324,9 @@ class TestAudioRecorder:
     def test_start_raises_without_audio_libs(self, monkeypatch):
         def _fail_import():
             raise ImportError("no sounddevice")
-        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio", _fail_import)
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         with pytest.raises(RuntimeError, match="sounddevice and numpy"):
@@ -338,9 +338,9 @@ class TestAudioRecorder:
         package, not 'pip install sounddevice numpy' (#18432)."""
         def _fail_import():
             raise OSError("PortAudio library not found")
-        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio", _fail_import)
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         with pytest.raises(RuntimeError) as exc_info:
@@ -354,7 +354,7 @@ class TestAudioRecorder:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         recorder.start()
@@ -364,7 +364,7 @@ class TestAudioRecorder:
         mock_stream.start.assert_called_once()
 
     def test_ensure_stream_rebuilds_inactive_stream(self, mock_sd):
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         inactive_stream = MagicMock()
@@ -381,7 +381,7 @@ class TestAudioRecorder:
         assert recorder._stream is replacement_stream
 
     def test_ensure_stream_rebuilds_when_liveness_probe_fails(self, mock_sd):
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         class BrokenStream:
             stop = MagicMock()
@@ -410,7 +410,7 @@ class TestAudioRecorderStop:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder, SAMPLE_RATE
+        from hermes_agent.tools.voice_mode import AudioRecorder, SAMPLE_RATE
 
         recorder = AudioRecorder()
         recorder.start()
@@ -439,7 +439,7 @@ class TestAudioRecorderStop:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder, SAMPLE_RATE
+        from hermes_agent.tools.voice_mode import AudioRecorder, SAMPLE_RATE
 
         recorder = AudioRecorder()
         recorder.start()
@@ -458,7 +458,7 @@ class TestAudioRecorderCancel:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         recorder.start()
@@ -483,8 +483,8 @@ class TestTranscribeRecording:
             "transcript": "Thank you.",
         })
 
-        with patch("tools.transcription_tools.transcribe_audio", mock_transcribe):
-            from tools.voice_mode import transcribe_recording
+        with patch("hermes_agent.tools.transcription_tools.transcribe_audio", mock_transcribe):
+            from hermes_agent.tools.voice_mode import transcribe_recording
             result = transcribe_recording("/tmp/test.wav")
 
         assert result["success"] is True
@@ -509,8 +509,8 @@ class TestTranscribeRecording:
             "error": "STT is disabled in config.yaml",
         })
 
-        with patch("tools.transcription_tools.transcribe_audio", mock_transcribe):
-            from tools.voice_mode import transcribe_recording
+        with patch("hermes_agent.tools.transcription_tools.transcribe_audio", mock_transcribe):
+            from hermes_agent.tools.voice_mode import transcribe_recording
             result = transcribe_recording(str(wav_path), model="base")
 
         assert result["success"] is False
@@ -520,7 +520,7 @@ class TestTranscribeRecording:
 
 class TestWhisperHallucinationFilter:
     def test_known_hallucinations(self):
-        from tools.voice_mode_transcript import is_whisper_hallucination
+        from hermes_agent.tools.voice_mode_transcript import is_whisper_hallucination
 
         assert is_whisper_hallucination("Thank you.") is True
         assert is_whisper_hallucination("thank you") is True
@@ -530,7 +530,7 @@ class TestWhisperHallucinationFilter:
         assert is_whisper_hallucination("you") is True
 
     def test_real_speech_not_filtered(self):
-        from tools.voice_mode_transcript import is_whisper_hallucination
+        from hermes_agent.tools.voice_mode_transcript import is_whisper_hallucination
 
         assert is_whisper_hallucination("Hello, how are you?") is False
         assert is_whisper_hallucination("Thank you for your help with the project.") is False
@@ -559,9 +559,9 @@ class TestPlayAudioFile:
         def _fake_import():
             return mock_sd_obj, np
 
-        monkeypatch.setattr("tools.voice_mode._import_audio", _fake_import)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio", _fake_import)
 
-        from tools.voice_mode import play_audio_file
+        from hermes_agent.tools.voice_mode import play_audio_file
 
         result = play_audio_file(sample_wav)
 
@@ -585,7 +585,7 @@ class TestMacOSAudioOutputPolicy:
         def _forbidden_import():
             raise AssertionError("sounddevice must not be imported for output on macOS")
 
-        monkeypatch.setattr("tools.voice_mode._import_audio", _forbidden_import)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio", _forbidden_import)
 
         popen_cmds = []
 
@@ -606,7 +606,7 @@ class TestMacOSAudioOutputPolicy:
         # argv assertion below reflects real player selection.
         monkeypatch.setattr("subprocess.Popen", _fake_popen)
 
-        from tools.voice_mode import play_audio_file
+        from hermes_agent.tools.voice_mode import play_audio_file
 
         result = play_audio_file(sample_wav)
 
@@ -622,15 +622,15 @@ class TestMacOSAudioOutputPolicy:
         def _forbidden_import():
             raise AssertionError("sounddevice must not be imported for beeps on macOS")
 
-        monkeypatch.setattr("tools.voice_mode._import_audio", _forbidden_import)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio", _forbidden_import)
 
         calls = []
         monkeypatch.setattr(
-            "tools.voice_mode._play_int16_via_tempfile",
+            "hermes_agent.tools.voice_mode._play_int16_via_tempfile",
             lambda audio, sample_rate: calls.append((len(audio), sample_rate)),
         )
 
-        import tools.voice_mode as vm
+        import hermes_agent.tools.voice_mode as vm
 
         vm.play_beep(frequency=880, count=1)
 
@@ -652,7 +652,7 @@ class TestCleanupTempRecordings:
         old_mtime = time.time() - 7200
         os.utime(str(old_file), (old_mtime, old_mtime))
 
-        from tools.voice_mode import cleanup_temp_recordings
+        from hermes_agent.tools.voice_mode import cleanup_temp_recordings
 
         deleted = cleanup_temp_recordings(max_age_seconds=3600)
         assert deleted == 1
@@ -663,7 +663,7 @@ class TestCleanupTempRecordings:
         recent_file = temp_voice_dir / "recording_20260303_120000.wav"
         recent_file.write_bytes(b"\x00" * 100)
 
-        from tools.voice_mode import cleanup_temp_recordings
+        from hermes_agent.tools.voice_mode import cleanup_temp_recordings
 
         deleted = cleanup_temp_recordings(max_age_seconds=3600)
         assert deleted == 0
@@ -677,7 +677,7 @@ class TestPlayBeep:
     def test_beep_calls_sounddevice_play(self, mock_sd):
         np = pytest.importorskip("numpy")
 
-        from tools.voice_mode import play_beep
+        from hermes_agent.tools.voice_mode import play_beep
 
         # play_beep uses polling (get_stream) + sd.stop() instead of sd.wait()
         mock_stream = MagicMock()
@@ -705,7 +705,7 @@ class TestSilenceDetection:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         # Use very short durations for testing
@@ -753,7 +753,7 @@ class TestSilenceDetection:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         recorder._silence_duration = 0.05
@@ -807,7 +807,7 @@ class TestMaxRecordingCap:
 
         mock_sd.InputStream.return_value = MagicMock()
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         recorder._max_recording_seconds = 0.1
@@ -852,7 +852,7 @@ class TestMaxRecordingCap:
 
         mock_sd.InputStream.return_value = MagicMock()
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         recorder._max_recording_seconds = 0.0  # disabled (previous behaviour)
@@ -880,8 +880,8 @@ class TestPlaybackInterrupt:
     """Verify that TTS playback can be interrupted."""
 
     def test_stop_playback_terminates_process(self):
-        from tools.voice_mode import stop_playback, _playback_lock
-        import tools.voice_mode as vm
+        from hermes_agent.tools.voice_mode import stop_playback, _playback_lock
+        import hermes_agent.tools.voice_mode as vm
 
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None  # process is running
@@ -909,7 +909,7 @@ class TestContinuousModeFlow:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
 
@@ -956,7 +956,7 @@ class TestAudioLevelIndicator:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         recorder.start()
@@ -992,7 +992,7 @@ class TestConfigurableSilenceParams:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
         import threading
 
         recorder = AudioRecorder()
@@ -1038,7 +1038,7 @@ class TestStreamLeakOnStartFailure:
         mock_stream.start.side_effect = OSError("Audio device busy")
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
         recorder = AudioRecorder()
 
         with pytest.raises(RuntimeError, match="Failed to open audio input stream"):
@@ -1056,7 +1056,7 @@ class TestStreamStartTimeoutRetry:
         warm = MagicMock()
         mock_sd.InputStream.side_effect = [cold, warm]
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
         recorder = AudioRecorder()
         recorder._ensure_stream()
 
@@ -1069,7 +1069,7 @@ class TestStreamStartTimeoutRetry:
         mock_stream.start.side_effect = OSError("Wait timed out [PaErrorCode -9987]")
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
         recorder = AudioRecorder()
         with pytest.raises(RuntimeError, match="Wait timed out"):
             recorder._ensure_stream()
@@ -1113,7 +1113,7 @@ class TestListenForSpeech:
         np = pytest.importorskip("numpy")
         stream = _FakeInputStream(np, levels)
         mock_sd.InputStream.return_value = stream
-        from tools.voice_mode import listen_for_speech
+        from hermes_agent.tools.voice_mode import listen_for_speech
         stops = iter([False] * 200 + [True] * 10_000)
         return listen_for_speech(should_stop or (lambda: next(stops)), **kwargs), stream
 
@@ -1124,8 +1124,8 @@ class TestListenForSpeech:
 
 
     def test_returns_false_when_audio_unavailable(self, monkeypatch):
-        monkeypatch.setattr("tools.voice_mode._import_audio", MagicMock(side_effect=OSError("no audio")))
-        from tools.voice_mode import listen_for_speech
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio", MagicMock(side_effect=OSError("no audio")))
+        from hermes_agent.tools.voice_mode import listen_for_speech
         assert listen_for_speech(lambda: False) is False
 
     def test_quiet_then_loud_playback_does_not_trip(self, mock_sd):
@@ -1181,10 +1181,10 @@ class TestListenForSpeechCapture:
         mock_sd.InputStream.return_value = stream
         written = {}
         monkeypatch.setattr(
-            "tools.voice_mode.AudioRecorder._write_wav",
+            "hermes_agent.tools.voice_mode.AudioRecorder._write_wav",
             staticmethod(lambda audio: written.update(audio=audio) or "/tmp/barge.wav"),
         )
-        from tools.voice_mode import listen_for_speech
+        from hermes_agent.tools.voice_mode import listen_for_speech
         stops = iter([False] * 200 + [True] * 10_000)
         path = listen_for_speech(
             should_stop or (lambda: next(stops)), capture=True, **kwargs
@@ -1231,10 +1231,10 @@ class TestFullDuplexListen:
         mock_sd.InputStream.return_value = stream
         written = {}
         monkeypatch.setattr(
-            "tools.voice_mode.AudioRecorder._write_wav",
+            "hermes_agent.tools.voice_mode.AudioRecorder._write_wav",
             staticmethod(lambda audio: written.update(audio=audio) or "/tmp/fd.wav"),
         )
-        from tools.voice_mode import full_duplex_listen
+        from hermes_agent.tools.voice_mode import full_duplex_listen
 
         def is_playing():
             if playing_from is None:
@@ -1331,7 +1331,7 @@ class TestGetBeepVolume:
     """Issue #55908: beep amplitude must come from config.yaml, with safe fallback."""
 
     def _get(self):
-        from tools.voice_mode import _get_beep_volume
+        from hermes_agent.tools.voice_mode import _get_beep_volume
         return _get_beep_volume()
 
     @pytest.mark.parametrize("config,expected", [
@@ -1356,7 +1356,7 @@ class TestGetBeepVolume:
 
 class TestDefaultInputSamplerate:
     def test_uses_device_default_rate(self):
-        from tools.voice_mode import _default_input_samplerate
+        from hermes_agent.tools.voice_mode import _default_input_samplerate
 
         sd = MagicMock()
         sd.query_devices.return_value = {"default_samplerate": 44100.0}
@@ -1370,7 +1370,7 @@ class TestDefaultInputSamplerate:
         mock_stream = MagicMock()
         mock_sd.InputStream.return_value = mock_stream
 
-        from tools.voice_mode import AudioRecorder
+        from hermes_agent.tools.voice_mode import AudioRecorder
 
         recorder = AudioRecorder()
         recorder.start()
@@ -1409,7 +1409,7 @@ class TestWSL2PowerShellFallback:
         cleanup, so a real conversion/playback failure falls through to the
         next player instead of being masked by rm -f's always-zero exit."""
         from unittest.mock import patch, MagicMock
-        from tools import voice_mode as vm
+        from hermes_agent.tools import voice_mode as vm
 
         captured_cmds = []
 
@@ -1425,17 +1425,17 @@ class TestWSL2PowerShellFallback:
             m.wait = MagicMock(return_value=m.returncode)
             return m
 
-        with patch("tools.voice_mode.is_wsl", return_value=True), \
-             patch("tools.voice_mode._import_audio", side_effect=ImportError), \
-             patch("tools.voice_mode.shutil.which",
+        with patch("hermes_agent.tools.voice_mode.is_wsl", return_value=True), \
+             patch("hermes_agent.tools.voice_mode._import_audio", side_effect=ImportError), \
+             patch("hermes_agent.tools.voice_mode.shutil.which",
                    side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay", "sh") else (x if x.startswith("/") else None)), \
-             patch("tools.voice_mode.subprocess.check_output",
+             patch("hermes_agent.tools.voice_mode.subprocess.check_output",
                    side_effect=self._fake_check_output([
                        b"C:/Temp\r\n",
                        b"/mnt/c/Temp\n",
                        b"C:/Temp/hermes.wav\n",
                    ])), \
-             patch("tools.voice_mode.subprocess.Popen", side_effect=_capture_popen):
+             patch("hermes_agent.tools.voice_mode.subprocess.Popen", side_effect=_capture_popen):
             result = vm.play_audio_file(str(sample_wav))
 
         assert result is True, "Must fall through to ffplay and succeed"
@@ -1456,7 +1456,7 @@ class TestWSL2PowerShellFallback:
     def test_wsl2_unique_temp_filename(self, monkeypatch, tmp_path, sample_wav):
         """Two concurrent calls must use different temp WAV filenames."""
         from unittest.mock import patch, MagicMock
-        from tools import voice_mode as vm
+        from hermes_agent.tools import voice_mode as vm
 
         filenames = []
 
@@ -1472,12 +1472,12 @@ class TestWSL2PowerShellFallback:
                 return f"C:\\Temp\\{wsl_path.split('/')[-1]}\n".encode()
             return b""
 
-        with patch("tools.voice_mode.is_wsl", return_value=True), \
+        with patch("hermes_agent.tools.voice_mode.is_wsl", return_value=True), \
              patch("shutil.which", side_effect=lambda x: f"/bin/{x}" if x in ("powershell.exe", "ffmpeg", "ffplay") else None), \
              patch("subprocess.check_output", side_effect=_capture_check_output), \
              patch("subprocess.Popen", return_value=MagicMock(returncode=0, wait=lambda **k: 0)), \
-             patch("tools.voice_mode._playback_lock"), \
-             patch("tools.voice_mode._active_playback", None):
+             patch("hermes_agent.tools.voice_mode._playback_lock"), \
+             patch("hermes_agent.tools.voice_mode._active_playback", None):
             vm.play_audio_file(str(sample_wav))
             vm.play_audio_file(str(sample_wav))
 
@@ -1495,7 +1495,7 @@ class TestWSL2PowerShellFallback:
     def test_non_wsl_skips_powershell_fallback(self, monkeypatch, sample_wav):
         """On non-WSL Linux, the PowerShell player must not be inserted."""
         from unittest.mock import patch, MagicMock
-        from tools import voice_mode as vm
+        from hermes_agent.tools import voice_mode as vm
 
         captured_players = []
 
@@ -1506,12 +1506,12 @@ class TestWSL2PowerShellFallback:
             m.wait.return_value = 0
             return m
 
-        with patch("tools.voice_mode.is_wsl", return_value=False), \
-             patch("tools.voice_mode._import_audio", side_effect=ImportError), \
+        with patch("hermes_agent.tools.voice_mode.is_wsl", return_value=False), \
+             patch("hermes_agent.tools.voice_mode._import_audio", side_effect=ImportError), \
              patch("shutil.which", side_effect=lambda x: f"/bin/{x}" if x in ("ffplay", "aplay") else None), \
              patch("subprocess.Popen", side_effect=_capture_popen), \
-             patch("tools.voice_mode._playback_lock"), \
-             patch("tools.voice_mode._active_playback", None):
+             patch("hermes_agent.tools.voice_mode._playback_lock"), \
+             patch("hermes_agent.tools.voice_mode._active_playback", None):
             vm.play_audio_file(str(sample_wav))
 
         assert captured_players, "No players were tried"
@@ -1529,17 +1529,17 @@ class TestWSLAudioEnvironmentGate:
 
     def test_wsl_no_pulse_but_powershell_available_not_hard_blocked(self, monkeypatch):
         from unittest.mock import patch
-        from tools import voice_mode as vm
+        from hermes_agent.tools import voice_mode as vm
 
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
         for _ssh_var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION"):
             monkeypatch.delenv(_ssh_var, raising=False)
-        monkeypatch.setattr("tools.voice_mode._import_audio",
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
-        with patch("tools.voice_mode.is_wsl", return_value=True), \
-             patch("tools.voice_mode._wsl_powershell_tts_available", return_value=True), \
-             patch("tools.voice_mode._pulse_socket_reachable", return_value=False), \
+        with patch("hermes_agent.tools.voice_mode.is_wsl", return_value=True), \
+             patch("hermes_agent.tools.voice_mode._wsl_powershell_tts_available", return_value=True), \
+             patch("hermes_agent.tools.voice_mode._pulse_socket_reachable", return_value=False), \
              patch("hermes_constants.is_container", return_value=False):
             result = vm.detect_audio_environment()
 
@@ -1556,17 +1556,17 @@ class TestWSLAudioEnvironmentGate:
 
     def test_wsl_no_pulse_no_powershell_still_blocked(self, monkeypatch):
         from unittest.mock import patch
-        from tools import voice_mode as vm
+        from hermes_agent.tools import voice_mode as vm
 
         monkeypatch.delenv("PULSE_SERVER", raising=False)
         monkeypatch.delenv("PIPEWIRE_REMOTE", raising=False)
         for _ssh_var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION"):
             monkeypatch.delenv(_ssh_var, raising=False)
-        monkeypatch.setattr("tools.voice_mode._import_audio",
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
-        with patch("tools.voice_mode.is_wsl", return_value=True), \
-             patch("tools.voice_mode._wsl_powershell_tts_available", return_value=False), \
-             patch("tools.voice_mode._pulse_socket_reachable", return_value=False), \
+        with patch("hermes_agent.tools.voice_mode.is_wsl", return_value=True), \
+             patch("hermes_agent.tools.voice_mode._wsl_powershell_tts_available", return_value=False), \
+             patch("hermes_agent.tools.voice_mode._pulse_socket_reachable", return_value=False), \
              patch("hermes_constants.is_container", return_value=False):
             result = vm.detect_audio_environment()
 
@@ -1578,14 +1578,14 @@ class TestWSLAudioEnvironmentGate:
     def test_wsl_with_pulse_server_unaffected(self, monkeypatch):
         """PULSE_SERVER already configured: existing behavior unchanged."""
         from unittest.mock import patch
-        from tools import voice_mode as vm
+        from hermes_agent.tools import voice_mode as vm
 
         monkeypatch.setenv("PULSE_SERVER", "unix:/mnt/wslg/PulseServer")
         for _ssh_var in ("SSH_CLIENT", "SSH_TTY", "SSH_CONNECTION"):
             monkeypatch.delenv(_ssh_var, raising=False)
-        monkeypatch.setattr("tools.voice_mode._import_audio",
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
-        with patch("tools.voice_mode.is_wsl", return_value=True), \
+        with patch("hermes_agent.tools.voice_mode.is_wsl", return_value=True), \
              patch("hermes_constants.is_container", return_value=False):
             result = vm.detect_audio_environment()
 

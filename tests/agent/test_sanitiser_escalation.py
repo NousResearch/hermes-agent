@@ -259,8 +259,8 @@ class TestProjectionStopsReheal:
         from run_agent import AIAgent
 
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
         ):
             agent = AIAgent(

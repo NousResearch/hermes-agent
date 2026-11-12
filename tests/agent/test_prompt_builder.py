@@ -707,9 +707,9 @@ class TestEnvironmentHints:
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
-        monkeypatch.setattr("tools.bot_desktop.runtime.published_env",
+        monkeypatch.setattr("hermes_agent.tools.bot_desktop.runtime.published_env",
                             lambda: {"DISPLAY": ":20", "XAUTHORITY": "/run/x"})
-        monkeypatch.setattr("tools.bot_desktop.lease.get", lambda: SimpleNamespace(holder="agent"))
+        monkeypatch.setattr("hermes_agent.tools.bot_desktop.lease.get", lambda: SimpleNamespace(holder="agent"))
         hints = _pb.build_environment_hints()
         assert "Bot Screen" in hints and "display :20" in hints and "you hold it" in hints
 
@@ -717,8 +717,8 @@ class TestEnvironmentHints:
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
-        monkeypatch.setattr("tools.bot_desktop.runtime.published_env", lambda: {"DISPLAY": ":20"})
-        monkeypatch.setattr("tools.bot_desktop.lease.get", lambda: SimpleNamespace(holder="human"))
+        monkeypatch.setattr("hermes_agent.tools.bot_desktop.runtime.published_env", lambda: {"DISPLAY": ":20"})
+        monkeypatch.setattr("hermes_agent.tools.bot_desktop.lease.get", lambda: SimpleNamespace(holder="human"))
         hints = _pb.build_environment_hints()
         assert "a human holds it" in hints and "do not drive the screen" in hints
 
@@ -727,7 +727,7 @@ class TestEnvironmentHints:
         import agent.prompt_builder as _pb
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
-        monkeypatch.setattr("tools.bot_desktop.runtime.published_env", dict)
+        monkeypatch.setattr("hermes_agent.tools.bot_desktop.runtime.published_env", dict)
         _pb._BACKEND_PROBE_CACHE.clear()
         assert "Bot Screen" not in _pb.build_environment_hints()
 
@@ -737,7 +737,7 @@ class TestEnvironmentHints:
         monkeypatch.setattr(_pb, "is_wsl", lambda: False)
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setattr(_pb, "_probe_remote_backend", lambda _t: None)
-        monkeypatch.setattr("tools.bot_desktop.runtime.published_env",
+        monkeypatch.setattr("hermes_agent.tools.bot_desktop.runtime.published_env",
                             lambda: {"DISPLAY": ":20"})
         _pb._BACKEND_PROBE_CACHE.clear()
         assert "Bot Screen" not in _pb.build_environment_hints()
@@ -750,8 +750,8 @@ class TestEnvironmentHints:
         fake sandbox answers with the legacy full payload so a formatter that still
         renders those keys is caught too."""
         import agent.prompt_builder as _pb
-        import tools.terminal_tool_backends as _tt
-        import tools.terminal_tool_lifecycle as _lc
+        import hermes_agent.tools.terminal_tool_backends as _tt
+        import hermes_agent.tools.terminal_tool_lifecycle as _lc
 
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         _pb._clear_backend_probe_cache()
@@ -803,7 +803,7 @@ class TestEnvironmentHints:
             def cleanup(self, *, force_remove=False):
                 cleaned["force_remove"] = force_remove
 
-        import tools.terminal_tool_backends as _tt
+        import hermes_agent.tools.terminal_tool_backends as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _FakeEnv())
 
         assert _pb._probe_remote_backend("docker") is not None
@@ -827,7 +827,7 @@ class TestEnvironmentHints:
             def cleanup(self, *, force_remove=False):
                 cleaned.append(force_remove)
 
-        import tools.terminal_tool_backends as _tt
+        import hermes_agent.tools.terminal_tool_backends as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _ExplodingEnv())
 
         assert _pb._probe_remote_backend("docker") is None
@@ -856,7 +856,7 @@ class TestEnvironmentHints:
             def cleanup(self):
                 calls.append("bare")
 
-        import tools.terminal_tool_backends as _tt
+        import hermes_agent.tools.terminal_tool_backends as _tt
         monkeypatch.setattr(_tt, "_create_environment", lambda **kw: _LegacyEnv())
 
         assert _pb._probe_remote_backend("daytona") is not None
@@ -888,7 +888,7 @@ class TestEnvironmentHints:
             def cleanup(self):
                 calls.append("cleanup")
 
-        import tools.terminal_tool_backends as _tt
+        import hermes_agent.tools.terminal_tool_backends as _tt
 
         def _fake_create(**kw):
             created.update(kw)

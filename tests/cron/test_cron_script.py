@@ -72,7 +72,7 @@ class TestJobScriptField:
 
 
 def test_cronjob_tool_rejects_stale_past_one_shot(cron_env, monkeypatch):
-    from tools.cronjob_tools import cronjob
+    from hermes_agent.tools.cronjob_tools import cronjob
 
     now = datetime(2026, 3, 18, 4, 30, 0, tzinfo=UTC)
     monkeypatch.setattr("hermes_agent.cron.jobs._hermes_now", lambda: now)
@@ -168,7 +168,7 @@ class TestRunJobScript:
 
     def test_script_subprocess_env_sanitized(self, cron_env, monkeypatch):
         """Cron scripts must not inherit Hermes provider env (SECURITY.md §2.3)."""
-        from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
+        from hermes_agent.tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
         from hermes_agent.cron.scheduler_script import _run_job_script
 
         # sorted() so the probed var is deterministic across runs
@@ -482,7 +482,7 @@ class TestCronjobToolScript:
 
     def test_clear_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         (cron_env / "scripts" / "some_script.py").write_text("print('hi')\n")
         create_result = json.loads(cronjob(
@@ -503,7 +503,7 @@ class TestCronjobToolScript:
 
     def test_list_shows_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         (cron_env / "scripts" / "data_collector.py").write_text("print('hi')\n")
         cronjob(
@@ -616,7 +616,7 @@ class TestCronjobToolScriptValidation:
 
     def test_create_with_traversal_script_rejected(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         result = json.loads(cronjob(
             action="create",

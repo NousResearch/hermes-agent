@@ -48,7 +48,7 @@ class TestCreateSession:
 
         monkeypatch.setattr("hermes_platform.host.runtime._wsl_detected", True)
         monkeypatch.setattr(
-            "tools.terminal_tool.register_task_env_overrides",
+            "hermes_agent.tools.terminal_tool.register_task_env_overrides",
             fake_register_task_env_overrides,
         )
 
@@ -148,8 +148,8 @@ class TestCreateSession:
     def test_fresh_agent_tool_surface_honours_toolset_config(self, monkeypatch, config, offered, withheld):
         """A fresh ACP agent resolves its tools like the gateway/cron: the real tool surface built from its
         kwargs carries the offered toolset and none of the withheld one."""
-        from model_tools import get_tool_definitions
-        from toolsets import resolve_toolset
+        from hermes_agent.model_tools import get_tool_definitions
+        from hermes_agent.toolsets import resolve_toolset
 
         seen: list[dict] = []
 

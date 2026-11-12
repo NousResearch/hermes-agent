@@ -21,7 +21,7 @@ import time
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 if TYPE_CHECKING:
-    from tools.browser_supervisor import CDPSupervisor, _SupervisorRegistry
+    from hermes_agent.tools.browser_supervisor import CDPSupervisor, _SupervisorRegistry
 
 
 class CapturedCDPInvalid(RuntimeError):
@@ -142,7 +142,7 @@ class CapturedCDP:
 
 def capture(registry: _SupervisorRegistry, task_id: str, *, timeout: float = 10.0) -> CapturedCDP:
     """Pin the running supervisor for ``task_id``; never starts, reconnects or refocuses one."""
-    from tools.browser_supervisor import _LoopUnavailable, _schedule
+    from hermes_agent.tools.browser_supervisor import _LoopUnavailable, _schedule
 
     found = registry.get(task_id)
     loop = found._loop if found is not None else None

@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.computer_use import cua_backend
+from hermes_agent.tools.computer_use import cua_backend
 
 pytestmark = pytest.mark.platforms("linux")
 

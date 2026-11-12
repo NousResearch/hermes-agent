@@ -59,7 +59,7 @@ def _side_scope(authority, policy, task_id):
     from hermes_agent.gateway.session_authorities import owner_scope, served_profile_name
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from hermes_agent.gateway.session_policy import bind_turn_workspace, policy_scope, unbind_turn_workspace
-    from tools.environments.local import _is_routed_home
+    from hermes_agent.tools.environments.local import _is_routed_home
     # The owning profile, as its own turns bind it: a served secondary by its name, so persistent
     # Docker keys ITS workspace container (never the launch profile's live one for the same folder);
     # the launch home binds none, like its ``agent:main`` turns.
@@ -279,7 +279,7 @@ async def preview_restart(connection, ref, params):
         prompt = _preview_restart_prompt(url, cwd, context, bool(history))
         with _side_scope(authority, policy, task_id):
             if preview_cwd:
-                from tools.terminal_tool import register_task_env_overrides
+                from hermes_agent.tools.terminal_tool import register_task_env_overrides
                 register_task_env_overrides(task_id, {'cwd': preview_cwd})
             try:
                 progress('Starting hidden restart agent')
@@ -293,7 +293,7 @@ async def preview_restart(connection, ref, params):
                                                 conversation_history=history or None)
             finally:
                 with contextlib.suppress(Exception):
-                    from tools.terminal_tool import clear_task_env_overrides
+                    from hermes_agent.tools.terminal_tool import clear_task_env_overrides
                     clear_task_env_overrides(task_id)
         return _final_response_text(result)
 

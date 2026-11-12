@@ -314,7 +314,7 @@ from hermes_agent.gateway.platforms.base import (
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from tools.url_safety import is_safe_url
+from hermes_agent.tools.url_safety import is_safe_url
 from hermes_agent.gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
     extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
@@ -3710,7 +3710,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         )
         os.makedirs(os.path.dirname(audio_path), exist_ok=True)
         try:
-            from tools.tts_tool import text_to_speech_tool
+            from hermes_agent.tools.tts_tool import text_to_speech_tool
             result_json = await asyncio.to_thread(
                 text_to_speech_tool, text=phrase, output_path=audio_path
             )
@@ -4000,13 +4000,13 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def _process_voice_input(self, guild_id: int, user_id: int, pcm_data: bytes, captured_for: int | None):
         """Convert PCM -> WAV -> STT -> callback; dropped if the binding moved off *captured_for* during STT."""
-        from tools.voice_mode_transcript import is_whisper_hallucination
+        from hermes_agent.tools.voice_mode_transcript import is_whisper_hallucination
         tmp_f = tempfile.NamedTemporaryFile(suffix=".wav", prefix="vc_listen_", delete=False)
         wav_path = tmp_f.name
         tmp_f.close()
         try:
             await asyncio.to_thread(VoiceReceiver.pcm_to_wav, pcm_data, wav_path)
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             result = await asyncio.to_thread(transcribe_audio, wav_path)
             if not result.get("success"):
                 return
@@ -5689,7 +5689,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     def _observe_exec_approval_settle(self, session_key: str, view) -> bool:
         """Retire ``view`` when its request settles (before it is sent: via ``view.pending_retire``)."""
-        from tools.approval import observe_gateway_settle
+        from hermes_agent.tools.approval import observe_gateway_settle
         loop = asyncio.get_running_loop()
 
         def retire(reason):
@@ -6421,7 +6421,7 @@ def _define_discord_view_classes() -> None:
 
     class SlashConfirmView(_HermesView):
         """Approve Once / Always Approve / Cancel for slash-command confirmations (``/reload-mcp``,
-        ``GatewayRunner._request_slash_confirm``); clicks call ``tools.slash_confirm.resolve(...)``."""
+        ``GatewayRunner._request_slash_confirm``); clicks call ``hermes_agent.tools.slash_confirm.resolve(...)``."""
 
         def __init__(self, session_key: str, confirm_id: str, allowed_user_ids: set, allowed_role_ids: Optional[set] = None):
             super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
@@ -6441,7 +6441,7 @@ def _define_discord_view_classes() -> None:
                 t("platform.discord.approval.by_user", label=t(label_key), user=interaction.user.display_name))
             # A returned follow-up message is posted in the same channel.
             try:
-                from tools import slash_confirm as _slash_confirm_mod
+                from hermes_agent.tools import slash_confirm as _slash_confirm_mod
                 result_text = await _slash_confirm_mod.resolve(self.session_key, self.confirm_id, choice)
                 if result_text:
                     await interaction.followup.send(result_text)
@@ -6833,7 +6833,7 @@ def _define_discord_view_classes() -> None:
             # Round-trip the canonical choice text from the entry, not the button label.
             resolved_text: Optional[str] = None
             try:
-                from tools.clarify_gateway import get_pending
+                from hermes_agent.tools.clarify_gateway import get_pending
                 entry = get_pending(self.clarify_id)
                 if entry and entry.choices and 0 <= index < len(entry.choices):
                     resolved_text = entry.choices[index]
@@ -6842,7 +6842,7 @@ def _define_discord_view_classes() -> None:
             if resolved_text is None:
                 resolved_text = choice
             try:
-                from tools.clarify_gateway import resolve_gateway_clarify
+                from hermes_agent.tools.clarify_gateway import resolve_gateway_clarify
                 resolved = resolve_gateway_clarify(self.clarify_id, resolved_text)
                 logger.info(
                     "Discord clarify button resolved (id=%s, choice=%r, user=%s, ok=%s)",
@@ -6859,7 +6859,7 @@ def _define_discord_view_classes() -> None:
                 return
             # Don't pop: the gateway text-intercept needs the entry until the user types.
             try:
-                from tools.clarify_gateway import mark_awaiting_text
+                from hermes_agent.tools.clarify_gateway import mark_awaiting_text
                 mark_awaiting_text(self.clarify_id)
             except Exception as exc:
                 logger.warning("Discord clarify mark_awaiting_text failed (id=%s): %s", self.clarify_id, exc)
@@ -6873,7 +6873,7 @@ if DISCORD_AVAILABLE:
 
 
 # ── Standalone (out-of-process) sender ────────────────────────────────────────
-# Used by ``tools/send_message_tool._send_via_adapter`` when no live DiscordAdapter is in this
+# Used by ``hermes_agent/tools/send_message_tool._send_via_adapter`` when no live DiscordAdapter is in this
 # process (e.g. standalone ``hermes cron``); same forum/thread/multipart logic via Discord REST.
 
 # Process-local channel-type probe cache: avoids re-probing every send when the directory cache misses.

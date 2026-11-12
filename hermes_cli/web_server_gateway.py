@@ -383,7 +383,7 @@ def _profile_action_environment(
     """
     profile = _named_profile_from_action(subcommand)
     if _is_host_gateway_spawn(subcommand):
-        from tools.environments.local import host_gateway_child_env
+        from hermes_agent.tools.environments.local import host_gateway_child_env
         action_env = host_gateway_child_env()
     elif profile is None:
         action_env = dict(os.environ)
@@ -393,7 +393,7 @@ def _profile_action_environment(
         )
         from hermes_cli.web_server_profiles import _resolve_profile_dir
         from hermes_constants import apply_subprocess_home_env, get_default_hermes_root
-        from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+        from hermes_agent.tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
         target_home = _resolve_profile_dir(profile)
         action_env = build_subprocess_env(base=os.environ, scrub_secrets=True)
@@ -746,7 +746,7 @@ def _split_text_for_speak_stream(text: str, cap: int) -> list:
     Deliberately NOT unified with gateway.platforms.helpers' split_text_fence_aware: this
     reflows whitespace (sentences re-joined with single spaces) and has no fence semantics.
     """
-    from tools.tts_streaming import SENTENCE_BOUNDARY_RE as _SENTENCE_BOUNDARY_RE
+    from hermes_agent.tools.tts_streaming import SENTENCE_BOUNDARY_RE as _SENTENCE_BOUNDARY_RE
     cap = cap if cap and cap > 0 else 4000
     pieces, buf = [], ""
     for sentence in filter(str.strip, _SENTENCE_BOUNDARY_RE.split(text)):

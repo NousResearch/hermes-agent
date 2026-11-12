@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional
 
 from agent.browser_provider import BrowserProvider
 from hermes_constants import get_hermes_home_override, hermes_home_key
-from tools.tool_backend_helpers import normalize_browser_cloud_provider
+from hermes_agent.tools.tool_backend_helpers import normalize_browser_cloud_provider
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -188,7 +188,7 @@ def _instantiate_explicit_provider(provider_key: str) -> Optional[BrowserProvide
         logger.warning("Failed to instantiate cloud_provider %r; will retry on next call", provider_key, exc_info=True)
         return None
     if resolved is None:
-        from tools.tool_backend_helpers import selection_error
+        from hermes_agent.tools.tool_backend_helpers import selection_error
         raise ValueError(selection_error(
             "browser", f"'{provider_key}'",
             "no registered browser plugin has that name (install the corresponding plugin or fix the config key spelling)",
@@ -259,11 +259,11 @@ def is_local_backend() -> bool:
     SSRF protection matters only when the browser reaches networks the terminal cannot (cloud backends,
     containerized terminals). A CDP override is never trusted as local (that Chrome may live off-host).
     """
-    from tools.browser_session_cdp import get_cdp_override_raw
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override_raw
     if get_cdp_override_raw() or get_cloud_provider() is not None:
         return False
     # Scope-aware: under multiplexing the routed profile's terminal backend lives in the per-turn scope (#68559).
-    from tools.terminal_scope import terminal_env
+    from hermes_agent.tools.terminal_scope import terminal_env
     return terminal_env("TERMINAL_ENV", "local").strip().lower() in ("local", "")
 
 
@@ -273,7 +273,7 @@ def browser_backend_name(local_engine: Optional[str] = None) -> str:
     hybrid ``::local`` sidecar, a cloud failure's local fallback, the real profile) of that engine (``local``
     or ``lightpanda``, as its session was created), so neither a configured provider nor ``browser.engine``
     names it. Config reads only, no network I/O."""
-    from tools.browser_session_cdp import get_cdp_override_raw
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override_raw
     if get_cdp_override_raw():
         return "cdp"
     if local_engine:

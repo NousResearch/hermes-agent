@@ -74,7 +74,7 @@ def real_profile_key() -> str:
 
 def terminate_real_profile_browser() -> None:
     """Stop this profile's real-profile browser if this process launched it (idempotent)."""
-    from tools.browser_launcher import stop_browser
+    from hermes_agent.tools.browser_launcher import stop_browser
     stop_browser(real_profile_key())
 
 
@@ -92,8 +92,8 @@ def _consent_revoked() -> tuple[None, None]:
 
 def _launch(browser_name: str) -> tuple[Optional[str], Optional[str]]:
     from hermes_cli.browser_connect import chromium_executable, real_profile_copy_dir, snapshot_real_profile
-    from tools.browser_launcher import launch_chromium
-    from tools.browser_session import ensure_screen_for_headed_chromium
+    from hermes_agent.tools.browser_launcher import launch_chromium
+    from hermes_agent.tools.browser_session import ensure_screen_for_headed_chromium
     real_binary = chromium_executable(browser_name)
     if real_binary is None:
         return None, f"{_RP}the real browser binary for '{browser_name}' could not be found. Reinstall it or turn the toggle off."
@@ -126,12 +126,12 @@ def real_profile_cdp() -> tuple[Optional[str], Optional[str]]:
     Snapshot → launch the real binary on the copy (or attach to the one already running) → its CDP URL.
     ``(None, message)`` when it can't (callers fall back to a fresh browser and report the message);
     ``(None, None)`` when consent is off."""
-    from tools.browser_session_cloud import use_real_profile
+    from hermes_agent.tools.browser_session_cloud import use_real_profile
     if not use_real_profile():
         return _consent_revoked()
     # Lightpanda cannot load a Chromium profile; checked before default-browser detection so a host with no
     # Chromium default still reports the actionable engine conflict.
-    from tools.browser_lightpanda import using_lightpanda_engine
+    from hermes_agent.tools.browser_lightpanda import using_lightpanda_engine
     if using_lightpanda_engine():
         return None, (_RP + "browser.engine is set to 'lightpanda', which cannot load a real Chromium profile. "
                       "Set browser.engine to 'auto' to use real-profile browsing, or turn the toggle off.")
@@ -140,7 +140,7 @@ def real_profile_cdp() -> tuple[Optional[str], Optional[str]]:
         return None, (_RP + "the real-profile browser is already being prepared by another call that has not "
                       "finished. Retry after that call completes, or restart Hermes if it was abandoned.")
     try:
-        from tools.browser_launcher import get_browser
+        from hermes_agent.tools.browser_launcher import get_browser
         running = get_browser(real_profile_key())
         if running is not None:
             return running.cdp_url, None

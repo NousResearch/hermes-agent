@@ -60,7 +60,7 @@ async def test_what_the_old_conversation_schedules_for_here_names_the_app_not_th
     kanban subscription or send_message origin it creates never names the chat."""
     from hermes_agent.gateway.session import build_session_context
     from hermes_agent.gateway.session_context import get_session_env
-    from tools.cronjob_job_args import _origin_from_env
+    from hermes_agent.tools.cronjob_job_args import _origin_from_env
     runner, _adapter, authority, _source, _sent, _ran, _gates, _lane, ref_a = await _moved_on(monkeypatch)
     live = authority.sessions[ref_a.session_id]
     entry = runner.session_store.get_or_create_session(live.source)

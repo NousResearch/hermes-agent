@@ -123,7 +123,7 @@ def busy_ledger() -> Optional[str]:
             busy_sessions = [sid for sid, s in gateway._sessions.items() if _session_work_in_flight(s)]
         if busy_sessions:
             return "session:" + ",".join(str(sid) for sid in busy_sessions)
-        from tools.async_delegation import active_count
+        from hermes_agent.tools.async_delegation import active_count
         from hermes_agent.cron.scheduler import get_running_job_ids
         if active_count():
             return "delegation"

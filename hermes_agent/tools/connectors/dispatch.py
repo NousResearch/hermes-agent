@@ -3,14 +3,14 @@
 import json
 from dataclasses import asdict
 
-from tools.registry import tool_error
-from tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
-from tools.connectors.gateway.merge import assemble_results, fill_remote_failure, partition_calls
+from hermes_agent.tools.registry import tool_error
+from hermes_agent.tools.connectors.gateway.config import MAX_CALLS_PER_DISPATCH
+from hermes_agent.tools.connectors.gateway.merge import assemble_results, fill_remote_failure, partition_calls
 
 
 def dispatch_connector_call(name, arguments, tool_call_id, turn_id=None, task_id=None):
-    from tools.connectors.data_use import record_data_use
-    from tools.connectors.gateway.bridge import run_remote
+    from hermes_agent.tools.connectors.data_use import record_data_use
+    from hermes_agent.tools.connectors.gateway.bridge import run_remote
 
     partition = partition_calls([{"name": name, "arguments": arguments}])
     entries = run_remote(partition.remote, tool_call_id, availability=None, client_factory=None, turn_id=turn_id,
@@ -25,15 +25,15 @@ def dispatch_connector_batch(calls, ids, *, user_task, enabled_tools,
                              middleware_trace, enabled_toolsets, disabled_toolsets):
     from dataclasses import replace
 
-    from model_tools import handle_function_call, suppress_post_tool_call_hook
-    from tools.interrupt import is_interrupted
+    from hermes_agent.model_tools import handle_function_call, suppress_post_tool_call_hook
+    from hermes_agent.tools.interrupt import is_interrupted
 
     if len(calls) > MAX_CALLS_PER_DISPATCH:
         return tool_error(f"too many calls: {len(calls)} > max {MAX_CALLS_PER_DISPATCH}. "
                           "Retry with fewer calls per batch.")
     partition = partition_calls(calls)
     if partition.local:
-        from tools.tool_search_validation import local_batch_error
+        from hermes_agent.tools.tool_search_validation import local_batch_error
         return tool_error(local_batch_error(calls))
     entries = list(partition.errors)
     for offset, plan in enumerate(partition.remote):

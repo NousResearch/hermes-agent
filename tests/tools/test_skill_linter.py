@@ -1,7 +1,7 @@
-"""Tests for tools/skill_linter.py — the advisory SKILL.md convention linter."""
+"""Tests for hermes_agent/tools/skill_linter.py — the advisory SKILL.md convention linter."""
 
 
-from tools.skill_linter import (
+from hermes_agent.tools.skill_linter import (
     ERROR,
     WARNING,
     lint_content,
@@ -194,7 +194,7 @@ def test_incident_log_shape_flagged_and_rule_shape_not():
 
 
 def test_references_sprawl_flagged_above_cap(tmp_path):
-    from tools.skill_linter import _MAX_REFERENCE_FILES
+    from hermes_agent.tools.skill_linter import _MAX_REFERENCE_FILES
     skill_dir = tmp_path / "my-skill"
     refs = skill_dir / "references"
     refs.mkdir(parents=True)
@@ -210,7 +210,7 @@ def test_oversized_body_flagged_above_budget_and_not_below():
     # skill_view loads SKILL.md whole and it rides in context for the rest of the session, so the
     # body has a soft budget. Threshold-relative on purpose: the number is a calibration, not a
     # contract. The finding names the size so the author sees how far over they are.
-    from tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
+    from hermes_agent.tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
     filler = "- Prefer the native tool; the shell path loses the structured result.\n"
     over = CLEAN + filler * (_BODY_SOFT_BUDGET_CHARS // len(filler) + 1)
     under = CLEAN + filler * (_BODY_SOFT_BUDGET_CHARS // len(filler) // 2)

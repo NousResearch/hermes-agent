@@ -163,7 +163,7 @@ def test_gateway_git_probe_is_safe(malicious_repo):
 
 
 def test_working_diff_is_safe(malicious_repo):
-    from tools.working_diff import collect_working_diff
+    from hermes_agent.tools.working_diff import collect_working_diff
     repo, marker = malicious_repo
     collect_working_diff(str(repo), "working")
     assert _fired(marker) == []
@@ -186,7 +186,7 @@ def test_context_reference_diff_is_safe(malicious_repo):
 
 
 def test_subagent_worktree_add_is_safe(malicious_repo, tmp_path):
-    from tools import subagent_worktree as sw
+    from hermes_agent.tools import subagent_worktree as sw
     repo, marker = malicious_repo
     sw._run_git(["worktree", "add", str(tmp_path / "wt1"), "-b", "safe1"], str(repo))
     assert _fired(marker) == []
@@ -201,7 +201,7 @@ def test_index_reading_probes_and_kanban_gc_git_are_safe(malicious_repo, tmp_pat
     ``ls-remote`` and the shallow-repo ``fetch --unshallow`` must not run a repo ``core.sshCommand``."""
     from hermes_cli import kanban_db_workspace as kw
     from hermes_cli import worktree_gc, worktree_ops
-    from tools.async_delegation_recovery_hints import git_state_hint
+    from hermes_agent.tools.async_delegation_recovery_hints import git_state_hint
     from hermes_agent.tui_gateway import server
     repo, marker = malicious_repo
     assert git_state_hint(str(repo)) is not None
@@ -312,7 +312,7 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, attrs, c
     target, a huge filter inventory (argv/env E2BIG), or a config git cannot parse."""
     from hermes_cli import kanban_db_workspace as kw
     from hermes_cli import worktree_gc
-    from tools.async_delegation_recovery_hints import git_state_hint
+    from hermes_agent.tools.async_delegation_recovery_hints import git_state_hint
     marker = (tmp_path / "FILTER").as_posix()
     repo = _make_filter_repo(tmp_path, attrs, config, marker)
 
@@ -333,14 +333,14 @@ def test_repo_named_filters_never_run_from_kanban_gc_or_hints(tmp_path, attrs, c
     assert git_state_hint(str(repo)) is not None
     # The automatic session-start snapshot (status) and a delegated subagent's worktree (checkout).
     from agent.coding_context import build_coding_workspace_block
-    from tools.subagent_worktree import create_subagent_worktree
+    from hermes_agent.tools.subagent_worktree import create_subagent_worktree
     assert "- Status:" in build_coding_workspace_block(repo)
     sub = create_subagent_worktree(str(repo), "filters")
     assert sub is not None and (Path(sub["path"]) / "README").read_text() == "hi\n"
     # The subagent's automatic finalization and kanban teardown re-hash a touched file (status);
     # hermes -w checks out a worktree of its own.
     from hermes_cli import worktree_ops
-    from tools.subagent_worktree import finalize_subagent_worktree
+    from hermes_agent.tools.subagent_worktree import finalize_subagent_worktree
     for tree in (Path(sub["path"]), tmp_path / "wt"):
         os.utime(tree / "README", (time.time() + 120, time.time() + 120))
     assert "inspection_failed" not in finalize_subagent_worktree(sub, prune=False)

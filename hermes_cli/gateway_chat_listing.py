@@ -22,7 +22,7 @@ def print_tool_listing(args) -> int:
     from agent.i18n import t
     enabled, disabled = _selection(args)
     if getattr(args, "list_tools", False):
-        from model_tools import get_tool_definitions, get_toolset_for_tool
+        from hermes_agent.model_tools import get_tool_definitions, get_toolset_for_tool
         # Pre-assembly list, as main's /tools: deferred tool_search tools are shown too.
         tools = get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,
                                      skip_tool_search_assembly=True)
@@ -43,7 +43,7 @@ def print_tool_listing(args) -> int:
                 print(f"    * {name:<20} - {desc}")
         print(f"\n  {t('cli.tools.total', count=str(len(tools)))}")
         return 0
-    from toolsets import get_all_toolsets, get_toolset_info
+    from hermes_agent.toolsets import get_all_toolsets, get_toolset_info
     print(t("cli.toolsets.header"))
     for name in sorted(get_all_toolsets()):
         info = get_toolset_info(name)

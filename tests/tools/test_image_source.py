@@ -1,4 +1,4 @@
-"""Tests for tools/image_source.py — the unified vision image-source resolver.
+"""Tests for hermes_agent/tools/image_source.py — the unified vision image-source resolver.
 
 Covers the delivery contract (data:/http/file/local/container source handling,
 size cap, magic-byte sniff) AND the terminal-backend confinement security model
@@ -28,7 +28,7 @@ def _reload(monkeypatch, hermes_home: Path):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     import hermes_constants
     importlib.reload(hermes_constants)
-    import tools.image_source as isrc
+    import hermes_agent.tools.image_source as isrc
     importlib.reload(isrc)
     return isrc
 
@@ -39,7 +39,7 @@ def _no_real_sandbox_bringup(monkeypatch):
     tests never spawn a real ssh/docker env. Patched on terminal_tool (which
     _reload does not touch) and resolved at call time, so it survives the
     per-test image_source reload. The bring-up tests override it."""
-    import tools.terminal_tool as tt
+    import hermes_agent.tools.terminal_tool as tt
     monkeypatch.setattr(tt, "ensure_task_env", lambda *a, **k: None)
 
 
@@ -262,7 +262,7 @@ class TestNonLocalBackendConfinement:
             calls["cmd"] = cmd
             return {"returncode": 0, "output": container_png_b64}
 
-        with patch("tools.image_source._get_active_env",
+        with patch("hermes_agent.tools.image_source._get_active_env",
                    return_value=SimpleNamespace(execute=fake_execute)):
             res = await isrc.resolve_image_source(str(secret), isrc.ResolveContext(task_id="t1"))
 
@@ -282,7 +282,7 @@ class TestNonLocalBackendConfinement:
         secret = tmp_path / "id_rsa"
         secret.write_bytes(b"HOST-PRIVATE-KEY")
 
-        with patch("tools.image_source._get_active_env", return_value=None):
+        with patch("hermes_agent.tools.image_source._get_active_env", return_value=None):
             with pytest.raises(isrc.SourceNotFound):
                 await isrc.resolve_image_source(str(secret), isrc.ResolveContext(task_id="t1"))
 
@@ -305,7 +305,7 @@ class TestNonLocalBackendConfinement:
             pytest.skip("symlinks unsupported")
 
         # Fails closed (no sandbox) rather than host-reading the symlink target.
-        with patch("tools.image_source._get_active_env", return_value=None):
+        with patch("hermes_agent.tools.image_source._get_active_env", return_value=None):
             with pytest.raises(isrc.SourceNotFound):
                 await isrc.resolve_image_source(str(link), isrc.ResolveContext(task_id="t1"))
 
@@ -324,7 +324,7 @@ class TestExecReadSafety:
             captured["cmd"] = cmd
             return {"returncode": 0, "output": base64.b64encode(PNG).decode()}
 
-        with patch("tools.image_source._get_active_env",
+        with patch("hermes_agent.tools.image_source._get_active_env",
                    return_value=SimpleNamespace(execute=fake_execute)):
             await isrc.resolve_image_source(
                 "/workspace/-i-etc-shadow.png", isrc.ResolveContext(task_id="t1"))
@@ -345,7 +345,7 @@ class TestExecReadSafety:
             limit = int(re.search(r"head -c (\d+)", cmd).group(1))
             return {"returncode": 0, "output": base64.b64encode(sandbox_file[:limit]).decode()}
 
-        with patch("tools.image_source._get_active_env",
+        with patch("hermes_agent.tools.image_source._get_active_env",
                    return_value=SimpleNamespace(execute=fake_execute)):
             with pytest.raises(isrc.SourceTooLarge):
                 await isrc.resolve_image_source("/workspace/big.png", isrc.ResolveContext(task_id="t1"))
@@ -372,7 +372,7 @@ class TestExecReadSafety:
                 return {"returncode": 1, "output": ""}
             return {"returncode": 0, "output": b64}
 
-        with patch("tools.image_source._get_active_env",
+        with patch("hermes_agent.tools.image_source._get_active_env",
                    return_value=SimpleNamespace(execute=fake_execute)):
             res = await isrc.resolve_image_source(
                 "/workspace/cold.png", isrc.ResolveContext(task_id="t1"))
@@ -394,7 +394,7 @@ class TestExecReadSafety:
         def fake_execute(cmd, **kw):
             return {"returncode": 1, "output": "head: can't open '/x': No such file or directory"}
 
-        with patch("tools.image_source._get_active_env",
+        with patch("hermes_agent.tools.image_source._get_active_env",
                    return_value=SimpleNamespace(execute=fake_execute)):
             with pytest.raises(isrc.SourceNotFound) as excinfo:
                 await isrc.resolve_image_source(
@@ -410,7 +410,7 @@ class TestSvgNormalization:
 
     @pytest.mark.asyncio
     async def test_svg_rasterized_when_converter_available(self, tmp_path, monkeypatch):
-        from tools import vision_tools_image_prep as vt
+        from hermes_agent.tools import vision_tools_image_prep as vt
         isrc = _reload(monkeypatch, tmp_path / "hermes")
         monkeypatch.setenv("TERMINAL_ENV", "local")
         svg = tmp_path / "art.svg"
@@ -430,7 +430,7 @@ class TestSvgNormalization:
         path.unlink()
 
     def test_svg_actionable_error_when_no_converter(self, tmp_path, monkeypatch):
-        from tools import vision_tools_image_prep as vt
+        from hermes_agent.tools import vision_tools_image_prep as vt
         _reload(monkeypatch, tmp_path / "hermes")
         svg = tmp_path / "art.svg"
         svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>')
@@ -463,7 +463,7 @@ class TestLazySandboxBringUp:
         def fake_get_active(task_id):
             return fake_env if brought_up else None
 
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
         monkeypatch.setattr(tt, "ensure_task_env", fake_ensure)
         monkeypatch.setattr(isrc, "_get_active_env", fake_get_active)
 
@@ -482,7 +482,7 @@ class TestLazySandboxBringUp:
         secret = tmp_path / "id_rsa"
         secret.write_bytes(b"HOST-PRIVATE-KEY")
 
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
         monkeypatch.setattr(tt, "ensure_task_env", lambda *_a, **_k: None)
         monkeypatch.setattr(isrc, "_get_active_env", lambda *_a, **_k: None)
 
@@ -513,15 +513,15 @@ class TestHeicDetection:
     'not a recognized image' (the pre-fix behavior for iPhone photos)."""
 
     def test_heic_brand_detected(self):
-        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(HEIC_HEADER) == "image/heic"
 
     def test_generic_mif1_brand_detected_as_heic(self):
-        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(MIF1_HEADER) == "image/heic"
 
     def test_avif_brand_detected(self):
-        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(AVIF_HEADER) == "image/avif"
 
     def test_mif1_major_with_avif_compatible_brand_is_avif(self):
@@ -529,13 +529,13 @@ class TestHeicDetection:
         compatible brands is AV1-coded and must be reported as AVIF. Sniffing
         only the major brand labeled every mif1 file HEIC, which routes an AVIF
         to the HEVC error text and mis-reports the format to the caller."""
-        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(
             MIF1_MAJOR_AVIF_COMPATIBLE) == "image/avif"
 
     def test_mif1_major_with_av01_compatible_brand_is_avif(self):
         """Same as above for the 'av01' codec brand, deeper in the list."""
-        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(
             MIF1_MAJOR_AV01_COMPATIBLE) == "image/avif"
 
@@ -543,7 +543,7 @@ class TestHeicDetection:
     def test_brand_scan_does_not_read_past_the_ftyp_box(self):
         """The scan is bounded by the declared ftyp box size, so an 'avif' token
         sitting in a FOLLOWING box must not upgrade a HEIC to AVIF."""
-        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         # ftyp box is exactly 0x18 bytes (major mif1 + one compatible 'heic');
         # the next box then contains the literal bytes 'avif'.
         hdr = (
@@ -564,7 +564,7 @@ class TestHeicDetection:
         enforce. Every malformed size must still report HEIC.
         """
         import struct
-        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         hdr = (
             struct.pack(">I", declared_size)
             + b"ftyp" + b"mif1" + b"\x00" * 4 + b"heic"
@@ -580,7 +580,7 @@ class TestHeicDetection:
         an attack: clamp to the available bytes rather than failing closed, so a
         genuine AVIF whose ftyp box is larger than 64 bytes is still detected."""
         import struct
-        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         hdr = (
             struct.pack(">I", 9999)
             + b"ftyp" + b"mif1" + b"\x00" * 4 + b"mif1avif"
@@ -591,7 +591,7 @@ class TestHeicDetection:
         """A size that is not a multiple of 4 must not misalign the brand loop
         into reading a partial brand."""
         import struct
-        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         for size in (17, 18, 19, 21, 22, 23):
             hdr = (
                 struct.pack(">I", size)
@@ -604,7 +604,7 @@ class TestHeicDetection:
 
     def test_truncated_ftyp_header_does_not_crash(self):
         """A short/garbage read must return a value, not raise."""
-        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         assert _detect_image_mime_type_from_bytes(b"\x00\x00\x00\x18ftyp") is None
         # Bogus (huge) declared box size must fall back to the sniffed window.
         assert _detect_image_mime_type_from_bytes(
@@ -613,7 +613,7 @@ class TestHeicDetection:
     def test_ftyp_with_unknown_brand_not_misdetected(self):
         """An ISO-BMFF ftyp box that isn't an image brand (e.g. mp4) stays
         unrecognized — we must not claim every ftyp container is an image."""
-        from tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
+        from hermes_agent.tools.vision_tools_image_prep import _detect_image_mime_type_from_bytes
         mp4 = b"\x00\x00\x00\x18ftypmp42\x00\x00\x00\x00mp42isom" + b"\x00" * 32
         assert _detect_image_mime_type_from_bytes(mp4) is None
 
@@ -624,7 +624,7 @@ class TestHeicDetection:
         pillow_heif = pytest.importorskip("pillow_heif")
         pillow_heif.register_heif_opener()
         from PIL import Image
-        from tools import vision_tools_image_prep as vt
+        from hermes_agent.tools import vision_tools_image_prep as vt
         isrc = _reload(monkeypatch, tmp_path / "hermes")
         monkeypatch.setenv("TERMINAL_ENV", "local")
 
@@ -649,7 +649,7 @@ class TestHeicDetection:
         """With pillow-heif unavailable, a HEIC image gets an actionable error
         (install pillow-heif) rather than a generic conversion failure — the
         same soft-dependency posture as SVG-without-rasterizer."""
-        from tools import vision_tools_image_prep as vt
+        from hermes_agent.tools import vision_tools_image_prep as vt
         _reload(monkeypatch, tmp_path / "hermes")
         heic = tmp_path / "photo.heic"
         heic.write_bytes(HEIC_HEADER)
@@ -681,7 +681,7 @@ class TestHeicDetection:
         from PIL import Image, features
         if not features.check("avif"):
             pytest.skip("this Pillow build has no native AVIF codec")
-        from tools import vision_tools_image_prep as vt
+        from hermes_agent.tools import vision_tools_image_prep as vt
         _reload(monkeypatch, tmp_path / "hermes")
 
         avif = tmp_path / "photo.avif"
@@ -707,7 +707,7 @@ class TestHeicDetection:
         """When an AVIF genuinely cannot be decoded, the guidance must mention
         the AV1/Pillow path — not blame pillow-heif alone, which frequently
         ships without any AV1 codec."""
-        from tools import vision_tools_image_prep as vt
+        from hermes_agent.tools import vision_tools_image_prep as vt
         _reload(monkeypatch, tmp_path / "hermes")
         # Valid AVIF brand, but the payload is not decodable by anything.
         broken = tmp_path / "broken.avif"

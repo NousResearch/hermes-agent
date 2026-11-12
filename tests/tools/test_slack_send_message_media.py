@@ -143,7 +143,7 @@ def test_send_to_platform_routes_slack_media():
     from hermes_agent.gateway.config import Platform
     from hermes_cli.plugins import discover_plugins
     from hermes_agent.gateway.platform_registry import platform_registry
-    from tools.send_message_tool import _send_to_platform
+    from hermes_agent.tools.send_message_tool import _send_to_platform
 
     pdf = _tmpfile(".pdf")
     discover_plugins()

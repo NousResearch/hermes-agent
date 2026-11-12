@@ -68,9 +68,9 @@ def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
     with (
         patch(
-            "model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")
+            "hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")
         ),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
@@ -195,10 +195,10 @@ def test_malformed_memory_config_still_builds_default_store():
             return_value=malformed,
         ),
         patch(
-            "model_tools.get_tool_definitions",
+            "hermes_agent.model_tools.get_tool_definitions",
             return_value=_make_tool_defs("memory"),
         ),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
@@ -222,10 +222,10 @@ def agent_with_memory_tool():
     """Agent whose valid_tool_names includes 'memory'."""
     with (
         patch(
-            "model_tools.get_tool_definitions",
+            "hermes_agent.model_tools.get_tool_definitions",
             return_value=_make_tool_defs("web_search", "memory"),
         ),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
@@ -259,10 +259,10 @@ def test_aiagent_reuses_existing_errors_log_handler():
 
         with (
             patch(
-                "model_tools.get_tool_definitions",
+                "hermes_agent.model_tools.get_tool_definitions",
                 return_value=_make_tool_defs("web_search"),
             ),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
         ):
             AIAgent(
@@ -299,9 +299,9 @@ class TestProviderModelNormalization:
     def test_aiagent_strips_matching_native_provider_prefix(self):
         with (
             patch(
-                "model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")
+                "hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")
             ),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
         ):
             agent = AIAgent(
@@ -527,8 +527,8 @@ class TestInit:
     def test_anthropic_base_url_accepted(self):
         """Anthropic base URLs should route to native Anthropic client."""
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter._anthropic_sdk") as mock_anthropic,
         ):
             agent = AIAgent(
@@ -544,8 +544,8 @@ class TestInit:
     def test_tool_delay_kwarg_is_deprecated_noop(self):
         """tool_delay stays accepted for compatibility but warns and is ignored."""
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
         ):
             with pytest.warns(DeprecationWarning, match="tool_delay"):
@@ -561,8 +561,8 @@ class TestInit:
     def test_prompt_caching_claude_openrouter(self):
         """Claude model via OpenRouter should enable prompt caching."""
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
         ):
             a = AIAgent(
@@ -578,8 +578,8 @@ class TestInit:
     def test_prompt_caching_non_claude(self):
         """Non-Claude model should disable prompt caching."""
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
         ):
             a = AIAgent(
@@ -596,8 +596,8 @@ class TestInit:
     def test_prompt_caching_native_anthropic(self):
         """Native Anthropic provider should enable prompt caching."""
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter._anthropic_sdk"),
         ):
             a = AIAgent(
@@ -613,8 +613,8 @@ class TestInit:
     def test_prompt_caching_cache_ttl_defaults_without_config(self):
         """cache_ttl stays 5m when prompt_caching is absent from config."""
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch("hermes_cli.config.load_config", return_value={}), patch("hermes_cli.config.load_config_readonly", return_value={}),
         ):
@@ -635,8 +635,8 @@ class TestInit:
     def test_prompt_caching_disabled_by_falsy_cache_ttl(self, falsy_value):
         """Falsy cache_ttl values should fully disable prompt caching."""
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
@@ -663,8 +663,8 @@ class TestInit:
         """The disable must survive anthropic_prompt_cache_policy() re-derivation
         (called during /model switch and fallback activation)."""
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
@@ -694,8 +694,8 @@ class TestInit:
     def test_constructor_max_tokens_wins_over_config(self):
         """Explicit constructor max_tokens keeps programmatic callers stable."""
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
@@ -824,8 +824,8 @@ class TestBuildSystemPrompt:
 
     def test_can_use_soul_identity_even_when_context_files_are_skipped(self):
         with (
-            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("terminal")),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("terminal")),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch("agent.prompt_builder.load_soul_md", return_value="SOUL IDENTITY"),
         ):
@@ -953,12 +953,12 @@ class TestBuildSystemPrompt:
         }
 
         with (
-            patch("model_tools.get_tool_definitions", return_value=tools),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=tools),
             patch(
-                "model_tools.check_toolset_requirements",
+                "hermes_agent.model_tools.check_toolset_requirements",
                 side_effect=AssertionError("should not re-check toolset requirements"),
             ),
-            patch("model_tools.get_toolset_for_tool", create=True, side_effect=toolset_map.get),
+            patch("hermes_agent.model_tools.get_toolset_for_tool", create=True, side_effect=toolset_map.get),
             patch("agent.prompt_builder.build_skills_system_prompt", return_value="SKILLS_PROMPT") as mock_skills,
             patch("agent.process_bootstrap.OpenAI"),
         ):
@@ -985,8 +985,8 @@ class TestToolUseEnforcementConfig:
         """Even with enforcement=true, no injection when agent has no tools."""
         from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
@@ -1019,10 +1019,10 @@ class TestExecutionGuidanceConfig:
             agent_cfg["execution_guidance"] = execution_guidance
         with (
             patch(
-                "model_tools.get_tool_definitions",
+                "hermes_agent.model_tools.get_tool_definitions",
                 return_value=_make_tool_defs("terminal", "web_search"),
             ),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
@@ -1080,10 +1080,10 @@ class TestTaskCompletionGuidance:
         agent_cfg.update(extra_cfg)
         with (
             patch(
-                "model_tools.get_tool_definitions",
+                "hermes_agent.model_tools.get_tool_definitions",
                 return_value=_make_tool_defs("terminal", "web_search"),
             ),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
@@ -1119,8 +1119,8 @@ class TestTaskCompletionGuidance:
         tools it would be advice for a capability the agent doesn't have."""
         from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
         with (
-            patch("model_tools.get_tool_definitions", return_value=[]),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
@@ -1152,10 +1152,10 @@ class TestEnvironmentProbeIntegration:
                     environment_probe=True):
         with (
             patch(
-                "model_tools.get_tool_definitions",
+                "hermes_agent.model_tools.get_tool_definitions",
                 return_value=_make_tool_defs("terminal"),
             ),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.process_bootstrap.OpenAI"),
             patch(
                 "hermes_cli.config.load_config",
@@ -1178,7 +1178,7 @@ class TestEnvironmentProbeIntegration:
 
     def test_probe_appears_when_problem_detected(self, monkeypatch):
         """When the probe finds something off, the line lands in the prompt."""
-        from tools import env_probe
+        from hermes_agent.tools import env_probe
         env_probe._reset_cache_for_tests()
         monkeypatch.setattr(env_probe, "_python_version_of",
                             lambda b: {"python3": "3.11.15"}.get(b))
@@ -1195,7 +1195,7 @@ class TestEnvironmentProbeIntegration:
 
     def test_probe_silent_on_clean_env(self, monkeypatch):
         """Clean environment → probe emits nothing → no line in prompt."""
-        from tools import env_probe
+        from hermes_agent.tools import env_probe
         env_probe._reset_cache_for_tests()
         monkeypatch.setattr(env_probe, "_python_version_of",
                             lambda b: "3.13.3" if b == "python3" else None)
@@ -1210,7 +1210,7 @@ class TestEnvironmentProbeIntegration:
 
     def test_probe_disabled_by_config(self, monkeypatch):
         """Even with detectable problems, the probe stays out when disabled."""
-        from tools import env_probe
+        from hermes_agent.tools import env_probe
         env_probe._reset_cache_for_tests()
         monkeypatch.setattr(env_probe, "_python_version_of",
                             lambda b: {"python3": "3.11.15"}.get(b))
@@ -1500,7 +1500,7 @@ class TestExecuteToolCalls:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
         with patch(
-            "model_tools.handle_function_call", return_value="search result"
+            "hermes_agent.model_tools.handle_function_call", return_value="search result"
         ) as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
             # enabled_tools passes the agent's own valid_tool_names
@@ -1518,7 +1518,7 @@ class TestExecuteToolCalls:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
         with (
-            patch("model_tools.handle_function_call", return_value="ok") as mock_hfc,
+            patch("hermes_agent.model_tools.handle_function_call", return_value="ok") as mock_hfc,
             patch("agent.tool_executor.time.sleep") as mock_sleep,
         ):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
@@ -1552,7 +1552,7 @@ class TestExecuteToolCalls:
         agent._memory_manager = FakeMemoryManager()
         agent._memory_store = object()
 
-        with patch("tools.memory_tool.memory_tool", return_value=json.dumps({"success": True})):
+        with patch("hermes_agent.tools.memory_tool.memory_tool", return_value=json.dumps({"success": True})):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
         assert len(calls) == 1
@@ -1601,7 +1601,7 @@ class TestExecuteToolCalls:
             "hermes_cli.lifecycle.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        with patch("model_tools.handle_function_call", return_value="ok") as mock_hfc:
+        with patch("hermes_agent.model_tools.handle_function_call", return_value="ok") as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
             mock_hfc.assert_not_called()
         assert len(messages) == 1
@@ -1647,7 +1647,7 @@ class TestExecuteToolCalls:
         tc = _mock_tool_call(name="web_search", arguments=None, call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
-        with patch("model_tools.handle_function_call", return_value="ok") as mock_hfc:
+        with patch("hermes_agent.model_tools.handle_function_call", return_value="ok") as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
             mock_hfc.assert_not_called()
         assert len(messages) == 1
@@ -1662,7 +1662,7 @@ class TestExecuteToolCalls:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
         big_result = "x" * 150_000
-        with patch("model_tools.handle_function_call", return_value=big_result):
+        with patch("hermes_agent.model_tools.handle_function_call", return_value=big_result):
             agent._execute_tool_calls(mock_msg, messages, "task-1")
         # Content should be replaced with persisted-output or truncation
         assert len(messages[0]["content"]) < 150_000
@@ -1674,7 +1674,7 @@ class TestExecuteToolCalls:
         messages = []
         agent.tool_progress_callback = lambda *args, **kwargs: None
 
-        with patch("model_tools.handle_function_call", return_value="search result"), \
+        with patch("hermes_agent.model_tools.handle_function_call", return_value="search result"), \
              patch.object(agent, "_safe_print") as mock_print:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
 
@@ -1834,7 +1834,7 @@ class TestConcurrentToolExecution:
             call_log.append(name)
             return json.dumps({"result": args.get("q", "")})
 
-        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert len(messages) == 3
@@ -1864,7 +1864,7 @@ class TestConcurrentToolExecution:
             seen_args.append((kwargs["tool_call_id"], args))
             return "ok"
 
-        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         # Only the valid call executed; the None-args call was rejected.
@@ -1887,7 +1887,7 @@ class TestConcurrentToolExecution:
                 _time.sleep(0.1)  # Slow tool
             return f"result_{q}"
 
-        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert messages[0]["tool_call_id"] == "c1"
@@ -1920,7 +1920,7 @@ class TestConcurrentToolExecution:
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
 
-        with patch("tools.daemon_pool.DaemonThreadPoolExecutor", ShutdownExecutor):
+        with patch("hermes_agent.tools.daemon_pool.DaemonThreadPoolExecutor", ShutdownExecutor):
             agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
 
         assert len(messages) == 2
@@ -1938,7 +1938,7 @@ class TestConcurrentToolExecution:
         agent.tool_start_callback = lambda tool_call_id, function_name, function_args: starts.append((tool_call_id, function_name, function_args))
         agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
 
-        with patch("model_tools.handle_function_call", return_value='{"success": true}'):
+        with patch("hermes_agent.model_tools.handle_function_call", return_value='{"success": true}'):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
         assert starts == [("c1", "web_search", {"query": "hello"})]
@@ -1961,7 +1961,7 @@ class TestConcurrentToolExecution:
         agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
         agent.tool_progress_callback = lambda event, name, preview, args, **kw: progress.append((event, name, preview, args))
 
-        with patch("model_tools.handle_function_call", return_value='{"success": true, "typed": "sk-pro...EFGH"}'):
+        with patch("hermes_agent.model_tools.handle_function_call", return_value='{"success": true, "typed": "sk-pro...EFGH"}'):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
         assert starts[0][2]["text"].startswith("sk-pro")
@@ -1990,7 +1990,7 @@ class TestConcurrentToolExecution:
         starts = []
         agent.tool_start_callback = lambda *a: starts.append(a)
 
-        with patch("model_tools.handle_function_call", side_effect=AssertionError("should not run")):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=AssertionError("should not run")):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
         agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
@@ -2032,7 +2032,7 @@ class TestConcurrentToolExecution:
         monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
 
         with patch(
-            "model_tools.handle_function_call",
+            "hermes_agent.model_tools.handle_function_call",
             side_effect=AssertionError("middleware replacement must not dispatch"),
         ):
             if concurrent:
@@ -2056,7 +2056,7 @@ class TestConcurrentToolExecution:
             "hermes_cli.plugins._dispatch_pre_tool_call_hooks",
             lambda *args, **kwargs: ("Blocked", None),
         )
-        with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
+        with patch("hermes_agent.tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
             result = agent._invoke_tool(
                 "memory", {"action": "add", "target": "memory", "content": "x"}, "task-1",
             )
@@ -2215,47 +2215,47 @@ class TestAgentRuntimePostHookOwnershipSync:
         )
         monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
         monkeypatch.setattr(
-            "tools.todo_tool.todo_tool",
+            "hermes_agent.tools.todo_tool.todo_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(
-            "tools.memory_tool.memory_tool",
+            "hermes_agent.tools.memory_tool.memory_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(
-            "tools.clarify_tool.clarify_tool",
+            "hermes_agent.tools.clarify_tool.clarify_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(
-            "tools.read_terminal_tool.read_terminal_tool",
+            "hermes_agent.tools.read_terminal_tool.read_terminal_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(
-            "tools.read_preview_tool.read_preview_tool",
+            "hermes_agent.tools.read_preview_tool.read_preview_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(
-            "tools.drive_preview_tool.drive_preview_tool",
+            "hermes_agent.tools.drive_preview_tool.drive_preview_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(
-            "tools.annotate_preview_tool.annotate_preview_tool",
+            "hermes_agent.tools.annotate_preview_tool.annotate_preview_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(
-            "tools.read_window_tool.read_window_below_tool",
+            "hermes_agent.tools.read_window_tool.read_window_below_tool",
             lambda **kwargs: '{"ok":true}',
         )
         # manage_connections / setup_mcp shim: no card on this fake agent, so the MCP leg runs the
         # backend at once; pin the catalog and the backend so the run is hermetic.
-        monkeypatch.setattr("tools.connectors.mcp._catalog_names", lambda: ["linear"])
-        monkeypatch.setattr("tools.connectors.mcp._configured_names", list)
+        monkeypatch.setattr("hermes_agent.tools.connectors.mcp._catalog_names", lambda: ["linear"])
+        monkeypatch.setattr("hermes_agent.tools.connectors.mcp._configured_names", list)
 
         class _NoInstallBackend:
             def required_env(self, name):
                 return [{"name": "LINEAR_API_KEY", "prompt": "API key", "required": True}]
 
-        monkeypatch.setattr("tools.connectors.mcp._default_backend", _NoInstallBackend)
+        monkeypatch.setattr("hermes_agent.tools.connectors.mcp._default_backend", _NoInstallBackend)
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
         monkeypatch.setattr(
             agent,
@@ -2266,7 +2266,7 @@ class TestAgentRuntimePostHookOwnershipSync:
 
         assert tool_name in AGENT_RUNTIME_POST_HOOK_TOOL_NAMES
         with patch(
-            "model_tools.handle_function_call",
+            "hermes_agent.model_tools.handle_function_call",
             side_effect=AssertionError("agent-runtime tools must stay inline"),
         ):
             agent._invoke_tool(
@@ -2317,7 +2317,7 @@ class TestRuntimeToolTransformToolResult:
                 else []
             ),
         )
-        monkeypatch.setattr("tools.todo_tool.todo_tool", lambda **kwargs: '{"ok":true}')
+        monkeypatch.setattr("hermes_agent.tools.todo_tool.todo_tool", lambda **kwargs: '{"ok":true}')
         agent._memory_manager = None
 
     def test_concurrent_path_applies_transform(self, agent, monkeypatch):
@@ -2393,7 +2393,7 @@ class TestMcpParallelToolBatch:
     def test_mcp_tools_parallel_when_server_opted_in(self):
         """MCP tools from a parallel-safe server can run concurrently."""
         from agent.tool_dispatch_helpers import _should_parallelize_tool_batch
-        from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
+        from hermes_agent.tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("github")
             _mcp_tool_server_names["mcp__github__list_repos"] = "github"
@@ -2502,7 +2502,7 @@ class TestHandleMaxIterations:
 
         try:
             with (
-                patch("model_tools.handle_function_call", return_value="ok"),
+                patch("hermes_agent.model_tools.handle_function_call", return_value="ok"),
                 patch.object(agent, "_persist_session"),
                 patch.object(agent, "_save_trajectory"),
                 patch.object(agent, "_cleanup_task_resources"),
@@ -3237,7 +3237,7 @@ class TestRunConversation:
         resp2 = _mock_response(content="Done searching", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [resp1, resp2]
         with (
-            patch("model_tools.handle_function_call", return_value="search result") as mock_handle_function_call,
+            patch("hermes_agent.model_tools.handle_function_call", return_value="search result") as mock_handle_function_call,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -3263,7 +3263,7 @@ class TestRunConversation:
             return []
 
         with (
-            patch("model_tools.handle_function_call", return_value="search result"),
+            patch("hermes_agent.model_tools.handle_function_call", return_value="search result"),
             patch(
                 "hermes_cli.lifecycle.has_hook",
                 side_effect=lambda name: name in {"pre_api_request", "post_api_request"},
@@ -3380,7 +3380,7 @@ class TestRunConversation:
         agent.client.chat.completions.create.side_effect = [resp1, resp2]
 
         with (
-            patch("model_tools.handle_function_call", return_value="search result"),
+            patch("hermes_agent.model_tools.handle_function_call", return_value="search result"),
             patch.object(agent, "_safe_print") as mock_print,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -4129,7 +4129,7 @@ class TestRunConversation:
         agent.client.chat.completions.create.side_effect = [resp1, resp2]
 
         with (
-            patch("model_tools.handle_function_call", return_value="result"),
+            patch("hermes_agent.model_tools.handle_function_call", return_value="result"),
             patch.object(
                 agent.context_compressor, "should_compress", return_value=True
             ),
@@ -4316,7 +4316,7 @@ class TestRunConversation:
         ]
 
         with (
-            patch("model_tools.handle_function_call", return_value="search result"),
+            patch("hermes_agent.model_tools.handle_function_call", return_value="search result"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4381,7 +4381,7 @@ class TestRunConversation:
         agent.client.chat.completions.create.return_value = resp
 
         with (
-            patch("model_tools.handle_function_call") as mock_handle_function_call,
+            patch("hermes_agent.model_tools.handle_function_call") as mock_handle_function_call,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4417,7 +4417,7 @@ class TestRunConversation:
         agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
 
         with (
-            patch("model_tools.handle_function_call"),
+            patch("hermes_agent.model_tools.handle_function_call"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4454,7 +4454,7 @@ class TestRunConversation:
         agent._print_fn = lambda *a, **k: printed.append(" ".join(str(x) for x in a))
 
         with (
-            patch("model_tools.handle_function_call"),
+            patch("hermes_agent.model_tools.handle_function_call"),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4487,7 +4487,7 @@ class TestRunConversation:
             content="", finish_reason="stop", tool_calls=[good_tc],
         )
         with (
-            patch("model_tools.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch("hermes_agent.model_tools.handle_function_call", return_value='{"success":true}') as mock_hfc,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4532,7 +4532,7 @@ class TestRunConversation:
         final_resp = _mock_response(content="Done!", finish_reason="stop")
 
         with (
-            patch("model_tools.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch("hermes_agent.model_tools.handle_function_call", return_value='{"success":true}') as mock_hfc,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4572,7 +4572,7 @@ class TestRunConversation:
         final_resp = _mock_response(content="Done!", finish_reason="stop")
 
         with (
-            patch("model_tools.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch("hermes_agent.model_tools.handle_function_call", return_value='{"success":true}') as mock_hfc,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4611,7 +4611,7 @@ class TestRunConversation:
         agent.client.chat.completions.create.side_effect = [good_resp, bad_resp]
 
         with (
-            patch("model_tools.handle_function_call", return_value='{"success":true}'),
+            patch("hermes_agent.model_tools.handle_function_call", return_value='{"success":true}'),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
@@ -4659,7 +4659,7 @@ class TestRunConversation:
         mock_connect = MagicMock(return_value=MagicMock())
 
         with (
-            patch("model_tools.handle_function_call", return_value="ok"),
+            patch("hermes_agent.model_tools.handle_function_call", return_value="ok"),
             patch("hermes_cli.kanban_db_dispatch._record_task_failure",
                   mock_record_failure),
             patch("hermes_cli.kanban_db_connect.connect", mock_connect),
@@ -4708,7 +4708,7 @@ class TestRunConversation:
         mock_record_failure = MagicMock(return_value=False)
 
         with (
-            patch("model_tools.handle_function_call", return_value="ok"),
+            patch("hermes_agent.model_tools.handle_function_call", return_value="ok"),
             patch("hermes_cli.kanban_db_dispatch._record_task_failure",
                   mock_record_failure),
             patch.object(agent, "_persist_session"),
@@ -5656,7 +5656,7 @@ class TestAnthropicImageFallback:
         }]
 
         with (
-            patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=json.dumps({"success": True, "analysis": "A cat sitting on a chair."}))),
+            patch("hermes_agent.tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=json.dumps({"success": True, "analysis": "A cat sitting on a chair."}))),
             patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
         ):
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
@@ -5696,7 +5696,7 @@ class TestAnthropicImageFallback:
 
         mock_vision = AsyncMock(return_value=json.dumps({"success": True, "analysis": "A small test image."}))
         with (
-            patch("tools.vision_tools.vision_analyze_tool", new=mock_vision),
+            patch("hermes_agent.tools.vision_tools.vision_analyze_tool", new=mock_vision),
             patch("agent.anthropic_adapter.build_anthropic_kwargs") as mock_build,
         ):
             mock_build.return_value = {"model": "claude-sonnet-4-20250514", "messages": [], "max_tokens": 4096}
@@ -5794,8 +5794,8 @@ class TestAnthropicBaseUrlPassthrough:
 
     def test_custom_proxy_base_url_passed_through(self):
         with (
-            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             mock_build.return_value = MagicMock()
@@ -5815,8 +5815,8 @@ class TestAnthropicBaseUrlPassthrough:
 class TestAnthropicCredentialRefresh:
     def test_try_refresh_anthropic_client_credentials_rebuilds_client(self):
         with (
-            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
         ):
             old_client = MagicMock()
@@ -5852,8 +5852,8 @@ class TestAnthropicCredentialRefresh:
 
     def test_anthropic_messages_create_preflights_refresh(self):
         with (
-            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(
@@ -5882,8 +5882,8 @@ class TestAnthropicCredentialRefresh:
 
     def test_anthropic_messages_create_falls_back_when_stream_unavailable(self):
         with (
-            patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
         ):
             agent = AIAgent(

@@ -24,9 +24,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from hermes_cli.plugin_install_phase import InstallPhase
 from hermes_constants import get_hermes_home, profile_name_for_home
-from tools.connectors.contract import Actor, SettleReason, TargetState
-from tools.connectors.mcp import _fail, _move
-from tools.connectors.operation import ConnectionOperation, IllegalTransition, Target
+from hermes_agent.tools.connectors.contract import Actor, SettleReason, TargetState
+from hermes_agent.tools.connectors.mcp import _fail, _move
+from hermes_agent.tools.connectors.operation import ConnectionOperation, IllegalTransition, Target
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ class HostInstaller:
     def skill_meta(self, identifier: str) -> Optional[dict[str, Any]]:
         """The first hub source that knows the identifier; metadata only, no bundle download."""
         from hermes_cli.skills_hub import _sources
-        from tools.skills_hub import skills_hub_http_session
+        from hermes_agent.tools.skills_hub import skills_hub_http_session
 
         with skills_hub_http_session():
             for source in _sources():
@@ -121,7 +121,7 @@ class HostInstaller:
         from rich.console import Console
 
         from hermes_cli.skills_hub import do_install
-        from tools.skills_hub import HubLockFile, installed_entry
+        from hermes_agent.tools.skills_hub import HubLockFile, installed_entry
 
         def entry() -> Optional[dict[str, Any]]:
             return installed_entry(HubLockFile().by_identifier(), identifier, source)
@@ -133,7 +133,7 @@ class HostInstaller:
         verdict = do_install(identifier, force=force, skip_confirm=True,
                              console=Console(file=out, width=200, no_color=True, highlight=False))
         after = entry()
-        from tools.skills_sync_bundled_ops import bundled_skill_for_install
+        from hermes_agent.tools.skills_sync_bundled_ops import bundled_skill_for_install
         if after is None and verdict is not False and (builtin := bundled_skill_for_install(identifier)):
             return {"name": builtin, "already_installed": verdict is None}  # shipped skill, no hub lock entry
         if after is None or (before is not None and after.get("updated_at") == before.get("updated_at")):

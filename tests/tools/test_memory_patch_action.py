@@ -8,8 +8,8 @@ import json
 
 import pytest
 
-from tools.memory_tool import memory_tool
-from tools.memory_tool_store import MemoryStore
+from hermes_agent.tools.memory_tool import memory_tool
+from hermes_agent.tools.memory_tool_store import MemoryStore
 from hermes_cli.write_approval_commands import _changed_entries
 
 PACKED = "todo: item A; item B; item C"
@@ -149,7 +149,7 @@ class TestPatchBatch:
     def test_patch_op_counts_as_destructive_for_staging(self, packed_store):
         # patch rewrites part of an entry: it must be staged (matched_entry pinned)
         # exactly like replace, never replayed against a newer entry.
-        from tools.memory_tool import destructive_ops
+        from hermes_agent.tools.memory_tool import destructive_ops
         ops = destructive_ops({"action": "batch", "operations": [
             {"action": "patch", "old_text": "item B", "new_text": "x"}]})
         assert [op["action"] for op in ops] == ["patch"]

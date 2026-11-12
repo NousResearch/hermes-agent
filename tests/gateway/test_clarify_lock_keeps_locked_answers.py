@@ -43,7 +43,7 @@ def _frame_of(worker):
 
 @pytest.mark.asyncio
 async def test_a_timeout_keeps_the_answer_already_locked(tmp_path, monkeypatch):
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
     monkeypatch.setattr(clarify_gateway, 'get_clarify_timeout', lambda: 1)
     out, peer = await _locked_then(tmp_path, monkeypatch, lambda *a: None)
     assert out == {'answers': {'q0': 'blue'}, 'outcome': 'timed_out'}, out

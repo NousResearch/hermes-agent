@@ -11,8 +11,8 @@ from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from hermes_agent.gateway.session import SessionSource
-from tools import async_delegation as ad
-from tools.process_registry import process_registry
+from hermes_agent.tools import async_delegation as ad
+from hermes_agent.tools.process_registry import process_registry
 
 
 @pytest.mark.asyncio

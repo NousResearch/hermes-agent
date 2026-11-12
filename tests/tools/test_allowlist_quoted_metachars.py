@@ -11,8 +11,8 @@ a ``-c``/``-e``-style option would hand to another interpreter.
 
 import pytest
 
-from tools.approval import _command_matches_permanent_allowlist
-from tools.approval_floors import _has_allowlist_shell_operator
+from hermes_agent.tools.approval import _command_matches_permanent_allowlist
+from hermes_agent.tools.approval_floors import _has_allowlist_shell_operator
 
 
 class TestHasAllowlistShellOperator:
@@ -98,7 +98,7 @@ class TestHasAllowlistShellOperator:
 
 class TestAllowlistGlobWithQuotedArgs:
     def test_cargo_glob_matches_quoted_regex_filter(self, monkeypatch):
-        import tools.approval as mod
+        import hermes_agent.tools.approval as mod
         monkeypatch.setattr(mod, "_permanent_approved", {"cargo *"})
         cmd = (
             "cargo bench --bench standardized_criterion -- "
@@ -107,12 +107,12 @@ class TestAllowlistGlobWithQuotedArgs:
         assert _command_matches_permanent_allowlist(cmd)
 
     def test_glob_still_refuses_compound(self, monkeypatch):
-        import tools.approval as mod
+        import hermes_agent.tools.approval as mod
         monkeypatch.setattr(mod, "_permanent_approved", {"cargo *"})
         assert not _command_matches_permanent_allowlist("cargo build && rm -rf /tmp/x")
 
     def test_glob_refuses_git_alias_payload(self, monkeypatch):
-        import tools.approval as mod
+        import hermes_agent.tools.approval as mod
         monkeypatch.setattr(mod, "_permanent_approved", {"git *"})
         assert not _command_matches_permanent_allowlist(
             "git -c alias.x='!touch /tmp/pwn; printf ok' x"

@@ -1,4 +1,4 @@
-"""Terminal-subshell PATH completion in ``tools/environments/local.py``.
+"""Terminal-subshell PATH completion in ``hermes_agent/tools/environments/local.py``.
 
 A backend started by a non-interactive SSH session, systemd or a GUI launcher
 inherits a PATH without ``~/.local/bin`` (only the login shell adds it), so CLIs
@@ -10,8 +10,8 @@ import sys
 
 import pytest
 
-from tools.environments import local as local_mod
-from tools.environments.local import _append_missing_sane_path_entries, _make_run_env
+from hermes_agent.tools.environments import local as local_mod
+from hermes_agent.tools.environments.local import _append_missing_sane_path_entries, _make_run_env
 
 pytestmark = pytest.mark.platforms("posix")  # POSIX PATH completion only
 

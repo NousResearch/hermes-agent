@@ -19,7 +19,7 @@ from tests.gateway.test_telegram_group_gating import _group_message, _make_adapt
 
 @pytest.fixture(autouse=True)
 def _clean_state():
-    from tools import approval as approval_mod
+    from hermes_agent.tools import approval as approval_mod
 
     approval_mod._gateway_queues.clear()
     yield
@@ -37,8 +37,8 @@ def _observed_event(adapter, uid, name, body):
 def _approval_raised_in(event):
     """The approval the agent raises inside *event*'s turn, through the gateway's real session binding."""
     from hermes_agent.gateway.run import GatewayRunner
-    from tools import approval as approval_mod
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval as approval_mod
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     key = build_session_key(event.source)
     runner = object.__new__(GatewayRunner)
@@ -73,7 +73,7 @@ async def test_an_observed_group_approval_belongs_to_the_member_who_asked():
     bob.text = alice.text = "/approve"
     assert await runner._handle_approve_command(bob) == "Only Alice Example can answer this approval."
     await runner._handle_approve_command(alice)
-    from tools import approval as approval_mod
+    from hermes_agent.tools import approval as approval_mod
     assert not approval_mod._gateway_queues.get(key)
 
 
@@ -93,7 +93,7 @@ def test_an_approval_with_no_requester_is_answered_only_by_approvers_and_admins(
         refusal = approval_refusal(key, member)
         assert refusal and refusal_text(refusal) == "Only an admin or a listed approver can answer this approval."
     assert approval_refusal(key, "444", extra={"group_allow_admin_from": ["444"]}) is None
-    from tools import approval as approval_mod
+    from hermes_agent.tools import approval as approval_mod
     for approvers, member in ((["333"], "333"), (DEFAULT, "222")):  # a listed approver; legacy: anyone
         approval_mod._gateway_queues.clear()
         write_approvers(approvers)
@@ -119,8 +119,8 @@ async def test_discord_buttons_use_the_approvals_own_admin_scope(chat_type, clic
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from plugins.platforms.discord.adapter import DiscordAdapter
     from tests.gateway.test_discord_exec_approval_content import _capture_channel
-    from tools import approval as approval_mod
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval as approval_mod
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
     write_approvers([])

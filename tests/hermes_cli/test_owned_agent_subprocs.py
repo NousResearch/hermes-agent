@@ -237,7 +237,7 @@ def test_verify_start_phase_owns_then_releases_the_app_group(monkeypatch, tmp_pa
 
 
 def test_tts_command_owns_then_releases_its_group_after_success_and_idle_kill(monkeypatch, owned):
-    from tools import tts_command_provider as tts
+    from hermes_agent.tools import tts_command_provider as tts
 
     released = []
     monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.extend(pgids))

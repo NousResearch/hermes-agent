@@ -11,9 +11,9 @@ import shutil
 
 import pytest
 
-from tools import file_operations_search
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import ShellFileOperations
+from hermes_agent.tools import file_operations_search
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import ShellFileOperations
 
 pytestmark = [
     pytest.mark.platforms("linux", "macos"),

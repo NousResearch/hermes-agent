@@ -24,7 +24,7 @@ from hermes_agent.gateway.platforms.api_server_run_idempotency import RunIdempot
 from hermes_agent.gateway.run import _INTERRUPT_REASON_GATEWAY_SHUTDOWN
 from hermes_agent.hermes_state import SessionDB
 from tests.gateway.restart_test_helpers import make_restart_runner
-from tools import browser_session_lifecycle as bt_lifecycle
+from hermes_agent.tools import browser_session_lifecycle as bt_lifecycle
 
 # Safety net so a regression parks the executor thread forever instead of
 # hanging CI.  No assertion below depends on elapsed time.
@@ -617,9 +617,9 @@ class TestShutdownSettleWindow:
         which it always is for API turns — and the post-interrupt tool kill
         lands on a turn that was asked to stop microseconds earlier.
         """
-        import tools.process_registry as _pr
-        import tools.terminal_tool as _tt
-        from tools import terminal_tool_lifecycle
+        import hermes_agent.tools.process_registry as _pr
+        import hermes_agent.tools.terminal_tool as _tt
+        from hermes_agent.tools import terminal_tool_lifecycle
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the drain-timeout path
@@ -666,9 +666,9 @@ class TestShutdownSettleWindow:
         and previously went straight to the tool-subprocess kill. The settle
         loop must re-signal when API work is still live at exit.
         """
-        import tools.process_registry as _pr
-        import tools.terminal_tool as _tt
-        from tools import terminal_tool_lifecycle
+        import hermes_agent.tools.process_registry as _pr
+        import hermes_agent.tools.terminal_tool as _tt
+        from hermes_agent.tools import terminal_tool_lifecycle
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01

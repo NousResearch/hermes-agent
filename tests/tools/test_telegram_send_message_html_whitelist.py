@@ -1,6 +1,6 @@
 """`hermes send --to telegram` must only take the HTML branch for real Telegram tags.
 
-The markup heuristic on the standalone sender (`tools/send_message_senders.py`) matched
+The markup heuristic on the standalone sender (`hermes_agent/tools/send_message_senders.py`) matched
 *any* `<...>` run, so prose like `<CoT>`, `List<int>` or `<name>` switched the message to
 `parse_mode=HTML`. `format_message()` only runs on the Markdown branch, so the message went
 out unconverted, Telegram answered 400 `unsupported start tag`, and the plain-text fallback

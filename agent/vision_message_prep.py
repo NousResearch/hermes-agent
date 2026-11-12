@@ -109,7 +109,7 @@ class VisionMessagePrepMixin:
             vision_source, cleanup_path = self._materialize_data_url_for_vision(vision_source)
 
         try:
-            from tools.vision_tools import vision_analyze_tool
+            from hermes_agent.tools.vision_tools import vision_analyze_tool
 
             result_json = asyncio.run(vision_analyze_tool(image_url=vision_source, user_prompt=analysis_prompt))
             result = json.loads(result_json) if isinstance(result_json, str) else {}

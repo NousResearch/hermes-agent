@@ -10,8 +10,8 @@ from unittest.mock import patch
 import pytest
 
 from tests.tools._child_env_fixtures import child_env, project_python, run_code
-from tools import code_execution_env as ce
-from tools.code_execution_tool import build_execute_code_schema
+from hermes_agent.tools import code_execution_env as ce
+from hermes_agent.tools.code_execution_tool import build_execute_code_schema
 
 
 @pytest.mark.platforms("linux", "macos", "windows")
@@ -75,7 +75,7 @@ print(json.dumps({{
 @pytest.mark.platforms("linux", "macos", "windows")
 @pytest.mark.parametrize("mode", ["strict", "project"])
 def test_credential_policy_and_whitelist_in_real_child(child_env, monkeypatch, mode):
-    from tools.env_passthrough import register_env_passthrough
+    from hermes_agent.tools.env_passthrough import register_env_passthrough
     blocked = (
         "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "MY_SECRET",
         "DB_PASSWORD", "VAULT_CREDENTIAL", "LDAP_PASSWD", "AUTH_TOKEN",
@@ -141,7 +141,7 @@ def test_project_without_active_venv_falls_back(child_env):
 
 
 def test_project_stale_cwd_falls_through_then_uses_process_cwd(child_env, monkeypatch):
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
     monkeypatch.setattr(terminal_tool, "_session_cwd", {})
     terminal_tool.register_task_env_overrides("stale", {"cwd": str(child_env)})
@@ -153,7 +153,7 @@ def test_project_stale_cwd_falls_through_then_uses_process_cwd(child_env, monkey
 
 @pytest.mark.parametrize("mode,description", [("strict", "temp dir"), ("project", "session")])
 def test_mode_schema_matches_config_without_claiming_isolation(mode, description):
-    with patch("tools.code_execution_tool._load_config", return_value={"mode": mode}):
+    with patch("hermes_agent.tools.code_execution_tool._load_config", return_value={"mode": mode}):
         text = build_execute_code_schema()["description"].lower()
     assert description in text
     assert not any(word in text for word in ("sandbox", "isolated", "cloud"))

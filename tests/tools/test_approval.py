@@ -9,13 +9,13 @@ from unittest.mock import patch as mock_patch
 
 import pytest
 
-import tools.approval as approval_module
-from tools import approval_context, approval_detection
-from tools import approval_smart
-from tools.approval import approve_session, detect_dangerous_command, detect_hardline_command, is_approved, load_permanent, prompt_dangerous_approval
-from tools.approval_context import _get_approval_mode
-from tools.approval_context import _normalize_approval_mode
-from tools.approval_smart import _smart_approve
+import hermes_agent.tools.approval as approval_module
+from hermes_agent.tools import approval_context, approval_detection
+from hermes_agent.tools import approval_smart
+from hermes_agent.tools.approval import approve_session, detect_dangerous_command, detect_hardline_command, is_approved, load_permanent, prompt_dangerous_approval
+from hermes_agent.tools.approval_context import _get_approval_mode
+from hermes_agent.tools.approval_context import _normalize_approval_mode
+from hermes_agent.tools.approval_smart import _smart_approve
 
 
 class TestPackageManagerUninstallApproval:
@@ -269,7 +269,7 @@ class TestPipeToShellNameCoverage:
     def test_pipe_to_shell_prompts_through_guard_pipeline(self, monkeypatch):
         """End to end through check_all_command_guards: `curl | zsh` must reach the
         approval callback carrying the pipe description, not just the pattern scan."""
-        from tools.approval import check_all_command_guards
+        from hermes_agent.tools.approval import check_all_command_guards
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         prompts = []
@@ -873,7 +873,7 @@ class TestWebhookApprovalExclusion:
 
     def test_webhook_platform_returns_false(self, monkeypatch):
         """Webhook sessions are not gateway approval contexts."""
-        from tools.approval import _is_gateway_approval_context
+        from hermes_agent.tools.approval import _is_gateway_approval_context
 
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -883,8 +883,8 @@ class TestWebhookApprovalExclusion:
 
     def test_all_unattended_platforms_return_false(self, monkeypatch):
         """Every unattended programmatic platform is excluded, not just webhook."""
-        from tools.approval import _is_gateway_approval_context
-        from tools.approval_context import _UNATTENDED_APPROVAL_PLATFORMS
+        from hermes_agent.tools.approval import _is_gateway_approval_context
+        from hermes_agent.tools.approval_context import _UNATTENDED_APPROVAL_PLATFORMS
 
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -894,7 +894,7 @@ class TestWebhookApprovalExclusion:
 
     def test_non_webhook_gateway_session_returns_true(self, monkeypatch):
         """Non-webhook gateway sessions (e.g. Telegram) are still gateway contexts."""
-        from tools.approval import _is_gateway_approval_context
+        from hermes_agent.tools.approval import _is_gateway_approval_context
 
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
@@ -904,7 +904,7 @@ class TestWebhookApprovalExclusion:
 
     def test_cron_session_returns_false_regardless_of_platform(self, monkeypatch):
         """Cron sessions are never gateway approval contexts."""
-        from tools.approval import _is_gateway_approval_context
+        from hermes_agent.tools.approval import _is_gateway_approval_context
 
         monkeypatch.setenv("HERMES_CRON_SESSION", "1")
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
@@ -913,7 +913,7 @@ class TestWebhookApprovalExclusion:
 
     def test_no_platform_returns_false(self, monkeypatch):
         """No session platform means not a gateway context."""
-        from tools.approval import _is_gateway_approval_context
+        from hermes_agent.tools.approval import _is_gateway_approval_context
 
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -923,8 +923,8 @@ class TestWebhookApprovalExclusion:
 
     def _isolate(self, monkeypatch):
         """Neutralize host leakage: yolo frozen at import time + real config."""
-        import tools.approval as approval_mod
-        from tools import approval_context
+        import hermes_agent.tools.approval as approval_mod
+        from hermes_agent.tools import approval_context
 
         monkeypatch.setattr(approval_mod, "_YOLO_MODE_FROZEN", False)
         monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
@@ -937,7 +937,7 @@ class TestWebhookApprovalExclusion:
         and must never block waiting for an approval nobody can answer.
         The deny message tells the agent how the operator can opt in.
         """
-        from tools.approval import check_all_command_guards
+        from hermes_agent.tools.approval import check_all_command_guards
 
         self._isolate(monkeypatch)
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
@@ -953,7 +953,7 @@ class TestWebhookApprovalExclusion:
 
     def test_webhook_dangerous_command_approves_when_opted_in(self, monkeypatch):
         """approvals.unattended_mode: approve restores the old auto-approve path."""
-        from tools.approval import check_all_command_guards
+        from hermes_agent.tools.approval import check_all_command_guards
 
         self._isolate(monkeypatch)
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
@@ -970,7 +970,7 @@ class TestWebhookApprovalExclusion:
 
     def test_webhook_safe_command_still_approves(self, monkeypatch):
         """Non-dangerous commands on unattended platforms are unaffected."""
-        from tools.approval import check_all_command_guards
+        from hermes_agent.tools.approval import check_all_command_guards
 
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
         monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
@@ -983,7 +983,7 @@ class TestWebhookApprovalExclusion:
 
     def test_api_server_dangerous_command_denies_by_default(self, monkeypatch):
         """api_server sessions get the same instant deny (#87509)."""
-        from tools.approval import check_all_command_guards
+        from hermes_agent.tools.approval import check_all_command_guards
 
         self._isolate(monkeypatch)
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
@@ -998,7 +998,7 @@ class TestWebhookApprovalExclusion:
 
     def test_execute_code_denied_on_unattended_platform(self, monkeypatch):
         """execute_code is denied instantly on unattended platforms (parity with cron)."""
-        from tools.approval import check_execute_code_guard
+        from hermes_agent.tools.approval import check_execute_code_guard
 
         self._isolate(monkeypatch)
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
@@ -1537,7 +1537,7 @@ class TestApprovalTimeoutIsNotConsent:
 
     def setup_method(self):
         """Reset module state and force a tight approval timeout for fast tests."""
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
         mod._session_approved.clear()
@@ -1560,7 +1560,7 @@ class TestApprovalTimeoutIsNotConsent:
         os.environ["HERMES_SESSION_KEY"] = self.SESSION_KEY
 
     def teardown_method(self):
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
         for k, v in self._saved_env.items():
@@ -1579,7 +1579,7 @@ class TestApprovalTimeoutIsNotConsent:
         """The reported #24912 scenario — user never responds, agent must see
         BLOCKED, and the post hook must distinguish timeout from deny so audit
         plugins can alert on 'agent asked, user never replied'."""
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
 
         self._force_short_timeout(monkeypatch)
 
@@ -1624,7 +1624,7 @@ class TestApprovalTimeoutIsNotConsent:
     def test_explicit_deny_carries_same_no_consent_shape(self, monkeypatch):
         """An explicit /deny must produce the same shape as timeout —
         the agent should treat both identically."""
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
 
         self._force_short_timeout(monkeypatch, seconds=60)
 
@@ -1661,7 +1661,7 @@ class TestApprovalTimeoutIsNotConsent:
         This is what an audit / notification plugin needs to alert
         operators on 'agent asked, user never replied' incidents like #24912.
         """
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
         self._force_short_timeout(monkeypatch, seconds=1)
         mod.register_gateway_notify(self.SESSION_KEY, lambda data: None)
 
@@ -1686,7 +1686,7 @@ class TestApprovalTimeoutIsNotConsent:
 
     def test_notify_failure_emits_post_hook_and_cleans_up(self, monkeypatch):
         """A failed notification still terminates the approval lifecycle."""
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
 
         hook_calls = []
 
@@ -1722,7 +1722,7 @@ class TestApprovalTimeoutIsNotConsent:
         assert hook_calls[-1][1]["choice"] == "notify_failed"
 
     def test_pending_approval_is_replayable_and_acknowledged(self, monkeypatch):
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
 
         self._force_short_timeout(monkeypatch, seconds=2)
         notified = []
@@ -1748,7 +1748,7 @@ class TestApprovalTimeoutIsNotConsent:
         assert mod.list_gateway_approvals(self.SESSION_KEY) == []
 
     def test_stale_request_id_cannot_resolve_current_approval(self, monkeypatch):
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
 
         self._force_short_timeout(monkeypatch, seconds=2)
         notified = []
@@ -1787,7 +1787,7 @@ class TestConcurrentApprovalCoalescing:
     SESSION_KEY = "test-coalesce-session"
 
     def setup_method(self):
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
         mod._gateway_queues.clear()
         mod._gateway_notify_cbs.clear()
         mod._session_approved.clear()
@@ -1832,7 +1832,7 @@ class TestConcurrentApprovalCoalescing:
         return results, threads
 
     def test_identical_concurrent_approvals_send_one_prompt(self, monkeypatch):
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
         monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 30)
 
         notified = []
@@ -1852,7 +1852,7 @@ class TestConcurrentApprovalCoalescing:
         assert sum(1 for r in results if r.get("coalesced")) == 2
 
     def test_deny_propagates_to_followers(self, monkeypatch):
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
         monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 30)
 
         notified = []
@@ -1868,7 +1868,7 @@ class TestConcurrentApprovalCoalescing:
         assert follower["reason"] == "nope"
 
     def test_once_makes_follower_reprompt(self, monkeypatch):
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
         monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 30)
 
         notified = []
@@ -1889,7 +1889,7 @@ class TestConcurrentApprovalCoalescing:
         assert all(r is not None and r["choice"] == "once" for r in results)
 
     def test_different_commands_are_not_coalesced(self, monkeypatch):
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
         monkeypatch.setattr(approval_context, "_get_approval_timeout", lambda: 30)
         import threading
 
@@ -1986,7 +1986,7 @@ class TestApprovalPromptRedaction:
         secret in both the pending record and the returned approval message."""
         from unittest.mock import patch as _patch
 
-        from tools.approval import check_execute_code_guard
+        from hermes_agent.tools.approval import check_execute_code_guard
 
         code = (
             "import os\n"
@@ -1995,9 +1995,9 @@ class TestApprovalPromptRedaction:
         )
         cfg = {"approvals": {"mode": "manual"}}
         with _patch("hermes_cli.config.load_config_readonly", return_value=cfg):
-            with _patch("tools.approval._is_gateway_approval_context",
+            with _patch("hermes_agent.tools.approval._is_gateway_approval_context",
                         return_value=True):
-                with _patch("tools.approval_context._get_approval_mode",
+                with _patch("hermes_agent.tools.approval_context._get_approval_mode",
                             return_value="manual"):
                     # No gateway notify callback registered -> pending fallback.
                     result = check_execute_code_guard(code, "local")
@@ -2047,7 +2047,7 @@ class TestCliApprovalTimeoutClassifiedSeparately:
         yields outcome='timeout' and a no-response message, not 'denied by
         user'."""
         from unittest.mock import patch as _patch
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
 
         mod._session_approved.clear()
         mod._permanent_approved.clear()
@@ -2071,7 +2071,7 @@ class TestCliApprovalTimeoutClassifiedSeparately:
     def test_guard_still_classifies_explicit_deny_as_denied(self):
         """Explicit CLI deny keeps outcome='denied' and the denial wording."""
         from unittest.mock import patch as _patch
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
 
         mod._session_approved.clear()
         mod._permanent_approved.clear()
@@ -2094,7 +2094,7 @@ class TestCliApprovalTimeoutClassifiedSeparately:
         distinguishes a prompt timeout from an explicit deny on the CLI
         path."""
         from unittest.mock import patch as _patch
-        from tools import approval as mod
+        from hermes_agent.tools import approval as mod
 
         mod._session_approved.clear()
         mod._permanent_approved.clear()

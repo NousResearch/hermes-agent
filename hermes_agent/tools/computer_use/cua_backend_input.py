@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from tools.computer_use.backend import ActionResult
-from tools.computer_use.cua_backend_parse import _parse_key_combo
+from hermes_agent.tools.computer_use.backend import ActionResult
+from hermes_agent.tools.computer_use.cua_backend_parse import _parse_key_combo
 
 _NO_TARGET_MSG = "No active window — call capture() first."
 _BTF_UNSUPPORTED_MSG = "The connected cua-driver does not advertise the standalone bring_to_front tool."

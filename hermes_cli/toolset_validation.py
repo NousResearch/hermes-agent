@@ -68,7 +68,7 @@ def _platform_default_is_valid(
     is_allowed_for_platform: Callable[[str, str], bool]) -> bool:
     if is_valid_toolset(default_toolset) and is_allowed_for_platform(default_toolset, str(platform)):
         return True
-    # Dynamic plugin platforms are resolved by toolsets.resolve_toolset() even though their synthesized
+    # Dynamic plugin platforms are resolved by hermes_agent.toolsets.resolve_toolset() even though their synthesized
     # hermes-<platform> name is not in TOOLSETS.
     try:
         from hermes_agent.gateway.platform_registry import platform_registry
@@ -87,7 +87,7 @@ def saved_toolset_resolver(config: dict) -> Callable[[str], bool]:
     happen only for a name the cheaper checks cannot place."""
     from functools import cache
 
-    from toolsets import validate_toolset
+    from hermes_agent.toolsets import validate_toolset
 
     mcp_servers = config.get("mcp_servers")
     servers = {str(name) for name in mcp_servers} if isinstance(mcp_servers, dict) else set()

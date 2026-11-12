@@ -3,7 +3,7 @@
 ``defer`` parks one (a cross-profile target whose gateway is down or still starting), and
 the retired CLI lane left records of the same shape behind. Each still-``queued`` record is handed,
 under its own id, to the target profile's live owner through the canonical
-``tools.bot_live_delivery.deliver_to_live_owner`` door (idempotent per id). Records are
+``hermes_agent.tools.bot_live_delivery.deliver_to_live_owner`` door (idempotent per id). Records are
 never deleted: they keep their final status as evidence, exactly as the old drain did.
 A ``claimed`` record was an uncertain CLI turn and is never resent.
 """
@@ -66,7 +66,7 @@ def _dispose(path: Path, record: dict) -> bool:
     from hermes_agent.cron.scheduler_delivery import BOT_CHAT_POLICY_PLATFORM, bot_chat_message
     from hermes_agent.gateway.warning_notifications import warning_notifications_enabled
     from hermes_cli.config_effective import load_user_config_effective
-    from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
+    from hermes_agent.tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
 
     if reason := _malformed(record):
         record.update(status="ambiguous", error=reason)

@@ -1,4 +1,4 @@
-"""Tests for tools/delegation_live_log.py — live subagent transcripts.
+"""Tests for hermes_agent/tools/delegation_live_log.py — live subagent transcripts.
 
 Covers:
 - writer event rendering + truncation + append/flush semantics
@@ -18,8 +18,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools import delegation_live_log as dll
-from tools.delegation_live_log import (
+from hermes_agent.tools import delegation_live_log as dll
+from hermes_agent.tools.delegation_live_log import (
     LiveTranscriptWriter,
     create_live_transcripts,
     live_transcript_root,
@@ -334,11 +334,11 @@ def test_parent_without_session_db_warns_and_skips_pin(caplog):
     observable (ambient fallback is the #91996 failure mode), not silent."""
     import logging as _logging
 
-    from tools.delegate_tool import _parent_live_home
+    from hermes_agent.tools.delegate_tool import _parent_live_home
 
     parent = MagicMock(spec=[])  # no _session_db attribute at all
 
-    with caplog.at_level(_logging.WARNING, logger="tools.delegate_tool"):
+    with caplog.at_level(_logging.WARNING, logger="hermes_agent.tools.delegate_tool"):
         assert _parent_live_home(parent) is None
     assert any("home pinning skipped" in r.getMessage() for r in caplog.records), (
         "the ambient fallback must leave a warning trace"
@@ -346,7 +346,7 @@ def test_parent_without_session_db_warns_and_skips_pin(caplog):
 
 
 def test_parent_session_db_pins_home():
-    from tools.delegate_tool import _parent_live_home
+    from hermes_agent.tools.delegate_tool import _parent_live_home
 
     parent = MagicMock(spec=["_session_db"])
     parent._session_db.db_path = Path("/prof/state.db")
@@ -364,11 +364,11 @@ def test_mock_parent_db_path_is_not_pinned(caplog):
     PathLike, which is exactly how the garbage pin slipped through."""
     import logging as _logging
 
-    from tools.delegate_tool import _parent_live_home
+    from hermes_agent.tools.delegate_tool import _parent_live_home
 
     parent = MagicMock()  # plain mock: _session_db.db_path auto-creates a Mock
 
-    with caplog.at_level(_logging.DEBUG, logger="tools.delegate_tool"):
+    with caplog.at_level(_logging.DEBUG, logger="hermes_agent.tools.delegate_tool"):
         assert _parent_live_home(parent) is None
     assert any("home pinning skipped" in r.getMessage() for r in caplog.records), (
         "the skipped pin must leave a log trace"
@@ -378,7 +378,7 @@ def test_mock_parent_db_path_is_not_pinned(caplog):
 def test_parent_db_path_accepts_str_paths():
     """SessionDB always holds a Path, but a str db_path is a valid path value
     too — it must pin, not be rejected by the concrete-type guard."""
-    from tools.delegate_tool import _parent_live_home
+    from hermes_agent.tools.delegate_tool import _parent_live_home
 
     parent = MagicMock(spec=["_session_db"])
     parent._session_db.db_path = "/prof/state.db"

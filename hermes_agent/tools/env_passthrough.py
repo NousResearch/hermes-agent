@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 # Process-wide set of env var names registered by skills for sandbox
 # passthrough. Deliberately NOT a ContextVar: tool dispatch fans each tool
 # call onto a worker whose context is a copy_context() snapshot taken at
-# submit time (tools.thread_context.propagate_context_to_thread), so a
+# submit time (hermes_agent.tools.thread_context.propagate_context_to_thread), so a
 # registration made inside one tool's worker (skill_view calling
 # register_env_passthrough) never reaches the submitting thread's context —
 # every subsequent tool (execute_code, terminal) re-snapshots the original
@@ -52,7 +52,7 @@ def _is_hermes_provider_credential(name: str) -> bool:
     in the ``execute_code`` child); non-Hermes keys (TENOR_API_KEY, …) stay
     registerable. Fails closed when the blocklist cannot be imported."""
     try:
-        from tools.environments.local_env_policy import (
+        from hermes_agent.tools.environments.local_env_policy import (
             _is_hermes_internal_secret, _is_provider_env_blocklisted)
     except Exception as e:
         logger.warning(
@@ -93,7 +93,7 @@ def _accepted(names, refusal_msg: str):
 
 
 def _load_config_passthrough() -> frozenset[str]:
-    """Load ``tools.env_passthrough`` from config.yaml (cached). Same credential
+    """Load ``hermes_agent.tools.env_passthrough`` from config.yaml (cached). Same credential
     filter as register_env_passthrough: operator config must not tunnel provider
     credentials into sandbox children either (GHSA-rhgp-j443-p4rf)."""
     from hermes_constants import hermes_home_key

@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, List, Optional
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 if TYPE_CHECKING:
-    from tools.process_registry import ProcessSession
+    from hermes_agent.tools.process_registry import ProcessSession
 
-logger = logging.getLogger("tools.process_registry")
+logger = logging.getLogger("hermes_agent.tools.process_registry")
 
 
 class ProcessTerminationMixin:
@@ -40,7 +40,7 @@ class ProcessTerminationMixin:
         ``terminal.daemon_term_grace_seconds`` window. Windows:
         ``taskkill /T /F`` (psutil's stale PPID links miss orphans there); ``os.kill``
         is the fallback."""
-        from tools.process_registry import _IS_WINDOWS
+        from hermes_agent.tools.process_registry import _IS_WINDOWS
 
         if expected_start is not None and not cls._host_pid_is_ours(pid, expected_start):
             logger.warning(

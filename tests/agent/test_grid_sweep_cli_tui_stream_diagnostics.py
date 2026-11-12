@@ -128,7 +128,7 @@ def test_cli_vision_fallback_notice_honors_policy(tmp_path, monkeypatch, setting
         async def _vision(**kwargs): return json.dumps({"error": "vision unavailable"})
     cli_obj = climod.HermesCLI.__new__(climod.HermesCLI)
     cli_obj.agent = types.SimpleNamespace(_notification_config=None)
-    with _patch("tools.vision_tools.vision_analyze_tool", side_effect=_vision):
+    with _patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=_vision):
         result = cli_obj._preprocess_images_with_vision("check this", [img])
     assert str(img) in result and "check this" in result
     assert (any("vision analysis" in s for s in out)) is _visible(setting)

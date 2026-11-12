@@ -73,7 +73,7 @@ class TestAnthropicMcpPrefixStrip:
         response = _make_response(block)
 
         registry = _FakeRegistry({"read_file", "terminal", "web_search"})
-        with patch("tools.registry.registry", registry):
+        with patch("hermes_agent.tools.registry.registry", registry):
             result = transport.normalize_response(response, strip_tool_prefix=True)
 
         assert len(result.tool_calls) == 1
@@ -87,7 +87,7 @@ class TestAnthropicMcpPrefixStrip:
         response = _make_response(block)
 
         registry = _FakeRegistry({"read_file"})
-        with patch("tools.registry.registry", registry):
+        with patch("hermes_agent.tools.registry.registry", registry):
             result = transport.normalize_response(response, strip_tool_prefix=False)
 
         assert len(result.tool_calls) == 1
@@ -111,7 +111,7 @@ class TestAnthropicOAuthAliasRoundTrip:
         response = _make_response(block)
 
         registry = _FakeRegistry({"session_search"})
-        with patch("tools.registry.registry", registry):
+        with patch("hermes_agent.tools.registry.registry", registry):
             result = transport.normalize_response(response, strip_tool_prefix=True)
 
         assert len(result.tool_calls) == 1
@@ -123,7 +123,7 @@ class TestAnthropicOAuthAliasRoundTrip:
         response = _make_response(block)
 
         registry = _FakeRegistry({"memory"})
-        with patch("tools.registry.registry", registry):
+        with patch("hermes_agent.tools.registry.registry", registry):
             result = transport.normalize_response(response, strip_tool_prefix=True)
 
         assert len(result.tool_calls) == 1
@@ -137,7 +137,7 @@ class TestAnthropicOAuthAliasRoundTrip:
         response = _make_response(block)
 
         registry = _FakeRegistry({"mcp_chat_history_lookup", "session_search"})
-        with patch("tools.registry.registry", registry):
+        with patch("hermes_agent.tools.registry.registry", registry):
             result = transport.normalize_response(response, strip_tool_prefix=True)
 
         assert len(result.tool_calls) == 1
@@ -248,7 +248,7 @@ class TestAnthropicOAuthClassifierAlias:
         assert "session_search" not in system_text
 
     def test_oauth_does_not_alias_longer_identifier_containing_token(self):
-        """Word-boundary matching: a path like tools/session_search_tool.py
+        """Word-boundary matching: a path like hermes_agent/tools/session_search_tool.py
         must survive untouched, not become chat_history_lookup_tool.py."""
         kwargs = self._build(
             [self._tool("session_search")],

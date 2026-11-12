@@ -212,12 +212,12 @@ def build_auto_tts_output_path(platform) -> str:
     Platform-awareness lives HERE because ``_clear_session_env`` wipes the TTS tool's
     ``HERMES_SESSION_PLATFORM`` contextvar before the post-handler auto-TTS block runs.
 
-    Platforms whose native voice bubbles require Ogg/Opus (``tools.tts_tool.OPUS_VOICE_PLATFORMS`` — the
+    Platforms whose native voice bubbles require Ogg/Opus (``hermes_agent.tools.tts_tool.OPUS_VOICE_PLATFORMS`` — the
     single source of truth) get an explicit ``.ogg`` path; the tool's central container repair
     (``_repair_ogg_container``) then guarantees real Ogg/Opus bytes for every provider, including MP3-only
     backends like Edge TTS. Everything else keeps the MP3 default. See #36685, #57049.
     """
-    from tools.tts_tool import OPUS_VOICE_PLATFORMS
+    from hermes_agent.tools.tts_tool import OPUS_VOICE_PLATFORMS
     ext = "ogg" if _platform_name(platform) in OPUS_VOICE_PLATFORMS else "mp3"
     audio_path = os.path.join(
         tempfile.gettempdir(), "hermes_voice", f"tts_reply_{uuid.uuid4().hex[:12]}.{ext}")
@@ -478,7 +478,7 @@ def unauthorized_action_notice(platform: Any) -> str:
 async def ssrf_redirect_guard(response):
     """Re-validate each redirect target (a public URL 302-ing to http://169.254.169.254/ would
     bypass the pre-flight is_safe_url()). Async because httpx awaits response event hooks."""
-    from tools.url_safety import is_safe_url, redirect_target_from_response
+    from hermes_agent.tools.url_safety import is_safe_url, redirect_target_from_response
     redirect_url = redirect_target_from_response(response)
     if redirect_url and not is_safe_url(redirect_url):
         raise ValueError(f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}")
@@ -641,7 +641,7 @@ async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type:
                                 cache_fn, log_label: str) -> str:
     """Shared downloader behind ``cache_*_from_url``: SSRF-checked (pre-flight + per-redirect;
     raises ValueError), size-capped, linear-backoff retries on timeouts / 429 / 5xx."""
-    from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+    from hermes_agent.tools.url_safety import create_ssrf_safe_async_client, is_safe_url
     import httpx
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
@@ -682,8 +682,8 @@ get_audio_cache_dir, cleanup_audio_cache = _cache_dir_accessors(
 
 def cache_audio_from_bytes(data: bytes, ext: str = ".ogg") -> str:
     """Save raw audio bytes to the cache (container-sniffed ext); return the path."""
-    # tools.audio_container is the ONE owner of container detection (outbound TTS repair + here).
-    from tools.audio_container import sniff_audio_ext
+    # hermes_agent.tools.audio_container is the ONE owner of container detection (outbound TTS repair + here).
+    from hermes_agent.tools.audio_container import sniff_audio_ext
     validate_inbound_media_size(len(data), media_type="audio")
     return _write_cache_file(get_audio_cache_dir(), "audio", sniff_audio_ext(data, ext), data)
 
@@ -924,7 +924,7 @@ def _tenv(name: str, default: str = "") -> str:
     os.getenv reads whatever a prior turn pinned into the process env. Only ImportError falls
     back — a refusal scope must raise rather than rebuild another profile's policy from the env."""
     try:
-        from tools.terminal_scope import terminal_env
+        from hermes_agent.tools.terminal_scope import terminal_env
     except ImportError:
         return os.getenv(name, default)
     return terminal_env(name, default)
@@ -974,7 +974,7 @@ def _cache_dir_container_mounts() -> list[tuple[Path, Path]]:
     if not _docker_env_active():
         return []
     try:
-        from tools.credential_files import get_cache_directory_mounts
+        from hermes_agent.tools.credential_files import get_cache_directory_mounts
         return [(Path(m["host_path"]), Path(m["container_path"])) for m in get_cache_directory_mounts()]
     except Exception:
         return []
@@ -1009,7 +1009,7 @@ def _translate_docker_container_media_path(
     # In-process gateways (Desktop, `hermes serve`) may not have bridged terminal.* config into
     # TERMINAL_* env yet; the bridge is idempotent.
     with contextlib.suppress(Exception):
-        from tools.terminal_tool import _ensure_terminal_env_bridged
+        from hermes_agent.tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
     from hermes_agent.gateway.platforms.docker_media_paths import (
         _default_docker_workspace_host_roots, _docker_persistent_sandbox_roots,
@@ -1447,7 +1447,7 @@ class CachedMedia:
         """One-line transcript annotation pointing the agent at the file (sandbox-translated at
         render time, never baked into ``path``: ``event.media_urls`` must hold one coordinate
         system so the routed turn can re-home and translate every entry alike, #101134)."""
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         return f"[{self.kind} '{self.display_name}' saved at: {to_agent_visible_cache_path(self.path)}]"
 
 
@@ -1570,7 +1570,7 @@ class ExecApprovalPrompt:
     """One exec-approval prompt, ready for a platform to render natively (see
     ``BasePlatformAdapter.send_exec_approval``). ``actions`` rows are ``(label, choice, style)``
     with ``choice`` in ``once`` / ``session`` / ``always`` / ``deny`` — the vocabulary
-    ``tools.approval.resolve_gateway_approval`` accepts — and ``style`` in ``primary`` /
+    ``hermes_agent.tools.approval.resolve_gateway_approval`` accepts — and ``style`` in ``primary`` /
     ``danger`` / ``""``."""
     chat_id: str
     session_key: str
@@ -1580,7 +1580,7 @@ class ExecApprovalPrompt:
     description: str
     smart_denied: bool
     metadata: Optional[dict[str, Any]] = None
-    request_id: Optional[str] = None  # the ``tools.approval`` request this card answers (and only that one)
+    request_id: Optional[str] = None  # the ``hermes_agent.tools.approval`` request this card answers (and only that one)
 
     @property
     def choices(self) -> list[str]:
@@ -2772,7 +2772,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         metadata: Optional[dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
         smart_denied: bool = False, request_id: Optional[str] = None,
     ) -> SendResult:
-        """Interactive exec-approval prompt; a press resolves via ``tools.approval.resolve_gateway_approval``.
+        """Interactive exec-approval prompt; a press resolves via ``hermes_agent.tools.approval.resolve_gateway_approval``.
         Text and choice set are shared; adapters render them natively in ``_send_exec_approval_prompt``.
         A preview that cannot hold the whole command is preceded by the full command; when that cannot
         be sent, the card offers Deny only — nobody approves a command they could not read."""
@@ -2822,7 +2822,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         session_key: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
         """Clarify prompt; button-capable adapters SHOULD override. Multiple choice (``choices``):
         one button per choice plus "Other"; callbacks MUST resolve via
-        ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``, "Other" calls
+        ``hermes_agent.tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``, "Other" calls
         ``mark_awaiting_text(clarify_id)``. Open-ended: send the question as text (the gateway
         text-intercept resolves the next message). Default: numbered list +
         ``mark_awaiting_text``. Adapters whose prompt is a persistent card MAY define
@@ -2831,7 +2831,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         if choices:
             # Multi-select flag lives on the pending entry (signature stays adapter-compatible).
             try:
-                from tools.clarify_gateway import get_pending
+                from hermes_agent.tools.clarify_gateway import get_pending
                 _is_multi = bool(getattr(get_pending(clarify_id), "multi_select", False))
             except Exception:
                 _is_multi = False
@@ -2840,7 +2840,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
                         for i, choice in enumerate(choices, start=1)]
             text = "\n".join([t("gateway.clarify.question", question=question), "", *numbered, "", hint])
             # Text fallback: let the gateway intercept capture the typed reply.
-            from tools.clarify_gateway import mark_awaiting_text
+            from hermes_agent.tools.clarify_gateway import mark_awaiting_text
             mark_awaiting_text(clarify_id)
         else:
             text = t("gateway.clarify.question", question=question)
@@ -3029,7 +3029,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         headings/bullets flattened, units expanded). Chunking and delivery limits are the TTS tool's
         job."""
         try:
-            from tools.tts_text_normalize import prepare_spoken_text
+            from hermes_agent.tools.tts_text_normalize import prepare_spoken_text
             return prepare_spoken_text(text, max_chars=None)
         except Exception:
             # Keep auto-TTS best-effort if the normalizer ever fails.
@@ -4012,7 +4012,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         # See #4926.
         if not cmd and event.allow_gateway_control:
             try:
-                from tools import clarify_gateway as _clarify_mod
+                from hermes_agent.tools import clarify_gateway as _clarify_mod
                 _has_text_clarify = _clarify_mod.get_pending_for_session(
                     session_key, include_choice_prompts=True) is not None
             except Exception:
@@ -4092,7 +4092,7 @@ class BasePlatformAdapter(_SessionModelSettingsMixin, ABC):
         paths: list[str] = []
         requested_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+            from hermes_agent.tools.tts_tool import text_to_speech_tool, check_tts_requirements
             if check_tts_requirements():
                 import json as _json
                 speech_text = self.prepare_tts_text(text_content)

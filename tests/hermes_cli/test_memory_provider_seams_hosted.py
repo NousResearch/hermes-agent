@@ -139,7 +139,7 @@ def test_a_profile_hook_runs_in_the_host_and_its_host_is_stopped(hosted_home):
     # middleware, session env and RPC method are all gone from the new profile's manager.
     from hermes_cli.plugins_session_env import _REGISTRATIONS
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     assert (work / "registered.json").exists()
     token = set_hermes_home_override(str(work))
     try:

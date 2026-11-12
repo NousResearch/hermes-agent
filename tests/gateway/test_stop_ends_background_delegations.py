@@ -3,13 +3,13 @@ mid-turn (busy fast path) or idle after the dispatching turn already ended — i
 children, leaving the detached unit to run to completion and wake the chat later. See #114456.
 
 Real ``GatewayRunner`` + real ``BasePlatformAdapter`` subclass; the background unit is a real
-``tools.async_delegation`` registry record whose ``interrupt_fn`` is the observable.
+``hermes_agent.tools.async_delegation`` registry record whose ``interrupt_fn`` is the observable.
 """
 from unittest.mock import MagicMock
 
 import pytest
 
-import tools.async_delegation as ad
+import hermes_agent.tools.async_delegation as ad
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType

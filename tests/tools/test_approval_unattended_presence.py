@@ -6,8 +6,8 @@ it runs, so without this a webhook run posted its card to the route's delivery c
 
 import pytest
 
-import tools.approval as approval_mod
-from tools import approval_context
+import hermes_agent.tools.approval as approval_mod
+from hermes_agent.tools import approval_context
 
 SESSION = "test-unattended-presence"
 

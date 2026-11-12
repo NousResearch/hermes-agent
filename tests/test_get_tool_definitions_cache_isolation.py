@@ -1,6 +1,6 @@
 """Regression tests for issue #17335.
 
-The ``quiet_mode=True`` fast path in :func:`model_tools.get_tool_definitions`
+The ``quiet_mode=True`` fast path in :func:`hermes_agent.model_tools.get_tool_definitions`
 memoizes results to avoid re-walking the registry on every Gateway call. The
 cached object must NOT be aliased into callers' return values \u2014 long-lived
 Gateway processes mutate the returned list (``run_agent`` appends memory and
@@ -21,7 +21,7 @@ from threading import Barrier
 
 import pytest
 
-import model_tools
+from hermes_agent import model_tools
 
 
 @pytest.fixture(autouse=True)

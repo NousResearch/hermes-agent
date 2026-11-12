@@ -65,7 +65,7 @@ PROJECT_ROOT = Path(project_root_str())
 PLATFORMS = {k: {"label": info.label, "default_toolset": info.default_toolset} for k, info in _PLATFORMS_REGISTRY.items()}
 
 # --- Toolset Registry ---
-# Toolsets shown in the configurator: (toolset key in toolsets.py TOOLSETS, label, description).
+# Toolsets shown in the configurator: (toolset key in hermes_agent/toolsets.py TOOLSETS, label, description).
 CONFIGURABLE_TOOLSETS = [
     ("web",             "🔍 Web Search & Scraping",    "web_search, web_extract"),
     ("browser",         "🌐 Browser Automation",       "navigate, click, type, scroll"),
@@ -300,7 +300,7 @@ TOOL_CATEGORIES = {
         # Provider rows (FAL, OpenAI, OpenAI Codex, xAI, Krea, …) come from plugins.image_gen.<vendor> via
         # _plugin_image_gen_providers(). Only the managed "Nous Subscription" row lives here: ONE row for the
         # FAL, Krea and Portal gateways, whose union catalog is `imagegen_backend: "nous"`; the stored model id
-        # picks the gateway at run time (tools/image_generation_managed.py).
+        # picks the gateway at run time (hermes_agent/tools/image_generation_managed.py).
         "providers": [
             _row("Nous Subscription", "subscription",
                  "Managed image generation (FAL, Krea 3 and Krea 2, Nous Portal models) billed to your subscription", **_NOUS,
@@ -404,7 +404,7 @@ def enabled_mcp_server_names(config: dict) -> set[str]:
     """MCP servers globally enabled in config.yaml or by a plugin (shared by platform + cron resolvers). Enabled
     unless ``enabled`` is explicitly falsey; portable-plugin servers (in-memory) count — enabling the plugin is
     the opt-in."""
-    from tools.mcp_tool_common import mcp_server_enabled
+    from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
 
     mcp_servers = (config or {}).get("mcp_servers") or {}
     names = {
@@ -436,7 +436,7 @@ def _enable_recently_shipped_toolsets(enabled_toolsets: set[str], config: dict, 
     """Turn on toolsets that shipped after this platform's saved list (mutates ``enabled_toolsets``). Both "no"s
     outlive this: unchecking records ``known_builtin_toolsets`` (declined), and ``agent.disabled_toolsets`` is
     subtracted last in :func:`_get_platform_tools`."""
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     offered = (config.get("known_builtin_toolsets") or {}).get(platform)
     declined = {str(ts) for ts in offered} if isinstance(offered, list) else set()
@@ -458,7 +458,7 @@ def _enable_recently_shipped_toolsets(enabled_toolsets: set[str], config: dict, 
 def _configurable_subset_of(tool_names: set[str], platform: str) -> set[str]:
     """Configurable toolsets whose STATIC membership is within ``tool_names`` (``include_registry=False``: a
     runtime-registered tool the composite never listed must not drop the whole toolset)."""
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     return {
         ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS if _toolset_allowed_for_platform(ts_key, platform)
@@ -492,7 +492,7 @@ def _explicit_toolsets(
     """Enabled set when the saved list names configurable/plugin keys directly (subset inference over
     ``hermes-cli`` would re-enable disabled toolsets). A mixed list (``[hermes-cli, discord]``) still expands the
     composite; _DEFAULT_OFF_TOOLSETS applies to that implicit expansion only."""
-    from toolsets import resolve_toolset, TOOLSETS
+    from hermes_agent.toolsets import resolve_toolset, TOOLSETS
 
     enabled = {ts for ts in toolset_names if ts in explicit_known_keys and _toolset_allowed_for_platform(ts, platform)}
     composite_tools = {
@@ -507,7 +507,7 @@ def _explicit_toolsets(
 def _composite_toolsets(toolset_names: list[str], platform: str, explicitly_configured: bool) -> set[str]:
     """Enabled set inferred from composite names by reverse-mapping tool names (only while no explicit list is
     saved). ``x_search`` is not in any composite, so inject it when xAI creds exist and exempt it from default-off."""
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     all_tool_names = {t for ts_name in toolset_names for t in resolve_toolset(ts_name)}
     enabled = _configurable_subset_of(all_tool_names, platform)
@@ -650,14 +650,14 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
 def _prune_toolsets_stripped_by_disabled(enabled_toolsets: set[str], disabled_names: list[str]) -> set[str]:
     """Drop disabled names AND every toolset whose tools the runtime would strip anyway.
 
-    The agent subtracts ``agent.disabled_toolsets`` at TOOL granularity (``model_tools._select_tool_names``),
+    The agent subtracts ``agent.disabled_toolsets`` at TOOL granularity (``hermes_agent.model_tools._select_tool_names``),
     so disabling a composite like ``debugging`` removes the terminal/web/file tools even though those names
     never appear in the list. A name-only subtraction here left inspection surfaces (``hermes tools
     --summary``, banner, ``/tools``) showing toolsets as enabled that no session could call (#97015).
     Passthrough entries (MCP server names) and toolsets with no static tools (``context_engine``) are kept.
     """
-    from model_tools import _apply_toolset_selection
-    from toolsets import resolve_toolset, validate_toolset
+    from hermes_agent.model_tools import _apply_toolset_selection
+    from hermes_agent.toolsets import resolve_toolset, validate_toolset
 
     remaining = enabled_toolsets - set(disabled_names)
     resolved = {name: set(resolve_toolset(name)) if validate_toolset(name) else set() for name in remaining}
@@ -669,8 +669,8 @@ def _prune_toolsets_stripped_by_disabled(enabled_toolsets: set[str], disabled_na
 def _disabled_entry_tools(name: str) -> set[str]:
     """Tools one ``agent.disabled_toolsets`` entry removes at runtime: legacy names (``terminal_tools``)
     and the bundle/posture non-core delta included, which ``resolve_toolset`` alone gets wrong."""
-    from model_tools import _LEGACY_TOOLSET_MAP, _apply_toolset_selection
-    from toolsets import resolve_toolset
+    from hermes_agent.model_tools import _LEGACY_TOOLSET_MAP, _apply_toolset_selection
+    from hermes_agent.toolsets import resolve_toolset
 
     universe = set(resolve_toolset(name)) | set(_LEGACY_TOOLSET_MAP.get(name, ()))
     kept = set(universe)
@@ -685,8 +685,8 @@ def toolsets_partially_stripped(config: dict, enabled_toolsets: set[str]) -> dic
     tools survive, so inspection surfaces need this to say which ones did not. The hint offers
     ``hermes tools enable`` only when that save clears every entry (``_save_platform_tools`` coverage)."""
     from agent.skill_utils import parse_config_string_list
-    from model_tools import _apply_toolset_selection
-    from toolsets import resolve_toolset, validate_toolset
+    from hermes_agent.model_tools import _apply_toolset_selection
+    from hermes_agent.toolsets import resolve_toolset, validate_toolset
 
     disabled = [n.strip() for n in parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) if n.strip()]
     report: dict[str, tuple[list[str], list[str]]] = {}
@@ -710,7 +710,7 @@ def toolsets_partially_stripped(config: dict, enabled_toolsets: set[str]) -> dic
 def _recover_platform_native_toolsets(enabled_toolsets: set[str], platform: str, *, skip: set[str]) -> None:
     """Add non-configurable platform toolsets (discord, feishu_*) in place: in the default composite but not in
     CONFIGURABLE_TOOLSETS, so never in a checklist or saved list. Runs for BOTH ``_get_platform_tools`` branches."""
-    from toolsets import resolve_toolset, TOOLSETS
+    from hermes_agent.toolsets import resolve_toolset, TOOLSETS
 
     platform_tool_universe = set(resolve_toolset(_platform_default_toolset(platform)))
     configurable_tool_universe = {t for ts_key, _, _ in CONFIGURABLE_TOOLSETS for t in resolve_toolset(ts_key)}
@@ -764,7 +764,7 @@ def _warn_all_invalid_platform_toolsets(platform: str, explicit: list, config: d
     (the kanban gate resolves every saved platform row) and on bypass launches that must not read profile
     plugin state; the resolver's manifest scan and plugin lookup run only for names those cannot place."""
     from hermes_cli.toolset_validation import is_known_platform_bundle, saved_toolset_resolver
-    from toolsets import validate_toolset
+    from hermes_agent.toolsets import validate_toolset
 
     if platform in _warned_invalid_platform_toolsets:
         return
@@ -819,7 +819,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: set[
         # Also clear entries whose tools are entirely covered by a newly enabled toolset: Blank Slate writes
         # subset toolsets like `search` (only web_search), which have no checklist row, so enabling `web`
         # left web_search stripped with no supported way to undo it (#134593).
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
         covered: set[str] = set()
         for ts in newly_enabled:
             covered.update(resolve_toolset(ts))  # [] for unknown names; never raises
@@ -884,8 +884,8 @@ def _estimate_tool_tokens() -> dict[str, int]:
     scope = hermes_home_key()
     _tool_token_cache = _tool_token_cache or {}
     try:
-        import model_tools
-        from tools.registry import registry
+        from hermes_agent import model_tools
+        from hermes_agent.tools.registry import registry
         cache_key = (scope, registry._generation)
     except Exception:
         logger.debug("Tool registry unavailable; skipping token estimation")
@@ -909,7 +909,7 @@ def _estimate_tool_tokens() -> dict[str, int]:
 def _prompt_toolset_checklist(platform_label: str, enabled: set[str], platform: str = "cli", *, force_fresh: bool = True) -> set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     tool_tokens = _estimate_tool_tokens()
     # Drop platform-scoped toolsets that don't apply here and config-only capabilities (stt).

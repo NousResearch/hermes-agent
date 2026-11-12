@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from tools.bot_live_delivery import _locked, _write, read_delivery_result
+from hermes_agent.tools.bot_live_delivery import _locked, _write, read_delivery_result
 
 
 def test_reader_never_observes_a_contended_partial_rewrite(tmp_path):

@@ -75,7 +75,7 @@ def test_admitted_retry_preserves_completed_tool_evidence(api, owner):
     from hermes_agent.gateway.run_turn_runner import TurnRunner
     from hermes_agent.gateway.session_api_turn import api_execution, prepare_api_execution
     from hermes_agent.gateway.turn_context import TurnContext
-    from tools.bot_failure_reasons import RETRY_RESUME, result_retry_action
+    from hermes_agent.tools.bot_failure_reasons import RETRY_RESUME, result_retry_action
 
     sid = "retry-completed-tool"
     message = "Create exactly one draft and return its ID."

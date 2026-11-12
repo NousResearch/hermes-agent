@@ -2,7 +2,7 @@
 
 Hermes runs shell commands through a pluggable set of **terminal backends**.
 The built-in backends (local, Docker, Modal, Daytona, Vercel Sandbox, SSH)
-live in the core repo under `tools/environments/`. The official
+live in the core repo under `hermes_agent/tools/environments/`. The official
 [Singularity/Apptainer plugin](https://github.com/NousResearch/hermes-official-plugins/tree/main/singularity)
 is a complete worked example of this page. Third-party
 sandbox vendors integrate as **plugins** instead — a standalone plugin repo
@@ -125,7 +125,7 @@ hermes config set terminal.backend acmebox
 ## Environment object contract
 
 `create_environment()` returns an object satisfying the same duck-typed
-interface as `tools.environments.base.BaseEnvironment`:
+interface as `hermes_agent.tools.environments.base.BaseEnvironment`:
 
 - `execute(command, timeout=None, ...)` → `{"output": str, "exit_code": int}`
 - `cleanup()` — release resources; called on session teardown / idle reaping
@@ -176,7 +176,7 @@ gives commands their own `$TMPDIR`) inherits `True` and must turn it off, or
 the file tools bypass the sandbox:
 
 ```python
-from tools.environments.local import LocalEnvironment
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 
 class AcmeJailEnvironment(LocalEnvironment):

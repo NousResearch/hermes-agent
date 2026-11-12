@@ -336,7 +336,7 @@ def test_codex_compaction_releases_the_live_sessions_read_dedup(tmp_path, entry,
     """Both out-of-turn codex compaction entry points reset the read_file dedup under the LIVE
     session row id — the task_id the main turn hands to run_conversation — not the "default"
     bucket, so a post-compaction re-read returns content instead of a stub (#98206)."""
-    from tools import file_tools_read_tracking as tracking
+    from hermes_agent.tools import file_tools_read_tracking as tracking
 
     tracker = {
         "sess-1": {"dedup_generation_reads": {"/live/file.py"}},

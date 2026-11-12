@@ -16,8 +16,8 @@ from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,
 )
-from tools import mcp_tool_discovery as discovery
-from tools.mcp_tool_config import _build_safe_env
+from hermes_agent.tools import mcp_tool_discovery as discovery
+from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
 TOKEN_NAME, TOKEN_VALUE = "EXAMPLE_TOKEN", "profile-own-value"
 
@@ -59,7 +59,7 @@ def spawn_env(monkeypatch):
             pass
 
     # Origin state is read through _core; patch the origin module (see mcp_tool_discovery docstring).
-    monkeypatch.setattr("tools.mcp_tool.MCPServerTask", _StubServerTask)
+    monkeypatch.setattr("hermes_agent.tools.mcp_tool.MCPServerTask", _StubServerTask)
     return captured
 
 
@@ -99,7 +99,7 @@ def test_unscoped_discover_interpolates_header_refs_under_the_owners_scope(profi
         "  stdiosrv:\n    command: 'true'\n", encoding="utf-8")
     handed_over = {}
     monkeypatch.setattr(discovery, "register_mcp_servers", lambda servers: handed_over.update(servers) or [])
-    monkeypatch.setattr("tools.mcp_tool._ensure_mcp_sdk", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.mcp_tool._ensure_mcp_sdk", lambda: True)
     assert current_secret_scope() is None
 
     discovery.discover_mcp_tools()
@@ -189,7 +189,7 @@ def test_launch_profile_env_only_credential_survives_the_owner_rebuild(spawn_env
     the header stayed the literal ``${VAR}`` and the fail-closed check parked a server that worked."""
     import os
     from pathlib import Path
-    from tools import mcp_tool_config as _config
+    from hermes_agent.tools import mcp_tool_config as _config
     from hermes_agent.tui_gateway import launch_profile_policy
     launch_home = Path(os.environ["HERMES_HOME"])  # conftest's per-test process home
     (launch_home / ".env").write_text("", encoding="utf-8")
@@ -215,7 +215,7 @@ def test_reconnect_rerenders_remote_headers_under_the_owners_fresh_scope(tmp_pat
     """Red on base (#119092): the run task re-read config.yaml on every rebuild but rendered it under
     its copied connect-time scope snapshot, so a parked server retried the literal ``${VAR}`` header
     forever after the owner's secret source came up."""
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool import MCPServerTask
     monkeypatch.setitem(env_loader._SECRET_SOURCES, TOKEN_NAME, "command")
     home_b = tmp_path / "s6probe-b"
     home_b.mkdir()

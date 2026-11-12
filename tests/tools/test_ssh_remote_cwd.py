@@ -12,14 +12,14 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.file_tools_paths as paths
-import tools.file_tools_write_guards as write_guards
-from tools import terminal_tool
-from tools import file_tools
-from tools.file_tools_write_guards import _check_sensitive_path
+import hermes_agent.tools.file_tools_paths as paths
+import hermes_agent.tools.file_tools_write_guards as write_guards
+from hermes_agent.tools import terminal_tool
+from hermes_agent.tools import file_tools
+from hermes_agent.tools.file_tools_write_guards import _check_sensitive_path
 from hermes_cli._startup_fast import project_root_str
-from tools import terminal_tool_config
-from tools.terminal_tool_config import coerce_ssh_remote_cwd
+from hermes_agent.tools import terminal_tool_config
+from hermes_agent.tools.terminal_tool_config import coerce_ssh_remote_cwd
 
 HOST_HOME = "/opt/data/home"
 
@@ -125,7 +125,7 @@ def test_ssh_cwd_keeps_relative_and_symlinked_paths(image_home, tmp_path, monkey
 def test_every_ssh_env_starts_in_the_remote_cwd(image_home, tmp_path, monkeypatch):
     """execute_code, image tools, the prompt probe and the dashboard files pane build SSHEnvironment from the raw
     config cwd."""
-    import tools.environments.ssh as ssh_env
+    import hermes_agent.tools.environments.ssh as ssh_env
 
     monkeypatch.setattr(ssh_env.tempfile, "gettempdir", lambda: str(tmp_path))
     monkeypatch.setattr(ssh_env.shutil, "which", lambda _name: "/usr/bin/ssh")
@@ -199,7 +199,7 @@ def test_ssh_child_workspace_skips_the_hermes_home(image_home, tmp_path, monkeyp
     monkeypatch.chdir(image_home)
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_CWD", ".")
-    from tools.delegate_tool_progress import _resolve_workspace_hint
+    from hermes_agent.tools.delegate_tool_progress import _resolve_workspace_hint
 
     parent = SimpleNamespace(
         _subdirectory_hints=SimpleNamespace(working_dir=image_home), terminal_cwd=under_sub, cwd=image_home,
@@ -213,7 +213,7 @@ def test_ssh_child_workspace_skips_the_hermes_home(image_home, tmp_path, monkeyp
 def test_local_child_workspace_keeps_the_process_directory(image_home, monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.setenv("TERMINAL_CWD", image_home)
-    from tools.delegate_tool_progress import _resolve_workspace_hint
+    from hermes_agent.tools.delegate_tool_progress import _resolve_workspace_hint
 
     parent = SimpleNamespace(_subdirectory_hints=None, terminal_cwd=None, cwd=None)
     assert _resolve_workspace_hint(parent) == image_home
@@ -231,7 +231,7 @@ def test_ssh_child_workspace_never_expands_remote_relative_cwd_on_host(
     monkeypatch.setenv("TERMINAL_CWD", remote_cwd)
     monkeypatch.chdir(image_home)
     from agent.subdirectory_hints import SubdirectoryHintTracker
-    from tools.delegate_tool_progress import _resolve_workspace_hint
+    from hermes_agent.tools.delegate_tool_progress import _resolve_workspace_hint
 
     # agent_init builds the tracker from the same cwd; it resolves it on this host.
     tracker = SubdirectoryHintTracker(working_dir=remote_cwd)
@@ -245,7 +245,7 @@ def test_ssh_child_workspace_keeps_an_absolute_session_cwd(image_home, tmp_path,
     project.mkdir()
     monkeypatch.setenv("TERMINAL_ENV", "ssh")
     monkeypatch.setenv("TERMINAL_CWD", "project")
-    from tools.delegate_tool_progress import _resolve_workspace_hint
+    from hermes_agent.tools.delegate_tool_progress import _resolve_workspace_hint
 
     parent = SimpleNamespace(_subdirectory_hints=None, session_cwd=str(project), terminal_cwd=None, cwd=None)
     assert _resolve_workspace_hint(parent) == str(project)

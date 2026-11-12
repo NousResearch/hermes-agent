@@ -64,9 +64,9 @@ class TestCleanShutdownMarker:
              patch("hermes_agent.gateway.run.GatewayRunner._finalize_shutdown_agents"), \
              patch("hermes_agent.gateway.run.GatewayRunner._update_runtime_status"), \
              patch("hermes_agent.gateway.status.remove_pid_file"), \
-             patch("tools.process_registry.process_registry") as mock_proc_reg, \
-             patch("tools.terminal_tool.cleanup_all_environments"), \
-             patch("tools.browser_session_lifecycle.cleanup_all_browsers"):
+             patch("hermes_agent.tools.process_registry.process_registry") as mock_proc_reg, \
+             patch("hermes_agent.tools.terminal_tool.cleanup_all_environments"), \
+             patch("hermes_agent.tools.browser_session_lifecycle.cleanup_all_browsers"):
             mock_proc_reg.kill_all = MagicMock()
 
             import asyncio

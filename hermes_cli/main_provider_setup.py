@@ -68,7 +68,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
 
 # Special non-auxiliary task surfaced in the same picker: subagent delegation. Routing lives
 # under top-level `delegation.*` (NOT `auxiliary.delegation`) because delegate_task spawns full
-# child agents via tools/delegate_tool.py::_resolve_delegation_credentials(), which reads that
+# child agents via hermes_agent/tools/delegate_tool.py::_resolve_delegation_credentials(), which reads that
 # section directly. "auto" means "inherit the parent agent" and is stored as empty strings —
 # never persist the literal "auto", or it would be resolved as a provider name.
 _DELEGATION_TASK_KEY = "delegation"

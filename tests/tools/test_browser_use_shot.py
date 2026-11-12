@@ -1,4 +1,4 @@
-"""browser_exec ``capture_screenshot()`` on a hidden tab (tools/browser_use_shot.py).
+"""browser_exec ``capture_screenshot()`` on a hidden tab (hermes_agent/tools/browser_use_shot.py).
 
 Chrome draws no frame for a hidden tab, and Browser Use cloud never answers a png
 ``Page.captureScreenshot`` for one, so the harness helper hung for its 60 s IPC timeout.
@@ -14,9 +14,9 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
-import tools.browser_use_cli as bu_cli
-from tools import browser_session as bs
-from tools import browser_session_cloud as bs_cloud
+import hermes_agent.tools.browser_use_cli as bu_cli
+from hermes_agent.tools import browser_session as bs
+from hermes_agent.tools import browser_session_cloud as bs_cloud
 
 # sitecustomize on the harness's PYTHONPATH: the real browser_harness CLI runs, only its daemon transport is
 # faked. A png Page.captureScreenshot on a hidden target raises the harness's own IPC timeout.
@@ -73,8 +73,8 @@ def run_exec(monkeypatch, tmp_path):
     """browser_exec on the local or cloud-provider route; the real harness CLI with the fake transport above."""
     monkeypatch.delenv("BU_NAME", raising=False)
     monkeypatch.delenv("BU_AUTOSPAWN", raising=False)
-    monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: "")
-    monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override_raw", lambda: "")
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.get_cdp_override", lambda: "")
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.get_cdp_override_raw", lambda: "")
     monkeypatch.setattr(bu_cli, "_attach_vault_supervisor", lambda env, task_id: None)
     monkeypatch.setattr(bu_cli, "_exec_route_is_sidecar", {}, raising=False)
     monkeypatch.setattr(bu_cli, "_driven_daemons", {})

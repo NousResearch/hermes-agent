@@ -7,8 +7,8 @@ import json
 
 import pytest
 
-from tools.bot_desktop import lease
-from tools.bot_desktop.rfb_filter import RfbClientFilter
+from hermes_agent.tools.bot_desktop import lease
+from hermes_agent.tools.bot_desktop.rfb_filter import RfbClientFilter
 
 _HANDSHAKE = b"RFB 003.008\n" + b"\x01" + b"\x00"
 _KEY = b"\x04\x01\x00\x00\x00\x00\x00\x61"          # KeyEvent 'a' down
@@ -22,7 +22,7 @@ _SETENC = b"\x02\x00\x00\x02" + b"\x00\x00\x00\x07" + b"\xff\xff\xff\x21"  # Set
 
 @pytest.fixture(autouse=True)
 def _fresh_lease():
-    from tools.computer_use import tool
+    from hermes_agent.tools.computer_use import tool
 
     tool.reset_backend_for_tests()
     lease._reset_for_tests()
@@ -51,7 +51,7 @@ def test_rfb_filter_forwards_input_only_from_the_lease_holder_across_arbitrary_c
 
 
 def test_computer_use_refuses_every_action_while_a_human_holds_the_screen(monkeypatch):
-    from tools.computer_use import tool
+    from hermes_agent.tools.computer_use import tool
 
     calls = []
     monkeypatch.setattr(tool, "_get_backend", lambda session_id="": calls.append(session_id) or object())
@@ -73,7 +73,7 @@ def test_lease_authority_is_shared_across_processes(tmp_path):
 
     lease.acquire("desktop-viewer")
     probe = (f"import sys; sys.path.insert(0, {os.getcwd()!r})\n"
-             "from tools.bot_desktop import lease\n"
+             "from hermes_agent.tools.bot_desktop import lease\n"
              "try:\n    lease.assert_agent_may_act(); print('AGENT')\n"
              "except lease.HumanHasControl:\n    print('HUMAN')\n"
              "lease.release('desktop-viewer')\n")
@@ -86,7 +86,7 @@ def test_lease_authority_is_shared_across_processes(tmp_path):
 def test_takeover_during_an_admitted_action_discards_its_result(monkeypatch):
     """Approval / backend start-up can take seconds; a human who takes over meanwhile must not have
     their keystrokes captured by an action admitted before they did."""
-    from tools.computer_use import tool
+    from hermes_agent.tools.computer_use import tool
 
     monkeypatch.setattr(tool, "_new_backend", lambda mode: tool._NoopBackend())
 
@@ -104,7 +104,7 @@ def test_takeover_handback_during_approval_does_not_start_the_device_op(monkeypa
     """A full take-over / hand-back during approval leaves holder=agent, so assert_agent_may_act
     succeeds. Input still belongs to the human's turn: compare admitted.epoch before _dispatch,
     not only after. Do not patch _dispatch — a recording backend must never be called."""
-    from tools.computer_use import tool
+    from hermes_agent.tools.computer_use import tool
 
     class Rec(tool._NoopBackend):
         def __init__(self):
@@ -163,8 +163,8 @@ def test_lease_works_without_fcntl(tmp_path):
     import sys
 
     probe = (f"import sys; sys.modules['fcntl'] = None; sys.path.insert(0, {os.getcwd()!r})\n"
-             "from tools.bot_desktop import lease\n"
-             "import tools.computer_use.tool\n"
+             "from hermes_agent.tools.bot_desktop import lease\n"
+             "import hermes_agent.tools.computer_use.tool\n"
              "assert lease.get().holder == lease.AGENT\n"
              "assert lease.acquire('v1').holder == lease.HUMAN\n"
              "assert lease.get().holder == lease.HUMAN\n"

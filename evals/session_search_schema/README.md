@@ -8,7 +8,7 @@ essay out of the schema and into response hints confuse models?"
 
 Unlike the readtool/browser evals, this one does not run the full AIAgent —
 it runs a minimal agent loop where the ONLY variable between arms is
-`tools/session_search_tool.py` extracted from two git refs. Everything else
+`hermes_agent/tools/session_search_tool.py` extracted from two git refs. Everything else
 (seeded DB, tasks, oracles, system prompt, temperature) is held constant.
 
 ## What it measures
@@ -31,7 +31,7 @@ first-call prompt tokens (measures the schema itself), total tokens, wall.
 ## Running
 
 ```bash
-# Arms are git refs; the runner extracts tools/session_search_tool.py
+# Arms are git refs; the runner extracts hermes_agent/tools/session_search_tool.py
 # from each and imports them side by side.
 python3 evals/session_search_schema/runner.py \
     --base origin/main --cand HEAD \

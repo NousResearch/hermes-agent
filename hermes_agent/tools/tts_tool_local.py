@@ -1,4 +1,4 @@
-"""Local on-device TTS engines for ``tools.tts_tool``: NeuTTS, Piper, KittenTTS.
+"""Local on-device TTS engines for ``hermes_agent.tools.tts_tool``: NeuTTS, Piper, KittenTTS.
 
 All three synthesize WAV natively; :func:`_finalize_wav_output` converts/renames to the requested
 container. Piper and KittenTTS keep loaded models in small LRU caches registered in
@@ -14,9 +14,9 @@ import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, Tuple
 
-from tools.tts_tool_delivery import _finalize_wav_output, _origin, _section, _wav_sidecar_path
+from hermes_agent.tools.tts_tool_delivery import _finalize_wav_output, _origin, _section, _wav_sidecar_path
 
-logger = logging.getLogger("tools.tts_tool")
+logger = logging.getLogger("hermes_agent.tools.tts_tool")
 
 DEFAULT_KITTENTTS_MODEL = "KittenML/kitten-tts-nano-0.8-int8"  # 25MB
 DEFAULT_KITTENTTS_VOICE = "Jasper"
@@ -57,7 +57,7 @@ def _run_helper(cmd: list, timeout: int) -> subprocess.CompletedProcess:
     )
 
 
-# --- NeuTTS (subprocess via tools/neutts_synth.py so the ~500MB model exits after use) ---
+# --- NeuTTS (subprocess via hermes_agent/tools/neutts_synth.py so the ~500MB model exits after use) ---
 def _generate_neutts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
     neutts_config = tts_config.get("neutts") or {}
     wav_path = _wav_sidecar_path(output_path)

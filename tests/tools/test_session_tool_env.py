@@ -26,7 +26,7 @@ def _parts(env):
 
 def test_terminal_run_env_starts_from_the_sessions_toolchain(daemon_env):
     from agent.session_client_env import client_env_scope
-    from tools.environments.local import _make_run_env
+    from hermes_agent.tools.environments.local import _make_run_env
     with client_env_scope(CLIENT):
         env = _make_run_env({})
         assert '/client/venv/bin' in _parts(env) and '/daemon/bin' not in _parts(env)
@@ -45,9 +45,9 @@ def test_tool_envs_carry_the_behaviour_values_the_session_uses(daemon_env, monke
     daemon's host values (prefill file), and an unbound session (messaging, cron) all of them."""
     import sys
     from agent.session_client_env import BEHAVIOUR_ENV, client_env_scope
-    from tools.code_execution_env import _build_child_env
-    from tools.environments.local import _make_run_env
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.code_execution_env import _build_child_env
+    from hermes_agent.tools.environments.local import _make_run_env
+    from hermes_agent.tools.process_registry import ProcessRegistry
     daemon = {name: f'daemon-{name}' for name in BEHAVIOUR_ENV}
     for name, value in daemon.items():
         monkeypatch.setenv(name, value)
@@ -67,7 +67,7 @@ def test_tool_envs_carry_the_behaviour_values_the_session_uses(daemon_env, monke
 
 def test_background_process_env_starts_from_the_sessions_toolchain(daemon_env):
     from agent.session_client_env import client_env_scope
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
     with client_env_scope(CLIENT):
         env = ProcessRegistry._spawn_env({})
     assert '/client/venv/bin' in _parts(env) and env['NVM_DIR'] == '/client/.nvm'
@@ -77,7 +77,7 @@ def test_background_process_env_starts_from_the_sessions_toolchain(daemon_env):
 def test_execute_code_child_env_starts_from_the_sessions_toolchain(daemon_env, tmp_path):
     import sys
     from agent.session_client_env import client_env_scope
-    from tools.code_execution_env import _build_child_env
+    from hermes_agent.tools.code_execution_env import _build_child_env
     kwargs = dict(rpc_endpoint='sock', rpc_token='t', tmpdir=str(tmp_path), child_python=sys.executable)
     with client_env_scope(CLIENT):
         env = _build_child_env(**kwargs)
@@ -105,7 +105,7 @@ def test_execute_code_scrubs_after_merging_the_sessions_toolchain(daemon_env, tm
     into the sandbox; the client's non-secret toolchain names (NVM_DIR) do reach it."""
     import sys
     from agent.session_client_env import client_env_scope
-    from tools.code_execution_env import _build_child_env
+    from hermes_agent.tools.code_execution_env import _build_child_env
     with client_env_scope({**CLIENT, **REFUSED}):
         env = _build_child_env(rpc_endpoint='sock', rpc_token='t', tmpdir=str(tmp_path), child_python=sys.executable)
     assert env['NVM_DIR'] == '/client/.nvm' and '/client/venv/bin' in _parts(env)
@@ -190,7 +190,7 @@ async def test_a_sessions_terminal_runs_with_its_clients_path(tmp_path, monkeypa
                 assert str(bins[name]) in path.split(os.pathsep) and '/daemon/bin' not in path.split(os.pathsep)
                 assert nvm == str(bins[name].parent) and toolchain == f'/opt/{name}'
     finally:
-        from tools.terminal_tool_lifecycle import cleanup_all_environments
+        from hermes_agent.tools.terminal_tool_lifecycle import cleanup_all_environments
         cleanup_all_environments()
         await connection.close()
         owner.db.close()
@@ -203,7 +203,7 @@ def _overlapping_terminal_turns(owner, policies):
     import threading
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
     from hermes_agent.gateway.session_policy import policy_scope
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
     barrier, outputs, errors = threading.Barrier(len(policies)), {}, []
 
     def turn(name, policy):

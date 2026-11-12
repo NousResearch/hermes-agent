@@ -1,4 +1,4 @@
-"""Unit tests for tools/budget_config.py.
+"""Unit tests for hermes_agent/tools/budget_config.py.
 
 Covers default values, resolve_threshold() priority chain
 (pinned > tool_overrides > registry > default), immutability,
@@ -8,7 +8,7 @@ and the PINNED_THRESHOLDS escape-hatch for read_file.
 from unittest.mock import patch
 
 
-from tools.budget_config import (
+from hermes_agent.tools.budget_config import (
     DEFAULT_BUDGET,
     DEFAULT_RESULT_SIZE_CHARS,
     PINNED_THRESHOLDS,
@@ -68,7 +68,7 @@ class TestResolveThreshold:
         assert result == 42
 
 
-    @patch("tools.registry.registry")
+    @patch("hermes_agent.tools.registry.registry")
     def test_registry_value_capped_at_default(self, mock_registry):
         """A scaled-down budget caps an oversized registry value (#23767).
 
@@ -80,7 +80,7 @@ class TestResolveThreshold:
         assert cfg.resolve_threshold("web_search") == 30_000
 
 
-    @patch("tools.registry.registry")
+    @patch("hermes_agent.tools.registry.registry")
     def test_default_budget_unchanged_for_100k_tool(self, mock_registry):
         """Default budget keeps 100K registry tools at 100K (no behavior change)."""
         mock_registry.get_max_result_size.return_value = 100_000
@@ -123,7 +123,7 @@ class TestMcpPrefixThreshold:
     """mcp_* tools get the tighter 50K default, config-overridable."""
 
     def test_default_mcp_threshold_is_tighter_than_generic(self):
-        from tools.budget_config import DEFAULT_MCP_RESULT_SIZE_CHARS
+        from hermes_agent.tools.budget_config import DEFAULT_MCP_RESULT_SIZE_CHARS
         assert DEFAULT_MCP_RESULT_SIZE_CHARS < DEFAULT_RESULT_SIZE_CHARS
         assert DEFAULT_BUDGET.resolve_threshold("mcp_composio_search_tools") == DEFAULT_MCP_RESULT_SIZE_CHARS
 
@@ -165,7 +165,7 @@ class TestMcpPrefixThreshold:
     def test_malformed_config_falls_back_to_default(self, tmp_path, monkeypatch):
         (tmp_path / "config.yaml").write_text("tool_budget: not-a-mapping\n")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from tools.budget_config import DEFAULT_MCP_RESULT_SIZE_CHARS
+        from hermes_agent.tools.budget_config import DEFAULT_MCP_RESULT_SIZE_CHARS
         cfg = budget_for_context_window(None)
         assert cfg.resolve_threshold("mcp_x_y") == DEFAULT_MCP_RESULT_SIZE_CHARS
 

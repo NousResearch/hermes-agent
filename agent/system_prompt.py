@@ -309,7 +309,7 @@ def _skills_prompt(agent: Any) -> str:
     categories to names-only — never hidden, every name stays visible."""
     if not any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage']):
         return ""
-    import model_tools
+    from hermes_agent import model_tools
     avail_toolsets = {model_tools.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names} - {None, ""}
     try:
         from agent.coding_context import coding_compact_skill_categories
@@ -353,7 +353,7 @@ def _bot_mode_parts(agent: Any) -> list[str]:
     date pinned in a months-long session is misinformation."""
     parts: list[str] = []
     try:
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, epoch_line, get_bot_mode_protocol_section
+        from hermes_agent.tools.bot_mode_probe import BOT_CHAT_TITLE, epoch_line, get_bot_mode_protocol_section
         _title = str(getattr(agent, "_session_title_hint", "") or "").strip()
         if not _title:
             _sdb = getattr(agent, "_session_db", None)
@@ -717,7 +717,7 @@ def _post_workspace_parts(agent: Any) -> list[str]:
     parts: list[str] = []
     if getattr(agent, "_environment_probe", True):
         try:
-            from tools.env_probe import get_environment_probe_line
+            from hermes_agent.tools.env_probe import get_environment_probe_line
             parts.append(get_environment_probe_line())
         except Exception:
             pass  # Probe failure must never block prompt build.

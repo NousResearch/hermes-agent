@@ -899,7 +899,7 @@ class CLIModalMixin:
         elif phase == "connected":
             lines.append(t("cli.connect.connected"))
             if target.get("alias"):
-                from tools.tool_labels import app_title
+                from hermes_agent.tools.tool_labels import app_title
 
                 lines.append(t("cli.connect.named_account", name=app_title(target.get("name", "")), alias=target["alias"]))
         else:
@@ -995,7 +995,7 @@ class CLIModalMixin:
         ``{"answers": {qid: raw | None}, "outcome"}`` (None = skipped): ``submitted`` when every
         question is locked, ``timed_out`` when the deadline expires, ``cancelled`` on an interrupt."""
         from cli import CLI_CONFIG, _DIM, _RST, _cprint
-        from tools.clarify_gateway import resolve_clarify_timeout
+        from hermes_agent.tools.clarify_gateway import resolve_clarify_timeout
 
         timeout = resolve_clarify_timeout(CLI_CONFIG)
         response_queue = queue.Queue()

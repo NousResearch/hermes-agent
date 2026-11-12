@@ -75,7 +75,7 @@ def load_epic_tools(scale: str) -> list[dict[str, Any]]:
 
 
 def register_epic_tools(scale: str) -> int:
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     tools = load_epic_tools(scale)
     for tdef in tools:
         def make_handler(nm):
@@ -169,7 +169,7 @@ def run_one(scenario, mode, scale, rep, out_dir: Path):
     base.reset_module_state()
     n_registered = register_epic_tools(scale)
 
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     original_dispatch = registry.dispatch
     tool_call_log: list[str] = []
 

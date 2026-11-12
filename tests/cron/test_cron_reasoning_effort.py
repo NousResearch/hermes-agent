@@ -156,7 +156,7 @@ class TestCronjobToolReasoningEffort:
     def test_format_job_surfaces_pin_when_set(self, tmp_cron_dir):
         import json
 
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         _create(reasoning_effort="high")
         listed = json.loads(cronjob(action="list"))["jobs"][0]
@@ -165,14 +165,14 @@ class TestCronjobToolReasoningEffort:
     def test_format_job_omits_field_when_unset(self, tmp_cron_dir):
         import json
 
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         _create()
         listed = json.loads(cronjob(action="list"))["jobs"][0]
         assert "reasoning_effort" not in listed
 
     def _tool_handler(self):
-        import tools.cronjob_tools as mod
+        import hermes_agent.tools.cronjob_tools as mod
 
         return mod.registry._tools["cronjob_manage"].handler
 

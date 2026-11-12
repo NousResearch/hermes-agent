@@ -11,9 +11,9 @@ from unittest.mock import patch
 import pytest
 
 from tests.tools._child_env_fixtures import child_env, observe_child, observe_terminal
-from tools.environments import local
-from tools.environments import local_pythonpath as pp
-from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
+from hermes_agent.tools.environments import local
+from hermes_agent.tools.environments import local_pythonpath as pp
+from hermes_agent.tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
 
 
 def _running_venv_site_packages() -> Path:
@@ -111,7 +111,7 @@ OPERATOR_SECRETS = ["MY_APP_KEY", "DEPLOY_WEBHOOK_SECRET", "SLACK_USER_TOKEN", "
 @pytest.mark.parametrize("builder", ["foreground", "background", "nonterminal"])
 def test_adapter_and_provider_profile_secrets_never_reach_children(child_env, monkeypatch, builder):
     from providers import list_providers
-    from tools.env_passthrough import is_env_passthrough, register_env_passthrough
+    from hermes_agent.tools.env_passthrough import is_env_passthrough, register_env_passthrough
     secrets = set(ADAPTER_SECRETS)
     # child_env's HERMES_HOME has no provider plugins, so these are the bundled profiles.
     secrets.update(name for profile in list_providers() for name in (profile.env_vars or ()))
@@ -144,7 +144,7 @@ def test_user_platform_plugin_secrets_belong_to_their_own_profile(child_env, mon
     it, the name is stripped from every child and refused for passthrough; bound to a sibling
     profile, the sibling's own same-named value is its user variable and reaches its children."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.env_passthrough import is_env_passthrough, register_env_passthrough
+    from hermes_agent.tools.env_passthrough import is_env_passthrough, register_env_passthrough
     a, b = child_env / "profiles" / "a", child_env / "profiles" / "b"
     _user_platform_plugin(a, "chatx", "CHATX_SIGNING_SECRET")
     b.mkdir(parents=True)
@@ -246,7 +246,7 @@ def test_a_partial_scan_is_rescanned_on_the_next_spawn(child_env, monkeypatch):
 @pytest.mark.platforms("posix")  # symlinks
 def test_a_symlinked_home_alias_shares_its_profiles_plugin_declarations(child_env, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.environments import local_env_policy as policy
+    from hermes_agent.tools.environments import local_env_policy as policy
     home = child_env / "profiles" / "a"
     _user_platform_plugin(home, "chatx", "CHATX_SIGNING_SECRET")
     alias = child_env / "a-alias"
@@ -353,7 +353,7 @@ def test_inheriting_child_gets_provider_keys_but_never_adapter_secrets(child_env
 
 def test_runtime_adapter_secret_follows_the_bound_profiles_registry(child_env, monkeypatch):
     from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
-    from tools.env_passthrough import is_env_passthrough, register_env_passthrough
+    from hermes_agent.tools.env_passthrough import is_env_passthrough, register_env_passthrough
     home_a, home_b = child_env / "hermes", child_env / "profile-b"
     home_a.mkdir(exist_ok=True)
     home_b.mkdir()
@@ -386,8 +386,8 @@ def test_passthrough_accepted_before_an_adapter_owns_the_name_stops_forwarding_i
         child_env, monkeypatch, declared_by):
     from agent import secret_scope as ss
     from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
-    from tools.code_execution_env import _scrub_child_env
-    from tools.env_passthrough import register_env_passthrough
+    from hermes_agent.tools.code_execution_env import _scrub_child_env
+    from hermes_agent.tools.env_passthrough import register_env_passthrough
     name, names = "ACME_CHAT_SIGNING_SECRET", ["ACME_CHAT_SIGNING_SECRET", "MY_APP_KEY"]
     monkeypatch.setenv(name, "fake-secret")
     monkeypatch.setenv("MY_APP_KEY", "operator")
@@ -447,7 +447,7 @@ def test_builders_strip_runtime_markers_and_owned_paths(child_env, monkeypatch, 
     ("nonterminal", None, None),
 ])
 def test_force_prefix_is_not_plugin_passthrough(child_env, monkeypatch, builder, base_force, extra_force):
-    from tools.env_passthrough import register_env_passthrough, is_env_passthrough
+    from hermes_agent.tools.env_passthrough import register_env_passthrough, is_env_passthrough
     register_env_passthrough(["OPENAI_API_KEY", "AUXILIARY_VISION_API_KEY", "SERVICE_TOKEN"])
     assert not is_env_passthrough("OPENAI_API_KEY")
     assert not is_env_passthrough("AUXILIARY_VISION_API_KEY")
@@ -470,7 +470,7 @@ def test_force_prefix_is_not_plugin_passthrough(child_env, monkeypatch, builder,
     assert "AUXILIARY_VISION_API_KEY" not in result
     assert not any(k.startswith("_HERMES_FORCE_") for k in result)
     # Even a buggy plugin hook cannot bypass dynamic-secret exclusion.
-    with patch("tools.env_passthrough.is_env_passthrough", return_value=True):
+    with patch("hermes_agent.tools.env_passthrough.is_env_passthrough", return_value=True):
         assert "AUXILIARY_VISION_API_KEY" not in factories[builder]()
 
 
@@ -479,8 +479,8 @@ def test_force_prefix_is_not_plugin_passthrough(child_env, monkeypatch, builder,
 def test_buzz_context_and_plain_process_value(child_env, monkeypatch, managed, platform, allowed, scope):
     from agent import secret_scope as ss
     from hermes_agent.gateway.session_context import _SESSION_PLATFORM
-    from tools.code_execution_env import _scrub_child_env
-    from tools.env_passthrough import register_env_passthrough, is_env_passthrough
+    from hermes_agent.tools.code_execution_env import _scrub_child_env
+    from hermes_agent.tools.env_passthrough import register_env_passthrough, is_env_passthrough
     buzz = {"BUZZ_PRIVATE_KEY": "fake-process", "BUZZ_AUTH_TAG": "fake-tag", "BUZZ_RELAY_URL": "fake-relay"}
     for k, v in buzz.items():
         monkeypatch.setenv(k, v)
@@ -535,7 +535,7 @@ def test_buzz_secret_never_reaches_second_profile_via_snapshot(child_env, monkey
 @pytest.mark.parametrize("scoped,expected", [({"SERVICE_TOKEN": "fake-routed"}, "fake-routed"), ({}, None)])
 def test_profile_passthrough_in_terminal_child(child_env, monkeypatch, scoped, expected):
     from agent import secret_scope as ss
-    from tools.env_passthrough import register_env_passthrough
+    from hermes_agent.tools.env_passthrough import register_env_passthrough
     register_env_passthrough(["SERVICE_TOKEN"])
     monkeypatch.setenv("SERVICE_TOKEN", "fake-default")
     ss.set_multiplex_active(True)
@@ -687,7 +687,7 @@ def test_payload_venv_that_is_not_real_is_not_provenance(tmp_path, monkeypatch, 
     monkeypatch.setattr("pm.environments.install_state_dir", lambda repo: tmp_path / "payload/state")
     monkeypatch.setattr("pm.environments.payload_venv", payload_venv)
     monkeypatch.setattr(local, "_hermes_repo_root_aliases", ())
-    from tools.environments.local_pythonpath import _validated_runtime_venv
+    from hermes_agent.tools.environments.local_pythonpath import _validated_runtime_venv
 
     assert _validated_runtime_venv({}) is None
 
@@ -764,7 +764,7 @@ class TestNativeEnvironmentContracts:
         user Windows path is preserved.  Windows-only: POSIX ``Path`` does
         not split on backslashes, so this cannot be meaningfully simulated
         on a POSIX host."""
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from hermes_agent.tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
 
         venv_sp = str(_running_site())
         # Windows form: C:\...\venv\Lib\site-packages (backslashes)
@@ -780,7 +780,7 @@ class TestNativeEnvironmentContracts:
 
     def test_empty_pythonpath_unchanged(self):
         """An empty PYTHONPATH is a no-op (falsy -> early return)."""
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from hermes_agent.tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
         env = {"PYTHONPATH": ""}
         _strip_hermes_owned_pythonpath(env)
         # Empty string is falsy, so the function returns early without
@@ -789,7 +789,7 @@ class TestNativeEnvironmentContracts:
 
     def test_empty_component_preserved(self):
         """An empty component means cwd and must survive unchanged."""
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from hermes_agent.tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
 
         user_pp = os.pathsep.join(["/foo", "", "/bar"])
         env = {"PYTHONPATH": user_pp}
@@ -800,7 +800,7 @@ class TestNativeEnvironmentContracts:
 
     def test_raw_user_spelling_preserved(self):
         """The sanitizer does not trim, normalize, or deduplicate user entries."""
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from hermes_agent.tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
 
         user_pp = os.pathsep.join([
             " /opt/user-lib ",
@@ -824,8 +824,8 @@ class TestNativeEnvironmentContracts:
         runner: sys.prefix represents base Python, while validated VIRTUAL_ENV
         identifies ``<repo>/venv`` as the Hermes runtime producer contract.
         """
-        from tools.environments import local
-        from tools.environments import local_pythonpath
+        from hermes_agent.tools.environments import local
+        from hermes_agent.tools.environments import local_pythonpath
 
         repo_root = tmp_path / "hermes-agent"
         runtime_venv = repo_root / "venv"
@@ -854,8 +854,8 @@ class TestNativeEnvironmentContracts:
 
     def test_unrelated_virtual_env_is_not_runtime_provenance(self, tmp_path, monkeypatch):
         """An arbitrary inherited VIRTUAL_ENV cannot claim PYTHONPATH ownership."""
-        from tools.environments import local
-        from tools.environments import local_pythonpath
+        from hermes_agent.tools.environments import local
+        from hermes_agent.tools.environments import local_pythonpath
 
         repo_root = tmp_path / "hermes-agent"
         repo_root.mkdir()
@@ -879,7 +879,7 @@ class TestNativeEnvironmentContracts:
 
     def test_no_pythonpath_key(self):
         """Missing PYTHONPATH key is a no-op."""
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from hermes_agent.tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
         env = {"PATH": "/usr/bin"}
         _strip_hermes_owned_pythonpath(env)
         assert "PYTHONPATH" not in env
@@ -894,7 +894,7 @@ class TestNativeEnvironmentContracts:
         """Every subprocess env builder applies the same sanitation contract:
         Hermes venv site-packages is stripped, user entries survive.
         """
-        from tools.environments import local as local_mod
+        from hermes_agent.tools.environments import local as local_mod
 
         venv_sp = str(_running_venv_site_packages())
         seed = {
@@ -920,8 +920,8 @@ class TestNativeEnvironmentContracts:
         _strip_hermes_owned_pythonpath is applied (as the spawn path does),
         while user entries (even for another Python version) are preserved.
         """
-        from tools.code_execution_env import _scrub_child_env
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from hermes_agent.tools.code_execution_env import _scrub_child_env
+        from hermes_agent.tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
 
         venv_sp = str(_running_venv_site_packages())
         other_sp = "/opt/other-venv/lib/python3.99/site-packages"
@@ -957,8 +957,8 @@ class TestNativeEnvironmentContracts:
           first) and stays absent for an external-environment child;
         * user entries survive after the controlled entries.
         """
-        import tools.code_execution_tool as cet
-        from tools.code_execution_tool import execute_code
+        import hermes_agent.tools.code_execution_tool as cet
+        from hermes_agent.tools.code_execution_tool import execute_code
 
         def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
             return '{"output": "mock", "exit_code": 0}'
@@ -985,11 +985,11 @@ class TestNativeEnvironmentContracts:
             proc.poll.return_value = 0
             return proc
 
-        with patch("tools.code_execution_tool._load_config",
+        with patch("hermes_agent.tools.code_execution_tool._load_config",
                    return_value={"mode": "strict"}), \
-             patch("model_tools.handle_function_call",
+             patch("hermes_agent.model_tools.handle_function_call",
                    side_effect=_mock_handle_function_call), \
-             patch("tools.code_execution_env._uses_hermes_python_environment",
+             patch("hermes_agent.tools.code_execution_env._uses_hermes_python_environment",
                    return_value=same_env), \
              patch("subprocess.Popen", side_effect=_fake_popen), \
              patch.dict(os.environ, {
@@ -1053,9 +1053,9 @@ class TestNativeEnvironmentContracts:
         PYTHONPATH entry.  A user path that merely happens to live under
         the repo directory must therefore be preserved.
         """
-        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+        from hermes_agent.tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
 
-        local_file = Path(__import__("tools.environments.local", fromlist=["__file__"]).__file__).resolve()
+        local_file = Path(__import__("hermes_agent.tools.environments.local", fromlist=["__file__"]).__file__).resolve()
         real_repo_root = local_file.parents[2]
         direct_child = str(real_repo_root / "tools")
 
@@ -1070,8 +1070,8 @@ class TestNativeEnvironmentContracts:
 
     def test_configured_home_alias_matches_launcher_output(self, tmp_path, monkeypatch):
         """The real producer spelling is derived and consumed end to end."""
-        from tools.environments import local
-        from tools.environments import local_pythonpath
+        from hermes_agent.tools.environments import local
+        from hermes_agent.tools.environments import local_pythonpath
         from hermes_cli.gateway_windows import _preserve_hermes_home_path
 
         physical_home = tmp_path / "physical-home"
@@ -1119,8 +1119,8 @@ class TestNativeEnvironmentContracts:
         builder must still recover the lexical root so the inherited lexical
         repo-root entry is stripped.
         """
-        from tools.environments import local
-        from tools.environments import local_pythonpath
+        from hermes_agent.tools.environments import local
+        from hermes_agent.tools.environments import local_pythonpath
         from hermes_cli.profiles import resolve_profile_env
 
         physical_home = tmp_path / "physical-home"
@@ -1164,8 +1164,8 @@ class TestNativeEnvironmentContracts:
         alias builder must recover the lexical spelling via exact-identity
         proof (strict resolve), not a name-based guess.
         """
-        from tools.environments import local
-        from tools.environments import local_pythonpath
+        from hermes_agent.tools.environments import local
+        from hermes_agent.tools.environments import local_pythonpath
 
         physical_root = _physical_repo_root(tmp_path)
         configured_home = tmp_path / "configured-home"
@@ -1195,8 +1195,8 @@ class TestNativeEnvironmentContracts:
         is never aliased or stripped.  Exact filesystem identity decides,
         not the name; no ownership provenance means no strip.
         """
-        from tools.environments import local
-        from tools.environments import local_pythonpath
+        from hermes_agent.tools.environments import local
+        from hermes_agent.tools.environments import local_pythonpath
 
         physical_root = _physical_repo_root(tmp_path)
         configured_home = tmp_path / "configured-home"
@@ -1224,8 +1224,8 @@ class TestNativeEnvironmentContracts:
         The root spelling must be derived (profiles -> grandparent) and then
         the lexical repo alias recovered from it.
         """
-        from tools.environments import local
-        from tools.environments import local_pythonpath
+        from hermes_agent.tools.environments import local
+        from hermes_agent.tools.environments import local_pythonpath
 
         physical_root = _physical_repo_root(tmp_path)
         configured_root = tmp_path / "configured-root"
@@ -1256,8 +1256,8 @@ class TestNativeEnvironmentContracts:
         VIRTUAL_ENV (<lexical repo>/venv) validates and its site-packages is
         stripped together with the repo root, while user entries survive.
         """
-        from tools.environments import local
-        from tools.environments import local_pythonpath
+        from hermes_agent.tools.environments import local
+        from hermes_agent.tools.environments import local_pythonpath
 
         physical_root = _physical_repo_root(tmp_path)
         venv_dir = physical_root / "venv"
@@ -1317,7 +1317,7 @@ class TestPythonhomeSanitized:
         builder -- terminal, background/PTY, cron no_agent scripts, and
         execute_code children (#75018).
         """
-        from tools.environments import local as local_mod
+        from hermes_agent.tools.environments import local as local_mod
 
         seed = {
             "PATH": "/usr/bin:/bin",
@@ -1345,7 +1345,7 @@ class TestPythonhomeSanitized:
         secret CLIs) must not have their environment silently altered — this
         test pins that exception as intentional.
         """
-        from tools.environments.local import build_subprocess_env
+        from hermes_agent.tools.environments.local import build_subprocess_env
         base = {
             "PATH": "/usr/bin:/bin",
             "HOME": "/home/user",
@@ -1363,8 +1363,8 @@ class TestProfileScopedPassthrough:
     def test_make_run_env_uses_active_profile_for_passthrough(self, monkeypatch):
         """Allowlisted values must come from the routed profile, not os.environ."""
         from agent import secret_scope as ss
-        from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.env_passthrough import clear_env_passthrough, register_env_passthrough
+        from hermes_agent.tools.environments.local import _make_run_env
 
         clear_env_passthrough()
         register_env_passthrough(["SERVICE_TOKEN"])
@@ -1383,8 +1383,8 @@ class TestProfileScopedPassthrough:
     def test_make_run_env_omits_missing_scoped_passthrough(self, monkeypatch):
         """A missing routed secret must not fall back to the default profile."""
         from agent import secret_scope as ss
-        from tools.env_passthrough import clear_env_passthrough, register_env_passthrough
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.env_passthrough import clear_env_passthrough, register_env_passthrough
+        from hermes_agent.tools.environments.local import _make_run_env
 
         clear_env_passthrough()
         register_env_passthrough(["SERVICE_TOKEN"])
@@ -1548,7 +1548,7 @@ class TestSanePathIncludesHomebrew:
         hermes-install-dir prepend (a separate concern, covered by
         TestHermesBinDirOnPath) so a real ``hermes`` on the test runner's PATH
         doesn't shift the asserted PATH layout."""
-        from tools.environments import local as local_mod
+        from hermes_agent.tools.environments import local as local_mod
         saved = local_mod._HERMES_BIN_DIR
         local_mod._HERMES_BIN_DIR = None  # resolved -> no dir to inject
         yield
@@ -1565,8 +1565,8 @@ class TestSanePathIncludesHomebrew:
         input.  Git Bash dir prepending is neutralised so the merged PATH
         layout is deterministic on every host.
         """
-        from tools.environments import local as local_mod
-        from tools.environments.local import _SANE_PATH, _make_run_env
+        from hermes_agent.tools.environments import local as local_mod
+        from hermes_agent.tools.environments.local import _SANE_PATH, _make_run_env
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", list)
         minimal_env = {"PATH": "/some/custom/bin"}
         with patch.dict(os.environ, minimal_env, clear=True):
@@ -1587,7 +1587,7 @@ class TestSanePathIncludesHomebrew:
         macOS-only: the regression is the launchd environment on macOS, and
         the sane-path merge is a documented passthrough on Windows.
         """
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.environments.local import _make_run_env
         launchd_env = {"PATH": os.pathsep.join(["/usr/bin", "/bin", "/usr/sbin", "/sbin"])}
         with patch.dict(os.environ, launchd_env, clear=True):
             result = _make_run_env({})
@@ -1607,8 +1607,8 @@ class TestSanePathIncludesHomebrew:
         The Git Bash dir prepend is neutralised so the assertion is about the
         key casing alone (a real Windows box has those dirs).
         """
-        from tools.environments import local as local_mod
-        from tools.environments.local import _make_run_env
+        from hermes_agent.tools.environments import local as local_mod
+        from hermes_agent.tools.environments.local import _make_run_env
         # Keep the real home vars: the adapter-secret lookup resolves the profile home.
         windows_env = {"Path": r"C:\Windows\System32;C:\Program Files\Git\bin",
                        **{k: os.environ[k] for k in ("USERPROFILE", "HOMEDRIVE", "HOMEPATH", "HERMES_HOME")

@@ -4,7 +4,7 @@ type Xvnc is configured to accept must be framed, or the stream dies on it."""
 
 import pytest
 
-from tools.bot_desktop.rfb_filter import _MAX_CUT_TEXT, RfbClientFilter
+from hermes_agent.tools.bot_desktop.rfb_filter import _MAX_CUT_TEXT, RfbClientFilter
 
 _HANDSHAKE = b"RFB 003.008\n\x01\x01"
 

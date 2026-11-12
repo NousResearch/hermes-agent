@@ -21,7 +21,7 @@ CASES = [(DEFAULT, True), ([], False)]
 
 @pytest.fixture(autouse=True)
 def _clean_queues():
-    from tools import approval as approval_mod
+    from hermes_agent.tools import approval as approval_mod
 
     approval_mod._gateway_queues.clear()
     yield

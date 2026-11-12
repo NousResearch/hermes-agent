@@ -1,19 +1,19 @@
 """Feishu Drive Tools -- document comment operations via Feishu/Lark API.
 
 List / reply-to / add document comments through the generic BaseRequest path (lazy SDK
-import), sharing client/request plumbing with feishu_doc_tool via ``tools.feishu_lark``.
+import), sharing client/request plumbing with feishu_doc_tool via ``hermes_agent.tools.feishu_lark``.
 The lark client is injected per-thread by the feishu_comment event handler.
 """
 
 import logging
 
-from tools.feishu_lark import (
+from hermes_agent.tools.feishu_lark import (
     _check_feishu,
     build_request,
     get_client,
     lark_call,
     set_client)
-from tools.registry import registry, tool_error, tool_result
+from hermes_agent.tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
 

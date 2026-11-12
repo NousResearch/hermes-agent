@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from tools import desktop_ui, open_preview_tool as op
+from hermes_agent.tools import desktop_ui, open_preview_tool as op
 
 
 @pytest.fixture(autouse=True)

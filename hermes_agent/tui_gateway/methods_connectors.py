@@ -34,7 +34,7 @@ def _connector_auth_error(rid, exc):
 
 def _connector_guard(fn):
     def handler(rid, params):
-        from tools.connectors.gateway.errors import GatewayAuthError
+        from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError
         from hermes_agent.tui_gateway.connector_refusals import REQUEST_FAILED
 
         try:
@@ -73,7 +73,7 @@ def _session_owner(rid, owner):
 
 
 def _account_gate_closed(rid):
-    from tools.connectors import connectors_available
+    from hermes_agent.tools.connectors import connectors_available
     from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason
 
     if connectors_available():
@@ -84,7 +84,7 @@ def _account_gate_closed(rid):
 def _account_identity_error(rid):
     """Connecting from the Connectors page is the user asking for apps: create the guest identity
     here when the user has none. Page reads and operation polls never call this."""
-    from tools.connectors import ensure_guest_identity
+    from hermes_agent.tools.connectors import ensure_guest_identity
     from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason
 
     if setup_error := ensure_guest_identity():
@@ -112,8 +112,8 @@ def _connector_params(rid, params, model):
 
 
 def _session_connector_gate(rid, session, action):
-    import model_tools
-    from tools.connectors import connectors_available
+    from hermes_agent import model_tools
+    from hermes_agent.tools.connectors import connectors_available
 
     agent = session.get("agent")
     enabled = agent.enabled_toolsets if agent is not None else _load_enabled_toolsets(_resolve_agent_platform(_session_source(session)))
@@ -129,10 +129,10 @@ def _session_connector_gate(rid, session, action):
 
 def _session_connector_rpc(rid, request, session, action):
     import json
-    import model_tools
+    from hermes_agent import model_tools
     import uuid
 
-    from tools.connectors import live
+    from hermes_agent.tools.connectors import live
     from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
     from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason
 
@@ -181,7 +181,7 @@ def _session_connector_rpc(rid, request, session, action):
 
 
 def _connector_rows(rows):
-    from tools.connectors.gateway.wire import ConnectorListItem
+    from hermes_agent.tools.connectors.gateway.wire import ConnectorListItem
     from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
 
     return connector_ui_payload([
@@ -196,8 +196,8 @@ _ACCOUNT_CREATES_GUEST = {"status": False, "connect": True}
 
 def _account_connector_list(rid):
     from hermes_cli.free_tier_offer import note_connected_apps_seen
-    from tools.connectors.managed import managed_client
-    from tools.managed_tool_gateway import read_nous_access_token
+    from hermes_agent.tools.connectors.managed import managed_client
+    from hermes_agent.tools.managed_tool_gateway import read_nous_access_token
 
     rows = managed_client(creates_guest=False).list_connectors() if read_nous_access_token() else []
     note_connected_apps_seen(rows)
@@ -205,8 +205,8 @@ def _account_connector_list(rid):
 
 
 def _account_connector_connect(rid, request):
-    from tools.connectors import account
-    from tools.connectors.managed import DESKTOP_PAGE
+    from hermes_agent.tools.connectors import account
+    from hermes_agent.tools.connectors.managed import DESKTOP_PAGE
     from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
     action = "reconnect" if request.reconnect else "connect"
     try:
@@ -214,7 +214,7 @@ def _account_connector_connect(rid, request):
             request.connectors, action=action, profile_home=_account_home(request), alias=request.alias,
             repair_id=request.connection_id, initiator=DESKTOP_PAGE)
         if not start.started:
-            from tools.connectors.contract import TargetState
+            from hermes_agent.tools.connectors.contract import TargetState
 
             targets = [start.operation.target(name) for name in request.connectors]
             if any(target.state in (TargetState.failed, TargetState.expired) for target in targets):
@@ -261,7 +261,7 @@ def _connector_rpc(rid, params, action):
 
 
 def _reissue(rid, operation, args, *, initiator=None):
-    from tools.connectors.run import reissue
+    from hermes_agent.tools.connectors.run import reissue
     from hermes_agent.tui_gateway.connector_payload import connector_ui_payload
     from hermes_agent.tui_gateway.connector_refusals import REISSUE_REFUSALS
 
@@ -315,7 +315,7 @@ def _account_scope(request):
 
 
 def _operation_for_request(rid, request, session):
-    from tools.connectors import live
+    from hermes_agent.tools.connectors import live
     if request.owner.type == "session":
         operation = live.get(session["session_key"], request.op_id, profile_home=session.get("profile_home"))
     else:
@@ -380,8 +380,8 @@ def _(rid, params):
 
 
 def _apply_connection_answer(rid, answer, operation):
-    from tools.connectors.operation import IllegalTransition
-    from tools.connectors.run import respond
+    from hermes_agent.tools.connectors.operation import IllegalTransition
+    from hermes_agent.tools.connectors.run import respond
     from hermes_agent.tui_gateway.connector_refusals import INVALID_ANSWER
 
     try:
@@ -431,7 +431,7 @@ def _connection_update(operation, change, snapshot):
 
 
 def _install_update_hook():
-    from tools.connectors import operation as op_module
+    from hermes_agent.tools.connectors import operation as op_module
 
     if getattr(op_module.ConnectionOperation, "_update_hook_installed", False):
         return

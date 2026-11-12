@@ -9,13 +9,13 @@ import pytest
 
 from agent.tool_executor import _ToolCallRef, _begin_tool_execution, _ensure_file_checkpoint
 from agent.turn_explainers import TurnExplainersMixin
-from tools.checkpoint_manager import CheckpointManager
-from tools.terminal_tool import _active_environments, _env_lock
+from hermes_agent.tools.checkpoint_manager import CheckpointManager
+from hermes_agent.tools.terminal_tool import _active_environments, _env_lock
 
 
 @pytest.fixture
 def manager(tmp_path, monkeypatch):
-    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", tmp_path / "checkpoints")
+    monkeypatch.setattr("hermes_agent.tools.checkpoint_manager.CHECKPOINT_BASE", tmp_path / "checkpoints")
     return CheckpointManager(enabled=True)
 
 
@@ -48,7 +48,7 @@ def test_relative_file_checkpoint_uses_task_workspace(tmp_path, monkeypatch):
     monkeypatch.chdir(process_cwd)
     monkeypatch.setenv("TERMINAL_CWD", str(workspace_cwd))
     monkeypatch.setattr(
-        "tools.checkpoint_manager.CHECKPOINT_BASE",
+        "hermes_agent.tools.checkpoint_manager.CHECKPOINT_BASE",
         tmp_path / "checkpoints",
     )
 

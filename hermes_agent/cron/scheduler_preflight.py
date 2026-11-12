@@ -323,7 +323,7 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
     skill_names = _job_skill_names(job)
     if not skill_names:
         return None
-    from tools.skills_tool import skill_view
+    from hermes_agent.tools.skills_tool import skill_view
     for skill_name in skill_names:
         try:
             payload = json.loads(skill_view(skill_name))
@@ -362,8 +362,8 @@ def _empty_requested_mcp_toolsets(job: dict, cfg: dict) -> Optional[str]:
     if not requested:
         return None
     from hermes_cli.tools_config import enabled_mcp_server_names
-    from toolsets import resolve_toolset
-    from tools.mcp_tool_discovery import mcp_server_reconnecting
+    from hermes_agent.toolsets import resolve_toolset
+    from hermes_agent.tools.mcp_tool_discovery import mcp_server_reconnecting
     missing = [name for name in requested
                if name in enabled_mcp_server_names(cfg) and not resolve_toolset(name)]
     # A server that worked in this process and is parked/self-probing after a network blip

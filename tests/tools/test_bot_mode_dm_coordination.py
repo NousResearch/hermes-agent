@@ -1,13 +1,13 @@
 """``message_agent`` coordination: fan-out with one combined reply, notify-only, cancel, live
-teammate state, and the single reply path (tools/bot_mode_dm.py + tools/bot_mode_dm_coordination.py)."""
+teammate state, and the single reply path (hermes_agent/tools/bot_mode_dm.py + hermes_agent/tools/bot_mode_dm_coordination.py)."""
 
 import json
 import os
 import shlex
 import sys
 
-from tools import bot_live_delivery as live
-from tools import bot_mode_dm, bot_mode_dm_coordination as coordination
+from hermes_agent.tools import bot_live_delivery as live
+from hermes_agent.tools import bot_mode_dm, bot_mode_dm_coordination as coordination
 
 # _fresh_probe_cache is the autouse probe-cache reset; importing it applies it here too.
 from tests.tools.test_bot_mode_dm import (
@@ -178,7 +178,7 @@ def test_one_targets_setup_failure_keeps_the_others_combined_reply(tmp_path, mon
 def test_a_peer_and_a_local_bot_sharing_a_name_are_two_recipients(tmp_path):
     from types import SimpleNamespace
 
-    from tools import bot_mode_probe as probe
+    from hermes_agent.tools import bot_mode_probe as probe
 
     home = _managed_home(tmp_path, teammates=("qa",), peers=("mini",))
     (home / "profiles" / "qa" / "profile.yaml").write_text("display_name: Mini\n", encoding="utf-8")

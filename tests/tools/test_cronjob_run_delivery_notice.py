@@ -21,14 +21,14 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.cronjob_tools import _manual_run_delivery_note
+from hermes_agent.tools.cronjob_tools import _manual_run_delivery_note
 
 @pytest.fixture(autouse=True)
 def _clean_state():
     """Reset the shared async-delegation world around each test.
 
     The dispatch tests below submit real workers onto the process-wide
-    daemon executor in ``tools.async_delegation``. A finished worker parks
+    daemon executor in ``hermes_agent.tools.async_delegation``. A finished worker parks
     idle holding an ``_idle_semaphore`` token, so the NEXT dispatch in this
     process REUSES that thread instead of spawning a fresh one — and only
     the fresh-spawn path keeps upstream's dispatch-and-return test winning
@@ -44,8 +44,8 @@ def _clean_state():
     deterministically whenever this file runs before it. Mirrors
     ``tests/tools/test_async_delegation.py::_clean_state``.
     """
-    from tools import async_delegation as ad
-    from tools.process_registry import process_registry
+    from hermes_agent.tools import async_delegation as ad
+    from hermes_agent.tools.process_registry import process_registry
 
     ad._reset_for_tests()
     while not process_registry.completion_queue.empty():
@@ -79,7 +79,7 @@ def _job(job_id, deliver):
 @contextlib.contextmanager
 def _bound_session_key(key):
     """Bind the approval session key contextvar (background dispatch gate)."""
-    from tools.approval_context import _approval_session_key
+    from hermes_agent.tools.approval_context import _approval_session_key
 
     token = _approval_session_key.set(key)
     try:
@@ -105,7 +105,7 @@ def _drain_completion_event(delegation_id):
     The runner executes on a daemon thread, so this must be called while the
     test's patches are still active.
     """
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     for _ in range(100):
         try:
@@ -144,18 +144,18 @@ class TestRunnerSummaryWiring:
     refreshed job record — both directions of issue #83993."""
 
     def test_delivery_failure_surfaces_in_completion_summary(self):
-        from tools.cronjob_tools import _try_dispatch_background_run
+        from hermes_agent.tools.cronjob_tools import _try_dispatch_background_run
 
         job = _job("job-dn-01", "telegram")
         with _bound_session_key("agent:main:telegram:dm:83993"):
             with (
                 patch(
-                    "tools.cronjob_tools.claim_job_for_fire",
+                    "hermes_agent.tools.cronjob_tools.claim_job_for_fire",
                     return_value=job,  # claimed snapshot (return_job=True API)
                 ),
                 patch("hermes_agent.cron.scheduler.run_one_job", return_value=True),
                 patch(
-                    "tools.cronjob_tools.get_job",
+                    "hermes_agent.tools.cronjob_tools.get_job",
                     return_value={
                         # Post-#83993 record shape: mark_job_run writes
                         # delivery_failed (not ok) when only delivery failed.
@@ -182,18 +182,18 @@ class TestRunnerSummaryWiring:
         """End-to-end: an empty stored deliver must render as the local target
         it behaves as at fire time — never a bare "Delivery target: " followed
         by a delivered-there claim."""
-        from tools.cronjob_tools import _try_dispatch_background_run
+        from hermes_agent.tools.cronjob_tools import _try_dispatch_background_run
 
         job = _job("job-dn-03", "")
         with _bound_session_key("agent:main:telegram:dm:86622"):
             with (
                 patch(
-                    "tools.cronjob_tools.claim_job_for_fire",
+                    "hermes_agent.tools.cronjob_tools.claim_job_for_fire",
                     return_value=job,  # claimed snapshot (return_job=True API)
                 ),
                 patch("hermes_agent.cron.scheduler.run_one_job", return_value=True),
                 patch(
-                    "tools.cronjob_tools.get_job",
+                    "hermes_agent.tools.cronjob_tools.get_job",
                     return_value={"last_status": "ok", "last_error": None},
                 ),
             ):

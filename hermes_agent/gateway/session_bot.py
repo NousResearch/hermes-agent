@@ -15,8 +15,8 @@ from hermes_agent.gateway.session_contract import SessionActor, SessionRef
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, get_session_admission
-from tools.bot_failure_reasons import HELD_NOT_SENT, UNKNOWN
-from tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
+from hermes_agent.tools.bot_failure_reasons import HELD_NOT_SENT, UNKNOWN
+from hermes_agent.tools.bot_live_delivery import _TERMINAL, _delivery_id, _read
 logger = logging.getLogger(__name__)
 from hermes_agent.gateway.session_bot_mailbox import (mailbox_lock, read_receipt, write_receipt,
     scan_receipts, remember_receipt, track_receipt_task, withdraw_pin, refuse_pin, requeue_pin)
@@ -69,7 +69,7 @@ def _record_shape_error(path, record):
     if 'admission_id' in record or record.get('status') == 'canonical' or 'principal_id' in record:
         return _canonical_record_error(path, record)
     if 'owner' in record:
-        from tools.bot_live_delivery import _ticket_shape_error
+        from hermes_agent.tools.bot_live_delivery import _ticket_shape_error
         return _ticket_shape_error(path, record)
     return 'unknown receipt schema'
 
@@ -170,7 +170,7 @@ def _legacy_order(path, record):
 
 def _home(authority, actor, profile):
     from hermes_agent.gateway.session_authorities import served_profile_name
-    from tools.bot_mode_probe import _handle, _hermes_root, _roster
+    from hermes_agent.tools.bot_mode_probe import _handle, _hermes_root, _roster
     home = Path(authority.db.db_path).parent.resolve()
     name = served_profile_name(home)
     handle = _handle(name, [n for n, _d in _roster(_hermes_root(home))]) if name == 'default' else name
@@ -481,7 +481,7 @@ def _result(authority, record):
     """The delivery's receipt. Once the one transient-failure retry was admitted, the sender's
     outcome is the retry's: ``status``/``reply`` follow it (``retry_admission_id``).
 
-    A ``failed`` receipt carries ``error`` + a typed ``reason`` (``tools.bot_failure_reasons``):
+    A ``failed`` receipt carries ``error`` + a typed ``reason`` (``hermes_agent.tools.bot_failure_reasons``):
     the relay's Desktop forwards ``res.reason`` to the sender, which cannot re-derive it from a
     reply that lacks the provider text."""
     retry_id = _retry_admission(authority, record)
@@ -503,7 +503,7 @@ def _result(authority, record):
             if exc.reason != 'not_found':
                 raise
             # Its admission aged out after the chat was deleted: the receipt's own answer stands.
-            from tools.bot_failure_reasons import UNKNOWN
+            from hermes_agent.tools.bot_failure_reasons import UNKNOWN
             error, reason = record.get('error') or 'Bot Chat delivery failed', record.get('reason') or UNKNOWN
     return {k: v for k, v in dict(status=status, delivery_id=record['delivery_id'],
         profile_home=record['profile_home'], session_id=record['session_id'],
@@ -516,7 +516,7 @@ def _failure(authority, admission_id):
     and the turn loop's typed verdict, classified like every other Bot lane. A refusal that never
     ran (no result) has no provider text: ``unknown``."""
     from hermes_agent.gateway.session_results import admission_result
-    from tools.bot_failure_reasons import classify_agent_error, turn_failure_text
+    from hermes_agent.tools.bot_failure_reasons import classify_agent_error, turn_failure_text
     saved = (admission_result(authority.db, admission_id) or {}).get('result') or {}
     from hermes_agent.gateway.session_bot_outcome import OWNER_STOPPED_ERROR, owner_stopped
     if owner_stopped(saved):
@@ -538,7 +538,7 @@ def peer_wait_admission(authority, record):
     An original that failed while its one retry is still eligible is ``interim``: pending, never
     the answer, while the owner's receipt task admits the retry (or records why it would not;
     the receipt file is re-read for that, the caller's in-memory record is stale)."""
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     retry_id = _retry_admission(authority, record)
     if retry_id:
         return (retry_id, False) if _admission_outcome(authority, retry_id)[0] in {'queued', 'claimed'} else (None, False)
@@ -557,7 +557,7 @@ def _retry_identity(key):
 
 
 def _retry_eligible(authority, record):
-    """Exactly the main-lane gate (``tools.bot_failure_reasons.result_retry_action``): the original
+    """Exactly the main-lane gate (``hermes_agent.tools.bot_failure_reasons.result_retry_action``): the original
     admission SETTLED ``failed`` with a committed result whose error classifies transient (429/5xx/
     context overflow). queued/started/unknown admissions never qualify — unknown execution is never
     replayed — and the retry itself is never retried."""
@@ -570,7 +570,7 @@ def _retry_eligible(authority, record):
     saved = admission_result(authority.db, record['admission_id'])
     if saved is None:
         return False
-    from tools.bot_failure_reasons import RETRY_NONE, result_retry_action
+    from hermes_agent.tools.bot_failure_reasons import RETRY_NONE, result_retry_action
     return result_retry_action(saved['result']) != RETRY_NONE
 
 
@@ -682,7 +682,7 @@ def relay_operation(connection, operation, params):
     fields = {'roster': {'agents'}, 'outbox': set(), 'reply': {'id', 'reply', 'error', 'reason'}}
     if set(params) - fields[operation]:
         raise RuntimeStoreError('invalid_params')
-    from tools.bot_relay import write_remote_roster, claim_pending_envelopes, write_reply
+    from hermes_agent.tools.bot_relay import write_remote_roster, claim_pending_envelopes, write_reply
     if operation == 'roster':
         return {'count': write_remote_roster(home, params.get('agents'))}
     if operation == 'outbox':

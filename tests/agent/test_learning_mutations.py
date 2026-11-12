@@ -57,7 +57,7 @@ def test_edit_memory_refuses_an_entry_over_the_memory_tools_limit(home):
     """Same char cap as the memory tool's replace: an over-limit entry reads as external drift to
     every later mutation, so the tool's own remove/replace would refuse (with a .bak) until the
     file is fixed by hand."""
-    from tools.memory_tool import MemoryStore
+    from hermes_agent.tools.memory_tool import MemoryStore
 
     result = lm.edit_node("memory:profile:2", "x" * 5000)
 
@@ -67,7 +67,7 @@ def test_edit_memory_refuses_an_entry_over_the_memory_tools_limit(home):
 
     # The cap gates what an edit adds, never a delete: pruning is the way out of a file that is
     # already over its total (lowered memory_char_limit, well-formed hand edits).
-    from tools.memory_tool import ENTRY_DELIMITER
+    from hermes_agent.tools.memory_tool import ENTRY_DELIMITER
 
     path = home / "memories" / "USER.md"
     path.write_text(ENTRY_DELIMITER.join(f"entry {i} " + "y" * 500 for i in range(4)), encoding="utf-8")
@@ -90,7 +90,7 @@ def test_skill_detail_returns_skill_md(home):
 
 
 def test_delete_pinned_skill_refused(home):
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
 
     skill_usage.set_pinned("my-skill", True)
     res = lm.delete_node("my-skill")
@@ -107,7 +107,7 @@ def test_memory_writes_match_memory_tool_format(home):
     """A journey mutation must leave the file byte-identical to what the memory
     tool itself writes — same §-join, no trailing-newline drift — so the two
     surfaces never fight over format and indices stay aligned."""
-    from tools.memory_tool import ENTRY_DELIMITER, MemoryStore
+    from hermes_agent.tools.memory_tool import ENTRY_DELIMITER, MemoryStore
 
     assert lm.edit_node("memory:memory:0", "alpha rewritten")["ok"]
     path = home / "memories" / "MEMORY.md"
@@ -140,7 +140,7 @@ def _race_memory_tool_add(monkeypatch, content: str) -> threading.Thread:
     writer blocks until the mutation has written; without one it interleaves and
     the mutation's write clobbers it."""
     from agent import learning_graph
-    from tools.memory_tool import MemoryStore
+    from hermes_agent.tools.memory_tool import MemoryStore
 
     located, landed = threading.Event(), threading.Event()
     real_cards = learning_graph._memory_cards
@@ -163,7 +163,7 @@ def _race_memory_tool_add(monkeypatch, content: str) -> threading.Thread:
 
 
 def test_delete_memory_keeps_concurrent_memory_tool_add(home, monkeypatch):
-    from tools.memory_tool import MemoryStore
+    from hermes_agent.tools.memory_tool import MemoryStore
 
     writer = _race_memory_tool_add(monkeypatch, "gamma note")
     assert lm.delete_node("memory:memory:0")["ok"]
@@ -173,7 +173,7 @@ def test_delete_memory_keeps_concurrent_memory_tool_add(home, monkeypatch):
 
 
 def test_edit_memory_keeps_concurrent_memory_tool_add(home, monkeypatch):
-    from tools.memory_tool import MemoryStore
+    from hermes_agent.tools.memory_tool import MemoryStore
 
     writer = _race_memory_tool_add(monkeypatch, "gamma note")
     assert lm.edit_node("memory:memory:0", "alpha rewritten")["ok"]
@@ -187,7 +187,7 @@ def test_memory_drift_is_refused_with_backup_like_memory_tool(home):
     limit) is what the memory tool's drift guard exists for: snapshot to .bak, refuse,
     leave the file untouched. A Journey edit must not flatten it silently; a delete that
     leaves that entry in place is a prune and goes through (#133028)."""
-    from tools.memory_tool_store import _drift_error
+    from hermes_agent.tools.memory_tool_store import _drift_error
 
     path = home / "memories" / "MEMORY.md"
     raw = "alpha note\n§\nbeta note\n\n## Vendor Master\n" + "x" * 2300 + "\n"
@@ -219,13 +219,13 @@ def test_unreadable_memory_file_is_refused_unchanged(home):
 
 
 def _memory_entries(home) -> list[str]:
-    from tools.memory_tool import MemoryStore
+    from hermes_agent.tools.memory_tool import MemoryStore
 
     return MemoryStore._read_file(home / "memories" / "MEMORY.md")
 
 
 def _write_memory_file(home, *entries):
-    from tools.memory_tool import ENTRY_DELIMITER
+    from hermes_agent.tools.memory_tool import ENTRY_DELIMITER
 
     (home / "memories" / "MEMORY.md").write_text(ENTRY_DELIMITER.join(entries), encoding="utf-8")
 

@@ -86,7 +86,7 @@ def _fs_path(raw_path: str, *, cwd: str | None = None, decode_fallback: bool = T
             raw = _file_url_path(raw)
         elif os.name == "nt":
             # MEDIA links can reuse Git Bash paths; native Path would read /c/ as C:\c\.
-            from tools.environments.local import _msys_to_windows_path
+            from hermes_agent.tools.environments.local import _msys_to_windows_path
 
             raw = _msys_to_windows_path(raw)
         candidate = _resolve_fs_candidate(raw, cwd=cwd)
@@ -116,7 +116,7 @@ def _session_workspace(session_id: str, cwd: str | None) -> tuple[str, str]:
     hashes to the same digest. ``/workspace`` and ``/root`` are container paths, not host
     workspaces. Call it in the session's profile scope, where the turn registered the key.
     """
-    from tools.terminal_tool import resolve_task_overrides, workspace_key_for
+    from hermes_agent.tools.terminal_tool import resolve_task_overrides, workspace_key_for
 
     overrides = resolve_task_overrides(session_id)
     key = overrides.get("workspace_key")
@@ -146,7 +146,7 @@ def _translate_agent_path(
     paths, which are not MEDIA misses worth a warning. ``own_sandbox_only`` (a session's
     Save) refuses with 409 a file the translator found only in a fallback sandbox."""
     from hermes_agent.gateway.platforms.base import _docker_env_active, _translate_docker_container_media_path
-    from tools.terminal_tool import _ensure_terminal_env_bridged
+    from hermes_agent.tools.terminal_tool import _ensure_terminal_env_bridged
 
     _ensure_terminal_env_bridged()
     if not _docker_env_active():
@@ -170,7 +170,7 @@ def _in_fallback_sandbox(target: Path, workspace_key: str) -> bool:
     whether or not its directory exists: reads fall through to the shared copies when the session's
     file or its whole sandbox is gone, and a Save that did would change another sandbox's file."""
     from hermes_agent.gateway.platforms.docker_media_paths import _docker_sandbox_dir_candidates
-    from tools.environments.base import get_sandbox_dir
+    from hermes_agent.tools.environments.base import get_sandbox_dir
 
     base = get_sandbox_dir() / "docker"
     names = _docker_sandbox_dir_candidates("", workspace_key)
@@ -204,7 +204,7 @@ def _agent_path_scope(profile_home: Path | None = None) -> Iterator[None]:
         get_hermes_home_override, get_process_hermes_home, reset_hermes_home_override,
         set_hermes_home_override,
     )
-    from tools.terminal_scope import get_terminal_scope, install_profile_terminal_scope, reset_terminal_scope
+    from hermes_agent.tools.terminal_scope import get_terminal_scope, install_profile_terminal_scope, reset_terminal_scope
 
     home_token = scope_token = None
     if profile_home is not None and Path(profile_home).resolve() != get_hermes_home().resolve():
@@ -245,7 +245,7 @@ def _agent_container_path(
         return None
     try:
         from hermes_cli.config import get_hermes_home
-        from tools.terminal_scope import (
+        from hermes_agent.tools.terminal_scope import (
             build_profile_terminal_scope, get_terminal_scope, reset_terminal_scope, set_terminal_scope,
         )
 
@@ -325,7 +325,7 @@ def _is_unmapped_container_path(raw: str, *, profile_home: Path | None = None) -
         return False
     try:
         from hermes_agent.gateway.platforms.base import _docker_env_active, _parse_docker_volume_mounts
-        from tools.environments.local import _msys_to_windows_path
+        from hermes_agent.tools.environments.local import _msys_to_windows_path
 
         with _agent_path_scope(profile_home):
             if not _docker_env_active() or _msys_to_windows_path(raw) != raw:

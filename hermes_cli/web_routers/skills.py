@@ -43,7 +43,7 @@ _SKILL_HUB_SOURCE_LABELS = {
 
 def _hub_sources(profile: Optional[str]):
     """Source router built under ``profile``'s config scope."""
-    from tools.skills_hub_search import create_source_router
+    from hermes_agent.tools.skills_hub_search import create_source_router
 
     with _config_profile_scope(profile):
         return create_source_router()
@@ -52,7 +52,7 @@ def _hub_sources(profile: Optional[str]):
 def _resolve_hub_skill(ident: str, profile: Optional[str]):
     """``(meta, bundle)`` for a hub identifier, resolved under ``profile``'s scope."""
     from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
-    from tools.skills_hub_search import create_source_router
+    from hermes_agent.tools.skills_hub_search import create_source_router
 
     with _config_profile_scope(profile):
         sources = create_source_router()
@@ -126,7 +126,7 @@ async def list_skill_hub_updates(profile: Optional[str] = None):
     ``hermes skills check`` pass; fetches from each skill's recorded source)."""
 
     def _run():
-        from tools.skills_hub_install import check_for_skill_updates
+        from hermes_agent.tools.skills_hub_install import check_for_skill_updates
 
         rows = check_for_skill_updates()
         return {"updates": [
@@ -142,7 +142,7 @@ async def list_official_skills(profile: Optional[str] = None):
     """The ENTIRE optional-skills catalog (local scan), marked installed for ``profile``."""
 
     def _run():
-        from tools.skills_hub_official import OptionalSkillSource
+        from hermes_agent.tools.skills_hub_official import OptionalSkillSource
 
         installed = _installed_hub_identifiers(profile)
         out = []
@@ -208,7 +208,7 @@ async def search_skills_hub(
         return {"results": [], "source_counts": {}, "timed_out": [], "installed": {}}
 
     def _run():
-        from tools.skills_hub_search import parallel_search_sources
+        from hermes_agent.tools.skills_hub_search import parallel_search_sources
 
         sources = _hub_sources(profile)
         capped = min(max(limit, 1), 50)
@@ -289,8 +289,8 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
     def _run():
         import shutil as _shutil
 
-        from tools.skills_hub_install import quarantine_bundle
-        from tools.skills_guard import scan_skill, should_allow_install
+        from hermes_agent.tools.skills_hub_install import quarantine_bundle
+        from hermes_agent.tools.skills_guard import scan_skill, should_allow_install
 
         meta, bundle = _resolve_hub_skill(ident, profile)
         if not bundle:
@@ -309,7 +309,7 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
             # Advisory SkillEvaluator Tier 1 second opinion: optional binary,
             # never blocks, errors degrade to no data (same as the CLI installer).
             try:
-                from tools.skillevaluator_scan import run_tier1_scan, tier1_advisory_enabled
+                from hermes_agent.tools.skillevaluator_scan import run_tier1_scan, tier1_advisory_enabled
                 if tier1_advisory_enabled():
                     t1 = run_tier1_scan(q_path)
                     if t1.available:
@@ -359,9 +359,9 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
 
 @router.get("/api/skills")
 async def get_skills(profile: Optional[str] = None):
-    from tools.skills_tool import find_all_skills
+    from hermes_agent.tools.skills_tool import find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
-    from tools.skill_usage import (
+    from hermes_agent.tools.skill_usage import (
         _external_skill_names, _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
 
     def _run():
@@ -400,11 +400,11 @@ def _locked_index() -> tuple[set, dict]:
     Locks are keyed by the skill's DIRECTORY (what the write guards resolve to) while rows
     carry the load name. A corrupt sidecar reads as unlocked here (``locked_skill_names`` is
     best-effort); the write guards decide enforcement."""
-    from tools.skill_usage import locked_skill_names
+    from hermes_agent.tools.skill_usage import locked_skill_names
     locked = set(locked_skill_names())
     if not locked:
         return set(), {}
-    from tools.skills_tool import _skill_catalog
+    from hermes_agent.tools.skills_tool import _skill_catalog
     return locked, {e["load_name"]: e["path"].parent.name
                     for e in _skill_catalog(skip_disabled=True) if e.get("load_name")}
 
@@ -413,8 +413,8 @@ def _locked_index() -> tuple[set, dict]:
 async def lock_skill(body: SkillLock, profile: Optional[str] = None):
     """Lock/unlock a skill against AGENT edits (same record as ``hermes curator lock``).
     The user's own edits (this dashboard's editor, their editor) stay allowed."""
-    from tools import skill_usage
-    from tools.skill_manager_tool import _find_skill
+    from hermes_agent.tools import skill_usage
+    from hermes_agent.tools.skill_manager_tool import _find_skill
 
     def _run():
         with config_write_scope(body.profile or profile):
@@ -453,7 +453,7 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
 @router.get("/api/skills/content")
 async def get_skill_content(name: str, profile: Optional[str] = None):
     """Raw SKILL.md text for the dashboard editor."""
-    from tools.skill_manager_tool import _find_skill
+    from hermes_agent.tools.skill_manager_tool import _find_skill
 
     def _read():
         found = _find_skill(name)
@@ -476,7 +476,7 @@ async def create_skill(body: SkillCreate, profile: Optional[str] = None):
     """Create a skill via the agent's ``skill_manage`` write path, minus the
     write-approval gate — an authenticated dashboard write IS the user.
     Profile from the body or ``?profile=``, like the rest of ``/api/skills``."""
-    from tools.skill_manager_tool import _create_skill
+    from hermes_agent.tools.skill_manager_tool import _create_skill
 
     result = await scoped_to_thread(
         body.profile or profile, lambda: _create_skill(body.name, body.content, body.category or None))
@@ -489,7 +489,7 @@ async def create_skill(body: SkillCreate, profile: Optional[str] = None):
 @router.put("/api/skills/content")
 async def update_skill_content(body: SkillContentUpdate, profile: Optional[str] = None):
     """Replace the SKILL.md of an existing skill (full rewrite) from the editor."""
-    from tools.skill_manager_tool import _edit_skill
+    from hermes_agent.tools.skill_manager_tool import _edit_skill
 
     result = await scoped_to_thread(body.profile or profile, lambda: _edit_skill(body.name, body.content))
     if not result.get("success"):

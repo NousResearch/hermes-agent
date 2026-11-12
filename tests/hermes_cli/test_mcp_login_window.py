@@ -42,7 +42,7 @@ def test_probe_timeout_names_server_and_knobs(monkeypatch):
     async def _hang(name, config):
         await asyncio.sleep(3600)
 
-    monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _hang)
+    monkeypatch.setattr("hermes_agent.tools.mcp_tool_discovery._connect_server", _hang)
     with pytest.raises(TimeoutError) as info:
         mc._probe_single_server("hangsrv", {"url": "https://mcp.example.test/mcp"}, connect_timeout=0.2)
     message = str(info.value)

@@ -439,7 +439,7 @@ class GatewayStatusCommandsMixin:
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
         from hermes_agent.gateway.run import _AGENT_PENDING_SENTINEL
-        from tools.process_registry import format_uptime_short, process_registry
+        from hermes_agent.tools.process_registry import format_uptime_short, process_registry
         now = time.time()
         current_session_key = self._session_key_for_source(event.source)
         agent_rows: list[dict] = []
@@ -462,7 +462,7 @@ class GatewayStatusCommandsMixin:
         # Background (async) delegations — delegate_task(background=true).
         # Live per-child activity comes from the registry's progress sampler (#51690): api calls, current
         # tool, seconds since last activity.
-        from tools.async_delegation import list_async_delegations
+        from hermes_agent.tools.async_delegation import list_async_delegations
         delegations = [d for d in _quiet_sync(list_async_delegations, [])
                        if d.get("status") in ("running", "stalling", "finalizing")]
 

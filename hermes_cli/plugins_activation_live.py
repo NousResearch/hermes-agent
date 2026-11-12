@@ -28,8 +28,8 @@ def connect_plugin_mcp(activation: dict[str, Any], portable: dict[str, dict[str,
     if not names:
         return []
     try:
-        from tools.mcp_tool_config import _filter_suspicious_mcp_servers, _load_mcp_config
-        from tools.mcp_tool_discovery import register_mcp_servers
+        from hermes_agent.tools.mcp_tool_config import _filter_suspicious_mcp_servers, _load_mcp_config
+        from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
         configured = _load_mcp_config()
     except Exception as exc:
         logger.warning("plugin MCP activation could not read server config: %s", exc)
@@ -43,7 +43,7 @@ def connect_plugin_mcp(activation: dict[str, Any], portable: dict[str, dict[str,
             continue
         try:
             register_mcp_servers({name: config})
-            from tools.connectors.mcp import _registered_tool_names
+            from hermes_agent.tools.connectors.mcp import _registered_tool_names
             tools = [t for t in _registered_tool_names(name) if not t.endswith(_utility_suffixes())]
         except Exception as exc:
             rows.append({"name": name, "connected": False, "tools": [], "error": str(exc)})
@@ -58,13 +58,13 @@ def connect_plugin_mcp(activation: dict[str, Any], portable: dict[str, dict[str,
 def _utility_suffixes() -> tuple:
     """The resource/prompt wrappers every MCP server gets (``mcp__x__list_resources``, ...): callable,
     but they say nothing about what the plugin does, so they are left out of counts and listings."""
-    from tools.mcp_tool_registration import _UTILITY_HANDLER_FACTORIES
+    from hermes_agent.tools.mcp_tool_registration import _UTILITY_HANDLER_FACTORIES
     return tuple(f"_{kind}" for kind in _UTILITY_HANDLER_FACTORIES)
 
 
 def _server_error(name: str) -> Optional[str]:
     try:
-        from tools.mcp_tool_discovery import get_mcp_status
+        from hermes_agent.tools.mcp_tool_discovery import get_mcp_status
         for entry in get_mcp_status():
             if entry.get("name") == name:
                 return entry.get("error")
@@ -133,5 +133,5 @@ def live_notice(activation: dict[str, Any]) -> str:
 
 def _tool_prefix(server: str) -> str:
     """``mcp__<server>__``: the start of every registered tool name of ``server``."""
-    from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX, sanitize_mcp_name_component
+    from hermes_agent.tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX, sanitize_mcp_name_component
     return f"{MCP_TOOL_NAME_PREFIX}{sanitize_mcp_name_component(server)}__"

@@ -5,7 +5,7 @@ from unittest.mock import patch as mock_patch
 
 import pytest
 
-from tools.file_tools import write_file_tool
+from hermes_agent.tools.file_tools import write_file_tool
 
 @pytest.fixture
 def workdir(tmp_path, monkeypatch):
@@ -33,7 +33,7 @@ class TestWriteVerification:
         f.write_bytes(b"old line\r\n")
         # Establish a full-read baseline: write_file refuses to overwrite
         # existing files the task has never read (stale-write guard).
-        from tools.file_tools import read_file_tool
+        from hermes_agent.tools.file_tools import read_file_tool
         json.loads(read_file_tool(str(f), task_id="t-wv"))
         r = json.loads(write_file_tool(str(f), "new line\nsecond\n", task_id="t-wv"))
         assert "error" not in r
@@ -43,7 +43,7 @@ class TestWriteVerification:
     def test_hash_mismatch_is_hard_error(self, workdir, monkeypatch):
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")  # the shell sha256sum transport
         f = workdir / "bad.txt"
-        import tools.file_operations as fo
+        import hermes_agent.tools.file_operations as fo
         real_sha = fo.hashlib.sha256
 
         class _WrongHash:
@@ -59,7 +59,7 @@ class TestWriteVerification:
     @pytest.mark.platforms("posix")  # the native write path is POSIX-only (_native_read_enabled)
     def test_native_hash_mismatch_is_hard_error(self, workdir):
         f = workdir / "bad_native.txt"
-        with mock_patch("tools.file_operations_native.sha256_of", return_value="0" * 64):
+        with mock_patch("hermes_agent.tools.file_operations_native.sha256_of", return_value="0" * 64):
             r = json.loads(write_file_tool(str(f), "actual content\n", task_id="t-wv3"))
         assert "error" in r and "verification failed" in r["error"]
 
@@ -67,7 +67,7 @@ class TestWriteVerification:
         # sha256sum unavailable/failing -> verified omitted, write still ok.
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")  # the shell sha256sum transport
         f = workdir / "ok.txt"
-        import tools.file_operations as fo
+        import hermes_agent.tools.file_operations as fo
 
         real_exec = fo.ShellFileOperations._exec
 

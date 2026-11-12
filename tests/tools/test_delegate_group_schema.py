@@ -3,14 +3,14 @@
 import json
 from dataclasses import fields
 
-from tools.delegate_tool import DELEGATE_TASK_SCHEMA, _strip_model_hidden_task_fields
-from tools.delegate_tool_dispatch import _Batch, _units_of
-from tools.delegate_tool_tasks import _normalize_task_list
-from tools.registry import registry
+from hermes_agent.tools.delegate_tool import DELEGATE_TASK_SCHEMA, _strip_model_hidden_task_fields
+from hermes_agent.tools.delegate_tool_dispatch import _Batch, _units_of
+from hermes_agent.tools.delegate_tool_tasks import _normalize_task_list
+from hermes_agent.tools.registry import registry
 
 
 def test_group_schema_tracks_delivery_policy_without_mutating_previous_definitions(monkeypatch):
-    from tools import delegate_tool_config
+    from hermes_agent.tools import delegate_tool_config
 
     original = json.dumps(DELEGATE_TASK_SCHEMA)
     snapshots = []
@@ -32,8 +32,8 @@ def test_group_schema_tracks_delivery_policy_without_mutating_previous_definitio
 
 def test_joined_variant_asks_for_no_delivery_group(monkeypatch):
     # One-shot and inline-gateway sessions join every task in the call, so a group would change nothing there.
-    from tools import delegate_tool_config
-    from tools.delegate_tool import oneshot_delegate_function
+    from hermes_agent.tools import delegate_tool_config
+    from hermes_agent.tools.delegate_tool import oneshot_delegate_function
 
     monkeypatch.setattr(delegate_tool_config, "_cfg", lambda: {"independent_completions": True})
     joined = oneshot_delegate_function(registry.get_definitions({"delegate_task"})[0]["function"])
@@ -43,7 +43,7 @@ def test_joined_variant_asks_for_no_delivery_group(monkeypatch):
 
 
 def test_legacy_group_replay_remains_accepted_and_delivery_policy_controls_units(monkeypatch):
-    from tools import delegate_tool_config
+    from hermes_agent.tools import delegate_tool_config
 
     tasks = [{"goal": "Review first module", "group": "join"}, {"goal": "Review second module", "group": "join"}, {"goal": "Review third module"}]
     assert _strip_model_hidden_task_fields(tasks) is tasks

@@ -80,7 +80,7 @@ def test_child_env_for_served_profile_drops_launch_profile_settings(two_homes):
     """A worker/bot-chat child spawned for served alpha must not inherit the default profile's
     non-credential ``.env`` settings or bridged ``TERMINAL_*`` policy — a standalone alpha never
     had them. Alpha's own home pin and non-profile env survive."""
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from hermes_agent.tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
     root, alpha = two_homes
     token = set_secret_scope(build_profile_secret_scope(alpha))

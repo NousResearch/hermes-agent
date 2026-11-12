@@ -12,7 +12,7 @@ import subprocess
 import pytest
 
 import hermes_agent.gateway.run as gateway_run
-import tools.checkpoint_manager as cpm
+import hermes_agent.tools.checkpoint_manager as cpm
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session import SessionSource

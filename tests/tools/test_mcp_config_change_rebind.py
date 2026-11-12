@@ -11,8 +11,8 @@ import pytest
 @pytest.mark.no_isolate
 def test_reconnect_adopts_changed_url_from_config_yaml(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools import mcp_tool_config
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools import mcp_tool_config
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     old = {"url": "https://mcp.example.test/sse", "auth": "oauth", "oauth": {"client_id": "a"}}
     new = {"url": "https://mcp.example.test/mcp", "auth": "oauth", "oauth": {"client_id": "a"}}
@@ -50,8 +50,8 @@ def test_unchanged_or_missing_definition_keeps_the_running_config(monkeypatch, t
     """No rebuild churn when config.yaml agrees with the running dict (or no longer lists the
     server): the start-time config stays bound byte-for-byte."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools import mcp_tool_config
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools import mcp_tool_config
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     cfg = {"url": "https://mcp.example.test/mcp", "headers": {"X": "1"}, "connect_timeout": 5}
     task = MCPServerTask("srv")
@@ -71,8 +71,8 @@ def test_plugin_remote_server_keeps_its_rendered_header_across_a_rebuild(monkeyp
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("PKG_API_KEY", "k-123")
-    from tools import mcp_tool_config
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools import mcp_tool_config
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     portable = {"srv": {"url": "https://mcp.example.test/mcp", "headers": {"apikey": "${PKG_API_KEY}"},
                         "strict_redirect_headers": True}}
@@ -98,7 +98,7 @@ def test_unscoped_multiplex_load_keeps_plugin_servers_after_a_templated_one(monk
     from agent.secret_scope import set_multiplex_active
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools import mcp_tool_config
+    from hermes_agent.tools import mcp_tool_config
 
     portable = {"srv": {"url": "https://mcp.example.test/mcp", "headers": {"apikey": "${VENDOR_KEY}"}},
                 "plain": {"url": "https://plain.example.test/mcp"}}

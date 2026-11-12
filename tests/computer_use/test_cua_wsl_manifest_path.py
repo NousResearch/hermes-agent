@@ -4,8 +4,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.computer_use import cua_backend
-from tools.computer_use import cua_backend_driver
+from hermes_agent.tools.computer_use import cua_backend
+from hermes_agent.tools.computer_use import cua_backend_driver
 
 
 def test_wsl_windows_manifest_path_translates_to_drvfs():

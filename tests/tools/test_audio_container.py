@@ -1,7 +1,7 @@
 """Tests for the shared magic-byte audio container sniffer.
 
-``tools/audio_container.py`` is the single owner of container detection:
-the outbound TTS repair (``tools/tts_tool.py``), the inbound gateway audio
+``hermes_agent/tools/audio_container.py`` is the single owner of container detection:
+the outbound TTS repair (``hermes_agent/tools/tts_tool.py``), the inbound gateway audio
 cache (``hermes_agent/gateway/platforms/base.py``), and Signal's ``_guess_extension``
 all delegate to it. These tests cover every magic-byte branch, the
 wrong-extension repair behaviour on the inbound cache path, and unknown
@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.audio_container import CONTAINER_TO_EXT, sniff_audio_ext, sniff_container
+from hermes_agent.tools.audio_container import CONTAINER_TO_EXT, sniff_audio_ext, sniff_container
 
 # --- canonical headers ------------------------------------------------------
 OGG = b"OggS\x00\x02" + b"\x00" * 64
@@ -139,10 +139,10 @@ class TestInboundCacheUsesSniffer:
 
         monkeypatch.setattr(base, "read_httpx_body_with_limit", _fake_read)
         monkeypatch.setattr(
-            "tools.url_safety.create_ssrf_safe_async_client",
+            "hermes_agent.tools.url_safety.create_ssrf_safe_async_client",
             lambda **k: _FakeClient(),
         )
-        monkeypatch.setattr("tools.url_safety.is_safe_url", lambda u: True)
+        monkeypatch.setattr("hermes_agent.tools.url_safety.is_safe_url", lambda u: True)
 
         result = await base.cache_audio_from_url("https://example.com/voice.ogg", ext=".ogg")
         assert result.endswith(".mp3")

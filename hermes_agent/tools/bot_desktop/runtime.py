@@ -30,7 +30,7 @@ from typing import Callable, Dict, Optional
 
 from agent.deadline import poll_until
 from hermes_constants import get_hermes_home
-from tools.bot_desktop import placement
+from hermes_agent.tools.bot_desktop import placement
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def package_manager() -> Optional[str]:
 def install_command() -> Optional[str]:
     """The distro command that installs the Bot Desktop packages, as the human would type it on THIS host:
     prefixed with ``sudo`` unless Hermes already runs as root, so it is both what the pane shows and what
-    :mod:`tools.bot_desktop.install` runs. ``None`` when no package manager is present.
+    :mod:`hermes_agent.tools.bot_desktop.install` runs. ``None`` when no package manager is present.
 
     Not a promise that it can run here: see :func:`installable`. The published Docker image supervises
     every service under ``s6-setuidgid hermes`` (UID 10000 by default) and ships no ``sudo`` binary, so an
@@ -482,7 +482,7 @@ def _idle_due(launcher: Optional[tuple[int, float]]) -> Optional[float]:
     idle = idle_seconds()
     if idle is None or idle < limit:
         return None
-    from tools.bot_desktop import lease as _bd_lease
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease
     abandoned_after = max(limit * HUMAN_LEASE_ABANDONED_WINDOWS, HUMAN_LEASE_ABANDONED_MIN_S)
     if _bd_lease.get().holder == _bd_lease.HUMAN and idle < abandoned_after:
         return None
@@ -501,7 +501,7 @@ def stop_if_idle(launcher: Optional[tuple[int, float]] = None) -> bool:
     idle = _idle_due(launcher)
     if idle is None:
         return False
-    from tools.bot_desktop import lease as _bd_lease
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease
     held: Optional[_bd_lease.Lease] = None  # the lease the final decision saw
 
     def still_due() -> bool:
@@ -532,7 +532,7 @@ def published_env() -> dict[str, str]:
     Pure file reads on the common path: this is called from every browser / cua-driver env builder, so it
     must not load config (that initializes HERMES_HOME). A sandbox-hosted screen leaves a host-side marker at
     start; only its presence routes to the sandbox probe."""
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     if sandbox_host._read_marker():
         return _sandbox_published_env()
     if _launcher_pid() is None:
@@ -551,7 +551,7 @@ def published_env() -> dict[str, str]:
 def rfb_socket_path() -> Optional[Path]:
     """Host path of the RFB socket; None when down OR when the screen lives in a sandbox (use
     :func:`open_rfb_stream` there: the socket is not on this filesystem)."""
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     if sandbox_host._read_marker():
         return None
     sock = state_dir() / "rfb.sock"
@@ -570,7 +570,7 @@ def sandbox_screen_running() -> bool:
     out from under us) drops the marker, so the next start rebuilds instead of the browser exec-ing into a
     dead container; an unregistered-but-alive one is re-attached by ``_sandbox_env(create=True)`` at the
     next spawn (the terminal planner reuses the persisted container by label)."""
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     marker = sandbox_host._read_marker()
     if not marker:
         return False
@@ -586,7 +586,7 @@ def _owned_sandbox_env():
     """The environment hosting the screen the marker records, re-attaching after a restart when the recorded
     sandbox is still alive; None when there is no marker or its sandbox is gone. Never builds a sandbox for
     a screen that is not there."""
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     marker = sandbox_host._read_marker()
     if not marker:
         return None
@@ -604,7 +604,7 @@ def is_running() -> bool:
 
 def open_rfb_stream() -> subprocess.Popen:
     """Popen whose stdin/stdout carry RFB bytes for a sandbox-hosted screen (``in_sandbox()`` only)."""
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     env = _sandbox_env(create=False)
     if env is None:
         raise RuntimeError("the sandbox hosting this screen is not running")
@@ -618,9 +618,9 @@ def geometry() -> str:
 
 
 def status(profile: Optional[str] = None) -> DesktopStatus:
-    from tools.bot_desktop import browser as _bd_browser
-    from tools.bot_desktop import resources
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import browser as _bd_browser
+    from hermes_agent.tools.bot_desktop import resources
+    from hermes_agent.tools.bot_desktop import sandbox_host
     where = placement.resolve()
     if where.where == placement.TERMINAL or sandbox_host._read_marker():
         # A screen already running inside a sandbox is reported (and stoppable) even after the placement
@@ -653,7 +653,7 @@ def status(profile: Optional[str] = None) -> DesktopStatus:
 def _sandbox_status(profile: Optional[str], where) -> DesktopStatus:
     """Status of a sandbox-placed screen. Package presence is only known once the sandbox exists; before
     that the pane shows "installed" with the image hint carried in ``install_command`` so Start can explain."""
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     env = _owned_sandbox_env() or _sandbox_env(create=False)
     missing = sandbox_host.missing_binaries(env) if env is not None else []
     published = sandbox_host.published_env(env, profile or _profile_name()) if env is not None else {}
@@ -753,7 +753,7 @@ def start(*, wait_seconds: float = 15.0) -> DesktopStatus:
     with _flocked(sd / "start.lock"):
         if _launcher_pid() is not None and published_env().get("DISPLAY"):
             return status()
-        from tools.bot_desktop import resources
+        from hermes_agent.tools.bot_desktop import resources
         floor = resources.min_free_mb()
         mem = resources.memory_info()
         if (blocker := resources.memory_blocker(mem, need=floor)) is not None:
@@ -785,13 +785,13 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
 
         # The agent drives this desktop and its dock opens a terminal, so it starts from the
         # scrubbed child env like any other agent child, keeping the user's HOME.
-        from tools.environments.local import served_profile_child_env
+        from hermes_agent.tools.environments.local import served_profile_child_env
         child_env = served_profile_child_env(inherit_credentials=False)
         child_env["HOME"] = child_env["HERMES_REAL_HOME"]
         for key in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "SESSION_MANAGER"):
             child_env.pop(key, None)
         from hermes_cli._launchers import installation_command
-        from tools.bot_desktop.idle_watch import next_check_in
+        from hermes_agent.tools.bot_desktop.idle_watch import next_check_in
         from hermes_cli._startup_fast import project_root_str
         child_env.update({
             "HERMES_BD_PROFILE": _profile_name(),
@@ -801,7 +801,7 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             "HERMES_BD_ENV_FILE": str(env_file),
             "HERMES_BD_CONFIG_HOME": str(sd / "xdg"),
             "HERMES_BD_GEOMETRY": geometry(),
-            # The launcher's idle self-stop runs tools.bot_desktop.idle_watch through the install's stable
+            # The launcher's idle self-stop runs hermes_agent.tools.bot_desktop.idle_watch through the install's stable
             # command (the ``hermes --run-module`` launcher on a store install, which follows Python pin changes
             # and picks the current dependency generation at every run; this interpreter elsewhere), in this
             # home, first once the screen could be due (nothing is idle at start). The screen outlives updates,
@@ -812,7 +812,7 @@ def _spawn_and_wait(sd: Path, wait_seconds: float) -> DesktopStatus:
             "HERMES_BD_HOME": str(get_hermes_home()),
             "HERMES_BD_IDLE_FIRST_DELAY": str(next_check_in(idle_stop_seconds(), 0.0)),
         })
-        from tools.bot_desktop.browser import dock_exec_line, dock_launch
+        from hermes_agent.tools.bot_desktop.browser import dock_exec_line, dock_launch
         if (browser := dock_launch()) is not None:
             # The bare executable (the launcher checks it exists) and the ready-made, spec-quoted Exec= line.
             child_env["HERMES_BD_BROWSER_EXEC"] = browser[0]
@@ -860,7 +860,7 @@ def _sandbox_env(*, create: bool):
 
 
 def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     env = _sandbox_env(create=True)
     if env is None:
         raise RuntimeError("the terminal backend's sandbox could not be started, so there is nowhere to put the screen")
@@ -870,7 +870,7 @@ def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:
     with _flocked(sd / "start.lock"):
         # The dock's Browser icon runs the sandbox's own Playwright Chromium on the profile the agent's browser
         # uses there: the human's browser is the bot's browser, as on the host.
-        from tools.bot_desktop.browser import dock_exec_line
+        from hermes_agent.tools.bot_desktop.browser import dock_exec_line
         exe = sandbox_host.chromium_executable(env)
         browser = (exe, dock_exec_line(exe, sandbox_host.browser_profile_dir(env), sandbox_bypass=True)) if exe else (None, None)
         published = sandbox_host.start(env, _profile_name(), geometry=geometry(), wait_seconds=max(wait_seconds, 20.0),
@@ -882,7 +882,7 @@ def _start_in_sandbox(wait_seconds: float) -> DesktopStatus:
 
 def _sandbox_published_env() -> dict[str, str]:
     """Published env of a sandbox-hosted screen (the caller saw the host-side marker written at start)."""
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     env = _sandbox_env(create=False)
     if env is None:
         return {}
@@ -893,7 +893,7 @@ def stop(still_due: Optional[Callable[[], bool]] = None) -> bool:
     """Stop this profile's desktop; True when a running launcher (or the X server a dead one left behind)
     was signalled. ``still_due`` is asked again before anything is killed (under ``start.lock`` for a screen on
     this host); False there leaves the screen running."""
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     if sandbox_host._read_marker() or placement.resolve().where == placement.TERMINAL:
         if still_due is not None and not still_due():
             return False

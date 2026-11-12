@@ -1,5 +1,5 @@
 """Tests for the ``transform_tool_result`` plugin hook wired into
-``model_tools.handle_function_call``.
+``hermes_agent.model_tools.handle_function_call``.
 
 Mirrors the ``transform_terminal_output`` hook tests from Phase 1 but
 targets the generic tool-result seam that runs for every tool dispatch.
@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 
 import hermes_cli.plugins as plugins_mod
-import model_tools
+from hermes_agent import model_tools
 
 
 _UNSET = object()
@@ -24,7 +24,7 @@ def _run_handle_function_call(
     invoke_hook=_UNSET,
 ):
     """Drive ``handle_function_call`` with a mocked registry dispatch."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     monkeypatch.setattr(
         registry, "dispatch",

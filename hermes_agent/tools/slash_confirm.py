@@ -3,7 +3,7 @@
 Slash commands with an expensive side effect (currently only ``/reload-mcp``, which invalidates
 the provider prompt cache) route through here. Button-UI adapters render Approve Once / Always
 Approve / Cancel and call ``resolve()``; text-only adapters get a prompt and the gateway
-intercepts ``/approve``, ``/always``, ``/cancel``. State is module-level (like ``tools.approval``)
+intercepts ``/approve``, ``/always``, ``/cancel``. State is module-level (like ``hermes_agent.tools.approval``)
 so adapters can resolve without a ``GatewayRunner`` backreference. The CLI has its own
 synchronous variant (``_prompt_slash_confirm`` in ``cli.py``).
 """
@@ -31,7 +31,7 @@ def register(session_key: str, confirm_id: str, command: str,
     """Register a pending confirm, superseding any prior one for the session. *authority* says who
     may answer it (``hermes_agent.gateway.approval_actor.slash_confirm_refusal``); default: the current turn's."""
     if authority is None:
-        from tools.approval_context import prompt_authority
+        from hermes_agent.tools.approval_context import prompt_authority
         authority = prompt_authority()
     with _lock:
         _pending[session_key] = {"confirm_id": confirm_id, "command": command,

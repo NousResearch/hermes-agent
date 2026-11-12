@@ -12,15 +12,15 @@ import asyncio
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask
-import tools.mcp_tool_server_run as run_mod
+from hermes_agent.tools.mcp_tool import MCPServerTask
+import hermes_agent.tools.mcp_tool_server_run as run_mod
 
 
 async def _drive_one_expired_proof_wake(task, monkeypatch, *, on_first_wake=None) -> tuple[str, int]:
     """Run ``_wait_for_lifecycle_event`` with the proof deadline already expired. The first
     ``asyncio.wait`` returns nothing (a plain timeout wake); a second wake means the loop did NOT exit
     on the first one, so shut it down to terminate. Returns ``(reason, wake_count)``."""
-    monkeypatch.setattr("tools.mcp_tool._DEFAULT_KEEPALIVE_INTERVAL", 0.0)
+    monkeypatch.setattr("hermes_agent.tools.mcp_tool._DEFAULT_KEEPALIVE_INTERVAL", 0.0)
     real_wait = asyncio.wait
     wakes = {"n": 0}
 

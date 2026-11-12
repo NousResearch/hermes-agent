@@ -171,7 +171,7 @@ def is_compaction_progress_status(text: str | None) -> bool:
 def _refresh_agent_tool_definitions(agent) -> bool:
     """Rebuild agent.tools at the compaction commit boundary (the only moment config reaches a forever-session's
     frozen tool schemas; the prompt cache is already invalid). Returns True when tools were added."""
-    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
     added = refresh_agent_mcp_tools(agent, content_aware=True)
     if added:
         logger.info("Compaction tool refresh added tools: %s", sorted(added))
@@ -777,7 +777,7 @@ def _get_compress_timeout_executor():
     executor = _compress_timeout_executor
     if executor is not None:
         return executor
-    from tools.daemon_pool import DaemonThreadPoolExecutor
+    from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
     with _compress_timeout_executor_lock:
         if _compress_timeout_executor is None:
             # Small pool sized for live compress + cancelled workers winding down, not asyncio's min(32, cpu+4).
@@ -1233,7 +1233,7 @@ def run_compress_context_with_progress_timeout(
     )
     # Sync mirror of gateway hygiene's run_in_executor + wait_for loop: offload,
     # poll idle budget + ceiling, fence-cancel on timeout so no late commit lands.
-    from tools.thread_context import propagate_context_to_thread
+    from hermes_agent.tools.thread_context import propagate_context_to_thread
     executor = _get_compress_timeout_executor()
     # Refuse rather than queue when the pool is full: a queued job would wait out
     # its budget unstarted and run stale later. Skip compression this cycle.
@@ -2220,7 +2220,7 @@ def _strip_stale_todo_snapshot(content: Any) -> Any:
     """Remove a previously merged todo-snapshot block from message content.
     Snapshots are appended to the trailing user turn, so a surviving header is stale; stripping before
     re-injection prevents accumulation across boundaries."""
-    from tools.todo_tool import TODO_INJECTION_HEADER
+    from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
     if isinstance(content, str):
         idx = content.find(TODO_INJECTION_HEADER)
         if idx == -1:
@@ -3255,7 +3255,7 @@ def _publish_rotated_compaction(
     old_title = agent._session_db.get_session_title(agent.session_id)
     new_session_id = mint_session_id()
     from agent.context_compressor import _DB_PERSISTED_MARKER
-    from tools.approval_yolo import with_session_yolo
+    from hermes_agent.tools.approval_yolo import with_session_yolo
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
         source=_compression_child_source(agent, old_session_id), model=agent.model,
@@ -3324,14 +3324,14 @@ def _reset_read_dedup_caches(task_id: str, *, session_id: str = "") -> None:
     The computer_use screenshot dedup is session-keyed and forgets its last frame for the same reason.
     """
     with contextlib.suppress(Exception):
-        from tools.file_tools_read_tracking import reset_file_dedup
+        from hermes_agent.tools.file_tools_read_tracking import reset_file_dedup
         reset_file_dedup(task_id)
     if session_id:
         with contextlib.suppress(Exception):
-            from tools.computer_use.tool import reset_screenshot_dedup
+            from hermes_agent.tools.computer_use.tool import reset_screenshot_dedup
             reset_screenshot_dedup(session_id)
     with contextlib.suppress(Exception):
-        from tools.skills_tool import reset_skill_view_dedup
+        from hermes_agent.tools.skills_tool import reset_skill_view_dedup
         reset_skill_view_dedup(task_id)
 
 
@@ -4325,7 +4325,7 @@ def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int
     if not api_messages:
         return False
     try:
-        from tools.vision_tools import _resize_image_for_vision
+        from hermes_agent.tools.vision_tools import _resize_image_for_vision
     except Exception as exc:
         logger.warning("image-shrink recovery: vision_tools unavailable — %s", exc)
         return False

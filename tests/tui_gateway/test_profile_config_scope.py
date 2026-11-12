@@ -6,7 +6,7 @@ import pytest
 
 from agent.secret_scope import current_secret_scope, current_secret_scope_home, get_secret, set_multiplex_active
 from hermes_constants import get_hermes_home, get_hermes_home_override
-from tools.terminal_scope import get_terminal_scope
+from hermes_agent.tools.terminal_scope import get_terminal_scope
 from hermes_agent.tui_gateway import launch_profile_policy as policy
 
 

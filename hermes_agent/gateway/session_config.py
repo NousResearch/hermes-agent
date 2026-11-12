@@ -84,7 +84,7 @@ async def config_get(connection, ref, params):
         from hermes_cli.config_backend import config_version_or_none, version_token
         from hermes_cli.config_effective import load_user_config_effective
         from hermes_constants import DEFAULT_INDICATOR_STYLE
-        from tools.approval_context import _get_approval_mode
+        from hermes_agent.tools.approval_context import _get_approval_mode
         home = Path(connection.authority.profile_id)
         with _profile_runtime_scope(home):
             cfg = load_config()

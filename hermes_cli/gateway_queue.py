@@ -159,7 +159,7 @@ class OwnQueueHold:
     def begin(cls, cli, item):
         from cli import _SeededQueryMessage
         from hermes_cli.gateway_tools_notify import gateway_store
-        from tools.process_registry_notifications import TimelineNotification
+        from hermes_agent.tools.process_registry_notifications import TimelineNotification
         if getattr(cli, "_agent_running", False) or isinstance(item, (_SeededQueryMessage, TimelineNotification)):
             return None  # a turn the owner already runs (or a seeded prompt) is never held
         store = gateway_store(cli) if getattr(cli, "session_id", None) else None
@@ -172,7 +172,7 @@ class OwnQueueHold:
     def take_gateway_turn(self, pending):
         """Pop a turn the owner is running now (an adopted admission, a notification header) from the
         head of ``_pending_input``: those run before the held item, typed items stay behind it."""
-        from tools.process_registry_notifications import TimelineNotification
+        from hermes_agent.tools.process_registry_notifications import TimelineNotification
         with pending.mutex:
             if not pending.queue:
                 return None

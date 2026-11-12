@@ -16,7 +16,7 @@ import json
 import pytest
 
 from hermes_agent.gateway.config import Platform
-from tools.send_message_tool import send_message_tool
+from hermes_agent.tools.send_message_tool import send_message_tool
 
 ATTESTED_CHAT = "111111111111111111"
 ARBITRARY_CHAT = "999999999999999999"
@@ -79,9 +79,9 @@ def _send(target: str, sent):
         return {"success": True, "message_id": "m1"}
 
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), patch(
-        "tools.interrupt.is_interrupted", return_value=False
-    ), patch("model_tools._run_async", side_effect=lambda c: asyncio.run(c)), patch(
-        "tools.send_message_tool._send_to_platform", side_effect=_record
+        "hermes_agent.tools.interrupt.is_interrupted", return_value=False
+    ), patch("hermes_agent.model_tools._run_async", side_effect=lambda c: asyncio.run(c)), patch(
+        "hermes_agent.tools.send_message_tool._send_to_platform", side_effect=_record
     ), patch(
         "hermes_agent.gateway.mirror.mirror_to_session", return_value=False
     ):
@@ -268,11 +268,11 @@ def _send_slack(target: str, sent, *, resolves_to: str | None = SLACK_DM):
         return (resolves_to, None)
 
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), patch(
-        "tools.interrupt.is_interrupted", return_value=False
-    ), patch("model_tools._run_async", side_effect=lambda c: asyncio.run(c)), patch(
-        "tools.send_message_tool._send_to_platform", side_effect=_record
+        "hermes_agent.tools.interrupt.is_interrupted", return_value=False
+    ), patch("hermes_agent.model_tools._run_async", side_effect=lambda c: asyncio.run(c)), patch(
+        "hermes_agent.tools.send_message_tool._send_to_platform", side_effect=_record
     ), patch(
-        "tools.send_message_tool._resolve_slack_user_target", side_effect=_resolve
+        "hermes_agent.tools.send_message_tool._resolve_slack_user_target", side_effect=_resolve
     ), patch(
         "hermes_agent.gateway.mirror.mirror_to_session", return_value=False
     ):
@@ -332,7 +332,7 @@ def test_slack_user_target_resolving_to_unattested_dm_is_refused(slack_relay_env
 def test_guard_fault_refuses_rather_than_authorizing(relay_env, monkeypatch):
     """A guard that cannot answer must refuse, and must not egress."""
     import hermes_agent.gateway.relay.egress as eg
-    from tools import send_message_tool as smt
+    from hermes_agent.tools import send_message_tool as smt
 
     def _boom(*_a, **_k):
         raise RuntimeError("bug inside the guard")
@@ -359,7 +359,7 @@ def test_missing_gateway_package_still_allows(relay_env, monkeypatch):
     """
     import builtins
 
-    from tools import send_message_tool as smt
+    from hermes_agent.tools import send_message_tool as smt
 
     real_import = builtins.__import__
 
@@ -387,7 +387,7 @@ def test_route_discovery_fault_refuses_rather_than_authorizing(relay_env, monkey
     unattested target get authorized.
     """
     import hermes_agent.gateway.relay as gr
-    from tools.send_message_tool import _authorize_relay_target
+    from hermes_agent.tools.send_message_tool import _authorize_relay_target
 
     def boom():
         raise RuntimeError("config unreadable while listing fronted platforms")
@@ -406,7 +406,7 @@ def test_missing_relay_module_still_authorizes(relay_env, monkeypatch):
     except was there to avoid.
     """
     import hermes_agent.gateway.relay as gr
-    from tools.send_message_tool import _authorize_relay_target
+    from hermes_agent.tools.send_message_tool import _authorize_relay_target
 
     monkeypatch.setattr(gr, "relay_fronted_platforms", lambda: set())
     assert _authorize_relay_target("discord", "999") is None
@@ -416,7 +416,7 @@ def test_relay_module_import_fault_refuses(monkeypatch):
     """A module that EXISTS but fails to import is a fault, not an absence."""
     import builtins
 
-    import tools.send_message_tool as smt
+    import hermes_agent.tools.send_message_tool as smt
 
     real_import = builtins.__import__
 
@@ -458,7 +458,7 @@ def test_requested_platform_name_is_also_normalised(relay_env, monkeypatch, requ
 
     SCOPE, precisely: `send_message` itself cannot reach this, because
     `_resolve_tool_target` lowercases the platform at
-    tools/send_message_tool.py:47 before the guard is called. This pins the
+    hermes_agent/tools/send_message_tool.py:47 before the guard is called. This pins the
     HELPERS' own contract for every other caller — the gateway lanes, and any
     future entry point that does not pre-normalise. Both functions are public
     within the package and must not assume a lowercased argument.
@@ -537,7 +537,7 @@ def test_nested_dependency_importerror_refuses(monkeypatch):
     """
     import builtins
 
-    import tools.send_message_tool as smt
+    import hermes_agent.tools.send_message_tool as smt
 
     real_import = builtins.__import__
 
@@ -558,7 +558,7 @@ def test_absent_gateway_module_importerror_still_authorizes(monkeypatch):
     """Control: genuine absence (CLI/cron) must keep working."""
     import builtins
 
-    import tools.send_message_tool as smt
+    import hermes_agent.tools.send_message_tool as smt
 
     real_import = builtins.__import__
 
@@ -581,7 +581,7 @@ def test_nameless_importerror_refuses(monkeypatch):
     """
     import builtins
 
-    import tools.send_message_tool as smt
+    import hermes_agent.tools.send_message_tool as smt
 
     real_import = builtins.__import__
 
@@ -646,7 +646,7 @@ def test_egress_module_own_import_boundary_fails_closed(monkeypatch):
     """Round 4, non-blocking finding: `hermes_agent/gateway/relay/egress.py` has its OWN
     import boundary (`_relay_fronted` -> `from hermes_agent.gateway.relay import ...`), and
     the existing nested-ImportError test intercepts the EARLIER import in
-    tools/send_message_tool.py, so this one was never exercised.
+    hermes_agent/tools/send_message_tool.py, so this one was never exercised.
     """
     import builtins
 
@@ -822,7 +822,7 @@ def test_tool_guard_forwards_the_thread_id(monkeypatch):
     nothing observed what the tool wrapper forwards. Same gap as the caller
     findings: testing the callee never proves the caller uses it.
     """
-    import tools.send_message_tool as smt
+    import hermes_agent.tools.send_message_tool as smt
 
     seen = {}
 
@@ -981,7 +981,7 @@ def test_a_live_adapter_that_cannot_answer_is_a_fault_not_an_absence(monkeypatch
         eg.relay_routed_platform("discord")
 
     # And the tool-facing guard must refuse rather than authorize.
-    from tools.send_message_tool import _authorize_relay_target
+    from hermes_agent.tools.send_message_tool import _authorize_relay_target
 
     denial = _authorize_relay_target("discord", "999")
     assert denial is not None
@@ -1351,7 +1351,7 @@ def test_tool_guard_forwards_the_dispatch_token(monkeypatch):
     even if the tool never forwards its snapshot — the gap that has produced
     four blockers on this branch. This asserts the wiring itself.
     """
-    import tools.send_message_tool as smt
+    import hermes_agent.tools.send_message_tool as smt
 
     seen = {}
 
@@ -1365,7 +1365,7 @@ def test_tool_guard_forwards_the_dispatch_token(monkeypatch):
 
 def test_a_caller_that_omits_the_snapshot_does_not_get_the_exemption(monkeypatch):
     """A forgotten argument must not silently look like "no native token"."""
-    import tools.send_message_tool as smt
+    import hermes_agent.tools.send_message_tool as smt
 
     seen = {}
 
@@ -1388,7 +1388,7 @@ def test_tool_guard_forwards_thread_id(monkeypatch):
     mutation `_authorize_relay_target(platform_name, chat_id, None, ...)`
     survived the ENTIRE tests/tools suite (146 passed).
     """
-    import tools.send_message_tool as smt
+    import hermes_agent.tools.send_message_tool as smt
 
     seen = {}
 

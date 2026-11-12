@@ -89,8 +89,8 @@ async def test_exec_approval_view_honors_discord_timeout_with_request_id(monkeyp
 @pytest.mark.asyncio
 async def test_expired_card_cannot_resolve_a_different_pending_request(monkeypatch):
     from plugins.platforms.discord import adapter as discord_adapter
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     sent = _capture_channel(adapter)
@@ -145,8 +145,8 @@ async def test_unsettled_click_without_an_observer_marks_the_card_expired(monkey
 ])
 async def test_card_retires_when_backend_request_ends(monkeypatch, ends, footer_key):
     """The card shows how its request ended, even when that happened while it was being sent."""
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     session = "agent:other:discord:555"

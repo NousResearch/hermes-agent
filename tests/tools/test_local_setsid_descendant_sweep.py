@@ -21,7 +21,7 @@ import pytest
 
 pytestmark = pytest.mark.platforms("linux")
 
-from tools.environments.local import LocalEnvironment
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 
 @pytest.fixture(autouse=True)
@@ -191,7 +191,7 @@ class TestReapUntrackedGroupGuard:
         recorded at spawn; no group primitive is consulted or signalled."""
         from unittest.mock import MagicMock
 
-        from tools.process_registry import ProcessRegistry
+        from hermes_agent.tools.process_registry import ProcessRegistry
 
         reg = ProcessRegistry()
         proc = MagicMock()
@@ -213,7 +213,7 @@ class TestReapUntrackedGroupGuard:
     def test_group_leader_child_is_reaped(self, monkeypatch):
         """Control: a real start_new_session child whose recorded start time
         still matches is terminated."""
-        from tools.process_registry import ProcessRegistry
+        from hermes_agent.tools.process_registry import ProcessRegistry
 
         monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
                             staticmethod(lambda: 0.5))
@@ -237,7 +237,7 @@ class TestReapUntrackedGroupGuard:
         """Regression: a group leader whose recorded start time does not match
         (the recycled-PID shape: same numeric pid, different process) must NOT
         be signalled, even though getpgid(pid) == pid authorized the old arm."""
-        from tools.process_registry import ProcessRegistry
+        from hermes_agent.tools.process_registry import ProcessRegistry
 
         monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
                             staticmethod(lambda: 0.5))

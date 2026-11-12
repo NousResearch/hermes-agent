@@ -76,7 +76,7 @@ def _orphan_claimed_row(executions, job_id: str) -> str:
 def _run_tick():
     with (
         patch.object(scheduler_mod, "get_due_jobs", return_value=[]),
-        patch("tools.mcp_tool_lifecycle._kill_orphaned_mcp_children", lambda: None),
+        patch("hermes_agent.tools.mcp_tool_lifecycle._kill_orphaned_mcp_children", lambda: None),
     ):
         return scheduler_mod.tick(verbose=False)
 
@@ -196,7 +196,7 @@ class TestOneShotCliRunIsSynchronous:
         tool's background dispatcher must fall back to synchronous execution
         (return None) even when a session key is inherited from a gateway env."""
         from hermes_agent.gateway.session_context import declare_stateless_channel
-        from tools.cronjob_tools import _try_dispatch_background_run
+        from hermes_agent.tools.cronjob_tools import _try_dispatch_background_run
 
         declare_stateless_channel()
         monkeypatch.setenv("HERMES_SESSION_KEY", "inherited-gateway-session")

@@ -167,7 +167,7 @@ def start_review(parent_agent, messages: list[dict[str, Any]], user_prompt: str 
     goal, context = build_review_task(snapshot, user_prompt, collect_parent_loaded_skills(parent_agent, messages))
     credentials_cfg = _load_review_credentials_cfg()
 
-    from tools.delegate_tool import delegate_task
+    from hermes_agent.tools.delegate_tool import delegate_task
     raw = delegate_task(goal=goal, context=context, background=True, parent_agent=parent_agent, credentials_cfg=credentials_cfg)
     try:
         result = json.loads(raw)

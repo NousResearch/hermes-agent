@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.environments import ssh as ssh_env
-from tools.environments import modal as modal_env
-from tools.environments import daytona as daytona_env
-from tools.environments.ssh import SSHEnvironment
+from hermes_agent.tools.environments import ssh as ssh_env
+from hermes_agent.tools.environments import modal as modal_env
+from hermes_agent.tools.environments import daytona as daytona_env
+from hermes_agent.tools.environments.ssh import SSHEnvironment
 
 # ── SSH helpers ──────────────────────────────────────────────────────
 
@@ -126,7 +126,7 @@ class TestSSHBulkDownload:
     def test_ssh_bulk_download_still_fails_on_every_other_status(self, ssh_mock_env, tmp_path):
         """rc=1; rc=2 with a real error beside the socket line, with no diagnostic at all, or
         with 'socket ignored' merely inside a filename — all still raise."""
-        from tools.environments.base import EnvironmentConnectionError
+        from hermes_agent.tools.environments.base import EnvironmentConnectionError
         dest = tmp_path / "backup.tar"
         failures = (
             subprocess.CompletedProcess([], 1, stderr=b"tar: home/testuser/.hermes/state.db: file changed as we read it"),

@@ -270,10 +270,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             # A running session covers steering plus pending clarify / tool approvals it holds.
             if self._is_session_running(_estop_key):
                 return True
-            from tools import slash_confirm as _estop_confirm_mod
+            from hermes_agent.tools import slash_confirm as _estop_confirm_mod
             if _estop_confirm_mod.get_pending(_estop_key):
                 return True
-            from tools.approval import has_blocking_approval as _estop_has_approval
+            from hermes_agent.tools.approval import has_blocking_approval as _estop_has_approval
             if _estop_has_approval(_estop_key):
                 return True
         return False
@@ -380,7 +380,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         Free text answers open-ended/"Other" prompts; "2" answers a multi-choice one. Resolved/retained
         replies return "" so adapters don't double-post — the agent produces the next user-facing message."""
         try:
-            from tools import clarify_gateway as _clarify_mod
+            from hermes_agent.tools import clarify_gateway as _clarify_mod
             _pending_clarify = _clarify_mod.get_pending_for_session(_quick_key, include_choice_prompts=True)
         except Exception:
             return None
@@ -474,7 +474,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         pop inside ``retire_clarify_card`` runs before its first await, so the agent thread's own
         expiry notice (scheduled once the wait unblocks) finds nothing and stays a no-op.
         """
-        from tools import clarify_gateway as _clarify_mod
+        from hermes_agent.tools import clarify_gateway as _clarify_mod
         if not _clarify_mod.resolve_gateway_clarify(pending.clarify_id, _clarify_mod.CANCELLED):
             return False
         _clarify_adapter = self._delivery_adapter_for(source)
@@ -495,7 +495,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         here — it is withdrawn exactly the way ``agent.clarify_timeout`` withdraws it, and the
         steer this caller is about to accept then lands on the unblocked turn.
         """
-        from tools import clarify_gateway as _clarify_mod
+        from hermes_agent.tools import clarify_gateway as _clarify_mod
         pending = _clarify_mod.get_pending_for_session(session_key, include_choice_prompts=True)
         if pending is None:
             return False
@@ -527,12 +527,12 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Resolve a reply (/approve, /always, /cancel + aliases) to a pending slash-confirm prompt;
         None when it falls through — a stale pending confirm does NOT block other commands. A pending
         dangerous-command approval takes precedence: /approve there unblocks the waiting tool thread."""
-        from tools import slash_confirm as _slash_confirm_mod
+        from hermes_agent.tools import slash_confirm as _slash_confirm_mod
         _pending_confirm = _slash_confirm_mod.get_pending(_quick_key)
         if not _pending_confirm:
             return None
         with suppress(Exception):
-            from tools.approval import has_blocking_approval
+            from hermes_agent.tools.approval import has_blocking_approval
             if has_blocking_approval(_quick_key):
                 return None
         # Accept bang-prefixed replies (`!always`, `!cancel`) verbatim: Slack/Matrix show the `!`
@@ -1620,7 +1620,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         cache filename ``<id>_<id>_<original>``. A relay temp file (``relay_media_<random>``)
         carries no name, so it is labelled unknown rather than shown as the random basename.
         The path is translated to the in-container mount under a Docker backend."""
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         basename = os.path.basename(path)
         name = clean_attachment_filename(original_name)
         if not name and basename.startswith(_RELAY_MEDIA_PREFIX):
@@ -1950,7 +1950,7 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         """Auto-analyze user-attached images with the vision tool and prepend the descriptions.
         Description *and* local cache path are injected so the model understands the image without
         a tool call and can re-examine it with vision_analyze."""
-        from tools.vision_tools import vision_analyze_tool
+        from hermes_agent.tools.vision_tools import vision_analyze_tool
         from agent.memory_context import sanitize_context
 
         analysis_prompt = (

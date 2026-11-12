@@ -103,7 +103,7 @@ def session_scope(authority, sid):
 def _server_names(scope, servers):
     """Index -> ledger name: the editor's own server name (the model sees ``mcp__editor_github_<tag>__x``)
     plus a per-session tag, so two sessions borrowing same-named servers never adopt one connection."""
-    from tools.mcp_tool_schema import sanitize_mcp_name_component
+    from hermes_agent.tools.mcp_tool_schema import sanitize_mcp_name_component
     return {i: f"editor_{sanitize_mcp_name_component(spec['name'])}_"
                f"{hashlib.sha256(f'{scope}:{i}'.encode()).hexdigest()[:8]}" for i, spec in enumerate(servers)}
 
@@ -166,15 +166,15 @@ def _viewed(authority, scope):
 
 
 def _connected(scope, names):
-    from tools.mcp_tool import _servers
-    from tools.mcp_tool_scope import _server_key
+    from hermes_agent.tools.mcp_tool import _servers
+    from hermes_agent.tools.mcp_tool_scope import _server_key
     # Inside the scope the ledger keys are ``(scope, name)``, never bare names.
     return [i for i, name in names.items()
             if _server_key(name, scope) in _servers and _servers[_server_key(name, scope)].session]
 
 
 def _disconnect(held, scope):
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers(scope=scope)
     held.fingerprint = None
 
@@ -184,8 +184,8 @@ def _borrowed(authority, scope, servers, names, cwd, *, partial=False):
     """Yield ``(schemas, connected indexes)`` inside the session's tool scope. Only ``partial`` (a
     selection being frozen) may leave a server out; an execution needs every server its manifest
     was frozen with. A held connection is reused; the last borrower closes it unless a viewer remains."""
-    from tools.registry import registry, session_tool_scope
-    from tools.mcp_tool_discovery import register_mcp_servers
+    from hermes_agent.tools.registry import registry, session_tool_scope
+    from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
     held = _held(authority, scope)
     # The cwd too: stdio servers run in it, so a committed workspace move respawns them there.
     wanted = fingerprint([servers, cwd])
@@ -350,9 +350,9 @@ def _live_tools_changed(scope, names):
     """Whether a held server's live ``tools/list`` differs from the tools its connection was
     discovered with. Editor servers ignore ``tools/list_changed`` (the manifest is frozen), so
     the admission start asks; an unanswered list (bounded) counts as unchanged."""
-    from tools import mcp_tool_loop
-    from tools.mcp_tool import _paginate_full_list, _servers
-    from tools.mcp_tool_scope import _server_key
+    from hermes_agent.tools import mcp_tool_loop
+    from hermes_agent.tools.mcp_tool import _paginate_full_list, _servers
+    from hermes_agent.tools.mcp_tool_scope import _server_key
 
     def dump(tools):
         return _json([tool.model_dump(mode='json') for tool in tools])

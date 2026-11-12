@@ -255,7 +255,7 @@ async def test_replay_is_admitted_once_before_dispatch(monkeypatch, tmp_path, ki
 
 async def _check_sticker_handoff(monkeypatch, adapter, app, delivered, stage):
     from hermes_agent.gateway import sticker_cache
-    from tools import vision_tools
+    from hermes_agent.tools import vision_tools
 
     entered = asyncio.Event()
     calls = []

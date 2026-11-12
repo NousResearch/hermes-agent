@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-from tools.environments.local import served_profile_child_env
+from hermes_agent.tools.environments.local import served_profile_child_env
 
 # Gates injected outside any dotenv — the shape a name-list scrub cannot see. Mix of allowlist,
 # deny list, allow-all opt-in, bot policy, channel scoping and a plugin adapter's gate.

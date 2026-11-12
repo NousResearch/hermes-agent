@@ -8,7 +8,7 @@ simple command: an unquoted ``;`` ``|`` ``&`` newline, or the ``)`` / backtick c
 """
 import pytest
 
-from tools.approval_detection import _quoted_grep_pattern_spans, _shell_tokens_with_spans, detect_hardline_command
+from hermes_agent.tools.approval_detection import _quoted_grep_pattern_spans, _shell_tokens_with_spans, detect_hardline_command
 
 
 @pytest.mark.parametrize("command", [
@@ -56,7 +56,7 @@ class TestExecutableSubstitutionBodiesStayExecutable:
 
     def test_public_guard_blocks_without_offering_approval(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
-        from tools.approval import check_dangerous_command
+        from hermes_agent.tools.approval import check_dangerous_command
         calls = []
         result = check_dangerous_command('echo "$(grep -P \'safe\' /dev/null\nreboot)"', "local",
                                          approval_callback=lambda *a, **k: calls.append(a) or False)

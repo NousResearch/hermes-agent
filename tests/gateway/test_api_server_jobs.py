@@ -537,7 +537,7 @@ class TestCronUnavailable:
 
 class TestCronPromptScanParity:
     """The REST cron endpoints must reject exfiltration/injection prompts the
-    same way the agent-facing ``cronjob`` tool does (tools/cronjob_tools.py).
+    same way the agent-facing ``cronjob`` tool does (hermes_agent/tools/cronjob_tools.py).
 
     These endpoints are already authenticated (``_check_auth`` runs on every
     handler and ``connect()`` refuses to start without ``API_SERVER_KEY``), so

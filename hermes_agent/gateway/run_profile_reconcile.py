@@ -396,7 +396,7 @@ class GatewayProfileReconcileMixin:
             if not self._running or getattr(self, "_draining", False):
                 return False  # shutdown began during the preflight await
             from hermes_constants import hermes_home_key
-            from tools.mcp_tool_scope import rekey_unscoped_connections
+            from hermes_agent.tools.mcp_tool_scope import rekey_unscoped_connections
             from hermes_agent.tui_gateway.launch_profile_policy import activate_multi_profile_hosting
             activate_multi_profile_hosting()
             rekey_unscoped_connections(hermes_home_key(launch))
@@ -462,11 +462,11 @@ class GatewayProfileReconcileMixin:
         from contextvars import copy_context
         with _log_suppressed(logging.DEBUG, "log routing refresh failed", exc_info=True):
             _enable_multiplex_log_routing(self.config)
-        from tools.mcp_oauth import suppress_interactive_oauth
+        from hermes_agent.tools.mcp_oauth import suppress_interactive_oauth
         loop = asyncio.get_running_loop()
         for profile_name, profile_home in profile_homes:
             try:
-                from tools.mcp_tool_discovery import discover_mcp_tools
+                from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
                 with _profile_runtime_scope(Path(profile_home)), suppress_interactive_oauth():
                     await loop.run_in_executor(None, copy_context().run, discover_mcp_tools)
             except Exception:
@@ -564,7 +564,7 @@ class GatewayProfileReconcileMixin:
                 # ``_profile_runtime_scope`` home/secret override stays visible in the worker.
                 with _log_suppressed(logging.DEBUG, "scoped MCP shutdown failed", exc_info=True):
                     from hermes_constants import hermes_home_key
-                    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+                    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
                     await asyncio.to_thread(shutdown_mcp_servers, scope=hermes_home_key(home))
                 with _log_suppressed(logging.DEBUG, "profile log handler release failed", exc_info=True):
                     from hermes_logging import release_profile_log_handlers
@@ -642,8 +642,8 @@ def _mcp_config_reconciler(runner=None):
     primed: set = set()
 
     def _reconcile_current(label: str) -> None:
-        from tools.mcp_oauth import suppress_interactive_oauth
-        from tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
+        from hermes_agent.tools.mcp_oauth import suppress_interactive_oauth
+        from hermes_agent.tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
         if label not in primed:
             primed.add(label)
             return  # first tick: startup discovery already reflects this config (or is still running)

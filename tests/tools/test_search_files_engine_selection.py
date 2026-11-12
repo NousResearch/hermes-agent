@@ -5,10 +5,10 @@ import re
 
 import pytest
 
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import SearchResult, ShellFileOperations
-from tools.file_tools import search_tool
-from tools.registry import registry
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import SearchResult, ShellFileOperations
+from hermes_agent.tools.file_tools import search_tool
+from hermes_agent.tools.registry import registry
 
 
 class RecordingEnvironment:
@@ -267,7 +267,7 @@ def test_handler_normalizes_blank_path_to_current_directory(monkeypatch, blank_p
         captured.update(kwargs)
         return "{}"
 
-    monkeypatch.setattr("tools.file_tools.search_tool", fake_search_tool)
+    monkeypatch.setattr("hermes_agent.tools.file_tools.search_tool", fake_search_tool)
 
     registry.dispatch("search_files", {"pattern": "needle", "target": "files", "path": blank_path})
 
@@ -281,7 +281,7 @@ def test_repeated_search_key_distinguishes_order(monkeypatch):
         def search(self, **kwargs):
             return SearchResult()
 
-    monkeypatch.setattr("tools.file_tools._get_file_ops", lambda task_id: StubOperations())
+    monkeypatch.setattr("hermes_agent.tools.file_tools._get_file_ops", lambda task_id: StubOperations())
     task_id = "engine-order-key"
     for _ in range(3):
         assert "BLOCKED" not in json.loads(
@@ -347,7 +347,7 @@ def test_off_path_windows_rg_miss_is_reprobed_then_success_is_cached(
 
     def command_v_miss(command, **kwargs):
         probes.append(command)
-        from tools.file_operations import ExecuteResult
+        from hermes_agent.tools.file_operations import ExecuteResult
         return ExecuteResult(stdout="", exit_code=1)
 
     monkeypatch.setattr(ops, "_exec", command_v_miss)
@@ -405,7 +405,7 @@ def test_remote_msys_shaped_executable_is_not_rewritten_as_controller_path():
 def test_every_windows_drive_root_is_broad_even_when_home_is_on_another_drive(
     tmp_path, monkeypatch
 ):
-    from tools import file_operations
+    from hermes_agent.tools import file_operations
 
     monkeypatch.setattr(file_operations, "_HOME", "C:/Users/alice")
     ops = ShellFileOperations(LocalEnvironment(str(tmp_path)))

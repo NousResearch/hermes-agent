@@ -4,8 +4,8 @@ Live QA (Aug 2026): KDE/Qt apps report [0,0,0,0] for elements that are
 perfectly clickable by index (all of kcalc's radio buttons). A
 plausible-looking zero rect invites coordinate=[0,0] derivation.
 """
-from tools.computer_use.backend import UIElement
-from tools.computer_use.tool import (
+from hermes_agent.tools.computer_use.backend import UIElement
+from hermes_agent.tools.computer_use.tool import (
     _bounds_unknown,
     _element_to_dict,
 )

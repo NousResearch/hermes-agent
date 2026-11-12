@@ -9,8 +9,8 @@ and tools have to follow that mount — any drive, any directory, not one user.
 
 import os
 
-import tools.terminal_tool as tt
-from tools.environments.docker import DockerEnvironment
+import hermes_agent.tools.terminal_tool as tt
+from hermes_agent.tools.environments.docker import DockerEnvironment
 
 
 WIN_WS = r"D:\Work\proj"
@@ -88,7 +88,7 @@ class TestToolsFollowTheMount:
         assert tt._sanitize_cwd_for_live_env(env, WIN_FILE) == f"{mount}/Downloads/clip.jpg"
 
     def test_file_ops_rewrite_a_mounted_windows_path(self):
-        from tools.file_operations import ShellFileOperations
+        from hermes_agent.tools.file_operations import ShellFileOperations
 
         env = type("E", (), {
             "env_type": "docker", "cwd": "/host-cwd",

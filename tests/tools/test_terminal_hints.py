@@ -1,9 +1,9 @@
-"""Tests for tools/terminal_hints.py — output-pattern failure hints."""
+"""Tests for hermes_agent/tools/terminal_hints.py — output-pattern failure hints."""
 
 from unittest.mock import patch as mock_patch
 
 
-from tools.terminal_hints import annotate_failure, annotate_masked_success
+from hermes_agent.tools.terminal_hints import annotate_failure, annotate_masked_success
 
 
 class TestAnnotateFailureBasics:
@@ -88,7 +88,7 @@ class TestBoundedScan:
 
     def test_hint_functions_cannot_crash_annotate(self):
         # A hint raising must not propagate.
-        with mock_patch("tools.terminal_hints._OUTPUT_HINTS", [lambda c, o: 1 / 0]):
+        with mock_patch("hermes_agent.tools.terminal_hints._OUTPUT_HINTS", [lambda c, o: 1 / 0]):
             assert annotate_failure("x", 1, "boom") is None
 
 

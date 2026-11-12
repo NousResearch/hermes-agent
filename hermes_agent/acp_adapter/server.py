@@ -42,7 +42,7 @@ from agent.context_compressor import (COMPRESSED_SUMMARY_METADATA_KEY, ContextCo
 from agent.turn_failure_copy import (
     CONTENT_REFUSED_DISPLAY_KIND, CONTENT_REFUSED_METADATA_KEY, CONTENT_REFUSED_NOTICE)
 from agent.interrupt_compat import request_hard_interrupt
-from tools.approval_context import reset_hermes_interactive_context, set_hermes_interactive_context
+from hermes_agent.tools.approval_context import reset_hermes_interactive_context, set_hermes_interactive_context
 
 logger = logging.getLogger(__name__)
 
@@ -468,13 +468,13 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return
         try:
             from agent.runtime_cwd import set_session_cwd
-            from tools.mcp_tool_discovery import register_mcp_servers
+            from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
 
             configs = {s.name: _mcp_server_config(s) for s in mcp_servers}
 
             def _register_pinned() -> None:
                 # new_session/load_session run outside the per-turn cwd pin; the session's logical cwd is
-                # the default stdio child cwd (tools/mcp_tool_transport.py::_run_stdio), so pin it here.
+                # the default stdio child cwd (hermes_agent/tools/mcp_tool_transport.py::_run_stdio), so pin it here.
                 set_session_cwd(state.cwd)
                 register_mcp_servers(configs)
 
@@ -483,7 +483,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
             return
         try:
-            from model_tools import get_tool_definitions
+            from hermes_agent.model_tools import get_tool_definitions
             from agent.memory_manager_tools import inject_memory_provider_tools
 
             agent = state.agent
@@ -548,7 +548,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                     if any(int(getattr(agent, k, 0) or 0) > 0 for k in ("_user_turn_count", "_api_call_count")):
                         return
 
-                    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+                    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 
                     added = refresh_agent_mcp_tools(agent, quiet_mode=True)
                 if added:
@@ -803,7 +803,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         ContextVar writes are isolated from concurrent sessions.
 
         Approval routing is thread-local, so it MUST be bound here, not on the loop thread.
-        Interactive routing is a ``tools.approval`` contextvar, not ``HERMES_INTERACTIVE`` in
+        Interactive routing is a ``hermes_agent.tools.approval`` contextvar, not ``HERMES_INTERACTIVE`` in
         os.environ, so concurrent workers can't race a global flag onto the non-interactive
         auto-approve path (GHSA-96vc-wcxf-jjff)."""
         agent = state.agent
@@ -822,7 +822,7 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
                 return lambda: clear_session_vars(tokens)
 
             def _approval() -> Callable[[], None]:
-                from tools import terminal_tool
+                from hermes_agent.tools import terminal_tool
 
                 previous = terminal_tool._get_approval_callback()
                 terminal_tool.set_approval_callback(approval_cb)

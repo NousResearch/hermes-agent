@@ -16,7 +16,7 @@ from agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio,
 from plugins.image_gen._common import (
     StaticImageGenProvider, catalog_rows, collect_source_images, error_factory,
     load_image_gen_config, materialize_image, post_json)
-from tools.xai_http import (
+from hermes_agent.tools.xai_http import (
     build_xai_storage_options, hermes_xai_user_agent, maybe_mark_xai_storage_notice_seen,
     read_xai_imagine_storage_config, resolve_xai_http_credentials, xai_storage_notice_text)
 

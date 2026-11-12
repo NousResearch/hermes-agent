@@ -102,7 +102,7 @@ def test_zero_event_retry_prunes_oversized_tool_output_and_logs_size_delta(monke
     """#95429 criterion 3: a reconnect after a zero-event attempt must not resend the same oversized
     payload unchanged -- the inline tool output is spilled and the size delta is logged."""
     from tests.agent.test_run_agent_codex_responses import _build_agent
-    from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
+    from hermes_agent.tools.tool_result_storage import PERSISTED_OUTPUT_TAG
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path, raising=False)

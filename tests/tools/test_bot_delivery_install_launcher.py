@@ -4,11 +4,11 @@ import sys
 
 import pytest
 
-from tools import bot_relay
+from hermes_agent.tools import bot_relay
 
 
 def _delivery_argv(profile, query_file):
-    # Bot-chat delivery runs over the gateway here; the DM path (tools/bot_mode_dm.py) still spawns
+    # Bot-chat delivery runs over the gateway here; the DM path (hermes_agent/tools/bot_mode_dm.py) still spawns
     # ``_hermes_cli() -p <profile> ...``, so the launcher it picks is the invariant under test.
     return [bot_relay._hermes_cli(), "-p", profile, "--query-file", query_file]
 
@@ -134,7 +134,7 @@ def test_real_delivery_launcher_imports_new_generation(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("name", ["hermes", "hermes.exe"])
 def test_launcher_shape_preserves_profile(tmp_path, monkeypatch, name):
-    from tools import bot_mode_dm, bot_mode_probe
+    from hermes_agent.tools import bot_mode_dm, bot_mode_probe
 
     home = tmp_path / "home"
     target = home / "profiles" / "researcher"

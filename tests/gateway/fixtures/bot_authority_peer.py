@@ -41,7 +41,7 @@ def probe(base):
         async with websocket(home, desc) as ws:
             created = await rpc(ws, 'session.create', request_id='bot', source='gui', toolsets=[], cwd=str(home))
             sid = created['result']['session_id']
-            from tools.bot_relay import enqueue_envelope, relay_root
+            from hermes_agent.tools.bot_relay import enqueue_envelope, relay_root
             roster = await rpc(ws, 'bot_relay.roster.sync', agents=[{'profile': 'remote', 'handle': 'remote', 'connection_id': 'peer'}])
             assert roster.get('result', {}).get('count') == 1, roster
             envelope = enqueue_envelope(home, target={'profile': 'remote', 'handle': 'remote', 'connection_id': 'peer'},
@@ -58,8 +58,8 @@ def probe(base):
             await wait(lambda: rows()[0]['status'] == 'terminal')
             await rpc(ws, 'prompt.submit', session_id=sid, input_id='hold', text='HOLD_AUTOMATION')
             assert await asyncio.to_thread(model.blocked.wait, 20)
-            from tools.bot_mode_dm import _admit_live_dm
-            from tools.bot_live_delivery import _locked, _write, _read
+            from hermes_agent.tools.bot_mode_dm import _admit_live_dm
+            from hermes_agent.tools.bot_live_delivery import _locked, _write, _read
             legacy_owner = dict(profile_home=str(home), session_id=sid, lease_id='departed', live_session_id='old-ui')
             with _locked(home) as mailbox:
                 for key, status, text in [('b' * 32, 'queued', 'LEGACY_QUEUED_ONCE'),
@@ -122,7 +122,7 @@ def probe(base):
                 raise
         # Model the exact post-settlement/pre-mailbox-publication crash boundary.
         # Keep the actual admission/result, remove only the derivative reply receipt.
-        from tools.bot_live_delivery import _locked, _read, _write
+        from hermes_agent.tools.bot_live_delivery import _locked, _read, _write
         with _locked(home) as mailbox:
             path = mailbox / ('a' * 32 + '.json')
             record = _read(path)

@@ -152,7 +152,7 @@ _DELIVERY_UPDATES = {
 
 
 def _delivery(db, conn, session_id, payload, *, execution_id, action):
-    from tools.async_delegation import _MAX_DELIVERY_ATTEMPTS
+    from hermes_agent.tools.async_delegation import _MAX_DELIVERY_ATTEMPTS
     _shape(payload, {'delegation_id', 'claim_id'})
     _owned(conn, session_id, execution_id, payload['delegation_id'])
     _text(payload['claim_id'])
@@ -223,7 +223,7 @@ async def worker_delegation_request(connection, ref, params):
                 row = _owned(conn, ref.session_id, params['execution_id'], params['payload']['event']['delegation_id'])
                 event = json.loads(row['event_json']) if row['delivery_state'] == 'pending' else None
             if event is not None:
-                from tools.process_registry import process_registry
+                from hermes_agent.tools.process_registry import process_registry
                 # Queueing after commit can repeat after a lost ACK. Existing
                 # token-guarded claims arbitrate delivery; never ACK at publication.
                 process_registry.completion_queue.put(event | {'restored': True})

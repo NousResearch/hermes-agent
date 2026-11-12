@@ -14,7 +14,7 @@ Holds the stateless atoms that every FAL-backed tool needs:
 
 Stateful pieces (cache globals, ``_managed_fal_client*`` selectors,
 ``_submit_fal_request``) intentionally stay on
-:mod:`tools.image_generation_tool`. That module is the patch target for
+:mod:`hermes_agent.tools.image_generation_tool`. That module is the patch target for
 existing test suites (``tests/tools/test_image_generation.py``,
 ``tests/tools/test_managed_media_gateways.py``) and for the
 ``plugins/image_gen/fal/`` plugin's ``_it`` indirection — moving the
@@ -154,7 +154,7 @@ def submit_managed_fal_with_rate_limit_retry(
     rate limit — it must never fall through to the callers' "model may not be enabled" 4xx text,
     which sends agents off to switch models. Every other exception propagates untouched.
     """
-    from tools.interrupt import is_interrupted
+    from hermes_agent.tools.interrupt import is_interrupted
     for attempt in (1, 2):
         try:
             return submit({"x-idempotency-key": str(uuid.uuid4())})

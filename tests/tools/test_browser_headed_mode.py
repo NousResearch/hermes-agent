@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import browser_launcher as launcher
-from tools import browser_session as bs
-from tools import browser_session_cloud as bs_cloud
+from hermes_agent.tools import browser_launcher as launcher
+from hermes_agent.tools import browser_session as bs
+from hermes_agent.tools import browser_session_cloud as bs_cloud
 
 
 @pytest.fixture(autouse=True)
@@ -52,7 +52,7 @@ class TestCleanupTaskResourcesHeadedSkip:
     def test_headless_still_cleans_browser(self):
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
-            patch("tools.browser_session_cloud.is_headed_mode", return_value=False),
+            patch("hermes_agent.tools.browser_session_cloud.is_headed_mode", return_value=False),
             patch("run_agent.cleanup_vm"),
             patch("run_agent.cleanup_browser") as mock_cb,
             patch(
@@ -68,7 +68,7 @@ class TestCleanupTaskResourcesHeadedSkip:
         """A headed session survives the turn; the inactivity reaper closes it when idle."""
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
-            patch("tools.browser_session_cloud.is_headed_mode", return_value=True),
+            patch("hermes_agent.tools.browser_session_cloud.is_headed_mode", return_value=True),
             patch("run_agent.cleanup_vm"),
             patch("run_agent.cleanup_browser") as mock_cb,
             patch(
@@ -84,7 +84,7 @@ class TestCleanupTaskResourcesHeadedSkip:
         """Headed mode only affects the browser; VM teardown is untouched."""
         from agent.chat_completion_helpers import cleanup_task_resources
         with (
-            patch("tools.browser_session_cloud.is_headed_mode", return_value=True),
+            patch("hermes_agent.tools.browser_session_cloud.is_headed_mode", return_value=True),
             patch("run_agent.cleanup_vm") as mock_vm,
             patch("run_agent.cleanup_browser"),
             patch(
@@ -132,7 +132,7 @@ class TestHeadedLaunch:
     def test_auto_started_screen_is_up_before_the_profile_is_chosen(self, monkeypatch):
         """browser.headed + bot_desktop.auto_start on a headless host: the first local launch brings the screen
         up and then uses the Bot Desktop profile (the dock Browser's cookie jar), not a throwaway one."""
-        from tools.bot_desktop import browser as bd_browser, placement, runtime
+        from hermes_agent.tools.bot_desktop import browser as bd_browser, placement, runtime
         screen = {}
         monkeypatch.setattr(bs_cloud, "is_headed_mode", lambda: True)
         monkeypatch.setattr(runtime, "tool_placement", lambda: placement.GATEWAY)
@@ -159,7 +159,7 @@ class TestHeadedLaunch:
     def test_headed_not_applied_in_cloud_mode(self, monkeypatch):
         """Cloud (CDP) sessions never launch a local (headed) Chromium: headed is a local-only knob."""
         monkeypatch.setattr(bs_cloud, "is_headed_mode", lambda: True)
-        monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: "")
+        monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.get_cdp_override", lambda: "")
         provider = SimpleNamespace(create_session=lambda key: {
             "session_name": "cloud", "bb_session_id": "bb-1",
             "cdp_url": "wss://example.invalid/devtools/browser/cloud", "features": {},

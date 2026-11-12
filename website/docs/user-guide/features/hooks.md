@@ -567,7 +567,7 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 | `args` | `dict` | The arguments the model passed to the tool |
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
 
-**Fires:** In `model_tools.py`, inside `handle_function_call()`, before the tool's handler runs. Fires once per tool call — if the model calls 3 tools in parallel, this fires 3 times.
+**Fires:** In `hermes_agent/model_tools.py`, inside `handle_function_call()`, before the tool's handler runs. Fires once per tool call — if the model calls 3 tools in parallel, this fires 3 times.
 
 **Return value — block or require approval:**
 
@@ -649,7 +649,7 @@ def my_callback(tool_name: str, args: dict, result: str, task_id: str,
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
 | `duration_ms` | `int` | How long the tool's dispatch took, in milliseconds (measured with `time.monotonic()` around `registry.dispatch()`). |
 
-**Fires:** In `model_tools.py`, inside `handle_function_call()`, after the tool's handler returns. Fires once per tool call. Does **not** fire if the tool raised an unhandled exception (the error is caught and returned as an error JSON string instead, and `post_tool_call` fires with that error string as `result`).
+**Fires:** In `hermes_agent/model_tools.py`, inside `handle_function_call()`, after the tool's handler returns. Fires once per tool call. Does **not** fire if the tool raised an unhandled exception (the error is caught and returned as an error JSON string instead, and `post_tool_call` fires with that error string as `result`).
 
 **Return value:** Ignored.
 
@@ -1262,7 +1262,7 @@ def my_callback(parent_session_id: str | None,
 | `child_role` | `str` | Effective child role after delegation policy is applied, for example `"leaf"` or `"orchestrator"`. |
 | `child_goal` | `str` | Delegated goal/prompt that the child agent will execute. |
 
-**Fires:** In `tools/delegate_tool.py`, inside `_build_child_agent()`, after the child `AIAgent` has been constructed and annotated with subagent identity metadata, and before `_run_single_child()` runs the child.
+**Fires:** In `hermes_agent/tools/delegate_tool.py`, inside `_build_child_agent()`, after the child `AIAgent` has been constructed and annotated with subagent identity metadata, and before `_run_single_child()` runs the child.
 
 **Return value:** Ignored. This is an observer hook only; returning a value does not block or mutate the child agent run.
 
@@ -1325,7 +1325,7 @@ def my_callback(parent_session_id: str, child_role: str | None,
 | `tool_call_history` | `list[dict]` | Ordered metadata-only tool calls: `tool_name`, bounded `tool_input`, `input_bytes`, `output_bytes`, and `status`; raw inputs and outputs are excluded |
 | `duration_ms` | `int` | Wall-clock time spent running the child, in milliseconds |
 
-**Fires:** In `tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all child futures. `invoke_hook("subagent_stop", ...)` is marshalled to the parent thread so authors don't see child-pool re-entrancy, and callbacks stay on that caller thread.
+**Fires:** In `hermes_agent/tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all child futures. `invoke_hook("subagent_stop", ...)` is marshalled to the parent thread so authors don't see child-pool re-entrancy, and callbacks stay on that caller thread.
 
 **Return value:** Ignored.
 
@@ -1689,7 +1689,7 @@ def register(ctx):
 
 ### `pre_transcription`
 
-Fires inside the STT dispatcher (`tools.transcription_tools.transcribe_audio`) **after** the provider has been resolved and **before** any backend is invoked, whether that backend is built-in, a `type: command` provider, or a plugin-registered provider. Lets a plugin steer the transcription request itself instead of only observing the transcript afterwards.
+Fires inside the STT dispatcher (`hermes_agent.tools.transcription_tools.transcribe_audio`) **after** the provider has been resolved and **before** any backend is invoked, whether that backend is built-in, a `type: command` provider, or a plugin-registered provider. Lets a plugin steer the transcription request itself instead of only observing the transcript afterwards.
 
 **Callback signature:**
 

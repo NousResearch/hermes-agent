@@ -23,9 +23,9 @@ import threading
 
 import pytest
 
-from tools import mcp_tool
-from tools import mcp_tool_discovery as _mcp_discovery
-from tools import mcp_tool_lifecycle as _mcp_lifecycle
+from hermes_agent.tools import mcp_tool
+from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
 import hermes_agent.tui_gateway.server as srv
 
 

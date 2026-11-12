@@ -8,7 +8,7 @@ import time
 import pytest
 
 from agent import runtime_session_store
-from tools import async_delegation as ledger
+from hermes_agent.tools import async_delegation as ledger
 
 
 class Store:
@@ -24,7 +24,7 @@ class Store:
 
 
 def test_worker_ledger_paths_are_closed_and_process_scoped(monkeypatch):
-    from tools import async_delegation_worker as worker
+    from hermes_agent.tools import async_delegation_worker as worker
     monkeypatch.setattr(runtime_session_store, '_worker_process', True)
     store = Store()
     monkeypatch.setattr(worker, '_store', None)
@@ -58,7 +58,7 @@ def test_worker_ledger_paths_are_closed_and_process_scoped(monkeypatch):
 
 
 def test_unbound_worker_refuses_before_persistence_and_dispatch_state(monkeypatch):
-    from tools import async_delegation_worker as worker
+    from hermes_agent.tools import async_delegation_worker as worker
     monkeypatch.setattr(runtime_session_store, '_worker_process', True)
     monkeypatch.setattr(worker, '_store', None)
     monkeypatch.setattr(ledger, '_records', {})

@@ -43,7 +43,7 @@ def backend(port):
                 assert sid in gw._pending_ws_reaps
                 gw._cancel_ws_orphan_reap(sid)
         elif action == 'delegate':
-            from tools.async_delegation import dispatch_async_delegation
+            from hermes_agent.tools.async_delegation import dispatch_async_delegation
             release, started, interrupted = threading.Event(), threading.Event(), threading.Event()
             work[sid] = (release, started, interrupted)
             def runner():

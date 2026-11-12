@@ -2,7 +2,7 @@
 import json
 
 from hermes_agent.cron import jobs
-from tools import cronjob_tools
+from hermes_agent.tools import cronjob_tools
 
 
 def test_paused_creation_is_inert_until_operator_action(tmp_path, monkeypatch, make_cron_provider):

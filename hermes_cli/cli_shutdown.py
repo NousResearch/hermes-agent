@@ -91,7 +91,7 @@ def _arm_exit_watchdog(timeout_s: float | None = None, *, from_signal: bool = Fa
         _flush_logging_and_stdio()
         # os._exit skips cleanup: a foreground command in its own process group would outlive us.
         with suppress(Exception):
-            from tools.environments.base import kill_live_foreground_processes
+            from hermes_agent.tools.environments.base import kill_live_foreground_processes
             kill_live_foreground_processes(now=True)
         os._exit(0)
 
@@ -125,18 +125,18 @@ def _shutdown_agent_memory_provider(agent) -> None:
 
 
 def _stop_cli_wake_word() -> None:
-    from tools.wake_word import stop_listening
+    from hermes_agent.tools.wake_word import stop_listening
     if _cli()._cli_wake_owner is not None:
         stop_listening(owner=_cli()._cli_wake_owner)
 
 
 def _interrupt_async_delegations() -> None:
-    from tools.async_delegation import interrupt_all
+    from hermes_agent.tools.async_delegation import interrupt_all
     interrupt_all(reason="CLI shutdown")
 
 
 def _shutdown_mcp_servers() -> None:
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
     shutdown_mcp_servers()
 
 
@@ -304,7 +304,7 @@ def _wait_for_oneshot_background_completions(cli) -> None:
     See #90879.
     """
     from cli import _oneshot_agent_and_session
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     if getattr(cli, "_quiet_notify_linger_done", False):
         return

@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from tools.skills_sync_optional import _ignore_runtime_cache, _skill_file_list, _ss
+from hermes_agent.tools.skills_sync_optional import _ignore_runtime_cache, _skill_file_list, _ss
 
 
 def _bundled_state():
@@ -84,7 +84,7 @@ def ensure_bundled_skill(name: str) -> dict:
     A restore into a leftover dir only adds the missing files (a user file is never overwritten) and
     the manifest records the bundled hash, so a dest that kept user files reads as user-modified and
     ``hermes update`` leaves it alone: intended, the user's data wins."""
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     ss, manifest, bundled_dir, bundled_by_name = _bundled_state()
     src = bundled_by_name[name]
     dest = ss._compute_relative_dest(src, bundled_dir)
@@ -103,7 +103,7 @@ def ensure_bundled_skill(name: str) -> dict:
         return {"ok": True, "action": "present", "path": active, "message": ""}
     try:  # the hub's containment check: a symlinked category must not carry the copy out of skills/
         from pm.filesystem import is_junction
-        from tools.skills_hub_install import _resolve_lock_install_path
+        from hermes_agent.tools.skills_hub_install import _resolve_lock_install_path
         rel = dest.relative_to(ss._skills_dir()).as_posix()
         _resolve_lock_install_path(rel, dest.name)
         # A dir with no SKILL.md (a delete or earlier copy that died partway) is no skill; filling in

@@ -7,9 +7,9 @@ os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="hh-")
 os.environ["HERMES_STREAM_RETRIES"] = "0"
 
 from run_agent import AIAgent
-import tools.delegate_tool as dt
-import tools.delegate_tool_dispatch as dd
-from tools.process_registry import process_registry
+import hermes_agent.tools.delegate_tool as dt
+import hermes_agent.tools.delegate_tool_dispatch as dd
+from hermes_agent.tools.process_registry import process_registry
 
 parent = AIAgent(api_key="k", base_url="https://example.com/v1", provider="test-provider", model="test/model",
                  quiet_mode=True, skip_context_files=True, skip_memory=True)
@@ -25,7 +25,7 @@ def fake_run_child(self, idx, task, child):
 dd._Batch.run_child = fake_run_child
 
 # Background dispatch requires an async-capable session; emulate a CLI session key.
-import tools.async_delegation as ad
+import hermes_agent.tools.async_delegation as ad
 t0 = time.time()
 out = dt.delegate_task(# Grouped: siblings share ONE final result, so a dead sibling would otherwise wait for the slowest. (Ungrouped tasks are
 # their own async unit since the per-group split landed on main and already report as they finish.)

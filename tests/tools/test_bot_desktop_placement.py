@@ -13,8 +13,8 @@ import subprocess
 
 import pytest
 
-from tools.bot_desktop import placement, runtime
-from tools.environments import streams
+from hermes_agent.tools.bot_desktop import placement, runtime
+from hermes_agent.tools.environments import streams
 
 
 @pytest.mark.parametrize(
@@ -57,7 +57,7 @@ class _FakeDocker:
 
 
 def test_sandbox_rfb_and_cua_ride_the_exec_prefix(monkeypatch):
-    from tools.environments.docker import DockerEnvironment
+    from hermes_agent.tools.environments.docker import DockerEnvironment
     env = _FakeDocker()
     monkeypatch.setattr(streams, "exec_prefix", lambda e, *, user=None, interactive=True:
                         ["docker", "exec", "-i", "-u", user, e._container_id] if user else ["docker", "exec", "-i", e._container_id])
@@ -69,7 +69,7 @@ def test_sandbox_rfb_and_cua_ride_the_exec_prefix(monkeypatch):
             pass
 
     monkeypatch.setattr(subprocess, "Popen", lambda argv, **kw: spawned.append(argv) or _P())
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     monkeypatch.setattr(sandbox_host, "_user_for", lambda e: "pn")
     sandbox_host.open_rfb_stream(env, "p1")
     assert spawned[0][:6] == ["docker", "exec", "-i", "-u", "pn", "c0ffee"]
@@ -86,7 +86,7 @@ def test_sandbox_status_offers_the_image_switch_instead_of_a_config_hint(monkeyp
     upgraded-install case: the blocker becomes the switch offer and ``image_switch`` carries what
     the pane needs to approve it. Without a pending switch the plain image hint stands."""
     from hermes_cli import sandbox_image_switch as sw
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
 
     monkeypatch.setattr(placement, "_setting", lambda: "auto")
     monkeypatch.setattr(placement, "_terminal_backend", lambda: "docker")
@@ -111,7 +111,7 @@ def test_remote_command_survives_the_ssh_remote_shell_reparse():
     the ``bash -c <script>`` must travel as ONE quoted word there; docker/apptainer pass argv through and
     must not get that extra quoting. Both shapes are executed through a real bash the way each client's
     remote side would run them."""
-    from tools.environments.ssh import SSHEnvironment
+    from hermes_agent.tools.environments.ssh import SSHEnvironment
 
     class _FakeSSH(SSHEnvironment):
         def __init__(self):  # no daemon, no key: only the exec prefix is exercised
@@ -155,16 +155,16 @@ def _placed(monkeypatch, setting, backend):
 
 def _local_sessions(monkeypatch) -> list:
     """The session layer on a local backend with an empty cache; returns the HOST Chromium launches."""
-    from tools import browser_launcher, browser_session, browser_session_cdp, browser_session_cloud
-    from tools import browser_session_lifecycle
+    from hermes_agent.tools import browser_launcher, browser_session, browser_session_cdp, browser_session_cloud
+    from hermes_agent.tools import browser_session_lifecycle
 
     for name in ("_active_sessions", "_session_last_activity", "_session_owner_homes", "_cleanup_failures"):
         monkeypatch.setattr(browser_session, name, {})
     monkeypatch.setattr(browser_session_lifecycle, "start_cleanup_thread", lambda: None)
     monkeypatch.setattr(browser_session_cdp, "get_cdp_override", lambda: "")
     monkeypatch.setattr(browser_session_cloud, "get_cloud_provider", lambda: None)
-    monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
-    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", lambda: (None, None))
+    monkeypatch.setattr("hermes_agent.tools.browser_lightpanda.using_lightpanda_engine", lambda: False)
     host_launches: list = []
     monkeypatch.setattr(browser_launcher, "launch_chromium",
                         lambda key, **kw: host_launches.append(key) or (None, "host Chromium must not start"))
@@ -175,8 +175,8 @@ def test_terminal_placement_starts_the_sandbox_screen_instead_of_running_on_the_
     """The placement boundary is policy, not liveness: with ``placement: terminal`` and the screen not yet
     up, the browser session and the CUA invocation bring the sandbox screen up (no ``auto_start`` opt-in
     needed inside the user's own sandbox) and route there. Neither hands the tool a host command."""
-    from tools import browser_session, browser_session_sandbox
-    from tools.computer_use import cua_backend as cb
+    from hermes_agent.tools import browser_session, browser_session_sandbox
+    from hermes_agent.tools.computer_use import cua_backend as cb
 
     host_launches = _local_sessions(monkeypatch)
     _placed(monkeypatch, "terminal", "docker")
@@ -195,7 +195,7 @@ def test_terminal_placement_starts_the_sandbox_screen_instead_of_running_on_the_
     assert info["features"].get("sandbox") and info["screen_up"], "the sandbox browser starts after its screen"
     assert host_launches == []
 
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
     monkeypatch.setattr(sandbox_host, "_user_for", lambda e: "pn")
     monkeypatch.setattr(streams, "exec_prefix", lambda e, *, user=None, interactive=True:
                         ["docker", "exec", "-i", "-u", user, e._container_id])
@@ -205,8 +205,8 @@ def test_terminal_placement_starts_the_sandbox_screen_instead_of_running_on_the_
 
 
 def test_refused_placement_never_falls_back_to_the_host(monkeypatch, isolated_home):
-    from tools import browser_session
-    from tools.computer_use import cua_backend as cb
+    from hermes_agent.tools import browser_session
+    from hermes_agent.tools.computer_use import cua_backend as cb
 
     host_launches = _local_sessions(monkeypatch)
     _placed(monkeypatch, "auto", "modal")
@@ -218,7 +218,7 @@ def test_refused_placement_never_falls_back_to_the_host(monkeypatch, isolated_ho
 
 
 def test_sandbox_screen_that_cannot_come_up_is_an_error_not_a_host_browser(monkeypatch, isolated_home):
-    from tools import browser_session
+    from hermes_agent.tools import browser_session
 
     host_launches = _local_sessions(monkeypatch)
     _placed(monkeypatch, "terminal", "docker")
@@ -238,7 +238,7 @@ def test_start_adopting_a_screen_the_sandbox_kept_records_the_marker(monkeypatch
     """Host state can vanish while the sandbox keeps its Xvnc (fresh HERMES_HOME, a stop() whose kill missed
     the launcher). start() finding the display already published must record it like a fresh launch, or
     status/thumbnail/stop never learn the screen is ours (found live against an ssh sandbox)."""
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
 
     monkeypatch.setattr(sandbox_host, "_published", lambda env, rdir: {"DISPLAY": ":20", "XAUTHORITY": f"{rdir}/Xauthority"})
     monkeypatch.setattr(sandbox_host, "_remote_dir", lambda env, profile: f"/scratch/hermes-bot-desktop/{profile}")
@@ -252,7 +252,7 @@ def test_marker_survives_a_gateway_restart_while_the_container_lives(monkeypatch
     """After a restart the process-local terminal registry is empty but the persisted container (and the
     Xvnc in it) is still running. The marker must NOT be dropped on that observation: liveness comes from
     the recorded container, stop() re-attaches to it, and only a container that is gone drops the marker."""
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
 
     _placed(monkeypatch, "terminal", "docker")
     sandbox_host._marker().parent.mkdir(parents=True)
@@ -295,7 +295,7 @@ def test_marker_survives_a_gateway_restart_while_the_container_lives(monkeypatch
 def test_stop_and_status_follow_the_recorded_owner_not_the_current_setting(monkeypatch, isolated_home):
     """Placement moved to ``gateway`` while a sandbox screen is still up: status keeps reporting the sandbox
     screen and stop() takes it down there, instead of both looking at the (empty) host."""
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools.bot_desktop import sandbox_host
 
     _placed(monkeypatch, "gateway", "docker")
     sandbox_host._marker().parent.mkdir(parents=True)
@@ -353,8 +353,8 @@ def test_forward_port_carries_bytes_both_ways_through_the_exec_stream(monkeypatc
 def test_sandbox_cdp_endpoint_is_rewritten_to_the_forwarded_local_port(monkeypatch):
     """The sandbox Chromium's DevTools port is the sandbox's loopback: the session hands browser_exec the
     forwarded LOCAL port, keeping Chromium's browser id path."""
-    from tools import browser_session
-    from tools.bot_desktop import sandbox_host
+    from hermes_agent.tools import browser_session
+    from hermes_agent.tools.bot_desktop import sandbox_host
 
     host_launches = _local_sessions(monkeypatch)
     _placed(monkeypatch, "terminal", "docker")

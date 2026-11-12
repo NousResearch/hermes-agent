@@ -1151,7 +1151,7 @@ class TestDispatchInteractiveReplyClarify:
 
         flipped_ids = []
         monkeypatch.setattr(
-            "tools.clarify_gateway.mark_awaiting_text",
+            "hermes_agent.tools.clarify_gateway.mark_awaiting_text",
             lambda cid: flipped_ids.append(cid) or True,
         )
 
@@ -1207,7 +1207,7 @@ class TestDispatchInteractiveReplyApproval:
 
         calls = []
         monkeypatch.setattr(
-            "tools.approval.resolve_gateway_approval",
+            "hermes_agent.tools.approval.resolve_gateway_approval",
             lambda session_key, choice, request_id=None: calls.append((session_key, choice)) or 1,
         )
 
@@ -1231,7 +1231,7 @@ class TestDispatchInteractiveReplyApproval:
 
 @pytest.mark.usefixtures("authorized_interactive_env")
 class TestDispatchInteractiveReplySlashConfirm:
-    """Inbound side: slash-confirm-tap → tools.slash_confirm.resolve."""
+    """Inbound side: slash-confirm-tap → hermes_agent.tools.slash_confirm.resolve."""
 
     @pytest.mark.asyncio
     async def test_once_tap_calls_resolver(self, monkeypatch):
@@ -1250,7 +1250,7 @@ class TestDispatchInteractiveReplySlashConfirm:
             )
             return "MCP reloaded."
 
-        import tools.slash_confirm as _sc
+        import hermes_agent.tools.slash_confirm as _sc
         monkeypatch.setattr(_sc, "resolve", fake_resolve)
 
         raw = {
@@ -1291,7 +1291,7 @@ class TestDispatchInteractiveReplyAuthorization:
         )
         calls = []
         monkeypatch.setattr(
-            "tools.approval.resolve_gateway_approval",
+            "hermes_agent.tools.approval.resolve_gateway_approval",
             lambda session_key, choice, request_id=None: calls.append((session_key, choice)) or 1,
         )
 
@@ -1320,7 +1320,7 @@ class TestInteractiveReplyEndToEnd:
         adapter = _make_adapter()
         adapter._clarify_state["q1"] = "sess-1"
         monkeypatch.setattr(
-            "tools.clarify_gateway.resolve_gateway_clarify",
+            "hermes_agent.tools.clarify_gateway.resolve_gateway_clarify",
             lambda cid, r: True,
         )
 

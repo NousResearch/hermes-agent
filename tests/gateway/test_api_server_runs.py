@@ -29,8 +29,8 @@ from hermes_agent.gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
-from tools import approval as approval_mod
-from tools import approval_gateway_wait
+from hermes_agent.tools import approval as approval_mod
+from hermes_agent.tools import approval_gateway_wait
 from tests.waiting import async_wait_until
 
 
@@ -274,7 +274,7 @@ class TestStartRun:
                 mock_agent = MagicMock()
 
                 def _capture_run(user_message=None, conversation_history=None, task_id=None):
-                    from tools.async_delegation import _current_origin_session_id
+                    from hermes_agent.tools.async_delegation import _current_origin_session_id
 
                     captured["origin_session_id"] = _current_origin_session_id()
                     return {"final_response": "done"}

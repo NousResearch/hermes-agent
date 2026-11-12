@@ -117,7 +117,7 @@ def _pip_python_version() -> Optional[str]:
 def _resolve_terminal_backend() -> str:
     """Scope-aware terminal backend name (``local`` when unresolvable)."""
     try:
-        from tools.terminal_scope import terminal_env
+        from hermes_agent.tools.terminal_scope import terminal_env
 
         return (terminal_env("TERMINAL_ENV") or "local").strip().lower()
     except Exception:  # never let policy resolution break prompt building

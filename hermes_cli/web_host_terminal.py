@@ -108,8 +108,8 @@ def resolve_argv(
         get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override,
     )
     from hermes_platform.host.facts import os_family
-    from tools.environments.local import build_subprocess_env, served_profile_child_env
-    from tools.terminal_scope import enforce_no_refusal, get_terminal_scope
+    from hermes_agent.tools.environments.local import build_subprocess_env, served_profile_child_env
+    from hermes_agent.tools.terminal_scope import enforce_no_refusal, get_terminal_scope
     from hermes_agent.tui_gateway.launch_profile_policy import (
         activate_multi_profile_hosting, launch_profile_runtime_scope,
     )

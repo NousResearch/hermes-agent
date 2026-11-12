@@ -64,7 +64,7 @@ def should_surface_notification(evt: dict, *, surface_child: bool | None = None)
     if not is_child_process_notification(evt):
         return True
     if surface_child is None:
-        from tools.process_registry import ProcessRegistry
+        from hermes_agent.tools.process_registry import ProcessRegistry
         surface_child = ProcessRegistry._surface_child_process_notifications()
     return surface_child
 
@@ -102,7 +102,7 @@ def _model_not_found_patterns() -> list[str]:
 def _delegation_config() -> dict:
     """Active delegation config; ``{}`` on any error. Lazy: delegate_tool is heavy."""
     try:
-        from tools.delegate_tool import _load_config as _cfg
+        from hermes_agent.tools.delegate_tool import _load_config as _cfg
         return _cfg() or {}
     except Exception:
         return {}
@@ -495,7 +495,7 @@ def _delegation_attribution_line(evt: dict) -> str | None:
         return None
     info = None
     with suppress(Exception):
-        from tools.delegate_tool import get_subagent_attribution
+        from hermes_agent.tools.delegate_tool import get_subagent_attribution
         info = get_subagent_attribution(task_id)
     if not info:
         # Registry entry aged out — still attribute generically, not anonymously.

@@ -19,7 +19,7 @@ import pytest
 
 from agent.secret_scope import UnscopedSecretError, set_multiplex_active
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from tools.environments.local import served_profile_child_env
+from hermes_agent.tools.environments.local import served_profile_child_env
 
 
 @pytest.fixture
@@ -65,8 +65,8 @@ def test_routed_home_with_multiplex_flag_off_gets_no_launch_residue(homes, monke
     """Desktop/dashboard topology: B served via the HERMES_HOME override only. The slash-worker /
     helper child sees B's env, the browser child env carries no provider key for either profile, and the
     browser_exec harness resolves B's (absent) credential as no credential."""
-    from tools.browser_session import build_browser_env
-    from tools.browser_use_cli import _harness_credentials
+    from hermes_agent.tools.browser_session import build_browser_env
+    from hermes_agent.tools.browser_use_cli import _harness_credentials
 
     _a, b = homes
     token = set_hermes_home_override(str(b))

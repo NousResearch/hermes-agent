@@ -547,7 +547,7 @@ def _launch_tui(
     import tempfile
     # TUI child is a hermes process: propagate the profile-home contract via
     # the single factory; keep secrets (the TUI/agent needs provider creds).
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
     env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
     _require_bypass_model(env, model, resume_session_id)
     # The directory this launch was invoked from is the source of truth. An inherited
@@ -699,7 +699,7 @@ def _sync_bundled_skills_quietly() -> None:
     """Seed ``~/.hermes/skills/`` with the bundled library (idempotent, milliseconds when synced).
     Failures are swallowed: skills are an enhancement, not a hard dependency."""
     with contextlib.suppress(Exception):
-        from tools.skills_sync import sync_skills
+        from hermes_agent.tools.skills_sync import sync_skills
         sync_skills(quiet=True)
 
 

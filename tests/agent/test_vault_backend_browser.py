@@ -100,7 +100,7 @@ def test_list_is_metadata_only_never_the_password(real_profile):
 def test_fill_is_password_blind_and_redaction_registered(real_profile):
     """A preview fill resolves the password over CDP (mocked) and must: (a) never put it in the tool
     result, (b) register it with the redaction boundary. Removing the registration flips (b)."""
-    from tools import browser_vault_tool
+    from hermes_agent.tools import browser_vault_tool
 
     with _set_consent(True):
         b = next(b for b in enabled_backends() if b.name == "browser")
@@ -109,13 +109,13 @@ def test_fill_is_password_blind_and_redaction_registered(real_profile):
     registered: list[str] = []
     # The real browser autofills + we read it over CDP; mock that one hop, assert blindness downstream.
     with _set_consent(True), \
-         patch("tools.browser_real_profile_logins.resolve_login_password", return_value=_PASSWORD), \
-         patch("tools.browser_session_real_profile.real_profile_cdp", return_value=("ws://x", None)), \
+         patch("hermes_agent.tools.browser_real_profile_logins.resolve_login_password", return_value=_PASSWORD), \
+         patch("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", return_value=("ws://x", None)), \
          patch("agent.redact.register_vault_redaction_value", side_effect=registered.append), \
-         patch("tools.browser_vault_tool._bound_page_origin", return_value="https://example.com"), \
-         patch("tools.browser_vault_tool._eval_js", return_value={"success": True, "result": json.dumps(
+         patch("hermes_agent.tools.browser_vault_tool._bound_page_origin", return_value="https://example.com"), \
+         patch("hermes_agent.tools.browser_vault_tool._eval_js", return_value={"success": True, "result": json.dumps(
              [{"index": 0, "tag": "input", "type": "password", "name": "password", "autocomplete": "current-password"}])}), \
-         patch("tools.browser_vault_tool._eval_js_secret", return_value={"success": True, "result": json.dumps({"filled": 1})}):
+         patch("hermes_agent.tools.browser_vault_tool._eval_js_secret", return_value={"success": True, "result": json.dumps({"filled": 1})}):
         out = browser_vault_tool.browser_vault_fill(handle, task_id="t")
 
     result = json.loads(out)
@@ -129,7 +129,7 @@ def test_resolve_refuses_wrong_account_on_multi_account_origin():
     """A saved login carrying a username only yields its password when the browser autofilled THAT
     username — otherwise a site with several saved accounts could hand back a different account's
     password. The CDP read + autofill hop is mocked at the DOM-read boundary."""
-    from tools import browser_real_profile_logins as rpl
+    from hermes_agent.tools import browser_real_profile_logins as rpl
 
     calls = {}
 
@@ -163,7 +163,7 @@ def test_resolve_refuses_when_page_redirected_off_saved_origin():
     """The saved root redirects to another site that has its OWN saved login; Chrome autofills THAT
     site's password. The resolver must refuse because the final page's origin is not the handle's
     saved origin, so a redirect can never leak a different site's password for this handle."""
-    from tools import browser_real_profile_logins as rpl
+    from hermes_agent.tools import browser_real_profile_logins as rpl
 
     def fake_cdp_call(ws, mid, method, params=None):
         if method == "Runtime.evaluate":
@@ -205,7 +205,7 @@ def test_handle_preserves_saved_login_path_and_resolve_navigates_there(real_prof
     """A login saved at ``https://example.com/login`` must list with an origin of
     ``https://example.com`` (for the exact-origin fill guard) yet resolve by navigating to the full
     saved URL (path included), not the bare root which may have no form."""
-    from tools import browser_real_profile_logins as rpl
+    from hermes_agent.tools import browser_real_profile_logins as rpl
 
     with _set_consent(True):
         b = next(b for b in enabled_backends() if b.name == "browser")
@@ -221,7 +221,7 @@ def test_handle_preserves_saved_login_path_and_resolve_navigates_there(real_prof
             return "pw"
 
         monkeypatch.setattr(rpl, "resolve_login_password", fake_resolve)
-        monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp",
+        monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.real_profile_cdp",
                             lambda: ("ws://x", None))
         assert b.resolve_password(item.id) == "pw"
     # The full saved URL (with its path) drives navigation; the normalized origin guards the match.
@@ -250,7 +250,7 @@ def test_list_prepares_snapshot_when_none_exists(tmp_path, monkeypatch):
 
     with patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
          patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
-         patch("tools.browser_session_real_profile.real_profile_cdp", side_effect=counted), \
+         patch("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", side_effect=counted), \
          _set_consent(True):
         b = next(b for b in enabled_backends() if b.name == "browser")
         items = b.list_items()
@@ -263,7 +263,7 @@ def test_list_prepares_snapshot_when_none_exists(tmp_path, monkeypatch):
 def test_page_target_closes_the_tab_on_exit():
     """``_page_target`` opens a tab for the autofill and must close it with ``Target.closeTarget`` on
     exit — on both success and failure — so repeated fills never leak live pages."""
-    from tools import browser_real_profile_logins as rpl
+    from hermes_agent.tools import browser_real_profile_logins as rpl
 
     closed = []
     created = {"id": "TARGET-123"}
@@ -339,7 +339,7 @@ class _FakeAutofillWS:
 
 
 def test_resolve_drives_real_autofill_mechanism_over_cdp_level_fake():
-    from tools import browser_real_profile_logins as rpl
+    from hermes_agent.tools import browser_real_profile_logins as rpl
 
     ws = _FakeAutofillWS(origin="https://example.com", username="jane@example.com",
                          password="s3cret-from-browser")
@@ -365,7 +365,7 @@ def test_resolve_returns_none_without_the_trusted_click_mutant():
     """Mutant-proof for finding 6: with the trusted click suppressed (PasswordAutofillAgent never
     fires), the real resolver reads an empty password and returns None — proving the test exercises
     the click mechanism, not a stubbed value."""
-    from tools import browser_real_profile_logins as rpl
+    from hermes_agent.tools import browser_real_profile_logins as rpl
 
     ws = _FakeAutofillWS(origin="https://example.com", username="jane@example.com",
                          password="s3cret-from-browser")
@@ -403,7 +403,7 @@ def test_read_login_metadata_sees_committed_wal_changes(tmp_path):
     """The real browser mutates its own ``Login Data`` while running: a saved/changed login is
     committed into the WAL file first. ``immutable=1`` tells SQLite to ignore the WAL, so such a login
     would be missing or stale in the picker. Reading with ``mode=ro`` (no immutable) must see it."""
-    from tools.browser_real_profile_logins import read_login_metadata
+    from hermes_agent.tools.browser_real_profile_logins import read_login_metadata
 
     default = tmp_path / "Default"
     default.mkdir()
@@ -437,7 +437,7 @@ def test_read_login_metadata_with_hash_in_path(tmp_path):
     (common in cloned Chrome profiles, synced folders) makes a bare ``f"file:{db}?mode=ro"`` truncate
     at the '#' fragment, so SQLite opens the wrong/empty path and EVERY login silently drops. Building
     the URI with ``Path.as_uri`` percent-escapes the '#', so the real logins are read."""
-    from tools.browser_real_profile_logins import read_login_metadata
+    from hermes_agent.tools.browser_real_profile_logins import read_login_metadata
 
     base = tmp_path / "Profile #1 (work)" / "copy"
     default = base / "Default"
@@ -461,7 +461,7 @@ def test_read_login_metadata_with_relative_copy_dir(tmp_path, monkeypatch):
     relative path, which escapes the ``sqlite3.Error`` handler and makes listing fail for EVERY
     source once a snapshot exists. Resolving the path to absolute first must let the real logins
     read back — the picker WORKS, not merely swallows the error."""
-    from tools.browser_real_profile_logins import read_login_metadata
+    from hermes_agent.tools.browser_real_profile_logins import read_login_metadata
 
     base = tmp_path / "copy"
     default = base / "Default"
@@ -536,7 +536,7 @@ def test_list_refreshes_when_pin_changed_to_another_profile(tmp_path, monkeypatc
          patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
          patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
          patch("hermes_cli.browser_connect.real_profile_data_dir", return_value=str(live_root)), \
-         patch("tools.browser_session_real_profile.real_profile_cdp", side_effect=counted):
+         patch("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", side_effect=counted):
         backend = next(b for b in enabled_backends() if b.name == "browser")
         items = backend.list_items()
 
@@ -562,7 +562,7 @@ def test_list_does_not_refresh_when_snapshot_source_still_matches(tmp_path, monk
          patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
          patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value=str(copy_dir)), \
          patch("hermes_cli.browser_connect.real_profile_data_dir", return_value=str(live_root)), \
-         patch("tools.browser_session_real_profile.real_profile_cdp",
+         patch("hermes_agent.tools.browser_session_real_profile.real_profile_cdp",
                side_effect=lambda: refreshed.__setitem__("n", refreshed["n"] + 1) or ("ws://x", None)):
         backend = next(b for b in enabled_backends() if b.name == "browser")
         items = backend.list_items()
@@ -588,7 +588,7 @@ def test_list_refreshes_when_pin_changed_and_browser_is_running(tmp_path, monkey
     BOB. Only ``get_browser`` / ``_launch`` / ``stop_browser`` are stubbed — the attach-vs-relaunch
     decision is the production code's.
     """
-    import tools.browser_session_real_profile as rpf
+    import hermes_agent.tools.browser_session_real_profile as rpf
     from agent.vault_backends import enabled_backends
 
     live_root = tmp_path / "chrome-data"
@@ -616,10 +616,10 @@ def test_list_refreshes_when_pin_changed_and_browser_is_running(tmp_path, monkey
         state["running"] = True
         return ("ws://relaunched", None)
 
-    monkeypatch.setattr("tools.browser_session_cloud.use_real_profile", lambda: True)
-    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: False)
-    monkeypatch.setattr("tools.browser_launcher.get_browser", fake_get_browser)
-    monkeypatch.setattr("tools.browser_launcher.stop_browser", fake_stop_browser)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.use_real_profile", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.browser_lightpanda.using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.browser_launcher.get_browser", fake_get_browser)
+    monkeypatch.setattr("hermes_agent.tools.browser_launcher.stop_browser", fake_stop_browser)
     monkeypatch.setattr(rpf, "_launch", fake_launch)
 
     with patch("agent.vault_backends.base._browser_profile_enabled", return_value=True), \

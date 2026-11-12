@@ -12,10 +12,10 @@ import textwrap
 import pytest
 
 from hermes_constants import get_hermes_home
-from tools import desktop_ui
-from tools.react_to_message_tool import check_react_requirements
-from tools.tip_tool import check_tips_enabled
-from tools.tour_tool import check_tours_enabled
+from hermes_agent.tools import desktop_ui
+from hermes_agent.tools.react_to_message_tool import check_react_requirements
+from hermes_agent.tools.tip_tool import check_tips_enabled
+from hermes_agent.tools.tour_tool import check_tours_enabled
 
 
 @pytest.fixture

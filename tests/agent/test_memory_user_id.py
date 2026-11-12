@@ -100,10 +100,10 @@ class TestMemoryManagerUserIdThreading:
         session_db.get_session_title_source.return_value = "llm"
 
         with patch(
-            "model_tools.get_tool_definitions",
+            "hermes_agent.model_tools.get_tool_definitions",
             return_value=[],
         ), patch(
-            "model_tools.check_toolset_requirements",
+            "hermes_agent.model_tools.check_toolset_requirements",
             return_value={},
         ), patch(
             "agent.process_bootstrap.OpenAI",

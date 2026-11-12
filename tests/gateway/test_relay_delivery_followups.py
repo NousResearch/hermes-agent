@@ -372,7 +372,7 @@ def test_durable_dispatch_persists_and_recovers_scope_id(tmp_path, monkeypatch):
     """End-to-end restart shape: dispatch with a scoped session context bound,
     simulate owner death, recover — the recovered completion event must carry
     scope_id/user_id, and the reconstructed SessionSource must prime them."""
-    import tools.async_delegation as ad
+    import hermes_agent.tools.async_delegation as ad
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
     ad._reset_for_tests()
@@ -435,7 +435,7 @@ def test_live_completion_event_carries_scope_id(tmp_path, monkeypatch):
     """The live (non-restart) completion event must carry the dispatch-time
     routing origin too, so priming works even when the in-memory source
     cache was evicted."""
-    import tools.async_delegation as ad
+    import hermes_agent.tools.async_delegation as ad
 
     record = {
         "delegation_id": "d-live-1",
@@ -458,7 +458,7 @@ def test_live_completion_event_carries_scope_id(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
     monkeypatch.setattr(
-        "tools.process_registry.process_registry", _PR(), raising=False
+        "hermes_agent.tools.process_registry.process_registry", _PR(), raising=False
     )
     ad._push_completion_event(record, {"summary": "ok"}, "completed")
     assert captured.get("scope_id") == "G777"

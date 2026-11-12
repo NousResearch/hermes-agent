@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from tools import browser_use_cli as bu
+from hermes_agent.tools import browser_use_cli as bu
 
 
 @pytest.mark.platforms("posix", "windows")
@@ -27,7 +27,7 @@ def test_harness_runs_on_an_interpreter_without_its_own_site_packages(monkeypatc
 
 @pytest.mark.platforms("posix", "windows")
 def test_browser_exec_child_environment(tmp_path, monkeypatch):
-    from tools import browser_session, browser_supervisor
+    from hermes_agent.tools import browser_session, browser_supervisor
 
     probe = tmp_path / "probe.py"
     # The child's view goes to a file: browser_exec output is redacted, so an env dump on stdout
@@ -40,10 +40,10 @@ def test_browser_exec_child_environment(tmp_path, monkeypatch):
                      encoding="utf-8")
     monkeypatch.setattr(bu, "_find_cli", lambda: [sys.executable, str(probe)])
     monkeypatch.setattr("hermes_cli.config_effective.load_user_config_effective", lambda: {"browser": {}})
-    monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: "")
-    monkeypatch.setattr("tools.browser_session_cdp.resolve_cdp_override", lambda url: url)
-    monkeypatch.setattr("tools.browser_session_cloud.get_cloud_provider", lambda: None)
-    monkeypatch.setattr("tools.browser_lightpanda.using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.get_cdp_override", lambda: "")
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.resolve_cdp_override", lambda url: url)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.get_cloud_provider", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.browser_lightpanda.using_lightpanda_engine", lambda: False)
     def local_browser(cache_key):
         assert cache_key == "bu-named-research"
         return {"cdp_url": "ws://127.0.0.1:47000/private", "features": {"local": True}}

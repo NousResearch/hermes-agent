@@ -60,7 +60,7 @@ Pick the category by what the tool IS, not what it feels like (an AI-agent CLI g
 
 ## Required Frontmatter
 
-Validator source of truth: `tools/skill_manager_tool.py::_validate_frontmatter`. Validator hard requirements:
+Validator source of truth: `hermes_agent/tools/skill_manager_tool.py::_validate_frontmatter`. Validator hard requirements:
 
 - Starts with `---` as the first bytes (no leading blank line).
 - Closes with `\n---\n` before the body.
@@ -151,7 +151,7 @@ When the skill needs a capability, name the proper Hermes tool in backticks: `te
 
 ### Never use machine-local paths
 
-Write repo-relative paths (`skills/...`, `tools/skill_manager_tool.py`). A `/home/<you>/...` path baked into a committed skill breaks for every other user and is an instant review flag.
+Write repo-relative paths (`skills/...`, `hermes_agent/tools/skill_manager_tool.py`). A `/home/<you>/...` path baked into a committed skill breaks for every other user and is an instant review flag.
 
 ## Writing Quality Principles
 

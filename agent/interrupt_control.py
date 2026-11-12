@@ -9,8 +9,8 @@ import threading
 from typing import Optional
 
 from agent.interrupt_compat import request_hard_interrupt
-from tools.interrupt import request_yield as _request_yield
-from tools.interrupt import set_interrupt as _set_interrupt
+from hermes_agent.tools.interrupt import request_yield as _request_yield
+from hermes_agent.tools.interrupt import set_interrupt as _set_interrupt
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")

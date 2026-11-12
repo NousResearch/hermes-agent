@@ -1,4 +1,4 @@
-"""Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
+"""Tests for hermes_agent/tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
 import json
 import os
@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.skill_manager_tool import (
+from hermes_agent.tools.skill_manager_tool import (
     _validate_name,
     _validate_category,
     _validate_frontmatter,
@@ -36,7 +36,7 @@ from agent.skill_utils import (
 def _skill_dir(tmp_path):
     """Patch both SKILLS_DIR and get_all_skills_dirs so _find_skill searches
     only the temp directory — not the real ~/.hermes/skills/."""
-    with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
+    with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
         yield
 
@@ -192,7 +192,7 @@ class TestCreateSkill:
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
 
-        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
+        with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
              patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category="../escape")
 
@@ -200,7 +200,7 @@ class TestCreateSkill:
         assert not (tmp_path / "escape").exists()
 
     def test_occupied_directory_is_preserved_when_scan_blocks(self, tmp_path):
-        with _skill_dir(tmp_path), patch("tools.skill_manager_tool._security_scan_skill", return_value="blocked"):
+        with _skill_dir(tmp_path), patch("hermes_agent.tools.skill_manager_tool._security_scan_skill", return_value="blocked"):
             target = tmp_path / "new-skill"
             target.mkdir()
             data = target / "data.bin"
@@ -245,7 +245,7 @@ class TestCreateSkill:
             assert not (unreadable / "SKILL.md").exists()
 
     def test_occupied_directory_is_refused_and_empty_leftover_is_reused(self, tmp_path):
-        with _skill_dir(tmp_path), patch("tools.skill_manager_tool._security_scan_skill", return_value=None):
+        with _skill_dir(tmp_path), patch("hermes_agent.tools.skill_manager_tool._security_scan_skill", return_value=None):
             category = tmp_path / "category"
             category.mkdir()
             nested = category / "nested-skill.md"
@@ -436,7 +436,7 @@ class TestPatchSkill:
     def test_patch_surfaces_oversized_body_finding_and_stays_quiet_when_clean(self, tmp_path):
         # SKILL.md grows by patches; the write that crosses the body budget carries the advisory
         # finding, a small clean patch attaches no lint keys at all.
-        from tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
+        from hermes_agent.tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
         filler = "- Prefer the native tool; the shell path loses the structured result.\n"
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
@@ -501,7 +501,7 @@ class TestSkillMutationLock:
         calls = 0
         results = []
 
-        from tools.fuzzy_match import fuzzy_find_and_replace as real_replace
+        from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace as real_replace
 
         def delayed_replace(*args, **kwargs):
             nonlocal calls
@@ -521,7 +521,7 @@ class TestSkillMutationLock:
 
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
-            with patch("tools.fuzzy_match.fuzzy_find_and_replace", side_effect=delayed_replace):
+            with patch("hermes_agent.tools.fuzzy_match.fuzzy_find_and_replace", side_effect=delayed_replace):
                 first = threading.Thread(target=run_patch, args=("# Test Skill", "# Test Skill Updated"))
                 second = threading.Thread(target=run_patch, args=("Step 1:", "Step 1 Updated:"))
                 first.start()
@@ -715,7 +715,7 @@ class TestSkillManageDispatcher:
         """
         with _skill_dir(tmp_path):
             raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
-            from tools.skill_usage import load_usage
+            from hermes_agent.tools.skill_usage import load_usage
             usage = load_usage()
         result = json.loads(raw)
         assert result["success"] is True
@@ -729,7 +729,7 @@ class TestSkillManageDispatcher:
 
 
     def test_background_review_delete_refuses_bundled_even_with_absorbed_into(self, tmp_path):
-        from tools.skill_provenance import (
+        from hermes_agent.tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
             set_current_write_origin,
@@ -738,9 +738,9 @@ class TestSkillManageDispatcher:
         token = set_current_write_origin(BACKGROUND_REVIEW)
         try:
             with _skill_dir(tmp_path), \
-                 patch("tools.skill_usage.is_protected_builtin", return_value=False), \
-                 patch("tools.skill_usage.is_hub_installed", return_value=False), \
-                 patch("tools.skill_usage.is_bundled",
+                 patch("hermes_agent.tools.skill_usage.is_protected_builtin", return_value=False), \
+                 patch("hermes_agent.tools.skill_usage.is_hub_installed", return_value=False), \
+                 patch("hermes_agent.tools.skill_usage.is_bundled",
                        side_effect=lambda skill_name: skill_name == "bundled"):
                 skill_manage(action="create", name="umbrella", content=VALID_SKILL_CONTENT)
                 skill_manage(action="create", name="bundled", content=VALID_SKILL_CONTENT)
@@ -850,10 +850,10 @@ class TestSecurityScanGate:
 
     def test_scan_noop_when_flag_off(self, tmp_path):
         """Default config (flag off) short-circuits before running scan_skill."""
-        from tools.skill_manager_tool import _security_scan_skill
+        from hermes_agent.tools.skill_manager_tool import _security_scan_skill
 
-        with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=False), \
-             patch("tools.skill_manager_tool.scan_skill") as mock_scan:
+        with patch("hermes_agent.tools.skill_manager_tool._guard_agent_created_enabled", return_value=False), \
+             patch("hermes_agent.tools.skill_manager_tool.scan_skill") as mock_scan:
             result = _security_scan_skill(tmp_path)
 
         assert result is None
@@ -861,8 +861,8 @@ class TestSecurityScanGate:
 
     def test_scan_blocks_dangerous_when_flag_on(self, tmp_path):
         """Dangerous verdict + flag on → returns an error string for the agent."""
-        from tools.skill_manager_tool import _security_scan_skill
-        from tools.skills_guard import ScanResult, Finding
+        from hermes_agent.tools.skill_manager_tool import _security_scan_skill
+        from hermes_agent.tools.skills_guard import ScanResult, Finding
 
         finding = Finding(
             pattern_id="test", severity="critical", category="exfiltration",
@@ -876,22 +876,22 @@ class TestSecurityScanGate:
             findings=[finding],
             summary="dangerous",
         )
-        with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
-             patch("tools.skill_manager_tool.scan_skill", return_value=fake_result):
+        with patch("hermes_agent.tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
+             patch("hermes_agent.tools.skill_manager_tool.scan_skill", return_value=fake_result):
             result = _security_scan_skill(tmp_path)
 
         assert result is not None
 
     def test_guard_flag_handles_config_error(self):
         """If load_config raises, _guard_agent_created_enabled defaults to False (fail-safe off)."""
-        from tools.skill_manager_tool import _guard_agent_created_enabled
+        from hermes_agent.tools.skill_manager_tool import _guard_agent_created_enabled
 
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
             assert _guard_agent_created_enabled() is False
 
     def test_guard_flag_quoted_false_stays_disabled(self):
         """Quoted 'false' from YAML edits must not enable the guard."""
-        from tools.skill_manager_tool import _guard_agent_created_enabled
+        from hermes_agent.tools.skill_manager_tool import _guard_agent_created_enabled
 
         for quoted in ("false", "False", "0", "no", "off"):
             with patch("hermes_cli.config.load_config",
@@ -909,7 +909,7 @@ class TestSecurityScanGate:
 def _two_roots(local_dir: Path, external_dir: Path):
     """Patch the skill manager so local SKILLS_DIR = local_dir and
     get_all_skills_dirs() returns [local_dir, external_dir] in order."""
-    with patch("tools.skill_manager_tool.SKILLS_DIR", local_dir), \
+    with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", local_dir), \
          patch("agent.skill_utils.get_all_skills_dirs",
                return_value=[local_dir, external_dir]):
         yield
@@ -953,18 +953,18 @@ class TestExternalSkillMutations:
     def test_background_review_improves_any_skill_but_deletes_only_managed_ones(self, tmp_path):
         """#134289: the review fork improves every skill it learns from (user-owned with no usage
         record, pinned, bundled, hub-installed), while delete keeps the ownership/pin guard."""
-        from tools.skill_manager_guards import mark_background_review_skill_read
-        from tools.skill_provenance import (
+        from hermes_agent.tools.skill_manager_guards import mark_background_review_skill_read
+        from hermes_agent.tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
             set_current_write_origin,
         )
 
         with _skill_dir(tmp_path), \
-             patch("tools.skill_usage.load_usage", return_value={}), \
-             patch("tools.skill_usage.get_record", return_value={"pinned": True}), \
-             patch("tools.skill_usage.is_bundled", return_value=True), \
-             patch("tools.skill_usage.is_hub_installed", return_value=True):
+             patch("hermes_agent.tools.skill_usage.load_usage", return_value={}), \
+             patch("hermes_agent.tools.skill_usage.get_record", return_value={"pinned": True}), \
+             patch("hermes_agent.tools.skill_usage.is_bundled", return_value=True), \
+             patch("hermes_agent.tools.skill_usage.is_hub_installed", return_value=True):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             token = set_current_write_origin(BACKGROUND_REVIEW)
             try:
@@ -989,7 +989,7 @@ class TestExternalSkillMutations:
 
 
     def test_background_review_fails_closed_when_ownership_lookup_errors(self, tmp_path):
-        from tools.skill_provenance import (
+        from hermes_agent.tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
             set_current_write_origin,
@@ -1000,7 +1000,7 @@ class TestExternalSkillMutations:
             token = set_current_write_origin(BACKGROUND_REVIEW)
             try:
                 with patch(
-                    "tools.skill_usage.load_usage",
+                    "hermes_agent.tools.skill_usage.load_usage",
                     side_effect=ValueError("corrupt usage data"),
                 ):
                     raw = skill_manage(
@@ -1027,7 +1027,7 @@ class TestBackgroundOwnershipPolicyConsistency:
 
     @staticmethod
     def _bg_delete(name):
-        from tools.skill_provenance import (
+        from hermes_agent.tools.skill_provenance import (
             BACKGROUND_REVIEW,
             reset_current_write_origin,
             set_current_write_origin,
@@ -1058,7 +1058,7 @@ class TestBackgroundOwnershipPolicyConsistency:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         with _skill_dir(tmp_path):
             _create_skill("no-record", VALID_SKILL_CONTENT)
-            with patch("tools.skill_usage.load_usage", return_value={}):
+            with patch("hermes_agent.tools.skill_usage.load_usage", return_value={}):
                 res = json.loads(skill_manage(
                     action="patch", name="no-record",
                     old_string="Do the thing.", new_string="Do the new thing.",
@@ -1070,13 +1070,13 @@ class TestBackgroundOwnershipPolicyConsistency:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         with _skill_dir(tmp_path):
             _create_skill("adopt-me", VALID_SKILL_CONTENT)
-            with patch("tools.skill_usage.load_usage", return_value={}):
+            with patch("hermes_agent.tools.skill_usage.load_usage", return_value={}):
                 before = self._bg_delete("adopt-me")
             with patch(
-                "tools.skill_usage.load_usage",
+                "hermes_agent.tools.skill_usage.load_usage",
                 return_value={"adopt-me": {"created_by": "agent"}},
             ), patch(
-                "tools.skill_usage.get_record",
+                "hermes_agent.tools.skill_usage.get_record",
                 side_effect=lambda n: {"created_by": "agent", "pinned": False},
             ):
                 after = self._bg_delete("adopt-me")
@@ -1099,7 +1099,7 @@ class TestPinnedGuard:
         """Return a patch context that marks *name* as pinned in skill_usage."""
         def _fake_get_record(skill_name, _name=name):
             return {"pinned": True} if skill_name == _name else {"pinned": False}
-        return patch("tools.skill_usage.get_record", side_effect=_fake_get_record)
+        return patch("hermes_agent.tools.skill_usage.get_record", side_effect=_fake_get_record)
 
     def test_edit_allowed_when_pinned(self, tmp_path):
         """Pin does NOT block edit — agent can still improve pinned skills."""
@@ -1131,7 +1131,7 @@ class TestPinnedGuard:
         """
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
-            with patch("tools.skill_usage.get_record",
+            with patch("hermes_agent.tools.skill_usage.get_record",
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
@@ -1168,9 +1168,9 @@ class TestDeleteSkillRmtreeGuard:
         evil = skills / "evil-skill"
         evil.symlink_to(victim, target_is_directory=True)
         try:
-            with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
+            with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills), \
                  patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
-                 patch("tools.skill_manager_tool._find_skill",
+                 patch("hermes_agent.tools.skill_manager_tool._find_skill",
                        return_value={"path": evil}):
                 result = _delete_skill("evil-skill", absorbed_into="")
             assert result["success"] is False
@@ -1188,9 +1188,9 @@ class TestDeleteSkillRmtreeGuard:
         outside = tmp_path / "outside_skill"
         outside.mkdir()
         (outside / "SKILL.md").write_text("x")
-        with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
+        with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills), \
              patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
-             patch("tools.skill_manager_tool._find_skill",
+             patch("hermes_agent.tools.skill_manager_tool._find_skill",
                    return_value={"path": outside}):
             result = _delete_skill("outside", absorbed_into="")
         assert result["success"] is False
@@ -1225,11 +1225,11 @@ def _curator_pass(tmp_path, *, monkeypatch):
     skills_root = hermes_home / "skills"
     skills_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    with patch("tools.skill_manager_tool.SKILLS_DIR", skills_root), \
-         patch("tools.skills_tool.SKILLS_DIR", skills_root), \
+    with patch("hermes_agent.tools.skill_manager_tool.SKILLS_DIR", skills_root), \
+         patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_root), \
          patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_root]), \
-         patch("tools.skill_usage._is_curator_managed_record", return_value=True), \
-         patch("tools.skill_provenance.is_background_review", return_value=True):
+         patch("hermes_agent.tools.skill_usage._is_curator_managed_record", return_value=True), \
+         patch("hermes_agent.tools.skill_provenance.is_background_review", return_value=True):
         yield skills_root
 
 
@@ -1251,7 +1251,7 @@ def _skill_content(name: str) -> str:
 
 def _create_curator_skill(name: str, content: str):
     """Create a skill and record the agent ownership a real curator create has."""
-    from tools.skill_usage import mark_agent_created
+    from hermes_agent.tools.skill_usage import mark_agent_created
 
     result = _create_skill(name, content)
     assert result["success"] is True, result
@@ -1283,8 +1283,8 @@ class TestCuratorConsolidationDeleteGuard:
         self, tmp_path, monkeypatch
     ):
         """A view in one tool worker authorizes a patch in the next worker."""
-        from tools.skills_tool import skill_view
-        from tools.skill_manager_guards import _reset_background_review_read_marks
+        from hermes_agent.tools.skills_tool import skill_view
+        from hermes_agent.tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
@@ -1308,8 +1308,8 @@ class TestCuratorConsolidationDeleteGuard:
         self, tmp_path, monkeypatch
     ):
         """Copied tool contexts share only their own review's read marks."""
-        from tools.skills_tool import skill_view
-        from tools.skill_manager_guards import _reset_background_review_read_marks
+        from hermes_agent.tools.skills_tool import skill_view
+        from hermes_agent.tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
@@ -1336,8 +1336,8 @@ class TestCuratorConsolidationDeleteGuard:
         _reset_background_review_read_marks()
 
     def test_background_review_support_file_overwrite_requires_that_file_read(self, tmp_path, monkeypatch):
-        from tools.skills_tool import skill_view
-        from tools.skill_manager_guards import _reset_background_review_read_marks
+        from hermes_agent.tools.skills_tool import skill_view
+        from hermes_agent.tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
         with _curator_pass(tmp_path, monkeypatch=monkeypatch):
@@ -1378,7 +1378,7 @@ class TestCuratorConsolidationDeleteGuard:
 
 @contextmanager
 def _background_origin():
-    from tools.skill_provenance import (
+    from hermes_agent.tools.skill_provenance import (
         BACKGROUND_REVIEW,
         reset_current_write_origin,
         set_current_write_origin,
@@ -1412,7 +1412,7 @@ class TestLockedGuard:
 
     @staticmethod
     def _make(skills, name, category=None):
-        from tools.skill_manager_tool import _write_file
+        from hermes_agent.tools.skill_manager_tool import _write_file
         assert _create_skill(name, VALID_SKILL_CONTENT, category)["success"]
         assert _write_file(name, "references/notes.md", "# Notes\n\nKeep this.\n")["success"]
         return skills / (f"{category}/{name}" if category else name)
@@ -1421,7 +1421,7 @@ class TestLockedGuard:
     def _bg(skill_dir, **op):
         """skill_manage from the review fork with read-before-write satisfied for every file of
         *skill_dir*, so the lock is the only guard that can refuse."""
-        from tools.skill_manager_guards import mark_background_review_skill_read
+        from hermes_agent.tools.skill_manager_guards import mark_background_review_skill_read
         with _background_origin():
             for f in skill_dir.rglob("*"):
                 if f.is_file():
@@ -1433,7 +1433,7 @@ class TestLockedGuard:
         return {p.relative_to(skill_dir).as_posix(): p.read_text() for p in skill_dir.rglob("*") if p.is_file()}
 
     def test_locked_skill_refuses_every_autonomous_mutation(self, tmp_path, monkeypatch):
-        from tools import skill_usage
+        from hermes_agent.tools import skill_usage
         skills = self._profile(tmp_path, monkeypatch)
         with _skill_dir(skills):
             d = self._make(skills, "locked-skill")
@@ -1449,7 +1449,7 @@ class TestLockedGuard:
         assert after == before
 
     def test_unlocked_sibling_keeps_learning_and_unlock_lifts_refusal(self, tmp_path, monkeypatch):
-        from tools import skill_usage
+        from hermes_agent.tools import skill_usage
         skills = self._profile(tmp_path, monkeypatch)
         with _skill_dir(skills):
             locked = self._make(skills, "locked-skill")
@@ -1466,7 +1466,7 @@ class TestLockedGuard:
 
     def test_foreground_mutations_are_refused_too(self, tmp_path, monkeypatch):
         """The lock is the user's: a normal turn asking for the edit is refused like the review fork."""
-        from tools import skill_usage
+        from hermes_agent.tools import skill_usage
         skills = self._profile(tmp_path, monkeypatch)
         with _skill_dir(skills):
             d = self._make(skills, "locked-skill")
@@ -1480,7 +1480,7 @@ class TestLockedGuard:
         assert after == before
 
     def test_batch_refuses_before_any_sibling_op_is_applied(self, tmp_path, monkeypatch):
-        from tools import skill_usage
+        from hermes_agent.tools import skill_usage
         skills = self._profile(tmp_path, monkeypatch)
         with _skill_dir(skills):
             d = self._make(skills, "locked-skill")
@@ -1494,7 +1494,7 @@ class TestLockedGuard:
         assert "Do the thing." in (d / "SKILL.md").read_text()
 
     def test_create_is_not_gated_and_cannot_shadow_a_locked_name(self, tmp_path, monkeypatch):
-        from tools import skill_usage
+        from hermes_agent.tools import skill_usage
         skills = self._profile(tmp_path, monkeypatch)
         with _skill_dir(skills):
             d = self._make(skills, "locked-skill")
@@ -1506,7 +1506,7 @@ class TestLockedGuard:
         assert "Do the thing." in (d / "SKILL.md").read_text()
 
     def test_categorized_and_frontmatter_names_resolve_to_the_lock(self, tmp_path, monkeypatch):
-        from tools import skill_usage
+        from hermes_agent.tools import skill_usage
         skills = self._profile(tmp_path, monkeypatch)
         with _skill_dir(skills):
             d = self._make(skills, "locked-cat", category="ops")
@@ -1518,7 +1518,7 @@ class TestLockedGuard:
         assert "Do the thing." in (d / "SKILL.md").read_text()
 
     def test_lock_is_per_profile(self, tmp_path, monkeypatch):
-        from tools import skill_usage
+        from hermes_agent.tools import skill_usage
         work = self._profile(tmp_path, monkeypatch, "work")
         with _skill_dir(work):
             self._make(work, "shared-name")

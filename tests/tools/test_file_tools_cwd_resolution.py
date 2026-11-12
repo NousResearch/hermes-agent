@@ -21,9 +21,9 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-import tools.file_tools as ft
-import tools.file_tools_paths as ftp
-from tools import terminal_tool
+import hermes_agent.tools.file_tools as ft
+import hermes_agent.tools.file_tools_paths as ftp
+from hermes_agent.tools import terminal_tool
 
 
 @pytest.fixture
@@ -269,8 +269,8 @@ def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
     terminal_tool.register_task_env_overrides(task_id, {"cwd": str(workspace)})
 
     # Backend file_ops lives in the DECOY dir — the divergence the fix closes.
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
 
     env = LocalEnvironment(cwd=str(decoy))
     monkeypatch.setattr(
@@ -320,9 +320,9 @@ def test_v4a_delete_and_move_act_on_a_symlink_not_its_target(
     """Delete and Move act on the directory entry. Resolving a symlinked header to its
     target deleted or renamed the real file and left the link dangling; an Update still
     edits the target's content through the link. The write guards cover the entry too."""
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
-    from tools.registry import registry
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.registry import registry
 
     workspace, _decoy = _isolated_cwd
     task_id = "sess-v4a-link"

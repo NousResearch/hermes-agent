@@ -12,9 +12,9 @@ import weakref
 
 import pytest
 
-from tools.delegate_tool import _register_subagent, _unregister_subagent
-from tools.process_registry import ProcessRegistry, process_registry, _handle_process
-from tools.process_registry_notifications import _process_accounting_lines, format_process_notification
+from hermes_agent.tools.delegate_tool import _register_subagent, _unregister_subagent
+from hermes_agent.tools.process_registry import ProcessRegistry, process_registry, _handle_process
+from hermes_agent.tools.process_registry_notifications import _process_accounting_lines, format_process_notification
 
 
 class _Parent:
@@ -36,7 +36,7 @@ def _register(sid, child):
 @pytest.fixture(autouse=True)
 def _plain_spawn(monkeypatch):
     """Spawn plain children: the systemd-run --user --scope wrapper is irrelevant here and stalls under pytest."""
-    import tools.process_registry as _pr
+    import hermes_agent.tools.process_registry as _pr
     monkeypatch.setattr(_pr, "_SYSTEMD_SCOPE_AVAILABLE", False)
 
 

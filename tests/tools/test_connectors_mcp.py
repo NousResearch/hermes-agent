@@ -18,11 +18,11 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.connectors.contract import SettleReason, TargetState
-from tools.connectors import live
-from tools.connectors.mcp import apply_answer
-from tools.connectors.tool import manage_connections
-from tools.registry import registry
+from hermes_agent.tools.connectors.contract import SettleReason, TargetState
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.connectors.mcp import apply_answer
+from hermes_agent.tools.connectors.tool import manage_connections
+from hermes_agent.tools.registry import registry
 
 CATALOG = ["figma", "linear", "notion"]
 CONFIGURED = {"paper": {"command": "paper-mcp"}, "linear": {"url": "https://mcp.linear.app/mcp"}}
@@ -107,7 +107,7 @@ def _catalog(backend):
     def register(runner, target, name):
         runner.backend.calls.append(("register", name))
         if runner.backend.registration_error:
-            from tools.connectors.mcp import _detail
+            from hermes_agent.tools.connectors.mcp import _detail
 
             return [], _detail(runner.backend.registration_error, runner, target)
         names = list(runner.backend.registered_tools)
@@ -121,10 +121,10 @@ def _catalog(backend):
             registered.append(tool_name)
         return names, ""
 
-    with patch("tools.connectors.mcp._catalog_names", return_value=CATALOG), \
-         patch("tools.connectors.mcp._configured_names", return_value=sorted(CONFIGURED)), \
-         patch("tools.connectors.mcp._default_backend", return_value=backend), \
-         patch("tools.connectors.mcp._register_connected", side_effect=register):
+    with patch("hermes_agent.tools.connectors.mcp._catalog_names", return_value=CATALOG), \
+         patch("hermes_agent.tools.connectors.mcp._configured_names", return_value=sorted(CONFIGURED)), \
+         patch("hermes_agent.tools.connectors.mcp._default_backend", return_value=backend), \
+         patch("hermes_agent.tools.connectors.mcp._register_connected", side_effect=register):
         yield
     with registry._lock:
         for tool_name in registered:
@@ -180,7 +180,7 @@ def _answering(answer, *, session_id="s1", delay=0.01):
 
 
 def _mcp(args, callback, **kw):
-    with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
+    with patch("hermes_agent.tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         return json.loads(manage_connections(args, connection_callback=callback, session_id="s1", **kw))
 
 
@@ -217,7 +217,7 @@ def test_a_card_claim_other_than_approved_or_skipped_moves_nothing(backend):
 
 
 def test_no_answer_settles_by_deadline_and_marks_targets_not_connected(backend):
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
         out = _mcp({"action": "install", "connectors": [_linear()]}, _answering(None), mcp_backend=backend)
     assert out["settled_by"] == SettleReason.deadline.value
     assert out["targets"][0]["state"] == TargetState.not_connected.value
@@ -309,7 +309,7 @@ def test_inline_executor_hands_the_agent_callback_to_the_tool(backend):
     from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 
     callback = _answering(json.dumps({"targets": [{"name": "paper", "status": "approved"}]}))
-    with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
+    with patch("hermes_agent.tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         out = json.loads(INLINE_TOOL_EXECUTORS["manage_connections"](
             _agent(callback), {"action": "enable", "connectors": [_mcp_target("paper")]}, InlineToolContext("task")))
     assert len(callback.seen) == 1
@@ -320,7 +320,7 @@ def test_setup_mcp_replay_shim_translates_to_an_mcp_target(backend):
     from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
 
     callback = _answering(json.dumps({"targets": [{"name": "linear", "status": "skipped"}]}))
-    with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
+    with patch("hermes_agent.tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         out = json.loads(INLINE_TOOL_EXECUTORS["setup_mcp"](
             _agent(callback), {"server": "linear", "action": "install", "reason": "old convo"}, InlineToolContext("task", tool_call_id="call-9")))
     (target,) = callback.seen[0]["targets"]
@@ -347,8 +347,8 @@ def test_a_desktop_session_with_no_callback_gets_the_link_at_once_and_opens_no_o
     """A call that arrives without the callback (registry dispatch, say from execute_code) has
     nothing to render a card, so an operation would block the tool for its whole deadline with
     nobody to answer it. The link goes to the model instead, the way it does off the desktop."""
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.2), \
-         patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.2), \
+         patch("hermes_agent.tools.connectors.run.WATCH_INTERVAL_SECONDS", 0.01):
         out = json.loads(manage_connections({"action": "authorize", "connectors": [_mcp_target("paper")]},
                                             connection_callback=None, session_id="s1", mcp_backend=backend))
 
@@ -387,9 +387,9 @@ def _profile_home(tmp_path, name):
 def _park_attempt(home, name="linear", session_key="s1", profile_key="stamped"):
     """Close a runner whose operation parked one approved OAuth attempt, the way
     ``_Runner.close`` does at the end of a tool call bound to ``home``."""
-    from tools.connectors import mcp
+    from hermes_agent.tools.connectors import mcp
     from hermes_constants import hermes_home_key
-    from tools.connectors.operation import ConnectionOperation
+    from hermes_agent.tools.connectors.operation import ConnectionOperation
 
     attempt = FakeAttempt("https://auth.example/linear")
     attempt.approve(["read"])
@@ -409,12 +409,12 @@ def _park_attempt(home, name="linear", session_key="s1", profile_key="stamped"):
 
 def _adopt_as(home, agent=None, session_id="s1"):
     """adopt_late_connections as it runs inside a turn bound to ``home``."""
-    from tools.connectors import mcp
+    from hermes_agent.tools.connectors import mcp
 
     registered = []
     agent = agent or SimpleNamespace(session_id=session_id, enabled_toolsets=[])
     with _as_home(home), \
-         patch("tools.mcp_tool_discovery.register_mcp_servers",
+         patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers",
                side_effect=lambda servers: registered.extend(servers) or list(servers)):
         adopted = mcp.adopt_late_connections(agent)
     return adopted, registered, agent
@@ -422,7 +422,7 @@ def _adopt_as(home, agent=None, session_id="s1"):
 
 @pytest.fixture(autouse=True)
 def _clear_late_attempts():
-    from tools.connectors import mcp
+    from hermes_agent.tools.connectors import mcp
 
     mcp._LATE_ATTEMPTS.clear()
     yield
@@ -433,7 +433,7 @@ def test_late_attempt_is_never_adopted_by_another_profile(tmp_path):
     """Two multiplexed profiles can carry the same session key (the api_server's
     X-Hermes-Session-Key header is client-chosen, and live.py keys _open by
     (profile, session) for exactly this reason). A parked grant must not leak."""
-    from tools.connectors import mcp
+    from hermes_agent.tools.connectors import mcp
 
     home_a = _profile_home(tmp_path, "home-a")
     home_b = _profile_home(tmp_path, "home-b")
@@ -452,7 +452,7 @@ def test_late_attempt_is_never_adopted_by_another_profile(tmp_path):
 def test_late_attempt_keyed_by_detached_path_uses_calling_profile(tmp_path):
     """The no-card DetachedOperation never passes through live.open, so profile_key is empty;
     the park must still record the home the tool thread was scoped to."""
-    from tools.connectors import mcp
+    from hermes_agent.tools.connectors import mcp
 
     home_a = _profile_home(tmp_path, "home-a")
     home_b = _profile_home(tmp_path, "home-b")
@@ -473,21 +473,21 @@ def test_e2e_carded_oauth_park_and_adopt_stay_inside_their_profile(tmp_path):
     profile key live.open stamped. The browser-side approval that lands afterwards may only
     be adopted by a turn bound to the same home — never by the other multiplexed profile,
     even one that configures the same-named server."""
-    from tools.connectors import mcp
+    from hermes_agent.tools.connectors import mcp
 
     home_a = _profile_home(tmp_path, "home-a")
     home_b = _profile_home(tmp_path, "home-b")
 
     backend = FakeBackend()
     with _as_home(home_a):
-        with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
+        with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
             out = _mcp({"action": "authorize", "connectors": [_linear()]},
                        _answering(None), mcp_backend=backend)
     assert out["settled_by"] == SettleReason.deadline.value
     backend.attempts["linear"].approve(["read"])  # the browser flow lands after the card closed
 
     registered = []
-    with patch("tools.mcp_tool_discovery.register_mcp_servers",
+    with patch("hermes_agent.tools.mcp_tool_discovery.register_mcp_servers",
                side_effect=lambda servers: registered.extend(servers) or list(servers)):
         agent_b = SimpleNamespace(session_id="s1", enabled_toolsets=[])
         with _as_home(home_b):

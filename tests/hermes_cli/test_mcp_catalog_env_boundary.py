@@ -144,7 +144,7 @@ def test_catalog_accepts_declared_credential(
 ):
     from hermes_cli import mcp_config
     from agent.secret_scope import get_secret
-    from tools.connectors.mcp import _CatalogBackend
+    from hermes_agent.tools.connectors.mcp import _CatalogBackend
 
     probes: list[str] = []
 
@@ -356,7 +356,7 @@ def test_connection_card_install_keeps_env_file_secrets_only(
     """The connector-card backend (Desktop/TUI/CLI setup card) makes the same secrets-only split
     as the terminal install: a declared non-secret lands in the server block, never in .env."""
     from hermes_cli import mcp_config
-    from tools.connectors.mcp import _CatalogBackend
+    from hermes_agent.tools.connectors.mcp import _CatalogBackend
 
     catalog_root = Path(os.environ["HERMES_OPTIONAL_MCPS"])
     manifest_path = catalog_root / "demo" / "manifest.yaml"

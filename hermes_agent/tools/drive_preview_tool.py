@@ -10,9 +10,9 @@ the platform-injected callback. ``desktop_ui`` toolset: desktop-sourced sessions
 
 from typing import Callable, Optional
 
-from tools.desktop_ui import passthrough_json
-from tools.browser_vault_preview import redact_preview_result
-from tools.registry import registry, tool_error
+from hermes_agent.tools.desktop_ui import passthrough_json
+from hermes_agent.tools.browser_vault_preview import redact_preview_result
+from hermes_agent.tools.registry import registry, tool_error
 
 ACTIONS = ("elements", "click", "hover", "type", "scroll", "press", "strobe", "back", "forward", "reload")
 SCROLL_TO = ("top", "bottom")

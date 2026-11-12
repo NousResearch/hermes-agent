@@ -64,7 +64,7 @@ def _registry_entry(name: str) -> Any:
     """Registry entry for ``name``; None when unregistered OR the registry raises (lookup
     failures must never fail a bridge call). Lazy import: tests patch the registry."""
     try:
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         return registry.get_entry(name)
     except Exception:
         return None
@@ -240,8 +240,8 @@ def _listing_group_label(source_name: str) -> str:
 def hidden_declared_sources() -> list[dict[str, Any]]:
     """Return deterministic summaries for declared MCP servers hidden by their check."""
     from hermes_platform import declaration
-    from tools.mcp_liveness import unavailable_details
-    from tools.registry import registry
+    from hermes_agent.tools.mcp_liveness import unavailable_details
+    from hermes_agent.tools.registry import registry
 
     grouped: dict[str, list[Any]] = {}
     for entry in registry.get_all_entries():

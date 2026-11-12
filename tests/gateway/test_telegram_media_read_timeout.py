@@ -25,7 +25,7 @@ from plugins.platforms.telegram.adapter import TelegramAdapter
 
 @pytest.fixture
 def adapter(monkeypatch):
-    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda *a, **k: True)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.is_safe_url", lambda *a, **k: True)
     a = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
     a._bot = MagicMock()
     a._metadata_thread_id = lambda metadata: None
@@ -68,7 +68,7 @@ def _stub_download(monkeypatch, size: int):
         def stream(self, method, url):
             return _Resp()
 
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
 
     monkeypatch.setattr(url_safety, "create_ssrf_safe_async_client", lambda **kw: _Client())
 

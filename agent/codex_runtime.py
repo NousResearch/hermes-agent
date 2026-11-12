@@ -88,8 +88,8 @@ def _prune_zero_event_retry_payload(api_kwargs: dict, attempt: int, attempts: in
     policy -- bounded preview + recoverable ``<persisted-output>`` reference -- and ONE log line
     records the size delta. When nothing is prunable the resend is logged as unchanged. The
     caller's kwargs are never mutated; only the retried wire payload changes."""
-    from tools.budget_config import DEFAULT_BUDGET
-    from tools.tool_result_storage import maybe_persist_tool_result
+    from hermes_agent.tools.budget_config import DEFAULT_BUDGET
+    from hermes_agent.tools.tool_result_storage import maybe_persist_tool_result
 
     items = api_kwargs.get("input")
     if not isinstance(items, list):
@@ -623,15 +623,15 @@ def _ensure_codex_session(agent, messages: list[dict[str, Any]] | None = None) -
     # unattended platforms can have one registered with nobody to answer it, so they get none and fail closed at once.
     approval_callback = None
     with suppress(Exception):
-        from tools.approval_context import _no_user_can_answer
-        from tools.terminal_tool import _get_approval_callback
+        from hermes_agent.tools.approval_context import _no_user_can_answer
+        from hermes_agent.tools.terminal_tool import _get_approval_callback
         if not _no_user_can_answer():
             approval_callback = _get_approval_callback()
     # Gateway/cron have no UI for codex approval requests, so exec/apply_patch fail closed by default. Only an
     # explicit approval bypass (approvals.mode: off, /yolo, --yolo, HERMES_YOLO_MODE) hands policy to codex's sandbox.
     auto_approve_requests = False
     try:
-        from tools.approval import is_approval_bypass_active
+        from hermes_agent.tools.approval import is_approval_bypass_active
         auto_approve_requests = is_approval_bypass_active()
     except Exception:
         logger.debug("codex app-server: approval-bypass lookup failed; keeping fail-closed default", exc_info=True)

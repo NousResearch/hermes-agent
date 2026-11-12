@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from tools import approval_context, approval_human_wait
-from tools import terminal_tool
-from tools import terminal_tool_sudo
+from hermes_agent.tools import approval_context, approval_human_wait
+from hermes_agent.tools import terminal_tool
+from hermes_agent.tools import terminal_tool_sudo
 
 
 @pytest.fixture(autouse=True)

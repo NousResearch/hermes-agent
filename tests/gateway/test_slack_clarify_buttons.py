@@ -78,7 +78,7 @@ def _attach_auth_runner(adapter, auth_fn=None):
 
 
 def _clear_clarify_state():
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
     with cm._lock:
         cm._entries.clear()
         cm._session_index.clear()
@@ -215,7 +215,7 @@ class TestSlackSendClarify:
     async def test_retire_clarify_card_drops_buttons_and_makes_a_late_click_a_noop(self):
         """Gateway-driven retirement (timeout / prose / reset) rewrites the card and wins the race
         against a later button click on the same message."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
@@ -244,7 +244,7 @@ class TestSlackSendClarify:
     async def test_other_click_keeps_the_card_retirable_until_the_clarify_ends(self):
         """'Other' is not terminal: the clarify stays pending for typed text, so a later
         timeout/reset must still be able to rewrite the '✏️ Awaiting typed answer' card."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
@@ -278,7 +278,7 @@ class TestSlackClarifyChoiceAction:
 
     @pytest.mark.asyncio
     async def test_unauthorized_click_ignored(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         _attach_auth_runner(adapter, auth_fn=lambda _s: False)
@@ -311,7 +311,7 @@ class TestSlackClarifyOtherFlow:
 
     @pytest.mark.asyncio
     async def test_other_flips_to_text_mode_then_typed_reply_resolves(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         _attach_auth_runner(adapter)

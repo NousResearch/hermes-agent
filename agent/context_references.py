@@ -483,7 +483,7 @@ async def _fetch_url_content(url: str, *, url_fetcher: UrlFetcher = None) -> str
 
 
 async def _default_url_fetcher(url: str) -> str:
-    from tools.web_tools import web_extract_tool
+    from hermes_agent.tools.web_tools import web_extract_tool
     docs = json.loads(await web_extract_tool([url], format="markdown")).get("results", [])
     return str(docs[0].get("content") or docs[0].get("raw_content") or "").strip() if docs else ""
 
@@ -522,7 +522,7 @@ def _agent_staged_path(path: Path) -> bool:
     backend-visible path via ``to_agent_visible_cache_path``.
     """
     try:
-        from tools.credential_files import get_cache_directory_mounts
+        from hermes_agent.tools.credential_files import get_cache_directory_mounts
         return any(_is_under(path, Path(entry["host_path"]).expanduser().resolve())
                    for entry in get_cache_directory_mounts())
     except Exception:
@@ -659,9 +659,9 @@ def _agent_visible_path(path: Path) -> str:
     # translation failure). Run the idempotent TERMINAL_ENV bridge first so in-process
     # gateways that never bridged terminal.* config still see the active backend.
     try:
-        from tools.terminal_tool import _ensure_terminal_env_bridged
+        from hermes_agent.tools.terminal_tool import _ensure_terminal_env_bridged
         _ensure_terminal_env_bridged()
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         return to_agent_visible_cache_path(str(path))
     except Exception:
         return str(path)

@@ -60,7 +60,7 @@ def test_worker_stop_hard_cancels_the_agent_before_and_after_construction(tmp_pa
     monkeypatch.setattr(worker, 'WorkerControls', Latched)
     monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', lambda home: lambda *a, **k: {'owner_epoch': 1})
     monkeypatch.setattr('agent.runtime_session_store.RuntimeSessionStore', Store)
-    monkeypatch.setattr('tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
+    monkeypatch.setattr('hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
     monkeypatch.setattr('run_agent.AIAgent', _Agent)
     monkeypatch.setattr('agent.title_generator.wait_for_title_upgrades', lambda: None)
     worker.execute(frame, SimpleNamespace(send=lambda kind, **payload: None))

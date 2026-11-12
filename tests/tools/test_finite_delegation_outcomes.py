@@ -14,9 +14,9 @@ import pytest
 
 from agent.interrupt_control import InterruptControlMixin
 from hermes_agent.gateway import session_context as sc
-from tools import async_delegation, delegate_tool as dt
-from tools.delegate_tool_child_run import _attach_child
-from tools.process_registry import process_registry
+from hermes_agent.tools import async_delegation, delegate_tool as dt
+from hermes_agent.tools.delegate_tool_child_run import _attach_child
+from hermes_agent.tools.process_registry import process_registry
 
 
 class _Parent(InterruptControlMixin, SimpleNamespace):
@@ -174,7 +174,7 @@ def test_finite_batch_returns_parent_interruption(harness, monkeypatch):
     # The child's own close() runs inside its worker before the future resolves, so stopping the
     # parent then can catch the sibling still pending and report it interrupted. Wait until the
     # parent has collected the completed sibling instead.
-    from tools import delegate_tool_dispatch as dispatch_mod
+    from hermes_agent.tools import delegate_tool_dispatch as dispatch_mod
     collected = threading.Event()
     report = dispatch_mod._report_child_done
 
@@ -244,7 +244,7 @@ def test_nonfinite_marker_preserves_background_dispatch(harness, monkeypatch, ma
 def test_owner_finite_scope_overrides_history_without_leaking(harness, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from hermes_agent.gateway.session_finite import finite_turn_scope, finite_turn_required
-    from tools.delegate_tool_dispatch import _resolve_async_wake_sid
+    from hermes_agent.tools.delegate_tool_dispatch import _resolve_async_wake_sid
 
     monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
     gate = threading.Barrier(2)

@@ -175,7 +175,7 @@ def _agent_cbs(sid: str) -> dict:
         # read_window_below (desktop GUI): main process enumerates native windows.
         "read_window_below_callback": lambda: _ask("window.read", sid, {}, timeout=30),
         # manage_connections card. Fire-and-forget: the tool thread waits on its own operation
-        # (tools/connectors/run.py), and the card drives it through connection.respond by op_id.
+        # (hermes_agent/tools/connectors/run.py), and the card drives it through connection.respond by op_id.
         "connection_callback": lambda payload: _emit("connection.request", sid, dict(payload)) and None,
         # tour (desktop GUI): renderer drives driver.js and answers the ``tour`` request.
         "tour_callback": lambda payload: _tour_request(sid, payload),
@@ -222,11 +222,11 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
 
 
 def _wire_callbacks(sid: str):
-    from tools.terminal_tool import set_sudo_password_callback
-    from tools.terminal_tool_sudo import get_sudo_prompt_command
+    from hermes_agent.tools.terminal_tool import set_sudo_password_callback
+    from hermes_agent.tools.terminal_tool_sudo import get_sudo_prompt_command
     from hermes_agent.gateway.run import _redact_approval_command
-    from tools.skills_tool import set_secret_capture_callback
-    from tools.project_tools import set_project_workspace_callback
+    from hermes_agent.tools.skills_tool import set_secret_capture_callback
+    from hermes_agent.tools.project_tools import set_project_workspace_callback
 
     def secret_cb(env_var, prompt, metadata=None):
         pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}
@@ -435,7 +435,7 @@ def _side_agent_session_db(parent_db):
     Handing the parent's object across is not enough: the parent releases its reference from
     ``AIAgent.close()`` / a session reset, and when it was the last holder the registry tears the
     connection down under the still-running background turn (the delegated-child path acquires
-    the same way, ``tools/delegate_tool._open_child_session_db``). Released on exit."""
+    the same way, ``hermes_agent/tools/delegate_tool._open_child_session_db``). Released on exit."""
     path = getattr(parent_db, "db_path", None)
     if parent_db is None or path is None:
         yield parent_db

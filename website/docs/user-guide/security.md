@@ -147,7 +147,7 @@ Some commands are so catastrophic — irreversible filesystem wipes, fork bombs,
 - Cron jobs running in headless `approve` mode
 - User explicitly clicking "allow always"
 
-The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
+The blocklist is the floor below `--yolo`. It trips **before** the approval layer even sees the command, and there's no override flag. Patterns currently covered (not exhaustive; kept in sync with `hermes_agent/tools/approval.py::UNRECOVERABLE_BLOCKLIST`):
 
 | Pattern | Why it's hardline |
 |---|---|
@@ -206,7 +206,7 @@ approvals:
 
 ### What Triggers Approval
 
-The following patterns trigger approval prompts (defined in `tools/approval.py`):
+The following patterns trigger approval prompts (defined in `hermes_agent/tools/approval.py`):
 
 | Pattern | Description |
 |---------|-------------|
@@ -595,7 +595,7 @@ When using the `docker` terminal backend, Hermes applies strict security hardeni
 
 ### Docker Security Flags
 
-Every container runs with these flags (defined in `tools/environments/docker.py`):
+Every container runs with these flags (defined in `hermes_agent/tools/environments/docker.py`):
 
 ```python
 _BASE_SECURITY_ARGS = [
@@ -722,7 +722,7 @@ terminal:
     - my_custom_oauth_token.json
 ```
 
-Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container. This list is read by `tools/credential_files.py` (`terminal.credential_files`) — it lives under the `terminal:` block but is loaded by the credential-files module, not the core terminal backend, so it isn't part of the bundled `DEFAULT_CONFIG` snapshot.
+Paths are relative to `~/.hermes/`. Files are mounted to `/root/.hermes/` inside the container. This list is read by `hermes_agent/tools/credential_files.py` (`terminal.credential_files`) — it lives under the `terminal:` block but is loaded by the credential-files module, not the core terminal backend, so it isn't part of the bundled `DEFAULT_CONFIG` snapshot.
 
 ### Borrowed CLI logins (Codex CLI, Claude Code) {#borrowed-cli-logins}
 

@@ -94,7 +94,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
     for name in list(sys.modules):
-        if name == "agent" or name.startswith(("agent.", "tools", "hermes")):
+        if name == "agent" or name.startswith(("agent.", "hermes_agent.tools", "hermes")):
             del sys.modules[name]
     with tempfile.TemporaryDirectory(prefix="gemini-schema-home-") as home:
         os.environ["HERMES_HOME"] = home

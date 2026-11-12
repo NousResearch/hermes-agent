@@ -75,7 +75,7 @@ async def _agentless_session(owner, request_id, pin):
 @pytest.mark.asyncio
 async def test_agentless_breakdown_measures_a_legacy_name_only_pin(owner):
     """A legacy name-only pin measures each tool's registry schema, as the next agent restores it."""
-    import tools.terminal_tool  # registers ``terminal``
+    import hermes_agent.tools.terminal_tool  # registers ``terminal``
 
     sid, _ = await _agentless_session(owner, 'legacy', ['terminal'])
     actual = await owner.call('session.context_breakdown', session_id=sid)
@@ -85,7 +85,7 @@ async def test_agentless_breakdown_measures_a_legacy_name_only_pin(owner):
 def test_a_legacy_pin_resolves_before_any_agent_ran_tool_discovery():
     """The gateway reads an agentless breakdown before its warm-up imports the tools (or with it off);
     only a fresh interpreter has that cold registry."""
-    code = ("from tools.mcp_tool_agent import pinned_tool_defs; "
+    code = ("from hermes_agent.tools.mcp_tool_agent import pinned_tool_defs; "
             "print(sorted(d['function']['name'] for d in pinned_tool_defs(['terminal'])))")
     out = subprocess.run([sys.executable, '-c', code], cwd=Path(__file__).resolve().parents[2],
                          capture_output=True, text=True, check=True, timeout=120).stdout

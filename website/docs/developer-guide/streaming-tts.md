@@ -17,18 +17,18 @@ generation + synthesis.
 The streaming pipeline has four parts:
 
 1. **Producer** — the LLM emits text deltas as it generates a response
-2. **Sentence chunker** — `tools.tts_streaming.SentenceChunker` accumulates
+2. **Sentence chunker** — `hermes_agent.tools.tts_streaming.SentenceChunker` accumulates
    deltas, strips `<think>` blocks (even split across deltas), and flushes
    complete sentences
 3. **TTS provider** — a registered `StreamingTTSProvider` turns each sentence
    into raw PCM chunks (int16 mono at the provider's declared `sample_rate`)
 4. **Audio sink** — `sounddevice.OutputStream` for local playback
-   (`tools.tts_tool_speaker.stream_tts_to_speaker`), or a gateway platform adapter's
+   (`hermes_agent.tools.tts_tool_speaker.stream_tts_to_speaker`), or a gateway platform adapter's
    `write_streaming_tts` seam (`hermes_agent/gateway/streaming_tts_consumer.py`)
 
 Providers with no chunked API still get per-*sentence* playback via the proven
 sync `text_to_speech_tool` path, so edge (the default) is conversational too.
-All spoken text is cleaned by `tools.tts_text_normalize.prepare_spoken_text`
+All spoken text is cleaned by `hermes_agent.tools.tts_text_normalize.prepare_spoken_text`
 (one cleaner, all paths).
 
 ## How to pick a provider
@@ -73,7 +73,7 @@ upstream-body invariant.
 
 ## Adding a new streaming provider
 
-1. Subclass `StreamingTTSProvider` in `tools/tts_streaming.py`
+1. Subclass `StreamingTTSProvider` in `hermes_agent/tools/tts_streaming.py`
 2. Set `sample_rate` (and `channels` / `sample_width` if not int16 mono)
 3. Implement `available()` (a pure probe — never install anything) and
    `stream(self, text) -> Iterator[bytes]` yielding raw PCM chunks
@@ -90,8 +90,8 @@ A plugin `TTSProvider` (registered with `ctx.register_tts_provider()`) joins thi
 path without core changes. It sets `streams_pcm = True` and a positive
 `stream_sample_rate`, and its `stream(text, format="pcm", voice=, model=, speed=)`
 yields int16 mono PCM. `resolve_streaming_provider` adapts it
-(`tools.tts_streaming._PluginPCMStreamer`) under the same routing rules as the
-sync dispatcher (`tools.tts_tool_plugins`): built-in names never reach the
+(`hermes_agent.tools.tts_streaming._PluginPCMStreamer`) under the same routing rules as the
+sync dispatcher (`hermes_agent.tools.tts_tool_plugins`): built-in names never reach the
 registry, a same-named `type: command` provider wins, and the plugin gets the
 same `tts.voice` / `tts.model` / `tts.speed` as `synthesize()`. A configured
 plugin streams first. Under `tts.streaming.provider: auto` it is tried only after

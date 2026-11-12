@@ -122,7 +122,7 @@ def test_worker_store_persists_and_restores_the_tools_prefix_pin(tmp_path):
     from types import SimpleNamespace
     from hermes_agent.hermes_state import SessionDB
     from hermes_agent.hermes_state_runtime import begin_runtime_epoch, mutate_worker_execution, register_worker_execution
-    from tools.mcp_tool_agent import persist_agent_tool_names
+    from hermes_agent.tools.mcp_tool_agent import persist_agent_tool_names
     db = SessionDB(tmp_path / 'state.db')
     try:
         db.create_session('owned', 'cli', system_prompt='prefix')

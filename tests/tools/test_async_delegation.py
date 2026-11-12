@@ -1,4 +1,4 @@
-"""Tests for async (background) delegation — tools/async_delegation.py.
+"""Tests for async (background) delegation — hermes_agent/tools/async_delegation.py.
 
 Covers the dispatch handle, non-blocking behavior, completion-event delivery
 onto the shared process_registry.completion_queue, the rich re-injection block
@@ -15,9 +15,9 @@ import time
 
 import pytest
 
-from tools import async_delegation as ad
-from tools.process_registry import process_registry
-from tools.process_registry_notifications import format_process_notification
+from hermes_agent.tools import async_delegation as ad
+from hermes_agent.tools.process_registry import process_registry
+from hermes_agent.tools.process_registry_notifications import format_process_notification
 
 
 @pytest.fixture(autouse=True)
@@ -503,7 +503,7 @@ def test_real_process_restart_restores_owned_completion_once(tmp_path):
     env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
     producer = r'''
 import time
-from tools import async_delegation as ad
+from hermes_agent.tools import async_delegation as ad
 r = ad.dispatch_async_delegation(
     goal="restart", context=None, toolsets=None, role="leaf", model="m",
     session_key="owner-session", parent_session_id="durable-parent",
@@ -523,8 +523,8 @@ print(r["delegation_id"])
     # The ledger replays on the first consumer, not at import (#123265).
     consumer = r'''
 import json
-from tools.process_registry import process_registry
-from tools.async_delegation import restore_undelivered_completions
+from hermes_agent.tools.process_registry import process_registry
+from hermes_agent.tools.async_delegation import restore_undelivered_completions
 assert process_registry.completion_queue.empty(), "import must not restore"
 restore_undelivered_completions(process_registry.completion_queue)
 evt = process_registry.completion_queue.get_nowait()
@@ -541,7 +541,7 @@ print(json.dumps(evt, sort_keys=True))
     assert evt["summary"] == "after restart"
 
     acker = f'''
-from tools import async_delegation as ad
+from hermes_agent.tools import async_delegation as ad
 assert ad.mark_completion_delivered({delegation_id!r})
 '''
     subprocess.run(
@@ -549,7 +549,7 @@ assert ad.mark_completion_delivered({delegation_id!r})
         text=True, capture_output=True, timeout=15, check=True,
     )
     probe = subprocess.run(
-        [sys.executable, "-c", "from tools.process_registry import process_registry; process_registry.restore_completions(); print(process_registry.completion_queue.qsize())"],
+        [sys.executable, "-c", "from hermes_agent.tools.process_registry import process_registry; process_registry.restore_completions(); print(process_registry.completion_queue.qsize())"],
         cwd=repo, env=env, text=True, capture_output=True, timeout=15, check=True,
     )
     assert probe.stdout.strip().splitlines()[-1] == "0"
@@ -564,7 +564,7 @@ def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     child synchronously, and the child completes on the background thread.
     A single task is dispatched as a one-item background batch unit."""
     from unittest.mock import MagicMock
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
 
     parent = MagicMock()
     parent._delegate_depth = 0
@@ -632,9 +632,9 @@ def test_delegate_task_background_uses_live_tui_agent_session_id(monkeypatch):
     """
     import json
     from unittest.mock import MagicMock
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools.approval_context import reset_current_session_key, set_current_session_key
+    from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
 
     parent = MagicMock()
     parent._delegate_depth = 0
@@ -829,7 +829,7 @@ def _patch_delegation_cfg(monkeypatch, model="upstage/solar-pro-4", provider="op
     """Pin the delegation config the notice renderer reads (adapts the
     #97667 tests to the shipped implementation, which reads the configured
     model from config rather than the event's model field)."""
-    import tools.process_registry_notifications as _prn
+    import hermes_agent.tools.process_registry_notifications as _prn
 
     monkeypatch.setattr(
         _prn, "_delegation_config", lambda: {"model": model, "provider": provider}
@@ -930,7 +930,7 @@ def test_batch_model_rejection_notice_requires_configured_model_in_text(monkeypa
 def _grouped_fanout(monkeypatch, tasks, gates):
     """delegate_task(tasks) in the background with gated fake children; returns the parsed handle."""
     from unittest.mock import MagicMock
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
 
     parent = MagicMock()
     parent._delegate_depth = 0
@@ -961,7 +961,7 @@ def _grouped_fanout(monkeypatch, tasks, gates):
 def test_ungrouped_task_completes_alone_and_group_completes_together(monkeypatch):
     """With delegation.independent_completions on, a finished ungrouped task must not wait for its siblings;
     tasks sharing a `group` must."""
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
     monkeypatch.setattr(dt, "_load_config", lambda: {"independent_completions": True})
     gates = [threading.Event() for _ in range(4)]
     tasks = [
@@ -1012,7 +1012,7 @@ def test_units_of_one_call_share_a_single_capacity_slot():
 def test_multi_task_call_is_one_completion_unless_independent_completions(monkeypatch):
     """Default: a background fan-out returns as ONE message when every task is done, so an orchestrator
     is not woken N times per call; `group` is inert until delegation.independent_completions is on."""
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
     monkeypatch.setattr(dt, "_load_config", dict)
     gates = [threading.Event() for _ in range(3)]
     tasks = [{"goal": "review PR 1 thoroughly and report"}, {"goal": "review PR 2 thoroughly and report", "group": "g"},
@@ -1068,7 +1068,7 @@ def test_child_finished_before_crash_is_recovered_with_its_result(tmp_path):
     producer = r'''
 import os, sys, time
 from unittest.mock import MagicMock
-import tools.delegate_tool as dt
+import hermes_agent.tools.delegate_tool as dt
 parent = MagicMock(); parent._delegate_depth = 0; parent.session_id = "sess"; parent._interrupt_requested = False
 parent._active_children = []; parent._active_children_lock = None
 def child(task_index, goal, child=None, parent_agent=None, **kw):
@@ -1088,7 +1088,7 @@ sys.stdout.flush(); os._exit(1)
     subprocess.run([sys.executable, "-c", producer], cwd=repo, env=env, text=True, capture_output=True, timeout=30, check=False)
     consumer = r'''
 import json, queue
-from tools import async_delegation as ad
+from hermes_agent.tools import async_delegation as ad
 q = queue.Queue(); ad.restore_undelivered_completions(q)
 print(json.dumps(q.get_nowait(), sort_keys=True))
 '''
@@ -1115,8 +1115,8 @@ def test_one_child_unit_keeps_its_finished_child_when_the_owner_dies(tmp_path):
     producer = r'''
 import os, sys, time
 from unittest.mock import MagicMock
-import tools.delegate_tool as dt
-import tools.delegate_tool_dispatch as dtd
+import hermes_agent.tools.delegate_tool as dt
+import hermes_agent.tools.delegate_tool_dispatch as dtd
 parent = MagicMock(); parent._delegate_depth = 0; parent.session_id = "sess"; parent._interrupt_requested = False
 parent._active_children = []; parent._active_children_lock = None
 def child(task_index, goal, child=None, parent_agent=None, **kw):
@@ -1148,7 +1148,7 @@ time.sleep(600)
         time.sleep(0.3)  # let the OS reap the owner before recovery asks whether its pid is alive
     consumer = r'''
 import json, queue
-from tools import async_delegation as ad
+from hermes_agent.tools import async_delegation as ad
 q = queue.Queue(); ad.restore_undelivered_completions(q)
 print(json.dumps(q.get_nowait(), sort_keys=True))
 '''

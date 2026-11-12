@@ -8,19 +8,19 @@ import random
 import re
 from typing import Any, Optional
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 
 class _OriginProxy:
-    """Attribute proxy for ``tools.mcp_tool`` resolved at access time. The split modules read
+    """Attribute proxy for ``hermes_agent.tools.mcp_tool`` resolved at access time. The split modules read
     origin state (``_servers``, ``_lock``, SDK symbols, patchable helpers) through this so
-    ``mock.patch("tools.mcp_tool.X")`` and origin-side rebinds stay effective, and so no split
+    ``mock.patch("hermes_agent.tools.mcp_tool.X")`` and origin-side rebinds stay effective, and so no split
     module needs the origin imported first (the origin imports them while initialising)."""
 
     __slots__ = ()
 
     def __getattr__(self, name: str):
-        from tools import mcp_tool
+        from hermes_agent.tools import mcp_tool
         return getattr(mcp_tool, name)
 
 
@@ -84,7 +84,7 @@ def _env_ref_name(ref: str) -> str:
 
 def _sanitize_error(text: str) -> str:
     """Replace credential-like patterns with [REDACTED] before text reaches the LLM."""
-    from tools.ansi_strip import strip_unicode_tags
+    from hermes_agent.tools.ansi_strip import strip_unicode_tags
     return strip_unicode_tags(_CREDENTIAL_PATTERN.sub("[REDACTED]", text))
 
 
@@ -92,7 +92,7 @@ def exact_mcp_identifier(value, what: str):
     """*value* unchanged: a name/uri the server matches a later request against must round-trip
     byte-exact, so a hidden TAG/bidi char in it is logged rather than stripped (stripping would make
     the prompt, resource or tool uncallable)."""
-    from tools.ansi_strip import strip_tool_metadata_text
+    from hermes_agent.tools.ansi_strip import strip_tool_metadata_text
     if isinstance(value, str) and strip_tool_metadata_text(value) != value:
         logger.warning("MCP %s %r carries invisible characters; kept as-is (the server matches it)", what, value)
     return value

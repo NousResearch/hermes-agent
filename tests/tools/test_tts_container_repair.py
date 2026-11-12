@@ -15,8 +15,8 @@ import struct
 
 import pytest
 
-from tools.tts_tool import OPUS_VOICE_PLATFORMS, _repair_ogg_container
-from tools.tts_tool_delivery import _sniff_audio_container
+from hermes_agent.tools.tts_tool import OPUS_VOICE_PLATFORMS, _repair_ogg_container
+from hermes_agent.tools.tts_tool_delivery import _sniff_audio_container
 
 MP3_ID3 = b"ID3\x04\x00\x00\x00\x00\x00\x00" + b"\x00" * 64
 MP3_FRAME = b"\xff\xfb\x90\x00" + b"\x00" * 64

@@ -71,7 +71,7 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   process-global runtime-lock boolean. Public accessors (`get_running_job_ids`,
   `get_running_job_details`, `get_wedged_job_ids`) still report the host-wide union of bare job
   ids for the shutdown drain, but LIVENESS consumers (`jobs.py::_job_running_in_this_process`,
-  `tools/cronjob_tools`) ask `is_job_running(job_id, home=...)` — the union made profile A's
+  `hermes_agent/tools/cronjob_tools`) ask `is_job_running(job_id, home=...)` — the union made profile A's
   running `daily-brief` answer for profile B's idle one.
 - **A claim is released under the key it was registered with.** The cron scope is a ContextVar:
   `try_register_running_job` runs on the ticker thread inside `_profile_cron_scope`, while the
@@ -125,13 +125,13 @@ zero outside a kanban task (footprint ladder rung 3).
   unlink, comment, attach, attachments, attach-rm, complete, request-review, request-changes,
   reopen-review, block, unblock, archive, tail`, plus `watch, stats, runs, log, assignees, heartbeat,
   notify-*, dispatch, daemon, gc`. Argparse alias dispatch must accept both `list` and `ls` (root).
-- **Toolset:** `tools/kanban_tools.py` — `kanban_show, kanban_complete, kanban_request_review,
+- **Toolset:** `hermes_agent/tools/kanban_tools.py` — `kanban_show, kanban_complete, kanban_request_review,
   kanban_request_changes, kanban_block, kanban_schedule, kanban_heartbeat, kanban_comment,
   kanban_create, kanban_link,
   kanban_attach, kanban_attach_url, kanban_attachments`; platforms whose saved selection enables
   `kanban` (`hermes tools enable kanban --platform <p>`; default-off, in `CONFIGURABLE_TOOLSETS`) get
   the full set plus `kanban_list`/`kanban_unblock` for board routing. The check_fn reads the schema
-  build's own selection (`tools/kanban_toolset_context.py`), never the legacy top-level `toolsets`
+  build's own selection (`hermes_agent/tools/kanban_toolset_context.py`), never the legacy top-level `toolsets`
   key alone.
 - **Dispatcher:** long-lived loop (default 60s) that reclaims stale claims, promotes ready tasks,
   atomically claims, and spawns assigned profiles. Runs **inside the gateway** by default

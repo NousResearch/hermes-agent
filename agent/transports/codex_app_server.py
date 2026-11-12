@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 from agent.deadline import kill_process_tree
 from agent.transports.hermes_tools_mcp_server import HERMES_TOOLS_MCP_SERVER_NAME
-from tools.environments.local import hermes_subprocess_env
+from hermes_agent.tools.environments.local import hermes_subprocess_env
 
 MIN_CODEX_VERSION = (0, 125, 0)
 

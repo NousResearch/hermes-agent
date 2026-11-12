@@ -1,4 +1,4 @@
-"""Tests for ``tools.computer_use.doctor``.
+"""Tests for ``hermes_agent.tools.computer_use.doctor``.
 
 The doctor module drives cua-driver's stable ``health_report`` MCP tool over
 stdio JSON-RPC and renders the structured response. Most of the surface is
@@ -92,7 +92,7 @@ def _default_cli_version_matches_report(monkeypatch):
     mock breaks version probing. Default to a CLI version that matches
     ``_ok_report`` / ``_degraded_report`` (0.5.8); identity tests override.
     """
-    from tools.computer_use import doctor
+    from hermes_agent.tools.computer_use import doctor
 
     monkeypatch.setattr(
         doctor,
@@ -106,7 +106,7 @@ def _default_cli_version_matches_report(monkeypatch):
 
 class TestDoctorExitCodes:
     def test_ok_exits_0(self):
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         proc = _fake_proc_with_responses(
             {"jsonrpc": "2.0", "id": 1, "result": {}},
@@ -119,7 +119,7 @@ class TestDoctorExitCodes:
         assert code == 0
 
     def test_degraded_exits_1(self):
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         proc = _fake_proc_with_responses(
             {"jsonrpc": "2.0", "id": 1, "result": {}},
@@ -134,7 +134,7 @@ class TestDoctorExitCodes:
     def test_failed_overall_exits_1(self):
         """`failed` overall (every check failed) is also exit 1, not 2 —
         the tool ran successfully; the diagnosis was bad."""
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         report = _degraded_report()
         report["overall"] = "failed"
@@ -151,7 +151,7 @@ class TestDoctorExitCodes:
     def test_spawn_denied_exits_2_with_diagnosis(self, capsys):
         """The runtime interpreter cannot execute the resolved binary (Windows WinError 5 on a
         `WindowsApps` install): a diagnosis + exit 2, never a raw traceback."""
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         with _pm_driver("/protected/cua-driver"), \
              patch("subprocess.Popen", side_effect=PermissionError(13, "Access is denied")):
@@ -163,7 +163,7 @@ class TestDoctorExitCodes:
     def test_protocol_error_exits_2(self, capsys):
         """An empty stdout response (driver crashed during handshake) is a
         protocol failure → exit 2."""
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         proc = MagicMock()
         proc.stdin = MagicMock()
@@ -190,7 +190,7 @@ class TestResponseShapeParsing:
 
 
     def test_jsonrpc_error_response_exits_2(self, capsys):
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         proc = _fake_proc_with_responses(
             {"jsonrpc": "2.0", "id": 1, "result": {}},
@@ -208,7 +208,7 @@ class TestResponseShapeParsing:
 
 class TestArgPassthrough:
     def test_include_passed_through_to_tools_call(self):
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         proc = _fake_proc_with_responses(
             {"jsonrpc": "2.0", "id": 1, "result": {}},
@@ -232,7 +232,7 @@ class TestArgPassthrough:
 
 class TestJsonOutput:
     def test_json_output_is_parseable_round_trip(self):
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         proc = _fake_proc_with_responses(
             {"jsonrpc": "2.0", "id": 1, "result": {}},
@@ -264,10 +264,10 @@ class TestDriverCmdResolution:
         return path
 
     def _inspected_binary(self, **kwargs) -> Path:
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         with _pm_driver("/pm/store/cua-driver"), \
-             patch("tools.computer_use.doctor._drive_health_report", return_value=_ok_report()) as health, \
+             patch("hermes_agent.tools.computer_use.doctor._drive_health_report", return_value=_ok_report()) as health, \
              patch("sys.stdout", new_callable=StringIO):
             assert doctor.run_doctor(**kwargs) == 0
         return Path(health.call_args.args[0])
@@ -344,7 +344,7 @@ class TestHealthReportFallback:
 
 
     def test_extract_raises_health_report_unavailable_on_isError(self):
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         with __import__("pytest").raises(doctor.HealthReportUnavailable) as ei:
             doctor._extract_health_report_from_result(_unclassified_health_result())
@@ -358,7 +358,7 @@ class TestDoctorVersionIdentity:
     def test_header_prefers_cli_version_on_mismatch(self):
         """Windows has been observed reporting 0.8.3 via health_report while
         the resolved binary is 0.12.6 — doctor must surface the real version."""
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         proc = _fake_proc_with_responses(
             {"jsonrpc": "2.0", "id": 1, "result": {}},
@@ -378,7 +378,7 @@ class TestDoctorVersionIdentity:
 
 
     def test_matching_versions_no_mismatch_flag(self):
-        from tools.computer_use import doctor
+        from hermes_agent.tools.computer_use import doctor
 
         proc = _fake_proc_with_responses(
             {"jsonrpc": "2.0", "id": 1, "result": {}},
@@ -398,7 +398,7 @@ def test_failed_tcc_row_from_health_report_names_the_stale_row_reset_for_that_se
     """A failed ``tcc_*`` row from the driver's own health_report (0.22+, not only the 0.10 fallback probes) must
     carry the stale-grant recovery for its own TCC service, because System Settings can show the toggle ON while
     the daemon is denied (trycua/cua#3170)."""
-    from tools.computer_use import doctor
+    from hermes_agent.tools.computer_use import doctor
 
     report = _ok_report()
     report["checks"] = [{"name": "tcc_screen_recording", "status": "fail", "message": "Screen Recording is not granted.",

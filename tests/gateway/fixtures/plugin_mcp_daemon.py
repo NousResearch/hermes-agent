@@ -9,8 +9,8 @@ import os
 import runpy
 from types import SimpleNamespace
 
-from tools import mcp_tool
-from tools.mcp_tool_loop import _ensure_mcp_loop
+from hermes_agent.tools import mcp_tool
+from hermes_agent.tools.mcp_tool_loop import _ensure_mcp_loop
 
 
 class _Session:

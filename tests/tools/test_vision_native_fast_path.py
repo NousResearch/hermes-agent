@@ -15,7 +15,7 @@ from io import BytesIO
 from unittest.mock import patch
 
 
-from tools.vision_tools import (
+from hermes_agent.tools.vision_tools import (
     _build_native_vision_tool_result,
     _handle_vision_analyze,
     _supports_media_in_tool_results,
@@ -99,7 +99,7 @@ class TestSupportsMediaInToolResults:
     def test_profile_veto_applies_even_when_vision_capable_lookup_agrees(self):
         """A capability source marking the model vision-capable must not
         re-open the native fast path for a provider that rejects it."""
-        from tools.vision_tools import _should_use_native_vision_fast_path
+        from hermes_agent.tools.vision_tools import _should_use_native_vision_fast_path
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
         from agent import image_routing
 
@@ -116,7 +116,7 @@ class TestSupportsMediaInToolResults:
 
     def test_openrouter_xiaomi_route_vetoes_native_fast_path(self):
         """A vision-capable catalog entry cannot override a routed Xiaomi veto."""
-        from tools.vision_tools import _should_use_native_vision_fast_path
+        from hermes_agent.tools.vision_tools import _should_use_native_vision_fast_path
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
         from agent import image_routing
 
@@ -215,10 +215,10 @@ class TestVisionAnalyzeNative:
         truncated = tmp_path / "truncated.gif"
         truncated.write_bytes(_animated_gif_bytes(["red", "blue"])[:-3])
         monkeypatch.setattr(
-            "tools.vision_tools._VISION_MAX_VALIDATED_FRAME_COUNT", 2
+            "hermes_agent.tools.vision_tools._VISION_MAX_VALIDATED_FRAME_COUNT", 2
         )
         monkeypatch.setattr(
-            "tools.vision_tools._VISION_MAX_VALIDATED_AGGREGATE_PIXELS", 32
+            "hermes_agent.tools.vision_tools._VISION_MAX_VALIDATED_AGGREGATE_PIXELS", 32
         )
 
         with Image.open(truncated) as image:
@@ -249,7 +249,7 @@ class TestVisionAnalyzeNative:
         animation = tmp_path / "too-many-frames.gif"
         animation.write_bytes(_animated_gif_bytes(["red", "green", "blue"]))
         monkeypatch.setattr(
-            "tools.vision_tools._VISION_MAX_VALIDATED_FRAME_COUNT", 2
+            "hermes_agent.tools.vision_tools._VISION_MAX_VALIDATED_FRAME_COUNT", 2
         )
         loaded_frames = _track_validated_frame_loads(monkeypatch)
 
@@ -276,7 +276,7 @@ class TestVisionAnalyzeNative:
         animation = tmp_path / "too-many-pixels.gif"
         animation.write_bytes(_animated_gif_bytes(["red", "blue"]))
         monkeypatch.setattr(
-            "tools.vision_tools._VISION_MAX_VALIDATED_AGGREGATE_PIXELS", 31
+            "hermes_agent.tools.vision_tools._VISION_MAX_VALIDATED_AGGREGATE_PIXELS", 31
         )
         loaded_frames = _track_validated_frame_loads(monkeypatch)
 
@@ -329,7 +329,7 @@ class TestVisionAnalyzeNative:
         except ImportError:
             pytest.skip("Pillow not installed — proactive resize is a no-op")
 
-        from tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES as _EMBED_TARGET_BYTES
+        from hermes_agent.tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES as _EMBED_TARGET_BYTES
 
         # Noisy PNG that base64-encodes to well over 5 MB (won't compress much).
         big = tmp_path / "big.png"
@@ -353,8 +353,8 @@ class TestVisionAnalyzeNative:
     def test_embed_caps_are_sized_for_history_reuse(self):
         """Native embeds ride every later turn, so caps must stay well below
         the Anthropic 5 MB / 8000px reject limits (#92699)."""
-        from tools.vision_tools import _EMBED_MAX_DIMENSION
-        from tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES as _EMBED_TARGET_BYTES
+        from hermes_agent.tools.vision_tools import _EMBED_MAX_DIMENSION
+        from hermes_agent.tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES as _EMBED_TARGET_BYTES
 
         assert _EMBED_TARGET_BYTES <= 512 * 1024
         assert _EMBED_MAX_DIMENSION <= 2048
@@ -402,7 +402,7 @@ class TestHandleVisionAnalyzeFastPath:
         from agent.auxiliary_client import set_runtime_main, clear_runtime_main
         set_runtime_main("brand-new-provider", "anthropic/claude-opus-4.6")
         try:
-            with patch("tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel):
+            with patch("hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel):
                 coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
                 result = asyncio.get_event_loop().run_until_complete(coro)
         finally:
@@ -426,7 +426,7 @@ class TestHandleVisionAnalyzeFastPath:
                 "hermes_cli.config.load_config",
                 return_value={"model": {"supports_vision": True}},
             ), patch(
-                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+                "hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
             ) as mock_aux:
                 coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
                 result = asyncio.get_event_loop().run_until_complete(coro)
@@ -454,7 +454,7 @@ class TestHandleVisionAnalyzeFastPath:
                     "model": {"supports_vision": True},
                 },
             ), patch(
-                "tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
+                "hermes_agent.tools.vision_tools.vision_analyze_tool", side_effect=_aux_sentinel,
             ) as mock_aux:
                 coro = _handle_vision_analyze({"image_url": str(img), "question": "?"})
                 result = asyncio.get_event_loop().run_until_complete(coro)

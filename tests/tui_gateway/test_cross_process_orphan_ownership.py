@@ -253,7 +253,7 @@ def test_automatic_cleanup_preserves_corrupt_registry_without_overwrite(
         server, "_notify_session_boundary", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(
-        "tools.async_delegation.interrupt_for_session", lambda *args, **kwargs: None
+        "hermes_agent.tools.async_delegation.interrupt_for_session", lambda *args, **kwargs: None
     )
     session = {
         "agent": None,
@@ -330,7 +330,7 @@ def test_automatic_cleanup_reclaims_own_orphan_lease_not_treated_as_sibling(
         server, "_notify_session_boundary", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(
-        "tools.async_delegation.interrupt_for_session", lambda *args, **kwargs: None
+        "hermes_agent.tools.async_delegation.interrupt_for_session", lambda *args, **kwargs: None
     )
     session = {
         "active_session_lease": None,
@@ -428,7 +428,7 @@ def test_automatic_desktop_cleanup_preserves_sibling_and_releases_sole_owner_lea
         server, "_notify_session_boundary", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(
-        "tools.async_delegation.interrupt_for_session", lambda *args, **kwargs: None
+        "hermes_agent.tools.async_delegation.interrupt_for_session", lambda *args, **kwargs: None
     )
 
     def _session(lease) -> dict:
@@ -641,9 +641,9 @@ def test_taken_over_runtime_finalize_spares_the_new_owners_row(monkeypatch: pyte
 
     monkeypatch.setattr(server, "_session_db", _db)
     monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
-    monkeypatch.setattr("tools.async_delegation.interrupt_for_session",
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.interrupt_for_session",
                         lambda *a, **k: key_interrupts.append(k.get("session_key")))
-    monkeypatch.setattr("tools.approval.unregister_gateway_notify", lambda k: unregistered.append(k))
+    monkeypatch.setattr("hermes_agent.tools.approval.unregister_gateway_notify", lambda k: unregistered.append(k))
     try:
         server._teardown_session(old, end_reason="ws_orphan_reap")
         assert ended == [] and key_interrupts == [""] and unregistered == []

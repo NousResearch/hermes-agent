@@ -23,8 +23,8 @@ import pytest
 import hermes_agent.gateway.run as gateway_run
 from hermes_agent.gateway.run_turn_runner import TurnRunner
 from hermes_agent.gateway.platforms.base import SendResult
-from tools import approval as _approval
-from tools import approval_gateway_wait as wait_mod
+from hermes_agent.tools import approval as _approval
+from hermes_agent.tools import approval_gateway_wait as wait_mod
 
 SESSION = "agent:main:telegram:dm:1"
 APPROVAL = {"command": "rm -rf /tmp/x", "description": "recursive delete", "pattern_key": "k"}
@@ -41,7 +41,7 @@ def test_timeout_settle_leaves_dispatch_and_settle_records(monkeypatch, caplog):
     _clear_queues()
     monkeypatch.setattr(wait_mod._ctx, "_fire_approval_hook", lambda name, **kw: None)
     monkeypatch.setattr(wait_mod, "_poll_event", lambda event, session_key, **_kw: "timeout")
-    with caplog.at_level(logging.INFO, logger="tools.approval"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.tools.approval"):
         decision = wait_mod._await_gateway_decision(SESSION, lambda data: None, APPROVAL)
 
     assert decision == {"resolved": False, "choice": None, "reason": None}
@@ -107,7 +107,7 @@ def test_handoff_failure_still_logs_the_wait_side_boundary(monkeypatch, caplog):
     def _raising_notify(data):
         raise RuntimeError("boundary gone")
 
-    with caplog.at_level(logging.INFO, logger="tools.approval"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.tools.approval"):
         decision = wait_mod._await_gateway_decision(SESSION, _raising_notify, APPROVAL)
 
     assert decision["notify_failed"] is True

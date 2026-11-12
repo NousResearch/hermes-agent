@@ -125,7 +125,7 @@ def _install_fakes(monkeypatch, mode):
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = ClarifyThenToolAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-    import tools.terminal_tool
+    import hermes_agent.tools.terminal_tool
 
     gateway_run = importlib.import_module("hermes_agent.gateway.run")
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})

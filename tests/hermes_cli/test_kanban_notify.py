@@ -765,7 +765,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     from hermes_cli import kanban_db_notify as kbn
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.config import Platform
-    from tools import kanban_tools as kt
+    from hermes_agent.tools import kanban_tools as kt
 
     # Allow ``tmp_path`` through the media-delivery safety filter. See the
     # companion test for the full explanation.

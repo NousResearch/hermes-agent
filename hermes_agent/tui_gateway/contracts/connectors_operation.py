@@ -1,7 +1,7 @@
 """The connection operation (``manage_connections`` card): the request event that opens a card,
 the update frames that drive it, and the RPCs the card answers through.
 
-Shapes are typed from ``tools/connectors/operation.py`` (``Target.snapshot``,
+Shapes are typed from ``hermes_agent/tools/connectors/operation.py`` (``Target.snapshot``,
 ``ConnectionOperation.request_payload`` / ``_snapshot_locked``) and
 ``hermes_agent/tui_gateway/methods_connectors.py`` (``_operation_view``, ``_connection_update``). The card is a
 projection: every frame carries the full target snapshot, and the renderer never derives state.
@@ -37,7 +37,7 @@ class ConnectionTargetAction(WireEnum):
 
 
 class ConnectionTargetState(WireEnum):
-    """``tools/connectors/contract.py::TargetState``."""
+    """``hermes_agent/tools/connectors/contract.py::TargetState``."""
 
     pending = "pending"
     initiated = "initiated"
@@ -49,7 +49,7 @@ class ConnectionTargetState(WireEnum):
 
 
 class ConnectionActor(WireEnum):
-    """``tools/connectors/contract.py::Actor``."""
+    """``hermes_agent/tools/connectors/contract.py::Actor``."""
 
     user = "user"
     backend_watcher = "backend_watcher"
@@ -57,7 +57,7 @@ class ConnectionActor(WireEnum):
 
 
 class ConnectionSettleReason(WireEnum):
-    """``tools/connectors/contract.py::SettleReason``."""
+    """``hermes_agent/tools/connectors/contract.py::SettleReason``."""
 
     all_resolved = "all_resolved"
     continue_ = "continue"
@@ -260,7 +260,7 @@ method("connectors.operation.wake", params=ConnectionOperationParams, result=Con
 
 
 class ConnectionAnswerStatus(WireEnum):
-    """What the card says about one row: ``tools/connectors/mcp.py::apply_answer``."""
+    """What the card says about one row: ``hermes_agent/tools/connectors/mcp.py::apply_answer``."""
 
     approved = "approved"
     skipped = "skipped"

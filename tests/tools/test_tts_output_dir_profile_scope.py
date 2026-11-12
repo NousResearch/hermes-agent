@@ -14,7 +14,7 @@ from pathlib import Path
 
 def _reload_tts_tool(import_home: Path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(import_home))
-    from tools import tts_tool
+    from hermes_agent.tools import tts_tool
 
     return importlib.reload(tts_tool)
 

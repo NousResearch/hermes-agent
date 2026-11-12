@@ -22,7 +22,7 @@ def policy(authority, sid, spec, tmp_path):
 
 
 def test_opposing_editors_freeze_tools_and_release_only_their_session(server_spec, tmp_path):
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     authority = owner()
     left = policy(authority, 'a', server_spec, tmp_path)
     other = json.loads(json.dumps(server_spec))
@@ -55,7 +55,7 @@ def test_opposing_editors_freeze_tools_and_release_only_their_session(server_spe
 
 def test_cold_editor_rebind_requires_exact_borrowed_config(server_spec, tmp_path):
     from hermes_agent.gateway.session_local_mcp import attach_editor_mcp
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     original = policy(owner(), 'cold', server_spec, tmp_path)
     cold = restore_policy(json.loads(json.dumps(asdict(original))))
     authority = owner()

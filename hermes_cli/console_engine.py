@@ -16,7 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, Iterable, Literal, NoReturn, Sequence
 
-from tools.ansi_strip import strip_ansi as _strip_ansi
+from hermes_agent.tools.ansi_strip import strip_ansi as _strip_ansi
 
 
 ConsoleStatus = Literal["ok", "error", "confirm_required", "exit", "clear"]

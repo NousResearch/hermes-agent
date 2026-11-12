@@ -18,14 +18,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
+from hermes_agent.tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
 
 pytestmark = pytest.mark.skipif(not _MCP_AVAILABLE, reason="MCP SDK not installed")
 
 
 def _run_stdio_with_mocks(os_name: str, attach_mock) -> None:
     """Drive _run_stdio's pre-spawn path with the transport mocked out."""
-    import tools.mcp_tool_transport as transport_mod
+    import hermes_agent.tools.mcp_tool_transport as transport_mod
 
     mock_session = MagicMock()
     mock_session.initialize = AsyncMock()
@@ -42,13 +42,13 @@ def _run_stdio_with_mocks(os_name: str, attach_mock) -> None:
 
     with (
         patch("hermes_cli.process_identity.attach_self_to_kill_on_close_job", attach_mock),
-        patch("tools.mcp_tool.StdioServerParameters"),
-        patch("tools.mcp_tool.stdio_client", return_value=(mock_stdio_cm := MagicMock())),
-        patch("tools.mcp_tool.ClientSession", return_value=(mock_session_cm := MagicMock())),
-        patch("tools.mcp_tool._preflight_stdio_command", fake_preflight),
-        patch("tools.mcp_tool_lifecycle._snapshot_child_pids", return_value=set()),
-        patch("tools.mcp_tool_lifecycle._kill_orphaned_mcp_children"),
-        patch("tools.mcp_tool_config._write_stderr_log_header"),
+        patch("hermes_agent.tools.mcp_tool.StdioServerParameters"),
+        patch("hermes_agent.tools.mcp_tool.stdio_client", return_value=(mock_stdio_cm := MagicMock())),
+        patch("hermes_agent.tools.mcp_tool.ClientSession", return_value=(mock_session_cm := MagicMock())),
+        patch("hermes_agent.tools.mcp_tool._preflight_stdio_command", fake_preflight),
+        patch("hermes_agent.tools.mcp_tool_lifecycle._snapshot_child_pids", return_value=set()),
+        patch("hermes_agent.tools.mcp_tool_lifecycle._kill_orphaned_mcp_children"),
+        patch("hermes_agent.tools.mcp_tool_config._write_stderr_log_header"),
     ):
         mock_stdio_cm.__aenter__ = AsyncMock(return_value=(object(), object()))
         mock_stdio_cm.__aexit__ = AsyncMock(return_value=False)
@@ -88,7 +88,7 @@ class TestWindowsTreeKillHelpers:
     """Best-effort contract of the tree-kill helpers (Win32 paths can't run here)."""
 
     def test_tree_kill_swallows_missing_process(self):
-        import tools.mcp_tool_lifecycle as lifecycle
+        import hermes_agent.tools.mcp_tool_lifecycle as lifecycle
 
         # Must not raise for a PID that raced away. (_kill_windows_process_tree carries no
         # os.name gate itself — the gate lives at the _signal_mcp_process call site — so this
@@ -96,7 +96,7 @@ class TestWindowsTreeKillHelpers:
         lifecycle._kill_windows_process_tree(999999999, 15)
 
     def test_tree_kill_terminates_descendants(self, monkeypatch):
-        import tools.mcp_tool_lifecycle as lifecycle
+        import hermes_agent.tools.mcp_tool_lifecycle as lifecycle
 
         terminated = []
         killed = []

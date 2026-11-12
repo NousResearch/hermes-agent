@@ -12,7 +12,7 @@ from agent.runtime_session_store import RuntimeSessionStore
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import (RuntimeStoreError, begin_runtime_epoch, register_worker_execution,
                                   adopt_worker_execution, mutate_worker_execution)
-from tools.async_delegation import _initialize_schema
+from hermes_agent.tools.async_delegation import _initialize_schema
 
 
 def test_lost_ack_reopens_owner_and_replays_same_ledger_receipt(tmp_path):

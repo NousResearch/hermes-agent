@@ -6,7 +6,7 @@ import pytest
 
 from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 from hermes_agent.hermes_state import SessionDB
-from tools import react_to_message_tool as reactions
+from hermes_agent.tools import react_to_message_tool as reactions
 
 
 @pytest.mark.parametrize("routing_key", ["agent:main:local:dm:chat-a", "chat-b"])

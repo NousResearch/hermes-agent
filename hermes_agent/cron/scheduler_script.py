@@ -466,7 +466,7 @@ def _run_job_script(
         argv, env_overlay, err = _script_argv(path, interpreter)
         if argv is None:
             return False, err
-        from tools.environments.local import build_subprocess_env
+        from hermes_agent.tools.environments.local import build_subprocess_env
         # Lossy decode only: keep the platform-default (locale) encoding — gating ``encoding=``
         # to win32 was deliberate (#66566: unconditional UTF-8 leaked into POSIX) — but
         # ``errors=`` must not stay 'strict': one stray non-UTF-8 byte in the script's stdout

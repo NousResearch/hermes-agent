@@ -1,4 +1,4 @@
-"""Tests for escape-drift auto-correction on ``patch`` (tools/escape_drift_autocorrect.py).
+"""Tests for escape-drift auto-correction on ``patch`` (hermes_agent/tools/escape_drift_autocorrect.py).
 
 Contract: a verified doubled anchor is corrected only for a backslash-free replacement;
 replacement backslashes require a clean resend and leave the file unchanged. Quote
@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
+from hermes_agent.tools.escape_drift_autocorrect import AmbiguousEscapeDriftError, maybe_correct_escape_drift
 
 
 @pytest.fixture
@@ -19,7 +19,7 @@ def workdir(tmp_path, monkeypatch):
 
 
 def _patch_tool(**kwargs):
-    from tools.file_tools import patch_tool
+    from hermes_agent.tools.file_tools import patch_tool
     return json.loads(patch_tool(**kwargs))
 
 
@@ -50,7 +50,7 @@ def test_quote_kind_escaped_only_in_replacement_is_rejected():
     content, old, new = _UNPROVEN_QUOTE_KIND
     with pytest.raises(AmbiguousEscapeDriftError):
         maybe_correct_escape_drift(old, new, content)
-    from tools.fuzzy_match import fuzzy_find_and_replace
+    from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace
     out, count, _strategy, err = fuzzy_find_and_replace(content, old, new)
     assert count == 0 and out == content
     assert "intended escaping" in err
@@ -70,7 +70,7 @@ def test_shared_correction_policy_across_tools(workdir, monkeypatch, engine, con
     target = workdir / "example.txt"
     target.write_text(content)
     if engine == "skill":
-        from tools import skill_manager_tool
+        from hermes_agent.tools import skill_manager_tool
         skill_dir = workdir / "skills" / "example"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("---\nname: example\ndescription: Test skill.\n---\n")

@@ -68,8 +68,8 @@ def test_quiet_one_shot_resumes_nested_notify_on_this_session_not_parent(monkeyp
     ``chat -Q`` used to inherit the dispatcher's HERMES_SESSION_KEY and exit after the
     dispatch ack, so C's reply was saved but B never resumed.
     """
-    from tools.approval_context import get_current_session_key
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.approval_context import get_current_session_key
+    from hermes_agent.tools.process_registry import process_registry
 
     monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
@@ -114,7 +114,7 @@ def test_quiet_notify_loop_shares_one_linger_budget(monkeypatch):
     round 2 as 600 again; the shared deadline yields 600 then the remainder.
     """
     from hermes_cli import quiet_single_query as qsq
-    from tools import process_registry as pr
+    from hermes_agent.tools import process_registry as pr
 
     waits = []
 
@@ -146,7 +146,7 @@ def test_quiet_notify_loop_shares_one_linger_budget(monkeypatch):
 def test_quiet_notify_loop_stops_after_timeout_with_drained_texts(monkeypatch):
     """A timed-out process is waited on no further: drained texts still run, then the loop stops."""
     from hermes_cli import quiet_single_query as qsq
-    from tools import process_registry as pr
+    from hermes_agent.tools import process_registry as pr
 
     waits = []
 
@@ -173,7 +173,7 @@ def test_quiet_notify_loop_stops_after_timeout_with_drained_texts(monkeypatch):
 
 def test_finalize_linger_skipped_after_quiet_notify_loop(monkeypatch):
     """_wait_for_oneshot_background_completions must not re-wait once the notify loop consumed the budget."""
-    from tools import process_registry as pr
+    from hermes_agent.tools import process_registry as pr
 
     waited = []
     monkeypatch.setattr(pr.process_registry, "wait_for_pending_completions",
@@ -196,7 +196,7 @@ def test_quiet_notify_loop_injects_owned_async_delegation_events(monkeypatch):
     follow-up turn exactly like a completion.
     """
     from hermes_cli import quiet_single_query as qsq
-    from tools import process_registry as pr
+    from hermes_agent.tools import process_registry as pr
 
     monkeypatch.setattr(pr.process_registry, "wait_for_pending_completions",
                         lambda *a, **k: {"waited": [], "completed": [], "timed_out": []})
@@ -217,7 +217,7 @@ def test_quiet_notify_loop_injects_owned_async_delegation_events(monkeypatch):
 
 
 def _quiet_drain(monkeypatch, events):
-    from tools import process_registry as pr
+    from hermes_agent.tools import process_registry as pr
     monkeypatch.setattr(pr.process_registry, "wait_for_pending_completions",
                         lambda *a, **k: {"waited": [], "completed": [], "timed_out": []})
     queue = list(events)

@@ -11,10 +11,10 @@ from unittest.mock import patch
 
 import pytest
 
-from tools import approval as approval_module
-from tools import approval_context, approval_gateway_wait, terminal_tool, terminal_tool_sudo
-from tools.approval_prompt import prompt_dangerous_approval
-from tools.clarify_tool import clarify_tool
+from hermes_agent.tools import approval as approval_module
+from hermes_agent.tools import approval_context, approval_gateway_wait, terminal_tool, terminal_tool_sudo
+from hermes_agent.tools.approval_prompt import prompt_dangerous_approval
+from hermes_agent.tools.clarify_tool import clarify_tool
 
 PASSWORD = "hunter2-do-not-leak"
 TOKEN = "ghp_" + "Z" * 36
@@ -151,7 +151,7 @@ class TestApproval:
 
     def test_plugin_transport_fires_pair(self, captured, monkeypatch):
         from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-        from tools import approval_prompt
+        from hermes_agent.tools import approval_prompt
 
         manager = PluginManager()
         manifest = PluginManifest(name="phone-fixture", version="1.0.0", description="", source="user", key="phone")

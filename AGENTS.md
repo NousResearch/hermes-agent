@@ -95,7 +95,7 @@ all profile-aware via `get_hermes_home()`.
 
 Every former god file is a **facade** (public entry points + the names other packages import) plus
 **siblings** `<stem>_<topic>.py`, each owning one topic (the tree above, `hermes_agent/gateway/run.py`,
-`tools/mcp_tool.py`, `hermes_cli/kanban.py`, `hermes_cli/web_server.py`).
+`hermes_agent/tools/mcp_tool.py`, `hermes_cli/kanban.py`, `hermes_cli/web_server.py`).
 
 - **Find code by topic:** `grep -rn "def name" <dir>/<stem>_*.py`, not by reading the facade.
 - **Siblings late-import the facade** inside functions; never a module-level cycle.
@@ -148,7 +148,7 @@ Every former god file is a **facade** (public entry points + the names other pac
 | `cli.py`, `hermes_cli/` | `hermes_cli/AGENTS.md` | CLI mixins, slash registry, config system, skins, `hermes update`, profiles / multiplex |
 | `hermes_agent/gateway/` | `hermes_agent/gateway/AGENTS.md` | adapters, message guards, streaming, notifications, token locks, § Profile scope |
 | `plugins/platforms/` new adapter | `hermes_agent/gateway/platforms/ADDING_A_PLATFORM.md` | step-by-step adapter guide |
-| `tools/`, `toolsets.py`, `model_tools.py` | `tools/AGENTS.md` | adding tools, registry, toolsets, delegation, session-scoped surface tools |
+| `tools/`, `hermes_agent/toolsets.py`, `hermes_agent/model_tools.py` | `hermes_agent/tools/AGENTS.md` | adding tools, registry, toolsets, delegation, session-scoped surface tools |
 | `plugins/`, `hermes_cli/plugins*.py` | `plugins/AGENTS.md` | plugin kinds, native compat contract, in-tree policy, boundary lint |
 | `plugin-catalog/` | `plugin-catalog/README.md` | catalog admission rules (mirrored in the developer guide; keep identical) |
 | `hermes_agent/tui_gateway/`, `ui-tui/` | `hermes_agent/tui_gateway/AGENTS.md` | process model, JSON-RPC transport, slash flow |

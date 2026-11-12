@@ -5,8 +5,8 @@ import subprocess
 
 import pytest
 
-from tools import terminal_tool
-import tools.terminal_tool_backends as backends
+from hermes_agent.tools import terminal_tool
+import hermes_agent.tools.terminal_tool_backends as backends
 
 
 @pytest.fixture(autouse=True)

@@ -2,7 +2,7 @@
 
 ``hermes_agent/gateway/session_bot.py`` admits a Bot Chat delivery into the authority FIFO. When that admission
 SETTLES ``failed`` with a committed result whose error classifies transient
-(``tools.bot_failure_reasons.result_retry_action``), one retry is admitted under the derived
+(``hermes_agent.tools.bot_failure_reasons.result_retry_action``), one retry is admitted under the derived
 identity ``bot:<id>:retry``; the delivery's receipt follows it. A repeated ``deliver`` of the same
 id or an owner restart (``recover_bot_deliveries``) re-reads that admission instead of minting
 another, and an unknown/non-transient admission is never replayed.
@@ -78,7 +78,7 @@ async def _settle_quietly(bot):
 
 async def _settled(bot, count):
     from hermes_agent.gateway.session_bot import _result
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     for _ in range(200):
         await asyncio.sleep(0.02)
         rows = _admissions(bot)
@@ -132,7 +132,7 @@ async def test_retry_that_fails_again_and_non_transient_failures_are_never_repla
     await _settle_quietly(bot)
     assert [r['request_id'] for r in _admissions(bot)][2:] == ['bot:' + other]
     from hermes_agent.gateway.session_bot import _result
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     auth = _result(bot.authority, (await asyncio.to_thread(read_delivery_result, bot.home, other)))
     assert (auth['status'], auth['reason']) == ('failed', 'provider_auth_or_access'), auth
 
@@ -144,7 +144,7 @@ async def test_context_overflow_retries_once_unless_the_failed_dm_is_still_an_op
     row, and refuses (recorded, typed) when the DM is still the durable tail: the owner execution has
     no adoption seam, and a second copy would merge into the unanswered one."""
     from hermes_agent.gateway.session_bot import deliver
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     bot.errors[:] = ["This model's maximum context length is 200000 tokens"]
     await deliver(bot.connection, dict(id=KEY, profile='default', message='ping'))
     receipt = await _settled(bot, 2)
@@ -216,7 +216,7 @@ async def test_receipt_file_stays_pending_while_a_draining_owner_leaves_the_retr
     transiently while the owner drains is interim there (``claimed``), never the final ``failed``:
     the restarted owner's recovery admits the one retry and the same wait gets its answer."""
     from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
-    from tools.bot_live_delivery import await_delivery_async
+    from hermes_agent.tools.bot_live_delivery import await_delivery_async
     import hermes_agent.gateway.session_finite as finite
     started, gate = asyncio.Event(), asyncio.Event()
     execute = finite.execute_finite_admission
@@ -261,7 +261,7 @@ async def test_mailbox_file_lock_held_elsewhere_never_stalls_the_owner_loop(bot)
     import time
     from hermes_agent.gateway.session_bot import deliver
     from hermes_cli.active_sessions import _FileLock
-    from tools.bot_live_delivery import _locked, _root
+    from hermes_agent.tools.bot_live_delivery import _locked, _root
     with _locked(bot.home):
         pass
     from tests.waiting import async_wait_until

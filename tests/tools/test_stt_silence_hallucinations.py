@@ -12,7 +12,7 @@ three-layer fix at every local whisper call site:
 
 from types import SimpleNamespace
 
-from tools.transcription_local import (
+from hermes_agent.tools.transcription_local import (
     _LOGPROB_THRESHOLD_DEFAULT,
     _NO_SPEECH_PROB_THRESHOLD_DEFAULT,
     _is_hallucinated_segment,
@@ -97,7 +97,7 @@ class TestTranscribeLocalWiring:
     """_transcribe_local must pass the shared hardened kwargs to the model."""
 
     def _run(self, monkeypatch, stt_config, segments=None):
-        import tools.transcription_tools as tt
+        import hermes_agent.tools.transcription_tools as tt
 
         captured = {}
 

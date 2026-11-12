@@ -122,7 +122,7 @@ class TestDDGSProviderSearch:
         monkeypatch.setattr(prov, "_test_hook", "sleep", raising=True)
         monkeypatch.setattr(prov, "_SEARCH_TIMEOUT_SECS", 0.4, raising=True)
         monkeypatch.setattr(prov, "_TERMINATE_GRACE_SECS", 0.5, raising=True)
-        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        monkeypatch.setattr("hermes_agent.tools.interrupt.is_interrupted", lambda: False)
 
         start = time.monotonic()
         result = prov.DDGSWebSearchProvider().search("hangs forever", limit=5)
@@ -173,7 +173,7 @@ class TestDDGSProcessIsolation:
         monkeypatch.setattr(prov, "_test_hook", "gil", raising=True)
         monkeypatch.setattr(prov, "_SEARCH_TIMEOUT_SECS", 0.5, raising=True)
         monkeypatch.setattr(prov, "_TERMINATE_GRACE_SECS", 0.5, raising=True)
-        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        monkeypatch.setattr("hermes_agent.tools.interrupt.is_interrupted", lambda: False)
 
         start = time.monotonic()
         result = prov.DDGSWebSearchProvider().search("gil hold", limit=5)
@@ -199,7 +199,7 @@ class TestDDGSProcessIsolation:
         monkeypatch.setattr(prov, "_test_hook", "sleep", raising=True)
         monkeypatch.setattr(prov, "_SEARCH_TIMEOUT_SECS", 30, raising=True)
         monkeypatch.setattr(prov, "_TERMINATE_GRACE_SECS", 0.5, raising=True)
-        monkeypatch.setattr("tools.interrupt.is_interrupted", _interrupt_after_poll)
+        monkeypatch.setattr("hermes_agent.tools.interrupt.is_interrupted", _interrupt_after_poll)
 
         start = time.monotonic()
         result = prov.DDGSWebSearchProvider().search("interrupt me", limit=5)
@@ -216,7 +216,7 @@ class TestDDGSProcessIsolation:
         import plugins.web.ddgs.provider as prov
 
         monkeypatch.setattr(prov, "_test_hook", "empty", raising=True)
-        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+        monkeypatch.setattr("hermes_agent.tools.interrupt.is_interrupted", lambda: False)
 
         result = prov.DDGSWebSearchProvider().search("q", limit=5)
         assert result["success"] is True
@@ -229,13 +229,13 @@ class TestDDGSProcessIsolation:
 
 class TestDDGSBackendWiring:
     def test_is_backend_available_true_when_package_importable(self, monkeypatch):
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
         assert web_tools._is_backend_available("ddgs") is True
 
 
     def test_auto_detect_picks_ddgs_as_last_resort(self, monkeypatch):
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", dict)
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
                     "EXA_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY", "KEENABLE_API_KEY"):
@@ -245,7 +245,7 @@ class TestDDGSBackendWiring:
         assert web_tools._get_backend() == "ddgs"
 
     def test_check_web_api_key_true_when_ddgs_configured(self, monkeypatch):
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
         assert web_tools.check_web_api_key() is True
@@ -268,7 +268,7 @@ class TestDDGSSearchOnlyErrors:
 
     def test_web_extract_returns_search_only_error(self, monkeypatch):
         import asyncio
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "ddgs"})
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
@@ -277,7 +277,7 @@ class TestDDGSSearchOnlyErrors:
             return True
 
         monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
-        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+        monkeypatch.setattr("hermes_agent.tools.interrupt.is_interrupted", lambda: False, raising=False)
 
         result_str = asyncio.get_event_loop().run_until_complete(
             web_tools.web_extract_tool(["https://example.com"])

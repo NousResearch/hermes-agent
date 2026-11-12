@@ -17,7 +17,7 @@ from hermes_agent.gateway.owner_identity import host_owner_subject as _owner
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from hermes_cli.browser_connect import ChromeDebugLaunch
-from tools import async_delegation as ad
+from hermes_agent.tools import async_delegation as ad
 from hermes_agent.tui_gateway import server
 from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 
@@ -1715,7 +1715,7 @@ def test_voice_toggle_returns_configured_record_key(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "hermes_agent.tools.voice_mode",
         types.SimpleNamespace(
             check_voice_requirements=lambda: {"available": True, "details": ""}
         ),
@@ -1749,7 +1749,7 @@ def test_voice_toggle_handles_non_dict_voice_cfg(monkeypatch):
     """
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "hermes_agent.tools.voice_mode",
         types.SimpleNamespace(
             check_voice_requirements=lambda: {"available": True, "details": ""}
         ),
@@ -1877,7 +1877,7 @@ def test_prompt_submit_typed_stop_phrase_ends_voice_chat(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "hermes_agent.tools.voice_mode",
         types.SimpleNamespace(
             is_voice_stop_phrase=lambda t: t.strip().lower().strip(".!?") == "stop"
         ),
@@ -1915,7 +1915,7 @@ def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
     matcher must not even be consulted (guard is on voice mode)."""
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "hermes_agent.tools.voice_mode",
         types.SimpleNamespace(
             is_voice_stop_phrase=lambda t: (_ for _ in ()).throw(
                 AssertionError("stop matcher must not run when voice is off")
@@ -1938,7 +1938,7 @@ def test_prompt_submit_typed_stop_passes_through_when_voice_off(monkeypatch):
 
 
 def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatch):
-    from tools import wake_word
+    from hermes_agent.tools import wake_word
 
     state = {"owner": None, "callback": None, "paused": False}
     voice_callbacks = {}
@@ -2123,7 +2123,7 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
 
 def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch):
     """The ear toggle / /wake on|off write wake_word.enabled; auto-arm never does."""
-    from tools import wake_word
+    from hermes_agent.tools import wake_word
 
     config = {"enabled": False, "phrase": "hey hermes", "surface": "auto",
               "start_new_session": True}
@@ -2382,7 +2382,7 @@ def test_voice_toggle_tts_branch_also_carries_record_key(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "hermes_agent.tools.voice_mode",
         types.SimpleNamespace(
             check_voice_requirements=lambda: {"available": True, "details": ""}
         ),
@@ -2422,7 +2422,7 @@ def test_load_enabled_toolsets_filters_invalid_tui_env(monkeypatch, capsys):
 def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "plugin_demo")
 
-    import toolsets
+    from hermes_agent import toolsets
 
     discovered = {"ready": False}
     original_validate = toolsets.validate_toolset
@@ -3036,7 +3036,7 @@ def test_expand_skill_invocation_for_replay_round_trips_the_projection(
     # body never leaving the server.
     from agent import skill_commands
     from agent import skill_utils
-    from tools import skills_tool
+    from hermes_agent.tools import skills_tool
 
     skills_dir = tmp_path / "skills"
     (skills_dir / "worktree-kickoff").mkdir(parents=True)
@@ -3074,7 +3074,7 @@ def _two_repo_project_skill_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]
     launch shape whose process cwd and TERMINAL_CWD both point at a non-project dir."""
     from agent import skill_commands
     from agent import skill_utils
-    from tools import skills_tool
+    from hermes_agent.tools import skills_tool
 
     def repo(name: str, skill: str) -> Path:
         r = tmp_path / name
@@ -3133,7 +3133,7 @@ def test_command_dispatch_reviews_staged_skill_writes(tmp_path, monkeypatch):
     # review command into the routing refusal, stranding staged writes with no surface
     # left. The review slice (pending/approve/reject/diff/approval) must answer; the
     # CLI-hub mutations must keep refusing.
-    from tools import write_approval as wa
+    from hermes_agent.tools import write_approval as wa
 
     home = tmp_path / "home"
     home.mkdir()
@@ -3190,7 +3190,7 @@ def test_command_dispatch_skills_gate_off_answers_instead_of_refusing(tmp_path, 
 def test_command_dispatch_memory_pending_reviews_staged_writes(tmp_path, monkeypatch):
     # Same fallback for /memory (#118812): the store must resolve under the session's
     # profile home, applying the write on approve instead of dropping it.
-    from tools import write_approval as wa
+    from hermes_agent.tools import write_approval as wa
 
     home = tmp_path / "home"
     home.mkdir()
@@ -4057,7 +4057,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         lambda _agent, session=None: {"cwd": session.get("cwd") if session else ""},
     )
 
-    from tools import approval
+    from hermes_agent.tools import approval
 
     monkeypatch.setattr(approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(approval, "load_permanent_allowlist", lambda: None)
@@ -4106,7 +4106,7 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
 
     profile_db = ProfileDB()
 
-    from tools import terminal_tool_lifecycle
+    from hermes_agent.tools import terminal_tool_lifecycle
 
     monkeypatch.setattr("hermes_agent.hermes_state_registry.acquire", lambda db_path=None: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
@@ -5406,7 +5406,7 @@ def test_ws_orphan_reap_reschedules_while_mid_turn_then_reaps(monkeypatch):
 
 
 def test_ws_orphan_reap_waits_for_active_delegation_then_reaps(monkeypatch):
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     callbacks = []
     torn_down = []
@@ -5461,7 +5461,7 @@ def test_ws_orphan_reap_waits_for_active_delegation_then_reaps(monkeypatch):
 
 
 def test_ws_orphan_reap_retries_when_delegation_lookup_fails(monkeypatch):
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     callbacks = []
     torn_down = []
@@ -6221,7 +6221,7 @@ def test_init_session_fires_reset_hook(monkeypatch):
         lambda event, session_id, *_args: hooks.append((event, session_id)),
     )
 
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
@@ -7501,7 +7501,7 @@ def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
     """A foreign live-loop dequeue is handed back to its proven owner."""
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     delivered = {"a": [], "b": []}
     emitted = []
@@ -7565,7 +7565,7 @@ def test_completion_ownership_lineage_lookup_failure_fails_closed(monkeypatch):
     """A provenance lookup failure cannot turn an addressed event into ours."""
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     class _BrokenDB:
         def resolve_resume_session_id(self, _session_key):
@@ -7610,7 +7610,7 @@ def test_notification_poller_live_loop_drops_addressed_orphan(
     """A live poll never injects an addressed event whose owner is gone."""
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     delivered = []
     emitted = []
@@ -7662,7 +7662,7 @@ def test_notification_poller_drops_orphaned_events(monkeypatch, routing):
     """Addressed completions whose owner is gone are dropped, not hijacked."""
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     emitted = []
     delivered = []
@@ -7724,7 +7724,7 @@ def test_notification_poller_delivers_owned_events(
     """Direct, UI-origin, and compression-lineage owners are delivered."""
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     class _CompressionDB:
         def resolve_resume_session_id(self, key):
@@ -7812,7 +7812,7 @@ def test_run_prompt_submit_binds_exact_steer_authority_and_resets_contextvars(
     monkeypatch, tmp_path
 ):
     """The turn thread commissions children with this session generation only."""
-    from tools.delegate_tool import _capture_gateway_steer_authority
+    from hermes_agent.tools.delegate_tool import _capture_gateway_steer_authority
     from hermes_agent.tui_gateway.transport import (
         bind_transport,
         current_transport,
@@ -7931,7 +7931,7 @@ def test_run_prompt_submit_requeues_foreign_completion(
 ):
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     _configure_immediate_prompt_run(monkeypatch, tmp_path)
     turns = []
@@ -7970,7 +7970,7 @@ def test_run_prompt_submit_requeues_foreign_completion(
 def test_run_prompt_submit_delivers_completion_observed_by_poll(monkeypatch, tmp_path):
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     _configure_immediate_prompt_run(monkeypatch, tmp_path)
     turns = []
@@ -8012,7 +8012,7 @@ def test_run_prompt_submit_requeues_all_unstarted_notifications_with_real_thread
 ):
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     _configure_immediate_prompt_run(
         monkeypatch, tmp_path, immediate_threads=False
@@ -8106,7 +8106,7 @@ def test_run_prompt_submit_delivers_completion_owned_through_compression_lineage
 ):
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     class _CompressionDB:
         def resolve_resume_session_id(self, key):
@@ -8159,7 +8159,7 @@ def test_run_prompt_submit_delivers_completion_owned_through_compression_lineage
 def test_run_prompt_submit_prefers_origin_ui_session_id(monkeypatch, tmp_path):
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     _configure_immediate_prompt_run(monkeypatch, tmp_path)
     ownership_checks = []
@@ -8720,7 +8720,7 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
 
 
 def test_config_set_yolo_toggles_session_scope():
-    from tools.approval import clear_session, is_session_yolo_enabled
+    from hermes_agent.tools.approval import clear_session, is_session_yolo_enabled
 
     server._sessions["sid"] = _session()
     try:
@@ -8823,7 +8823,7 @@ def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_valu
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # _load_approval_mode delegates to the canonical resolver in
-    # tools.approval, which reads via hermes_cli.config.load_config —
+    # hermes_agent.tools.approval, which reads via hermes_cli.config.load_config —
     # that path resolves HERMES_HOME from the environment, not
     # server._hermes_home.
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -8862,7 +8862,7 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # config.set writes via server._hermes_home, but the post-write
     # session.info emit resolves the effective mode through the canonical
-    # tools.approval resolver (load_config → env HERMES_HOME).
+    # hermes_agent.tools.approval resolver (load_config → env HERMES_HOME).
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     emitted = []
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
@@ -11572,7 +11572,7 @@ def test_slash_exec_r7_read_commands_use_metadata_mirror_flag_on(monkeypatch):
 
 
 def test_prompt_submit_sets_approval_session_key(monkeypatch):
-    from tools.approval import get_current_session_key
+    from hermes_agent.tools.approval import get_current_session_key
 
     captured = {}
 
@@ -12083,7 +12083,7 @@ def test_commands_catalog_ranks_skill_commands_by_recorded_usage(monkeypatch):
 def test_commands_catalog_survives_an_unreadable_usage_sidecar(monkeypatch):
     """A broken/absent .usage.json degrades to no ranking, never a broken menu."""
     monkeypatch.setattr(
-        "tools.skill_usage.load_usage",
+        "hermes_agent.tools.skill_usage.load_usage",
         lambda: (_ for _ in ()).throw(OSError("sidecar is gone")),
     )
 
@@ -14214,7 +14214,7 @@ def test_interrupt_only_clears_own_session_pending():
 
 def _wake_lease_double():
     """Owner-gated pause/resume stand-in: only the lease holder can re-arm."""
-    from tools import wake_word
+    from hermes_agent.tools import wake_word
 
     state = {"lease": None, "paused": False, "resumed": []}
 
@@ -15440,7 +15440,7 @@ def test_session_create_close_race_does_not_orphan_resources(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
 
     # Shim register/unregister to observe leaks
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(
         _approval,
@@ -15558,7 +15558,7 @@ def test_session_create_no_race_keeps_worker_alive(monkeypatch):
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
 
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(
@@ -15734,7 +15734,7 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: emits.append(a))
 
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
@@ -16438,7 +16438,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
 
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
@@ -16558,7 +16558,7 @@ def test_session_create_branch_seed_failure_does_not_break_create(monkeypatch):
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
 
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
@@ -16620,7 +16620,7 @@ def test_session_create_seed_failure_after_row_compensates(monkeypatch):
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
 
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
@@ -16682,7 +16682,7 @@ def test_session_create_seed_disk_full_keeps_row_for_retry(monkeypatch):
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
 
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
@@ -16741,7 +16741,7 @@ def test_session_create_without_parent_still_defers_row(monkeypatch):
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
 
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
@@ -18131,7 +18131,7 @@ def test_notification_poller_delivers_completion(monkeypatch):
     """Poller picks up completion events and triggers agent turns."""
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     turns = []
     emitted = []
@@ -18203,7 +18203,7 @@ def test_notification_poller_skips_consumed(monkeypatch):
     """Already-consumed completions are not dispatched by the poller."""
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     turns = []
 
@@ -18259,7 +18259,7 @@ def test_notification_poller_starts_no_turn_after_stop(monkeypatch):
     automatic model turn; it waits (requeued) until the user submits again."""
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     started = []
     sess = _session(running=False, _turn_cancel_requested=True)
@@ -18304,7 +18304,7 @@ def test_notification_poller_requeues_when_busy(monkeypatch):
     """When the agent is busy, the poller requeues the event."""
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     emitted = []
 
@@ -18488,7 +18488,7 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     """Distinct watch matches from one process emit; exact replay is deduped."""
     import queue as _queue_mod
 
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     turns = []
     emitted = []
@@ -18794,7 +18794,7 @@ def test_close_session_by_id_is_idempotent_and_full(monkeypatch):
 
     monkeypatch.setattr(server, "_finalize_session", _fake_finalize)
     monkeypatch.setattr(
-        "tools.approval.unregister_gateway_notify",
+        "hermes_agent.tools.approval.unregister_gateway_notify",
         lambda key: calls.__setitem__("unreg", calls["unreg"] + 1), raising=False,
     )
     server._sessions["sid-1"] = {"session_key": "k1", "agent": A(), "slash_worker": W()}
@@ -19240,7 +19240,7 @@ def test_reap_idle_sessions_logs_trim_failure(monkeypatch, caplog):
 
 
 def test_ttl_reaper_spares_session_with_active_delegation(monkeypatch):
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     closed = []
     delegation_id = "deleg_ttl_reaper_test"
@@ -19271,7 +19271,7 @@ def test_ttl_reaper_spares_session_with_active_delegation(monkeypatch):
 
 
 def test_lru_reaper_spares_active_delegation_and_evicts_idle_peer(monkeypatch):
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     closed = []
     delegation_id = "deleg_lru_reaper_test"
@@ -19749,7 +19749,7 @@ def test_subscription_upgrade_requires_action_surfaces_recovery(monkeypatch):
     assert res["idempotency_key"]  # minted when the caller omits one
 # ── _get_usage active_subagents (TUI status-bar ⛓ indicator) ──────────────
 # Mirrors the classic CLI status bar: _get_usage embeds a live count of
-# background/async subagents from tools.async_delegation.active_count() so the
+# background/async subagents from hermes_agent.tools.async_delegation.active_count() so the
 # Ink status bar can render ⛓ N. Source of truth is the same registry the CLI
 # reads; the field rides the existing per-update `usage` payload.
 
@@ -19807,7 +19807,7 @@ def test_get_usage_perf_readouts_guard_negative_latency():
 
 
 def test_get_usage_includes_active_subagents(monkeypatch):
-    import tools.async_delegation as ad_mod
+    import hermes_agent.tools.async_delegation as ad_mod
     monkeypatch.setattr(ad_mod, "active_count", lambda: 4)
     usage = server._get_usage(_BareAgent())
     assert usage["active_subagents"] == 4
@@ -19815,7 +19815,7 @@ def test_get_usage_includes_active_subagents(monkeypatch):
 
 def test_get_usage_safe_when_active_count_raises(monkeypatch):
     """A raising active_count() must not break the usage payload."""
-    import tools.async_delegation as ad_mod
+    import hermes_agent.tools.async_delegation as ad_mod
 
     def _boom():
         raise RuntimeError("boom")
@@ -20125,7 +20125,7 @@ def test_get_usage_clamps_post_compression_sentinel():
 # ---------------------------------------------------------------------------
 
 def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, listen=None, transcribe=None):
-    """Install lightweight tools.tts_tool / tools.voice_mode fakes."""
+    """Install lightweight hermes_agent.tools.tts_tool / hermes_agent.tools.voice_mode fakes."""
     started = {}
 
     def fake_stream(text_queue, stop, done, **_kw):
@@ -20141,7 +20141,7 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
 
     monkeypatch.setitem(
         sys.modules,
-        "tools.tts_tool",
+        "hermes_agent.tools.tts_tool",
         types.SimpleNamespace(
             check_tts_requirements=lambda: requirements,
             _get_provider=lambda cfg: "edge",
@@ -20151,12 +20151,12 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.tts_tool_speaker",
+        "hermes_agent.tools.tts_tool_speaker",
         types.SimpleNamespace(stream_tts_to_speaker=fake_stream),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.voice_mode",
+        "hermes_agent.tools.voice_mode",
         types.SimpleNamespace(
             stop_playback=lambda: (playback_stops.append(True) if playback_stops is not None else None),
             listen_for_speech=listen or default_listen,
@@ -20220,7 +20220,7 @@ def test_tts_stream_begin_barges_in_on_previous_pipeline(monkeypatch):
 def test_tts_stream_stop_latches_interruption_for_next_turn(monkeypatch):
     """Cutting live speech (interrupt / typing barge) marks the latch the next
     turn's model note consumes; a mode change (user_barge=False) does not."""
-    import tools.tts_streaming as ts
+    import hermes_agent.tools.tts_streaming as ts
 
     ts._interrupted_at = None
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
@@ -20238,7 +20238,7 @@ def test_tts_stream_stop_latches_interruption_for_next_turn(monkeypatch):
 
 def test_tts_stream_stop_after_natural_finish_does_not_latch(monkeypatch):
     """Speech that already finished (done set) isn't an interruption."""
-    import tools.tts_streaming as ts
+    import hermes_agent.tools.tts_streaming as ts
 
     ts._interrupted_at = None
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
@@ -20258,7 +20258,7 @@ def test_tts_stream_vad_barge_in_cuts_pipeline_and_submits_capture(monkeypatch, 
     emitted as voice.transcript so the TUI submits it — complete from its
     first syllable, no re-record round trip. The cut also latches the
     speech-interrupted note for the next turn."""
-    import tools.tts_streaming as ts
+    import hermes_agent.tools.tts_streaming as ts
 
     ts._interrupted_at = None
     monkeypatch.setenv("HERMES_VOICE_TTS", "1")
@@ -20298,7 +20298,7 @@ def test_full_duplex_generation_phase_interrupts_running_turn(monkeypatch, tmp_p
     in-flight agent turn via the same seam session.interrupt uses, and the
     captured interjection is emitted as voice.transcript. This is the
     half-duplex gap: previously no listener existed until playback started."""
-    import tools.tts_streaming as ts
+    import hermes_agent.tools.tts_streaming as ts
 
     ts._interrupted_at = None
     monkeypatch.setenv("HERMES_VOICE", "1")
@@ -20367,8 +20367,8 @@ def test_full_duplex_stop_phrase_mid_generation_ends_voice_chat(monkeypatch, tmp
         listen=fake_listen,
         transcribe=lambda path, model=None: {"success": True, "transcript": "stop"},
     )
-    # is_voice_stop_phrase lives in the faked tools.voice_mode namespace.
-    sys.modules["tools.voice_mode"].is_voice_stop_phrase = (
+    # is_voice_stop_phrase lives in the faked hermes_agent.tools.voice_mode namespace.
+    sys.modules["hermes_agent.tools.voice_mode"].is_voice_stop_phrase = (
         lambda text: text.strip().lower() == "stop"
     )
     monkeypatch.setitem(
@@ -20393,7 +20393,7 @@ def test_speak_text_with_barge_arms_monitor_and_cuts_playback(monkeypatch, tmp_p
     reply cuts playback and the captured interruption is emitted as
     voice.transcript — previously these paths called speak_text bare and
     were uninterruptible by voice."""
-    import tools.tts_streaming as ts
+    import hermes_agent.tools.tts_streaming as ts
 
     ts._interrupted_at = None
     monkeypatch.setenv("HERMES_VOICE", "1")
@@ -20519,7 +20519,7 @@ def test_clarify_callback_uses_configured_timeout(monkeypatch):
 def test_clarify_timeout_seconds_maps_non_positive_to_unlimited(monkeypatch, configured, expected):
     """A ``<= 0`` clarify timeout means unlimited and reaches the server request as None
     (wait(None) waits forever) rather than an immediate wait(0) skip."""
-    monkeypatch.setattr("tools.clarify_gateway.get_clarify_timeout", lambda: configured)
+    monkeypatch.setattr("hermes_agent.tools.clarify_gateway.get_clarify_timeout", lambda: configured)
 
     assert server._clarify_timeout_seconds() == expected
 

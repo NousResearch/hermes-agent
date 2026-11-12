@@ -21,7 +21,7 @@ from typing import Any
 
 from hermes_constants import get_hermes_home
 from hermes_cli._startup_fast import project_root_str
-from tools.environments.local import hermes_subprocess_env
+from hermes_agent.tools.environments.local import hermes_subprocess_env
 
 logger = logging.getLogger(__name__)
 

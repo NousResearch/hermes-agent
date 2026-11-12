@@ -9,8 +9,8 @@ Cloud backends (Browserbase, Browser Use) enforce it by default. Users can opt o
 
 import pytest
 
-from tools import browser_session_cdp, browser_session_cloud, browser_url_policy, browser_use_cli
-from tools.browser_url_policy import evaluate_url_safety
+from hermes_agent.tools import browser_session_cdp, browser_session_cloud, browser_url_policy, browser_use_cli
+from hermes_agent.tools.browser_url_policy import evaluate_url_safety
 
 
 @pytest.fixture(autouse=True)

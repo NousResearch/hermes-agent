@@ -1,7 +1,7 @@
-"""Connecting and discovery for tools.mcp_tool: per-server connect cooldown, connect /
+"""Connecting and discovery for hermes_agent.tools.mcp_tool: per-server connect cooldown, connect /
 lazy-start / recycled-stdio wake-up, ``register_mcp_servers`` / ``discover_mcp_tools`` and
 the status / probe public API. Origin state (``_servers``, ``_lock``, the loop, patchable
-helpers) is read through ``_core`` so ``mock.patch("tools.mcp_tool.X")`` keeps working."""
+helpers) is read through ``_core`` so ``mock.patch("hermes_agent.tools.mcp_tool.X")`` keeps working."""
 
 from __future__ import annotations
 
@@ -12,16 +12,16 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
-from tools.mcp_tool_common import _core, _parse_boolish, mcp_server_enabled
-from tools import mcp_tool_config as _config
-from tools import mcp_tool_errors as _errors
-from tools import mcp_tool_lifecycle as _lifecycle
-from tools import mcp_tool_loop as _loop
-from tools import mcp_tool_registration as _registration
-from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
-from tools.mcp_tool_scope import _key_name, _key_scope, _key_visible_in_scope, _resolve_server_key, _server_key
+from hermes_agent.tools.mcp_tool_common import _core, _parse_boolish, mcp_server_enabled
+from hermes_agent.tools import mcp_tool_config as _config
+from hermes_agent.tools import mcp_tool_errors as _errors
+from hermes_agent.tools import mcp_tool_lifecycle as _lifecycle
+from hermes_agent.tools import mcp_tool_loop as _loop
+from hermes_agent.tools import mcp_tool_registration as _registration
+from hermes_agent.tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
+from hermes_agent.tools.mcp_tool_scope import _key_name, _key_scope, _key_visible_in_scope, _resolve_server_key, _server_key
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 # Default max concurrent MCP server connections per discovery pass (one unbounded
 # `asyncio.gather` spawned every server's subprocess tree simultaneously); config.yaml
@@ -233,7 +233,7 @@ def _stderr_tail_note(name: str) -> str:
     ``Connection closed`` alone hides why the child died — the reason sits in the shared
     mcp-stderr.log. The stored status message stays single-line; only the log line quotes
     the child's output."""
-    from tools.mcp_tool_config import _tail_server_stderr
+    from hermes_agent.tools.mcp_tool_config import _tail_server_stderr
     tail = _tail_server_stderr(name)
     if not tail:
         return ""
@@ -409,7 +409,7 @@ def _register_lazy_from_cache(new_servers: dict[str, dict]) -> tuple[dict[str, d
     lazy_registered = 0
     lazy_server_count = 0
     try:
-        from tools.mcp_schema_cache import config_fingerprint, get_cached_entry
+        from hermes_agent.tools.mcp_schema_cache import config_fingerprint, get_cached_entry
     except Exception:  # pragma: no cover - cache module missing
         return eager_servers, 0, 0
     for name, cfg in new_servers.items():
@@ -468,7 +468,7 @@ def _run_discovery_pass(new_servers: dict[str, dict]) -> None:
     """Run ``_discover_all`` on the MCP loop with the interrupt flag parked; clean up
     ``_server_connecting`` when the pass dies early."""
     # Executor threads are reused: a prior session's stale interrupt must not cancel this pass.
-    from tools.interrupt import is_interrupted as _is_interrupted, set_interrupt as _set_interrupt
+    from hermes_agent.tools.interrupt import is_interrupted as _is_interrupted, set_interrupt as _set_interrupt
     _was_interrupted = _is_interrupted()
     if _was_interrupted:
         _set_interrupt(False)

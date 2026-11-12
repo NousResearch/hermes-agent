@@ -127,7 +127,7 @@ def test_loop_completion_persists_into_the_served_profiles_store(served):
 def test_watch_event_gate_uses_the_owning_profiles_mode(served):
     """alpha has notifications ``off``; its watch event is drained silently even when the shared
     queue is drained from the root context, exactly as a standalone alpha gateway would."""
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     runner = served.runner
     registry = ProcessRegistry()
@@ -144,7 +144,7 @@ def test_watch_event_gate_uses_the_owning_profiles_mode(served):
 def test_served_profile_process_checkpoint_is_recovered_at_startup(served, monkeypatch):
     """A background process checkpointed during alpha's turn (alpha/processes.json) is re-adopted by
     the multiplexer's startup recovery, once, with its watcher re-armed."""
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     runner = served.runner
     import os

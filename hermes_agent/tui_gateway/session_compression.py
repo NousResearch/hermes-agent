@@ -330,10 +330,10 @@ def _sync_session_key_after_compress(
     # Even if the approval module fails to import, anchor session_key on the continuation id.
     session["session_key"] = new_session_id
     with contextlib.suppress(Exception):
-        from tools import approval
+        from hermes_agent.tools import approval
         with contextlib.suppress(Exception):
             approval.unregister_gateway_notify(old_key)
-        from tools.approval_yolo import transfer_session_yolo
+        from hermes_agent.tools.approval_yolo import transfer_session_yolo
         transfer_session_yolo(old_key, new_session_id)
         with contextlib.suppress(Exception):
             approval.register_gateway_notify(new_session_id, lambda data: _emit_approval_request(sid, data))

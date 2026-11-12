@@ -11,7 +11,7 @@ import pytest
 import pm
 from pm import paths
 from tests.waiting import wait_until
-from tools import browser_launcher as launcher
+from hermes_agent.tools import browser_launcher as launcher
 
 
 @pytest.fixture(autouse=True)
@@ -144,7 +144,7 @@ def test_termux_ownership_policy_never_provisions(browser_store, monkeypatch):
 
 
 def test_cdp_override_does_not_require_pm_browser(browser_store, monkeypatch):
-    from tools import browser_session
+    from hermes_agent.tools import browser_session
 
     monkeypatch.setenv("BROWSER_CDP_URL", "ws://127.0.0.1:9222/devtools/browser/test")
     monkeypatch.setattr(launcher, "launch_chromium",
@@ -180,7 +180,7 @@ def test_historical_warmer_is_inert(monkeypatch):
 
     monkeypatch.setattr("subprocess.Popen", forbidden)
     monkeypatch.setattr(pm, "ensure", forbidden)
-    from tools import browser_tool
+    from hermes_agent.tools import browser_tool
 
     assert browser_tool.warm_agent_browser_npx_cache(timeout=0.1) is False
 
@@ -215,8 +215,8 @@ def test_exact_pm_child_receives_composed_scrubbed_environment(browser_store, mo
     records.mkdir()
     monkeypatch.setattr(launcher, "_records_dir", lambda _home: records)
     monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: False)
-    monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
-    monkeypatch.setattr("tools.browser_session_cloud.is_headed_mode", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.chromium_args", list)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.is_headed_mode", lambda: False)
     monkeypatch.setenv("PATH", str(tmp_path / "hostile-path"))
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-browser")
     monkeypatch.setenv("BROWSERBASE_API_KEY", "browser-provider-key")

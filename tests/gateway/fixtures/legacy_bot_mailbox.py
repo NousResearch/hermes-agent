@@ -1,7 +1,7 @@
 """Executed with the pre-authority checkout on PYTHONPATH, not the new writer."""
 import sys
 from pathlib import Path
-from tools.bot_live_delivery import deliver_to_live_owner, claim_pending_delivery
+from hermes_agent.tools.bot_live_delivery import deliver_to_live_owner, claim_pending_delivery
 
 home, sid = Path(sys.argv[1]), sys.argv[2]
 owner = dict(profile_home=str(home), session_id=sid, lease_id='departed-owner', live_session_id='old-native')

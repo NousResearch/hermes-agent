@@ -14,19 +14,19 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from agent.skill_utils import (
     EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS, is_skill_support_path as _is_skill_support_path)
-from tools.skills_tool_setup import (
+from hermes_agent.tools.skills_tool_setup import (
     SkillReadinessStatus, _build_setup_note, _capture_required_environment_variables,
     _get_required_environment_variables, _is_env_var_persisted, _is_remote_env_backend)
-from tools.skills_tool_plugin import (
+from hermes_agent.tools.skills_tool_plugin import (
     MAX_DESCRIPTION_LENGTH, MAX_NAME_LENGTH, _INJECTION_PATTERNS, _fail, _json,
     _mark_background_review_read, _preprocess_skill, _read_skill_text, _safe_frontmatter,
     _serve_plugin_skill, _serve_skill_file, _truncate_description)
-from tools.skills_tool_dedup import dedup_skill_view, reset_skill_view_dedup
-from tools.skill_provenance import is_background_review
+from hermes_agent.tools.skills_tool_dedup import dedup_skill_view, reset_skill_view_dedup
+from hermes_agent.tools.skill_provenance import is_background_review
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +104,7 @@ _LOOKUP_HINT = "Use a skill name or relative path within the skills directory."
 def skill_lookup_path_error(name: str) -> Optional[str]:
     """Error if lookup *name* could escape the search roots it is joined onto. Windows drive
     paths are rejected too: their ``:`` would be misread as a plugin namespace separator."""
-    from tools.path_security import has_traversal_component
+    from hermes_agent.tools.path_security import has_traversal_component
     if not isinstance(name, str):
         return "Skill name must be a string."
     win = PureWindowsPath(candidate := name.strip())
@@ -472,7 +472,7 @@ def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict
     allows) and register what's available for sandboxes. Returns ``(fields, extras)``: fields go
     before the readiness extras in the skill_view result — key order is tool output."""
     required_env_vars = _get_required_environment_variables(frontmatter)
-    from tools.terminal_scope import terminal_env
+    from hermes_agent.tools.terminal_scope import terminal_env
     backend = str(terminal_env("TERMINAL_ENV", "local")).strip().lower() or "local"
     env_snapshot = load_env()
     missing_required_env_vars = [
@@ -489,7 +489,7 @@ def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict
     # Only vars actually set pass through to sandboxed execution (execute_code, terminal).
     if available_env_names := [e["name"] for e in required_env_vars if e["name"] not in remaining]:
         try:
-            from tools.env_passthrough import register_env_passthrough
+            from hermes_agent.tools.env_passthrough import register_env_passthrough
             register_env_passthrough(available_env_names)
         except Exception:
             logger.debug("Could not register env passthrough for skill %s", skill_name, exc_info=True)
@@ -499,7 +499,7 @@ def _skill_readiness(frontmatter: dict[str, Any], skill_name: str) -> tuple[dict
     missing_cred_files: list = []
     if isinstance(required_cred_files_raw, list) and required_cred_files_raw:
         try:
-            from tools.credential_files import register_credential_files
+            from hermes_agent.tools.credential_files import register_credential_files
             missing_cred_files = register_credential_files(required_cred_files_raw)
             setup_needed = setup_needed or bool(missing_cred_files)
         except Exception:
@@ -773,7 +773,7 @@ def _skill_view_with_bump(args, **kw):
             if (stub := dedup_skill_view(dedup_task_id, name, args.get("file_path"), parsed, result)) is not None:
                 return stub
             if resolved := parsed.get("name") or name:  # qualified forms return the canonical name
-                from tools.skill_usage import bump_use, bump_view
+                from hermes_agent.tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))
                 # Viewing is actively loading the skill to act on it — that counts as use
                 # (the curator's stale timer keys off last_used_at).

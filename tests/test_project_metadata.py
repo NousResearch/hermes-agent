@@ -155,7 +155,7 @@ def _exact_pins(specs):
 def test_extras_pin_each_package_at_one_version():
     """One package, one version, across every extra.
 
-    tools/lazy_deps.py is gone — pyproject.toml is the single authority for
+    hermes_agent/tools/lazy_deps.py is gone — pyproject.toml is the single authority for
     optional-dependency pins (pm syncs the venv from uv.lock, which resolves
     from here). The drift class that killed us before (#31817: two documents
     pinning the same package differently, update ping-ponging the version)

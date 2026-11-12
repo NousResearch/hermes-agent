@@ -12,7 +12,7 @@ from hermes_agent.gateway import run_runtime
 from hermes_agent.gateway.session_authority import LiveSession
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import admit_session_input, begin_runtime_epoch
-from tools.bot_live_delivery import _locked, _write
+from hermes_agent.tools.bot_live_delivery import _locked, _write
 
 
 class _Registry:

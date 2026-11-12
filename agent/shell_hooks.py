@@ -477,7 +477,7 @@ def _windows_script_argv(argv: list[str]) -> list[str]:
         return [sys.executable, *argv]
     # Resolved inside the caller's try: no Git for Windows raises RuntimeError carrying the
     # installer's own actionable guidance, which is a better diagnostic than any we could add.
-    from tools.environments.local import _find_bash
+    from hermes_agent.tools.environments.local import _find_bash
     return [_find_bash(), *argv]
 
 
@@ -504,7 +504,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> dict[str, Any]:
     # under multiplexing os.environ carries the DEFAULT profile's secrets, which a secondary's hook
     # script must not inherit; single-profile runs keep the process env byte-for-byte as before.
     from agent.secret_scope import is_multiplex_active
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
     try:
         if IS_WINDOWS:
             argv = _windows_script_argv(argv)

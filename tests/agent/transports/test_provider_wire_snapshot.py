@@ -160,8 +160,8 @@ def _agent(provider: str, model: str, base_url: str, **agent_kwargs: Any):
     from agent.turn_context import _PER_TURN_RESET_STATE
     from run_agent import AIAgent
 
-    with patch("model_tools.get_tool_definitions", return_value=TOOLS), \
-         patch("model_tools.check_toolset_requirements", return_value={}), \
+    with patch("hermes_agent.model_tools.get_tool_definitions", return_value=TOOLS), \
+         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
          patch("agent.process_bootstrap.OpenAI"):
         agent = AIAgent(provider=provider, model=model, base_url=base_url, api_key="sk-tes...0000",
                         quiet_mode=True, skip_context_files=True, skip_memory=True, session_id="wire-snapshot",

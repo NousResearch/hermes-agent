@@ -96,13 +96,13 @@ def test_acp_background_discovery_does_not_block_startup(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_oauth",
-        _mod("tools.mcp_oauth", suppress_interactive_oauth=lambda: nullcontext()),
+        "hermes_agent.tools.mcp_oauth",
+        _mod("hermes_agent.tools.mcp_oauth", suppress_interactive_oauth=lambda: nullcontext()),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
-        _mod("tools.mcp_tool_discovery", discover_mcp_tools=_blocking_discover),
+        "hermes_agent.tools.mcp_tool_discovery",
+        _mod("hermes_agent.tools.mcp_tool_discovery", discover_mcp_tools=_blocking_discover),
     )
 
     start = time.monotonic()
@@ -145,13 +145,13 @@ def test_acp_late_refresh_adds_tools_when_discovery_lands_after_build(monkeypatc
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_oauth",
-        _mod("tools.mcp_oauth", suppress_interactive_oauth=lambda: nullcontext()),
+        "hermes_agent.tools.mcp_oauth",
+        _mod("hermes_agent.tools.mcp_oauth", suppress_interactive_oauth=lambda: nullcontext()),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
-        _mod("tools.mcp_tool_discovery", discover_mcp_tools=_slow_discover),
+        "hermes_agent.tools.mcp_tool_discovery",
+        _mod("hermes_agent.tools.mcp_tool_discovery", discover_mcp_tools=_slow_discover),
     )
 
     mcp_startup.start_background_mcp_discovery(
@@ -179,8 +179,8 @@ def test_acp_late_refresh_adds_tools_when_discovery_lands_after_build(monkeypatc
 
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_agent",
-        _mod("tools.mcp_tool_agent", refresh_agent_mcp_tools=_fake_refresh),
+        "hermes_agent.tools.mcp_tool_agent",
+        _mod("hermes_agent.tools.mcp_tool_agent", refresh_agent_mcp_tools=_fake_refresh),
     )
 
     # Trigger late-refresh.
@@ -222,13 +222,13 @@ def test_acp_late_refresh_skips_after_first_turn(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_oauth",
-        _mod("tools.mcp_oauth", suppress_interactive_oauth=lambda: nullcontext()),
+        "hermes_agent.tools.mcp_oauth",
+        _mod("hermes_agent.tools.mcp_oauth", suppress_interactive_oauth=lambda: nullcontext()),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
-        _mod("tools.mcp_tool_discovery", discover_mcp_tools=_slow_discover),
+        "hermes_agent.tools.mcp_tool_discovery",
+        _mod("hermes_agent.tools.mcp_tool_discovery", discover_mcp_tools=_slow_discover),
     )
 
     mcp_startup.start_background_mcp_discovery(
@@ -250,8 +250,8 @@ def test_acp_late_refresh_skips_after_first_turn(monkeypatch):
 
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_agent",
-        _mod("tools.mcp_tool_agent", refresh_agent_mcp_tools=_fake_refresh),
+        "hermes_agent.tools.mcp_tool_agent",
+        _mod("hermes_agent.tools.mcp_tool_agent", refresh_agent_mcp_tools=_fake_refresh),
     )
 
     acp_agent._schedule_mcp_late_refresh(state)
@@ -289,13 +289,13 @@ def test_acp_late_refresh_skips_while_turn_running(monkeypatch):
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_oauth",
-        _mod("tools.mcp_oauth", suppress_interactive_oauth=lambda: nullcontext()),
+        "hermes_agent.tools.mcp_oauth",
+        _mod("hermes_agent.tools.mcp_oauth", suppress_interactive_oauth=lambda: nullcontext()),
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_discovery",
-        _mod("tools.mcp_tool_discovery", discover_mcp_tools=_slow_discover),
+        "hermes_agent.tools.mcp_tool_discovery",
+        _mod("hermes_agent.tools.mcp_tool_discovery", discover_mcp_tools=_slow_discover),
     )
 
     mcp_startup.start_background_mcp_discovery(
@@ -317,8 +317,8 @@ def test_acp_late_refresh_skips_while_turn_running(monkeypatch):
 
     monkeypatch.setitem(
         sys.modules,
-        "tools.mcp_tool_agent",
-        _mod("tools.mcp_tool_agent", refresh_agent_mcp_tools=_fake_refresh),
+        "hermes_agent.tools.mcp_tool_agent",
+        _mod("hermes_agent.tools.mcp_tool_agent", refresh_agent_mcp_tools=_fake_refresh),
     )
 
     acp_agent._schedule_mcp_late_refresh(state)

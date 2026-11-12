@@ -104,8 +104,8 @@ async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
         Path(output_path).write_bytes(b"partial")
         return json.dumps({"success": False, "error": "backend exploded"})
 
-    with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
-        "tools.tts_tool.text_to_speech_tool", side_effect=fake_tts
+    with patch("hermes_agent.tools.tts_tool.check_tts_requirements", return_value=True), patch(
+        "hermes_agent.tools.tts_tool.text_to_speech_tool", side_effect=fake_tts
     ):
         await adapter._process_message_background(
             event, build_session_key(event.source)

@@ -50,7 +50,7 @@ def test_session_state_paths_are_write_denied(fake_homes, relative):
 
 
 def test_write_file_tool_preserves_existing_session_snapshot(fake_homes):
-    import tools.file_tools as ft
+    import hermes_agent.tools.file_tools as ft
 
     _root, profile = fake_homes
     target = profile / "sessions" / "session_abc.json"

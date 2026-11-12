@@ -13,7 +13,7 @@ import sys
 from typing import Dict
 
 # Logger name kept as the origin module's so existing log expectations hold.
-logger = logging.getLogger("tools.code_execution_tool")
+logger = logging.getLogger("hermes_agent.tools.code_execution_tool")
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -65,7 +65,7 @@ def _scrub_child_env(source_env, is_passthrough=None, is_windows=None, toolchain
     OS-essential allowlist passes by exact name.
     """
     try:
-        from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value, scoped_passthrough_additions
+        from hermes_agent.tools.env_passthrough import is_env_passthrough, resolve_passthrough_value, scoped_passthrough_additions
     except Exception:
         is_env_passthrough = lambda _: False
         resolve_passthrough_value = lambda _name, _fallback: None
@@ -162,7 +162,7 @@ def _build_child_env(*, rpc_endpoint: str, rpc_token: str, tmpdir: str,
     # (PYTHONPATH is in _SAFE_ENV_PREFIXES so it passes the scrub). External project interpreters
     # must not inherit Hermes dependencies (#74817). PM's own interpreter, however, can be a
     # bare bundled Python whose dependencies live in the selected generation, not sys.prefix.
-    from tools.environments.local_pythonpath import (
+    from hermes_agent.tools.environments.local_pythonpath import (
         _strip_hermes_owned_pythonpath, _validated_runtime_venv, _same_path,
     )
     _runtime_path = None
@@ -295,14 +295,14 @@ def _resolve_child_cwd(mode: str, staging_dir: str, task_id: str = "") -> str:
         return staging_dir
     if task_id:
         try:
-            from tools.terminal_tool import get_session_cwd
+            from hermes_agent.tools.terminal_tool import get_session_cwd
             recorded = get_session_cwd(task_id)
         except Exception:
             recorded = None
         if recorded and os.path.isdir(recorded):
             return recorded
         try:
-            from tools.file_tools_paths import _registered_task_cwd_override
+            from hermes_agent.tools.file_tools_paths import _registered_task_cwd_override
             session_cwd = _registered_task_cwd_override(task_id)
         except Exception:
             session_cwd = None

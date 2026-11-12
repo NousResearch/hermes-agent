@@ -1905,7 +1905,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Native-button exec approval over the relay (the press resolves via
-        tools.approval.resolve_gateway_approval). When the lane is unavailable the send FAILS
+        hermes_agent.tools.approval.resolve_gateway_approval). When the lane is unavailable the send FAILS
         (success=False) so run.py's button→text fallback runs."""
         options = [{"id": choice, "label": label, **({"style": style} if style else {})}
                    for label, choice, style in prompt.actions]
@@ -1926,7 +1926,7 @@ class RelayAdapter(RelayDiscordInteractionMixin, BasePlatformAdapter):
         metadata: Optional[dict[str, Any]] = None,
     ) -> SendResult:
         """Three-button slash-command confirmation over the relay (resolves via
-        tools.slash_confirm.resolve; success=False falls back to text-intercept)."""
+        hermes_agent.tools.slash_confirm.resolve; success=False falls back to text-intercept)."""
         options = [
             {"id": "once", "label": t("platform.relay.confirm_approve_once"), "style": "primary"},
             {"id": "always", "label": t("platform.relay.confirm_always_approve")},

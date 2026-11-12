@@ -8,8 +8,8 @@ under a different session cwd were invisible ("No checkpoints found for
 
 import json
 
-import tools.checkpoint_manager as cm
-from tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
+import hermes_agent.tools.checkpoint_manager as cm
+from hermes_agent.tools.checkpoint_manager import CheckpointManager, format_checkpoint_list
 
 
 def _make_store_with_project(tmp_path, workdir: str):

@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from tools.skills_hub_github import GitHubAuth, GitHubSource
+from hermes_agent.tools.skills_hub_github import GitHubAuth, GitHubSource
 
 
 @pytest.mark.parametrize("raw_status", [200, 404])
@@ -14,7 +14,7 @@ def test_pinned_file_comes_from_raw_and_spends_no_api_call(monkeypatch, raw_stat
     never install a skill with ~58+ files (remotion-best-practices: 143 calls, rate_limited).
     A pinned file now comes from raw.githubusercontent.com; a raw miss (private repo) still
     falls back to the API."""
-    import tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub as hub
     hosts = []
 
     def fake_get(url, **_kw):
@@ -34,8 +34,8 @@ def test_unreachable_raw_host_falls_back_to_the_api_and_is_tried_once(monkeypatc
     """A DNS-poisoned or NXDOMAIN raw.githubusercontent.com (api.github.com fine) raises
     SSRFConnectionBlocked, a ValueError the raw attempt did not catch: every install failed before
     the API fallback. A dropped-packet firewall costs a 15 s timeout per file, so stop after one."""
-    import tools.skills_hub as hub
-    from tools.url_safety import SSRFConnectionBlocked
+    import hermes_agent.tools.skills_hub as hub
+    from hermes_agent.tools.url_safety import SSRFConnectionBlocked
     hosts = []
 
     def fake_get(url, **_kw):

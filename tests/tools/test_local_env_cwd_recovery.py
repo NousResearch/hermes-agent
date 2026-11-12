@@ -14,7 +14,7 @@ import shutil
 import tempfile
 from unittest.mock import MagicMock, patch
 
-from tools.environments.local import (
+from hermes_agent.tools.environments.local import (
     LocalEnvironment,
     _resolve_safe_cwd,
 )
@@ -80,8 +80,8 @@ class TestRunBashCwdRecovery:
     @pytest.fixture(autouse=True)
     def _no_supervisor(self, monkeypatch):
         # The faked Popen must see only the command, not the owner-death supervisor's spawn.
-        monkeypatch.setattr("tools.environments.local.own_process_groups", lambda pgids: None)
-        monkeypatch.setattr("tools.environments.local.release_process_groups", lambda pgids: None)
+        monkeypatch.setattr("hermes_agent.tools.environments.local.own_process_groups", lambda pgids: None)
+        monkeypatch.setattr("hermes_agent.tools.environments.local.release_process_groups", lambda pgids: None)
 
     def test_recovers_when_cwd_deleted_after_init(self, tmp_path, caplog):
         """Reproduces the wedge from #17558: cwd was valid when the
@@ -100,9 +100,9 @@ class TestRunBashCwdRecovery:
         captured = {}
         fds: list = []
         try:
-            with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
+            with patch("hermes_agent.tools.environments.local._find_bash", return_value="/bin/bash"), \
                  patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
-                 caplog.at_level("WARNING", logger="tools.environments.local"):
+                 caplog.at_level("WARNING", logger="hermes_agent.tools.environments.local"):
                 env.execute("echo hello")
         finally:
             _close_fds(fds)
@@ -124,9 +124,9 @@ class TestRunBashCwdRecovery:
         captured = {}
         fds: list = []
         try:
-            with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
+            with patch("hermes_agent.tools.environments.local._find_bash", return_value="/bin/bash"), \
                  patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
-                 caplog.at_level("WARNING", logger="tools.environments.local"):
+                 caplog.at_level("WARNING", logger="hermes_agent.tools.environments.local"):
                 env.execute("echo hello")
         finally:
             _close_fds(fds)

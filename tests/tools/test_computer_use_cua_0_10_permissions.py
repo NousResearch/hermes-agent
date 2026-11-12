@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from tools.computer_use import cua_backend_daemon, cua_backend_driver
+from hermes_agent.tools.computer_use import cua_backend_daemon, cua_backend_driver
 
 
 @pytest.fixture(autouse=True)
 def _reset_computer_use_state():
-    from tools.computer_use.tool import reset_backend_for_tests
+    from hermes_agent.tools.computer_use.tool import reset_backend_for_tests
 
     reset_backend_for_tests()
     yield
@@ -21,20 +21,20 @@ def _reset_computer_use_state():
 
 
 def test_normal_hermes_session_maps_to_standard_mode():
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     with patch(
-        "tools.approval.is_approval_bypass_active_for_session",
+        "hermes_agent.tools.approval.is_approval_bypass_active_for_session",
         return_value=False,
     ):
         assert computer_use._cua_permission_mode("session-a") == "standard"
 
 
 def test_any_explicit_hermes_bypass_maps_to_unrestricted_mode():
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     with patch(
-        "tools.approval.is_approval_bypass_active_for_session",
+        "hermes_agent.tools.approval.is_approval_bypass_active_for_session",
         return_value=True,
     ):
         assert computer_use._cua_permission_mode("session-a") == "unrestricted"
@@ -44,9 +44,9 @@ def test_gateway_session_key_yolo_maps_to_unrestricted_mode():
     """Gateway /yolo keys bypass off the gateway session_key contextvar,
     not the DB session_id the tool path passes. Mode resolution must consult
     both namespaces or /yolo is silently dead on messaging platforms."""
-    from tools import approval
-    from tools import approval_context
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools import approval
+    from hermes_agent.tools import approval_context
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     gateway_key = "agent:main:telegram:private:12345"
     token = approval_context.set_current_session_key(gateway_key)
@@ -65,7 +65,7 @@ def test_gateway_session_key_yolo_maps_to_unrestricted_mode():
 
 
 def test_mode_change_replaces_only_that_sessions_backend():
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     created = []
 
@@ -83,10 +83,10 @@ def test_mode_change_replaces_only_that_sessions_backend():
 
     yolo = False
     with patch(
-        "tools.approval.is_approval_bypass_active_for_session",
+        "hermes_agent.tools.approval.is_approval_bypass_active_for_session",
         side_effect=lambda sid: yolo,
     ), patch(
-        "tools.computer_use.cua_backend.CuaDriverBackend", _Backend
+        "hermes_agent.tools.computer_use.cua_backend.CuaDriverBackend", _Backend
     ):
         standard = computer_use._get_backend("session-a")
         other = computer_use._get_backend("session-b")
@@ -102,7 +102,7 @@ def test_mode_change_replaces_only_that_sessions_backend():
 
 
 def test_mode_change_is_rechecked_after_stale_backend_stops():
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     yolo = False
     created = []
@@ -120,9 +120,9 @@ def test_mode_change_is_rechecked_after_stale_backend_stops():
             yolo = False
 
     with patch(
-        "tools.approval.is_approval_bypass_active_for_session",
+        "hermes_agent.tools.approval.is_approval_bypass_active_for_session",
         side_effect=lambda sid: yolo,
-    ), patch("tools.computer_use.cua_backend.CuaDriverBackend", _Backend):
+    ), patch("hermes_agent.tools.computer_use.cua_backend.CuaDriverBackend", _Backend):
         original = computer_use._get_backend("session-a")
         yolo = True
         replacement = computer_use._get_backend("session-a")
@@ -138,7 +138,7 @@ def test_mode_change_is_rechecked_after_stale_backend_stops():
 
 @pytest.mark.platforms("linux")
 def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
-    from tools.computer_use import cua_backend
+    from hermes_agent.tools.computer_use import cua_backend
 
     process = Mock()
     process.poll.return_value = None
@@ -189,7 +189,7 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
 
 
 def test_standard_backend_does_not_spawn_an_embedded_daemon():
-    from tools.computer_use.cua_backend import CuaDriverBackend
+    from hermes_agent.tools.computer_use.cua_backend import CuaDriverBackend
 
     standard = CuaDriverBackend(permission_mode="standard")
     unrestricted = CuaDriverBackend(permission_mode="unrestricted")
@@ -199,7 +199,7 @@ def test_standard_backend_does_not_spawn_an_embedded_daemon():
 
 
 def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypatch):
-    from tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
+    from hermes_agent.tools.computer_use.cua_backend_session import _AsyncBridge, _CuaDriverSession
 
     (tmp_path / "config.yaml").write_text(
         "computer_use:\n  grant_existing_profile: true\n",
@@ -215,10 +215,10 @@ def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypa
             return MagicMock()
 
         with patch(
-            "tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
+            "hermes_agent.tools.computer_use.cua_backend_driver.resolve_cua_driver_cmd",
             return_value="/opt/cua-driver",
         ), patch(
-            "tools.computer_use.cua_backend_driver._resolve_mcp_invocation",
+            "hermes_agent.tools.computer_use.cua_backend_driver._resolve_mcp_invocation",
             return_value=("/opt/cua-driver", ["mcp"]),
         ), patch(
             "mcp.StdioServerParameters", side_effect=capture_params
@@ -268,11 +268,11 @@ def test_bypass_escalation_is_warned_once_per_session(caplog):
     """
     import logging
 
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     computer_use._escalation_warned.clear()
     with patch(
-        "tools.approval.is_approval_bypass_active_for_session",
+        "hermes_agent.tools.approval.is_approval_bypass_active_for_session",
         return_value=True,
     ):
         with caplog.at_level(logging.WARNING, logger=computer_use.logger.name):
@@ -291,11 +291,11 @@ def test_bypass_escalation_is_warned_once_per_session(caplog):
 def test_no_escalation_warning_without_a_bypass(caplog):
     import logging
 
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     computer_use._escalation_warned.clear()
     with patch(
-        "tools.approval.is_approval_bypass_active_for_session",
+        "hermes_agent.tools.approval.is_approval_bypass_active_for_session",
         return_value=False,
     ):
         with caplog.at_level(logging.WARNING, logger=computer_use.logger.name):

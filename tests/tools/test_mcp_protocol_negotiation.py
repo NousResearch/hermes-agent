@@ -10,8 +10,8 @@ import asyncio
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask
-from tools.mcp_tool_errors import _handshake_rejected_as_modern, _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION
+from hermes_agent.tools.mcp_tool import MCPServerTask
+from hermes_agent.tools.mcp_tool_errors import _handshake_rejected_as_modern, _JSONRPC_UNSUPPORTED_PROTOCOL_VERSION
 
 
 class _Err(Exception):
@@ -171,7 +171,7 @@ class TestModernVersionEchoedToLegacyHandshake:
     ``server/discover`` must still connect — the handshake succeeded on the wire."""
 
     def test_auto_completes_the_handshake_at_the_offered_version_when_discover_fails(self):
-        from tools import mcp_tool as _core
+        from hermes_agent.tools import mcp_tool as _core
         s = _EchoingStatelessSession(disc=_Err(-32603, "Server returned an error response"))
         out = _run(_task()._negotiate_session(s, 5))
         assert out.capabilities.tools is not None

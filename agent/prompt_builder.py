@@ -28,7 +28,7 @@ from agent.skill_utils import (
     iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
-from tools.threat_patterns import scan_for_threats as _scan_for_threats
+from hermes_agent.tools.threat_patterns import scan_for_threats as _scan_for_threats
 from utils import atomic_json_write, file_cache_version
 
 logger = logging.getLogger(__name__)
@@ -89,7 +89,7 @@ def _scan_context_content(content: str, filename: str, *, user_authored: bool = 
 
     *user_authored* (SOUL.md in the user's own HERMES_HOME): a hit is WARNED and the file still loads.
     SOUL.md sits in the same trust class as config.yaml — file-tool writes to it go through the
-    protected-instruction approval gate (``tools/file_tools_write_guards.py``) and project checkouts never
+    protected-instruction approval gate (``hermes_agent/tools/file_tools_write_guards.py``) and project checkouts never
     supply it — so a user who *documents* "ignore previous instructions" in their security guidance
     must not lose their whole identity file to a one-line log entry (#112570). Project-dir files
     (repo AGENTS.md / .cursorrules / .hermes.md) arrive with the checkout and keep blocking, and so does
@@ -818,7 +818,7 @@ def _tenv_read(name: str, default: str = "") -> str:
     the active profile's settings (raw os.getenv could read a previous profile's value).
     Only an import failure falls back — an active refusal scope must raise."""
     try:
-        from tools.terminal_scope import terminal_env
+        from hermes_agent.tools.terminal_scope import terminal_env
     except ImportError:
         return os.getenv(name, default)
     return terminal_env(name, default)
@@ -837,8 +837,8 @@ _BACKEND_PROBE_CMD = (
 
 def _run_backend_probe(env_type: str, terminal_tool) -> str:
     """Execute the probe command inside a freshly built backend; "" when it yields nothing."""
-    from tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
-    from tools.terminal_tool_lifecycle import _cleanup_env
+    from hermes_agent.tools.terminal_tool_backends import _container_config_from_config, _create_environment, _ssh_config_from_config
+    from hermes_agent.tools.terminal_tool_lifecycle import _cleanup_env
 
     config = terminal_tool._get_env_config()
     # Same container_config shaper as the live terminal path: a private copy of the key table here
@@ -886,7 +886,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     if formatted is None:
         formatted = ""
         try:
-            from tools import terminal_tool  # heavy; only needed for non-local backends
+            from hermes_agent.tools import terminal_tool  # heavy; only needed for non-local backends
         except Exception as e:
             logger.debug("Backend probe unavailable (import failed): %s", e)
         else:
@@ -965,7 +965,7 @@ def _bot_screen_hint() -> str:
     bot_desktop module or an unreadable lease must not break prompt construction. ``""`` when
     no screen is running, so the block simply drops out of the environment hints."""
     try:
-        from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+        from hermes_agent.tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
         return bot_screen_note(True, _bd_runtime.published_env().get("DISPLAY"), _bd_lease.get().holder)
     except Exception:
         return ""
@@ -1538,7 +1538,7 @@ def load_soul_md(context_length: Optional[int] = None, home_override: Path | Non
         if content:
             # Plugin-era desktop builds appended a frozen Bot Mode roster to SOUL.md; the server
             # now injects the live section in Bot Chat only, so the copy is dead weight everywhere.
-            from tools.bot_mode_probe import strip_legacy_protocol
+            from hermes_agent.tools.bot_mode_probe import strip_legacy_protocol
             content = strip_legacy_protocol(content).strip()
         if not content:
             return None

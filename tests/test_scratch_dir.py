@@ -686,7 +686,7 @@ def test_prune_keeps_entry_a_registered_hermes_process_works_in_but_reaps_orphan
     process registry's ``processes.json``) is never reaped, and the idle entry it works in is
     kept with an audit line. The orphaned grandchild of a registered shell that already exited
     is no longer Hermes' — it is still reaped and its entry removed. Red on the cwd-only reap."""
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     scratch = get_scratch_dir(tmp_path, prune=False)
@@ -746,7 +746,7 @@ def test_prune_owner_lookup_survives_symlinked_scratch_and_drops_orphaned_mcp_he
     symlink onto another disk, and an MCP helper whose recorded spawner died is an orphan again
     (reaped, entry removed) while a live background worker keeps its entry."""
     from hermes_cli import process_identity
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     home = tmp_path / "home"
     home.mkdir()

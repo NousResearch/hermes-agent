@@ -23,7 +23,7 @@ Two things are deliberately NOT failed on:
 * ``config.yaml`` (root and per-profile) is rewritten by config migration. The
   rewrite is additive by design, so it is reported, never judged.
 * ``skills/**`` is seeded and re-synced from the bundled library at startup and
-  after every update (``tools.skills_sync.sync_skills``) at BOTH roots -- the
+  after every update (``hermes_agent.tools.skills_sync.sync_skills``) at BOTH roots -- the
   home's own tree and every profile's. It changes on an ordinary release, so it
   is advisory-only. The exception is ``skills/.archive/**``, which holds
   restorable *user* skills and therefore is judged like everything else.
@@ -341,7 +341,7 @@ def _walk_root(home: str, root_rel: str, *, profiles: bool, judged: bool):
 
     The third field is per ENTRY, not per root: a bundled skills tree is seeded
     and re-synced from the library at startup and after every update at BOTH
-    roots (``tools.skills_sync``), so it is advisory-only -- except
+    roots (``hermes_agent.tools.skills_sync``), so it is advisory-only -- except
     ``<skills>/.archive/**``, which holds restorable USER skills and therefore
     stays judged.
     """

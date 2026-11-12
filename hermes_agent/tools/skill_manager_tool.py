@@ -27,13 +27,13 @@ from agent.skill_utils import (
     is_skill_description_truncated_for_prompt,
     parse_frontmatter as _parse_frontmatter,
     SKILL_PROMPT_DESC_LIMIT)
-from tools.skill_manager_guards import (
+from hermes_agent.tools.skill_manager_guards import (
     _background_review_delete_guard, _background_review_preflight, _background_review_read_before_write_guard,
     _containing_skills_root, _curator_consolidation_delete_guard, _is_path_redirect, _pinned_guard,
     _validate_delete_target, _is_background_review, _refusal as _err)
-from tools.skill_manager_batch import (
+from hermes_agent.tools.skill_manager_batch import (
     _PATCH_EITHER_OR, _PATCH_NEEDS_NEW_STRING, _PATCH_NEEDS_OLD_STRING, _op_shape_error, _skill_manage_batch)
-from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+from hermes_agent.tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
 logger = logging.getLogger(__name__)
 
@@ -92,13 +92,13 @@ def _skill_lock_path(name: str) -> Path:
 
 def _skill_mutation_lock(name: str):
     """Exclusive lock held across one skill's whole read-modify-write; thread-re-entrant."""
-    from tools.skill_usage import skill_file_lock
+    from hermes_agent.tools.skill_usage import skill_file_lock
     return skill_file_lock(_skill_lock_path(name))
 
 
 def _skill_mutation_locks(names):
     """Every lock of an atomic batch, acquired in one stable path order (deadlock-free across batches)."""
-    from tools.skill_usage import skill_file_lock
+    from hermes_agent.tools.skill_usage import skill_file_lock
     stack = ExitStack()
     for lock_path in sorted({_skill_lock_path(n) for n in names}):
         stack.enter_context(skill_file_lock(lock_path))
@@ -366,7 +366,7 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
 
 def _validate_file_path(file_path: str) -> Optional[str]:
     """Validate a write_file/remove_file path: under an allowed subdir, no escape."""
-    from tools.path_security import has_traversal_component
+    from hermes_agent.tools.path_security import has_traversal_component
     if not file_path:
         return "file_path is required."
     parts = Path(file_path).parts
@@ -387,7 +387,7 @@ def _validate_file_path(file_path: str) -> Optional[str]:
 def _resolve_supporting_file(skill_dir: Path, file_path: str):
     """Validate ``file_path`` and resolve it inside ``skill_dir``
     -> ``(target, None)`` | ``(None, error_dict)``."""
-    from tools.path_security import validate_within_dir
+    from hermes_agent.tools.path_security import validate_within_dir
     target = skill_dir / (file_path or "")
     err = _validate_file_path(file_path) or validate_within_dir(target, skill_dir)
     return (None, _err(err)) if err else (target, None)
@@ -443,7 +443,7 @@ def _attach_lint_findings(result: dict[str, Any], skill_md: Path, before: Option
     With ``before`` (the pre-write content) only rules the write INTRODUCED are attached, so a
     patch reports the line it crossed rather than re-listing the skill's standing findings."""
     try:
-        from tools.skill_linter import lint_content, lint_skill  # local import: optional path
+        from hermes_agent.tools.skill_linter import lint_content, lint_skill  # local import: optional path
         findings = lint_skill(skill_md)
         if before is not None:
             standing = {f.rule for f in lint_content(before, skill_dir=skill_md.parent)}
@@ -546,13 +546,13 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
     content = target.read_text(encoding="utf-8-sig")
 
     # Use the same fuzzy matching engine as the file patch tool.
-    from tools.fuzzy_match import fuzzy_find_and_replace
+    from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace
     correction_notes = []
     new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
         content, old_string, new_string, replace_all, correction_notes=correction_notes)
     if match_error:
         with suppress(Exception):
-            from tools.fuzzy_match import format_no_match_hint
+            from hermes_agent.tools.fuzzy_match import format_no_match_hint
             match_error += format_no_match_hint(match_error, match_count, old_string, content)
         return _err(match_error) | {"file_preview": _clip(content, 500, "...")}
     if err := _validate_content_size(new_content, label=target_label):
@@ -597,7 +597,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> dict[str, A
     absorbed_note = f" Content absorbed into '{absorbed_target}'." if absorbed_target else ""
     if _is_background_review():
         try:
-            from tools.skill_usage import archive_skill
+            from hermes_agent.tools.skill_usage import archive_skill
             ok, archive_msg = archive_skill(name)
         except Exception as e:
             return _err(f"failed to archive '{name}': {e}")
@@ -674,7 +674,7 @@ def _run_write_gate(build_staging):
     ``build_staging(wa) -> (payload, gist)`` runs only when staging. Fails open if
     write_approval cannot be imported."""
     try:
-        from tools import write_approval as wa
+        from hermes_agent.tools import write_approval as wa
     except Exception:
         return None  # fail open
     decision = wa.evaluate_gate(wa.SKILLS)
@@ -748,7 +748,7 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
     """Best-effort post-mutation side effects (never break the tool): ledger, prompt-cache
     clear, curator telemetry (which fires ``on_skill_lifecycle`` for plugins)."""
     with suppress(Exception):
-        from tools import skill_ledger as _ledger
+        from hermes_agent.tools import skill_ledger as _ledger
         _post = _find_skill(name)
         # delete: consolidation vs prune, and whether the recoverable archive handled it
         _evidence = ({"absorbed_into": absorbed_into, "archived": bool(result.get("_archived"))}
@@ -764,13 +764,13 @@ def _record_success(action, name, result, *, file_path, absorbed_into, task_id,
     # (foreground creates belong to the user). A recoverable curator archive keeps its
     # record as STATE_ARCHIVED (`hermes curator status`/`restore`); only a hard delete forgets.
     with suppress(Exception):
-        from tools.skill_usage import bump_patch, forget, record_created
+        from hermes_agent.tools.skill_usage import bump_patch, forget, record_created
         # During the curator consolidation pass, a verified consolidation must be RECOVERABLE: archival into
         # ~/.hermes/skills/.archive/ is documented as the maximum destructive action the curator may take,
         # and `hermes curator restore` promises the skill can be brought back. Route through the recoverable
         # archive primitive instead of permanent rmtree so a misjudged consolidation can be undone (#29912).
         # Foreground, user-directed deletes keep their existing hard-delete semantics.
-        from tools.skill_provenance import is_background_review
+        from hermes_agent.tools.skill_provenance import is_background_review
         if action == "create":
             record_created(name, agent_created=is_background_review(),
                            task_id=task_id, session_id=session_id)
@@ -816,7 +816,7 @@ def skill_manage(
         # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
         _ledger_before = None
         with suppress(Exception):
-            from tools import skill_ledger as _ledger
+            from hermes_agent.tools import skill_ledger as _ledger
             _pre = _find_skill(name)
             _ledger_before = _ledger.capture_before(
                 _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
@@ -933,7 +933,7 @@ SKILL_MANAGE_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 registry.register(
     name="skill_manage", toolset="skills", schema=SKILL_MANAGE_SCHEMA, emoji="📝",

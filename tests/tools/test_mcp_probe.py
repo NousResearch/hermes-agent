@@ -1,4 +1,4 @@
-"""Tests for probe_mcp_server_tools() in tools.mcp_tool."""
+"""Tests for probe_mcp_server_tools() in hermes_agent.tools.mcp_tool."""
 
 import asyncio
 from types import SimpleNamespace
@@ -10,7 +10,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _reset_mcp_state():
     """Ensure clean MCP module state before/after each test."""
-    import tools.mcp_tool as mcp
+    import hermes_agent.tools.mcp_tool as mcp
     old_loop = mcp._mcp_loop
     old_thread = mcp._mcp_thread
     old_servers = dict(mcp._servers)
@@ -25,8 +25,8 @@ class TestProbeMcpServerTools:
     """Tests for the lightweight probe_mcp_server_tools function."""
 
     def test_returns_empty_when_mcp_not_available(self):
-        with patch("tools.mcp_tool._MCP_AVAILABLE", False):
-            from tools.mcp_tool_discovery import probe_mcp_server_tools
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", False):
+            from hermes_agent.tools.mcp_tool_discovery import probe_mcp_server_tools
             result = probe_mcp_server_tools()
         assert result == {}
 
@@ -47,12 +47,12 @@ class TestProbeMcpServerTools:
                 raise ConnectionError("Server not found")
             return mock_server
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool_config._load_mcp_config", return_value=config), \
-             patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-             patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
-             patch("tools.mcp_tool_loop._run_on_mcp_loop") as mock_run, \
-             patch("tools.mcp_tool_loop._stop_mcp_loop"):
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool_config._load_mcp_config", return_value=config), \
+             patch("hermes_agent.tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+             patch("hermes_agent.tools.mcp_tool_loop._ensure_mcp_loop"), \
+             patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop") as mock_run, \
+             patch("hermes_agent.tools.mcp_tool_loop._stop_mcp_loop"):
 
             def run_coro(coro_or_factory, timeout=120):
                 coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
@@ -64,7 +64,7 @@ class TestProbeMcpServerTools:
 
             mock_run.side_effect = run_coro
 
-            from tools.mcp_tool_discovery import probe_mcp_server_tools
+            from hermes_agent.tools.mcp_tool_discovery import probe_mcp_server_tools
             result = probe_mcp_server_tools()
 
         assert "github" in result
@@ -88,12 +88,12 @@ class TestProbeMcpServerTools:
             connect_calls.append(name)
             return mock_server
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool_config._load_mcp_config", return_value=config), \
-             patch("tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
-             patch("tools.mcp_tool_loop._ensure_mcp_loop"), \
-             patch("tools.mcp_tool_loop._run_on_mcp_loop") as mock_run, \
-             patch("tools.mcp_tool_loop._stop_mcp_loop"):
+        with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool_config._load_mcp_config", return_value=config), \
+             patch("hermes_agent.tools.mcp_tool_discovery._connect_server", side_effect=fake_connect), \
+             patch("hermes_agent.tools.mcp_tool_loop._ensure_mcp_loop"), \
+             patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop") as mock_run, \
+             patch("hermes_agent.tools.mcp_tool_loop._stop_mcp_loop"):
 
             def run_coro(coro_or_factory, timeout=120):
                 coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
@@ -105,7 +105,7 @@ class TestProbeMcpServerTools:
 
             mock_run.side_effect = run_coro
 
-            from tools.mcp_tool_discovery import probe_mcp_server_tools
+            from hermes_agent.tools.mcp_tool_discovery import probe_mcp_server_tools
             result = probe_mcp_server_tools()
 
         assert "github" in result

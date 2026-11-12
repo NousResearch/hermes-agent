@@ -24,7 +24,7 @@ async def test_same_audio_under_two_paths_is_transcribed_once(tmp_path):
     replied.write_bytes(b"same telegram voice bytes")
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "hermes_agent.tools.transcription_tools.transcribe_audio",
         return_value={"success": True, "transcript": "one transcript", "provider": "local_command"},
     ) as transcribe:
         text, transcripts = await _runner()._enrich_message_with_transcription(
@@ -43,7 +43,7 @@ async def test_distinct_and_unreadable_audio_keep_their_own_transcription(tmp_pa
     paths = [str(first), str(second), "/missing/a.ogg", "/missing/b.ogg", str(first)]
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "hermes_agent.tools.transcription_tools.transcribe_audio",
         side_effect=[{"success": True, "transcript": t, "provider": "local_command"}
                      for t in ("first", "second", "gone-a", "gone-b")],
     ) as transcribe:

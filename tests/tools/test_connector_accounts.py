@@ -13,10 +13,10 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.connectors import live
-from tools.connectors import operation as op
-from tools.connectors.gateway.client import ConnectorClient
-from tools.connectors.tool import manage_connections
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.connectors import operation as op
+from hermes_agent.tools.connectors.gateway.client import ConnectorClient
+from hermes_agent.tools.connectors.tool import manage_connections
 
 
 @pytest.fixture(autouse=True)
@@ -50,9 +50,9 @@ class _ExecuteTransport:
 
 
 def test_the_account_a_call_ran_under_reaches_the_model_on_both_dispatch_paths(monkeypatch):
-    import model_tools
-    from tools.connectors.gateway import bridge, config
-    from tools.registry import invalidate_check_fn_cache
+    from hermes_agent import model_tools
+    from hermes_agent.tools.connectors.gateway import bridge, config
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
@@ -103,9 +103,9 @@ def _account(alias, label, status="active"):
 
 
 def _run(args, gateway, accounts=()):
-    with patch("tools.connectors.managed.WATCH_TICK_SECONDS", 0.0), \
-         patch("tools.connectors.managed.portal_accounts", return_value=list(accounts)), \
-         patch("tools.connectors.gateway.client.session_platform", return_value="desktop"):
+    with patch("hermes_agent.tools.connectors.managed.WATCH_TICK_SECONDS", 0.0), \
+         patch("hermes_agent.tools.connectors.managed.portal_accounts", return_value=list(accounts)), \
+         patch("hermes_agent.tools.connectors.gateway.client.session_platform", return_value="desktop"):
         return json.loads(manage_connections(args, client_factory=lambda: gateway,
                                              connection_callback=lambda _payload: None, session_id="s1"))
 
@@ -152,7 +152,7 @@ def test_an_open_repair_of_one_account_is_not_reused_for_another():
 
 
 def test_a_pending_link_reaches_the_model_with_its_account_id_and_no_link():
-    from tools.connectors.gateway.merge import PlannedCall, render_remote_entry
+    from hermes_agent.tools.connectors.gateway.merge import PlannedCall, render_remote_entry
 
     planned = PlannedCall(position=0, name="connectors__gmail__FETCH_EMAILS", connector="gmail",
                           tool="FETCH_EMAILS", arguments={})
@@ -172,25 +172,25 @@ def test_reconnect_of_a_name_no_account_has_yet_sends_the_alias():
 
 
 def test_try_again_on_a_named_account_repairs_the_account_it_minted_not_the_name(monkeypatch):
-    from tools.connectors import run
-    from tools.connectors.contract import Actor, TargetState
+    from hermes_agent.tools.connectors import run
+    from hermes_agent.tools.connectors.contract import Actor, TargetState
 
     gateway = _Gateway()
-    monkeypatch.setattr("tools.connectors.managed.managed_client", lambda **_: gateway)
+    monkeypatch.setattr("hermes_agent.tools.connectors.managed.managed_client", lambda **_: gateway)
     operation = op.ConnectionOperation([op.Target("gmail", "connector", "reconnect", alias="work")], session_key="s1")
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher, connection_id="ca_work")
     operation.transition("gmail", TargetState.failed, Actor.backend_watcher, detail="expired")
-    with patch("tools.connectors.gateway.client.session_platform", return_value="desktop"):
+    with patch("hermes_agent.tools.connectors.gateway.client.session_platform", return_value="desktop"):
         assert run.reissue(operation, ["gmail"]) is None
     assert gateway.mints == [{"connectors": ("gmail",), "reinitiate": True, "alias": None, "connection_id": "ca_work"}]
 
 
 def test_reconnect_with_an_alias_mints_nothing_when_the_account_list_cannot_be_read():
-    from tools.connectors.gateway.errors import ToolGatewayError
+    from hermes_agent.tools.connectors.gateway.errors import ToolGatewayError
 
     gateway = _Gateway()
-    with patch("tools.connectors.managed.WATCH_TICK_SECONDS", 0.0), \
-         patch("tools.connectors.managed.portal_accounts", side_effect=ToolGatewayError("down", status=503)):
+    with patch("hermes_agent.tools.connectors.managed.WATCH_TICK_SECONDS", 0.0), \
+         patch("hermes_agent.tools.connectors.managed.portal_accounts", side_effect=ToolGatewayError("down", status=503)):
         out = json.loads(manage_connections({"action": "reconnect", "connectors": [{"name": "gmail", "alias": "work"}]},
                                             client_factory=lambda: gateway, connection_callback=lambda _p: None,
                                             session_id="s1"))
@@ -199,7 +199,7 @@ def test_reconnect_with_an_alias_mints_nothing_when_the_account_list_cannot_be_r
 
 
 def test_rename_sends_the_new_name_for_the_resolved_account():
-    from tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
 
     sent = []
 
@@ -211,7 +211,7 @@ def test_rename_sends_the_new_name_for_the_resolved_account():
 
     client = PortalConnectorClient(transport=Transport(), endpoint_resolver=lambda: "https://portal.test",
                                    header_provider=lambda _url: {"Authorization": "Bearer t"})
-    with patch("tools.connectors.portal.client.PortalConnectorClient", return_value=client):
+    with patch("hermes_agent.tools.connectors.portal.client.PortalConnectorClient", return_value=client):
         out = _run({"action": "rename", "connectors": [{"name": "gmail", "alias": "work", "to": "office"}]},
                    _Gateway(), [_account("home", "me@example.com"), _account("work", "me@corp.example")])
     assert sent == [("PATCH", "https://portal.test/api/v1/connectors/accounts/ca_work", {"alias": "office"})]
@@ -220,7 +220,7 @@ def test_rename_sends_the_new_name_for_the_resolved_account():
 
 def test_rename_of_an_unknown_name_lists_the_names_that_exist():
     accounts = [_account("home", "me@example.com"), _account(None, "me@corp.example")]
-    with patch("tools.connectors.portal.client.PortalConnectorClient.rename_account") as rename:
+    with patch("hermes_agent.tools.connectors.portal.client.PortalConnectorClient.rename_account") as rename:
         out = _run({"action": "rename", "connectors": [{"name": "gmail", "alias": "wrk", "to": "office"}]},
                    _Gateway(), accounts)
     rename.assert_not_called()

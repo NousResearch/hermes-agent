@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from hermes_agent.gateway.config import Platform
-from tools.send_message_tool import send_message_tool
+from hermes_agent.tools.send_message_tool import send_message_tool
 
 _SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
 
@@ -34,9 +34,9 @@ def _make_config():
 def _send(message):
     send_mock = AsyncMock(return_value={"success": True})
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=_make_config()), \
-         patch("tools.interrupt.is_interrupted", return_value=False), \
-         patch("model_tools._run_async", side_effect=_run_async_immediately), \
-         patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+         patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False), \
+         patch("hermes_agent.model_tools._run_async", side_effect=_run_async_immediately), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", new=send_mock), \
          patch("hermes_agent.gateway.mirror.mirror_to_session", return_value=True):
         result = json.loads(
             send_message_tool({"action": "send", "target": "telegram:12345", "message": message})

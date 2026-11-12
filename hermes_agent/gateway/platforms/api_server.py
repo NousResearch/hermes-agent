@@ -544,7 +544,7 @@ _TURN_PROCESS_EPOCH_COUNTER = itertools.count(1)
 def _publish_turn_process_ownership(agent: Any, task_id: str) -> None:
     """Snapshot the process baseline and claim the task_id's epoch — the single place every
     API-server agent lifecycle records turn ownership (marker names cannot drift)."""
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     with _TURN_PROCESS_EPOCH_LOCK:
         epoch = next(_TURN_PROCESS_EPOCH_COUNTER)
         _TURN_PROCESS_EPOCHS[task_id] = epoch
@@ -920,7 +920,7 @@ def _notify_cron_provider_jobs_changed() -> None:
 # endpoints are authenticated, so this is not the trust boundary). Optional import:
 # a missing scanner must not disable the cron REST API.
 try:
-    from tools.cronjob_tools import _scan_cron_prompt
+    from hermes_agent.tools.cronjob_tools import _scan_cron_prompt
 except Exception:  # pragma: no cover - scanner is optional hardening
     _scan_cron_prompt = None
 
@@ -1184,10 +1184,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         process_depth = 0
         active_delegations = 0
         with suppress(Exception):
-            from tools.process_registry import process_registry
+            from hermes_agent.tools.process_registry import process_registry
             process_depth = process_registry.completion_queue.qsize()
         with suppress(Exception):
-            from tools.async_delegation import active_count
+            from hermes_agent.tools.async_delegation import active_count
             active_delegations = active_count()
         return active_api_runs, process_depth, active_delegations
 
@@ -2382,7 +2382,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         """GET /v1/skills — deterministic JSON listing of installed skills (name, description,
         category), the same set ``/skills list`` shows."""
         try:
-            from tools.skills_tool import find_all_skills, sort_skills
+            from hermes_agent.tools.skills_tool import find_all_skills, sort_skills
             skills = sort_skills(
                 find_all_skills(
                     skip_disabled=False, include_editorial=True
@@ -2402,7 +2402,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from hermes_cli.tools_config import (
                 _get_effective_configurable_toolsets, _get_platform_tools, _toolset_has_keys,
                 get_nous_subscription_features)
-            from toolsets import resolve_toolset
+            from hermes_agent.toolsets import resolve_toolset
             config = load_config()
             enabled_toolsets = _get_platform_tools(config, "api_server", include_default_mcp_servers=False)
             features = get_nous_subscription_features(config)
@@ -2552,7 +2552,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # reaper / older agent cleanup is invisible to list_sessions_rich (include_archived=False),
                 # which would fail `hermes peer dm` resolution and mint transient sessions — same accident
                 # the tui_gateway lookups heal.
-                from tools.bot_mode_probe import BOT_CHAT_TITLE
+                from hermes_agent.tools.bot_mode_probe import BOT_CHAT_TITLE
 
                 def _resurrect() -> bool:
                     # Lookup + unarchive (a WRITE with the full write patience) as one worker-thread
@@ -2935,7 +2935,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if db is None:
             return None
         home = Path(db.db_path).parent
-        from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
+        from hermes_agent.tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
 
         def _admit() -> Optional[dict[str, Any]]:
             try:
@@ -2958,7 +2958,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         second writer beside the lease holder: the open chat never shows the message or the reply,
         its live context never learns of them, and the two transcripts interleave in state.db.
         Local and relayed DMs already hand such a message to the owner's mailbox
-        (``tools/bot_mode_dm.py``, ``hermes_agent/tui_gateway/methods_bot_relay.py``). This waits for the owner's
+        (``hermes_agent/tools/bot_mode_dm.py``, ``hermes_agent/tui_gateway/methods_bot_relay.py``). This waits for the owner's
         receipt on the same budget as the local path, so the peer still gets the reply on this call.
         """
         admitted = await self._admit_to_live_bot_chat(ctx["session_id"], ctx["user_message"], ctx["run_kwargs"].get("turn_author"))
@@ -2986,7 +2986,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         ``keepalive`` (async) is called every SSE keepalive interval so a streaming caller's proxy
         keeps the socket."""
         from hermes_agent.gateway.platforms.api_server_bot_chat import await_live_delivery
-        from tools.bot_mode_dm import _LIVE_WAIT_SECONDS
+        from hermes_agent.tools.bot_mode_dm import _LIVE_WAIT_SECONDS
         deadline = time.monotonic() + _LIVE_WAIT_SECONDS
         while record["status"] in ("queued", "claimed"):
             remaining = deadline - time.monotonic()
@@ -3040,7 +3040,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _handle_session_chat(self, request: web.Request) -> web.Response:
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn (plus the delivery lanes'
         one bounded re-run of a transient failure; ``hermes peer dm`` is the client)."""
-        from tools.bot_failure_reasons import RETRY_NONE, result_retry_action
+        from hermes_agent.tools.bot_failure_reasons import RETRY_NONE, result_retry_action
         # This turn runs through _run_agent, so it already COUNTS toward the cap (#7483).
         # Spending the budget without checking it refused every other caller while never
         # refusing this route — and a fleet's cross-machine DMs all arrive here.
@@ -3060,7 +3060,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         from hermes_agent.gateway.platforms.api_server_authority_runs import RuntimeStoreError, store_error_response
         try:
             result, usage = await self._run_agent(conversation_history=history, **ctx["run_kwargs"])
-            # One policy-gated re-run of a transiently failed turn, as the local (``tools.bot_mode_dm``)
+            # One policy-gated re-run of a transiently failed turn, as the local (``hermes_agent.tools.bot_mode_dm``)
             # and relayed (``hermes_agent.tui_gateway.methods_bot_relay``) delivery lanes do (#93091 item 5, #115325):
             # transient classes re-run the SAME session once, resuming the failed attempt's unanswered
             # tail row from a fresh store read; auth/quota/config/model never re-run.
@@ -3764,8 +3764,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     if approval_notify_callback is not None and approval_session_key:
                         # Same machinery as /v1/runs (_run_agent_sync): the contextvar scopes
                         # this turn's approvals to the key the resolve endpoint looks up.
-                        from tools.approval import register_gateway_notify
-                        from tools.approval_context import set_current_session_key
+                        from hermes_agent.tools.approval import register_gateway_notify
+                        from hermes_agent.tools.approval_context import set_current_session_key
                         approval_token = set_current_session_key(approval_session_key)
                         register_gateway_notify(approval_session_key, approval_notify_callback)
                     try:
@@ -3773,7 +3773,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                             result = agent.run_conversation(**conversation_kwargs)
                     finally:
                         if approval_token is not None:
-                            from tools.approval_context import reset_current_session_key
+                            from hermes_agent.tools.approval_context import reset_current_session_key
                             _api_runs._unregister_approval_notify(approval_session_key)
                             with suppress(Exception):
                                 reset_current_session_key(approval_token)

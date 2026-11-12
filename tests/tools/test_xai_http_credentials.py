@@ -12,7 +12,7 @@ def _set_xai_oauth_unavailable(monkeypatch):
 def test_xai_credentials_fail_closed_without_profile_scope(tmp_path, monkeypatch):
     from agent import secret_scope
     from hermes_cli.config import invalidate_env_cache
-    from tools.xai_http import resolve_xai_http_credentials
+    from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("XAI_API_KEY", "foreign-xai-key")
@@ -36,7 +36,7 @@ def test_xai_credentials_do_not_fall_back_to_environ_when_scope_has_no_key(
 ):
     from agent import secret_scope
     from hermes_cli.config import invalidate_env_cache
-    from tools.xai_http import resolve_xai_http_credentials
+    from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("XAI_API_KEY", "foreign-xai-key")
@@ -91,7 +91,7 @@ def _install_fake_oauth_pool(monkeypatch, oauth_token: str) -> None:
 
 
 def test_prefer_api_key_wins_over_available_oauth(monkeypatch):
-    from tools.xai_http import resolve_xai_http_credentials
+    from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
@@ -114,7 +114,7 @@ def test_prefer_api_key_wins_over_available_oauth(monkeypatch):
 
 
 def test_prefer_api_key_falls_back_to_oauth_without_explicit_key(monkeypatch):
-    from tools.xai_http import resolve_xai_http_credentials
+    from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
@@ -132,7 +132,7 @@ def test_prefer_api_key_honors_hermes_xai_base_url_with_validation(monkeypatch):
     branch (HERMES_XAI_BASE_URL first, then XAI_BASE_URL) behind the same
     origin-pinning validation: an *.x.ai override is honored, a foreign
     origin is rejected in favor of the default."""
-    from tools.xai_http import resolve_xai_http_credentials
+    from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
@@ -165,7 +165,7 @@ def test_prefer_api_key_honors_profile_scope_only_key(tmp_path, monkeypatch):
     through resolve_provider_secret, not a raw env lookup."""
     from agent import secret_scope
     from hermes_cli.config import invalidate_env_cache
-    from tools.xai_http import resolve_xai_http_credentials
+    from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("XAI_API_KEY", raising=False)
@@ -214,7 +214,7 @@ def _write_auth_store(tmp_path, monkeypatch, suppressed):
 ])
 def test_suppressed_env_key_does_not_override_oauth(tmp_path, monkeypatch, suppressed, expected_provider):
     from hermes_cli.config import invalidate_env_cache
-    from tools.xai_http import resolve_xai_http_credentials
+    from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     _write_auth_store(tmp_path, monkeypatch, suppressed)
     monkeypatch.setenv("XAI_API_KEY", "dead-creditless-team-key")
@@ -227,7 +227,7 @@ def test_suppressed_env_key_does_not_override_oauth(tmp_path, monkeypatch, suppr
 
 def test_suppression_is_scoped_to_its_provider(tmp_path, monkeypatch):
     """Suppressing xai's env source must not blind another provider's env read."""
-    from tools.tool_backend_helpers import resolve_provider_secret
+    from hermes_agent.tools.tool_backend_helpers import resolve_provider_secret
 
     _write_auth_store(tmp_path, monkeypatch, {"xai": ["env:XAI_API_KEY"]})
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el-key")

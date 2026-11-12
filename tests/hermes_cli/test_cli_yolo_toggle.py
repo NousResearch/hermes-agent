@@ -2,7 +2,7 @@
 
 Pre-fix bug (issue #33925): ``cli.HermesCLI._toggle_yolo`` mutated only
 ``os.environ["HERMES_YOLO_MODE"]``. That env var is captured once at
-module-import time into ``tools.approval._YOLO_MODE_FROZEN`` (security
+module-import time into ``hermes_agent.tools.approval._YOLO_MODE_FROZEN`` (security
 hardening: stops prompt-injected skills from flipping the bypass mid-run),
 so the post-startup toggle was a silent no-op. ``/yolo`` advertised "YOLO ON"
 in the status bar while every dangerous command still hit the approval
@@ -28,9 +28,9 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.approval as approval_module
-from tools.approval_yolo import transfer_session_yolo
-from tools import approval_context
+import hermes_agent.tools.approval as approval_module
+from hermes_agent.tools.approval_yolo import transfer_session_yolo
+from hermes_agent.tools import approval_context
 from cli import HermesCLI
 
 
@@ -41,7 +41,7 @@ SESSION_KEY = "test-cli-yolo-session"
 def _clear_approval_state(monkeypatch):
     """Clear the YOLO bypass + env var around every test so cases are independent."""
     monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
-    # The value is intentionally frozen at tools.approval import time. Local
+    # The value is intentionally frozen at hermes_agent.tools.approval import time. Local
     # Hermes-driven test runs may inherit HERMES_YOLO_MODE=1 from the parent
     # agent process, so make the default test state hermetic; the one test that
     # covers startup-frozen YOLO explicitly patches it back to True.
@@ -181,7 +181,7 @@ class TestSessionRotationTransfersYolo:
     compression continuation), YOLO state keyed under the old id must move
     to the new id. Otherwise the user's ``/yolo ON`` silently reverts on
     the next turn — the same UX failure mode this PR set out to fix.
-    Shared with the TUI rotation path via ``tools.approval_yolo``."""
+    Shared with the TUI rotation path via ``hermes_agent.tools.approval_yolo``."""
 
     def test_transfer_moves_yolo_to_new_session(self):
         try:

@@ -29,12 +29,12 @@ def test_canonical_busy_notification_backs_off_without_consuming_work(monkeypatc
         monkeypatch.setattr(server, "time", SimpleNamespace(sleep=waits.append, time=lambda: 1))
         session = {"history_lock": threading.RLock(), "session_key": key, "running": False}
         registry = SimpleNamespace(completion_queue=queue.Queue())
-        monkeypatch.setattr("tools.process_registry.process_registry", registry)
-        monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "")
+        monkeypatch.setattr("hermes_agent.tools.process_registry.process_registry", registry)
+        monkeypatch.setattr("hermes_agent.tools.async_delegation.claim_event_delivery", lambda *a: "")
         completed = []
-        monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: completed.append(a))
-        monkeypatch.setattr("tools.process_registry_notifications.ProcessNotificationBatch.render", lambda *a: "finished")
-        monkeypatch.setattr("tools.process_registry_notifications.ProcessNotificationBatch.display_text", lambda *a: "finished")
+        monkeypatch.setattr("hermes_agent.tools.async_delegation.complete_event_delivery", lambda *a: completed.append(a))
+        monkeypatch.setattr("hermes_agent.tools.process_registry_notifications.ProcessNotificationBatch.render", lambda *a: "finished")
+        monkeypatch.setattr("hermes_agent.tools.process_registry_notifications.ProcessNotificationBatch.display_text", lambda *a: "finished")
         event = {"type": kind, "session_id": "proc", "session_key": key}
 
         def dispatch():

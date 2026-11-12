@@ -201,7 +201,7 @@ class TestBangApprovalGate:
     def test_approval_gate_is_invoked_for_a_dangerous_command(self):
         cli = _make_cli()
         gate = MagicMock(return_value={"approved": True, "message": None})
-        with patch("tools.terminal_tool._check_all_guards", gate), \
+        with patch("hermes_agent.tools.terminal_tool._check_all_guards", gate), \
              patch("hermes_cli.bang_shell.run_bang_command", return_value=0):
             cli.handle_bang_shell("!rm -rf ./build")
 
@@ -211,7 +211,7 @@ class TestBangApprovalGate:
     def test_gate_is_invoked_for_every_command_not_just_dangerous_ones(self):
         cli = _make_cli()
         gate = MagicMock(return_value={"approved": True, "message": None})
-        with patch("tools.terminal_tool._check_all_guards", gate), \
+        with patch("hermes_agent.tools.terminal_tool._check_all_guards", gate), \
              patch("hermes_cli.bang_shell.run_bang_command", return_value=0):
             cli.handle_bang_shell("!ls")
         gate.assert_called_once()
@@ -222,7 +222,7 @@ class TestBangApprovalGate:
             "approved": False,
             "message": "Command denied: recursive delete",
         })
-        with patch("tools.terminal_tool._check_all_guards", gate), \
+        with patch("hermes_agent.tools.terminal_tool._check_all_guards", gate), \
              patch("hermes_cli.bang_shell.run_bang_command") as runner:
             assert cli.handle_bang_shell("!rm -rf /important") is True
 
@@ -286,7 +286,7 @@ class TestBangLeavesHistoryByteIdentical:
         before = json.dumps(cli.conversation_history, sort_keys=True)
 
         gate = MagicMock(return_value={"approved": False, "message": "nope"})
-        with patch("tools.terminal_tool._check_all_guards", gate):
+        with patch("hermes_agent.tools.terminal_tool._check_all_guards", gate):
             cli.handle_bang_shell("!rm -rf /important")
 
         assert json.dumps(cli.conversation_history, sort_keys=True) == before

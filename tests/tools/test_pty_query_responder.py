@@ -1,4 +1,4 @@
-"""Tests for tools.pty_query_responder (port of openai/codex#41436).
+"""Tests for hermes_agent.tools.pty_query_responder (port of openai/codex#41436).
 
 Covers the byte-level scanner (exact queries, chunk splits, DEC private-mode
 queries, passthrough of unhandled sequences) and a live PTY E2E where a
@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from tools.pty_query_responder import PtyQueryResponder
+from hermes_agent.tools.pty_query_responder import PtyQueryResponder
 
 
 def test_plain_output_passes_through():
@@ -127,7 +127,7 @@ def test_live_pty_subprocess_unblocked_by_cursor_report(tmp_path):
     Mirrors direct_terminal_queries_are_answered from openai/codex#41436.
     """
     ptyprocess = pytest.importorskip("ptyprocess")
-    from tools.pty_query_responder import PtyQueryResponder
+    from hermes_agent.tools.pty_query_responder import PtyQueryResponder
 
     script = (
         "stty -echo -icanon; printf 'alpha\\033[6n'; "

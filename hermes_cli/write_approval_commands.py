@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from typing import List, Optional
 
-from tools import write_approval as wa
+from hermes_agent.tools import write_approval as wa
 
 
 def _fmt_state(subsystem: str) -> str:
@@ -119,7 +119,7 @@ def _changed_entries(result: dict, kind: str) -> list[str]:
 def _matched_entries(payload) -> list[str]:
     """The full entry each staged memory replace/remove is pinned to: the summary shows only
     the old_text search string, and approval applies to this entry, not to that search."""
-    from tools.memory_tool import destructive_ops
+    from hermes_agent.tools.memory_tool import destructive_ops
     return [f"{op['action']}s entry: {op['matched_entry']}" if op.get("matched_entry")
             else f"{op['action']}: unpinned legacy target \u2014 reject and recreate before approving"
             for op in destructive_ops(payload)]
@@ -132,10 +132,10 @@ def _apply_one(subsystem: str, rec, memory_store):
         if subsystem == wa.MEMORY:
             if memory_store is None:
                 return False, "memory store unavailable", {}
-            from tools.memory_tool import apply_memory_pending
+            from hermes_agent.tools.memory_tool import apply_memory_pending
             result = apply_memory_pending(payload, memory_store)
         else:
-            from tools.skill_manager_tool import apply_skill_pending
+            from hermes_agent.tools.skill_manager_tool import apply_skill_pending
             result = json.loads(apply_skill_pending(payload))
         return bool(result.get("success")), result.get("error", ""), result
     except Exception as e:

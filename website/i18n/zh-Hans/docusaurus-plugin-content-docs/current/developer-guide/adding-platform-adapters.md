@@ -317,7 +317,7 @@ ctx.register_platform(
 )
 ```
 
-为何需要此 hook：内置平台（Telegram、Discord、Slack 等）在 `tools/send_message_tool.py` 中内置了直接 REST 辅助函数，使 cron 无需在同一进程中持有 gateway 即可投递。Plugin 平台历史上依赖 `_gateway_runner_ref()`，该函数在 gateway 进程外返回 `None`，因此若没有 `standalone_sender_fn`，cron 端发送会失败并报 `No live adapter for platform '<name>'`。
+为何需要此 hook：内置平台（Telegram、Discord、Slack 等）在 `hermes_agent/tools/send_message_tool.py` 中内置了直接 REST 辅助函数，使 cron 无需在同一进程中持有 gateway 即可投递。Plugin 平台历史上依赖 `_gateway_runner_ref()`，该函数在 gateway 进程外返回 `None`，因此若没有 `standalone_sender_fn`，cron 端发送会失败并报 `No live adapter for platform '<name>'`。
 
 该函数接收与实时适配器相同的 `pconfig` 和 `chat_id`，以及可选的 `thread_id`、`media_files` 和 `force_document` 关键字参数。返回 `{"success": True, "message_id": ...}` 视为成功投递；返回 `{"error": "..."}` 会将消息记录到 cron 的 `delivery_errors` 中。函数内抛出的异常由调度器捕获并报告为 `Plugin standalone send failed: <reason>`。参考实现位于 `plugins/platforms/{irc,teams,google_chat}/adapter.py`。
 
@@ -560,13 +560,13 @@ await self.handle_message(event)
 
 ### 7. 工具
 
-1. **`tools/send_message_tool.py`** — 将 `"newplat": Platform.NEWPLAT` 添加到平台映射
-2. **`tools/cronjob_tools.py`** — 将 `newplat` 添加到投递目标描述字符串
+1. **`hermes_agent/tools/send_message_tool.py`** — 将 `"newplat": Platform.NEWPLAT` 添加到平台映射
+2. **`hermes_agent/tools/cronjob_tools.py`** — 将 `newplat` 添加到投递目标描述字符串
 
 ### 8. Toolset
 
-1. **`toolsets.py`** — 添加带 `_HERMES_CORE_TOOLS` 的 `"hermes-newplat"` toolset 定义
-2. **`toolsets.py`** — 将 `"hermes-newplat"` 添加到 `"hermes-gateway"` 的 includes 列表
+1. **`hermes_agent/toolsets.py`** — 添加带 `_HERMES_CORE_TOOLS` 的 `"hermes-newplat"` toolset 定义
+2. **`hermes_agent/toolsets.py`** — 将 `"hermes-newplat"` 添加到 `"hermes-gateway"` 的 includes 列表
 
 ### 9. 可选：平台提示
 

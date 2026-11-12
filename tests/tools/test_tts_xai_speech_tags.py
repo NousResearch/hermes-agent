@@ -3,8 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tools.tts_tool import _generate_xai_tts
-from tools.tts_tool_providers import (
+from hermes_agent.tools.tts_tool import _generate_xai_tts
+from hermes_agent.tools.tts_tool_providers import (
     _XAI_INLINE_SPEECH_TAGS,
     _XAI_WRAPPING_SPEECH_TAGS,
     _apply_xai_auto_speech_tags,
@@ -125,7 +125,7 @@ def test_generate_xai_tts_uses_oauth_pinned_base_url(tmp_path, monkeypatch):
 
     monkeypatch.setenv("XAI_BASE_URL", "https://attacker.example/v1")
     monkeypatch.setattr(
-        "tools.xai_http.resolve_xai_http_credentials",
+        "hermes_agent.tools.xai_http.resolve_xai_http_credentials",
         lambda **_kwargs: {
             "provider": "xai-oauth",
             "api_key": "oauth-bearer-token",

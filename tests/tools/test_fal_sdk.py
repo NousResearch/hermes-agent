@@ -6,7 +6,7 @@ import fal_client
 import httpx
 import pytest
 
-from tools.fal_common import (
+from hermes_agent.tools.fal_common import (
     _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error,
     _normalize_fal_queue_url_format, import_fal_client,
 )
@@ -188,8 +188,8 @@ def test_older_sdk_timeout_default_and_optional_hint(transport, monkeypatch, tim
 
 def test_image_wait_polls_queue_status_at_gateway_cadence(transport, monkeypatch):
     """The SDK's ``handle.get()`` polls every 0.1 s: one job alone burns the gateway's 200 req/min."""
-    import tools.image_generation_tool as image_tool
-    from tools.fal_common import FAL_QUEUE_POLL_SECONDS
+    import hermes_agent.tools.image_generation_tool as image_tool
+    from hermes_agent.tools.fal_common import FAL_QUEUE_POLL_SECONDS
 
     requests, replies = transport
     sleeps = []

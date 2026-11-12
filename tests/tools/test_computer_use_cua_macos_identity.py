@@ -7,8 +7,8 @@ import subprocess
 
 import pytest
 
-from tools.computer_use import cua_backend
-from tools.computer_use import cua_backend_daemon
+from hermes_agent.tools.computer_use import cua_backend
+from hermes_agent.tools.computer_use import cua_backend_daemon
 
 
 def _codesign_proc(

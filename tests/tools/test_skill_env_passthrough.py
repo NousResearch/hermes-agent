@@ -7,8 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.env_passthrough as _ep_mod
-from tools.env_passthrough import clear_env_passthrough, is_env_passthrough
+import hermes_agent.tools.env_passthrough as _ep_mod
+from hermes_agent.tools.env_passthrough import clear_env_passthrough, is_env_passthrough
 
 # Real optional AgentMail skill — its CLI-first workflow runs `agentmail` through
 # the sandboxed terminal, which strips secrets unless the skill declares them.
@@ -56,14 +56,14 @@ class TestSkillViewRegistersPassthrough:
             ),
         )
         monkeypatch.setattr(
-            "tools.skills_tool.SKILLS_DIR", tmp_path
+            "hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path
         )
         # Set the env var so it's "available"
         monkeypatch.setenv("TENOR_API_KEY", "test-value-123")
 
         # Patch the secret capture callback to not prompt
-        with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+        with patch("hermes_agent.tools.skills_tool._secret_capture_callback", None):
+            from hermes_agent.tools.skills_tool import skill_view
 
             result = json.loads(skill_view(name="test-skill"))
 
@@ -75,16 +75,16 @@ class TestSkillViewRegistersPassthrough:
         """Skills without required_environment_variables shouldn't register anything."""
         _create_skill(tmp_path, "simple-skill")
         monkeypatch.setattr(
-            "tools.skills_tool.SKILLS_DIR", tmp_path
+            "hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path
         )
 
-        with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+        with patch("hermes_agent.tools.skills_tool._secret_capture_callback", None):
+            from hermes_agent.tools.skills_tool import skill_view
 
             result = json.loads(skill_view(name="simple-skill"))
 
         assert result["success"] is True
-        from tools.env_passthrough import get_all_passthrough
+        from hermes_agent.tools.env_passthrough import get_all_passthrough
         assert len(get_all_passthrough()) == 0
 
 
@@ -96,7 +96,7 @@ class TestAgentMailKeyPassthrough:
     def _install_real_skill(self, tmp_path, monkeypatch):
         dest = tmp_path / "email" / "agentmail"
         shutil.copytree(_AGENTMAIL_SKILL_SRC, dest)
-        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path)
+        monkeypatch.setattr("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path)
         return dest
 
     def test_agentmail_api_key_registered_for_sandbox_when_set(self, tmp_path, monkeypatch):
@@ -105,8 +105,8 @@ class TestAgentMailKeyPassthrough:
         self._install_real_skill(tmp_path, monkeypatch)
         monkeypatch.setenv("AGENTMAIL_API_KEY", "am_test_key_123")
 
-        with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+        with patch("hermes_agent.tools.skills_tool._secret_capture_callback", None):
+            from hermes_agent.tools.skills_tool import skill_view
 
             result = json.loads(skill_view(name="agentmail"))
 
@@ -122,8 +122,8 @@ class TestAgentMailKeyPassthrough:
         self._install_real_skill(tmp_path, monkeypatch)
         monkeypatch.delenv("AGENTMAIL_API_KEY", raising=False)
 
-        with patch("tools.skills_tool._secret_capture_callback", None):
-            from tools.skills_tool import skill_view
+        with patch("hermes_agent.tools.skills_tool._secret_capture_callback", None):
+            from hermes_agent.tools.skills_tool import skill_view
 
             result = json.loads(skill_view(name="agentmail"))
 

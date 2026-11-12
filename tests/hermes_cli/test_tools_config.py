@@ -269,7 +269,7 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
     video_gen.use_gateway so the FAL plugin can route through the gateway
     at runtime.  Regression test for the bug where video_gen was marked as
     auto-configured but no config was actually written."""
-    monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous"},
         "platform_toolsets": {"cli": []},
@@ -331,7 +331,7 @@ class TestPlatformToolsetConsistency:
     def test_all_platforms_have_toolset_definitions(self):
         """Each platform's default_toolset must exist in TOOLSETS."""
         from hermes_cli.tools_config import PLATFORMS
-        from toolsets import TOOLSETS
+        from hermes_agent.toolsets import TOOLSETS
 
         for platform, meta in PLATFORMS.items():
             ts_name = meta["default_toolset"]
@@ -343,7 +343,7 @@ class TestPlatformToolsetConsistency:
     def test_gateway_toolset_includes_all_messaging_platforms(self):
         """hermes-gateway includes list should cover all messaging platforms."""
         from hermes_cli.tools_config import PLATFORMS
-        from toolsets import TOOLSETS
+        from hermes_agent.toolsets import TOOLSETS
 
         gateway_includes = set(TOOLSETS["hermes-gateway"]["includes"])
         # Exclude non-messaging platforms from the check
@@ -462,7 +462,7 @@ class TestBrowserExecEngineCheckedForEveryBrowserRow:
             "shutil.which", return_value=None
         ), patch("subprocess.run"), patch("pm.ensure"), patch(
             "hermes_cli.browser_runtime.chromium_executable", return_value="/pm/chrome"
-        ), patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None):
+        ), patch("hermes_agent.tools.browser_lightpanda.find_lightpanda_binary", return_value=None):
             _run_post_setup(key)
         ensure.assert_called_once()
 
@@ -470,7 +470,7 @@ class TestBrowserExecEngineCheckedForEveryBrowserRow:
         """A missing harness must warn and point at `hermes update`, never raise."""
         from hermes_cli.tools_config import _ensure_browser_use_cli
 
-        with patch("tools.browser_use_cli._find_cli", return_value=None), patch(
+        with patch("hermes_agent.tools.browser_use_cli._find_cli", return_value=None), patch(
             "hermes_cli.tools_config_post_setup._print_warning"
         ) as warn, patch("hermes_cli.tools_config_post_setup._print_info") as info:
             _ensure_browser_use_cli()  # must not raise
@@ -733,7 +733,7 @@ def test_gui_model_catalog_for_the_managed_row_spans_every_managed_gateway(monke
     from hermes_cli import tools_config
     from hermes_cli.web_routers.tools import _resolve_toolset_model_plugin, _toolset_model_catalog
     from plugins.image_gen.krea import KREA_MODEL_IDS
-    from tools.image_generation_catalog import FAL_MODELS
+    from hermes_agent.tools.image_generation_catalog import FAL_MODELS
 
     paid = NousPortalAccountInfo(logged_in=True, source="jwt", fresh=False, paid_service_access=True)
     monkeypatch.setattr(
@@ -889,8 +889,8 @@ def test_disabled_composite_debugging_prunes_constituent_platform_toolsets():
 def test_disabled_composite_display_matches_runtime_tool_selection():
     """Display/runtime parity: a toolset is listed as enabled iff the agent keeps
     at least one of its tools after the runtime's tool-level subtraction."""
-    from model_tools import _select_tool_names
-    from toolsets import resolve_toolset
+    from hermes_agent.model_tools import _select_tool_names
+    from hermes_agent.toolsets import resolve_toolset
 
     config = {
         "platform_toolsets": {"cli": ["hermes-cli"]},
@@ -907,7 +907,7 @@ def test_disabled_composite_display_matches_runtime_tool_selection():
 def test_platforms_whose_composite_excludes_it_are_left_narrow():
     """Parity is the justification, so don't widen a deliberately small
     composite (hermes-acp, hermes-webhook) that never carried the toolset."""
-    from toolsets import TOOLSETS, resolve_toolset
+    from hermes_agent.toolsets import TOOLSETS, resolve_toolset
 
     narrow = [
         platform
@@ -970,7 +970,7 @@ def test_explicit_plugin_toolset_admitted_in_platform_toolsets(monkeypatch):
     # Resolve dplat_call inside the dplat_client toolset — _get_platform_tools
     # ends up calling resolve_toolset() which can fall back to the registry
     # for plugin-provided names. Patch resolve_toolset for "dplat_client".
-    import toolsets as _toolsets_mod
+    import hermes_agent.toolsets as _toolsets_mod
 
     original_resolve = _toolsets_mod.resolve_toolset
 
@@ -1031,7 +1031,7 @@ class TestLightpandaPostSetup:
     def test_reports_binary_when_found(self, _stub_browser_use_install):
         from hermes_cli.tools_config import _run_post_setup
 
-        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"), \
+        with patch("hermes_agent.tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"), \
              patch("hermes_cli.tools_config_post_setup._print_success") as ok, \
              patch("hermes_cli.tools_config_post_setup._print_warning") as warn:
             _run_post_setup("lightpanda")
@@ -1041,9 +1041,9 @@ class TestLightpandaPostSetup:
 
     def test_prints_install_hint_when_missing(self):
         from hermes_cli.tools_config import _run_post_setup
-        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_URL
+        from hermes_agent.tools.browser_lightpanda import LIGHTPANDA_INSTALL_URL
 
-        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None), \
+        with patch("hermes_agent.tools.browser_lightpanda.find_lightpanda_binary", return_value=None), \
              patch("hermes_cli.tools_config_post_setup._print_warning") as warn, \
              patch("hermes_cli.tools_config_post_setup._print_info") as info:
             _run_post_setup("lightpanda")
@@ -1058,9 +1058,9 @@ class TestLightpandaPostSetup:
         )
 
         assert "lightpanda" in valid_post_setup_keys()
-        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"):
+        with patch("hermes_agent.tools.browser_lightpanda.find_lightpanda_binary", return_value="/opt/lightpanda"):
             assert _POST_SETUP_READY["lightpanda"]() is True
-        with patch("tools.browser_lightpanda.find_lightpanda_binary", return_value=None):
+        with patch("hermes_agent.tools.browser_lightpanda.find_lightpanda_binary", return_value=None):
             assert _POST_SETUP_READY["lightpanda"]() is False
         # Not in the forced-setup gate: a missing binary must not nag every
         # user who toggles the browser toolset.

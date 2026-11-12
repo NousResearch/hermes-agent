@@ -11,7 +11,7 @@ liveness probe reads as *kernel died: state lost* and the next call respawns,
 never a hung poll (every wait is bounded by the cell timeout).
 
 Same invariants as local: owner = approval session key with the ``::child::``
-qualifier (one resolver in tools.code_kernel), same generated tool stubs, same
+qualifier (one resolver in hermes_agent.tools.code_kernel), same generated tool stubs, same
 output post-processing in the caller. ``reset=true`` kills and respawns. Spawn
 failure fails OPEN to the per-call path with a note.
 """
@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry
+from hermes_agent.tools.code_kernel import RUNNER_CELL_SOURCE, KernelRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +119,7 @@ class RemoteKernel:
     cell_seq: int = 0
     # Cells currently running on this kernel. Reap/evict skip attached
     # kernels: killing one mid-cell tears the runner out from under a live
-    # poll loop (same guard as tools.code_kernel, hermes-agent#101861).
+    # poll loop (same guard as hermes_agent.tools.code_kernel, hermes-agent#101861).
     attached: int = 0
     # Owned by a live delegate_task child: exempt from LRU eviction (the child's teardown disposes it).
     pinned: bool = False
@@ -191,7 +191,7 @@ def _reap_unlocked(idle_timeout: int) -> list[RemoteKernel]:
 def _evict_over_cap_unlocked(keep: tuple) -> list[RemoteKernel]:
     """Pop least-recently-used unattached remote kernels beyond the process-wide cap (the same
     ``max_session_kernels`` bound as local kernels, applied independently to this map)."""
-    from tools.code_kernel import _lifecycle_limits
+    from hermes_agent.tools.code_kernel import _lifecycle_limits
     cap, _ = _lifecycle_limits()
     unpinned = [key for key in _REMOTE_KERNELS if not _REMOTE_KERNELS[key].pinned]
     if len(unpinned) <= cap:
@@ -207,8 +207,8 @@ atexit.register(shutdown_all_remote_kernels)
 def _spawn_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
                          sandbox_tools: frozenset, *, idle_exit: int) -> Optional[RemoteKernel]:
     """Start a detached kernel runner on the remote. None on failure (dir removed)."""
-    from tools.code_execution_rpc import _execute_checked, _private_dirs_cmd
-    from tools.code_execution_tool import (
+    from hermes_agent.tools.code_execution_rpc import _execute_checked, _private_dirs_cmd
+    from hermes_agent.tools.code_execution_tool import (
         MAX_STDOUT_BYTES, _ship_file_to_remote, _env_temp_dir,
         _ship_env_file_and_launch, generate_hermes_tools_module,
     )
@@ -301,7 +301,7 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
 
 def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> tuple[str, dict[str, Any]]:
     """Ship one cell request and poll for its result: (cell status, payload)."""
-    from tools.code_execution_tool import _ship_file_to_remote
+    from hermes_agent.tools.code_execution_tool import _ship_file_to_remote
     kernel.cell_seq += 1
     seq = f"{kernel.cell_seq:06d}"
     q_cells, q_res = shlex.quote(f"{kernel.kernel_dir}/cells"), shlex.quote(f"cell_res_{seq}.json")
@@ -340,7 +340,7 @@ def execute_in_remote_kernel(
     """Run one cell in the owner's remote kernel. Returns the raw cell result dict (caller
     post-processes output), or ``None`` when no kernel could be spawned (caller falls open to
     per-call). ``state_lost``/``state_reset``/``reused`` ride in the ``kernel`` sub-dict."""
-    from tools.code_kernel import _resolve_owner
+    from hermes_agent.tools.code_kernel import _resolve_owner
     owner = _resolve_owner(task_env_id)
     kernel, reused, state_reset, state_lost = _acquire_remote_kernel(
         env, env_type, owner, task_env_id, sandbox_tools, reset=reset, idle_exit=idle_exit)
@@ -366,9 +366,9 @@ def execute_in_remote_kernel(
 def _run_attached_cell(kernel: RemoteKernel, key: tuple, code: str, *, env, task_env_id: str,
                        sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
                        reused: bool, state_reset: bool, state_lost: bool) -> dict[str, Any]:
-    from tools.code_execution_rpc import tool_errors_since
-    from tools.code_execution_tool import _rpc_poll_loop
-    from tools.thread_context import propagate_context_to_thread
+    from hermes_agent.tools.code_execution_rpc import tool_errors_since
+    from hermes_agent.tools.code_execution_tool import _rpc_poll_loop
+    from hermes_agent.tools.thread_context import propagate_context_to_thread
     # Clean stale tool-RPC requests from a previous cell before arming this cell's poll loop, so
     # a background thread the last cell leaked cannot smuggle a call into this authority window.
     q_rpc = shlex.quote(kernel.kernel_dir + '/rpc')

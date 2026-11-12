@@ -505,12 +505,12 @@ def _check_capabilities(
 def _builtin_tool_names() -> list[str]:
     """Return the built-in tool registry names (discovery-timing safe).
 
-    ``tools.registry`` starts empty — built-in tool modules self-register on
+    ``hermes_agent.tools.registry`` starts empty — built-in tool modules self-register on
     import, so we must run ``discover_builtin_tools()`` first (idempotent;
     see the AGENTS.md discover_plugins timing pitfall).
     """
     try:
-        from tools.registry import discover_builtin_tools, registry
+        from hermes_agent.tools.registry import discover_builtin_tools, registry
 
         discover_builtin_tools()
         return list(registry.get_all_tool_names())
@@ -666,7 +666,7 @@ def _check_security_scan(report: ValidationReport, plugin_dir: Path) -> None:
     """Run the install-time scanner at admission, so a pin a reviewer approves is one the
     installer will accept: ``dangerous`` fails the entry; ``caution`` findings surface as
     warnings for the reviewer (the installer trusts them once the pin is merged)."""
-    from tools.plugin_guard import scan_plugin
+    from hermes_agent.tools.plugin_guard import scan_plugin
 
     result = scan_plugin(plugin_dir)
     flagged = [f for f in result.findings if f.severity in ("critical", "high")]

@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.transcription_tools import _resolve_stt_language
+from hermes_agent.tools.transcription_tools import _resolve_stt_language
 
 
 @pytest.fixture(autouse=True)
@@ -43,7 +43,7 @@ class TestXaiNoForcedEnglish:
     """xAI previously defaulted language to "en" — auto-detect must be the default."""
 
     def test_no_language_sent_by_default(self, tmp_path, monkeypatch):
-        import tools.transcription_tools as tt
+        import hermes_agent.tools.transcription_tools as tt
         audio = tmp_path / "a.ogg"
         audio.write_bytes(b"x")
         captured = {}
@@ -63,7 +63,7 @@ class TestXaiNoForcedEnglish:
 
         monkeypatch.setattr(_requests, "post", fake_post)
         with patch.object(tt, "_load_stt_config", return_value={}), \
-             patch("tools.xai_http.resolve_xai_http_credentials",
+             patch("hermes_agent.tools.xai_http.resolve_xai_http_credentials",
                    return_value={"api_key": "xai-test", "base_url": "https://api.x.ai/v1"}):
             result = tt._transcribe_xai(str(audio), "grok-stt")
 
@@ -75,7 +75,7 @@ class TestXaiNoForcedEnglish:
             "format=true must not be sent without a language (xAI rejects it with HTTP 400)"
 
     def test_global_language_reaches_xai(self, tmp_path, monkeypatch):
-        import tools.transcription_tools as tt
+        import hermes_agent.tools.transcription_tools as tt
         audio = tmp_path / "a.ogg"
         audio.write_bytes(b"x")
         captured = {}
@@ -94,7 +94,7 @@ class TestXaiNoForcedEnglish:
             lambda url, **kw: captured.update(data=kw.get("data")) or _Resp(),
         )
         with patch.object(tt, "_load_stt_config", return_value={"language": "he"}), \
-             patch("tools.xai_http.resolve_xai_http_credentials",
+             patch("hermes_agent.tools.xai_http.resolve_xai_http_credentials",
                    return_value={"api_key": "xai-test", "base_url": "https://api.x.ai/v1"}):
             result = tt._transcribe_xai(str(audio), "grok-stt")
 

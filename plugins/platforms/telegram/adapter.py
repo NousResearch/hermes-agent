@@ -639,7 +639,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._model_picker_state: dict[str, dict] = {}  # per-chat interactive picker state
         self._choice_picker_state: dict[str, dict] = {}
         self._approval_state: dict[int, str] = {}  # message_id → session_key
-        self._approval_request_ids: dict[int, str] = {}  # message_id → tools.approval request id
+        self._approval_request_ids: dict[int, str] = {}  # message_id → hermes_agent.tools.approval request id
         self._slash_confirm_state: dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: dict[str, ClarifyPrompt] = {}  # clarify_id → prompt bound to its sent message
         # "important" (default): only final responses, approvals and slash confirmations notify;
@@ -4454,7 +4454,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._approval_request_ids.pop(approval_id, None)
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
         try:  # resolve FIRST, render after: a tap after the wait timed out (count == 0) is not "Approved" (#63501)
-            from tools.approval import resolve_gateway_approval_card
+            from hermes_agent.tools.approval import resolve_gateway_approval_card
             count = resolve_gateway_approval_card(session_key, choice, request_id,
                                                   actor_id=getattr(query.from_user, "id", ""), extra=self.config.extra)
             logger.info("Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)", count, session_key, choice, user_display)
@@ -4500,7 +4500,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         await edit_keeping_prompt(self, query, decided)
         # The runner stored a handler keyed by session_key; run it and send any returned text as a follow-up.
         try:
-            from tools import slash_confirm as _slash_confirm_mod
+            from hermes_agent.tools import slash_confirm as _slash_confirm_mod
             result_text = await _slash_confirm_mod.resolve(session_key, confirm_id, choice)
             if result_text and query.message:
                 # Inherit the prompt's topic: forums use message_thread_id; private DM-topic lanes need
@@ -4546,7 +4546,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             # Flip to text-capture (the next message resolves it); keep _clarify_state until then.
             flipped = False
             try:
-                from tools.clarify_gateway import mark_awaiting_text
+                from hermes_agent.tools.clarify_gateway import mark_awaiting_text
                 flipped = mark_awaiting_text(clarify_id)
             except Exception as exc:
                 logger.warning("[%s] mark_awaiting_text failed: %s", self.name, exc)
@@ -4569,7 +4569,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             return
         resolved_text: Optional[str] = None
         try:
-            from tools.clarify_gateway import get_pending
+            from hermes_agent.tools.clarify_gateway import get_pending
             entry = get_pending(clarify_id)
             if entry and entry.choices and 0 <= idx < len(entry.choices):
                 resolved_text = entry.choices[idx]
@@ -4580,7 +4580,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             resolved_text = f"choice {idx + 1}"
         self._clarify_state.pop(clarify_id, None)
         try:
-            from tools.clarify_gateway import resolve_gateway_clarify
+            from hermes_agent.tools.clarify_gateway import resolve_gateway_clarify
             resolved = resolve_gateway_clarify(clarify_id, resolved_text)
         except Exception as exc:
             logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
@@ -4653,7 +4653,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         success = False
         try:
             # A user script under HERMES_HOME the agent can write: scrubbed like cron and quick-command scripts.
-            from tools.environments.local import build_subprocess_env
+            from hermes_agent.tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_exec(
                 str(script_path), arg, *extra_args, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=build_subprocess_env(strip_launch_profile=True))
@@ -5075,7 +5075,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         """Send a URL image as a Telegram photo: URL send (<5MB) → download+upload (≤10MB) → base text."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
@@ -5093,7 +5093,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
                 "[%s] URL-based send_photo failed, trying file upload: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
             try:
                 from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
-                from tools.url_safety import create_ssrf_safe_async_client
+                from hermes_agent.tools.url_safety import create_ssrf_safe_async_client
                 async with create_ssrf_safe_async_client(timeout=30.0, event_hooks={"response": [ssrf_redirect_guard]}) as client, \
                         client.stream("GET", image_url) as resp:
                     resp.raise_for_status()
@@ -6372,7 +6372,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             _, image_bytes = await fetch_telegram_file(sticker, "sticker")
             cached_path = await cache_image_from_bytes_async(bytes(image_bytes), ext=".webp")
             logger.info("[Telegram] Analyzing sticker at %s", cached_path)
-            from tools.vision_tools import vision_analyze_tool
+            from hermes_agent.tools.vision_tools import vision_analyze_tool
             self._accept_update()  # Cancellation cannot undo an already submitted auxiliary LLM request.
             result = json.loads(await vision_analyze_tool(image_url=cached_path, user_prompt=STICKER_VISION_PROMPT))
             if result.get("success"):

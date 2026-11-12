@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pm.install import InstalledPackage
-from tools.computer_use import doctor
+from hermes_agent.tools.computer_use import doctor
 
 pytestmark = pytest.mark.platforms("linux")
 
@@ -46,7 +46,7 @@ def _run_doctor_json(monkeypatch, home, daemon_probe=lambda *_a, **_kw: None):
     monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
     if "XDG_CONFIG_HOME" in os.environ and not os.environ["XDG_CONFIG_HOME"].startswith(str(home)):
         monkeypatch.delenv("XDG_CONFIG_HOME")  # the host's own config dir must not leak into the scan
-    monkeypatch.setattr("tools.computer_use.cua_backend.cua_daemon_listening", daemon_probe)
+    monkeypatch.setattr("hermes_agent.tools.computer_use.cua_backend.cua_daemon_listening", daemon_probe)
     monkeypatch.setattr(doctor, "_read_cli_version", lambda binary, timeout=5.0: "cua-driver 0.28.2")
     installed = InstalledPackage(Path("/fake"), "0.28.2", Path("/fake/cua-driver"))
     out = StringIO()

@@ -3,7 +3,7 @@
 ``stt.providers.<name>: type: command`` registry, plugin-registered
 ``TranscriptionProvider`` dispatch, and the ``pre_transcription`` hook that
 threads prompt/language/model overrides into every backend. ``_resolve_stt_language``
-is read lazily from ``tools.transcription_tools``.
+is read lazily from ``hermes_agent.tools.transcription_tools``.
 """
 
 from __future__ import annotations
@@ -16,18 +16,18 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from agent.model_metadata import CHARS_PER_TOKEN
-from tools.tts_command_provider import (
+from hermes_agent.tools.tts_command_provider import (
     _command_output_format, _command_timeout, _is_command_provider_config as _is_command_stt_provider_config,
     _named_provider_config, _resolve_command_config, command_env_passthrough as _command_stt_env_passthrough,
     command_failure_detail, render_command_template as _render_command_stt_template,
     run_command_provider as _run_command_stt)
-from tools.transcription_audio import _transcode_audio_for_stt
-from tools.transcription_common import (
+from hermes_agent.tools.transcription_audio import _transcode_audio_for_stt
+from hermes_agent.tools.transcription_common import (
     BUILTIN_STT_PROVIDERS, _error_result, _log_prompt_unsupported, _ok_result)
 from utils import is_truthy_value
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("tools.transcription_tools")
+logger = logging.getLogger("hermes_agent.tools.transcription_tools")
 
 
 # ---- Command-provider registry (``stt.providers.<name>: type: command``) ---
@@ -95,7 +95,7 @@ def _transcribe_command_stt(
     16 kHz mono m4a when ``normalize: true``), ``{output_path}`` (transcript file),
     ``{output_dir}``, ``{format}`` txt/json/srt/vtt, ``{language}`` (default ``en``),
     ``{model}`` (empty when unset)."""
-    from tools.transcription_tools import _resolve_stt_language
+    from hermes_agent.tools.transcription_tools import _resolve_stt_language
     if prompt:
         _log_prompt_unsupported(f"Command STT provider '{provider_name}'")
 

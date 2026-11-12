@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools.environments.base_output import _BoundedOutputCollector, _drain_fd_windows
+from hermes_agent.tools.environments.base_output import _BoundedOutputCollector, _drain_fd_windows
 
 
 @pytest.mark.platforms("windows")
@@ -44,7 +44,7 @@ def test_drain_fd_windows_returns_promptly_when_writer_remains_open():
 def test_local_environment_returns_while_background_grandchild_holds_pipe(tmp_path):
     """End-to-end on Git Bash: ``execute()`` returns promptly with the marker while a
     backgrounded grandchild still holds the stdout pipe (issues #105865 / #67362)."""
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     env = LocalEnvironment(cwd=str(tmp_path))
     try:

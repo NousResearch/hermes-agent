@@ -219,11 +219,11 @@ async def _connection_card(authority, ws, reader, sid, marker, receipt):
     from pathlib import Path
     from tests.gateway.fixtures.local_recovery_probe import rpc
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from tools.connectors import live, run
-    from tools.connectors.contract import Actor, TargetState
-    from tools import connectors
-    from tools.connectors.gateway.errors import GatewayAuthError
-    from tools.connectors.operation import ConnectionOperation, Target
+    from hermes_agent.tools.connectors import live, run
+    from hermes_agent.tools.connectors.contract import Actor, TargetState
+    from hermes_agent.tools import connectors
+    from hermes_agent.tools.connectors.gateway.errors import GatewayAuthError
+    from hermes_agent.tools.connectors.operation import ConnectionOperation, Target
 
     created = await rpc(ws, 'session.create', request_id='routes-card', source='gui', toolsets=['connections'],
                         cwd=str(Path(authority.profile_id) / 'session-work'))

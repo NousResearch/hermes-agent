@@ -54,7 +54,7 @@ def _patch_daytona_imports(monkeypatch):
 def daytona_sdk(monkeypatch):
     """Provide a mock daytona SDK module and return it for assertions."""
     # The SDK itself is faked below; bypass the PM install while exercising it.
-    monkeypatch.setattr("tools.environments.daytona.ensure_lazy_dep", lambda extra: None)
+    monkeypatch.setattr("hermes_agent.tools.environments.daytona.ensure_lazy_dep", lambda extra: None)
     return _patch_daytona_imports(monkeypatch)
 
 
@@ -62,11 +62,11 @@ def daytona_sdk(monkeypatch):
 def make_env(daytona_sdk, monkeypatch):
     """Factory that creates a DaytonaEnvironment with a mocked SDK."""
     # Prevent is_interrupted from interfering — patch where it's used (base.py)
-    monkeypatch.setattr("tools.environments.base.is_interrupted", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.environments.base.is_interrupted", lambda: False)
     # Prevent skills/credential sync from consuming mock exec calls
-    monkeypatch.setattr("tools.credential_files.get_credential_file_mounts", list)
-    monkeypatch.setattr("tools.credential_files.get_skills_directory_mount", lambda **kw: None)
-    monkeypatch.setattr("tools.credential_files.iter_skills_files", lambda **kw: [])
+    monkeypatch.setattr("hermes_agent.tools.credential_files.get_credential_file_mounts", list)
+    monkeypatch.setattr("hermes_agent.tools.credential_files.get_skills_directory_mount", lambda **kw: None)
+    monkeypatch.setattr("hermes_agent.tools.credential_files.iter_skills_files", lambda **kw: [])
 
     def _factory(
         sandbox=None,
@@ -97,7 +97,7 @@ def make_env(daytona_sdk, monkeypatch):
 
         daytona_sdk.Daytona = MagicMock(return_value=mock_client)
 
-        from tools.environments.daytona import DaytonaEnvironment
+        from hermes_agent.tools.environments.daytona import DaytonaEnvironment
 
         kwargs.setdefault("disk", 10240)
         env = DaytonaEnvironment(
@@ -118,7 +118,7 @@ def make_env(daytona_sdk, monkeypatch):
 class TestCwdResolution:
     def test_constructor_prepares_sdk_once(self, make_env, monkeypatch):
         calls = []
-        monkeypatch.setattr("tools.environments.daytona.ensure_lazy_dep", calls.append)
+        monkeypatch.setattr("hermes_agent.tools.environments.daytona.ensure_lazy_dep", calls.append)
         make_env()
         assert calls == ["daytona"]
 
@@ -242,7 +242,7 @@ class TestInterrupt:
         # is_interrupted is checked by base.py's _wait_for_process,
         # patch where it's actually referenced (base.py's local binding)
         monkeypatch.setattr(
-            "tools.environments.base.is_interrupted", lambda: True
+            "hermes_agent.tools.environments.base.is_interrupted", lambda: True
         )
         try:
             result = env.execute("sleep 10")

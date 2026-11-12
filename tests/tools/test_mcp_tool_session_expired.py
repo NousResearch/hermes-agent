@@ -17,7 +17,7 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
-from tools import mcp_tool_loop as _mcp_loop
+from hermes_agent.tools import mcp_tool_loop as _mcp_loop
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ from tools import mcp_tool_loop as _mcp_loop
 
 def test_is_session_expired_detects_invalid_or_expired_session():
     """Reporter's exact wpcom-mcp error message (#13383)."""
-    from tools.mcp_tool_errors import _is_session_expired_error
+    from hermes_agent.tools.mcp_tool_errors import _is_session_expired_error
     exc = RuntimeError("Invalid params: Invalid or expired session")
     assert _is_session_expired_error(exc) is True
 
@@ -35,7 +35,7 @@ def test_is_session_expired_detects_invalid_or_expired_session():
 def test_is_session_expired_detects_expired_session_variant():
     """Generic ``session expired`` / ``expired session`` phrasings used
     by other SDK servers."""
-    from tools.mcp_tool_errors import _is_session_expired_error
+    from hermes_agent.tools.mcp_tool_errors import _is_session_expired_error
     assert _is_session_expired_error(RuntimeError("Session expired")) is True
     assert _is_session_expired_error(RuntimeError("expired session: abc")) is True
 
@@ -43,15 +43,15 @@ def test_is_session_expired_detects_expired_session_variant():
 def test_is_session_expired_detects_session_not_found():
     """Server-side GC produces ``session not found`` / ``unknown session``
     on some implementations."""
-    from tools.mcp_tool_errors import _is_session_expired_error
+    from hermes_agent.tools.mcp_tool_errors import _is_session_expired_error
     assert _is_session_expired_error(RuntimeError("session not found")) is True
     assert _is_session_expired_error(RuntimeError("Unknown session: abc123")) is True
 
 
 def test_is_session_expired_traversal_is_budget_bounded():
     """Pathologically long chains stop at the node budget without spinning."""
-    from tools import mcp_tool_errors as _mcp_errors
-    from tools.mcp_tool_errors import _is_session_expired_error
+    from hermes_agent.tools import mcp_tool_errors as _mcp_errors
+    from hermes_agent.tools.mcp_tool_errors import _is_session_expired_error
 
     exc: BaseException = RuntimeError("leaf")
     for i in range(_mcp_errors._EXC_TRAVERSAL_MAX_NODES * 2):
@@ -68,7 +68,7 @@ def test_is_session_expired_traversal_is_budget_bounded():
 def test_is_session_expired_walks_group_chain():
     """A group's own ``__cause__``/``__context__`` are inspected like any node's: a marker there classifies
     as expired, and an InterruptedError there still overrides a marker inside the group."""
-    from tools.mcp_tool_errors import _is_session_expired_error
+    from hermes_agent.tools.mcp_tool_errors import _is_session_expired_error
 
     group = ExceptionGroup("task group", [ValueError("unrelated")])
     group.__context__ = RuntimeError("session terminated")
@@ -155,9 +155,9 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
 ):
     """The real server run loop selects and rebuilds its configured transport."""
     from anyio import ClosedResourceError
-    from tools import mcp_tool
-    from tools.mcp_tool import MCPServerTask
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _mcp_loop._ensure_mcp_loop()
@@ -248,9 +248,9 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools import mcp_tool_loop as _mcp_loop
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_loop as _mcp_loop
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     _mcp_loop._ensure_mcp_loop()
     server = MagicMock()
@@ -301,7 +301,7 @@ def test_session_expired_retry_waits_for_new_session(monkeypatch, tmp_path):
     mcp_tool._tool_read_only_hints.setdefault("hindsight", {})["get_bank"] = True
     # Stamp the breaker "open" far enough in the past that the cooldown has
     # provably elapsed, so this call is a half-open probe. The breaker compares
-    # against time.monotonic() (tools/mcp_tool.py), whose origin is arbitrary and
+    # against time.monotonic() (hermes_agent/tools/mcp_tool.py), whose origin is arbitrary and
     # small on a freshly-booted CI container — a hardcoded literal like 123.0
     # only looked "elapsed" on a long-uptime dev box and flaked under CI.
     mcp_tool._server_breaker_opened_at["hindsight"] = (
@@ -325,8 +325,8 @@ def test_session_expired_handler_returns_none_without_loop(monkeypatch):
     """Defensive: if the MCP loop isn't running (cold start / shutdown
     race), the handler must fall through cleanly instead of hanging
     or raising."""
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _handle_session_expired_and_retry
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _handle_session_expired_and_retry
 
     # Install a server stub but make the event loop unavailable.
     server = MagicMock()
@@ -363,7 +363,7 @@ def test_session_expired_handler_returns_none_without_loop(monkeypatch):
 def test_session_expired_handler_returns_none_without_server_record():
     """If the server has been torn down / isn't in _servers, fall
     through cleanly — nothing to reconnect to."""
-    from tools.mcp_tool_handlers import _handle_session_expired_and_retry
+    from hermes_agent.tools.mcp_tool_handlers import _handle_session_expired_and_retry
     out = _handle_session_expired_and_retry(
         "does-not-exist",
         RuntimeError("Invalid or expired session"),
@@ -395,7 +395,7 @@ def test_non_tool_handlers_also_reconnect_on_session_expired(
     pattern and must reconnect the same way on session-expired."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     server, reconnect_flag = _install_stub_server(f"srv-{op_label}")
     mcp_tool._servers[f"srv-{op_label}"] = server
@@ -421,7 +421,7 @@ def test_non_tool_handlers_also_reconnect_on_session_expired(
 
     setattr(server.session, session_method, _sequence)
 
-    from tools import mcp_tool_handlers as _mcp_handlers
+    from hermes_agent.tools import mcp_tool_handlers as _mcp_handlers
     factory = getattr(_mcp_handlers, handler_factory)
     # list_resources / list_prompts take (server_name, timeout).
     # read_resource / get_prompt take the same signature.
@@ -460,8 +460,8 @@ def test_non_tool_handlers_also_reconnect_on_session_expired(
 def test_session_expired_retry_only_for_read_only_tools(monkeypatch, tmp_path, read_only):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _make_tool_handler
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _make_tool_handler
 
     _mcp_loop._ensure_mcp_loop()
     server, reconnect_flag = _install_stub_server("srv")
@@ -504,8 +504,8 @@ def test_session_expired_retry_only_for_read_only_tools(monkeypatch, tmp_path, r
 
 def test_tool_is_read_only_fails_safe():
     """Unknown server/tool metadata classifies as write-capable (False)."""
-    from tools import mcp_tool
-    from tools.mcp_tool_handlers import _tool_is_read_only
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools.mcp_tool_handlers import _tool_is_read_only
 
     assert _tool_is_read_only("no-such-server", "tool") is False
     mcp_tool._tool_read_only_hints["known"] = {"reader": True, "writer": False}

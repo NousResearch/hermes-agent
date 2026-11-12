@@ -16,7 +16,7 @@ def exercise_surfaces(agent, captures, url, home, config):
     assert response["final_response"] == "LOCAL_CAPTURE_ONLY", response
     results["full-agent"] = captures[start:]
 
-    from tools.delegate_tool import _build_child_agent, _run_single_child
+    from hermes_agent.tools.delegate_tool import _build_child_agent, _run_single_child
     child = _build_child_agent(0, "Return fixture response", None, [], "fixture", 2, 1, agent)
     start = len(captures)
     response = _run_single_child(0, "Return fixture response", child, agent)

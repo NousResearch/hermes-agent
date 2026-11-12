@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from tools.fuzzy_match import is_already_applied
+from hermes_agent.tools.fuzzy_match import is_already_applied
 
 
 class TestIsAlreadyApplied:
@@ -49,7 +49,7 @@ def workdir(tmp_path, monkeypatch):
 
 
 def _patch_tool(**kwargs):
-    from tools.file_tools import patch_tool
+    from hermes_agent.tools.file_tools import patch_tool
     return json.loads(patch_tool(**kwargs))
 
 

@@ -820,7 +820,7 @@ def _build_providers() -> list[OpenRouterCompatImageProvider]:
                 }],
             }),
         # No picker row: Portal models are offered inside the single managed "Nous Subscription" row
-        # (tools/image_generation_managed.py). A row of its own also wrote `provider: nous` and so
+        # (hermes_agent/tools/image_generation_managed.py). A row of its own also wrote `provider: nous` and so
         # read "active" alongside the managed FAL row while the runtime routed its pick to FAL.
         OpenRouterCompatImageProvider(
             provider_name="nous", display_name="Nous Portal", runtime_name="nous", config_key="nous",

@@ -16,13 +16,13 @@ import logging
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask
+from hermes_agent.tools.mcp_tool import MCPServerTask
 
 
 def _fast_time(monkeypatch, tmp_path):
     """Zero out the retry sleeps and the parked self-probe interval; keep ``blender``
     enabled in the temp home's config.yaml so the self-probe gate lets it wake."""
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     (tmp_path / "config.yaml").write_text(
         "mcp_servers:\n  blender:\n    command: x\n", encoding="utf-8")
@@ -42,7 +42,7 @@ def test_reparked_server_logs_once_not_per_probe(monkeypatch, tmp_path, caplog):
     ``hermes mcp list`` (#115713)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 1)
     _fast_time(monkeypatch, tmp_path)
@@ -68,7 +68,7 @@ def test_reparked_server_logs_once_not_per_probe(monkeypatch, tmp_path, caplog):
         run_task = asyncio.ensure_future(task.run({"command": "x"}))
         await asyncio.wait_for(run_task, timeout=15)
 
-    with caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.mcp_tool"):
         asyncio.run(_scenario())
 
     parks = [
@@ -91,7 +91,7 @@ def test_park_after_revival_warns_again(monkeypatch, tmp_path, caplog):
     transition, not probe chatter."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_MAX_INITIAL_CONNECT_RETRIES", 1)
     monkeypatch.setattr(mcp_tool, "_MAX_RECONNECT_RETRIES", 1)
@@ -127,7 +127,7 @@ def test_park_after_revival_warns_again(monkeypatch, tmp_path, caplog):
         run_task = asyncio.ensure_future(task.run({"command": "x"}))
         await asyncio.wait_for(run_task, timeout=15)
 
-    with caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.mcp_tool"):
         asyncio.run(_scenario())
 
     initial_parks = [
@@ -146,7 +146,7 @@ def test_park_for_a_different_reason_warns_again(caplog):
     connection error that re-parks on an auth error carries new information and warns again;
     only an identical repeat is demoted to DEBUG."""
     task = MCPServerTask("t")
-    with caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.mcp_tool"):
         task._log_park("MCP server '%s' parked: %s", "t", "ConnectionError: refused")
         task._was_parked = True  # _park() latches this on the first park
         task._log_park("MCP server '%s' parked: %s", "t", "ConnectionError: refused")

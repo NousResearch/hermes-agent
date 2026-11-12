@@ -498,13 +498,13 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     _EA_CARD_CAP = 1024  # interactive.body.text cap; past it _truncate_body would cut the deadline line
 
     def _approval_request_ids(self) -> OrderedDict[str, str]:
-        """approval_id → ``tools.approval`` request id; created on first use, like Telegram's
+        """approval_id → ``hermes_agent.tools.approval`` request id; created on first use, like Telegram's
         ``_approval_counter``, so adapters assembled without ``__init__`` still resolve."""
         return self.__dict__.setdefault("_exec_approval_request_ids", OrderedDict())
 
     async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
         """Approve / Deny buttons only (a 3-button cap leaves no room for the session/always
-        tiers); a tap resolves via ``tools.approval.resolve_gateway_approval``."""
+        tiers); a tap resolves via ``hermes_agent.tools.approval.resolve_gateway_approval``."""
         approval_id = uuid.uuid4().hex[:12]
         buttons = [(f"appr:{approval_id}:{c}", self._truncate_button_label(t(f"platform.whatsapp.{c}_button")))
                    for c in ("approve", "deny") if c == "deny" or "once" in prompt.choices]  # Deny-only: cut command
@@ -899,7 +899,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not session_key:
             return False
         clarify_gateway = _optional_module(
-            "tools.clarify_gateway", "[whatsapp_cloud] clarify resolver unavailable; falling back to text dispatch"
+            "hermes_agent.tools.clarify_gateway", "[whatsapp_cloud] clarify resolver unavailable; falling back to text dispatch"
         )
         if clarify_gateway is None:
             return False
@@ -946,7 +946,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not session_key:
             return False
         request_id = self._approval_request_ids().pop(approval_id, None)
-        approval = _optional_module("tools.approval", "[whatsapp_cloud] approval resolver unavailable")
+        approval = _optional_module("hermes_agent.tools.approval", "[whatsapp_cloud] approval resolver unavailable")
         if approval is None:
             return False
         count = approval.resolve_gateway_approval_card(session_key, choice, request_id, actor_id=to,
@@ -974,7 +974,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
         if not session_key:
             return False
-        slash_confirm = _optional_module("tools.slash_confirm", "[whatsapp_cloud] slash_confirm resolver unavailable")
+        slash_confirm = _optional_module("hermes_agent.tools.slash_confirm", "[whatsapp_cloud] slash_confirm resolver unavailable")
         if slash_confirm is None:
             return False
         try:

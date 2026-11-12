@@ -146,7 +146,7 @@ def _run_confirm(busy) -> Optional[str]:
 
 
 def test_slash_confirm_decline_returns_none_and_clears_state():
-    from tools import slash_confirm as mod
+    from hermes_agent.tools import slash_confirm as mod
 
     adapter = _ConfirmAdapter(
         SendResult(success=False, error="declined", raw_response=CODE_ONLY_DECLINE)

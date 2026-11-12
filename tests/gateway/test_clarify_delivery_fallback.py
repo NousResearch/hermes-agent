@@ -1,7 +1,7 @@
 """A clarify card that cannot render is retried as plain text, and a card that fails late does
 not pass for user inactivity (#112684).
 
-Real ``TurnRunner._clarify_callback_sync`` + real ``tools.clarify_gateway`` + a real gateway loop
+Real ``TurnRunner._clarify_callback_sync`` + real ``hermes_agent.tools.clarify_gateway`` + a real gateway loop
 thread; the adapter is Telegram-shaped (``SendResult`` shapes from
 ``plugins/platforms/telegram/adapter.py::_send_prompt``) with a native ``send_clarify`` override.
 """
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
-from tools import clarify_gateway as cm
+from hermes_agent.tools import clarify_gateway as cm
 
 UNDELIVERED = "[clarify prompt could not be delivered"  # prefix shared by every delivery notice
 PICK = [{"qid": "q0", "question": "Pick?", "choices": ["alpha", "beta"], "multi_select": False}]

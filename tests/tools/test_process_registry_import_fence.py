@@ -2,7 +2,7 @@
 
 Only the runtime that owns delegation state (gateway authority, interactive agent) may
 restore durable completions, and only explicitly; an ordinary client CLI (``hermes cron
-run``, ``hermes sessions list``) imports ``tools.process_registry`` transitively and must
+run``, ``hermes sessions list``) imports ``hermes_agent.tools.process_registry`` transitively and must
 stay a zero-writer against ``state.db``.
 """
 import json
@@ -19,7 +19,7 @@ import json, os, sys
 home = os.environ["HERMES_HOME"]
 connects = []
 sys.addaudithook(lambda ev, a: connects.append(str(a[0])) if ev == "sqlite3.connect" and home in str(a[0]) else None)
-import tools.process_registry  # noqa: F401
+import hermes_agent.tools.process_registry  # noqa: F401
 print(json.dumps(connects))
 '''
 
@@ -41,8 +41,8 @@ async def test_gateway_startup_restores_pending_delegation_completions(tmp_path,
     """The gateway authority is the owner that rehydrates durable completions, at startup."""
     from unittest.mock import MagicMock
     import hermes_agent.gateway.run as gateway_run
-    import tools.async_delegation as ad
-    from tools.process_registry import process_registry
+    import hermes_agent.tools.async_delegation as ad
+    from hermes_agent.tools.process_registry import process_registry
 
     monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

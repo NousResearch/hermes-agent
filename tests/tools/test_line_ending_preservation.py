@@ -32,15 +32,15 @@ def hermes_home(monkeypatch, tmp_path):
     # returns the stale cwd from this test's ops and breaks tests like
     # test_resolve_path that rely on TERMINAL_CWD env var.
     try:
-        from tools.file_tools import clear_file_ops_cache
-        from tools.file_tools_read_tracking import _read_tracker_lock, _read_tracker
+        from hermes_agent.tools.file_tools import clear_file_ops_cache
+        from hermes_agent.tools.file_tools_read_tracking import _read_tracker_lock, _read_tracker
         clear_file_ops_cache()
         with _read_tracker_lock:
             _read_tracker.clear()
     except Exception:
         pass
     try:
-        from tools.terminal_tool import _active_environments, _env_lock
+        from hermes_agent.tools.terminal_tool import _active_environments, _env_lock
         with _env_lock:
             _active_environments.clear()
     except Exception:
@@ -59,7 +59,7 @@ class TestPatchCRLFPreservation:
     def test_patch_on_crlf_file_stays_pure_crlf(self, hermes_home, tmp_path):
         """LLM sends LF old/new; file has CRLF.  Result must be all CRLF,
         no mixed endings."""
-        from tools.file_tools import _handle_patch
+        from hermes_agent.tools.file_tools import _handle_patch
 
         target = tmp_path / "config.ini"
         target.write_bytes(b"[a]\r\nkey=1\r\n\r\n[b]\r\nkey=2\r\n")
@@ -88,7 +88,7 @@ class TestPatchCRLFPreservation:
     def test_patch_multiline_replacement_on_crlf(self, hermes_home, tmp_path):
         """Multi-line new_string with bare LFs should be CRLF-converted
         before write."""
-        from tools.file_tools import _handle_patch
+        from hermes_agent.tools.file_tools import _handle_patch
 
         target = tmp_path / "f.py"
         target.write_bytes(b"def foo():\r\n    return 1\r\n")
@@ -119,7 +119,7 @@ class TestWriteFileCRLFPreservation:
         """The agent typically sends bare-LF content; if the file existed
         with CRLF, the write should convert to CRLF rather than silently
         flipping the endings."""
-        from tools.file_tools import _handle_write_file, read_file_tool
+        from hermes_agent.tools.file_tools import _handle_write_file, read_file_tool
 
         target = tmp_path / "config.bat"
         target.write_bytes(b"@echo off\r\nset X=1\r\n")
@@ -145,7 +145,7 @@ class TestWriteFileCRLFPreservation:
 
     def test_overwrite_lf_file_stays_lf(self, hermes_home, tmp_path):
         """Pre-existing LF file should not get spurious CRLFs."""
-        from tools.file_tools import _handle_write_file, read_file_tool
+        from hermes_agent.tools.file_tools import _handle_write_file, read_file_tool
 
         target = tmp_path / "lf.txt"
         target.write_bytes(b"line1\nline2\n")
@@ -169,7 +169,7 @@ class TestLineEndingHelpers:
 
 
     def test_normalize_to_crlf_idempotent(self):
-        from tools.file_operations import _normalize_line_endings
+        from hermes_agent.tools.file_operations import _normalize_line_endings
 
         once = _normalize_line_endings("a\nb\n", "\r\n")
         twice = _normalize_line_endings(once, "\r\n")

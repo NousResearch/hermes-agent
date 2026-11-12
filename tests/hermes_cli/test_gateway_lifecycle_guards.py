@@ -266,7 +266,7 @@ def test_host_served_profile_refuses_before_unserving_its_live_turns(tmp_path, m
 def test_active_work_verb_scoped_to_a_profile_names_only_its_turns(monkeypatch):
     """The host's ``active-work`` verb with ``{"profile": "coder"}`` answers only what unserving coder stops."""
     from hermes_agent.gateway.run_active_work_verb import active_work_verb
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
     monkeypatch.setattr(async_delegation, "list_async_delegations", list)
     units = [{"kind": "chat", "session": "agent:coder:telegram:dm:7", "pid": 1},
              {"kind": "chat", "session": "agent:main:telegram:dm:8", "pid": 1}]
@@ -285,7 +285,7 @@ def test_active_work_verb_counts_a_profiles_side_agent_and_reads_it_on_the_loop(
     """A profile whose only work is a running /bg side agent is not idle (unserving it interrupts the
     agent), and every live read happens inside the loop callback, never on the socket thread."""
     from hermes_agent.gateway.run_active_work_verb import active_work_verb
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
     monkeypatch.setattr(async_delegation, "list_async_delegations", list)
     on_loop = []
     authority = SimpleNamespace(_managed_workers={}, _cron_cancellations={},

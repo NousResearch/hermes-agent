@@ -5,8 +5,8 @@ from unittest.mock import patch
 from rich.console import Console
 
 from hermes_cli import banner
-import model_tools
-import tools.mcp_tool_discovery
+from hermes_agent import model_tools
+import hermes_agent.tools.mcp_tool_discovery
 
 def test_banner_snapshot_accepts_bom_without_weakening_freshness(tmp_path, monkeypatch):
     import json
@@ -43,7 +43,7 @@ def test_empty_model_shows_no_model_configured(tmp_path, monkeypatch):
         patch.object(model_tools, "check_tool_availability", return_value=([], [])),
         patch.object(banner, "get_available_skills", return_value={}),
         patch.object(banner, "get_update_result", return_value=None),
-        patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
+        patch.object(hermes_agent.tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
     ):
         console = Console(record=True, force_terminal=False, color_system=None, width=160)
         banner.build_welcome_banner(console=console, model="", cwd="/tmp/project", tools=[],
@@ -65,7 +65,7 @@ def test_build_welcome_banner_does_not_center_pad_hero_art():
         patch.object(banner, "get_available_skills", return_value={}),
         patch.object(banner, "get_update_result", return_value=None),
         patch.object(banner, "get_latest_release_tag", return_value=None),
-        patch.object(tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
+        patch.object(hermes_agent.tools.mcp_tool_discovery, "get_mcp_status", return_value=[]),
         patch.object(banner, "_active_skin", return_value=skin),
     ):
         console = Console(file=buf, force_terminal=False, color_system=None, width=80)

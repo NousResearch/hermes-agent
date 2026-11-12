@@ -1,7 +1,7 @@
 """v5 signals: which disabled built-in tools models reach for, and when an install first adopts a feature.
 
 ``hermes.tool_unavailable.count`` is counted where the agent validates the calls a model emitted: a
-name Hermes ships (``toolsets.BUILTIN_TOOL_NAMES``) that this session did not enable. Any other name
+name Hermes ships (``hermes_agent.toolsets.BUILTIN_TOOL_NAMES``) that this session did not enable. Any other name
 stays the v4 ``unknown_tool`` quality issue only, so a plugin, MCP or hallucinated name never leaves.
 
 ``hermes.feature_adoption.count`` rides on counters the subscriber already records: the first counter
@@ -41,7 +41,7 @@ def tool_unavailable_fields(agent: Any, name: Any, issue: str, route: dict[str, 
     if getattr(agent, "_delegate_depth", 0) or getattr(agent, "platform", None) == "cron":
         return None
     from agent.tool_executor import _tool_search_scoped_names
-    from tools.skill_provenance import is_background_review
+    from hermes_agent.tools.skill_provenance import is_background_review
 
     if is_background_review() or name in _tool_search_scoped_names(agent):
         return None

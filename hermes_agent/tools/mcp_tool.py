@@ -6,7 +6,7 @@ into the hermes tool registry. The ``mcp`` package is optional (no-op without it
 One background event loop (``_mcp_loop``) in a daemon thread runs each server as a long-lived
 Task (``MCPServerTask``) so the transport's anyio cancel scopes enter and exit in one Task; every
 ``_servers``/loop mutation holds ``_lock``. This module keeps the SDK loader, ``MCPServerTask`` and
-all shared state; the ``mcp_tool_*`` siblings read that state back through ``tools.mcp_tool`` at
+all shared state; the ``mcp_tool_*`` siblings read that state back through ``hermes_agent.tools.mcp_tool`` at
 call time (``_core``) and are imported directly by their callers."""
 
 import asyncio
@@ -22,12 +22,12 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
-from tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, mcp_field
-from tools.mcp_tool_config import _npx_cached_bin, _packaged_npx_entry
-from tools.mcp_tool_sampling import ElicitationHandler, SamplingHandler
-from tools.mcp_tool_transport import MCPServerTransportMixin
-from tools.mcp_tool_server_run import MCPServerRunMixin
-from tools.mcp_tool_health import MCPServerHealthMixin
+from hermes_agent.tools.mcp_tool_common import _DEFAULT_TOOL_TIMEOUT, mcp_field
+from hermes_agent.tools.mcp_tool_config import _npx_cached_bin, _packaged_npx_entry
+from hermes_agent.tools.mcp_tool_sampling import ElicitationHandler, SamplingHandler
+from hermes_agent.tools.mcp_tool_transport import MCPServerTransportMixin
+from hermes_agent.tools.mcp_tool_server_run import MCPServerRunMixin
+from hermes_agent.tools.mcp_tool_health import MCPServerHealthMixin
 
 
 # Wall-clock bound on the fail-open OSV malware preflight before a stdio spawn; just ABOVE
@@ -40,7 +40,7 @@ async def _preflight_stdio_command(server_name: str, command: str, args: list) -
     cached-npx swap. The preflight must see the REAL command/args: anything that rewrites argv to a
     wrapper or resolved binary has to happen after it, or the check silently inspects the wrapper
     and becomes a no-op (``_infer_ecosystem`` keys off the command basename being npx/uvx/pipx)."""
-    from tools.osv_check import check_package_for_malware
+    from hermes_agent.tools.osv_check import check_package_for_malware
     try:
         malware_error = await asyncio.wait_for(
             asyncio.to_thread(check_package_for_malware, command, args), timeout=_OSV_MALWARE_CHECK_TIMEOUT_S)
@@ -124,7 +124,7 @@ _OPTIONAL_TYPE_FAMILIES = (
      "MCP notification types not available -- dynamic tool discovery disabled"),
 )
 # Bound by _ensure_mcp_sdk(); module __getattr__ (PEP 562) imports the SDK on first external
-# access so mock.patch("tools.mcp_tool.stdio_client") sees a real original, never clobbered.
+# access so mock.patch("hermes_agent.tools.mcp_tool.stdio_client") sees a real original, never clobbered.
 _MCP_SDK_LAZY_SYMBOLS = frozenset(
     {"StdioServerParameters", "stdio_client", "streamablehttp_client", "streamable_http_client"}
     | {n for _mod, names, _msg in _OPTIONAL_TYPE_FAMILIES for n in names})
@@ -533,7 +533,7 @@ class MCPServerTask(MCPServerRunMixin, MCPServerTransportMixin, MCPServerHealthM
 
 # ---- Module-level state (every mutation under ``_lock``) ----
 #
-# Every ledger below is keyed by the CONNECTION KEY from ``tools.mcp_tool_scope``: the bare
+# Every ledger below is keyed by the CONNECTION KEY from ``hermes_agent.tools.mcp_tool_scope``: the bare
 # server name outside a multiplexer, ``(owner_scope, name)`` under one. Two profiles naming the
 # same server with their own credentials are two connections; a name-keyed ledger let the first
 # profile's connection shadow the second's (never connected, silently tool-less — #106005).
@@ -607,7 +607,7 @@ _CIRCUIT_BREAKER_THRESHOLD, _CIRCUIT_BREAKER_COOLDOWN_SEC = 3, 60.0
 # ``_tool_read_only_hints`` by the connection key (the server's own tool annotations).
 _server_trust_levels: dict[Any, str] = {}
 _tool_read_only_hints: dict[Any, dict[str, bool]] = {}
-# Declared per-tool costs + per-chat spend limit (``tools.mcp_tool_costs.CostPolicy``), keyed like
+# Declared per-tool costs + per-chat spend limit (``hermes_agent.tools.mcp_tool_costs.CostPolicy``), keyed like
 # ``_server_trust_levels``: the consuming profile's policy. Absent = no costs, behaviour unchanged.
 _server_cost_policies: dict[Any, Any] = {}
 
@@ -618,7 +618,7 @@ def _bump_server_error(server_name: str, *, application: bool = False) -> None:
     """Count a failure; at the threshold (re)stamp the breaker-open time. Keyed by the calling
     scope's connection so one profile's failing server never opens another profile's breaker.
     *application*: the call completed and the payload was an error (transport is fine)."""
-    from tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
     key = _resolve_server_key(server_name)
     n = _server_error_counts.get(key, 0) + 1
     _server_error_counts[key] = n
@@ -629,7 +629,7 @@ def _bump_server_error(server_name: str, *, application: bool = False) -> None:
 
 def _reset_server_error(server_name: str) -> None:
     """Close the breaker on any unambiguous success signal."""
-    from tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
     key = _resolve_server_key(server_name)
     _server_error_counts[key] = 0
     _server_breaker_opened_at.pop(key, None)
@@ -657,14 +657,14 @@ def _mcp_registry_scope() -> Optional[str]:
     off — keying its connections by the bare name would hand one profile's credentialed connection
     to every other served profile (#111151). Single-profile processes (no override, or an override
     naming their own home) keep bare names."""
-    from tools.registry import current_session_tool_scope
+    from hermes_agent.tools.registry import current_session_tool_scope
     session_scope = current_session_tool_scope()
     if session_scope is not None:
         return session_scope
     from agent.secret_scope import serves_routed_profile
     if not serves_routed_profile():
         return None
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     return registry.current_scope_key()
 
 
@@ -673,7 +673,7 @@ def _server_registry_scope(key) -> Optional[str]:
     runs on the MCP loop without the discovering profile's context), else the current one."""
     if key in _server_scope_keys:
         return _server_scope_keys[key]
-    from tools.mcp_tool_scope import _key_scope
+    from hermes_agent.tools.mcp_tool_scope import _key_scope
     return _key_scope(key) or _mcp_registry_scope()
 
 

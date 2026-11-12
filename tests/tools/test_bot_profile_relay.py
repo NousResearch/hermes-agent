@@ -2,7 +2,7 @@
 import json
 from types import SimpleNamespace
 
-from tools import bot_mode_dm, bot_mode_probe, bot_relay
+from hermes_agent.tools import bot_mode_dm, bot_mode_probe, bot_relay
 
 
 def test_named_sender_uses_own_remote_roster_and_outbox(tmp_path, monkeypatch):

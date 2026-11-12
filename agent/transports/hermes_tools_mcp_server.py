@@ -50,7 +50,7 @@ def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict
     return inspect.Signature(params, return_annotation=str), annots
 
 
-# Each name MUST match a registered Hermes tool ``model_tools.handle_function_call()`` can dispatch.
+# Each name MUST match a registered Hermes tool ``hermes_agent.model_tools.handle_function_call()`` can dispatch.
 # NOT exposed: terminal/file/search/process/clarify (codex built-ins + its own approval UI);
 # delegate_task/memory/session_search/todo (need the running AIAgent context); browser_exec (runs
 # model-written Python on the Hermes host, outside codex's sandbox and approval UI).
@@ -75,7 +75,7 @@ def _build_server() -> Any:
     except ImportError as exc:  # pragma: no cover - install hint
         raise ImportError(f"hermes-tools MCP server requires the 'mcp' package: {exc}") from exc
 
-    from model_tools import get_tool_definitions, handle_function_call
+    from hermes_agent.model_tools import get_tool_definitions, handle_function_call
 
     mcp = MCPServer(
         HERMES_TOOLS_MCP_SERVER_NAME,

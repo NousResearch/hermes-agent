@@ -30,8 +30,8 @@ async def test_editor_guard_uses_shared_waiter_without_leaking_to_cli(tmp_path):
     from hermes_agent.acp_adapter.edit_approval import maybe_require_edit_approval
     from hermes_agent.gateway.session_events import SessionEvents
     from hermes_agent.gateway.session_pending_controls import PendingControls
-    from tools.approval import register_gateway_notify, unregister_gateway_notify
-    from tools.approval_context import set_current_session_key, reset_current_session_key
+    from hermes_agent.tools.approval import register_gateway_notify, unregister_gateway_notify
+    from hermes_agent.tools.approval_context import set_current_session_key, reset_current_session_key
 
     route = 'owned-editor-route'
     controls = PendingControls(SessionEvents())

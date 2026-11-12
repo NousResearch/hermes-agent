@@ -65,7 +65,7 @@ class _SlashWorker:
         # (gateway/GitHub/infra) are still stripped (#29157). Global-remote / multi-profile sessions: the
         # worker must resolve config/skills/state against the session's profile home, not the gateway's
         # launch HERMES_HOME (#40677).
-        from tools.environments.local import served_profile_child_env
+        from hermes_agent.tools.environments.local import served_profile_child_env
         from agent.secret_scope import is_multiplex_active
 
         # The worker runs the agent → needs provider credentials; tier-1 secrets (gateway/GitHub/

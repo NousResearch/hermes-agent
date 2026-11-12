@@ -20,17 +20,17 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 
-from tools.browser_supervisor_dialogs import (
+from hermes_agent.tools.browser_supervisor_dialogs import (
     DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S, RECENT_DIALOGS_MAX, _VALID_POLICIES, DialogRecord,
     DialogSupervisionMixin, PendingDialog,
 )
-from tools.browser_supervisor_frames import FrameInfo, FrameTrackingMixin
+from hermes_agent.tools.browser_supervisor_frames import FrameInfo, FrameTrackingMixin
 
 # ``websockets`` costs ~22 ms at import and is only needed once a supervisor connects.
 if TYPE_CHECKING:
     from websockets.asyncio.client import ClientConnection
 
-    from tools.browser_supervisor_capture import CapturedCDP
+    from hermes_agent.tools.browser_supervisor_capture import CapturedCDP
 
 logger = logging.getLogger(__name__)
 
@@ -517,8 +517,8 @@ class _SupervisorRegistry:
 
     def capture(self, task_id: str, *, timeout: float = 10.0) -> CapturedCDP:
         """Public CDP seam for trusted in-process plugins: a handle pinned to this task's
-        current connection and default page session (``tools.browser_supervisor_capture``)."""
-        from tools.browser_supervisor_capture import capture
+        current connection and default page session (``hermes_agent.tools.browser_supervisor_capture``)."""
+        from hermes_agent.tools.browser_supervisor_capture import capture
 
         return capture(self, task_id, timeout=timeout)
 

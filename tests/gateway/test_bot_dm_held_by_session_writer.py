@@ -26,7 +26,7 @@ async def held(tmp_path, monkeypatch):
     from hermes_cli.active_sessions import release_active_session, try_acquire_active_session
     from hermes_cli.gateway_client import rpc_error
     from hermes_agent.hermes_state import SessionDB
-    from tools import bot_live_delivery, bot_mode_dm
+    from hermes_agent.tools import bot_live_delivery, bot_mode_dm
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
@@ -100,7 +100,7 @@ async def held(tmp_path, monkeypatch):
 
 async def _send(held, text):
     """``message_agent``'s local send: pin the intent, then call the owner's door."""
-    from tools import bot_mode_dm
+    from hermes_agent.tools import bot_mode_dm
     raw = await asyncio.to_thread(bot_mode_dm._start_delivery, ['hermes', '-p', 'default'], text, '@default',
                                   stdin_file=False, task_id=None, agent=None, profile_home=held.home)
     return json.loads(raw)
@@ -113,7 +113,7 @@ def _admissions(held):
 @pytest.mark.asyncio
 async def test_a_dm_refused_while_another_writer_holds_the_chat_is_a_definite_no_send(held):
     from hermes_agent.gateway.session_bot import recover_bot_deliveries
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
 
     refused = await _send(held, 'ping')
     assert refused.get('reason') == 'runtime_coordination_required', refused
@@ -154,12 +154,12 @@ async def test_a_refusal_after_the_owner_may_have_admitted_stays_ambiguous(held,
 def _resubmit(held, delivery_id, text):
     """A second attempt under the SAME delivery id and payload (the runner retrying the pinned
     intent), straight at the owner's door."""
-    from tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
+    from hermes_agent.tools.bot_live_delivery import deliver_to_live_owner, find_canonical_live_owner
     return deliver_to_live_owner(held.home, find_canonical_live_owner(held.home), text, delivery_id=delivery_id)
 
 
 def _runner(held, dm_file):
-    from tools import bot_mode_dm
+    from hermes_agent.tools import bot_mode_dm
     return bot_mode_dm._run_delivery(['hermes', '-p', 'default'], dm_file, stdin_file=False, profile_home=held.home)
 
 
@@ -199,7 +199,7 @@ async def test_a_not_sent_answer_is_the_delivery_ids_durable_disposition(held):
 async def test_the_runner_settles_a_held_refusal_with_its_payload(held, capsys):
     """The background runner's definite no-send removes the payload too: rerunning the same
     runner command after the writer closes can neither rebuild the intent nor admit the id."""
-    from tools import bot_mode_dm
+    from hermes_agent.tools import bot_mode_dm
     dm_file = bot_mode_dm._write_dm_file('ping')
     assert await asyncio.to_thread(_runner, held, dm_file) == 1
     refused = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -228,7 +228,7 @@ async def test_an_older_owner_without_the_marker_stays_ambiguous(held, monkeypat
 async def test_a_settled_receipt_states_only_what_settle_serialized(held):
     """``settle`` doesn't re-check the writer (it may release between the refusal and the settle),
     so the stored receipt says the id was settled as not sent, never that a writer held the chat."""
-    from tools.bot_live_delivery import find_canonical_live_owner, read_delivery_result, settle_held_delivery
+    from hermes_agent.tools.bot_live_delivery import find_canonical_live_owner, read_delivery_result, settle_held_delivery
     held.release()
     delivery_id = 'd' * 64
     answer = await asyncio.to_thread(settle_held_delivery, held.home, find_canonical_live_owner(held.home),
@@ -246,7 +246,7 @@ async def test_a_retiring_or_retired_owner_refuses_settle_through_a_retained_con
     own, so nothing else keeps it from racing the home's next owner."""
     from hermes_agent.gateway import run_runtime
     from hermes_cli.gateway_client import GatewayRPCError
-    from tools.bot_live_delivery import find_canonical_live_owner, read_delivery_result, settle_held_delivery
+    from hermes_agent.tools.bot_live_delivery import find_canonical_live_owner, read_delivery_result, settle_held_delivery
     owner = find_canonical_live_owner(held.home)
     held.authority.retiring = True
     for reason, delivery_id in (('runtime_draining', 'e' * 64), ('runtime_retired', 'f' * 64)):
@@ -264,7 +264,7 @@ async def test_a_settle_refused_by_a_retired_owner_keeps_the_unknown_outcome(hel
     """The owner refused the DM (writer held), then retired before the tool's settle: that refusal
     settles nothing, so the tool keeps the intent and gives the ambiguous answer, never 'NOT sent'."""
     from hermes_agent.gateway import run_runtime
-    from tools import bot_live_delivery
+    from hermes_agent.tools import bot_live_delivery
     loop = asyncio.get_running_loop()
     settle = bot_live_delivery.authority_settle
 

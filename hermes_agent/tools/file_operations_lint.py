@@ -1,4 +1,4 @@
-"""Syntax-lint and LSP-diagnostics tier for ``tools.file_operations``.
+"""Syntax-lint and LSP-diagnostics tier for ``hermes_agent.tools.file_operations``.
 
 ``ShellFileOperations`` inherits ``LintMixin``; module constants and in-process
 linters are pure functions importable from this module.
@@ -11,7 +11,7 @@ import os
 import tomllib
 from typing import Callable, Dict, Optional
 
-from tools.file_operations_common import ExecuteResult, LintResult
+from hermes_agent.tools.file_operations_common import ExecuteResult, LintResult
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +187,7 @@ class LintMixin:
             # Native Windows binaries need C:/... not MSYS /c/... (→ phantom ENOENT).
             result = self._exec(linter_cmd.replace("{file}", self._escape_native_tool_arg(path)), timeout=30)
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
-            from tools.ansi_strip import strip_ansi
+            from hermes_agent.tools.ansi_strip import strip_ansi
             cleaned = strip_ansi(result.stdout).strip()
             # Collapse to one line — the npx banner is multi-line ASCII art.
             first_line = next((ln.strip() for ln in cleaned.splitlines() if ln.strip()), cleaned[:120])
@@ -201,7 +201,7 @@ class LintMixin:
 
         from hermes_cli._subprocess_compat import windows_hide_flags
         from hermes_constants import with_hermes_node_path
-        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path, hermes_subprocess_env
+        from hermes_agent.tools.environments.local import _IS_WINDOWS, _msys_to_windows_path, hermes_subprocess_env
 
         tool, *args = _MANAGED_NODE_LINTERS[ext]
         executable = shutil.which(tool, path=with_hermes_node_path({"PATH": ""})["PATH"])
@@ -245,7 +245,7 @@ class LintMixin:
     def _lsp_local_only(self) -> bool:
         """True iff the backend's files are the host's (``uses_host_filesystem``). LSP servers run on
         the host and can't see files inside Docker/Modal/SSH/Daytona or a confining local sandbox."""
-        from tools.environments.base import env_uses_host_filesystem
+        from hermes_agent.tools.environments.base import env_uses_host_filesystem
 
         return env_uses_host_filesystem(getattr(self, "env", None))  # tests may build via __new__
 

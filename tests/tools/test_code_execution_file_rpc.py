@@ -9,8 +9,8 @@ import time
 
 import pytest
 
-from tools.code_execution_tool import generate_hermes_tools_module
-from tools.code_execution_rpc import _rpc_poll_loop
+from hermes_agent.tools.code_execution_tool import generate_hermes_tools_module
+from hermes_agent.tools.code_execution_rpc import _rpc_poll_loop
 
 
 CALLS = {
@@ -29,10 +29,10 @@ CALLS = {
 @pytest.mark.platforms("posix")
 def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypatch):
     from pm.shell import bash
-    from tools.registry import registry
-    import tools.file_tools
-    import tools.web_tools
-    import tools.terminal_tool
+    from hermes_agent.tools.registry import registry
+    import hermes_agent.tools.file_tools
+    import hermes_agent.tools.web_tools
+    import hermes_agent.tools.terminal_tool
 
     shell = bash()
     assert shell
@@ -53,7 +53,7 @@ def test_generated_file_rpc_kwargs_correlation_and_authority(tmp_path, monkeypat
         seen.append((name, args.copy()))
         return json.dumps({"name": name, "args": args})
 
-    monkeypatch.setattr("model_tools.handle_function_call", dispatch)
+    monkeypatch.setattr("hermes_agent.model_tools.handle_function_call", dispatch)
 
     class Shell:
         def execute(self, command, cwd=None, timeout=None, stdin_data=None):

@@ -56,7 +56,7 @@ def _home(home: Path, plugins: tuple, backend: str | None) -> Path:
 
 
 def _list_apps(session_id: str = "s1") -> list:
-    from tools.computer_use.tool import handle_computer_use
+    from hermes_agent.tools.computer_use.tool import handle_computer_use
     out = json.loads(handle_computer_use({"action": "list_apps"}, session_id=session_id))
     assert "apps" in out, out
     return out["apps"]
@@ -64,7 +64,7 @@ def _list_apps(session_id: str = "s1") -> list:
 
 @pytest.fixture(autouse=True)
 def _clean():
-    from tools.computer_use.tool import reset_backend_for_tests
+    from hermes_agent.tools.computer_use.tool import reset_backend_for_tests
     reset_backend_for_tests()
     yield
     reset_backend_for_tests()
@@ -76,7 +76,7 @@ def test_selected_plugin_receives_tool_calls_and_unselected_stays_dormant(tmp_pa
     home = _home(tmp_path / "home", ("cu-alpha", "cu-beta"), "cu-beta")
     tok = set_hermes_home_override(str(home))
     try:
-        from tools.computer_use.tool import check_computer_use_requirements, handle_computer_use
+        from hermes_agent.tools.computer_use.tool import check_computer_use_requirements, handle_computer_use
         assert check_computer_use_requirements() is True
         assert _list_apps()[0]["backend"] == "cu-beta"
         assert json.loads(handle_computer_use({"action": "click", "element": 3}, session_id="s1"))["ok"] is True
@@ -94,7 +94,7 @@ def test_unknown_backend_errors_naming_configured_and_available(tmp_path):
     home = _home(tmp_path / "home", (), "nope")
     tok = set_hermes_home_override(str(home))
     try:
-        from tools.computer_use.tool import check_computer_use_requirements, handle_computer_use
+        from hermes_agent.tools.computer_use.tool import check_computer_use_requirements, handle_computer_use
         out = json.loads(handle_computer_use({"action": "list_apps"}, session_id="s1"))
         assert "'nope'" in out["error"] and "available: cua" in out["error"]
         assert "hint" not in out  # the cua-driver install hint would mislead here
@@ -109,8 +109,8 @@ def test_builtin_cua_is_default_and_plugin_never_self_activates(tmp_path, backen
     tok = set_hermes_home_override(str(home))
     try:
         from plugins.computer_use import get_active_provider
-        from tools.computer_use.cua_backend import CuaDriverBackend
-        from tools.computer_use.tool import _new_backend
+        from hermes_agent.tools.computer_use.cua_backend import CuaDriverBackend
+        from hermes_agent.tools.computer_use.tool import _new_backend
         assert get_active_provider().name == "cua"
         assert isinstance(_new_backend("standard"), CuaDriverBackend)
         assert "_hermes_user_computer_use.cu-alpha" not in sys.modules

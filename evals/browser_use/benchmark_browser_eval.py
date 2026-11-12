@@ -63,7 +63,7 @@ def main():
 
     proc, profile, cdp_url = _start_chrome(args.port)
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
 
         # Warm up: start the supervisor, navigate to a page.
         supervisor = SUPERVISOR_REGISTRY.get_or_start(

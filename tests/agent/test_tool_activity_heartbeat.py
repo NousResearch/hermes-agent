@@ -282,7 +282,7 @@ def test_heartbeat_exits_once_worker_tid_is_interrupted():
     the inactivity watchdog pinned for the rest of the run.
     """
     import agent.tool_executor as te
-    from tools.interrupt import set_interrupt
+    from hermes_agent.tools.interrupt import set_interrupt
 
     touches: list = []
     stop = threading.Event()

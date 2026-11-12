@@ -47,7 +47,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 def _exec(code: str) -> dict:
-    from tools import browser_use_cli as bu
+    from hermes_agent.tools import browser_use_cli as bu
 
     out = json.loads(bu.browser_exec(code, task_id=TASK, timeout_s=90))
     assert out.get("success"), out
@@ -59,7 +59,7 @@ def main() -> int:
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     origin = f"http://127.0.0.1:{srv.server_address[1]}"
 
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
     try:
         # browser_exec opens its own tabs; the login page is deliberately NOT the first one.
         _exec("new_tab('about:blank')")
@@ -70,11 +70,11 @@ def main() -> int:
         assert sup is not None, "browser_exec did not attach a supervisor for its task (problem 1 regressed)"
         print("supervisor attached by browser_exec; its page before fill:", sup.evaluate_runtime("location.href")["result"])
 
-        from tools import browser_vault_tool as bvt
-        from tools.browser_cdp_tool import _redact_cdp_output
+        from hermes_agent.tools import browser_vault_tool as bvt
+        from hermes_agent.tools.browser_cdp_tool import _redact_cdp_output
         from agent.vault_store import get_vault_store
         from agent import redact
-        import tools.approval_prompt as ap
+        import hermes_agent.tools.approval_prompt as ap
 
         store = get_vault_store()
         login = store.add_item("login", "site", {"identifier_type": "email", "identifier": "a@b.c", "password": "pw-E2E-8842"}, origin=origin)
@@ -132,7 +132,7 @@ def main() -> int:
         return 0
     finally:
         SUPERVISOR_REGISTRY.stop_all()
-        from tools.browser_session_lifecycle import cleanup_all_browsers
+        from hermes_agent.tools.browser_session_lifecycle import cleanup_all_browsers
         cleanup_all_browsers()
         srv.shutdown()
 

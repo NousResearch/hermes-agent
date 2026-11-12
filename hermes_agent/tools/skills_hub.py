@@ -25,10 +25,10 @@ from urllib.parse import urljoin
 import httpx
 
 from hermes_constants import get_hermes_home
-from tools.url_safety import is_safe_url
-from tools.url_safety import create_ssrf_safe_client
-from tools.website_policy import check_website_access
-from tools.skills_hub_models import _normalize_lock_install_path, _validate_skill_name
+from hermes_agent.tools.url_safety import is_safe_url
+from hermes_agent.tools.url_safety import create_ssrf_safe_client
+from hermes_agent.tools.website_policy import check_website_access
+from hermes_agent.tools.skills_hub_models import _normalize_lock_install_path, _validate_skill_name
 from utils import atomic_write_text
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
     """Fetch a URL with SSRF and redirect-target validation (each hop re-checked).
 
     *headers* are plain request headers (no credentials) and are sent on every hop."""
-    from tools.url_safety import SSRFConnectionBlocked
+    from hermes_agent.tools.url_safety import SSRFConnectionBlocked
 
     current_url = url
 
@@ -176,7 +176,7 @@ def _guarded_http_stream(
     timeout: int = _DEFAULT_HTTP_TIMEOUT,
 ) -> Iterator[Optional[httpx.Response]]:
     """Stream one response with bounded, policy-checked redirects."""
-    from tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_client
+    from hermes_agent.tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_client
 
     current_url = url
     current_params = params
@@ -387,7 +387,7 @@ class HubLockFile(_JsonStateFile):
         ``clawhub/<slug>`` id a catalog card installs, since the lock records ``@owner/slug``.
         That alias names its source, so a ClawHub install never answers for another source's
         id. Exact identifiers win."""
-        from tools.skills_hub_clawhub import ClawHubSource
+        from hermes_agent.tools.skills_hub_clawhub import ClawHubSource
 
         rows = [entry for entry in self.list_installed() if entry.get("identifier")]
         installed = {entry["identifier"]: entry for entry in rows}
@@ -407,7 +407,7 @@ def installed_entry(installed: dict[str, dict], identifier: str,
         return installed[identifier]
     if source != "clawhub":
         return None
-    from tools.skills_hub_clawhub import ClawHubSource
+    from hermes_agent.tools.skills_hub_clawhub import ClawHubSource
 
     alias = ClawHubSource.catalog_identifier(identifier)
     return installed.get(alias) if alias else None

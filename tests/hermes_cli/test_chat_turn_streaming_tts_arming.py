@@ -57,7 +57,7 @@ def _arm_turn(monkeypatch, requirements, sounddevice_factory=None):
     and records that the arm gate called it at all — the gate must never call it,
     so the raise doubles as proof that arming does not depend on the import.
     """
-    from tools import tts_tool
+    from hermes_agent.tools import tts_tool
 
     probe = []
 
@@ -76,7 +76,7 @@ def _arm_turn(monkeypatch, requirements, sounddevice_factory=None):
         done_event.set()
         started.set()
 
-    import tools.tts_tool_speaker as speaker_mod
+    import hermes_agent.tools.tts_tool_speaker as speaker_mod
     monkeypatch.setattr(speaker_mod, "stream_tts_to_speaker", _fake_stream)
 
     cli = _StreamingTTSArming().make_cli()
@@ -126,7 +126,7 @@ def test_streaming_tts_stays_off_when_provider_unavailable(monkeypatch):
 
 def test_streaming_tts_not_armed_without_voice_tts(monkeypatch):
     """Non-voice-tts turns are untouched: no probe, no queue, no thread."""
-    from tools import tts_tool
+    from hermes_agent.tools import tts_tool
 
     probe = []
     monkeypatch.setattr(tts_tool, "_import_sounddevice",

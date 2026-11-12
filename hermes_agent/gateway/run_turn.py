@@ -469,7 +469,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         a history-destroying ``/new``. Each agent keeps its build-time toolset selection EXACTLY: a
         session built with restricted enabled_toolsets (e.g. ["safe"]) must NOT silently gain tools."""
         try:
-            from tools.mcp_tool_agent import refresh_agent_mcp_tools
+            from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
             _cache = getattr(self, "_agent_cache", None)
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             if _cache_lock is None or not _cache:
@@ -501,12 +501,12 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             with _profile_runtime_scope(Path(profile_home)):
                 return await self._execute_mcp_reload(event)
         try:
-            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-            from tools.mcp_tool_discovery import discover_mcp_tools
-            from tools.mcp_tool import _servers, _lock, _server_visible_in_scope
-            from tools.mcp_tool_agent import reprobe_tool_availability
-            from tools.mcp_tool_scope import _key_name
-            from tools.registry import registry
+            from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
+            from hermes_agent.tools.mcp_tool_discovery import discover_mcp_tools
+            from hermes_agent.tools.mcp_tool import _servers, _lock, _server_visible_in_scope
+            from hermes_agent.tools.mcp_tool_agent import reprobe_tool_availability
+            from hermes_agent.tools.mcp_tool_scope import _key_name
+            from hermes_agent.tools.registry import registry
 
             reload_scope = registry.current_scope_key() if multiplex else None
 
@@ -520,13 +520,13 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             reprobe_tool_availability()
             # Reconnect by discovering tools (reads config.yaml fresh). A chat command cannot finish
             # a browser OAuth flow either: an expired token parks with a `hermes mcp login` hint.
-            from tools.mcp_oauth import suppress_interactive_oauth
+            from hermes_agent.tools.mcp_oauth import suppress_interactive_oauth
             with suppress_interactive_oauth():
                 new_tools = await self._run_in_executor_with_context(discover_mcp_tools)
 
             connected_servers = _scoped_server_names()
             if reload_scope is not None:
-                from tools.mcp_tool import _mcp_tool_server_names
+                from hermes_agent.tools.mcp_tool import _mcp_tool_server_names
                 with _lock:
                     new_tools = [n for n in new_tools if _mcp_tool_server_names.get(n) in connected_servers]
             # (label, i18n key, names); i18n lines list reconnected first, the injected note added first.
@@ -538,7 +538,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             lines = [t("gateway.reload_mcp.header")] + [
                 t(key, names=", ".join(sorted(names))) for _label, key, names in changes if names
             ]
-            from tools.mcp_tool_discovery import mcp_servers_not_connected
+            from hermes_agent.tools.mcp_tool_discovery import mcp_servers_not_connected
             failed = await self._run_in_executor_with_context(mcp_servers_not_connected)
             lines.append(t("gateway.reload_mcp.none_connected") if not connected_servers else t(
                 "gateway.reload_mcp.tools_available", tools=len(new_tools), servers=len(connected_servers)))
@@ -1155,7 +1155,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
             return
         try:
             from hermes_agent.gateway.streaming_tts_consumer import StreamingTTSConsumer
-            from tools.tts_tool import _load_tts_config
+            from hermes_agent.tools.tts_tool import _load_tts_config
             _stts_consumer = StreamingTTSConsumer(
                 adapter=_stts_adapter, chat_id=source.chat_id, tts_config=_load_tts_config(),
                 loop=self._gateway_loop or asyncio.get_event_loop(),
@@ -1330,7 +1330,7 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         not wall-clock. The daemon watchdog is independent of asyncio: cgroup memory reclaim can
         starve the loop that runs the normal timeout poll."""
         from hermes_agent.gateway.run import _float_env, _watch_gateway_turn_inactivity
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
         agent_holder, session_key, run_generation = turn_ctx.agent_holder, turn_ctx.session_key, turn_ctx.run_generation
         _agent_timeout, _agent_warning = (
             v if v > 0 else None

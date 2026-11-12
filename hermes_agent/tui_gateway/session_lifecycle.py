@@ -509,7 +509,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # In-flight async delegations end WITH the session (no return address left). Always interrupt by THIS live UI
     # sid; by durable session_key only when the TUI owns the lifecycle — a viewer tab must not kill gateway work.
     with contextlib.suppress(Exception):
-        from tools.async_delegation import interrupt_for_session
+        from hermes_agent.tools.async_delegation import interrupt_for_session
         interrupt_for_session(
             session_key=str(session_key or "") if _tui_owns_lifecycle else "",
             origin_ui_session_id=_lifecycle_own_sid(session), reason=end_reason)
@@ -519,7 +519,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     # gateway-owned session must not kill the gateway's kernels.
     if _tui_owns_lifecycle and session_key:
         with contextlib.suppress(Exception):
-            from tools.approval import clear_session
+            from hermes_agent.tools.approval import clear_session
             clear_session(str(session_key))
     # A session's in-flight background memory/skill review ends WITH the session too (#102895): the
     # review fork is a SEPARATE AIAgent instance tracked only on the parent's
@@ -572,7 +572,7 @@ def _announce_cancelled_gateway_approvals(session: dict, reason: str, *, session
     if not session_key:
         return
     try:
-        from tools.approval import list_gateway_approvals
+        from hermes_agent.tools.approval import list_gateway_approvals
         pending = list_gateway_approvals(session_key)
     except Exception:
         logger.debug("list_gateway_approvals failed", exc_info=True)
@@ -604,7 +604,7 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
         # popped by unregister must not just vanish from every surface without a notice.
         _announce_cancelled_gateway_approvals(session, end_reason)
     with contextlib.suppress(Exception):
-        from tools.approval import unregister_gateway_notify
+        from hermes_agent.tools.approval import unregister_gateway_notify
         # One approval callback per key: after a takeover it is the new runtime's registration.
         if (key := session.get("session_key")) and not session.get("_lease_taken_over"):
             unregister_gateway_notify(key)
@@ -840,7 +840,7 @@ def _interrupt_session_turn(
         # Announce BEFORE the queue is drained, or there is nothing left to name.
         reason = "ws_orphan_reap" if orphan else "interrupt"
         _announce_cancelled_gateway_approvals(session, reason, session_id=sid)
-        from tools.approval import resolve_gateway_approval
+        from hermes_agent.tools.approval import resolve_gateway_approval
         resolve_gateway_approval(session["session_key"], "deny", resolve_all=True)
     return use_compute_host
 
@@ -870,7 +870,7 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
     if not own_sid and not owned_session_key:
         return False
     try:
-        from tools.async_delegation import has_live_for_session
+        from hermes_agent.tools.async_delegation import has_live_for_session
         return has_live_for_session(session_key=owned_session_key, origin_ui_session_id=own_sid)
     except Exception:
         logger.debug("Failed to query active delegations for UI session %s", sid, exc_info=True)
@@ -906,7 +906,7 @@ def _reattach_refusal(rid, sid: str, session: dict) -> dict | None:
 def _rebind_live_transport(sid: str, session: dict, transport: Transport) -> None:
     """Attach a live peer without displacing existing subscribers (caller holds ``history_lock``).
     Subagent control authority needs no bookkeeping here: it resolves against ``session["transport"]``
-    at RPC time (``tools.delegate_tool_registry._subagent_transport_matches``)."""
+    at RPC time (``hermes_agent.tools.delegate_tool_registry._subagent_transport_matches``)."""
     if transport is not _detached_ws_transport and _transport_is_dead(transport):
         # The rebinding socket already closed: its disconnect cleanup ran before this late RPC (a
         # resume-then-drop burst), so nothing will detach it again. The client is NOT back — re-arm the

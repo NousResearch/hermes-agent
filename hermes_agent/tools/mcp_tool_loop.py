@@ -1,7 +1,7 @@
-"""Background-loop plumbing for tools.mcp_tool: cross-process discovery file lock, scheduling
+"""Background-loop plumbing for hermes_agent.tools.mcp_tool: cross-process discovery file lock, scheduling
 coroutines onto the MCP loop from caller threads (with profile HOME override and dashboard OAuth
 flow propagation) and the loop's exception handler. Origin state (``_lock``, ``_mcp_loop``) is
-read through ``_core`` so ``mock.patch("tools.mcp_tool.X")`` keeps working."""
+read through ``_core`` so ``mock.patch("hermes_agent.tools.mcp_tool.X")`` keeps working."""
 
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ import os
 import threading
 import time
 from typing import Any, Coroutine, Optional
-from tools.mcp_tool_common import _core
-from tools import mcp_tool_lifecycle as _lifecycle
+from hermes_agent.tools.mcp_tool_common import _core
+from hermes_agent.tools import mcp_tool_lifecycle as _lifecycle
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 
 class _LockCookie:
@@ -66,10 +66,10 @@ def _acquire_lock_on_fh(fh: Any) -> bool:
 def _try_acquire_mcp_discovery_lock() -> Any:
     """``_LockCookie`` (acquired), ``None`` (held by another process) or ``_LOCK_UNAVAILABLE``
     (locking broken: run discovery unguarded)."""
-    # The cached path lives on the ORIGIN module (tests reset ``tools.mcp_tool._MCP_DISCOVERY_LOCK_PATH``).
+    # The cached path lives on the ORIGIN module (tests reset ``hermes_agent.tools.mcp_tool._MCP_DISCOVERY_LOCK_PATH``).
     # A routed profile (multiplexed gateway) locks under ITS home: the launch profile's lock file
     # would serialize discovery across profiles and never coordinate with B's own single-profile processes.
-    from tools import mcp_tool as _origin
+    from hermes_agent.tools import mcp_tool as _origin
     try:
         from hermes_constants import get_hermes_home, get_hermes_home_override
         if get_hermes_home_override() is not None:
@@ -124,7 +124,7 @@ def _wrap_with_home_override(coro: Coroutine) -> Coroutine:
 def _wrap_with_dashboard_oauth_flow(coro):
     """Propagate a dashboard OAuth flow onto the dedicated MCP loop task."""
     try:
-        from tools.mcp_dashboard_oauth import dashboard_oauth_flow, get_dashboard_oauth_flow
+        from hermes_agent.tools.mcp_dashboard_oauth import dashboard_oauth_flow, get_dashboard_oauth_flow
         flow = get_dashboard_oauth_flow()
     except Exception:
         flow = None
@@ -148,7 +148,7 @@ def _running_loop() -> Optional[asyncio.AbstractEventLoop]:
 def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     """Schedule a coroutine (or zero-arg factory — avoids leaking a never-awaited coroutine when the
     loop is down) on the MCP loop and block until done, polling so user interrupts are honored."""
-    from tools.interrupt import is_interrupted
+    from hermes_agent.tools.interrupt import is_interrupted
     from agent.async_utils import safe_schedule_threadsafe
 
     loop = _running_loop()
@@ -200,7 +200,7 @@ def _signal_reconnect(server: Any) -> bool:
 
 def reconnect_mcp_server(server_name: str) -> bool:
     """Ask a currently-live MCP server to rebuild after external re-auth."""
-    from tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
     with _core._lock:
         server = _core._servers.get(_resolve_server_key(server_name))
     return server is not None and _signal_reconnect(server)
@@ -247,8 +247,8 @@ def _signal_reconnect_and_wait(server_name: str, srv: Any, *, op_description: st
 
 def _ensure_mcp_loop():
     """Start the background loop thread if not running. The loop/thread handles live on the ORIGIN
-    module (tests read and reset ``tools.mcp_tool._mcp_loop``), so they are written there."""
-    from tools import mcp_tool as _origin
+    module (tests read and reset ``hermes_agent.tools.mcp_tool._mcp_loop``), so they are written there."""
+    from hermes_agent.tools import mcp_tool as _origin
     with _core._lock:
         if _origin._mcp_loop is not None and _origin._mcp_loop.is_running():
             return
@@ -260,7 +260,7 @@ def _ensure_mcp_loop():
 
 def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
     """Stop the background event loop and join its thread."""
-    from tools import mcp_tool as _origin
+    from hermes_agent.tools import mcp_tool as _origin
     with _core._lock:
         if only_if_idle and (_core._servers or _core._server_connecting):
             logger.debug("Leaving MCP event loop running; active servers are registered or connecting")

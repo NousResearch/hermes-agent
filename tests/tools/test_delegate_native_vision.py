@@ -12,9 +12,9 @@ from unittest.mock import AsyncMock, patch
 
 from agent.auxiliary_client import reset_runtime_main, set_runtime_main
 from hermes_constants import get_hermes_home
-from tools import vision_tools
-from tools.delegate_tool_config import _resolve_child_runtime
-from tools.registry import registry
+from hermes_agent.tools import vision_tools
+from hermes_agent.tools.delegate_tool_config import _resolve_child_runtime
+from hermes_agent.tools.registry import registry
 
 
 _TINY_PNG = base64.b64decode(
@@ -86,7 +86,7 @@ providers:
     )
     try:
         with patch(
-            "tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
+            "hermes_agent.tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock
         ) as auxiliary:
             result = registry.dispatch(
                 "vision_analyze", {"image_url": str(image), "question": "describe"}

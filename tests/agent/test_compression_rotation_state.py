@@ -1397,7 +1397,7 @@ class TestTodoSnapshotScaffoldingTails:
     def test_previously_merged_snapshot_is_stripped_before_reinjection(
         self, tmp_path: Path
     ):
-        from tools.todo_tool import TODO_INJECTION_HEADER
+        from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
         previously_merged = (
             "please fix the login bug\n\n"
@@ -1431,7 +1431,7 @@ class TestTodoSnapshotScaffoldingTails:
         )
 
     def test_empty_todo_store_injects_nothing(self, tmp_path: Path):
-        from tools.todo_tool import TODO_INJECTION_HEADER
+        from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = "PARENT_TODO_EMPTY"
@@ -1472,7 +1472,7 @@ class TestTodoSnapshotScaffoldingTails:
         self, tmp_path: Path
     ):
         """Completed items make the store authoritative and clear old work."""
-        from tools.todo_tool import TODO_INJECTION_HEADER
+        from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = "PARENT_TODO_CLEARED"
@@ -1512,7 +1512,7 @@ class TestTodoSnapshotScaffoldingTails:
 
     def test_cancelled_only_store_is_authoritative(self, tmp_path: Path):
         """Cancelled work retires the old snapshot just like completed work."""
-        from tools.todo_tool import TODO_INJECTION_HEADER
+        from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = "PARENT_TODO_CANCELLED"
@@ -1546,7 +1546,7 @@ class TestTodoSnapshotScaffoldingTails:
 
     def test_structured_snapshot_only_tail_is_removed(self, tmp_path: Path):
         """A flagged list row is removable only when no other part remains."""
-        from tools.todo_tool import TODO_INJECTION_HEADER
+        from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = "PARENT_TODO_STRUCTURED_ONLY"
@@ -1582,7 +1582,7 @@ class TestTodoSnapshotScaffoldingTails:
     def test_non_tail_snapshot_deletion_repairs_assistant_alternation(
         self, tmp_path: Path
     ):
-        from tools.todo_tool import TODO_INJECTION_HEADER
+        from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = "PARENT_TODO_MIDDLE"
@@ -1628,7 +1628,7 @@ class TestTodoSnapshotScaffoldingTails:
     def test_multimodal_content_survives_and_synthetic_provenance_clears(
         self, tmp_path: Path
     ):
-        from tools.todo_tool import TODO_INJECTION_HEADER
+        from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = "PARENT_TODO_MULTIMODAL_RETIRE"
@@ -1687,7 +1687,7 @@ class TestTodoSnapshotScaffoldingTails:
         self, tmp_path: Path, authority_mode: str
     ):
         """Legacy or broken stores fail conservative, never erasing pending work."""
-        from tools.todo_tool import TODO_INJECTION_HEADER
+        from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = f"PARENT_TODO_COMPAT_{authority_mode.upper()}"
@@ -1725,7 +1725,7 @@ class TestTodoSnapshotScaffoldingTails:
         self, tmp_path: Path
     ):
         """A fresh empty store must not erase pending work retained by compression."""
-        from tools.todo_tool import TODO_INJECTION_HEADER
+        from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
         db = SessionDB(db_path=tmp_path / "state.db")
         session_id = "PARENT_TODO_UNHYDRATED"

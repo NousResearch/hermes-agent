@@ -33,7 +33,7 @@ PATH_DOC = "/.well-known/oauth-authorization-server/mcp-issuer"
     pytest.param(f"{RESOURCE}#/.well-known/openid-configuration", id="fragment"),
 ])
 async def test_origin_issued_metadata_shim_does_not_read_non_discovery_response(url):
-    from tools.mcp_oauth_provider import HermesProviderMixin
+    from hermes_agent.tools.mcp_oauth_provider import HermesProviderMixin
 
     class ResourceResponse:
         status_code = 200
@@ -85,9 +85,9 @@ async def _run_flow(tmp_path, monkeypatch, issuer_doc, advertised=ADVERTISED, is
     from mcp.shared.auth import OAuthClientMetadata
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage, _authorization_code_result
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage, _authorization_code_result
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from hermes_agent.tools.mcp_tool import sdk_httpx
 
     httpx = sdk_httpx()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -164,8 +164,8 @@ async def test_path_scoped_issuer_differing_only_by_a_trailing_slash_is_still_re
 
 @pytest.mark.asyncio
 async def test_issuer_equal_to_the_advertised_identifier_is_left_to_the_sdk():
-    from tools.mcp_oauth_provider import HermesProviderMixin
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_oauth_provider import HermesProviderMixin
+    from hermes_agent.tools.mcp_tool import sdk_httpx
 
     class _Provider(HermesProviderMixin):
         context: SimpleNamespace

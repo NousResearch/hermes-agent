@@ -4,7 +4,7 @@ Regression coverage for #34619 and #41312 (same root cause): ``_default_spawn``
 launched the worker subprocess with ``cwd=workspace`` and set
 ``HERMES_KANBAN_WORKSPACE``, but did NOT set ``TERMINAL_CWD``. Because
 ``TERMINAL_CWD`` takes precedence over the process cwd in both
-``tools/file_tools.py::_resolve_base_dir`` (relative ``write_file`` paths) and
+``hermes_agent/tools/file_tools.py::_resolve_base_dir`` (relative ``write_file`` paths) and
 ``agent_init``'s context-file loader (``AGENTS.md`` discovery), workers inherited
 the dispatching gateway's cwd — relative writes landed in the gateway user's
 home (#41312) and the wrong profile's ``AGENTS.md`` was loaded (#34619).

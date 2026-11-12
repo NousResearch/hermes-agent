@@ -6,7 +6,7 @@ tool output.  Ported from block/goose#10746, with one deliberate divergence:
 valid emoji tag sequences (regional flags) are preserved.
 """
 
-from tools.ansi_strip import strip_unicode_tags
+from hermes_agent.tools.ansi_strip import strip_unicode_tags
 
 
 class TestStripUnicodeTags:

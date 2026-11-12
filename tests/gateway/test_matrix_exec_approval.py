@@ -30,7 +30,7 @@ class TestMatrixExecApprovalReactions:
             content=content,
         )
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
+        with patch("hermes_agent.tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
             await adapter._on_reaction(event)
 
         mock_resolve.assert_called_once_with("sess-1", "once", request_id="req-1")

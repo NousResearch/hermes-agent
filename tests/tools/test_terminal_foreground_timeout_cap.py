@@ -32,13 +32,13 @@ class TestForegroundTimeoutCap:
         """Real local backend, real registry: the command runs (once), the result is a background
         session with notify_on_complete and a note naming the requested and cap seconds."""
         import time
-        from tools.terminal_tool import terminal_tool, FOREGROUND_MAX_TIMEOUT
+        from hermes_agent.tools.terminal_tool import terminal_tool, FOREGROUND_MAX_TIMEOUT
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
         marker = tmp_path / "ran"
-        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config(cwd=str(tmp_path))), \
-             patch("tools.terminal_tool._start_cleanup_thread"), \
-             patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+        with patch("hermes_agent.tools.terminal_tool._get_env_config", return_value=_make_env_config(cwd=str(tmp_path))), \
+             patch("hermes_agent.tools.terminal_tool._start_cleanup_thread"), \
+             patch("hermes_agent.tools.terminal_tool._check_all_guards", return_value={"approved": True}):
             result = json.loads(terminal_tool(command=f"echo x >> {marker}", timeout=9999))
 
         assert result.get("error") is None
@@ -53,10 +53,10 @@ class TestForegroundTimeoutCap:
 
     def test_zero_timeout_rejected(self):
         """timeout=0 must be rejected, not silently coerced to the default."""
-        from tools.terminal_tool import terminal_tool
+        from hermes_agent.tools.terminal_tool import terminal_tool
 
-        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
-             patch("tools.terminal_tool._start_cleanup_thread"):
+        with patch("hermes_agent.tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("hermes_agent.tools.terminal_tool._start_cleanup_thread"):
             result = json.loads(terminal_tool(command="echo hi", timeout=0))
 
         assert result.get("error")
@@ -64,10 +64,10 @@ class TestForegroundTimeoutCap:
 
     def test_negative_timeout_rejected(self):
         """timeout=-1 must be rejected, not fire an immediate '-1s' timeout."""
-        from tools.terminal_tool import terminal_tool
+        from hermes_agent.tools.terminal_tool import terminal_tool
 
-        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
-             patch("tools.terminal_tool._start_cleanup_thread"):
+        with patch("hermes_agent.tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("hermes_agent.tools.terminal_tool._start_cleanup_thread"):
             result = json.loads(terminal_tool(command="echo hi", timeout=-1))
 
         assert result.get("error")
@@ -75,17 +75,17 @@ class TestForegroundTimeoutCap:
 
     def test_foreground_allows_help_variant_for_server_command(self):
         """Informational variants like '--help' should not be blocked."""
-        from tools.terminal_tool import terminal_tool
+        from hermes_agent.tools.terminal_tool import terminal_tool
 
-        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
-             patch("tools.terminal_tool._start_cleanup_thread"):
+        with patch("hermes_agent.tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("hermes_agent.tools.terminal_tool._start_cleanup_thread"):
 
             mock_env = MagicMock()
             mock_env.execute.return_value = {"output": "usage", "returncode": 0}
 
-            with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
-                 patch("tools.terminal_tool._last_activity", {"default": 0}), \
-                 patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+            with patch("hermes_agent.tools.terminal_tool._active_environments", {"default": mock_env}), \
+                 patch("hermes_agent.tools.terminal_tool._last_activity", {"default": 0}), \
+                 patch("hermes_agent.tools.terminal_tool._check_all_guards", return_value={"approved": True}):
                 result = json.loads(terminal_tool(command="pnpm dev --help"))
 
         assert result["error"] is None
@@ -98,19 +98,19 @@ class TestForegroundTimeoutCap:
         Only the model's explicit timeout parameter triggers rejection,
         not the user's configured default.
         """
-        from tools.terminal_tool import terminal_tool
+        from hermes_agent.tools.terminal_tool import terminal_tool
 
         # User configured TERMINAL_TIMEOUT=900 in their env
-        with patch("tools.terminal_tool._get_env_config",
+        with patch("hermes_agent.tools.terminal_tool._get_env_config",
                     return_value=_make_env_config(timeout=900)), \
-             patch("tools.terminal_tool._start_cleanup_thread"):
+             patch("hermes_agent.tools.terminal_tool._start_cleanup_thread"):
 
             mock_env = MagicMock()
             mock_env.execute.return_value = {"output": "done", "returncode": 0}
 
-            with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
-                 patch("tools.terminal_tool._last_activity", {"default": 0}), \
-                 patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+            with patch("hermes_agent.tools.terminal_tool._active_environments", {"default": mock_env}), \
+                 patch("hermes_agent.tools.terminal_tool._last_activity", {"default": 0}), \
+                 patch("hermes_agent.tools.terminal_tool._check_all_guards", return_value={"approved": True}):
                 result = json.loads(terminal_tool(command="make build"))
 
         # Should execute with the config default, NOT be rejected
@@ -120,17 +120,17 @@ class TestForegroundTimeoutCap:
 
     def test_exactly_at_max_not_rejected(self):
         """Timeout exactly at FOREGROUND_MAX_TIMEOUT should execute normally."""
-        from tools.terminal_tool import terminal_tool, FOREGROUND_MAX_TIMEOUT
+        from hermes_agent.tools.terminal_tool import terminal_tool, FOREGROUND_MAX_TIMEOUT
 
-        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
-             patch("tools.terminal_tool._start_cleanup_thread"):
+        with patch("hermes_agent.tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("hermes_agent.tools.terminal_tool._start_cleanup_thread"):
 
             mock_env = MagicMock()
             mock_env.execute.return_value = {"output": "done", "returncode": 0}
 
-            with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
-                 patch("tools.terminal_tool._last_activity", {"default": 0}), \
-                 patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+            with patch("hermes_agent.tools.terminal_tool._active_environments", {"default": mock_env}), \
+                 patch("hermes_agent.tools.terminal_tool._last_activity", {"default": 0}), \
+                 patch("hermes_agent.tools.terminal_tool._check_all_guards", return_value={"approved": True}):
                 result = json.loads(terminal_tool(
                     command="echo hello",
                     timeout=FOREGROUND_MAX_TIMEOUT,  # Exactly at limit
@@ -144,10 +144,10 @@ class TestPromotionKeepsTheDetachmentGuard:
     def test_over_cap_timeout_with_shell_backgrounding_is_still_refused(self):
         """Independent-review witness: a promoted `cmd &` started a tracked shell that exited at once
         while the payload ran untracked, defeating the guidance the refusal exists for."""
-        from tools.terminal_tool import terminal_tool
+        from hermes_agent.tools.terminal_tool import terminal_tool
 
-        with patch("tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
-             patch("tools.terminal_tool._start_cleanup_thread"):
+        with patch("hermes_agent.tools.terminal_tool._get_env_config", return_value=_make_env_config()), \
+             patch("hermes_agent.tools.terminal_tool._start_cleanup_thread"):
             result = json.loads(terminal_tool(command="sleep 5 & echo started", timeout=9999))
             result2 = json.loads(terminal_tool(command="nohup make test", timeout=9999))
         assert "'&' backgrounding" in result["error"]

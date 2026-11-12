@@ -9,22 +9,22 @@ import json
 import os
 import threading
 import time
-from tools.delegation_redaction import redact_child_result, redact_child_text
+from hermes_agent.tools.delegation_redaction import redact_child_result, redact_child_text
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 from agent.compression_marker import elide
 from agent.interrupt_compat import request_hard_interrupt
 from dataclasses import dataclass, field
-from tools import file_state
-from tools.delegate_tool_progress import _quiet, _safe_progress
-from tools.delegate_tool_registry import (
+from hermes_agent.tools import file_state
+from hermes_agent.tools.delegate_tool_progress import _quiet, _safe_progress
+from hermes_agent.tools.delegate_tool_registry import (
     _capture_gateway_steer_authority, _close_subagent_steering, _register_subagent, _unregister_subagent,
 )
-from tools.delegate_tool_results import (
+from hermes_agent.tools.delegate_tool_results import (
     _extract_output_tail, _looks_like_error_output, _stringify_tool_content, _summarize_tool_arguments,
 )
 
-logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 def _reserve_child_transcript(child: Any) -> None:
     """Make a queued child readable without completing its first-turn persistence."""
@@ -350,7 +350,7 @@ class _Heartbeat:
 
     def start(self) -> None:
         from agent.periodic_scheduler import schedule
-        from tools.delegate_tool import _HEARTBEAT_INTERVAL
+        from hermes_agent.tools.delegate_tool import _HEARTBEAT_INTERVAL
         self.handle = schedule(self.tick, _HEARTBEAT_INTERVAL)
 
     def stop(self) -> None:
@@ -360,7 +360,7 @@ class _Heartbeat:
 
     def tick(self):
         """Returning False stops the periodic callback."""
-        from tools.delegate_tool import _HEARTBEAT_INTERVAL, _HEARTBEAT_STALE_CYCLES_IDLE, _HEARTBEAT_STALE_CYCLES_IN_TOOL
+        from hermes_agent.tools.delegate_tool import _HEARTBEAT_INTERVAL, _HEARTBEAT_STALE_CYCLES_IDLE, _HEARTBEAT_STALE_CYCLES_IN_TOOL
         child, parent_agent, task_index, last_seen = self.child, self.parent_agent, self.task_index, self.last_seen
         touch = getattr(parent_agent, "_touch_activity", None) if parent_agent is not None else None
         if not touch:
@@ -450,17 +450,17 @@ def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_i
     """Opt-in worktree isolation: own git worktree off the parent's HEAD (the
     child's terminal starts there). Git-only, local-backend-only; failures
     degrade silently to the shared workspace. Returns the worktree info or None."""
-    from tools.delegate_tool import _get_worktree_isolation, _resolve_workspace_hint
+    from hermes_agent.tools.delegate_tool import _get_worktree_isolation, _resolve_workspace_hint
     if not _get_worktree_isolation():
         return None
     with _quiet("worktree isolation setup failed: %s"):
-        from tools import subagent_worktree
+        from hermes_agent.tools import subagent_worktree
         if not subagent_worktree.local_backend_active():
             logger.debug("worktree isolation skipped: non-local terminal backend")
             return None
         _parent_cwd = None
         with _quiet(None):
-            from tools.terminal_tool import get_session_cwd as _gsc
+            from hermes_agent.tools.terminal_tool import get_session_cwd as _gsc
             _parent_cwd = _gsc(parent_task_id)
         return subagent_worktree.create_subagent_worktree(
             _parent_cwd or _resolve_workspace_hint(parent_agent), subagent_id=subagent_id,
@@ -507,7 +507,7 @@ def _lease_child_credential(child: Any) -> tuple[Any, Optional[str]]:
     if child_pool is None:
         return None, None
     from agent.credential_pool import credential_pool_entry_serves_endpoint as _entry_serves_endpoint
-    from tools.delegate_tool_routes import child_profile_scope
+    from hermes_agent.tools.delegate_tool_routes import child_profile_scope
     base_url = getattr(child, "base_url", None)
     with child_profile_scope(child):
         leased_cred_id = child_pool.acquire_lease()
@@ -552,7 +552,7 @@ def _validate_child_output_schema(
     _output_schema = getattr(child, "_delegate_output_schema", None)
     if not isinstance(_output_schema, dict):
         return _SchemaOutcome(_output_schema, None, [], 0)
-    from tools.delegation_output_schema import build_retry_message, validate_output
+    from hermes_agent.tools.delegation_output_schema import build_retry_message, validate_output
     _first_text = result.get("final_response") or ""
     _schema_valid, _schema_errors = validate_output(_first_text, _output_schema)
     if _schema_valid or not _first_text.strip() or result.get("interrupted", False):
@@ -565,7 +565,7 @@ def _validate_child_output_schema(
         # Same identity as the main child turn: this runs on the parent worker's thread, and an
         # unmarked turn is misread as the dispatcher-owned worker by every HERMES_KANBAN_* gate.
         from agent.delegation_context import delegated_child_context
-        from tools.delegate_tool_routes import child_profile_scope
+        from hermes_agent.tools.delegate_tool_routes import child_profile_scope
         with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
             _retry_result = child.run_conversation(
                 user_message=build_retry_message(_schema_errors), task_id=child_task_id,
@@ -812,7 +812,7 @@ class _ChildRun:
         info = self.worktree_info
         if info is None:
             return redact_child_result(entry_dict, getattr(self.child, "_delegate_output_schema", None), force=False)
-        from tools import subagent_worktree
+        from hermes_agent.tools import subagent_worktree
         try:
             entry_dict["worktree"] = subagent_worktree.finalize_subagent_worktree(info)
         except Exception as e:
@@ -833,9 +833,9 @@ class _ChildRun:
         # isolation keys containers by task_id; the child must share the PARENT's.
         # The parent's record is read in the parent's scope; the child's is written in the child's (cwd records
         # are keyed by the active profile, and a profile-routed child looks its own up as that profile).
-        from tools.delegate_tool_routes import child_profile_scope
+        from hermes_agent.tools.delegate_tool_routes import child_profile_scope
         with _quiet("Child cwd seed failed: %s"):
-            from tools.terminal_tool import get_session_cwd, record_session_cwd, register_container_alias
+            from hermes_agent.tools.terminal_tool import get_session_cwd, record_session_cwd, register_container_alias
             parent_cwd = get_session_cwd(self.parent_task_id)
             with child_profile_scope(self.child):
                 record_session_cwd(self.child_task_id, parent_cwd)
@@ -844,11 +844,11 @@ class _ChildRun:
         self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
         if self.worktree_info is not None:
             with _quiet("worktree cwd seed failed: %s"), child_profile_scope(self.child):
-                from tools.terminal_tool import record_session_cwd as _rsc
+                from hermes_agent.tools.terminal_tool import record_session_cwd as _rsc
                 _rsc(self.child_task_id, self.worktree_info["path"])
             # The child's context is already built; carry the isolation contract on
             # the goal message instead (same turn, no system-prompt mutation).
-            from tools.subagent_worktree import build_worktree_context_note
+            from hermes_agent.tools.subagent_worktree import build_worktree_context_note
             self.goal = self.goal + build_worktree_context_note(self.worktree_info)
         self.wall_start = time.time()
         self.parent_reads_snapshot = list(file_state.known_reads(self.parent_task_id)) if self.parent_task_id else []
@@ -921,10 +921,10 @@ class _ChildRun:
         via a Future done-callback (``close_deferred=True``) — closing here would race its still-unwinding finally
         path.
         """
-        from tools.delegate_tool import (
+        from hermes_agent.tools.delegate_tool import (
             _STALE_RESULT_GRACE_SECONDS, _get_child_timeout, _get_subagent_approval_callback, _set_subagent_approval_cb,
         )
-        from tools.daemon_pool import DaemonThreadPoolExecutor
+        from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
         child, task_index = self.child, self.task_index
         child_timeout = _get_child_timeout()
         executor = DaemonThreadPoolExecutor(
@@ -939,7 +939,7 @@ class _ChildRun:
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
-            from tools.delegate_tool_routes import child_profile_scope
+            from hermes_agent.tools.delegate_tool_routes import child_profile_scope
             # A profile-routed child converses as that profile (config, secrets, skills, terminal policy).
             with child_profile_scope(child), delegated_child_context(str(getattr(child, "session_id", "") or "")):
                 return child.run_conversation(
@@ -1086,7 +1086,7 @@ class _ChildRun:
         if handed:
             entry["handed_off_processes"] = handed
         with _quiet(None):
-            from tools.process_registry import process_registry, _output_tail
+            from hermes_agent.tools.process_registry import process_registry, _output_tail
             leftover = process_registry.running_owned_by(self.child_task_id)
             if leftover:
                 entry["orphaned_processes"] = [
@@ -1153,7 +1153,7 @@ class _ChildRun:
 
         # Restore the parent's tool names so the process-global is correct for
         # any subsequent execute_code calls or other consumers.
-        import model_tools
+        from hermes_agent import model_tools
         saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)
@@ -1167,7 +1167,7 @@ class _ChildRun:
         # The child's execute_code kernels live exactly as long as the child (pinned against the LRU
         # cap while it runs); dispose them here so they never squat the cap after the child is gone.
         with _quiet("Failed to dispose child execute_code kernels: %s"):
-            from tools.code_kernel import shutdown_kernels_for_delegated_child
+            from hermes_agent.tools.code_kernel import shutdown_kernels_for_delegated_child
             shutdown_kernels_for_delegated_child(str(getattr(child, "session_id", "") or ""))
 
         # The AIAgent turn boundary normally closes the child scope itself. This fallback covers failures before that

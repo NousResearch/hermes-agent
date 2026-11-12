@@ -20,7 +20,7 @@ from hermes_cli import web_server
 import hermes_cli.config as _cfg_mod
 import hermes_cli.web_server_dashboard as _web_server_dashboard
 import hermes_cli.web_server_memory as _web_server_memory
-from tools import registry as tools_registry
+from hermes_agent.tools import registry as tools_registry
 
 
 @pytest.fixture(autouse=True)

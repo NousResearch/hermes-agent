@@ -39,7 +39,7 @@ def _assert_no_tags(value):
 
 class TestDroppedBlockNotice:
     def test_type_mime_uri_name_stripped(self):
-        from tools.mcp_tool_content import _render_mcp_dropped_block_notice
+        from hermes_agent.tools.mcp_tool_content import _render_mcp_dropped_block_notice
 
         block = SimpleNamespace(
             type=TAGGED, mimeType=TAGGED, uri="x://y", name=TAGGED, size=42)
@@ -51,7 +51,7 @@ class TestDroppedBlockNotice:
 
     def test_uri_kept_exact(self):
         """The notice hands the model a uri to fetch with read_resource: it must round-trip."""
-        from tools.mcp_tool_content import _render_mcp_dropped_block_notice
+        from hermes_agent.tools.mcp_tool_content import _render_mcp_dropped_block_notice
 
         block = SimpleNamespace(type=None, resource=SimpleNamespace(uri=TAGGED))
         assert f"uri={TAGGED}" in _render_mcp_dropped_block_notice(block, "weird")
@@ -59,7 +59,7 @@ class TestDroppedBlockNotice:
 
 class TestResourceLinkAndEmbeddedMetadata:
     def test_resource_link_fields_stripped(self):
-        from tools.mcp_tool_content import _render_mcp_resource_block
+        from hermes_agent.tools.mcp_tool_content import _render_mcp_resource_block
 
         block = SimpleNamespace(
             type="resource_link", uri="x://y", name=TAGGED, mimeType=TAGGED)
@@ -68,7 +68,7 @@ class TestResourceLinkAndEmbeddedMetadata:
         _assert_no_tags(out)
 
     def test_embedded_blob_uri_mime_in_markers_stripped(self):
-        from tools.mcp_tool_content import _render_mcp_resource_block
+        from hermes_agent.tools.mcp_tool_content import _render_mcp_resource_block
 
         res = SimpleNamespace(
             uri=TAGGED, mimeType=TAGGED,
@@ -79,7 +79,7 @@ class TestResourceLinkAndEmbeddedMetadata:
         _assert_no_tags(out)
 
     def test_embedded_blob_decode_fail_marker_stripped(self):
-        from tools.mcp_tool_content import _render_mcp_resource_block
+        from hermes_agent.tools.mcp_tool_content import _render_mcp_resource_block
 
         res = SimpleNamespace(uri=TAGGED, mimeType="", blob="ööü", text=None)
         out = _render_mcp_resource_block(SimpleNamespace(type="resource", resource=res), "srv")
@@ -87,7 +87,7 @@ class TestResourceLinkAndEmbeddedMetadata:
         _assert_no_tags(out)
 
     def test_emoji_tag_sequence_preserved_in_text(self):
-        from tools.mcp_tool_content import _render_mcp_resource_block
+        from hermes_agent.tools.mcp_tool_content import _render_mcp_resource_block
 
         res = SimpleNamespace(uri="x://y", mimeType="text/plain", text=EMOJI_TAGGED, blob=None)
         out = _render_mcp_resource_block(SimpleNamespace(type="resource", resource=res), "srv")
@@ -96,7 +96,7 @@ class TestResourceLinkAndEmbeddedMetadata:
 
 class TestUtilityRenderers:
     def test_resource_list_fields_stripped(self):
-        from tools.mcp_tool_handlers import _render_resource_list
+        from hermes_agent.tools.mcp_tool_handlers import _render_resource_list
 
         r = SimpleNamespace(uri=TAGGED, name=TAGGED, description=TAGGED, mimeType=TAGGED)
         entry = _render_resource_list([r], "srv")["resources"][0]
@@ -106,7 +106,7 @@ class TestUtilityRenderers:
 
     def test_prompt_list_strips_prose_but_keeps_callable_names(self):
         """get_prompt sends the listed prompt/argument names back to the server: they must round-trip."""
-        from tools.mcp_tool_handlers import _render_prompt_list
+        from hermes_agent.tools.mcp_tool_handlers import _render_prompt_list
 
         p = SimpleNamespace(
             name=TAGGED, description=TAGGED,
@@ -117,7 +117,7 @@ class TestUtilityRenderers:
         assert entry["arguments"][0]["required"] is True
 
     def test_get_prompt_role_and_description_stripped(self):
-        from tools.mcp_tool_handlers import _render_get_prompt
+        from hermes_agent.tools.mcp_tool_handlers import _render_get_prompt
 
         msg = SimpleNamespace(role=TAGGED, content=SimpleNamespace(text="clean"))
         result = SimpleNamespace(messages=[msg], description=TAGGED)
@@ -130,7 +130,7 @@ class TestUtilityRenderers:
 
 class TestCallToolResultArms:
     def _render(self, result):
-        from tools.mcp_tool_handlers import _render_call_tool_result
+        from hermes_agent.tools.mcp_tool_handlers import _render_call_tool_result
         return json.loads(_render_call_tool_result(result, "srv"))
 
     def test_iserror_text_stripped(self):
@@ -166,7 +166,7 @@ class TestSamplingPath:
     """sampling/createMessage: the server writes strings straight into a local LLM call."""
 
     def test_sampling_message_text_and_role_stripped(self):
-        from tools.mcp_tool_sampling import _convert_sampling_message
+        from hermes_agent.tools.mcp_tool_sampling import _convert_sampling_message
 
         msg = SimpleNamespace(role=TAGGED, content=SimpleNamespace(text=TAGGED))
         out = _convert_sampling_message(msg)
@@ -175,7 +175,7 @@ class TestSamplingPath:
         assert out[0]["role"] == "evil"
 
     def test_sampling_tool_result_text_and_id_stripped(self):
-        from tools.mcp_tool_sampling import _convert_sampling_message
+        from hermes_agent.tools.mcp_tool_sampling import _convert_sampling_message
 
         tr = SimpleNamespace(toolUseId=TAGGED, content=[SimpleNamespace(text=TAGGED)])
         msg = SimpleNamespace(role="user", content=[tr])
@@ -188,7 +188,7 @@ class TestSamplingPath:
 
     def test_sampling_tool_use_name_and_args_kept_exact(self):
         """A historical tool call is execution data matched against the tool's exact schema names/enums."""
-        from tools.mcp_tool_sampling import _convert_sampling_message
+        from hermes_agent.tools.mcp_tool_sampling import _convert_sampling_message
 
         tu = SimpleNamespace(name=TAGGED, input={TAGGED: TAGGED}, id="c1")
         msg = SimpleNamespace(role="assistant", content=[tu])
@@ -197,7 +197,7 @@ class TestSamplingPath:
         assert json.loads(call["arguments"]) == {TAGGED: TAGGED}
 
     def test_sampling_system_prompt_and_tools_stripped(self):
-        from tools.mcp_tool_sampling import SamplingHandler
+        from hermes_agent.tools.mcp_tool_sampling import SamplingHandler
 
         handler = SamplingHandler("srv", {})
         params = SimpleNamespace(
@@ -222,7 +222,7 @@ class TestSamplingPath:
         assert captured["messages"][0] == {"role": "system", "content": "evil"}
 
     def test_elicitation_summary_fields_stripped(self):
-        from tools.mcp_tool_sampling import _format_elicitation_schema_summary
+        from hermes_agent.tools.mcp_tool_sampling import _format_elicitation_schema_summary
 
         schema = {"properties": {TAGGED: {"type": TAGGED, "description": TAGGED}}}
         out = _format_elicitation_schema_summary(schema, "srv")
@@ -232,12 +232,12 @@ class TestSamplingPath:
 
 class TestServerErrorText:
     def test_sanitize_error_strips_tags(self):
-        from tools.mcp_tool_common import _sanitize_error
+        from hermes_agent.tools.mcp_tool_common import _sanitize_error
 
         assert _sanitize_error(f"server blew up: {TAGGED}") == "server blew up: evil"
 
     def test_dispatch_error_strips_tags(self):
-        from tools.mcp_tool_handlers import _dispatch
+        from hermes_agent.tools.mcp_tool_handlers import _dispatch
 
         class Boom(Exception):
             pass
@@ -246,7 +246,7 @@ class TestServerErrorText:
             raise Boom(TAGGED)
 
         server = SimpleNamespace(mark_tool_call=lambda: None)
-        import tools.mcp_tool_loop as _loop
+        import hermes_agent.tools.mcp_tool_loop as _loop
         orig = _loop._run_on_mcp_loop
         _loop._run_on_mcp_loop = lambda call, timeout=None: _raise()
         try:

@@ -8,15 +8,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
-from tools.mcp_tool_errors import _format_connect_error
-from tools.mcp_tool_common import _prepend_path
-from tools.mcp_tool_config import _first_user_which_hit, _resolve_stdio_command
-from tools.mcp_tool_config import _which_with_config_pathext
+from hermes_agent.tools.mcp_tool import MCPServerTask, _MCP_AVAILABLE
+from hermes_agent.tools.mcp_tool_errors import _format_connect_error
+from hermes_agent.tools.mcp_tool_common import _prepend_path
+from hermes_agent.tools.mcp_tool_config import _first_user_which_hit, _resolve_stdio_command
+from hermes_agent.tools.mcp_tool_config import _which_with_config_pathext
 
 # Ensure the mcp module symbols exist for patching even when the SDK isn't installed
 if not _MCP_AVAILABLE:
-    import tools.mcp_tool as _mcp_mod
+    import hermes_agent.tools.mcp_tool as _mcp_mod
     if not hasattr(_mcp_mod, "StdioServerParameters"):
         _mcp_mod.StdioServerParameters = MagicMock
     if not hasattr(_mcp_mod, "stdio_client"):
@@ -49,9 +49,9 @@ def test_resolve_stdio_command_skips_unknown_commands():
     """Bare command names outside the npx/npm/node/uv/uvx launcher set must NOT
     be matched against the fallback paths — that would rewrite ``command:
     my-tool`` into a coincidentally-named file at /opt/homebrew/bin/my-tool."""
-    with patch("tools.mcp_tool_config.shutil.which", return_value=None), \
-         patch("tools.mcp_tool_config.os.path.isfile", return_value=True), \
-         patch("tools.mcp_tool_config.os.access", return_value=True):
+    with patch("hermes_agent.tools.mcp_tool_config.shutil.which", return_value=None), \
+         patch("hermes_agent.tools.mcp_tool_config.os.path.isfile", return_value=True), \
+         patch("hermes_agent.tools.mcp_tool_config.os.access", return_value=True):
         command, _env = _resolve_stdio_command("my-tool", {"PATH": "/usr/bin:/bin"})
 
     assert command == "my-tool"
@@ -103,7 +103,7 @@ def test_config_pathext_lookup_never_touches_parent_environ(tmp_path, monkeypatc
     monkeypatch.setenv("PATH", str(server_dir))
     seen = {}
 
-    import tools.mcp_tool_config as _cfg
+    import hermes_agent.tools.mcp_tool_config as _cfg
 
     def _spy(cmd, path=None):
         seen["PATHEXT"] = os.environ.get("PATHEXT")
@@ -156,11 +156,11 @@ def test_run_stdio_malware_check_does_not_block_event_loop():
             ticks["n"] += 1
 
     async def _test():
-        with patch("tools.osv_check.check_package_for_malware", side_effect=slow_check), \
-             patch("tools.mcp_tool_config._managed_launcher", return_value=None), \
-             patch("tools.mcp_tool.StdioServerParameters"), \
-             patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
-             patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm):
+        with patch("hermes_agent.tools.osv_check.check_package_for_malware", side_effect=slow_check), \
+             patch("hermes_agent.tools.mcp_tool_config._managed_launcher", return_value=None), \
+             patch("hermes_agent.tools.mcp_tool.StdioServerParameters"), \
+             patch("hermes_agent.tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
+             patch("hermes_agent.tools.mcp_tool.ClientSession", return_value=mock_session_cm):
             server = MCPServerTask("srv")
             ticker = asyncio.create_task(_ticker())
             await server.start({"command": "npx", "args": ["-y", "pkg"]})
@@ -184,12 +184,12 @@ def test_run_stdio_malware_check_times_out_fail_open():
         return "MALWARE"  # would block startup if awaited to completion
 
     async def _test():
-        with patch("tools.osv_check.check_package_for_malware", side_effect=hung_check), \
-             patch("tools.mcp_tool._OSV_MALWARE_CHECK_TIMEOUT_S", 0.2), \
-             patch("tools.mcp_tool_config._managed_launcher", return_value=None), \
-             patch("tools.mcp_tool.StdioServerParameters"), \
-             patch("tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
-             patch("tools.mcp_tool.ClientSession", return_value=mock_session_cm):
+        with patch("hermes_agent.tools.osv_check.check_package_for_malware", side_effect=hung_check), \
+             patch("hermes_agent.tools.mcp_tool._OSV_MALWARE_CHECK_TIMEOUT_S", 0.2), \
+             patch("hermes_agent.tools.mcp_tool_config._managed_launcher", return_value=None), \
+             patch("hermes_agent.tools.mcp_tool.StdioServerParameters"), \
+             patch("hermes_agent.tools.mcp_tool.stdio_client", return_value=mock_stdio_cm), \
+             patch("hermes_agent.tools.mcp_tool.ClientSession", return_value=mock_session_cm):
             server = MCPServerTask("srv")
             start = time.monotonic()
             await server.start({"command": "npx", "args": ["-y", "pkg"]})
@@ -256,7 +256,7 @@ def test_packaged_npx_runs_the_package_bin_on_the_packaged_node(tmp_path, monkey
     package (scripts off) and runs its bin script on the packaged node instead."""
     import subprocess
 
-    from tools.mcp_tool_config import _packaged_npx_entry
+    from hermes_agent.tools.mcp_tool_config import _packaged_npx_entry
 
     npm_bin, node = _sealed_npx(tmp_path, monkeypatch)
     calls = []
@@ -298,7 +298,7 @@ def test_packaged_npx_runs_the_package_bin_on_the_packaged_node(tmp_path, monkey
 def test_packaged_npx_install_failure_degrades_to_plain_npx(tmp_path, monkeypatch, failure):
     """A hung, unstartable or failing install must return None (plain npx, an honest failure),
     never raise into the MCP connect loop where it would burn the server's retry budget."""
-    from tools.mcp_tool_config import _packaged_npx_entry
+    from hermes_agent.tools.mcp_tool_config import _packaged_npx_entry
 
     npm_bin, _node = _sealed_npx(tmp_path, monkeypatch)
 
@@ -324,7 +324,7 @@ def test_outside_package_swaps_the_sealed_dirs_for_pm_copies(tmp_path, monkeypat
     """A bare npx/npm/node on a sealed payload resolves in PM's writable copy (npm starts each
     bin through cmd.exe, which cannot start the packaged node); outside a payload it is untouched."""
     import pm.user_facing
-    from tools.mcp_tool_config import _outside_package
+    from hermes_agent.tools.mcp_tool_config import _outside_package
 
     sealed_dir = str(tmp_path / "sealed")
     copy = _toolchain_bin(tmp_path / "copy", "npx")
@@ -461,7 +461,7 @@ def test_tail_server_stderr_scopes_to_the_named_server(tmp_path, monkeypatch):
     """The connect-failure log line quotes the child's last stderr lines; a server that
     never started has no segment and gets nothing (not another server's output)."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools import mcp_tool_config as cfg
+    from hermes_agent.tools import mcp_tool_config as cfg
 
     token = set_hermes_home_override(tmp_path)
     try:

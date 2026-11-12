@@ -109,8 +109,8 @@ def format_voice_record_key_for_status(raw: Any) -> str:
     return prefix + key[0].upper() + key[1:]
 
 
-from tools.voice_mode_transcript import is_voice_stop_phrase, is_whisper_hallucination
-from tools.voice_mode import create_audio_recorder, play_audio_file, transcribe_recording
+from hermes_agent.tools.voice_mode_transcript import is_voice_stop_phrase, is_whisper_hallucination
+from hermes_agent.tools.voice_mode import create_audio_recorder, play_audio_file, transcribe_recording
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ def _play_beep(frequency: int, count: int = 1) -> None:
     if not _beeps_enabled():
         return
     try:
-        from tools.voice_mode import play_beep
+        from hermes_agent.tools.voice_mode import play_beep
 
         play_beep(frequency=frequency, count=count)
     except Exception as e:
@@ -545,7 +545,7 @@ def _rearm_after_turn(rec: Any, on_status, no_speech: int) -> None:
 
 # ── TTS API ──────────────────────────────────────────────────────────
 
-# Legacy markdown stripper used only when tools.tts_text_normalize is unavailable.
+# Legacy markdown stripper used only when hermes_agent.tools.tts_text_normalize is unavailable.
 _LEGACY_TTS_STRIP = [
     (re.compile(r'```[\s\S]*?```'), ' '),                       # fenced code blocks
     (re.compile(r'\[([^\]]+)\]\([^)]+\)'), r'\1'),               # [text](url) → text
@@ -571,12 +571,12 @@ def _speak_streaming(text: str, stop_event: Optional[threading.Event]) -> bool:
     import queue
 
     # One dispatcher, zero parallel streaming implementations (#58930): when the configured provider has a
-    # chunked streamer registered in tools.tts_streaming, route the whole reply through the same
+    # chunked streamer registered in hermes_agent.tools.tts_streaming, route the whole reply through the same
     # stream_tts_to_speaker pipeline the CLI voice mode uses — audio starts on sentence one instead of after
     # full synthesis. Falls through to the legacy whole-file path when no streamer resolves.
-    from tools.tts_streaming import resolve_streaming_provider
-    from tools.tts_tool import _load_tts_config
-    from tools.tts_tool_speaker import stream_tts_to_speaker
+    from hermes_agent.tools.tts_streaming import resolve_streaming_provider
+    from hermes_agent.tools.tts_tool import _load_tts_config
+    from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
 
     if resolve_streaming_provider(_load_tts_config()) is None:
         return False
@@ -590,12 +590,12 @@ def _speak_streaming(text: str, stop_event: Optional[threading.Event]) -> bool:
 
 def _speak_whole_file(text: str) -> None:
     """Sync path: clean, synthesize to a temp MP3 via ``text_to_speech_tool``, play, unlink."""
-    from tools.tts_tool import text_to_speech_tool
+    from hermes_agent.tools.tts_tool import text_to_speech_tool
 
     # Shared cleaner (markdown, emoji, ⋗ blocks, verifier footer, units); the TTS tool owns
     # provider request limits and long-form chunking.
     try:
-        from tools.tts_text_normalize import prepare_spoken_text
+        from hermes_agent.tools.tts_text_normalize import prepare_spoken_text
         tts_text = prepare_spoken_text(text, max_chars=None)
     except Exception:
         tts_text = text

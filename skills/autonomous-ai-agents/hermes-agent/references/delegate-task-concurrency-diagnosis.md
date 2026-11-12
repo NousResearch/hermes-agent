@@ -9,12 +9,12 @@ choice.
 
 ## The three real caps in Hermes
 
-All resolved through `tools.delegate_tool._get_max_concurrent_children()`,
+All resolved through `hermes_agent.tools.delegate_tool._get_max_concurrent_children()`,
 which reads `delegation.max_concurrent_children` from `config.yaml`
 (env fallback `DELEGATION_MAX_CONCURRENT_CHILDREN`, default 3). Floor of 1.
 **No hard ceiling.**
 
-1. **Per-call hard reject** — `tools/delegate_tool.py` (~line 1953).
+1. **Per-call hard reject** — `hermes_agent/tools/delegate_tool.py` (~line 1953).
    If `len(tasks) > max_children`, the call returns a `tool_error` with the
    exact message: `"Too many tasks: {N} provided, but
    max_concurrent_children is {M}. ..."` The model sees this as a failed
@@ -47,7 +47,7 @@ grep -E "Truncated.*delegate_task|Too many tasks" ~/.hermes/logs/agent.log | tai
 # If neither line appears, neither cap path executed.
 
 # 3. Confirm the resolver returns what config says (in venv with hermes on path)
-python -c "from tools.delegate_tool import _get_max_concurrent_children; \
+python -c "from hermes_agent.tools.delegate_tool import _get_max_concurrent_children; \
            print(_get_max_concurrent_children())"
 ```
 

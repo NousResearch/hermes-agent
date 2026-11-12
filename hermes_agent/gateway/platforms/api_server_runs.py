@@ -943,8 +943,8 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
     # a config with a few stdio servers — even for sessions that never run a worker-routed command. Sessions
     # held by a live transport are never reaped, so with the desktop app open for days those fleets
     # accumulate until the OS refuses new process spawns.
-    from tools.approval import register_gateway_notify, unregister_gateway_notify
-    from tools.approval_context import reset_current_session_key, set_current_session_key
+    from hermes_agent.tools.approval import register_gateway_notify, unregister_gateway_notify
+    from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
     session_id = run.session_id
     effective_task_id = session_id or run.run_id
     # (token, reset) pairs unwound in the finally block; bound only once each step succeeds.
@@ -954,7 +954,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
             # Contextvars, not process env: concurrent runs must not share identity.
             resets.append((set_current_session_key(run.approval_session_key), reset_current_session_key))
             # chat_id carries the raw session id like _run_agent() does; without it
-            # tools.async_delegation sees no HERMES_SESSION_CHAT_ID and forces delegations sync.
+            # hermes_agent.tools.async_delegation sees no HERMES_SESSION_CHAT_ID and forces delegations sync.
             session_tokens = self._bind_api_server_session(
                 chat_id=session_id or "", session_key=run.approval_session_key, session_id=session_id or "",
                 profile=run.request_profile or "",
@@ -1195,7 +1195,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
 def _unregister_approval_notify(approval_session_key: Optional[str]) -> None:
     """Best-effort release of a run's approval waiter (no-op without a key)."""
     with suppress(Exception):
-        from tools.approval import unregister_gateway_notify
+        from hermes_agent.tools.approval import unregister_gateway_notify
         if approval_session_key:
             unregister_gateway_notify(approval_session_key)
 
@@ -1397,7 +1397,7 @@ async def _handle_run_approval(self, request: web.Request, *, _api_server) -> we
         if failed:
             return _json_error(_openai_error, message, code=code, status=status)
     try:
-        from tools.approval import resolve_gateway_approval
+        from hermes_agent.tools.approval import resolve_gateway_approval
         resolved = resolve_gateway_approval(
             approval_session_key, choice, resolve_all=resolve_all, request_id=request_id or None)
     except Exception as exc:

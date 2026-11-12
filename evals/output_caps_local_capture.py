@@ -84,7 +84,7 @@ kwargs = ChatCompletionsTransport().build_kwargs("fixture", messages, provider_p
 client.chat.completions.create(**kwargs)
 results["registered-custom-profile"] = captures[-1]
 from agent.auxiliary_client import _compression_fast_lane_controls
-from tools.delegate_tool_config import _resolve_delegation_credentials
+from hermes_agent.tools.delegate_tool_config import _resolve_delegation_credentials
 route = {"provider": "custom", "model": "fixture", "reasoning_effort": "none", "max_output_tokens": 47}
 compression_cap, _ = _compression_fast_lane_controls(
     "compression", actual_provider="custom", actual_model="fixture", requested_provider="custom",

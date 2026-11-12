@@ -17,7 +17,7 @@ from __future__ import annotations
 import os
 import signal
 
-from tools.environments.file_sync import FileSyncManager
+from hermes_agent.tools.environments.file_sync import FileSyncManager
 
 
 def _make_manager() -> FileSyncManager:
@@ -41,10 +41,10 @@ def test_deferred_sigint_redelivered_via_raise_signal(tmp_path, monkeypatch):
     raised: list[int] = []
     killed: list[tuple[int, int]] = []
     monkeypatch.setattr(
-        "tools.environments.file_sync.signal.raise_signal", raised.append
+        "hermes_agent.tools.environments.file_sync.signal.raise_signal", raised.append
     )
     monkeypatch.setattr(
-        "tools.environments.file_sync.os.kill",
+        "hermes_agent.tools.environments.file_sync.os.kill",
         lambda pid, sig: killed.append((pid, sig)),
     )
 

@@ -8,8 +8,8 @@ the raw session record, neither of which creates a new environment.
 import pytest
 
 import hermes_constants
-from tools import terminal_tool
-from tools.file_operations import ShellFileOperations
+from hermes_agent.tools import terminal_tool
+from hermes_agent.tools.file_operations import ShellFileOperations
 
 
 HOST_HOME = "/srv/hermes-host/home"

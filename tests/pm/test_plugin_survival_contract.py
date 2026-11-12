@@ -732,7 +732,7 @@ def test_update_sync_retries_a_fetch_failure_once_before_disabling(admission_env
 
 def test_active_context_home_exported_to_wrapper_subprocess(monkeypatch, tmp_path):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "ambient"))
     active = tmp_path / "custom-root/profiles/worker"

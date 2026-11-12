@@ -56,14 +56,14 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     make_tool_result_message,
 )
-from tools.terminal_tool_lifecycle import get_active_env
-from tools.thread_context import propagate_context_to_thread
-from tools.tool_result_storage import (
+from hermes_agent.tools.terminal_tool_lifecycle import get_active_env
+from hermes_agent.tools.thread_context import propagate_context_to_thread
+from hermes_agent.tools.tool_result_storage import (
     maybe_persist_tool_result,
     enforce_turn_budget,
     extract_persisted_path,
 )
-from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from hermes_agent.tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
 from hermes_cli.observability.shared_metrics_efficiency import note_tool_result, record_tool_batch
 
 # A tool result this large (raw stdout, file dumps) is the biggest allocation a turn ever drops.
@@ -102,7 +102,7 @@ def _ensure_file_checkpoint(agent, function_name: str, function_args: dict, effe
     if not file_path:
         return
     from agent.file_safety import is_nt_namespace_path
-    from tools.file_tools_paths import _resolve_path_for_task, container_backend_for_task
+    from hermes_agent.tools.file_tools_paths import _resolve_path_for_task, container_backend_for_task
 
     if container_backend_for_task(effective_task_id or "default") is not None:
         return  # container paths: nothing to checkpoint on the host
@@ -144,19 +144,19 @@ _AUTHORIZATION_GATE_LOCK_TIMEOUT_S = 360.0
 
 
 def _authorization_gate_lock_timeout() -> float:
-    """Authorization-lock bound = ``tools.approval_human_wait.human_wait_ceiling`` (approval timeout +
+    """Authorization-lock bound = ``hermes_agent.tools.approval_human_wait.human_wait_ceiling`` (approval timeout +
     margin, capped so it can't overflow Lock.acquire): never break serialization while a
     prompt is answerable, never let a wedged holder park workers forever. Deliberately NOT
     min()'d with the fallback so the gate never gives up early.
 
-    Delegates to ``tools.approval_human_wait.human_wait_ceiling`` — the same bound that clamps a human-wait window's
+    Delegates to ``hermes_agent.tools.approval_human_wait.human_wait_ceiling`` — the same bound that clamps a human-wait window's
     deadline contribution — so the two can't drift. Long enough that serialization is never broken while a
     legitimate approval prompt is still answerable; short enough that a wedged holder (hanging
     ``pre_tool_call`` plugin, dead approval client) cannot park other workers forever (#79719). Resolved
     once per gate (per batch), so a mid-process ``approvals.timeout`` change applies from the next batch.
     """
     try:
-        from tools.approval_human_wait import human_wait_ceiling
+        from hermes_agent.tools.approval_human_wait import human_wait_ceiling
 
         # human_wait_ceiling is platform-safety-capped (agent/deadline.py MAX_SAFE_TIMEOUT_S): a huge
         # approvals.timeout can no longer overflow Lock.acquire's time_t on macOS (#83220). Deliberately NOT
@@ -260,13 +260,13 @@ def _ra():
 
 
 def _is_interpreter_shutdown_submit_error(exc: RuntimeError) -> bool:
-    """Shutdown-race predicate; ``tools.interpreter_shutdown`` knows both CPython message variants.
+    """Shutdown-race predicate; ``hermes_agent.tools.interpreter_shutdown`` knows both CPython message variants.
 
     Delegates so all sites (cron delivery, conversation-loop retry, tool submission) recognize both CPython
     shutdown-message variants instead of each matching its own substring (the bug class behind
     #55924/#58720).
     """
-    from tools.interpreter_shutdown import interpreter_shutting_down
+    from hermes_agent.tools.interpreter_shutdown import interpreter_shutting_down
 
     return interpreter_shutting_down(exc)
 
@@ -360,14 +360,14 @@ def _append_skipped_tool_results(
 
 def _tool_search_scoped_names(agent) -> frozenset:
     """Deferrable tool names the session may invoke via ``tool_call``; the unwrap bypasses
-    the bridge's scope check in ``model_tools.handle_function_call``, so restricted sessions
+    the bridge's scope check in ``hermes_agent.model_tools.handle_function_call``, so restricted sessions
     validate against this set. Read through the ``get_tool_definitions`` memo on every call
     and never copied onto the agent: the memo expires with the check_fn verdicts it was
     filtered on, a per-agent copy keyed on registry generation would not, and a recovered
     MCP server's tools would stay uncallable for the agent's lifetime."""
     try:
-        import model_tools
-        from tools import tool_search as _ts
+        from hermes_agent import model_tools
+        from hermes_agent.tools import tool_search as _ts
     except Exception:
         return frozenset()
     try:
@@ -382,7 +382,7 @@ def _tool_search_scoped_names(agent) -> frozenset:
 
 def _canonical_tool_name(function_name: str) -> str:
     """Map legacy tool-name aliases BEFORE agent-loop dispatch."""
-    from model_tools import _LEGACY_TOOL_ALIASES as _lta
+    from hermes_agent.model_tools import _LEGACY_TOOL_ALIASES as _lta
 
     return _lta.get(function_name, function_name)
 
@@ -402,7 +402,7 @@ def _unwrap_tool_search_call(
     """
     scope_block: Optional[str] = None
     try:
-        from tools import tool_search as _ts
+        from hermes_agent.tools import tool_search as _ts
         if function_name != _ts.TOOL_CALL_NAME:
             return function_name, function_args, None
         underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
@@ -481,7 +481,7 @@ class _ConcurrentToolAuthorizationGate:
 
     The acquire is BOUNDED: on expiry the worker prompts unserialized rather than starving
     the batch behind a wedged plugin/approval client. Exclusion is measured at the SOURCE
-    of the human wait (``tools.approval.human_wait_seconds``), NOT as gate residency —
+    of the human wait (``hermes_agent.tools.approval.human_wait_seconds``), NOT as gate residency —
     residency-based exclusion let a wedged plugin keep the deadline from ever firing.
 
     Serialization keeps concurrent approval prompts from interleaving on the user's screen. The acquire is
@@ -504,7 +504,7 @@ class _ConcurrentToolAuthorizationGate:
             # Snapshot on the SUBMITTING thread: excluded_seconds() is polled from the
             # batch wait loop, whose context may differ from the workers'.
             try:
-                from tools.approval_context import get_current_session_key
+                from hermes_agent.tools.approval_context import get_current_session_key
 
                 self._session_key = get_current_session_key()
             except Exception:
@@ -517,7 +517,7 @@ class _ConcurrentToolAuthorizationGate:
 
     def _human_wait_seconds(self) -> float:
         try:
-            from tools.approval_human_wait import human_wait_seconds
+            from hermes_agent.tools.approval_human_wait import human_wait_seconds
 
             return human_wait_seconds(self._session_key)
         except Exception:
@@ -579,7 +579,7 @@ def _interrupt_worker_tids(agent, tids, *, reason=_NO_REASON) -> None:
 def _set_worker_activity_callback(agent) -> None:
     """The activity callback is thread-local: bind it on THIS thread so tool-layer heartbeats fire."""
     with contextlib.suppress(Exception):
-        from tools.environments.base import set_activity_callback
+        from hermes_agent.tools.environments.base import set_activity_callback
 
         set_activity_callback(agent._touch_activity)
 
@@ -603,7 +603,7 @@ def _run_tool_activity_heartbeat(
     executor raises (``_interrupt_worker_tids``). Otherwise a tool wedged in a kernel probe
     keeps reporting "activity" for the rest of the run and the inactivity watchdog, the second
     line of defense, can never fire (#111922)."""
-    from tools.interrupt import is_thread_interrupted
+    from hermes_agent.tools.interrupt import is_thread_interrupted
 
     try:
         while not stop_event.wait(interval):
@@ -743,7 +743,7 @@ def _dispatch_authorized_once(
     prepare_current_terminal(ref)
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
     from agent.tool_progress_relay import bound_tool_progress
-    from tools.connectors.data_use import collect_data_use
+    from hermes_agent.tools.connectors.data_use import collect_data_use
     with bound_tool_progress(agent.tool_progress_callback, ref.name, ref.call_id), collect_data_use() as data_use:
         try:
             return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
@@ -927,7 +927,7 @@ def _run_sequential_tool_execution_middleware(
     if function_name in _NEVER_PARALLEL_TOOLS:
         return _run_agent_tool_execution_middleware(agent, **kwargs)
 
-    from tools.daemon_pool import DaemonThreadPoolExecutor
+    from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
 
     if prepared is None:
         authorization_gate = _ConcurrentToolAuthorizationGate()
@@ -1038,7 +1038,7 @@ def _begin_tool_execution(agent, ref: _ToolCallRef, display_index: int | None) -
         elif function_name == "terminal":
             command = function_args.get("command", "")
             if _is_destructive_command(command):
-                from tools.file_tools_paths import container_backend_for_task
+                from hermes_agent.tools.file_tools_paths import container_backend_for_task
                 if container_backend_for_task(effective_task_id or "default") is None:
                     from agent.runtime_cwd import scope_terminal_cwd
                     cwd = function_args.get("workdir") or scope_terminal_cwd() or os.getcwd()
@@ -1502,7 +1502,7 @@ class _ConcurrentBatch:
         deadline = time.monotonic() + self.timeout_s if self.timeout_s is not None else None
         max_workers = _max_workers_for_tool_batch([(i, None, self.parsed_calls[i].name) for i in runnable])
         # Daemon workers: the stdlib pool's atexit join would let one wedged tool block exit.
-        from tools.daemon_pool import DaemonThreadPoolExecutor
+        from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
         executor = DaemonThreadPoolExecutor(max_workers=max_workers)
         abandon_executor = False
         try:
@@ -1686,8 +1686,8 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     if function_name == "delegate_task":
         spinner = _start_quiet_tool_spinner(agent, function_name, function_args, label=_delegate_spinner_label(function_args))
         agent._delegate_spinner = spinner
-        from tools.arg_validation import call_with_arg_checks
-        from tools.registry import registry
+        from hermes_agent.tools.arg_validation import call_with_arg_checks
+        from hermes_agent.tools.registry import registry
         return _SequentialDispatch(
             lambda next_args: call_with_arg_checks(
                 registry.get_entry(function_name), next_args, agent._dispatch_delegate_task),
@@ -1713,7 +1713,7 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
 
     # Registry tools: post hook is owned by this executor (inner observer suppressed).
     def _execute(next_args: dict) -> Any:
-        import model_tools
+        from hermes_agent import model_tools
 
         with model_tools.suppress_post_tool_call_hook():
             return model_tools.handle_function_call(

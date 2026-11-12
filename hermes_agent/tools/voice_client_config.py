@@ -2,8 +2,8 @@
 
 Single resolver behind ``GET /api/audio/voice-config``: the desktop skips the
 audio relay hop by calling providers directly with the profile's own
-credentials, resolved through the exact chains of ``tools.transcription_tools``
-and ``tools.tts_tool`` so the client gets byte-for-byte what the gateway uses.
+credentials, resolved through the exact chains of ``hermes_agent.tools.transcription_tools``
+and ``hermes_agent.tools.tts_tool`` so the client gets byte-for-byte what the gateway uses.
 Rules: same trust boundary as every REST route (keys never logged, never hit
 client disk); relay is the floor, not an error (server-host-only providers and
 resolution failures return ``{"mode": "relay"}``); no new key stores.
@@ -67,7 +67,7 @@ def stt_hallucination_filter() -> dict[str, Any]:
     (``transcribe_recording`` → ``is_whisper_hallucination``), shipped to the
     client so a client-direct transcription agrees with a relayed one instead
     of submitting "thank you" on silence as a real turn."""
-    from tools.voice_mode_transcript import WHISPER_HALLUCINATIONS
+    from hermes_agent.tools.voice_mode_transcript import WHISPER_HALLUCINATIONS
 
     return {
         "phrases": sorted(WHISPER_HALLUCINATIONS),
@@ -93,8 +93,8 @@ _STT_KEYED: dict[str, tuple[str, str, str]] = {
 
 
 def _resolve_stt_client_config() -> dict[str, Any]:
-    from tools import transcription_common as tc
-    from tools import transcription_tools as tt
+    from hermes_agent.tools import transcription_common as tc
+    from hermes_agent.tools import transcription_tools as tt
 
     stt_config = tt._load_stt_config()
     if not tt.is_stt_enabled(stt_config):
@@ -167,8 +167,8 @@ def _resolve_stt_client_config() -> dict[str, Any]:
 
 # ── TTS ──
 def _resolve_tts_client_config() -> dict[str, Any]:
-    from tools import tts_tool as tts
-    from tools import tts_tool_openai, tts_tool_providers
+    from hermes_agent.tools import tts_tool as tts
+    from hermes_agent.tools import tts_tool_openai, tts_tool_providers
 
     tts_config = tts._load_tts_config()
     provider = tts._get_provider(tts_config)
@@ -176,7 +176,7 @@ def _resolve_tts_client_config() -> dict[str, Any]:
         return _relay("command/plugin provider")
     # The desktop's client-direct sentence cutter honours the same tts.streaming.min_len as
     # the gateway/CLI chunkers, so a short CJK opener is spoken alone on every surface.
-    from tools.tts_streaming import SentenceChunker
+    from hermes_agent.tools.tts_streaming import SentenceChunker
     min_len = SentenceChunker.from_config(tts_config).min_len
 
     if provider == "openai":
@@ -251,7 +251,7 @@ def resolve_client_voice_config(client_direct: bool = True) -> dict[str, Any]:
                 out[key] = _relay("resolution error")
     # Live dictation always goes through the host's /api/audio/transcribe-stream socket (keys stay
     # server-side), independent of client_direct; the verdict above remains the blob fallback.
-    from tools.transcription_streaming import streaming_available
+    from hermes_agent.tools.transcription_streaming import streaming_available
     try:
         out["stt"]["streaming"] = streaming_available()
     except Exception:

@@ -30,7 +30,7 @@ def test_run_error_persists_redacted_cause_but_returns_summary(tmp_path, monkeyp
 
 def test_list_exposes_run_error_and_clears_it_after_success(tmp_path, capsys):
     from hermes_cli.cli_cron_lines import cron_list_lines
-    from tools.cronjob_job_args import _format_job
+    from hermes_agent.tools.cronjob_job_args import _format_job
 
     with jobs.use_cron_store(tmp_path):
         job = jobs.create_job(prompt="Check status", schedule="every 1h", model="local-probe", deliver="local")

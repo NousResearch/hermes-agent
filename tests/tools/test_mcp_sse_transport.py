@@ -28,7 +28,7 @@ def _build_server_with_sse(oauth: bool = False):
     """Stand up an MCPServerTask configured for SSE transport, with mocks
     threaded through so ``_run_http`` can enter the SSE branch without a
     real network call."""
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     server = MCPServerTask("sse-test")
     server._auth_type = "oauth" if oauth else ""
@@ -71,8 +71,8 @@ def patch_sse_client():
         async def __aexit__(self, *a):
             return False
 
-    with patch("tools.mcp_tool.sse_client", new=fake_sse_client), \
-         patch("tools.mcp_tool.ClientSession", new=_FakeSession):
+    with patch("hermes_agent.tools.mcp_tool.sse_client", new=fake_sse_client), \
+         patch("hermes_agent.tools.mcp_tool.ClientSession", new=_FakeSession):
         yield captured_kwargs
 
 class TestSSEReadTimeout:
@@ -80,7 +80,7 @@ class TestSSEReadTimeout:
         """``sse_read_timeout`` must be 300s regardless of the configured
         ``timeout``. Using the tool timeout (60s default) causes Cloudflare-
         Workers-style SSE MCP servers to drop the connection at ~60s idle."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         server = _build_server_with_sse()
 
@@ -112,7 +112,7 @@ class TestSSEOAuthForwarding:
         """If ``_auth_type == 'oauth'``, ``sse_client`` must receive the
         constructed OAuth provider via ``auth=``. Previously the provider
         was built but never forwarded to the SSE path."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         server = _build_server_with_sse(oauth=True)
         fake_oauth_provider = MagicMock(name="fake_oauth_provider")
@@ -123,7 +123,7 @@ class TestSSEOAuthForwarding:
             with patch.object(MCPServerTask, "_wait_for_lifecycle_event",
                               new=AsyncMock(return_value="shutdown")), \
                  patch.object(MCPServerTask, "_discover_tools", new=AsyncMock()), \
-                 patch("tools.mcp_oauth_manager.get_manager", return_value=fake_manager):
+                 patch("hermes_agent.tools.mcp_oauth_manager.get_manager", return_value=fake_manager):
                 try:
                     await asyncio.wait_for(
                         server._run_http({

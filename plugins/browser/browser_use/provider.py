@@ -73,8 +73,8 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
 
     def _get_config_or_none(self, *, refresh_token: bool = True) -> Optional[dict[str, Any]]:
         # Lazy: managed_tool_gateway pulls in the Nous auth stack direct-key users never need.
-        from tools.managed_tool_gateway import peek_nous_access_token, resolve_managed_tool_gateway
-        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+        from hermes_agent.tools.managed_tool_gateway import peek_nous_access_token, resolve_managed_tool_gateway
+        from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
 
         def _managed_config() -> Optional[dict[str, Any]]:
             # Keep availability scans off the synchronous OAuth refresh path.
@@ -101,7 +101,7 @@ class BrowserUseBrowserProvider(CloudBrowserProvider):
         return direct if api_key else _managed_config()
 
     def _get_config(self) -> dict[str, Any]:
-        from tools.tool_backend_helpers import (
+        from hermes_agent.tools.tool_backend_helpers import (
             NOUS_MANAGED_PROVIDER, managed_nous_tools_enabled, read_selection, selection_error)
 
         config = self._get_config_or_none()

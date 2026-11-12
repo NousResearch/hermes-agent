@@ -114,7 +114,7 @@ class TestBrowserScreenshotPathRegex:
     """#83884 — Windows drive-letter screenshot paths must be detected."""
 
     def _re(self):
-        from tools.browser_use_cli import _IMAGE_PATH_RE
+        from hermes_agent.tools.browser_use_cli import _IMAGE_PATH_RE
 
         return _IMAGE_PATH_RE
 
@@ -147,9 +147,9 @@ class TestSkillHashSymmetry:
         return skill
 
     def test_disk_and_bundle_hashes_match(self, tmp_path):
-        from tools.skills_guard import content_hash
-        from tools.skills_hub_install import bundle_content_hash
-        from tools.skills_hub_models import SkillBundle
+        from hermes_agent.tools.skills_guard import content_hash
+        from hermes_agent.tools.skills_hub_install import bundle_content_hash
+        from hermes_agent.tools.skills_hub_models import SkillBundle
 
         skill = self._make_skill(tmp_path)
         disk = content_hash(skill)
@@ -166,8 +166,8 @@ class TestSkillHashSymmetry:
         assert bundle_content_hash(bundle) == disk
 
     def test_backslash_and_posix_keys_hash_identically(self):
-        from tools.skills_hub_install import bundle_content_hash
-        from tools.skills_hub_models import SkillBundle
+        from hermes_agent.tools.skills_hub_install import bundle_content_hash
+        from hermes_agent.tools.skills_hub_models import SkillBundle
 
         posix = SkillBundle(
             name="s",
@@ -198,7 +198,7 @@ class TestLineEndingPreservation:
     """
 
     def test_write_file_preserves_lf_on_overwrite(self, tmp_path):
-        from tools.file_tools import write_file_tool
+        from hermes_agent.tools.file_tools import write_file_tool
         import json
 
         p = tmp_path / "mod.py"
@@ -208,7 +208,7 @@ class TestLineEndingPreservation:
         assert b"\r\n" not in p.read_bytes()
 
     def test_patch_preserves_lf_multiline(self, tmp_path):
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         import json
 
         p = tmp_path / "mod.py"
@@ -223,7 +223,7 @@ class TestLineEndingPreservation:
         assert b"return 100" in data
 
     def test_patch_preserves_crlf_file(self, tmp_path):
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         import json
 
         p = tmp_path / "mod.py"

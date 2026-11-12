@@ -42,7 +42,7 @@ def hermes_env(tmp_path, monkeypatch):
     return home
 
 def _create_job() -> dict:
-    from tools.cronjob_tools import cronjob
+    from hermes_agent.tools.cronjob_tools import cronjob
 
     return json.loads(
         cronjob(
@@ -100,7 +100,7 @@ class TestListSurfacesGatewayLiveness:
     learn they are not firing, not just see a clean list."""
 
     def _list_jobs(self) -> dict:
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         return json.loads(cronjob(action="list"))
 
@@ -217,7 +217,7 @@ class TestRuntimeLockFirstLiveness:
         """The reported false alarm: lock held, pid scan empty → alive."""
         _create_job()
         with patch_liveness(provider="builtin", pids=[], lock_active=True):
-            from tools.cronjob_tools import cronjob
+            from hermes_agent.tools.cronjob_tools import cronjob
 
             result = json.loads(cronjob(action="list"))
 

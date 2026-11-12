@@ -16,7 +16,7 @@ from plugins.platforms.qqbot.constants import (
 )
 from plugins.platforms.qqbot.send import _qqbot_media_file_type
 from plugins.platforms.qqbot.send import send_qqbot as _send_qqbot
-from tools.send_message_tool import _send_to_platform
+from hermes_agent.tools.send_message_tool import _send_to_platform
 
 
 def _pconfig():
@@ -56,7 +56,7 @@ class TestSendToPlatformQqbotMediaRouting:
             }
         )
         with patch(
-            "tools.send_message_tool._plugin_standalone_sender",
+            "hermes_agent.tools.send_message_tool._plugin_standalone_sender",
             return_value=(mock_send, None),
         ):
             result = asyncio.run(
@@ -83,7 +83,7 @@ class TestSendToPlatformQqbotMediaRouting:
             return_value={"success": True, "platform": "qqbot", "chat_id": "oid"}
         )
         with patch(
-            "tools.send_message_tool._plugin_standalone_sender",
+            "hermes_agent.tools.send_message_tool._plugin_standalone_sender",
             return_value=(mock_send, None),
         ):
             result = asyncio.run(

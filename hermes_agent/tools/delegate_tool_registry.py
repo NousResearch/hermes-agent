@@ -8,9 +8,9 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 from agent.interrupt_compat import request_hard_interrupt
-from tools.registry import tool_error
+from hermes_agent.tools.registry import tool_error
 
-logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 _spawn_pause_lock = threading.Lock()
 _spawn_paused: bool = False

@@ -94,7 +94,7 @@ def test_mixed_credential_satellite_borrows_only_its_routed_platform(rig):
 
 
 def test_satellite_cannot_send_to_an_unrouted_chat_through_the_primary_bot(rig):
-    from tools.send_message_senders import _live_adapter
+    from hermes_agent.tools.send_message_senders import _live_adapter
 
     r = rig.runner
     # A Discord channel no route sends to ops: no injection, no restored-source reply.

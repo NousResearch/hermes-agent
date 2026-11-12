@@ -7,8 +7,8 @@ import shlex
 import subprocess
 from typing import Callable, Iterable
 
-from tools.environments.base_session_env import _SHELL_ENV_NAME_RE
-from tools.environments.local_env_policy import _is_hermes_internal_secret, _is_provider_env_blocklisted
+from hermes_agent.tools.environments.base_session_env import _SHELL_ENV_NAME_RE
+from hermes_agent.tools.environments.local_env_policy import _is_hermes_internal_secret, _is_provider_env_blocklisted
 
 
 def load_hermes_env_vars() -> dict[str, str]:
@@ -37,7 +37,7 @@ def resolve_passthrough_env(explicit_forward: Iterable[str] = (),
     multiplex_active = False
     is_global_env = lambda _name: False
     try:
-        from tools.env_passthrough import get_all_passthrough, resolve_passthrough_value
+        from hermes_agent.tools.env_passthrough import get_all_passthrough, resolve_passthrough_value
         from agent.secret_scope import _is_global_env as is_global_env, is_multiplex_active
         multiplex_active = is_multiplex_active()
         passthrough_keys = set(get_all_passthrough())

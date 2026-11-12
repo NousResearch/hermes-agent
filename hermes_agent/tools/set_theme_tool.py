@@ -10,7 +10,7 @@ import json
 import re
 from typing import Callable, Optional
 
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 ACCENT_SWATCHES = ("mono", "green", "cyan", "nous", "violet", "pink", "red", "orange")
 # The theme's own accent; the renderer stores it as "no accent pick".

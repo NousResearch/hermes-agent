@@ -28,9 +28,9 @@ def _stub_fetch(monkeypatch, handler):
     these pin the streaming/content-type/headers contract."""
     import httpx
 
-    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: True)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.is_safe_url", lambda url: True)
     monkeypatch.setattr(
-        "tools.url_safety.create_ssrf_safe_client",
+        "hermes_agent.tools.url_safety.create_ssrf_safe_client",
         lambda **kw: httpx.Client(transport=httpx.MockTransport(handler), **kw),
     )
 

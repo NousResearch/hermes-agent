@@ -64,7 +64,7 @@ class TestRunBackgroundTask:
     @pytest.mark.asyncio
     async def test_delegated_result_is_delivered_before_background_task_ends(self, monkeypatch):
         """A /bg session has no consumer for a detached completion (#140569)."""
-        import tools.delegate_tool as dt
+        import hermes_agent.tools.delegate_tool as dt
         from hermes_agent.gateway.session_context import async_delivery_supported, clear_session_vars, set_session_vars
 
         runner = _make_runner()
@@ -84,7 +84,7 @@ class TestRunBackgroundTask:
             "api_calls": 1, "duration_seconds": 0, "model": "test", "exit_reason": "completed",
         })
         detached = MagicMock(return_value={"delegation_id": "detached"})
-        monkeypatch.setattr("tools.async_delegation.dispatch_async_delegation_batch", detached)
+        monkeypatch.setattr("hermes_agent.tools.async_delegation.dispatch_async_delegation_batch", detached)
         agent = MagicMock()
         agent.run_conversation.side_effect = lambda **kw: {
             "final_response": dt.delegate_task(goal="inspect workspace", background=True, parent_agent=parent),

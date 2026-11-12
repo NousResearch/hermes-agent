@@ -163,7 +163,7 @@ class TestIsAvailable:
         assert p.is_available() is False
 
         monkeypatch.setattr(
-            "tools.web_tools._load_web_config",
+            "hermes_agent.tools.web_tools._load_web_config",
             lambda: {"backend": "firecrawl"},
             raising=False,
         )

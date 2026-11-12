@@ -127,7 +127,7 @@ def _normalize_tool_input_schema(schema: Any) -> dict[str, Any]:
     optionality is already expressed by ``required``; ``keep_nullable_hint=False`` because the
     OpenAPI ``nullable`` keyword is not recognized. Top-level oneOf/allOf/anyOf are rejected with a
     generic 400, so they are dropped in favour of a plain object."""
-    from tools.schema_sanitizer import strip_nullable_unions
+    from hermes_agent.tools.schema_sanitizer import strip_nullable_unions
 
     normalized = strip_nullable_unions(schema, keep_nullable_hint=False) if schema else None
     if not isinstance(normalized, dict):
@@ -168,7 +168,7 @@ def _image_block_from_openai_url(url: str) -> dict[str, Any]:
     """OpenAI image URL / data URL -> Anthropic ``image`` block. An inline subtype the API rejects
     (svg+xml, bmp, tiff) 400s every replay once in history: an SVG is rasterized to PNG when a
     rasterizer is installed, anything else unsupported becomes a text placeholder."""
-    from tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
+    from hermes_agent.tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
     url = str(url or "").strip()
     if not url.startswith("data:"):
         return {"type": "image", "source": {"type": "url", "url": url}}

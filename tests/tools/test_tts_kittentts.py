@@ -1,4 +1,4 @@
-"""Tests for the KittenTTS local provider in tools/tts_tool.py."""
+"""Tests for the KittenTTS local provider in hermes_agent/tools/tts_tool.py."""
 
 import json
 from unittest.mock import MagicMock, patch
@@ -15,7 +15,7 @@ def clean_env(monkeypatch):
 @pytest.fixture(autouse=True)
 def clear_kittentts_cache():
     """Reset the module-level model cache between tests."""
-    from tools import tts_tool_local as _tt
+    from hermes_agent.tools import tts_tool_local as _tt
     _tt._kittentts_model_cache.clear()
     yield
     _tt._kittentts_model_cache.clear()
@@ -49,7 +49,7 @@ def mock_kittentts_module():
 
 class TestGenerateKittenTts:
     def test_successful_wav_generation(self, tmp_path, mock_kittentts_module):
-        from tools.tts_tool import _generate_kittentts
+        from hermes_agent.tools.tts_tool import _generate_kittentts
 
         fake_model, fake_cls = mock_kittentts_module
         output_path = str(tmp_path / "test.wav")
@@ -61,7 +61,7 @@ class TestGenerateKittenTts:
         fake_model.generate.assert_called_once()
 
     def test_config_passes_voice_speed_cleantext(self, tmp_path, mock_kittentts_module):
-        from tools.tts_tool import _generate_kittentts
+        from hermes_agent.tools.tts_tool import _generate_kittentts
 
         fake_model, _ = mock_kittentts_module
         config = {
@@ -91,7 +91,7 @@ class TestDispatcherBranch:
         monkeypatch.setitem(sys.modules, "kittentts", None)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        from tools.tts_tool import text_to_speech_tool
+        from hermes_agent.tools.tts_tool import text_to_speech_tool
 
         # Write a config telling it to use kittentts
         import hermes_yaml as yaml

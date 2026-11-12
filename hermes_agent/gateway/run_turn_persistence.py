@@ -290,7 +290,7 @@ class GatewayTurnPersistenceMixin:
 
         # Pending process watchers (check_interval on background processes)
         try:
-            from tools.process_registry import process_registry
+            from hermes_agent.tools.process_registry import process_registry
             # Detach the batch atomically (reassign, not clear()) so concurrent appends aren't dropped.
             watchers = process_registry.pending_watchers
             process_registry.pending_watchers = []
@@ -304,7 +304,7 @@ class GatewayTurnPersistenceMixin:
         # Drain watch notifications that arrived during the run; the queue also carries process /
         # async-delegation completions owned elsewhere — inject only watch-type events.
         try:
-            from tools.process_registry import process_registry as _pr
+            from hermes_agent.tools.process_registry import process_registry as _pr
             await self._drain_watch_notifications(_pr.completion_queue)
         except Exception as e:
             logger.debug("Watch queue drain error: %s", e)

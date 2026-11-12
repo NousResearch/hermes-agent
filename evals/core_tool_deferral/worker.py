@@ -95,7 +95,7 @@ if TASK.get("fixtures"):
 EVENTS = []
 CALLBACK_LOG = []
 
-from tools import desktop_ui
+from hermes_agent.tools import desktop_ui
 desktop_ui.set_emitter(lambda sid, event, payload: EVENTS.append(
     {"sid": sid, "event": event, "payload": payload}))
 
@@ -177,8 +177,8 @@ def connection_cb(payload):
         {"name": t["name"], "status": "installed"} for t in payload.get("targets", [])]})
 
 # --- import the tree's model_tools + patch registry stubs ------------------
-import model_tools
-from tools.registry import registry
+from hermes_agent import model_tools
+from hermes_agent.tools.registry import registry
 
 def _stub_entry(name, handler):
     entry = registry.get_entry(name)

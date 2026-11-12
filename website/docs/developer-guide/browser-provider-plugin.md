@@ -16,7 +16,7 @@ Browser backends are one of several **backend plugins** Hermes supports. The oth
 
 A browser provider does **not** implement browsing. It implements **session lifecycle**: create a remote browser session, hand back a CDP websocket URL, and tear the session down. Hermes hands the CDP URL you return to `browser_exec`, which drives the page from there — every provider gets the full browser toolset (`browser_exec`, `browser_cdp`, `browser_dialog`, `browser_vault`) for free.
 
-The active provider is selected by `browser.cloud_provider` in `config.yaml`; the resolver in `tools/browser_session_cloud.py` is a pure registry lookup with no per-provider conditionals.
+The active provider is selected by `browser.cloud_provider` in `config.yaml`; the resolver in `hermes_agent/tools/browser_session_cloud.py` is a pure registry lookup with no per-provider conditionals.
 
 ## Discovery
 

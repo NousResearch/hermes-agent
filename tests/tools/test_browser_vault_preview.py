@@ -12,8 +12,8 @@ import pytest
 from agent.redact import clear_vault_redaction_values
 from agent.vault_store import get_vault_store
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from tools import browser_vault_tool
-from tools.registry import registry
+from hermes_agent.tools import browser_vault_tool
+from hermes_agent.tools.registry import registry
 
 ORIGIN = "https://login.example.test"
 CONTROLS = [{"index": 0, "formIndex": 0, "type": "password", "autocomplete": "current-password", "name": "password"}]
@@ -73,8 +73,8 @@ def _login(password, origin=ORIGIN):
 
 def test_preview_fill_writes_through_the_pinned_tab_and_redacts_echoes(home):
     from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
-    from tools.drive_preview_tool import drive_preview_tool
-    from tools.read_preview_tool import read_preview_tool
+    from hermes_agent.tools.drive_preview_tool import drive_preview_tool
+    from hermes_agent.tools.read_preview_tool import read_preview_tool
 
     password = 'synthetic-quote"-slash\\-secret'
     meta = _login(password)
@@ -128,7 +128,7 @@ def test_omitted_target_picks_the_preview_only_without_a_managed_page(home, monk
     plugin backend (e.g. Camofox), keeps filling that page."""
     from agent import tool_executor
     from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
-    from tools import browser_session
+    from hermes_agent.tools import browser_session
 
     managed = []
     monkeypatch.setattr(browser_vault_tool, "_fenced_page_op", lambda tid, _op: managed.append(tid) or "{}")

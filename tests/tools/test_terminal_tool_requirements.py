@@ -5,17 +5,17 @@ import logging
 
 import pytest
 
-from model_tools import get_tool_definitions
+from hermes_agent.model_tools import get_tool_definitions
 
-terminal_tool_module = importlib.import_module("tools.terminal_tool")
+terminal_tool_module = importlib.import_module("hermes_agent.tools.terminal_tool")
 
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
     """Invalidate check_fn and tool-definitions caches before each test
     so that monkeypatched env vars / config take effect."""
-    from tools.registry import invalidate_check_fn_cache
-    from model_tools import _clear_tool_defs_cache
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
+    from hermes_agent.model_tools import _clear_tool_defs_cache
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
     yield
@@ -34,8 +34,8 @@ class TestTerminalRequirements:
 
 
     def test_terminal_and_execute_code_tools_resolve_for_managed_modal(self, monkeypatch, tmp_path):
-        monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
-        monkeypatch.setattr("tools.terminal_tool_backends.managed_nous_tools_enabled", lambda: True)
+        monkeypatch.setattr("hermes_agent.tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
+        monkeypatch.setattr("hermes_agent.tools.terminal_tool_backends.managed_nous_tools_enabled", lambda: True)
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
         monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
@@ -46,7 +46,7 @@ class TestTerminalRequirements:
             lambda: {"env_type": "modal", "modal_mode": "managed"},
         )
         monkeypatch.setattr(
-            "tools.terminal_tool_backends.is_managed_tool_gateway_ready",
+            "hermes_agent.tools.terminal_tool_backends.is_managed_tool_gateway_ready",
             lambda _vendor: True,
         )
         tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
@@ -68,14 +68,14 @@ class TestCheckFnTransientFailureSuppression:
 
     @pytest.fixture(autouse=True)
     def _reset(self):
-        from tools.registry import invalidate_check_fn_cache
+        from hermes_agent.tools.registry import invalidate_check_fn_cache
 
         invalidate_check_fn_cache()
         yield
         invalidate_check_fn_cache()
 
     def test_transient_failure_after_success_is_suppressed(self, monkeypatch):
-        import tools.registry as reg
+        import hermes_agent.tools.registry as reg
 
         calls = {"n": 0}
 
@@ -96,7 +96,7 @@ class TestCheckFnTransientFailureSuppression:
         assert calls["n"] == 2  # the probe actually ran (not just cached)
 
     def test_persistent_failure_after_grace_is_honored(self, monkeypatch):
-        import tools.registry as reg
+        import hermes_agent.tools.registry as reg
 
         def good():
             return True
@@ -124,7 +124,7 @@ class TestCheckFnTransientFailureSuppression:
         process when every unconfigured core tool warned. The WARNING fires once per probe per
         process, not on every TTL re-probe.
         """
-        import tools.registry as reg
+        import hermes_agent.tools.registry as reg
 
         state = {"core": True}
 
@@ -134,7 +134,7 @@ class TestCheckFnTransientFailureSuppression:
         def never_gate():
             return False
 
-        import toolsets
+        from hermes_agent import toolsets
 
         clock = {"now": 1000.0}
         monkeypatch.setattr(reg.time, "monotonic", lambda: clock["now"])
@@ -145,7 +145,7 @@ class TestCheckFnTransientFailureSuppression:
                                   handler=lambda **kw: None, check_fn=gate)
         reg.invalidate_check_fn_cache()
         try:
-            with caplog.at_level(logging.INFO, logger="tools.registry"):
+            with caplog.at_level(logging.INFO, logger="hermes_agent.tools.registry"):
                 assert reg._check_fn_cached(core_gate) is True
                 assert reg._check_fn_cached(never_gate) is False
                 state["core"] = False
@@ -166,7 +166,7 @@ class TestCheckFnTransientFailureSuppression:
         assert never and all(r.levelno == logging.INFO for r in never)
 
     def test_grace_expiry_lets_real_outage_through(self, monkeypatch):
-        import tools.registry as reg
+        import hermes_agent.tools.registry as reg
 
         state = {"ok": True}
 
@@ -189,7 +189,7 @@ class TestCheckFnTransientFailureSuppression:
         self, tmp_path
     ):
         """Both availability caches must use the active profile as a key."""
-        import tools.registry as reg
+        import hermes_agent.tools.registry as reg
         from agent.secret_scope import (
             get_secret,
             reset_secret_scope,
@@ -200,7 +200,7 @@ class TestCheckFnTransientFailureSuppression:
             reset_hermes_home_override,
             set_hermes_home_override,
         )
-        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+        from hermes_agent.model_tools import _clear_tool_defs_cache, get_tool_definitions
 
         profile_a = tmp_path / "profiles" / "a"
         profile_b = tmp_path / "profiles" / "b"
@@ -258,8 +258,8 @@ class TestCheckFnTransientFailureSuppression:
 
     def test_unscoped_multiplex_request_bypasses_cache(self, monkeypatch):
         """An unknown profile must never share another request's cache entry."""
-        import model_tools
-        import tools.registry as reg
+        from hermes_agent import model_tools
+        import hermes_agent.tools.registry as reg
         from agent.secret_scope import set_multiplex_active
 
         values = iter([True, False])
@@ -290,7 +290,7 @@ class TestCheckFnTransientFailureSuppression:
 
     def test_profile_scoped_check_cache_is_bounded(self, monkeypatch):
         """Many multiplex profiles must not grow registry caches forever."""
-        import tools.registry as reg
+        import hermes_agent.tools.registry as reg
 
         scopes = iter(f"/profiles/{index}" for index in range(1_000))
         monkeypatch.setattr(reg, "check_fn_cache_scope", lambda: next(scopes))
@@ -307,7 +307,7 @@ class TestCheckFnTransientFailureSuppression:
     def test_subagent_keeps_file_tools_through_docker_flake(self, monkeypatch):
         """End-to-end: a docker probe that flakes on the 2nd build keeps the
         file/terminal toolset available for the subagent being constructed."""
-        import tools.registry as reg
+        import hermes_agent.tools.registry as reg
 
         flake = {"first": True}
 
@@ -321,7 +321,7 @@ class TestCheckFnTransientFailureSuppression:
             terminal_tool_module, "check_terminal_requirements", flaky_terminal_check
         )
         # file tools delegate to the same check via tools.check_file_requirements.
-        import tools as tools_pkg
+        import hermes_agent.tools as tools_pkg
 
         monkeypatch.setattr(
             tools_pkg, "check_file_requirements", flaky_terminal_check
@@ -330,7 +330,7 @@ class TestCheckFnTransientFailureSuppression:
         t = {"now": 5000.0}
         monkeypatch.setattr(reg.time, "monotonic", lambda: t["now"])
 
-        from model_tools import get_tool_definitions, _clear_tool_defs_cache
+        from hermes_agent.model_tools import get_tool_definitions, _clear_tool_defs_cache
 
         reg.invalidate_check_fn_cache()
         _clear_tool_defs_cache()
@@ -428,7 +428,7 @@ class TestUnscopedSecretReadLogging:
         import logging
         import threading
 
-        import tools.registry as reg
+        import hermes_agent.tools.registry as reg
         from agent.secret_scope import (
             get_secret, reset_secret_scope, set_multiplex_active, set_secret_scope,
         )
@@ -447,16 +447,16 @@ class TestUnscopedSecretReadLogging:
 
         set_multiplex_active(True)
         try:
-            with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+            with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.registry"):
                 assert reg._run_check_fn_uncached(probe) is False
-                boot = [r for r in caplog.records if r.name == "tools.registry"]
+                boot = [r for r in caplog.records if r.name == "hermes_agent.tools.registry"]
                 caplog.clear()
                 token = set_secret_scope({})
                 try:
                     assert reg._run_check_fn_uncached(probe_on_bare_thread) is False
                 finally:
                     reset_secret_scope(token)
-                lost = [r for r in caplog.records if r.name == "tools.registry"]
+                lost = [r for r in caplog.records if r.name == "hermes_agent.tools.registry"]
         finally:
             set_multiplex_active(False)
 
@@ -470,7 +470,7 @@ class TestUnscopedSecretReadLogging:
         same DEBUG verdict."""
         import logging
 
-        import tools.registry as reg
+        import hermes_agent.tools.registry as reg
         from agent.secret_scope import get_secret, set_multiplex_active
 
         def probe():
@@ -479,10 +479,10 @@ class TestUnscopedSecretReadLogging:
         reg.no_cache_check_fn(probe)
         set_multiplex_active(True)
         try:
-            with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+            with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.registry"):
                 assert reg._check_fn_cached(probe) is False
         finally:
             set_multiplex_active(False)
             reg._NO_CACHE_CHECK_FNS.discard(probe)
-        records = [r for r in caplog.records if r.name == "tools.registry"]
+        records = [r for r in caplog.records if r.name == "hermes_agent.tools.registry"]
         assert records and all(r.levelno == logging.DEBUG and r.exc_info is None for r in records)

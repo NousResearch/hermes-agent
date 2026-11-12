@@ -51,10 +51,10 @@ class _FakeStreamer:
 
 
 def _patch_provider(monkeypatch, streamer, cap=4000):
-    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: streamer)
-    monkeypatch.setattr("tools.tts_tool._load_tts_config", dict)
-    monkeypatch.setattr("tools.tts_tool._get_provider", lambda cfg: "fake")
-    monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: cap)
+    monkeypatch.setattr("hermes_agent.tools.tts_streaming.resolve_streaming_provider", lambda cfg: streamer)
+    monkeypatch.setattr("hermes_agent.tools.tts_tool._load_tts_config", dict)
+    monkeypatch.setattr("hermes_agent.tools.tts_tool._get_provider", lambda cfg: "fake")
+    monkeypatch.setattr("hermes_agent.tools.tts_tool._resolve_max_text_length", lambda provider, cfg: cap)
 
 
 class _RateLearningStreamer(_FakeStreamer):
@@ -98,7 +98,7 @@ def test_short_cjk_opener_is_synthesized_alone_with_configured_min_len(stream_cl
     CJK opener gets its own provider request instead of riding behind the second sentence."""
     streamer = _FakeStreamer([b"\x00\x00"])
     _patch_provider(monkeypatch, streamer)
-    monkeypatch.setattr("tools.tts_tool._load_tts_config", lambda: {"streaming": {"min_len": 6}})
+    monkeypatch.setattr("hermes_agent.tools.tts_tool._load_tts_config", lambda: {"streaming": {"min_len": 6}})
 
     with stream_client.websocket_connect(_url()) as conn:
         conn.send_text(json.dumps({"text": "记得，叫团团. 然后我们再说第二句话，这一句要长一些才行. ", "done": True}))
@@ -190,15 +190,15 @@ def test_edge_speak_stream_speaks_each_sentence_instead_of_whole_text_fallback(
         assert "s16le" in args and "pipe:1" in args
         return subprocess.CompletedProcess(args, 0, stdout=pcm_for[path], stderr=b"")
 
-    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: None)
+    monkeypatch.setattr("hermes_agent.tools.tts_streaming.resolve_streaming_provider", lambda cfg: None)
     monkeypatch.setattr(
-        "tools.tts_tool._load_tts_config",
+        "hermes_agent.tools.tts_tool._load_tts_config",
         lambda: {"provider": "edge", "streaming": {"min_len": 6}},
     )
-    monkeypatch.setattr("tools.tts_tool._get_provider", lambda cfg: "edge")
-    monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: 4000)
-    monkeypatch.setattr("tools.tts_tool.text_to_speech_tool", fake_tts)
-    monkeypatch.setattr("tools.tts_tool_delivery._ffmpeg_run", fake_ffmpeg)
+    monkeypatch.setattr("hermes_agent.tools.tts_tool._get_provider", lambda cfg: "edge")
+    monkeypatch.setattr("hermes_agent.tools.tts_tool._resolve_max_text_length", lambda provider, cfg: 4000)
+    monkeypatch.setattr("hermes_agent.tools.tts_tool.text_to_speech_tool", fake_tts)
+    monkeypatch.setattr("hermes_agent.tools.tts_tool_delivery._ffmpeg_run", fake_ffmpeg)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None)
 
     with stream_client.websocket_connect(_url()) as conn:

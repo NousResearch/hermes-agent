@@ -8,8 +8,8 @@ import pytest
 
 from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 from hermes_cli.config import get_config_path
-from tools.connectors.gateway.client import ConnectorClient
-from tools.managed_gateway_identity import CallRef, connector_headers, user_agent
+from hermes_agent.tools.connectors.gateway.client import ConnectorClient
+from hermes_agent.tools.managed_gateway_identity import CallRef, connector_headers, user_agent
 
 
 class _Response:
@@ -107,7 +107,7 @@ def test_gateway_request_id_is_logged_on_failure_and_success(caplog):
         _Response(403, {"error": {"code": "TOOL_NOT_ALLOWED", "message": "no"}}, request_id="bad-id"),
     )
     client = _client(transport, call=CallRef(tool_call_id="call-9"))
-    with caplog.at_level(logging.DEBUG, logger="tools.managed_gateway_identity"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.managed_gateway_identity"):
         client.schemas(["X"])
         with pytest.raises(Exception) as raised:
             client.schemas(["X"])
@@ -120,7 +120,7 @@ def test_gateway_request_id_is_logged_on_failure_and_success(caplog):
 
 def test_a_not_yet_created_account_stays_debug(caplog):
     transport = _Transport(_Response(404, {"error": "connection_not_found"}))
-    with caplog.at_level(logging.DEBUG, logger="tools.managed_gateway_identity"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.managed_gateway_identity"):
         assert _client(transport).account_status("acct-1") is None
     assert [r.levelno for r in caplog.records] == [logging.DEBUG]
     assert "connectors.accounts 404" in caplog.records[0].getMessage()
@@ -131,15 +131,15 @@ def _mint_ok(names):
 
 
 def test_each_connect_path_names_its_initiator(monkeypatch):
-    from tools.connectors import managed
-    from tools.connectors.contract import Actor, TargetState
-    from tools.connectors.operation import ConnectionOperation, Target
-    from tools.connectors.run import reissue
+    from hermes_agent.tools.connectors import managed
+    from hermes_agent.tools.connectors.contract import Actor, TargetState
+    from hermes_agent.tools.connectors.operation import ConnectionOperation, Target
+    from hermes_agent.tools.connectors.run import reissue
 
     transport = _Transport(_mint_ok(["gmail"]), _mint_ok(["gmail"]), _mint_ok(["gmail"]))
     monkeypatch.setattr(managed, "ensure_guest_identity", lambda: None)
     real = ConnectorClient
-    monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", lambda **kw: real(
+    monkeypatch.setattr("hermes_agent.tools.connectors.gateway.client.ConnectorClient", lambda **kw: real(
         transport=transport, endpoint_resolver=lambda: "https://gw.test",
         header_provider=lambda url: {"Authorization": "Bearer t"}, **kw))
 
@@ -156,12 +156,12 @@ def test_each_connect_path_names_its_initiator(monkeypatch):
 
 
 def test_operation_logs_open_transitions_and_settle(caplog):
-    from tools.connectors import live
-    from tools.connectors.contract import Actor, SettleReason, TargetState
-    from tools.connectors.operation import ConnectionOperation, Target
+    from hermes_agent.tools.connectors import live
+    from hermes_agent.tools.connectors.contract import Actor, SettleReason, TargetState
+    from hermes_agent.tools.connectors.operation import ConnectionOperation, Target
 
     operation = ConnectionOperation([Target("gmail", "connector", "connect")], session_key="s-log")
-    with caplog.at_level(logging.INFO, logger="tools.connectors"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.tools.connectors"):
         live.open(operation)
         operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
         operation.transition("gmail", TargetState.connected, Actor.backend_watcher)
@@ -178,16 +178,16 @@ def test_operation_logs_open_transitions_and_settle(caplog):
 
 
 def _outcomes(caplog):
-    return [(r.levelno, r.getMessage()) for r in caplog.records if r.name == "tools.managed_gateway_identity"]
+    return [(r.levelno, r.getMessage()) for r in caplog.records if r.name == "hermes_agent.tools.managed_gateway_identity"]
 
 
 def test_a_200_whose_body_failed_is_a_warning_with_the_request_id(caplog):
     """The outcome line follows the checked body: a failed call inside the execute envelope and a body
     that does not parse are both failures, and both keep the gateway's request id."""
-    from tools.connectors.gateway.errors import ToolGatewayError
-    from tools.connectors.gateway.merge import PlannedCall
+    from hermes_agent.tools.connectors.gateway.errors import ToolGatewayError
+    from hermes_agent.tools.connectors.gateway.merge import PlannedCall
 
-    from tools.connectors.gateway import client as client_module
+    from hermes_agent.tools.connectors.gateway import client as client_module
 
     failed_call = {"results": [{"error": {"code": "CONNECTION_REQUIRED", "message": "connect gmail"}}]}
     transport = _Transport(_Response(200, failed_call, request_id="exec-id"),
@@ -195,7 +195,7 @@ def test_a_200_whose_body_failed_is_a_warning_with_the_request_id(caplog):
                            _Response(200, {"unexpected": True}, request_id="one-id"))
     client = _client(transport, call=CallRef(tool_call_id="call-3"))
     plan = PlannedCall(position=0, name="gmail_send_email", connector="gmail", tool="GMAIL_SEND_EMAIL", arguments={})
-    with caplog.at_level(logging.DEBUG, logger="tools.managed_gateway_identity"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.managed_gateway_identity"):
         # An older gateway answers the array form: a 200 envelope with the call's failure inside.
         client_module._LEGACY_EXECUTE_ORIGINS.add("https://gw.test")
         try:
@@ -215,13 +215,13 @@ def test_a_200_whose_body_failed_is_a_warning_with_the_request_id(caplog):
 
 
 def test_portal_tools_304_is_a_success_and_a_bad_body_a_failure(caplog):
-    from tools.connectors.portal.client import NotModified, PortalConnectorClient
-    from tools.connectors.portal.errors import PortalToolsUnavailable
+    from hermes_agent.tools.connectors.portal.client import NotModified, PortalConnectorClient
+    from hermes_agent.tools.connectors.portal.errors import PortalToolsUnavailable
 
     transport = _Transport(_Response(304, None, request_id="same-id"), _Response(200, [], request_id="bad-id"))
     client = PortalConnectorClient(transport=transport, endpoint_resolver=lambda: "https://portal.test",
                                    header_provider=lambda url: {"Authorization": "Bearer t"})
-    with caplog.at_level(logging.DEBUG, logger="tools.managed_gateway_identity"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.managed_gateway_identity"):
         assert isinstance(client.tools("gmail", if_none_match="etag-1"), NotModified)
         with pytest.raises(PortalToolsUnavailable) as raised:
             client.tools("gmail")
@@ -233,16 +233,16 @@ def test_portal_tools_304_is_a_success_and_a_bad_body_a_failure(caplog):
 
 
 def test_try_again_keeps_the_opening_calls_ids(monkeypatch, caplog):
-    from tools.connectors import managed
-    from tools.connectors.contract import Actor, TargetState
-    from tools.connectors.operation import ConnectionOperation, Target
-    from tools.connectors.run import reissue
+    from hermes_agent.tools.connectors import managed
+    from hermes_agent.tools.connectors.contract import Actor, TargetState
+    from hermes_agent.tools.connectors.operation import ConnectionOperation, Target
+    from hermes_agent.tools.connectors.run import reissue
 
     _consent(True)
     transport = _Transport(_mint_ok(["gmail"]))
     monkeypatch.setattr(managed, "ensure_guest_identity", lambda: None)
     real = ConnectorClient
-    monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", lambda **kw: real(
+    monkeypatch.setattr("hermes_agent.tools.connectors.gateway.client.ConnectorClient", lambda **kw: real(
         transport=transport, endpoint_resolver=lambda: "https://gw.test",
         header_provider=lambda url: {"Authorization": "Bearer t"}, **kw))
     operation = ConnectionOperation([Target("gmail", "connector", "connect")],
@@ -250,7 +250,7 @@ def test_try_again_keeps_the_opening_calls_ids(monkeypatch, caplog):
     operation.transition("gmail", TargetState.initiated, Actor.backend_watcher)
     operation.transition("gmail", TargetState.failed, Actor.backend_watcher)
 
-    with caplog.at_level(logging.DEBUG, logger="tools.managed_gateway_identity"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.managed_gateway_identity"):
         assert reissue(operation, ["gmail"]) is None
     headers = transport.sent[0]["headers"]
     assert headers["x-nous-hermes-turn"] == "turn-7" and headers["x-nous-hermes-tool-call"] == "call-7"

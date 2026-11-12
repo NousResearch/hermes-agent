@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tools.computer_use import cua_backend
+from hermes_agent.tools.computer_use import cua_backend
 
 
 def test_backend_display_identity_tracks_the_display_a_spawn_would_get():

@@ -15,7 +15,7 @@ transforming on Darwin), ``test_bare_open_file_is_transformed_on_darwin`` and
 ``test_open_dash_a_file_is_transformed_on_darwin`` FAIL.
 """
 
-import tools.terminal_tool_macos_open as macos_open
+import hermes_agent.tools.terminal_tool_macos_open as macos_open
 
 # Markers that must appear in a transformed command.
 LADDER_MARKERS = ("osascript", "activate", "lsappinfo", "frontmost")

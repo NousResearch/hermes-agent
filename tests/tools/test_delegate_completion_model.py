@@ -3,8 +3,8 @@
 from dataclasses import fields
 from types import SimpleNamespace
 
-from tools import async_delegation
-from tools.delegate_tool_dispatch import _Batch, _dispatch_unit
+from hermes_agent.tools import async_delegation
+from hermes_agent.tools.delegate_tool_dispatch import _Batch, _dispatch_unit
 
 
 def _unit(configured_model):

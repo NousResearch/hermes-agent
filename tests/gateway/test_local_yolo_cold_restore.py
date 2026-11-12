@@ -13,7 +13,7 @@ async def test_cold_restore_keeps_the_persisted_yolo_toggle_and_untoggled_follow
     from hermes_agent.gateway.session_contract import SessionActor
     from hermes_agent.gateway.session_local import create_local_session
     from hermes_agent.gateway.session_managed_worker import _session_yolo
-    from tools.approval import clear_session
+    from hermes_agent.tools.approval import clear_session
 
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'cli': []}})
     def runner():

@@ -23,15 +23,15 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict
 from pathlib import Path
 
-from tools.binary_extensions import has_binary_extension
+from hermes_agent.tools.binary_extensions import has_binary_extension
 from agent.file_safety import get_write_denied_error
-from tools.file_operations_common import (
+from hermes_agent.tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
     _UTF8_BOM, _detect_line_ending, _has_bom, _normalize_line_endings, _strip_bom,
     _strip_terminal_fence_leaks, normalize_read_pagination, normalize_search_pagination)
-from tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
-from tools.file_operations_search import SearchMixin
-from tools import file_operations_native as _native_io
+from hermes_agent.tools.file_operations_lint import LINTERS_INPROC, LintMixin, _FAIL_CLOSED_INPROC_EXTS
+from hermes_agent.tools.file_operations_search import SearchMixin
+from hermes_agent.tools import file_operations_native as _native_io
 
 logger = logging.getLogger(__name__)
 
@@ -245,7 +245,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # ``cd:`` line reads like a sandbox/mount fault at the requested path.
         cwd_error = ""
         if exit_code == 126 and "cd: " in output:
-            from tools.terminal_tool_config import _is_container_backend
+            from hermes_agent.tools.terminal_tool_config import _is_container_backend
             env_type = getattr(self.env, "env_type", None)
             hint = ("; for container backends use a path inside the container, e.g. /workspace"
                     if env_type and _is_container_backend(env_type) else "")
@@ -489,7 +489,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         """Prefix each line with a compact ``<n>|`` gutter, clamping long lines. Not
         fixed-width: padding cost ~16% more tokens per line for no accuracy gain in
         A/B, while dropping numbers regressed line-referencing."""
-        from tools.tool_output_limits import get_max_line_length
+        from hermes_agent.tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
         # A trailing newline terminates the final line — it does not start a new,
         # empty one. Splitting without dropping it rendered a phantom "<N+1>|"
@@ -506,7 +506,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         host's). A host path under the configured workspace mount is rewritten
         to that container path first, so a Windows drive path is readable
         inside Docker. Must run BEFORE shell escaping — ~ doesn't expand in quotes."""
-        from tools.terminal_tool_config import translate_mounted_host_path
+        from hermes_agent.tools.terminal_tool_config import translate_mounted_host_path
         host_root = getattr(self.env, "host_cwd", None)
         container_root = getattr(self.env, "host_cwd_mount", None) or "/workspace"
         translated = translate_mounted_host_path(path, host_root or "", container_root)
@@ -547,7 +547,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         such as regex patterns. Backslash compensation applies only to the
         local Windows argv transport. Serialized shell text stays literal.
         """
-        from tools.environments.local import _IS_WINDOWS, _bash_safe_path
+        from hermes_agent.tools.environments.local import _IS_WINDOWS, _bash_safe_path
 
         if translate_path:
             arg = _bash_safe_path(arg)
@@ -561,7 +561,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         understand the MSYS ``/c/...`` form and Hermes disables MSYS argument
         conversion, so nothing translates it back (→ ``os error 3``). ``C:/Users/x``
         is accepted by every layer. Identical to ``_escape_shell_arg`` off Windows."""
-        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+        from hermes_agent.tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
         if _IS_WINDOWS and arg:
             arg = _msys_to_windows_path(arg).replace("\\", "/")
         return "'" + arg.replace("'", "'\"'\"'") + "'"
@@ -578,7 +578,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         gives umask-default perms instead of mktemp's 0600 — not ``$(umask)``
         arithmetic (zsh parses leading-zero constants as decimal), quoted so zsh
         doesn't =word-expand. ``trap ... EXIT`` removes the temp on every failure.
-        The local POSIX backend does the same in-process (``tools.file_operations_native``).
+        The local POSIX backend does the same in-process (``hermes_agent.tools.file_operations_native``).
         """
         if self._native_read_enabled():
             error = _native_io.atomic_write(self._native_path(path), content.encode("utf-8", "surrogateescape"))
@@ -810,7 +810,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             hint_parts.append(
                 f"Use offset={end_line + 1} to continue reading "
                 f"(showing {offset}-{end_line} of {total_lines} lines)")
-        from tools.tool_output_limits import get_max_line_length
+        from hermes_agent.tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
         truncated_lines = any(len(line) > max_line_length for line in content.split('\n'))
         return ReadResult(
@@ -839,7 +839,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if self._is_image(path) or has_binary_extension(path):
             return self._read_file_sequential(path, offset, limit)
 
-        from tools.tool_output_limits import get_max_line_length
+        from hermes_agent.tools.tool_output_limits import get_max_line_length
         line_clamp_bytes = 4 * get_max_line_length() + 1
         end_line = offset + limit - 1
         sentinel = _new_sentinel(_READ_SENTINEL_PREFIX)
@@ -953,7 +953,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if self._is_image(path):
             return self._image_redirect_result(file_size)
 
-        from tools.tool_output_limits import get_max_line_length
+        from hermes_agent.tools.tool_output_limits import get_max_line_length
         clamp = 4 * get_max_line_length() + 1
         end_line = offset + limit - 1
 
@@ -1105,7 +1105,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # CHARS than max so the Python clamp in _add_line_numbers would never fire
         # (silent truncation). UTF-8 codepoints are ≤4 bytes, so every over-long
         # line still trips the char clamp, which also drops a boundary-split U+FFFD.
-        from tools.tool_output_limits import get_max_line_length
+        from hermes_agent.tools.tool_output_limits import get_max_line_length
         line_clamp_bytes = 4 * get_max_line_length() + 1
         end_line = offset + limit - 1
         read_result = self._exec(
@@ -1167,7 +1167,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     f"Note: offset {offset} is beyond the end of the file "
                     f"({total_lines} lines total). Retry with offset <= "
                     f"{total_lines}."))
-        from tools.tool_output_limits import get_max_line_length
+        from hermes_agent.tools.tool_output_limits import get_max_line_length
         max_line_length = get_max_line_length()
         truncated_lines = any(len(line) > max_line_length for line in read_output.split('\n'))
         return ReadResult(
@@ -1586,7 +1586,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         most common production failure is a re-send of an edit that already landed,
         and a success-shaped no-op stops the model burning turns on re-reads.
         Otherwise attach a best-effort "Did you mean?" snippet to the error."""
-        from tools.fuzzy_match import format_no_match_hint, is_already_applied
+        from hermes_agent.tools.fuzzy_match import format_no_match_hint, is_already_applied
         if is_already_applied(content, old_string, new_string):
             return PatchResult(
                 success=True, no_change=True,
@@ -1640,7 +1640,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         raw_content = data.decode("utf-8", "surrogateescape")
         content, _ = _strip_bom(raw_content)
 
-        from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace
+        from hermes_agent.tools.fuzzy_match import boundary_note, fuzzy_find_and_replace
         correction_notes = []
         new_content, match_count, strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all, correction_notes=correction_notes)
@@ -1669,7 +1669,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply a V4A format patch (``*** Begin Patch`` / ``*** Update File:`` /
         ``@@ hint @@`` hunks / ``*** End Patch``)."""
-        from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+        from hermes_agent.tools.patch_parser import parse_v4a_patch, apply_v4a_operations
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")

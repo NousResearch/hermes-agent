@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.process_registry import ProcessRegistry, ProcessSession
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
 
 def _live_session(sid="proc_killverify1", pid=424242, start=777001):
@@ -30,7 +30,7 @@ def _paused_registry_calls():
     """Neutralize tree-kill + checkpoint side effects; return the mocks."""
     t = patch.object(ProcessRegistry, "_terminate_host_pid", return_value=None).start()
     c = patch.object(ProcessRegistry, "_write_checkpoint", return_value=None).start()
-    s = patch("tools.process_registry.save_completed_result").start()
+    s = patch("hermes_agent.tools.process_registry.save_completed_result").start()
     return t, c, s
 
 

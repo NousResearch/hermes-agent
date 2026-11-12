@@ -26,7 +26,7 @@ _FAKE_CHROMIUM = textwrap.dedent('''\
 
 @pytest.fixture
 def two_profiles(tmp_path, monkeypatch):
-    from tools import browser_launcher as launcher
+    from hermes_agent.tools import browser_launcher as launcher
     script = tmp_path / "chromium"
     script.write_text(_FAKE_CHROMIUM.format(python=sys.executable, port=45679))
     script.chmod(0o755)
@@ -43,14 +43,14 @@ def two_profiles(tmp_path, monkeypatch):
         (home / "config.yaml").write_text(json.dumps({"browser": {}}))
         homes[name] = home
     yield homes
-    from tools.browser_session_lifecycle import cleanup_all_browsers
+    from hermes_agent.tools.browser_session_lifecycle import cleanup_all_browsers
     cleanup_all_browsers()
 
 
 def _session_in(home: Path) -> dict:
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.browser_session import get_session_info
-    from tools.browser_use_cli import _backend_cache_key
+    from hermes_agent.tools.browser_session import get_session_info
+    from hermes_agent.tools.browser_use_cli import _backend_cache_key
     token = set_hermes_home_override(str(home))
     try:
         return get_session_info(_backend_cache_key("same-task"))
@@ -70,7 +70,7 @@ def test_profile_a_then_b_then_a_each_get_their_own_browser(two_profiles):
     assert _pid(first_a) != _pid(b)
     assert _pid(again_a) == _pid(first_a)
 
-    from tools.browser_launcher import get_browser
+    from hermes_agent.tools.browser_launcher import get_browser
     dirs = {name: Path(get_browser(s["launcher_key"]).user_data_dir)
             for name, s in (("a", first_a), ("b", b))}
     assert two_profiles["a"] in dirs["a"].parents
@@ -79,8 +79,8 @@ def test_profile_a_then_b_then_a_each_get_their_own_browser(two_profiles):
 
 def test_cleaning_up_one_profile_leaves_the_other_profiles_browser_running(two_profiles):
     from hermes_constants import hermes_home_key
-    from tools.browser_launcher import get_browser
-    from tools.browser_session_lifecycle import cleanup_profile_browsers
+    from hermes_agent.tools.browser_launcher import get_browser
+    from hermes_agent.tools.browser_session_lifecycle import cleanup_profile_browsers
     a = _session_in(two_profiles["a"])
     b = _session_in(two_profiles["b"])
 

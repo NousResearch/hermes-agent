@@ -75,7 +75,7 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
                *(["--idle-exit"] if idle_exit else []), *(["--force"] if force else [])]
     # The target profile's own secrets, never the launching client's: a `hermes -p work` client's
     # dotenv would otherwise become the default daemon's frozen launch env (host_gateway_child_env).
-    from tools.environments.local import served_profile_child_env
+    from hermes_agent.tools.environments.local import served_profile_child_env
     env = served_profile_child_env(base=dict(os.environ), target_home=home, inherit_credentials=True)
     if sys.platform == "win32":
         from hermes_cli.gateway_windows import windowless_gateway_restart_spec
@@ -89,7 +89,7 @@ def spawn_unmanaged_gateway(profile_home: Path, *, deadline: float, idle_exit: b
     # name. Launch-only approval/context/config flags ride the launching session's frozen
     # policy, not the shared daemon or every later session.
     from hermes_agent.gateway.session_context import _VAR_MAP  # the launching turn's session identity, too
-    from tools.environments.local_env_policy import carry_gateway_profile_pin
+    from hermes_agent.tools.environments.local_env_policy import carry_gateway_profile_pin
     carry_gateway_profile_pin(env)  # the supervisor markers go; the daemon's tools keep their pin
     for key in (*DAEMON_STRIPPED_ENV, *_VAR_MAP):
         env.pop(key, None)

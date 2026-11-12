@@ -49,7 +49,7 @@ def _first_save():
 
 def _runtime():
     """What the browser launcher resolves for the active home right now."""
-    from tools import browser_session_cloud as session
+    from hermes_agent.tools import browser_session_cloud as session
     session.reset_caches()
     return {"engine": session.get_browser_engine(), "headed": session.is_headed_mode(),
             "user_data_dir": session.user_data_dir()}

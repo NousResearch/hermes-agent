@@ -22,7 +22,7 @@ ADMIN, MEMBER = "111", "222"
 
 @pytest.fixture(autouse=True)
 def _clean_state():
-    from tools import approval, slash_confirm
+    from hermes_agent.tools import approval, slash_confirm
 
     approval._gateway_queues.clear()
     slash_confirm._pending.clear()
@@ -38,8 +38,8 @@ def _gate(admins):
 def _raise_approval(session_key, platform, requester=ADMIN):
     """Enqueue an approval the way the agent thread does, inside the requester's DM turn."""
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     tokens = set_session_vars(platform=platform, chat_type="dm", user_id=requester, user_name="Req",
                               session_key=session_key)
@@ -81,7 +81,7 @@ def _bare_always(extra):
 
 
 def _typed_confirm(extra):
-    from tools import slash_confirm
+    from hermes_agent.tools import slash_confirm
 
     runner = _runner(extra)
     key = runner._session_key_for_source(_event(ADMIN, "").source)

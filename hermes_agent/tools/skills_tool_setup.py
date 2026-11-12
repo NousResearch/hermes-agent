@@ -1,5 +1,5 @@
 """Skill readiness: required env vars, secret capture, and setup notes. Split out of
-``tools.skills_tool`` (names re-imported there); module state (``_secret_capture_callback``,
+``hermes_agent.tools.skills_tool`` (names re-imported there); module state (``_secret_capture_callback``,
 ``load_env``) stays there and is read lazily at call time so origin-module patches are honored."""
 
 import logging
@@ -10,7 +10,7 @@ from typing import Any, Dict, List
 from hermes_constants import display_hermes_home
 from utils import env_var_enabled
 
-logger = logging.getLogger("tools.skills_tool")
+logger = logging.getLogger("hermes_agent.tools.skills_tool")
 
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _REMOTE_ENV_BACKENDS = frozenset({"docker", "modal", "ssh", "daytona", "vercel_sandbox"})
@@ -87,14 +87,14 @@ def _capture_result(missing_names, setup_skipped=False, gateway_setup_hint=None)
 def _capture_required_environment_variables(
     skill_name: str, missing_entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Prompt for missing secrets via the registered capture callback (if any)."""
-    from tools import skills_tool as _st
+    from hermes_agent.tools import skills_tool as _st
     if not missing_entries:
         return _capture_result([])
     missing_names = [entry["name"] for entry in missing_entries]
     callback = _st._turn_secret_capture.get()
     # Messaging-platform gateway surfaces can't prompt for a secret, so they get the "unsupported"
     # hint. Interactive gateway surfaces (desktop app / TUI) set HERMES_INTERACTIVE (same flag
-    # tools/approval.py uses) and register a callback routing to a secure secret.request overlay.
+    # hermes_agent/tools/approval.py uses) and register a callback routing to a secure secret.request overlay.
     if callback is None and _is_gateway_surface() and not env_var_enabled("HERMES_INTERACTIVE"):
         try:
             from hermes_agent.gateway.platforms.base import GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE as hint

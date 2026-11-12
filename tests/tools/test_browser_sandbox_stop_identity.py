@@ -45,9 +45,9 @@ def _sigterm_pending(pid: int) -> bool:
 
 @pytest.fixture
 def local_sandbox(tmp_path, monkeypatch):
-    from tools import browser_session_sandbox
-    from tools.bot_desktop import runtime, sandbox_host
-    from tools.environments import streams
+    from hermes_agent.tools import browser_session_sandbox
+    from hermes_agent.tools.bot_desktop import runtime, sandbox_host
+    from hermes_agent.tools.environments import streams
 
     stub = tmp_path / "chromium"
     stub.write_text(_STUB.format(python=sys.executable), encoding="utf-8")
@@ -108,7 +108,7 @@ def test_stop_leaves_alone_a_pid_that_now_names_another_process(local_sandbox, t
         assert job.stdout.readline().strip() == "ready"
         env, _pid, *identity = local_sandbox._launched[key]
         local_sandbox._launched[key] = (env, job.pid, *identity)
-        with caplog.at_level("INFO", logger="tools.browser_session_sandbox"):
+        with caplog.at_level("INFO", logger="hermes_agent.tools.browser_session_sandbox"):
             local_sandbox.stop_sandbox_browser(info)
         assert not _sigterm_pending(job.pid), "an unrelated process on a reused pid was signalled"
         assert str(job.pid) in caplog.text

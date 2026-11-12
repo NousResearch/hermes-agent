@@ -519,7 +519,7 @@ class TestGuardJobCredentialExfil:
         # (it cannot prove the stored pair is safe). Regression for the
         # fail-open `except Exception: err = None` path.
         import pytest
-        import tools.cronjob_tools as ct
+        import hermes_agent.tools.cronjob_tools as ct
         from hermes_agent.cron.scheduler import _guard_job_credential_exfil
 
         def _boom(provider, base_url):

@@ -2,7 +2,7 @@
 
 import pytest
 
-from tools import terminal_tool_backends as backends
+from hermes_agent.tools import terminal_tool_backends as backends
 
 
 @pytest.mark.parametrize(

@@ -224,7 +224,7 @@ class TestQuarantine:
         _trust(project_env["config"], project_env["repo"])
         clean = project_env["repo"] / ".hermes" / "skills" / "repo-skill" / "SKILL.md"
 
-        import tools.skills_guard as guard
+        import hermes_agent.tools.skills_guard as guard
 
         def _boom(*a, **k):
             raise RuntimeError("scanner exploded")

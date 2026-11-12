@@ -113,7 +113,7 @@ property of the SESSION's client, not of the backend host. Wire its
 availability off the session source the app already sends on `session.create`
 (`source: 'desktop'`), never off an env var on the backend process: that
 process might be a remote or cloud gateway this app merely connected to. See
-`tools/AGENTS.md`, "Surface capability is a property of the SESSION."
+`hermes_agent/tools/AGENTS.md`, "Surface capability is a property of the SESSION."
 
 ## Respect the person using it
 

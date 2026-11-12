@@ -19,8 +19,8 @@ from tests.gateway.test_api_server_runs import (
     _make_adapter,
     _use_idempotency_db,
 )
-from tools import approval as approval_mod
-from tools import approval_gateway_wait
+from hermes_agent.tools import approval as approval_mod
+from hermes_agent.tools import approval_gateway_wait
 
 
 @pytest.fixture

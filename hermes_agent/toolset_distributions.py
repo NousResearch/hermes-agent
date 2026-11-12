@@ -8,7 +8,7 @@ be a "+"-grouped compound ("browser+search") that rolls once for all members.
 
 from typing import Any, Dict, List, Optional
 import random
-from toolsets import validate_toolset
+from hermes_agent.toolsets import validate_toolset
 
 
 def _dist(description: str, **toolsets: int) -> dict[str, object]:

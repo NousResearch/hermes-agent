@@ -28,10 +28,10 @@ def _patch_sdk_async_client(dummy):
     mcp 2.0 moved the SDK's HTTP stack to ``httpx2``, so patching
     ``httpx.AsyncClient`` no longer intercepts the client Hermes builds for
     the SDK. Resolve the module the same way production does, via
-    ``tools.mcp_tool.sdk_httpx``, so these tests follow the SDK rather than
+    ``hermes_agent.tools.mcp_tool.sdk_httpx``, so these tests follow the SDK rather than
     hardcoding a distribution name.
     """
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool import sdk_httpx
 
     return patch.object(sdk_httpx(), "AsyncClient", dummy)
 
@@ -43,7 +43,7 @@ def _patch_sdk_transport(dummy):
     applied to an inner ``AsyncHTTPTransport`` rather than as AsyncClient
     kwargs — a custom ``transport=`` makes client-level TLS kwargs inert.
     """
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool import sdk_httpx
 
     return patch.object(sdk_httpx(), "AsyncHTTPTransport", dummy)
 
@@ -70,13 +70,13 @@ class _DummyTransport:
 
 class TestResolveClientCert:
     def test_returns_none_when_unset(self):
-        from tools.mcp_tool_errors import _resolve_client_cert
+        from hermes_agent.tools.mcp_tool_errors import _resolve_client_cert
 
         assert _resolve_client_cert("srv", {}) is None
         assert _resolve_client_cert("srv", {"url": "https://x"}) is None
 
     def test_string_form_single_pem(self, tmp_path):
-        from tools.mcp_tool_errors import _resolve_client_cert
+        from hermes_agent.tools.mcp_tool_errors import _resolve_client_cert
 
         pem = tmp_path / "combined.pem"
         pem.write_text("dummy")
@@ -86,7 +86,7 @@ class TestResolveClientCert:
 
 
     def test_list_form_two_elements(self, tmp_path):
-        from tools.mcp_tool_errors import _resolve_client_cert
+        from hermes_agent.tools.mcp_tool_errors import _resolve_client_cert
 
         cert = tmp_path / "client.crt"
         key = tmp_path / "client.key"
@@ -100,7 +100,7 @@ class TestResolveClientCert:
 
 
     def test_password_must_be_string(self, tmp_path):
-        from tools.mcp_tool_errors import _resolve_client_cert
+        from hermes_agent.tools.mcp_tool_errors import _resolve_client_cert
 
         cert = tmp_path / "client.crt"
         key = tmp_path / "client.key"
@@ -122,7 +122,7 @@ class TestHTTPClientCert:
     def test_cert_forwarded_to_async_client(self, tmp_path):
         """When client_cert is set, the new-SDK HTTP path passes ``cert=``
         into the inner AsyncHTTPTransport under the body-cap wrapper."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         cert = tmp_path / "client.pem"
         cert.write_text("dummy")
@@ -164,13 +164,13 @@ class TestHTTPClientCert:
             self._shutdown_event.set()
 
         async def _drive():
-            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
-                 patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+            with patch("hermes_agent.tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+                 patch("hermes_agent.tools.mcp_tool._MCP_NEW_HTTP", True), \
                  _patch_sdk_async_client(DummyAsyncClient), \
                  _patch_sdk_transport(_DummyTransport), \
-                 patch("tools.mcp_tool.streamable_http_client",
+                 patch("hermes_agent.tools.mcp_tool.streamable_http_client",
                        return_value=DummyTransportCtx()), \
-                 patch("tools.mcp_tool.ClientSession", DummySession), \
+                 patch("hermes_agent.tools.mcp_tool.ClientSession", DummySession), \
                  patch.object(MCPServerTask, "_discover_tools", _discover_tools):
                 await server._run_http({
                     "url": "https://example.com/mcp",
@@ -189,13 +189,13 @@ class TestHTTPClientCert:
 
     def test_missing_cert_file_surfaces_clear_error(self, tmp_path):
         """A missing cert file fails fast with a server-scoped error message."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         server = MCPServerTask("remote")
 
         async def _drive():
-            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
-                 patch("tools.mcp_tool._MCP_NEW_HTTP", True):
+            with patch("hermes_agent.tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+                 patch("hermes_agent.tools.mcp_tool._MCP_NEW_HTTP", True):
                 await server._run_http({
                     "url": "https://example.com/mcp",
                     "client_cert": str(tmp_path / "nope.pem"),
@@ -247,8 +247,8 @@ def patch_sse_client():
         async def __aexit__(self, *a):
             return False
 
-    with patch("tools.mcp_tool.sse_client", new=fake_sse_client), \
-         patch("tools.mcp_tool.ClientSession", new=_FakeSession):
+    with patch("hermes_agent.tools.mcp_tool.sse_client", new=fake_sse_client), \
+         patch("hermes_agent.tools.mcp_tool.ClientSession", new=_FakeSession):
         yield captured_kwargs
 
 
@@ -257,7 +257,7 @@ class TestSSEClientCert:
         """The factory is always injected (it installs the wire-body cap);
         with no cert and ssl_verify=True the inner transport keeps default
         TLS settings."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         server = MCPServerTask("sse-test")
         server._auth_type = ""
@@ -299,7 +299,7 @@ class TestSSEClientCert:
     def test_factory_injected_when_cert_set(self, patch_sse_client, tmp_path):
         """With client_cert set, an httpx_client_factory is injected that
         applies the cert (and follow_redirects=True to match the SDK)."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         cert = tmp_path / "client.pem"
         cert.write_text("dummy")
@@ -337,7 +337,7 @@ class TestSSEClientCert:
             def __init__(self, **kwargs):
                 captured_client_kwargs.update(kwargs)
 
-        from tools.mcp_tool import sdk_httpx
+        from hermes_agent.tools.mcp_tool import sdk_httpx
         with _patch_sdk_async_client(DummyAsyncClient), \
              _patch_sdk_transport(_DummyTransport):
             factory(headers={"x": "y"}, timeout=sdk_httpx().Timeout(30.0), auth=None)
@@ -350,7 +350,7 @@ class TestSSEClientCert:
 
     def test_factory_forwards_custom_ca_bundle(self, patch_sse_client, tmp_path):
         """ssl_verify as a path is forwarded to the factory's httpx client."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         ca_bundle = tmp_path / "ca.pem"
         ca_bundle.write_text("dummy")

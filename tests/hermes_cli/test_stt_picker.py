@@ -63,7 +63,7 @@ class TestModelPicker:
         import re
 
         from hermes_cli.web_server_config import _SCHEMA_OVERRIDES
-        from tools.transcription_common import BUILTIN_STT_PROVIDERS, STT_MODEL_CONFIG_KEY
+        from hermes_agent.tools.transcription_common import BUILTIN_STT_PROVIDERS, STT_MODEL_CONFIG_KEY
 
         desktop = (Path(__file__).resolve().parents[2] / "apps/desktop/src/app/settings/constants.ts").read_text()
         for provider, models in STT_MODEL_CATALOG.items():

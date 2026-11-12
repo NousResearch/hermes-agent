@@ -10,8 +10,8 @@ import json
 
 
 def test_denied_result_carries_a_user_summary_beside_the_model_text(monkeypatch):
-    from tools import approval
-    monkeypatch.setattr("tools.approval_context._get_approval_timeout", lambda: 300)
+    from hermes_agent.tools import approval
+    monkeypatch.setattr("hermes_agent.tools.approval_context._get_approval_timeout", lambda: 300)
     res = approval._denied("BLOCKED: User denied this command. Do NOT retry.", pattern_key="rm",
                            description="delete files", outcome="denied")
     assert res["message"].startswith("BLOCKED")  # model contract untouched
@@ -35,7 +35,7 @@ def test_cli_completion_line_prefers_user_summary_over_blocked_text():
 
 
 def test_prompt_title_reaches_the_plain_prompt_and_only_title_aware_callbacks(monkeypatch, capsys):
-    from tools import approval_prompt as ap
+    from hermes_agent.tools import approval_prompt as ap
     seen = {}
 
     def legacy_cb(command, description, *, allow_permanent=True):
@@ -59,7 +59,7 @@ def test_prompt_title_reaches_the_plain_prompt_and_only_title_aware_callbacks(mo
 
 def test_every_surface_renders_the_timeout_window_with_one_formatter(monkeypatch):
     """CLI notice, tool user_summary and gateway card must agree on the wording of the same window."""
-    from tools import approval, approval_context as ctx
+    from hermes_agent.tools import approval, approval_context as ctx
     from hermes_agent.gateway.platforms.base_exec_approval import format_approval_timed_out_notice
     monkeypatch.setattr(ctx, "_get_approval_timeout", lambda: 90)
     window = ctx.format_approval_window(90)

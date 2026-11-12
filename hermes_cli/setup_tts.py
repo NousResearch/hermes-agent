@@ -6,7 +6,7 @@ import logging
 import shutil
 import subprocess
 import sys
-from tools import tool_backend_helpers
+from hermes_agent.tools import tool_backend_helpers
 
 logger = logging.getLogger("hermes_cli.setup")
 

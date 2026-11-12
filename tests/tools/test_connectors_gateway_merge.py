@@ -7,21 +7,21 @@ client PR; this file owns partition → splice → assemble and the name codec.
 
 import pytest
 
-from tools.connectors.gateway.config import ConnectorConfig, connectors_available
-from tools.connectors.gateway.errors import (
+from hermes_agent.tools.connectors.gateway.config import ConnectorConfig, connectors_available
+from hermes_agent.tools.connectors.gateway.errors import (
     GatewayAuthError,
     GatewayUnavailable,
     IdempotencyConflict,
     ToolGatewayError,
     parse_gateway_error,
 )
-from tools.connectors.gateway.merge import (
+from hermes_agent.tools.connectors.gateway.merge import (
     assemble_results,
     fill_remote_failure,
     partition_calls,
     splice_remote_results,
 )
-from tools.connectors.gateway.names import (
+from hermes_agent.tools.connectors.gateway.names import (
     CONNECTOR_BATCH_SENTINEL,
     format_connector_name,
     parse_connector_name,
@@ -304,7 +304,7 @@ def test_account_gate_reads_the_portal_claim_not_entitlement(monkeypatch, claims
     import time
 
     from hermes_cli import nous_account
-    from tools.connectors.gateway.config import managed_tools_rolled_out
+    from hermes_agent.tools.connectors.gateway.config import managed_tools_rolled_out
 
     monkeypatch.setattr(
         "hermes_cli.auth._decode_jwt_claims", lambda token: {"exp": time.time() + 3600, **claims})

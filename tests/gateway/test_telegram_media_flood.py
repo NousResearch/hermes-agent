@@ -169,7 +169,7 @@ async def test_flood_on_downloaded_image_upload_defers_instead_of_text_fallback(
     """URL send refused for a non-flood reason, then the downloaded-bytes upload is flood-refused:
     the image is re-sent natively after the window, never replaced by its URL as text."""
     adapter, _doc = flooded
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
 
     class _Resp:
         headers: dict = {}
@@ -215,7 +215,7 @@ async def test_flood_on_downloaded_image_upload_defers_instead_of_text_fallback(
 async def test_every_native_media_entry_waits_out_a_known_flood_window(flooded, tmp_path, monkeypatch):
     """A document's refusal arms the chat's window; a fresh voice clip, URL photo, animation and a
     queued sibling document then make no request inside it and each go out once after it."""
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
     monkeypatch.setattr(url_safety, "is_safe_url", lambda *a, **k: True)
     adapter, doc = flooded
     clip = tmp_path / "reply.ogg"

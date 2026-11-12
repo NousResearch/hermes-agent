@@ -34,7 +34,7 @@ async def test_surface_fields_are_admitted_and_scoped_to_their_own_turn(tmp_path
     from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_agent.gateway.session_surface import surface_turn_note
     from hermes_agent.hermes_state_runtime import list_session_admissions
-    from tools.voice_live import VOICE_LIVE_TURN_NOTE
+    from hermes_agent.tools.voice_live import VOICE_LIVE_TURN_NOTE
 
     seen = []
     async def answer(event):
@@ -118,7 +118,7 @@ def _wait_for(predicate):
 
 
 def test_real_daemon_accepts_hud_and_voice_live_submits_and_notes_the_model(tmp_path, monkeypatch):
-    from tools.voice_live import VOICE_LIVE_TURN_NOTE
+    from hermes_agent.tools.voice_live import VOICE_LIVE_TURN_NOTE
 
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'
@@ -185,7 +185,7 @@ def test_managed_worker_turn_carries_the_committed_surface_to_the_model(tmp_path
     """The same committed surface reaches the model from a managed child (N2): live-voice note and
     spoken context on the user message, ``voice_turn`` on ``auxiliary.voice_chat``, and the following
     typed turn carries neither."""
-    from tools.voice_live import VOICE_LIVE_TURN_NOTE
+    from hermes_agent.tools.voice_live import VOICE_LIVE_TURN_NOTE
 
     root = Path(__file__).resolve().parents[2]
     home, user = tmp_path / 'state', tmp_path / 'user'

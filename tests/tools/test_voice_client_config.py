@@ -1,4 +1,4 @@
-"""E2E tests for tools.voice_client_config — the /api/audio/voice-config resolver.
+"""E2E tests for hermes_agent.tools.voice_client_config — the /api/audio/voice-config resolver.
 
 Real config files in a temp HERMES_HOME, real resolution chains (no mocked
 resolvers): what the endpoint hands the desktop must be exactly what the
@@ -43,7 +43,7 @@ def voice_home(tmp_path, monkeypatch):
 
 
 def _resolve():
-    from tools.voice_client_config import resolve_client_voice_config
+    from hermes_agent.tools.voice_client_config import resolve_client_voice_config
 
     return resolve_client_voice_config()
 

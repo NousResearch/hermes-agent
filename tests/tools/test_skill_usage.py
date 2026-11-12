@@ -1,4 +1,4 @@
-"""Tests for tools/skill_usage.py — sidecar telemetry + provenance filtering."""
+"""Tests for hermes_agent/tools/skill_usage.py — sidecar telemetry + provenance filtering."""
 
 import json
 import multiprocessing as mp
@@ -10,7 +10,7 @@ import pytest
 
 def _bump_view_many(hermes_home: str, skill_name: str, iterations: int) -> None:
     os.environ["HERMES_HOME"] = hermes_home
-    from tools.skill_usage import bump_view
+    from hermes_agent.tools.skill_usage import bump_view
 
     for _ in range(iterations):
         bump_view(skill_name)
@@ -32,7 +32,7 @@ def skills_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     # Force skill_usage module to re-resolve paths per test
     import importlib
-    import tools.skill_usage as mod
+    import hermes_agent.tools.skill_usage as mod
     importlib.reload(mod)
     monkeypatch.setattr(mod, "_prune_builtins_enabled", lambda: False)
     return home
@@ -65,7 +65,7 @@ description: test skill
 
 
 def test_save_and_load_roundtrip(skills_home):
-    from tools.skill_usage import load_usage, save_usage
+    from hermes_agent.tools.skill_usage import load_usage, save_usage
     data = {"skill-a": {"use_count": 3, "state": "active"}}
     save_usage(data)
     loaded = load_usage()
@@ -74,7 +74,7 @@ def test_save_and_load_roundtrip(skills_home):
 
 
 def test_get_record_missing_returns_empty_record(skills_home):
-    from tools.skill_usage import get_record
+    from hermes_agent.tools.skill_usage import get_record
     rec = get_record("nonexistent")
     assert rec["use_count"] == 0
     assert rec["view_count"] == 0
@@ -84,7 +84,7 @@ def test_get_record_missing_returns_empty_record(skills_home):
 
 
 def test_load_usage_handles_corrupt_file(skills_home):
-    from tools.skill_usage import load_usage, _usage_file
+    from hermes_agent.tools.skill_usage import load_usage, _usage_file
     _usage_file().write_text("{ not json }", encoding="utf-8")
     assert load_usage() == {}
 
@@ -94,7 +94,7 @@ def test_load_usage_handles_corrupt_file(skills_home):
 # ---------------------------------------------------------------------------
 
 def test_bump_view_increments_and_timestamps(skills_home):
-    from tools.skill_usage import bump_view, get_record
+    from hermes_agent.tools.skill_usage import bump_view, get_record
     bump_view("my-skill")
     bump_view("my-skill")
     rec = get_record("my-skill")
@@ -107,7 +107,7 @@ def test_skill_reuse_and_post_patch_reuse_are_derived_atomically(
     monkeypatch,
 ):
     from hermes_cli import lifecycle
-    from tools.skill_usage import bump_patch, bump_use, get_record, record_created
+    from hermes_agent.tools.skill_usage import bump_patch, bump_use, get_record, record_created
 
     events = []
     monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
@@ -140,7 +140,7 @@ def test_skill_reuse_and_post_patch_reuse_are_derived_atomically(
 
 def test_skill_state_events_emit_only_for_real_transitions(skills_home, monkeypatch):
     from hermes_cli import lifecycle
-    from tools.skill_usage import (
+    from hermes_agent.tools.skill_usage import (
         STATE_ACTIVE,
         STATE_ARCHIVED,
         STATE_STALE,
@@ -176,7 +176,7 @@ def test_skill_event_is_not_emitted_when_usage_state_cannot_commit(
     monkeypatch,
 ):
     from hermes_cli import lifecycle
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
 
     events = []
     monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
@@ -196,7 +196,7 @@ def test_installed_lifecycle_uses_persisted_provenance_when_hub_lookup_misses(
     monkeypatch,
 ):
     from hermes_cli import lifecycle
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
 
     events = []
     monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
@@ -219,7 +219,7 @@ def test_created_skill_does_not_inherit_stale_identity_or_continuity(
     monkeypatch,
 ):
     from hermes_cli import lifecycle
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
 
     events = []
     monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
@@ -260,7 +260,7 @@ def test_malformed_usage_counters_recover_without_losing_patch_reuse(
     monkeypatch,
 ):
     from hermes_cli import lifecycle
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
 
     events = []
     monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
@@ -293,7 +293,7 @@ def test_malformed_usage_counters_recover_without_losing_patch_reuse(
     assert [event["reuse_after_patch"] for event in loaded] == [False, True]
 
 def test_bumps_do_not_corrupt_other_skills(skills_home):
-    from tools.skill_usage import bump_view, bump_use, get_record
+    from hermes_agent.tools.skill_usage import bump_view, bump_use, get_record
     bump_view("skill-a")
     bump_use("skill-b")
     bump_view("skill-a")
@@ -303,7 +303,7 @@ def test_bumps_do_not_corrupt_other_skills(skills_home):
 
 
 def test_concurrent_bump_view_preserves_all_updates(skills_home):
-    from tools.skill_usage import get_record
+    from hermes_agent.tools.skill_usage import get_record
 
     process_count = 6
     iterations = 25
@@ -333,7 +333,7 @@ def test_concurrent_bump_view_preserves_all_updates(skills_home):
 
 
 def test_restoring_from_archive_clears_timestamp(skills_home):
-    from tools.skill_usage import set_state, get_record, STATE_ARCHIVED, STATE_ACTIVE
+    from hermes_agent.tools.skill_usage import set_state, get_record, STATE_ARCHIVED, STATE_ACTIVE
     set_state("x", STATE_ARCHIVED)
     assert get_record("x")["archived_at"] is not None
     set_state("x", STATE_ACTIVE)
@@ -343,7 +343,7 @@ def test_restoring_from_archive_clears_timestamp(skills_home):
 def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):
     """`mlops/training/accelerate` is the skill `huggingface-accelerate`: archive lands under the NAME,
     and an older archive flattened under the directory name is still found by `restore_skill`."""
-    from tools.skill_usage import archive_skill, mark_agent_created, restore_skill
+    from hermes_agent.tools.skill_usage import archive_skill, mark_agent_created, restore_skill
     skills_dir = skills_home / "skills"
     d = skills_dir / "training" / "accelerate"
     d.mkdir(parents=True)
@@ -364,7 +364,7 @@ def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):
 
 
 def test_forget_removes_record(skills_home):
-    from tools.skill_usage import bump_view, forget, load_usage
+    from hermes_agent.tools.skill_usage import bump_view, forget, load_usage
     bump_view("x")
     assert "x" in load_usage()
     forget("x")
@@ -376,7 +376,7 @@ def test_forget_removes_record(skills_home):
 # ---------------------------------------------------------------------------
 
 def test_agent_created_excludes_bundled(skills_home):
-    from tools.skill_usage import list_agent_created_skill_names, mark_agent_created
+    from hermes_agent.tools.skill_usage import list_agent_created_skill_names, mark_agent_created
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "bundled-skill", category="github")
     _write_skill(skills_dir, "my-skill")
@@ -391,7 +391,7 @@ def test_agent_created_excludes_bundled(skills_home):
 
 
 def test_is_agent_created(skills_home):
-    from tools.skill_usage import is_agent_created
+    from hermes_agent.tools.skill_usage import is_agent_created
     skills_dir = skills_home / "skills"
     (skills_dir / ".bundled_manifest").write_text("bundled:abc\n", encoding="utf-8")
     hub_dir = skills_dir / ".hub"
@@ -427,7 +427,7 @@ def test_end_to_end_telemetry_tracked_but_lifecycle_refused(skills_home):
       (with pruning off, the fixture default), so no state/pinned/archived flag
       lands and the directories stay on disk.
     """
-    from tools.skill_usage import (
+    from hermes_agent.tools.skill_usage import (
         bump_view, bump_use, bump_patch, set_state, set_pinned,
         archive_skill, load_usage, STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED,
     )
@@ -503,7 +503,7 @@ def test_adopt_preserves_the_inactivity_clock(skills_home):
     fresh archive_after_days window, which is the opposite of what the user
     wants when they hand over a library they already stopped using.
     """
-    from tools.skill_usage import adopt_skill, get_record, latest_activity_at
+    from hermes_agent.tools.skill_usage import adopt_skill, get_record, latest_activity_at
 
     skills_dir = skills_home / "skills"
     _write_skill(skills_dir, "legacy")
@@ -536,8 +536,8 @@ def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, ki
     block the write and this test would pass without exercising adopt's guard
     at all.
     """
-    from tools import skill_usage
-    from tools.skill_usage import adopt_skill, load_usage
+    from hermes_agent.tools import skill_usage
+    from hermes_agent.tools.skill_usage import adopt_skill, load_usage
 
     monkeypatch.setattr(skill_usage, "_prune_builtins_enabled", lambda: True)
 
@@ -569,7 +569,7 @@ def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, ki
 
 
 def test_adopt_rejects_empty_name(skills_home):
-    from tools.skill_usage import adopt_skill
+    from hermes_agent.tools.skill_usage import adopt_skill
 
     assert adopt_skill("")[0] is False
 
@@ -577,7 +577,7 @@ def test_adopt_rejects_empty_name(skills_home):
 def test_foreground_create_stamps_learn_provenance_not_agent(skills_home):
     """A foreground create (e.g. /learn) gets a learning-signal marker ("learn"), never the
     curator-management opt-in ("agent") — /journey shows it, autonomous curation stays off."""
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
 
     skill_usage.record_created("taught-skill", agent_created=False)
     rec = skill_usage.get_record("taught-skill")
@@ -595,7 +595,7 @@ def test_skill_file_lock_is_reentrant_in_thread_and_exclusive_across_threads(tmp
     second thread still waits until the outer holder releases.
     """
     import threading
-    from tools.skill_usage import skill_file_lock
+    from hermes_agent.tools.skill_usage import skill_file_lock
 
     lock_path = tmp_path / ".locks" / "demo.lock"
     entered = threading.Event()
@@ -622,7 +622,7 @@ def test_skill_file_lock_is_reentrant_in_thread_and_exclusive_across_threads(tmp
 
 
 def test_set_locked_round_trip_and_listing(skills_home):
-    from tools import skill_usage as mod
+    from hermes_agent.tools import skill_usage as mod
 
     (skills_home / "skills" / "hand-written").mkdir()
     assert mod.is_locked("hand-written") is False  # no sidecar yet
@@ -636,7 +636,7 @@ def test_set_locked_round_trip_and_listing(skills_home):
 
 
 def test_is_locked_is_strict_on_a_corrupt_sidecar(skills_home):
-    from tools import skill_usage as mod
+    from hermes_agent.tools import skill_usage as mod
 
     (skills_home / "skills" / ".usage.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(ValueError):  # json.JSONDecodeError; load_usage() would return {} here
@@ -645,7 +645,7 @@ def test_is_locked_is_strict_on_a_corrupt_sidecar(skills_home):
 
 
 def test_is_locked_ignores_malformed_records_but_never_relaxes_a_truthy_flag(skills_home):
-    from tools import skill_usage as mod
+    from hermes_agent.tools import skill_usage as mod
 
     (skills_home / "skills" / ".usage.json").write_text(
         json.dumps({"a": "junk", "b": {"locked": "yes"}, "c": {}}), encoding="utf-8")

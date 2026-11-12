@@ -85,7 +85,7 @@ def image_host():
 
 
 def _allow_loopback(monkeypatch, allowed):
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
     monkeypatch.setenv('HERMES_ALLOW_PRIVATE_URLS', 'true' if allowed else 'false')
     url_safety._reset_allow_private_cache()
 

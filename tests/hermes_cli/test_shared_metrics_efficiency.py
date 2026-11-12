@@ -114,12 +114,12 @@ def test_undo_and_retry_count_the_tokens_of_the_turns_they_discard(direct_runtim
 
 
 def test_tool_output_truncation_is_judged_after_the_turn_budget(direct_runtime, tmp_path):
-    from tools.tool_result_storage import enforce_turn_budget, maybe_persist_tool_result
-    from tools.budget_config import BudgetConfig
+    from hermes_agent.tools.tool_result_storage import enforce_turn_budget, maybe_persist_tool_result
+    from hermes_agent.tools.budget_config import BudgetConfig
 
     agent = _agent()
     budget = BudgetConfig(default_result_size=5_000, turn_budget=12_000, preview_size=100)
-    from tools.tool_output_truncate import truncate_head_tail
+    from hermes_agent.tools.tool_output_truncate import truncate_head_tail
 
     cut = json.dumps({"output": truncate_head_tail("e" * 300_000, 3_000), "exit_code": 0})
     results = [("read_file", "a" * 200), ("terminal", "b" * 80_000), ("mcp_acme_query", "c" * 9_000),
@@ -146,7 +146,7 @@ def test_tool_output_truncation_is_judged_after_the_turn_budget(direct_runtime, 
 
 def test_tool_overhead_and_unused_toolsets_report_once_per_conversation(direct_runtime, tmp_path, monkeypatch):
     toolsets = {"read_file": "file", "terminal": "terminal", "acme_private_tool": "acme-private"}
-    monkeypatch.setattr("model_tools.get_toolset_for_tool", toolsets.get)
+    monkeypatch.setattr("hermes_agent.model_tools.get_toolset_for_tool", toolsets.get)
     agent = _agent()
     _turn("s1", "t1", None, calls=[_usage(100)])
     eff.observe_request_tools(agent, agent.tools)
@@ -188,7 +188,7 @@ def test_cache_breaks_count_known_causes_once_and_unannounced_cold_reads_as_miss
     rt._sessions["s1"].efficiency.cache_ended_ns -= int(eff.CACHE_TTL_S * 1e9) + 1
     _turn("s1", "t6", {"completed": True}, calls=[_usage(9_000, cache_read=0)])
     # The tool array changing mid-conversation.
-    monkeypatch.setattr("model_tools.get_toolset_for_tool", lambda name: None)
+    monkeypatch.setattr("hermes_agent.model_tools.get_toolset_for_tool", lambda name: None)
     eff.observe_request_tools(agent, agent.tools)
     eff.observe_request_tools(agent, agent.tools[:1])
     # Internal forks and persistence-disabled side agents never count.

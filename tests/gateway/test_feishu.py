@@ -1154,9 +1154,9 @@ class TestAdapterBehavior(unittest.TestCase):
                 adapter = FeishuAdapter(PlatformConfig())
 
                 async def _run() -> tuple[str, str]:
-                    with patch("tools.url_safety.is_safe_url", return_value=True):
+                    with patch("hermes_agent.tools.url_safety.is_safe_url", return_value=True):
                         with patch(
-                            "tools.url_safety.create_ssrf_safe_async_client",
+                            "hermes_agent.tools.url_safety.create_ssrf_safe_async_client",
                             side_effect=lambda **_kwargs: _FakeAsyncClient(),
                         ):
                             with patch(
@@ -1181,7 +1181,7 @@ class TestAdapterBehavior(unittest.TestCase):
         from httpcore._backends.auto import AutoBackend
         from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
-        from tools.url_safety import SSRFConnectionBlocked
+        from hermes_agent.tools.url_safety import SSRFConnectionBlocked
 
         adapter = FeishuAdapter(PlatformConfig())
         answers = iter(("93.184.216.34", "169.254.169.254"))

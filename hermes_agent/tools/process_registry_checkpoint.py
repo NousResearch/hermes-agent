@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.redact import redact_sensitive_text
 
-logger = logging.getLogger("tools.process_registry")
+logger = logging.getLogger("hermes_agent.tools.process_registry")
 
 
 class ProcessCheckpointMixin:
@@ -19,7 +19,7 @@ class ProcessCheckpointMixin:
 
     def _write_checkpoint(self, extra_entries: Optional[list[dict[str, Any]]] = None):
         """Write running process metadata to the checkpoint file atomically."""
-        from tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
+        from hermes_agent.tools.process_registry import _checkpoint_path, _CHECKPOINT_FIELDS
 
         try:
             with self._lock:
@@ -59,7 +59,7 @@ class ProcessCheckpointMixin:
         """On-disk worker handoffs this registry never tracked whose log still decides an outcome:
         the process is alive (same start time) or its recorded exit is waiting to be read."""
         from pathlib import Path
-        from tools.process_registry_output_log import _exit_path, adoptable_log
+        from hermes_agent.tools.process_registry_output_log import _exit_path, adoptable_log
         try:
             on_disk = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
@@ -72,11 +72,11 @@ class ProcessCheckpointMixin:
     def recover_from_checkpoint(self) -> int:
         """On gateway startup, probe PIDs from the checkpoint file; returns how many
         were recovered as detached sessions."""
-        from tools.process_registry import (
+        from hermes_agent.tools.process_registry import (
             ProcessSession, _CHECKPOINT_FIELDS, _checkpoint_path,
             _CHECKPOINT_DEFAULTS, _WATCHER_ROUTE_KEYS, _stop_systemd_unit,
         )
-        from tools.process_registry_output_log import adoptable_log
+        from hermes_agent.tools.process_registry_output_log import adoptable_log
 
         # This host adopts what a crashed predecessor left running, so the jobs it starts must
         # survive its own crash for the next one: they stay out of the owner-death supervisor.

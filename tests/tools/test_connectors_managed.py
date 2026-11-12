@@ -16,9 +16,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.connectors import contract as c
-from tools.connectors import live
-from tools.connectors.tool import manage_connections
+from hermes_agent.tools.connectors import contract as c
+from hermes_agent.tools.connectors import live
+from hermes_agent.tools.connectors.tool import manage_connections
 
 
 @pytest.fixture(autouse=True)
@@ -110,8 +110,8 @@ def _desktop_callback(answer=None):
 def _run(args, gw, *, callback=None, tick=0.0, platform="desktop"):
     # Two seams read the surface: managed decides whether a card exists, the client decides whether a
     # return target rides the mint.
-    with patch("tools.connectors.managed.WATCH_TICK_SECONDS", tick), \
-         patch("tools.connectors.gateway.client.session_platform", return_value=platform):
+    with patch("hermes_agent.tools.connectors.managed.WATCH_TICK_SECONDS", tick), \
+         patch("hermes_agent.tools.connectors.gateway.client.session_platform", return_value=platform):
         return json.loads(manage_connections(
             args, client_factory=lambda: gw, connection_callback=callback, session_id="s1",
         ))
@@ -161,7 +161,7 @@ def test_desktop_connect_url_stays_on_the_live_operation_for_the_panel():
 
 def test_watcher_transitions_on_flip_and_settles_by_deadline_when_nothing_flips():
     gw = GatewayFake()
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
         out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.01)
     assert out["settled_by"] == "deadline"
     assert out["targets"][0]["state"] == "not_connected"
@@ -200,9 +200,9 @@ def test_respond_from_the_card_skips_a_target_and_wakes_the_loop():
 
 def test_mint_failure_detail_survives_and_only_an_unlisted_catalog_name_is_misrouted():
     gw = GatewayFake(mint_status="failed", status_reason="vendor: bad scope")
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05), \
-         patch("tools.connectors.managed.catalog_names", return_value={"notion"}), \
-         patch("tools.connectors.managed.hosted_names", return_value={"gmail", "notion"}):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05), \
+         patch("hermes_agent.tools.connectors.managed.catalog_names", return_value={"notion"}), \
+         patch("hermes_agent.tools.connectors.managed.hosted_names", return_value={"gmail", "notion"}):
         out = _run({"action": "connect", "connectors": ["gmail", "notion"]}, gw,
                    callback=_desktop_callback(), tick=0.01)
     by = {t["name"]: t for t in out["targets"]}
@@ -212,9 +212,9 @@ def test_mint_failure_detail_survives_and_only_an_unlisted_catalog_name_is_misro
 
     gw = GatewayFake(flips={"gmail": 1}, mint_overrides={"notion": "failed"})
     card = _desktop_callback()
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.2), \
-         patch("tools.connectors.managed.catalog_names", return_value={"notion"}), \
-         patch("tools.connectors.managed.hosted_names", return_value={"gmail"}):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.2), \
+         patch("hermes_agent.tools.connectors.managed.catalog_names", return_value={"notion"}), \
+         patch("hermes_agent.tools.connectors.managed.hosted_names", return_value={"gmail"}):
         out = _run({"action": "connect", "connectors": ["gmail", "notion"]}, gw, callback=card, tick=0.01)
     by = {t["name"]: t for t in out["targets"]}
     assert len(gw.mints) == 1 and card.seen
@@ -223,17 +223,17 @@ def test_mint_failure_detail_survives_and_only_an_unlisted_catalog_name_is_misro
 
     gw = GatewayFake(mint_status="failed")
     card = _desktop_callback()
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 30.0), \
-         patch("tools.connectors.managed.catalog_names", return_value={"notion"}), \
-         patch("tools.connectors.managed.hosted_names", return_value=set()):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 30.0), \
+         patch("hermes_agent.tools.connectors.managed.catalog_names", return_value={"notion"}), \
+         patch("hermes_agent.tools.connectors.managed.hosted_names", return_value=set()):
         out = _run({"action": "connect", "connectors": ["notion"]}, gw, callback=card, tick=0.01)
     assert card.seen == [] and out["settled_by"] == "all_resolved"
     assert out["targets"][0]["detail"].startswith("notion is a local MCP server")
 
     gw = GatewayFake(mint_status="failed", status_reason="gateway hiccup")
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05), \
-         patch("tools.connectors.managed.catalog_names", return_value={"notion"}), \
-         patch("tools.connectors.managed.hosted_names", return_value=None):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05), \
+         patch("hermes_agent.tools.connectors.managed.catalog_names", return_value={"notion"}), \
+         patch("hermes_agent.tools.connectors.managed.hosted_names", return_value=None):
         out = _run({"action": "connect", "connectors": ["notion"]}, gw,
                    callback=_desktop_callback(), tick=0.01)
     assert out["targets"][0]["detail"] == "gateway hiccup"
@@ -255,19 +255,19 @@ def test_a_guessed_slug_fails_naming_the_listed_one_and_status_names_it_too():
 
     gw = Fake(mint_status="failed")
     card = _desktop_callback()
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 30.0), \
-         patch("tools.connectors.managed.catalog_names", return_value=set()):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 30.0), \
+         patch("hermes_agent.tools.connectors.managed.catalog_names", return_value=set()):
         out = _run({"action": "connect", "connectors": ["granola"]}, gw, callback=card, tick=0.01)
     assert card.seen == [] and out["settled_by"] == "all_resolved"
     assert out["targets"][0]["detail"] == "'granola' is not a connector slug; use granola_mcp"
 
     gw = Fake(mint_status="failed")
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05), \
-         patch("tools.connectors.managed.catalog_names", return_value=set()):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05), \
+         patch("hermes_agent.tools.connectors.managed.catalog_names", return_value=set()):
         out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.01)
     assert out["targets"][0]["detail"] == "This connector is not allowed by your organization's policy."
 
-    with patch("tools.connectors.managed.portal_accounts", return_value=[]):
+    with patch("hermes_agent.tools.connectors.managed.portal_accounts", return_value=[]):
         out = _run({"action": "status", "connectors": ["granola"]}, Fake())
     assert out["connectors"] == []
     assert out["unknown"] == {"granola": "'granola' is not a connector slug; use granola_mcp"}
@@ -288,7 +288,7 @@ def test_reconnect_on_an_active_target_makes_no_gateway_mint():
 
 def test_reconnect_force_always_reinitiates_even_when_active():
     gw = GatewayFake(connected={"gmail"}, flips={"gmail": 1})
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
         _run({"action": "reconnect", "connectors": ["gmail"], "force": True}, gw, callback=_desktop_callback(), tick=0.01)
     assert [(m["connectors"], m["reinitiate"]) for m in gw.mints] == [(("gmail",), True)]
 
@@ -332,7 +332,7 @@ def test_second_connect_while_an_operation_is_open_is_refused():
     gw = GatewayFake()
     operation = live.open_new([("gmail", "connector", "connect")], "s1") if hasattr(live, "open_new") else None
     if operation is None:
-        from tools.connectors import operation as op
+        from hermes_agent.tools.connectors import operation as op
         operation = op.ConnectionOperation([op.Target("gmail", "connector", "connect")], session_key="s1")
         live.open(operation)
     out = _run({"action": "connect", "connectors": ["notion"]}, gw, callback=_desktop_callback())
@@ -348,7 +348,7 @@ def test_second_connect_while_an_operation_is_open_is_refused():
 def test_connected_read_on_a_failed_target_is_ignored_not_an_error():
     """A failed mint whose account later reads connected must not raise out of the watcher."""
     gw = GatewayFake(mint_status="failed", status_reason="denied", flips={"gmail": 1})
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
+    with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
         out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.01)
     assert "error" not in out
     assert out["targets"][0]["state"] in {"failed", "not_connected"}
@@ -385,7 +385,7 @@ def test_continue_during_a_connected_read_keeps_the_settled_result():
 
 
 def test_interrupt_wakes_the_loop_and_settles_before_the_next_tick():
-    from tools.interrupt import set_interrupt
+    from hermes_agent.tools.interrupt import set_interrupt
 
     gw = GatewayFake()
     worker = {}
@@ -399,7 +399,7 @@ def test_interrupt_wakes_the_loop_and_settles_before_the_next_tick():
     import time
     started = time.monotonic()
     try:
-        with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 10):
+        with patch("hermes_agent.tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 10):
             out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=cb, tick=5.0)
     finally:
         set_interrupt(False, worker.get("tid"))

@@ -134,7 +134,7 @@ def redact_summary(summary: Any, structured: bool, force: bool) -> Any:
     if isinstance(summary, _ParentCopy):
         return redact_child_text(summary, force=force)
     if structured and isinstance(summary, str):
-        from tools.delegation_output_schema import extract_json_candidate
+        from hermes_agent.tools.delegation_output_schema import extract_json_candidate
 
         candidate = extract_json_candidate(summary)
         start = summary.find(candidate) if candidate else -1
@@ -183,7 +183,7 @@ def redact_child_result(result: dict[str, Any], output_schema=None, *, force: bo
             ],
         )
         if isinstance(output_schema, dict):
-            from tools.delegation_output_schema import validate_output
+            from hermes_agent.tools.delegation_output_schema import validate_output
 
             try:
                 summary = cleaned.get("summary")

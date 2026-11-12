@@ -193,7 +193,7 @@ async def test_resume_recreates_the_removed_classic_worktree(tmp_path, monkeypat
     repo = _repo(tmp_path)
     monkeypatch.chdir(repo)
     monkeypatch.setitem(cli.CLI_CONFIG, 'worktree_sync', False)
-    monkeypatch.setitem(sys.modules, 'model_tools', SimpleNamespace(get_tool_definitions=lambda **_: []))
+    monkeypatch.setitem(sys.modules, 'hermes_agent.model_tools', SimpleNamespace(get_tool_definitions=lambda **_: []))
     monkeypatch.setattr(cli.atexit, 'register', lambda *_a, **_k: None)
     monkeypatch.setattr(cli, '_prune_stale_worktrees', lambda *_: None)
     monkeypatch.setattr(cli, '_maintain_pack_health', lambda *_: None)

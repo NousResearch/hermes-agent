@@ -26,7 +26,7 @@ def blocked(*a, **kw):
 socket.socket.connect = blocked
 socket.create_connection = blocked
 from run_agent import AIAgent
-import tools.delegate_tool as dt
+import hermes_agent.tools.delegate_tool as dt
 import agent.context_compressor as mod
 from agent.model_metadata import estimate_messages_tokens_rough
 from hermes_agent.hermes_state import SessionDB

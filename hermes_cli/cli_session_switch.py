@@ -31,7 +31,7 @@ def _sync_agent_to_session(cli, session_id: str, *, parent_session_id: str, reas
         cli.agent._last_flushed_db_idx = len(cli.conversation_history)
     if hasattr(cli.agent, "_todo_store"):
         with suppress(Exception):
-            from tools.todo_tool import TodoStore
+            from hermes_agent.tools.todo_tool import TodoStore
             cli.agent._todo_store = TodoStore()
     if hasattr(cli.agent, "_invalidate_system_prompt"):
         cli.agent._invalidate_system_prompt()

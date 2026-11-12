@@ -373,7 +373,7 @@ method("billing.step_up", params=BillingStepUpParams, result=BillingStepUpResult
 
 
 class ActiveSubagent(OpenModel):
-    """One live child from ``tools/delegate_tool_registry.py::list_active_subagents`` (the record
+    """One live child from ``hermes_agent/tools/delegate_tool_registry.py::list_active_subagents`` (the record
     is extended by the child runner — ``missed_steer`` etc. — so it stays open)."""
 
     subagent_id: str

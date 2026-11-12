@@ -1,10 +1,10 @@
 """Sandbox lifecycle for the terminal tool: idle reaping, teardown, manual/atexit
 cleanup, and the lazy ensure_task_env bring-up. The env cache dicts and locks
-stay in tools.terminal_tool (tests patch them there) and are read through it
+stay in hermes_agent.tools.terminal_tool (tests patch them there) and are read through it
 at call time.
 
-Split out of ``tools/terminal_tool.py``; every public/patched name is re-imported there,
-so ``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
+Split out of ``hermes_agent/tools/terminal_tool.py``; every public/patched name is re-imported there,
+so ``hermes_agent.tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before.
 """
 
 import logging
@@ -13,15 +13,15 @@ import threading
 import time
 from contextlib import contextmanager
 from typing import Any, Dict, Optional
-from tools.terminal_tool_backends import (
+from hermes_agent.tools.terminal_tool_backends import (
     _container_config_from_config,
     _local_config_from_config,
     _ssh_config_from_config,
 )
-from tools.terminal_tool_config import _quiet
+from hermes_agent.tools.terminal_tool_config import _quiet
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("tools.terminal_tool")
+logger = logging.getLogger("hermes_agent.tools.terminal_tool")
 
 
 def _create_configured_env(
@@ -30,8 +30,8 @@ def _create_configured_env(
 ):
     """``_create_environment`` with the ssh/local/container kwargs shaped from *config*
     (shared by the terminal tool, the file tools and the lazy :func:`ensure_task_env` bring-up)."""
-    from tools.terminal_tool_backends import _create_environment
-    from tools.terminal_tool_config import _is_container_backend
+    from hermes_agent.tools.terminal_tool_backends import _create_environment
+    from hermes_agent.tools.terminal_tool_config import _is_container_backend
     return _create_environment(
         env_type=env_type, image=image, cwd=cwd, timeout=timeout,
         ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
@@ -68,7 +68,7 @@ def _settle_env_processes(env: Any) -> None:
     Called only after a teardown that succeeded or found the sandbox already gone: a failed
     one (Modal's sync-back raising before terminate) may leave the sandbox and its processes
     running and reachable."""
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     # WARNING, not _quiet's DEBUG: a failed settle leaves pollers spinning on a closed env.
     with _quiet("settling processes of a closed environment failed", level=logging.WARNING):
         settled = process_registry.settle_env_closed(env)
@@ -98,7 +98,7 @@ def _teardown_env(env: Any, task_id: str, *, force_remove: Optional[bool] = None
 def _clear_file_ops_cache(task_id: str) -> None:
     """Invalidate the file_ops cache entry so ShellFileOperations can't reference a dead sandbox."""
     try:
-        from tools.file_tools import clear_file_ops_cache
+        from hermes_agent.tools.file_tools import clear_file_ops_cache
         clear_file_ops_cache(task_id)
     except ImportError:
         pass
@@ -109,7 +109,7 @@ def _unregister_env(task_id: str):
     the env (or None). Callers run the (slow) teardown OUTSIDE the lock —
     Modal/Docker teardown can block 10-15s and would stall every concurrent
     terminal/file tool call."""
-    from tools.terminal_tool import (
+    from hermes_agent.tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
         _last_activity,
     )
@@ -130,7 +130,7 @@ def _call_in_flight(*keys: Optional[str]):
     it. Refcounted (parallel calls share a key); exit restamps, so the idle countdown starts at
     call end.
     """
-    from tools.terminal_tool import _calls_in_flight, _env_lock, _last_activity
+    from hermes_agent.tools.terminal_tool import _calls_in_flight, _env_lock, _last_activity
     held = [k for k in dict.fromkeys(keys) if k]
     with _env_lock:
         for k in held:
@@ -150,7 +150,7 @@ def _call_in_flight(*keys: Optional[str]):
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     """Clean up environments that have been inactive for longer than lifetime_seconds."""
-    from tools.terminal_tool import (
+    from hermes_agent.tools.terminal_tool import (
         _active_environments, _calls_in_flight, _creation_locks, _creation_locks_lock, _env_lock,
         _last_activity,
     )
@@ -160,7 +160,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # environment key or object, never the spawning owner id: the key is ``session:<id>``,
     # a workspace digest or ``default``, while ``owner_task_id`` is the raw task id.
     try:
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
         for task_id in list(_last_activity.keys()):
             if process_registry.has_running_in_env(task_id, _active_environments.get(task_id)):
                 _last_activity[task_id] = current_time
@@ -197,7 +197,7 @@ def _is_workspace_key(key: str) -> bool:
 
 def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
-    from tools.terminal_tool import _active_environments, _env_lock, _resolve_container_task_id
+    from hermes_agent.tools.terminal_tool import _active_environments, _env_lock, _resolve_container_task_id
     lookup = _resolve_container_task_id(task_id)
     with _env_lock:
         return _active_environments.get(lookup) or _active_environments.get(task_id)
@@ -206,7 +206,7 @@ def get_active_env(task_id: str):
 def ensure_task_env(task_id: Optional[str] = None):
     """Lazily create and cache the sandbox env for *task_id* if none is active.
 
-    Lets non-terminal callers (``tools.image_source`` reading container-only
+    Lets non-terminal callers (``hermes_agent.tools.image_source`` reading container-only
     paths) bring the sandbox up on demand with the same machinery as the
     terminal tool. No-op on local. Returns the env, or ``None`` when local or
     when creation fails (best-effort; the caller's fail-closed path stays intact).
@@ -214,10 +214,10 @@ def ensure_task_env(task_id: Optional[str] = None):
     :func:`terminal_tool` creates the environment on the first terminal command, but nothing else did — so
     under a non-local backend (ssh, docker, …) a session whose first action is ``vision_analyze`` on a
     container-only path hit "no active sandbox session" because the SSH/Docker handshake never ran (issue
-    #62825). vision reads such paths inside the sandbox (see ``tools.image_source``), so it calls this to
+    #62825). vision reads such paths inside the sandbox (see ``hermes_agent.tools.image_source``), so it calls this to
     bring the env up on demand, reusing the same creation machinery as the terminal tool.
     """
-    from tools.terminal_tool import (
+    from hermes_agent.tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
         _get_env_config, _last_activity, _resolve_container_task_id,
         _resolve_task_host_cwd, _select_image, _start_cleanup_thread, resolve_task_overrides,
@@ -286,8 +286,8 @@ def is_persistent_env(task_id: str) -> bool:
 
 def cleanup_all_environments():
     """Clean up ALL active environments (process exit). Use with caution."""
-    from tools.environments.base import kill_live_foreground_processes
-    from tools.terminal_tool import _active_environments
+    from hermes_agent.tools.environments.base import kill_live_foreground_processes
+    from hermes_agent.tools.terminal_tool import _active_environments
     # A command still running when the host exits would outlive it in its own process group.
     kill_live_foreground_processes()
     cleaned = 0
@@ -329,7 +329,7 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
 def _evict_environment_for_task(task_id: Optional[str]) -> None:
     """Drop any cached env for *task_id* (and its collapsed key) after an
     infrastructure failure, so later calls don't reuse a dead connection."""
-    from tools.terminal_tool import (
+    from hermes_agent.tools.terminal_tool import (
         _active_environments, _env_lock, _last_activity, _resolve_container_task_id,
     )
     keys = {_resolve_container_task_id(task_id)}

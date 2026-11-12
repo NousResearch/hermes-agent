@@ -49,7 +49,7 @@ def _answer_when_asked(peer, value):
 
 def test_local_viewer_turn_prompts_and_saves_the_secret(monkeypatch):
     from hermes_agent.gateway.session_secret_prompt import secret_prompt_scope
-    from tools.skills_tool_setup import _capture_required_environment_variables
+    from hermes_agent.tools.skills_tool_setup import _capture_required_environment_variables
     saved = []
     from hermes_cli import config
     monkeypatch.setattr(config, 'save_env_value_secure',
@@ -61,7 +61,7 @@ def test_local_viewer_turn_prompts_and_saves_the_secret(monkeypatch):
     out = {}
     with secret_prompt_scope(turn, SimpleNamespace()):
         # A tool worker thread, started the way the agent starts them (context propagated).
-        from tools.thread_context import propagate_context_to_thread
+        from hermes_agent.tools.thread_context import propagate_context_to_thread
         worker = threading.Thread(target=propagate_context_to_thread(lambda: out.update(
             _capture_required_environment_variables('hab-skill', [{'name': 'HAB_KEY', 'prompt': 'Enter the key'}]))))
         worker.start()
@@ -78,12 +78,12 @@ def test_local_viewer_turn_prompts_and_saves_the_secret(monkeypatch):
 
 def test_skipped_secret_stays_missing(monkeypatch):
     from hermes_agent.gateway.session_secret_prompt import secret_prompt_scope
-    from tools.skills_tool_setup import _capture_required_environment_variables
+    from hermes_agent.tools.skills_tool_setup import _capture_required_environment_variables
     turn, peer = _turn(Platform.LOCAL)
     out = {}
     with secret_prompt_scope(turn, SimpleNamespace()):
         # A tool worker thread, started the way the agent starts them (context propagated).
-        from tools.thread_context import propagate_context_to_thread
+        from hermes_agent.tools.thread_context import propagate_context_to_thread
         worker = threading.Thread(target=propagate_context_to_thread(lambda: out.update(
             _capture_required_environment_variables('hab-skill', [{'name': 'HAB_KEY', 'prompt': 'Enter the key'}]))))
         worker.start()
@@ -95,7 +95,7 @@ def test_skipped_secret_stays_missing(monkeypatch):
 @pytest.mark.parametrize('platform', [Platform.TELEGRAM])
 def test_messaging_turn_keeps_the_unsupported_hint(monkeypatch, platform):
     from hermes_agent.gateway.session_secret_prompt import secret_prompt_scope
-    from tools.skills_tool_setup import _capture_required_environment_variables
+    from hermes_agent.tools.skills_tool_setup import _capture_required_environment_variables
     monkeypatch.setenv('HERMES_GATEWAY_SESSION', '1')
     monkeypatch.delenv('HERMES_INTERACTIVE', raising=False)
     turn, peer = _turn(platform)

@@ -65,7 +65,7 @@ class WinPtyBridge:
                 raise PtyUnavailableError("pywinpty is not installed. Run hermes pm repair, then restart Hermes.")
             raise PtyUnavailableError("ConPTY is unavailable on this platform.")
         # See pty_bridge.py: exact-preservation factory for the env=None fallback.
-        from tools.environments.local import build_subprocess_env
+        from hermes_agent.tools.environments.local import build_subprocess_env
         spawn_env = (
             build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
             if env is None else dict(env))

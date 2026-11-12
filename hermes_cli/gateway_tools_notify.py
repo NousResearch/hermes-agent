@@ -1,6 +1,6 @@
 """Background-process notification turns the gateway admits for this CLI's session (W11).
 
-On main the classic CLI drained ``tools.process_registry`` itself, queued a
+On main the classic CLI drained ``hermes_agent.tools.process_registry`` itself, queued a
 ``ProcessNotificationBatch`` into ``_pending_input`` and ran the ``[IMPORTANT: Background process
 ...]`` turn. Over the session authority the process runs in the gateway: the gateway drains the
 completion, admits the notification turn (``authority.admit_automation``) and runs it. The CLI
@@ -38,7 +38,7 @@ def queue_admitted_turn(cli, store) -> None:
     """Idle tick: find a gateway-admitted notification turn's ``message.start`` for this session and
     queue main's ``TimelineNotification`` for it. Frames before it are the between-turn leftovers
     ``run_conversation`` would discard anyway; frames after it stay queued for the pump."""
-    from tools.process_registry_notifications import TimelineNotification
+    from hermes_agent.tools.process_registry_notifications import TimelineNotification
     connection, session_id = store.connection, getattr(cli, "session_id", None)
     state = connection.state(session_id)
     if _adoption_waiting(cli, state):

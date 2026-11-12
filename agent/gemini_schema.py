@@ -13,7 +13,7 @@ import logging
 import math
 from typing import Any, Dict, List, Optional
 
-from tools.schema_sanitizer import _normalize_type_array
+from hermes_agent.tools.schema_sanitizer import _normalize_type_array
 
 logger = logging.getLogger(__name__)
 

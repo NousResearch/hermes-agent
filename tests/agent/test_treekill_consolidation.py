@@ -7,7 +7,7 @@ termination through :func:`agent.deadline.kill_process_tree`:
 * ``hermes_cli._subprocess_compat.kill_process_tree(proc)`` — also consumed
   by ``agent.shell_hooks`` by name; falls back to
   ``_legacy_kill_process_tree`` when delegation fails.
-* ``tools.code_execution_tool._kill_process_group(proc, escalate=...)`` —
+* ``hermes_agent.tools.code_execution_tool._kill_process_group(proc, escalate=...)`` —
   SIGTERM tree first, then (escalate) bounded wait + SIGKILL tree.
 
 Plus one real end-to-end probe: a setsid'd grandchild must die through the
@@ -43,7 +43,7 @@ class _FakeProc:
 
 
 # ---------------------------------------------------------------------------
-# (2) tools.code_execution_tool._kill_process_group
+# (2) hermes_agent.tools.code_execution_tool._kill_process_group
 # ---------------------------------------------------------------------------
 
 class TestCodeExecutionDelegation:
@@ -52,7 +52,7 @@ class TestCodeExecutionDelegation:
     def test_escalate_waits_then_sigkills_tree(self, monkeypatch):
         import signal as _signal
 
-        from tools import code_execution_tool
+        from hermes_agent.tools import code_execution_tool
 
         calls = []
         monkeypatch.setattr(
@@ -68,7 +68,7 @@ class TestCodeExecutionDelegation:
         proc.wait.assert_called_once_with(timeout=5)
 
     def test_swallows_delegation_raise_falls_back_to_plain_kill(self, monkeypatch):
-        from tools import code_execution_tool
+        from hermes_agent.tools import code_execution_tool
 
         def _boom(pid, **kw):
             raise PermissionError("nope")
@@ -79,7 +79,7 @@ class TestCodeExecutionDelegation:
         assert proc.kill_calls == 1
 
     def test_even_proc_kill_raise_is_swallowed(self, monkeypatch):
-        from tools import code_execution_tool
+        from hermes_agent.tools import code_execution_tool
 
         def _boom(pid, **kw):
             raise PermissionError("nope")

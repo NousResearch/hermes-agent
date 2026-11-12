@@ -1,7 +1,7 @@
 """Every remote-party-supplied URL fetch refuses internal targets before a socket opens.
 
 Provider response URLs, model-supplied image refs, manifest-derived pet URLs, and remote
-sitemap ``<loc>`` entries all route through ``tools.url_safety``: the URL is checked up
+sitemap ``<loc>`` entries all route through ``hermes_agent.tools.url_safety``: the URL is checked up
 front and every redirect hop is re-validated at TCP connect. A loopback listener records
 hits — the invariant is that it sees none for the hostile target.
 """
@@ -62,8 +62,8 @@ def listener(tmp_path, monkeypatch):
 
 
 def _sitemap_catalog(url: str, monkeypatch):
-    from tools import skills_hub_skillssh
-    from tools.skills_hub_github import GitHubAuth
+    from hermes_agent.tools import skills_hub_skillssh
+    from hermes_agent.tools.skills_hub_github import GitHubAuth
 
     monkeypatch.setattr(skills_hub_skillssh, "_cached_metas", lambda key: None)
     monkeypatch.setattr(skills_hub_skillssh, "_cache_metas", lambda key, metas: None)
@@ -112,7 +112,7 @@ def _run(site, url, monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("site", list(SITES))
 def test_remote_fetch_sites_refuse_internal_targets_before_connect(site, listener, monkeypatch, tmp_path):
-    from tools import url_safety
+    from hermes_agent.tools import url_safety
 
     base, hits = listener
     suffix = "/index.xml" if "sitemap" in site else ("/manifest.json" if "manifest" in site else "/img.png")

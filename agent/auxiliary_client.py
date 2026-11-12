@@ -1325,7 +1325,7 @@ class _CodexStreamGuard:
                 self._close_client_on_timeout()
             raise TimeoutError(self.timeout_message())
         try:
-            from tools.interrupt import is_interrupted
+            from hermes_agent.tools.interrupt import is_interrupted
             # Protected atomic aux tasks (compression) must not abort on a mid-flight gateway
             # interrupt (degraded fallback marker); explicit host cancel has its own exception.
             if _aux_interrupt_cancel_requested():
@@ -1426,7 +1426,7 @@ class _CodexCompletionsAdapter:
             # in place and would strip the caller's tool registry.
             try:
                 import copy as _copy
-                from tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
+                from hermes_agent.tools.schema_sanitizer import strip_pattern_and_format, strip_slash_enum
                 tools = _copy.deepcopy(list(tools))
                 tools, _ = strip_pattern_and_format(tools)
                 tools, _ = strip_slash_enum(tools)
@@ -2254,7 +2254,7 @@ def _endpoint_default_headers(
     elif base_url_host_matches(base_url, "integrate.api.nvidia.com"):
         headers = dict(build_nvidia_nim_headers(base_url))
     elif xai and base_url_host_matches(base_url, "x.ai"):
-        from tools.xai_http import hermes_xai_default_headers
+        from hermes_agent.tools.xai_http import hermes_xai_default_headers
         headers = dict(hermes_xai_default_headers())
     else:
         headers = _profile_default_headers(provider) or {}
@@ -2949,7 +2949,7 @@ def _build_xai_oauth_aux_client(model: str) -> tuple[Optional[Any], Optional[str
         return None, None
     api_key, base_url = resolved
     logger.debug("Auxiliary client: xAI OAuth (%s via Responses API)", model)
-    from tools.xai_http import hermes_xai_default_headers
+    from hermes_agent.tools.xai_http import hermes_xai_default_headers
     real_client = _create_openai_client(
         api_key=api_key, base_url=base_url, default_headers=hermes_xai_default_headers()
     )

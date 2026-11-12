@@ -9,8 +9,8 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.logs import _parse_line_timestamp
-from tools.mcp_tool_config import _StderrTee, _get_mcp_stderr_log, _write_stderr_log_header
-from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+from hermes_agent.tools.mcp_tool_config import _StderrTee, _get_mcp_stderr_log, _write_stderr_log_header
+from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
 
 
 def test_scoped_shutdown_releases_log_and_preserves_other_profile(tmp_path):
@@ -43,7 +43,7 @@ def test_scoped_shutdown_releases_log_and_preserves_other_profile(tmp_path):
 
 def test_rename_profile_releases_cached_log_handle(tmp_path, monkeypatch):
     from hermes_cli import profiles
-    from tools import mcp_tool_config
+    from hermes_agent.tools import mcp_tool_config
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / ".hermes"

@@ -14,8 +14,8 @@ import pytest
 
 from agent.delegation_context import delegated_child_context
 from hermes_cli.config import get_config_path
-from tools import vision_tools_history_budget as budget
-from tools.vision_tools import _vision_analyze_native
+from hermes_agent.tools import vision_tools_history_budget as budget
+from hermes_agent.tools.vision_tools import _vision_analyze_native
 
 PIL = pytest.importorskip("PIL.Image")
 
@@ -162,7 +162,7 @@ class TestNativeTurnDedupe:
 
         from agent.image_routing import build_native_content_parts
         from run_agent import AIAgent
-        from tools import vision_tools
+        from hermes_agent.tools import vision_tools
 
         same = _png(tmp_path / "same.png")
         parts, skipped = build_native_content_parts("look", [same])
@@ -195,9 +195,9 @@ class TestNativeTurnDedupe:
 
         monkeypatch.setattr("agent.process_bootstrap.OpenAI",
                             lambda **kw: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())))
-        monkeypatch.setattr("model_tools.get_tool_definitions",
+        monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions",
                             lambda *a, **kw: [{"function": {"name": "vision_analyze"}}])
-        monkeypatch.setattr("model_tools.handle_function_call", _dispatch)
+        monkeypatch.setattr("hermes_agent.model_tools.handle_function_call", _dispatch)
         monkeypatch.setattr(vision_tools, "_should_use_native_vision_fast_path", lambda: True)
 
         agent = AIAgent(model="test-model", api_key="test-key", base_url="http://localhost:8080/v1",

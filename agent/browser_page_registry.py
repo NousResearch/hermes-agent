@@ -1,5 +1,5 @@
 """Browser page backends registered by plugins via :meth:`PluginContext.register_browser_page_backend`,
-consumed by ``tools.browser_vault_tool``. The backend holding the task's live page wins over the CDP
+consumed by ``hermes_agent.tools.browser_vault_tool``. The backend holding the task's live page wins over the CDP
 session; with none, the vault uses the CDP supervisor as before."""
 
 from __future__ import annotations

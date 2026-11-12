@@ -1,5 +1,5 @@
-"""The sandbox port forward (tools/environments/streams.py) reports connections that never reached their
-target: the sandbox browser's liveness is re-checked only after one (tools/browser_session_sandbox.py)."""
+"""The sandbox port forward (hermes_agent/tools/environments/streams.py) reports connections that never reached their
+target: the sandbox browser's liveness is re-checked only after one (hermes_agent/tools/browser_session_sandbox.py)."""
 
 import socket
 import subprocess
@@ -9,7 +9,7 @@ import threading
 import pytest
 
 from tests.waiting import wait_until
-from tools.environments import streams
+from hermes_agent.tools.environments import streams
 
 
 @pytest.fixture

@@ -142,7 +142,7 @@ Hermes 内置了 Graph 身份验证冒烟测试。在 Hermes 安装目录下执�
 ```python
 python -c "
 import asyncio
-from tools.microsoft_graph_auth import MicrosoftGraphTokenProvider
+from hermes_agent.tools.microsoft_graph_auth import MicrosoftGraphTokenProvider
 provider = MicrosoftGraphTokenProvider.from_env()
 token = asyncio.run(provider.get_access_token())
 print('Token acquired, length:', len(token))

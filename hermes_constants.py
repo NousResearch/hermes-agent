@@ -263,7 +263,7 @@ def pin_process_hermes_home(path: str | Path | None) -> None:
     ``os.environ["HERMES_HOME"]`` for legacy readers (Hermes WebUI) otherwise makes every turn's own
     profile look like the launch profile: ``agent.secret_scope.serves_routed_profile()`` turns
     False and that turn's MCP connections fall back to bare, cross-profile names; the sibling
-    launch-home checks (``secret_scope._is_process_home``, ``tools.environments.local._is_routed_home``,
+    launch-home checks (``secret_scope._is_process_home``, ``hermes_agent.tools.environments.local._is_routed_home``,
     ``hermes_cli.env_loader._process_hermes_home``) misjudge the same way. ``None`` clears the pin.
 
     Process-global on purpose: it names the process's own identity, not a per-task value. It is NOT

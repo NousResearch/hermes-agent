@@ -125,7 +125,7 @@ def test_prime_routing_cache_never_raises_on_malformed_event():
 
 @pytest.fixture()
 def _isolated_delegation_db(tmp_path, monkeypatch):
-    import tools.async_delegation as ad
+    import hermes_agent.tools.async_delegation as ad
 
     monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "state.db")
     return ad

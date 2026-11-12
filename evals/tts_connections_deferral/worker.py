@@ -140,7 +140,7 @@ def tts_stub(args, **kw):
 
 def conn_stub(args, **kw):
     """Arguments are checked by the arm's own validators; the lifecycle is scripted."""
-    from tools.connectors.targets import MCP_ACTIONS, normalize_targets, validate_action
+    from hermes_agent.tools.connectors.targets import MCP_ACTIONS, normalize_targets, validate_action
     args = args or {}
     action = str(args.get("action") or "status").strip().lower()
     managed, mcp_targets, err = normalize_targets(args.get("connectors"))
@@ -178,7 +178,7 @@ REMOTE = {"GMAIL_SEND_EMAIL": GMAIL_SEND, "NOTION_SEARCH_PAGES": NOTION_SEARCH}
 
 
 def search_stub(queries, **kw):
-    from tools.connectors.gateway.bridge import ConnectorLeg
+    from hermes_agent.tools.connectors.gateway.bridge import ConnectorLeg
     results, schemas = [], {}
     for q in queries:
         text = str(q.get("use_case") or "").lower()
@@ -190,15 +190,15 @@ def search_stub(queries, **kw):
 
 
 def describe_stub(names, **kw):
-    from tools.connectors.gateway.bridge import ConnectorLeg
+    from hermes_agent.tools.connectors.gateway.bridge import ConnectorLeg
     known = {"connectors__gmail__SEND_EMAIL": GMAIL_SEND, "connectors__notion__SEARCH_PAGES": NOTION_SEARCH}
     return ConnectorLeg(payload={"tools": {n: {"description": known[n]["description"], "parameters": known[n]["input_schema"]}
                                            for n in names if n in known}})
 
 
 def connector_call_stub(name, arguments, tool_call_id=None, turn_id=None, task_id=None):
-    from tools.connectors.gateway.errors import render_connection_required
-    from tools.connectors.turn import CARD
+    from hermes_agent.tools.connectors.gateway.errors import render_connection_required
+    from hermes_agent.tools.connectors.turn import CARD
     app = name.split("__")[1]
     LOG.append({"tool": name, "args": arguments, "connected": app in STATE["connected"]})
     if app not in STATE["connected"]:
@@ -210,13 +210,13 @@ def connector_call_stub(name, arguments, tool_call_id=None, turn_id=None, task_i
     return json.dumps({"response": {"results": []}})
 
 
-import model_tools  # registers the built-in tools
-import tools.connectors as connectors_pkg
-import tools.connectors.dispatch as connectors_dispatch
-import tools.connectors.gateway.bridge as connectors_bridge
-import tools.connectors.gateway.config as gateway_config
-import tools.connectors.tool as connectors_tool
-from tools.registry import registry
+from hermes_agent import model_tools  # registers the built-in tools
+import hermes_agent.tools.connectors as connectors_pkg
+import hermes_agent.tools.connectors.dispatch as connectors_dispatch
+import hermes_agent.tools.connectors.gateway.bridge as connectors_bridge
+import hermes_agent.tools.connectors.gateway.config as gateway_config
+import hermes_agent.tools.connectors.tool as connectors_tool
+from hermes_agent.tools.registry import registry
 
 for name, handler in (("text_to_speech", tts_stub), ("manage_connections", conn_stub)):
     entry = registry.get_entry(name)
@@ -272,7 +272,7 @@ if DRY:
     from types import SimpleNamespace
 
     from agent.inline_tool_executors import _manage_connections
-    from tools.terminal_tool import terminal_tool
+    from hermes_agent.tools.terminal_tool import terminal_tool
 
     real_home = os.environ.get("TCD_REAL_HERMES_HOME") or "/nonexistent"
     proof = {"arm": ARM, "surface": SURFACE, "tools": agent.tools, "hermes_home": hermes_home, "env_home": os.environ["HOME"],

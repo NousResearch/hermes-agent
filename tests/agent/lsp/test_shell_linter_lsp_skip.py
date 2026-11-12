@@ -38,8 +38,8 @@ import pytest
 
 
 def _make_fops():
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
     return ShellFileOperations(LocalEnvironment())
 
 

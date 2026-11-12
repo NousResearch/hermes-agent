@@ -29,8 +29,8 @@ from contextlib import asynccontextmanager, contextmanager
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask
-from tools.mcp_tool_errors import NonMcpEndpointError
+from hermes_agent.tools.mcp_tool import MCPServerTask
+from hermes_agent.tools.mcp_tool_errors import NonMcpEndpointError
 
 
 def _make_task(name: str = "probe_srv") -> MCPServerTask:
@@ -201,8 +201,8 @@ def test_run_skips_preflight_for_oauth(monkeypatch):
     their identity is established by the OAuth metadata discovery
     (``.well-known/oauth-protected-resource``), not by a GET content-type check.
     """
-    import tools.mcp_tool as _mcp
-    from tools import mcp_tool_errors as _mcp_errors
+    import hermes_agent.tools.mcp_tool as _mcp
+    from hermes_agent.tools import mcp_tool_errors as _mcp_errors
 
     preflight_calls: list[str] = []
 
@@ -240,8 +240,8 @@ def test_run_skips_preflight_when_skip_preflight_set(monkeypatch):
     non-MCP content type (and whose POST probe still can't be validated, e.g.
     non-OAuth auth schemes the probe headers don't satisfy).
     """
-    import tools.mcp_tool as _mcp
-    from tools import mcp_tool_errors as _mcp_errors
+    import hermes_agent.tools.mcp_tool as _mcp
+    from hermes_agent.tools import mcp_tool_errors as _mcp_errors
 
     preflight_calls: list[str] = []
 
@@ -326,8 +326,8 @@ def test_run_strict_redirect_headers_reaches_preflight_boundary(monkeypatch):
     the SDK client and forwarded every configured header verbatim. Driven through the production
     ``MCPServerTask.run`` so the flag's plumbing from config to the probe is what is asserted; only
     the SDK handshake after the probe is cut short."""
-    import tools.mcp_tool as _mcp
-    from tools import mcp_tool_errors as _mcp_errors
+    import hermes_agent.tools.mcp_tool as _mcp
+    from hermes_agent.tools import mcp_tool_errors as _mcp_errors
 
     seen: dict = {}
 
@@ -356,7 +356,7 @@ def test_streamable_http_client_strips_credentials_on_redirect(monkeypatch):
     SDK receives must be the stripping subclass — proven against a live redirect
     pair. Only the SDK's streams context manager is faked (a full MCP handshake
     is out of scope); the httpx client, its kwargs and the strip are all real."""
-    import tools.mcp_tool as _mcp
+    import hermes_agent.tools.mcp_tool as _mcp
 
     task = _make_task()
     seen: dict = {}

@@ -23,7 +23,7 @@ FIXTURE = Path(__file__).parents[1] / "fixtures" / "cua_driver_0_9_tools_list.js
 
 @pytest.fixture(autouse=True)
 def _reset_computer_use_state():
-    from tools.computer_use.tool import reset_backend_for_tests
+    from hermes_agent.tools.computer_use.tool import reset_backend_for_tests
 
     reset_backend_for_tests()
     yield
@@ -62,7 +62,7 @@ class _FakeSession:
 
 
 def _make_backend(session: _FakeSession):
-    from tools.computer_use.cua_backend import CuaDriverBackend
+    from hermes_agent.tools.computer_use.cua_backend import CuaDriverBackend
 
     backend = CuaDriverBackend.__new__(CuaDriverBackend)
     backend._session = session
@@ -79,7 +79,7 @@ def _make_backend(session: _FakeSession):
 
 
 def test_foreground_support_is_discovered_from_tool_input_schema():
-    from tools.computer_use.cua_backend_session import _CuaDriverSession
+    from hermes_agent.tools.computer_use.cua_backend_session import _CuaDriverSession
 
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
     listed = []
@@ -143,15 +143,15 @@ def test_invalid_delivery_mode_is_rejected_before_driver_call():
     ],
 )
 def test_action_verdict_precedence(result_kwargs, decision):
-    from tools.computer_use.backend import ActionResult
-    from tools.computer_use.tool import _classify_action_result
+    from hermes_agent.tools.computer_use.backend import ActionResult
+    from hermes_agent.tools.computer_use.tool import _classify_action_result
 
     result = ActionResult(action="click", **result_kwargs)
     assert _classify_action_result(result)["decision"] == decision
 
 
 def test_backends_are_isolated_by_hermes_session_and_reused_within_it():
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     created = []
 
@@ -166,7 +166,7 @@ def test_backends_are_isolated_by_hermes_session_and_reused_within_it():
         def stop(self):
             pass
 
-    with patch("tools.computer_use.cua_backend.CuaDriverBackend", _Backend):
+    with patch("hermes_agent.tools.computer_use.cua_backend.CuaDriverBackend", _Backend):
         first = computer_use._get_backend(session_id="conversation-a")
         first_again = computer_use._get_backend(session_id="conversation-a")
         second = computer_use._get_backend(session_id="conversation-b")
@@ -177,7 +177,7 @@ def test_backends_are_isolated_by_hermes_session_and_reused_within_it():
 
 
 def test_release_seam_stops_exact_backend_and_clears_session_state():
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     first = MagicMock()
     second = MagicMock()
@@ -201,7 +201,7 @@ def test_release_seam_stops_exact_backend_and_clears_session_state():
 
 
 def test_release_seam_evicts_state_even_when_backend_stop_fails():
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     backend = MagicMock()
     backend.stop.side_effect = RuntimeError("driver teardown failed")
@@ -214,7 +214,7 @@ def test_release_seam_evicts_state_even_when_backend_stop_fails():
 
 
 def test_release_seam_waits_for_in_flight_action_before_stopping_backend():
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     backend = MagicMock()
     call_lock = computer_use.threading.RLock()
@@ -242,7 +242,7 @@ def test_release_seam_waits_for_in_flight_action_before_stopping_backend():
 
 
 def test_concurrent_hermes_sessions_do_not_share_backend_state():
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     created = []
 
@@ -269,7 +269,7 @@ def test_concurrent_hermes_sessions_do_not_share_backend_state():
             )
         )["apps"][0]["marker"]
 
-    with patch("tools.computer_use.cua_backend.CuaDriverBackend", _Backend):
+    with patch("hermes_agent.tools.computer_use.cua_backend.CuaDriverBackend", _Backend):
         with ThreadPoolExecutor(max_workers=4) as executor:
             markers = list(
                 executor.map(invoke, ["conversation-a", "conversation-b"] * 4)
@@ -282,7 +282,7 @@ def test_concurrent_hermes_sessions_do_not_share_backend_state():
 
 
 def test_persistent_focus_has_a_separate_approval_scope(monkeypatch):
-    from tools.computer_use import tool as computer_use
+    from hermes_agent.tools.computer_use import tool as computer_use
 
     seen = []
 

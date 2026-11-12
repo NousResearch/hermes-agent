@@ -765,16 +765,16 @@ class TestTeamsBotFrameworkAttachments:
                 captured["headers"] = headers or {}
                 return _FakeStreamCtx(_FakeStreamResponse())
 
-        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
-             patch("tools.url_safety.is_safe_url", lambda url: True):
+        with patch("hermes_agent.tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("hermes_agent.tools.url_safety.is_safe_url", lambda url: True):
             # BF host: bearer attached
             data = await adapter._fetch_attachment_bytes("https://smba.trafficmanager.net/emea/v3/attachments/x")
         assert captured["headers"].get("Authorization") == "Bearer the-token"
         assert data == b"\x89PNG fake"
 
         adapter._get_botframework_token = AsyncMock(return_value="the-token")
-        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
-             patch("tools.url_safety.is_safe_url", lambda url: True):
+        with patch("hermes_agent.tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("hermes_agent.tools.url_safety.is_safe_url", lambda url: True):
             # Attacker lookalike host: NO bearer (exact-match allowlist)
             await adapter._fetch_attachment_bytes("https://evil-trafficmanager.net/steal")
         assert "Authorization" not in captured["headers"], (
@@ -914,8 +914,8 @@ class TestTeamsBotFrameworkAttachments:
                 captured["headers"] = headers or {}
                 return _FakeStreamCtx(_FakeStreamResponse())
 
-        with patch("tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
-             patch("tools.url_safety.is_safe_url", lambda url: True):
+        with patch("hermes_agent.tools.url_safety.create_ssrf_safe_async_client", lambda **kw: _FakeClient()), \
+             patch("hermes_agent.tools.url_safety.is_safe_url", lambda url: True):
             with pytest.raises(_httpx.HTTPStatusError):
                 await adapter._fetch_attachment_bytes("https://smba.trafficmanager.net/v3/attachments/x")
         assert "Authorization" not in captured["headers"]
@@ -1152,7 +1152,7 @@ async def test_expired_approval_click_keeps_the_request():
     ctx = MagicMock()
     ctx.activity.value.action.data = {"hermes_action": "approve_once", "session_key": "s1",
                                       "cmd": "rm -rf ./build", "desc": "dangerous deletion"}
-    with patch("tools.approval.has_blocking_approval", return_value=False):
+    with patch("hermes_agent.tools.approval.has_blocking_approval", return_value=False):
         body = await adapter._on_card_action(ctx)
     texts = " ".join(str(block.text) for block in body)
     assert "rm -rf ./build" in texts and "dangerous deletion" in texts
@@ -1171,8 +1171,8 @@ async def test_resolved_card_shows_the_prompts_full_command_preview():
         await adapter.send_exec_approval(chat_id="c1", command=command, session_key="s1", description="flagged")
     ctx = MagicMock()
     ctx.activity.value.action.data = buttons[0]["data"]
-    with patch("tools.approval.has_blocking_approval", return_value=True), \
-            patch("tools.approval.resolve_gateway_approval", return_value=1):
+    with patch("hermes_agent.tools.approval.has_blocking_approval", return_value=True), \
+            patch("hermes_agent.tools.approval.resolve_gateway_approval", return_value=1):
         body = await adapter._on_card_action(ctx)
     assert command in " ".join(str(block.text) for block in body)
 

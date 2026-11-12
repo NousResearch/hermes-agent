@@ -28,7 +28,7 @@ def rehome_inbound_media(event: MessageEvent) -> None:
     active, launch = Path(get_hermes_home()), Path(get_routing_process_hermes_home())
     if hermes_home_key(active) == hermes_home_key(launch):
         return
-    from tools.credential_files import to_agent_visible_cache_path
+    from hermes_agent.tools.credential_files import to_agent_visible_cache_path
     rewritten = list(event.media_urls)
     for i, raw in enumerate(event.media_urls):
         src = Path(raw)

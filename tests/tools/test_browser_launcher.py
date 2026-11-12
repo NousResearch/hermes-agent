@@ -1,4 +1,4 @@
-"""Behaviour contracts of the Python Chromium launcher (tools/browser_launcher.py).
+"""Behaviour contracts of the Python Chromium launcher (hermes_agent/tools/browser_launcher.py).
 
 A fake ``chromium`` (a Python script) stands in for the real binary: it writes ``DevToolsActivePort``
 into its ``--user-data-dir`` exactly like Chromium and records its argv, so every path through the
@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-from tools import browser_launcher as launcher
-from tools.browser_launcher_holders import ns_identity
+from hermes_agent.tools import browser_launcher as launcher
+from hermes_agent.tools.browser_launcher_holders import ns_identity
 
 _FAKE_CHROMIUM = textwrap.dedent('''\
     #!{python}
@@ -57,8 +57,8 @@ def fake_chromium(tmp_path, monkeypatch):
     script.chmod(0o755)
     monkeypatch.setattr(launcher, "_resolve_executable", lambda: str(script))
     monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: False)
-    monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
-    monkeypatch.setattr("tools.browser_session_cloud.is_headed_mode", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.chromium_args", list)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.is_headed_mode", lambda: False)
     yield script
     launcher.stop_all_browsers()
 
@@ -126,7 +126,7 @@ def test_two_processes_on_one_profile_never_share_an_ephemeral_profile(fake_chro
     """CLI + gateway on one profile launch the same key (``browser-exec-default``, a named session): each
     process gets its own throwaway profile, and a launch never wipes the other process's live one."""
     from hermes_constants import hermes_home_key
-    code = ("import sys; from tools.browser_launcher import _default_user_data_dir; "
+    code = ("import sys; from hermes_agent.tools.browser_launcher import _default_user_data_dir; "
             "print(_default_user_data_dir(sys.argv[1], sys.argv[2]))")
     other = Path(subprocess.run([sys.executable, "-c", code, "browser-exec-default", hermes_home_key()],
                                 cwd=Path(__file__).resolve().parents[2], env=dict(os.environ),
@@ -146,8 +146,8 @@ def test_a_bare_consumer_exiting_normally_stops_its_browser(fake_chromium):
     """A script / eval that imports only the session layer and exits normally: the atexit teardown must stop
     the browser (the teardown's process-tree helper is loaded before exit, not first imported during it)."""
     script = ("import os, sys\n"
-              "import tools.browser_session  # registers the exit teardown\n"
-              "from tools import browser_launcher\n"
+              "import hermes_agent.tools.browser_session  # registers the exit teardown\n"
+              "from hermes_agent.tools import browser_launcher\n"
               "browser_launcher.needs_chromium_sandbox_bypass = lambda: False\n"
               "browser, err = browser_launcher.launch_chromium('bare', executable=sys.argv[1], headed=False,\n"
               "                                                env=dict(os.environ), timeout=30)\n"
@@ -400,7 +400,7 @@ def test_a_throwaway_profile_left_by_a_process_that_died_mid_launch_is_reclaimed
     start time; the dir of a live process is never touched."""
     from hermes_constants import hermes_home_key
     code = ("import sys\n"
-            "from tools.browser_launcher import _default_user_data_dir, _prepare_dir\n"
+            "from hermes_agent.tools.browser_launcher import _default_user_data_dir, _prepare_dir\n"
             "udd = _default_user_data_dir('browser-exec-default', sys.argv[1])\n"
             "_prepare_dir(udd, True)\n"
             "print(udd, flush=True)\n"
@@ -513,7 +513,7 @@ def test_headed_only_when_configured_and_a_display_exists(headed, display, expec
 @pytest.mark.platforms("posix")
 def test_packaged_only_flags_never_reach_an_explicit_binary(monkeypatch):
     monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: True)
-    monkeypatch.setattr("tools.browser_session_cloud.chromium_args", lambda: ["--lang=de"])
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.chromium_args", lambda: ["--lang=de"])
     packaged = launcher.build_chromium_argv("/c", "/p", packaged=True, headed=False, sandbox_bypass=True)
     dock = launcher.build_chromium_argv("/c", "/p", packaged=False, headed=True, sandbox_bypass=True)
     real = launcher.build_chromium_argv("/c", "/p", packaged=False, headed=True, sandbox_bypass=False)

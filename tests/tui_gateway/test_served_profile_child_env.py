@@ -120,8 +120,8 @@ def test_helper_children_resolve_secrets_through_the_served_profile(mux_homes):
     """``key_cmd`` helpers and the browser driver spawned during B's turn see B's key, never A's."""
     from agent.command_token_source import _mint
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from tools.browser_session import build_browser_env
-    from tools.browser_use_cli import _base_subprocess_env
+    from hermes_agent.tools.browser_session import build_browser_env
+    from hermes_agent.tools.browser_use_cli import _base_subprocess_env
 
     _a, b = mux_homes
     helper = (f"{sys.executable} -c \"import os;print(os.environ.get('B_MARKER','-')+'|'"

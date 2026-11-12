@@ -349,7 +349,7 @@ class TestSubprocessCompatHelpers:
 
 
 # ---------------------------------------------------------------------------
-# tools/environments/local.py Windows temp dir & PATH injection
+# hermes_agent/tools/environments/local.py Windows temp dir & PATH injection
 # ---------------------------------------------------------------------------
 
 
@@ -361,7 +361,7 @@ class TestLocalEnvironmentWindowsTempDir:
         """Linux/macOS behaviour MUST be unchanged — return / tmp or
         tempfile.gettempdir()-derived POSIX path.  This is the 'do no harm'
         test — regressions here break every Unix user's terminal tool."""
-        from tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.environments.local import LocalEnvironment
 
         env = LocalEnvironment(cwd="/tmp", timeout=10, env={})
         tmp_dir = env.get_temp_dir()
@@ -381,7 +381,7 @@ class TestLocalEnvironmentPathInjectionGated:
         (``;``-separated, drive-lettered) comes back untouched. On Linux the
         old ``_IS_WINDOWS`` patch made the function return early without ever
         meeting a genuine Windows PATH."""
-        from tools.environments.local import _append_missing_sane_path_entries
+        from hermes_agent.tools.environments.local import _append_missing_sane_path_entries
 
         path = r"C:\Windows\System32;C:\Program Files\Git\bin"
         assert _append_missing_sane_path_entries(path) == path

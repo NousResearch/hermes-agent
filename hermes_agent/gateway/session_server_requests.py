@@ -5,7 +5,7 @@ The owner sends a request frame (``hermes_agent/tui_gateway/contracts/server_req
 agent thread until one answers, the turn is interrupted, or it times out: the canonical side of main's
 sidecar ``hermes_agent/tui_gateway/server_requests.py``. A viewer answers with a JSON-RPC response frame
 (:func:`resolve`) or, for a batch clarify, per question with ``clarify.lock`` (:func:`lock_answer`); both go
-through :func:`may_settle`, and a batch's terminal result comes from ``tools.clarify_batch.settle_batch``,
+through :func:`may_settle`, and a batch's terminal result comes from ``hermes_agent.tools.clarify_batch.settle_batch``,
 the rule the sidecar uses too. Values are never published, journaled or logged: they travel only in the
 viewer's response frame.
 """
@@ -15,7 +15,7 @@ import contextlib
 import threading
 import uuid
 
-from tools.clarify_batch import settle_batch
+from hermes_agent.tools.clarify_batch import settle_batch
 
 REQUEST_TIMEOUT_S = 120  # main: ``_ask("sudo", ..., timeout=120)``
 _POLL_S = 0.25

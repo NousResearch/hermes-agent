@@ -2,7 +2,7 @@
 
 import json
 
-from tools import read_preview_tool as rp
+from hermes_agent.tools import read_preview_tool as rp
 
 
 

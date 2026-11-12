@@ -9,7 +9,7 @@ import re
 
 from agent.redact import redact_sensitive_text
 
-logger = logging.getLogger("tools.send_message_tool")
+logger = logging.getLogger("hermes_agent.tools.send_message_tool")
 
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}

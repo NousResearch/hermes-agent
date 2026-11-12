@@ -247,7 +247,7 @@ def test_bot_capability_rebuild_stays_on_the_profile_store(homes, monkeypatch):
     homes_seen = _stub_rebuild_env(monkeypatch, server, launch)
     monkeypatch.setattr(server, "_session_cwd", lambda _s: str(root))
     monkeypatch.setattr(server, "_session_source", lambda _s: "desktop")
-    monkeypatch.setattr("tools.bot_mode_probe.capability_fingerprint", lambda _home: "caps-v2")
+    monkeypatch.setattr("hermes_agent.tools.bot_mode_probe.capability_fingerprint", lambda _home: "caps-v2")
 
     old_agent = SimpleNamespace(
         _session_db=profile_db, _owns_session_db=True, _session_title_hint="Bot Chat")

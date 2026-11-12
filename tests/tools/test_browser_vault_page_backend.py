@@ -40,7 +40,7 @@ class FakePage(BrowserPageBackend):
 @pytest.fixture()
 def page(tmp_path, monkeypatch):
     from agent import browser_page_registry
-    from tools import browser_vault_tool
+    from hermes_agent.tools import browser_vault_tool
 
     def cdp_used(*args, **kwargs):
         raise AssertionError("CDP supervisor used while a page backend holds the task's page")
@@ -57,7 +57,7 @@ def page(tmp_path, monkeypatch):
 
 
 def test_fill_runs_on_the_page_backend_and_refuses_another_origin(page):
-    from tools import browser_vault_tool
+    from hermes_agent.tools import browser_vault_tool
 
     fake, meta = page
     raw = browser_vault_tool.browser_vault_fill(meta.id)
@@ -74,7 +74,7 @@ def test_fill_runs_on_the_page_backend_and_refuses_another_origin(page):
 
 
 def test_secret_failure_never_echoes_the_script(page):
-    from tools import browser_vault_tool
+    from hermes_agent.tools import browser_vault_tool
 
     fake, meta = page
     fake.fail_secret = True

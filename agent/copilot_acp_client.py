@@ -136,7 +136,7 @@ def _former_attribute(name: str) -> Any:
     if name in _FORWARDED:
         return getattr(_acp, name)
     if name == "hermes_subprocess_env":
-        from tools.environments.local import hermes_subprocess_env  # lazy: hermes_cli.config may still be importing
+        from hermes_agent.tools.environments.local import hermes_subprocess_env  # lazy: hermes_cli.config may still be importing
 
         return hermes_subprocess_env
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

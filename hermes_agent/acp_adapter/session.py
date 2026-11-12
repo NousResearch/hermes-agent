@@ -94,7 +94,7 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
     if not task_id:
         return
     try:
-        from tools.terminal_tool import register_task_env_overrides
+        from hermes_agent.tools.terminal_tool import register_task_env_overrides
         register_task_env_overrides(task_id, {"cwd": _translate_acp_cwd(cwd)})
     except Exception:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)

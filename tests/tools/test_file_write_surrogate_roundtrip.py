@@ -12,9 +12,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools.environments.base_output import _pipe_stdin
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import ShellFileOperations
+from hermes_agent.tools.environments.base_output import _pipe_stdin
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import ShellFileOperations
 
 
 def _cat_to_file_proc(out_path):

@@ -25,7 +25,7 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
     # The ignored-override warning is once-per-process per distinct value;
     # reset it so one test's emission never masks the next test's assertion.
-    from tools import tts_tool as _tts_mod
+    from hermes_agent.tools import tts_tool as _tts_mod
 
     _tts_mod._once_warnings.clear()
 
@@ -46,16 +46,16 @@ class _OpenaiBackendStub:
         self.mock_client.audio.speech.create.return_value = response
 
         mock_cls = MagicMock(return_value=self.mock_client)
-        self.xai_patch = patch("tools.tts_tool._generate_xai_tts")
+        self.xai_patch = patch("hermes_agent.tools.tts_tool._generate_xai_tts")
         self.xai_generator = self.xai_patch.start()
         self._patches = [
-            patch("tools.tts_tool._import_openai_client", return_value=mock_cls),
+            patch("hermes_agent.tools.tts_tool._import_openai_client", return_value=mock_cls),
             patch(
-                "tools.tts_tool_openai._resolve_openai_audio_client_config",
+                "hermes_agent.tools.tts_tool_openai._resolve_openai_audio_client_config",
                 return_value=(_fake_key("openai"), None, False),
             ),
             patch(
-                "tools.tts_tool._load_tts_config",
+                "hermes_agent.tools.tts_tool._load_tts_config",
                 return_value={"provider": "openai"},
             ),
         ]
@@ -85,7 +85,7 @@ def openai_backend():
 
 class TestSchema:
     def test_schema_does_not_advertise_provider(self):
-        from tools.tts_tool import TTS_SCHEMA
+        from hermes_agent.tools.tts_tool import TTS_SCHEMA
         props = TTS_SCHEMA["parameters"]["properties"]
         assert "provider" not in props, (
             "The model-facing text_to_speech schema must not advertise a "
@@ -104,7 +104,7 @@ class TestToolLevelProviderAuthority:
     ):
         """A per-call provider that disagrees with config is not honored:
         the configured openai backend runs and xAI never fires."""
-        from tools.tts_tool import text_to_speech_tool
+        from hermes_agent.tools.tts_tool import text_to_speech_tool
 
         result = json.loads(
             text_to_speech_tool(
@@ -121,9 +121,9 @@ class TestToolLevelProviderAuthority:
     def test_disagreeing_override_logs_warning(
         self, tmp_path, monkeypatch, openai_backend, caplog
     ):
-        from tools.tts_tool import text_to_speech_tool
+        from hermes_agent.tools.tts_tool import text_to_speech_tool
 
-        with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.tts_tool"):
             text_to_speech_tool(
                 "Hello world",
                 output_path=str(tmp_path / "out.mp3"),
@@ -138,9 +138,9 @@ class TestToolLevelProviderAuthority:
         self, tmp_path, monkeypatch, openai_backend, caplog
     ):
         """A per-call provider that agrees with config stays a no-op."""
-        from tools.tts_tool import text_to_speech_tool
+        from hermes_agent.tools.tts_tool import text_to_speech_tool
 
-        with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.tts_tool"):
             result = json.loads(
                 text_to_speech_tool(
                     "Hello world",
@@ -166,7 +166,7 @@ class TestRegisteredHandler:
     ):
         """Even if a model (or a leaked platform hint) sends provider= in
         its tool args, the registered handler must not forward it."""
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         entry = registry.get_entry("text_to_speech")
         assert entry is not None
@@ -190,22 +190,22 @@ class TestRegisteredHandler:
 
 class TestResolverAuthority:
     def test_resolver_returns_configured_provider_despite_override(self, openai_backend):
-        from tools.tts_tool import _apply_call_overrides
+        from hermes_agent.tools.tts_tool import _apply_call_overrides
 
         _tts_config, provider = _apply_call_overrides({"provider": "openai"}, None, "xai")
         assert provider == "openai"
 
     def test_resolver_returns_configured_provider_when_unset(self, openai_backend):
-        from tools.tts_tool import _apply_call_overrides
+        from hermes_agent.tools.tts_tool import _apply_call_overrides
 
         _tts_config, provider = _apply_call_overrides({"provider": "openai"}, None, None)
         assert provider == "openai"
 
     def test_warning_is_emitted_once_per_distinct_value(self, openai_backend, caplog):
         """A stale session retrying the same override does not spam the log."""
-        from tools.tts_tool import _apply_call_overrides
+        from hermes_agent.tools.tts_tool import _apply_call_overrides
 
-        with caplog.at_level(logging.WARNING, logger="tools.tts_tool"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.tts_tool"):
             _apply_call_overrides({"provider": "openai"}, None, "xai")
             _apply_call_overrides({"provider": "openai"}, None, "xai")
             _apply_call_overrides({"provider": "openai"}, None, "mistral")

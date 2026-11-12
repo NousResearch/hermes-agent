@@ -353,7 +353,7 @@ class _MatrixApprovalPrompt:
     resolved: bool = False
     requester_user_id: str | None = None
     expires_at: float | None = None
-    request_id: str | None = None  # the tools.approval request this prompt answers
+    request_id: str | None = None  # the hermes_agent.tools.approval request this prompt answers
     offered: tuple[str, ...] = ()  # choices the card seeded; a Deny-only card offers only "deny"
     bot_reaction_events: dict[str, str] = field(default_factory=dict, init=False)  # emoji -> event_id
 
@@ -1503,7 +1503,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None) -> SendResult:
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("Matrix: blocked unsafe image URL (SSRF protection)")
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
@@ -1517,7 +1517,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _download_external_media_with_cap(self, url: str) -> tuple[bytes, str, str]:
         """Download external media while enforcing redirect safety and size caps."""
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
         if not is_safe_url(url):
             raise ValueError("blocked unsafe media URL")
 
@@ -1567,7 +1567,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         return data, ct, fname
                 raise ValueError("too many redirects")
         except ImportError:
-            from tools.url_safety import create_ssrf_safe_async_client
+            from hermes_agent.tools.url_safety import create_ssrf_safe_async_client
             _httpx_kw: dict = {"proxy": self._proxy_url} if self._proxy_url else {}
             _httpx_kw["event_hooks"] = {"response": [ssrf_redirect_guard]}
             async with create_ssrf_safe_async_client(**_httpx_kw) as http:
@@ -2556,7 +2556,7 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._send_invalid_reaction_feedback(room_id, reacts_to, refusal_text(requester))
             return True
         try:
-            from tools.approval import resolve_gateway_approval_card
+            from hermes_agent.tools.approval import resolve_gateway_approval_card
             count = resolve_gateway_approval_card(prompt.session_key, choice, prompt.request_id,
                                                   actor_id=sender, extra=self.config.extra)
             if count:

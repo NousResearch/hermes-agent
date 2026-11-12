@@ -13,18 +13,18 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_platform import declaration
-from tools.registry import invalidate_check_fn_cache, tool_error
-from tools.ansi_strip import strip_unicode_tags, strip_unicode_tags_deep
-from tools.mcp_tool_common import _exc_str, _sanitize_error, exact_mcp_identifier, mcp_field, _core
-from tools import mcp_tool_loop as _loop
-from tools.mcp_tool_content import (
+from hermes_agent.tools.registry import invalidate_check_fn_cache, tool_error
+from hermes_agent.tools.ansi_strip import strip_unicode_tags, strip_unicode_tags_deep
+from hermes_agent.tools.mcp_tool_common import _exc_str, _sanitize_error, exact_mcp_identifier, mcp_field, _core
+from hermes_agent.tools import mcp_tool_loop as _loop
+from hermes_agent.tools.mcp_tool_content import (
     _MCP_HARD_RESULT_CAP_CHARS, _cache_mcp_audio_block, _cache_mcp_image_block, _mcp_result_with_native_images,
     _render_mcp_dropped_block_notice, _render_mcp_resource_block, _strip_reserved_meta_keys,
     _truncate_mcp_text_result)
-from tools.mcp_tool_errors import (
+from hermes_agent.tools.mcp_tool_errors import (
     _auth_error_detail, _is_auth_error, _is_session_expired_error, _mcp_call_failed_message)
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 _MISSING = object()
 
 declaration.on_change = invalidate_check_fn_cache
@@ -53,7 +53,7 @@ def _tool_is_read_only(server_name: str, tool_name: str) -> bool:
     """True only when discovery captured ``readOnlyHint=True`` for the tool. Missing or malformed
     metadata fails safe to False (treated as write-capable). readOnlyHint is a property of the
     connection's tools, so it lives under the connection key."""
-    from tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
     return _core._tool_read_only_hints.get(_resolve_server_key(server_name), {}).get(tool_name) is True
 
 
@@ -67,8 +67,8 @@ def _trust_approval_key(server_name: str, tool_name: str) -> str:
 def _trust_granted(server_name: str, tool_name: str) -> bool:
     """A remembered Session/Always answer, or YOLO / ``approvals.mode: off`` for the calling session.
     Covers only the trust prompt: the spend limit is a budget, not an approval, and still asks."""
-    from tools.approval import is_approval_bypass_active, is_approved
-    from tools.approval_context import get_current_session_key
+    from hermes_agent.tools.approval import is_approval_bypass_active, is_approved
+    from hermes_agent.tools.approval_context import get_current_session_key
     return is_approval_bypass_active() or is_approved(get_current_session_key(),
                                                       _trust_approval_key(server_name, tool_name))
 
@@ -127,8 +127,8 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
     limit on any server. None to proceed, else a ``tool_error``. Fail-closed: approval-system errors
     block. An admitted costed call is charged to the chat's tally and appended to *booked* so the
     caller can refund it when the call never reaches the server."""
-    from tools.mcp_tool_scope import _server_key
-    from tools import mcp_tool_costs as _costs
+    from hermes_agent.tools.mcp_tool_scope import _server_key
+    from hermes_agent.tools import mcp_tool_costs as _costs
     # Trust and costs are the calling profile's own policy (an adopter of a shared connection keeps its own).
     key = _server_key(server_name)
     trust = _core._server_trust_levels.get(key, _core._TRUST_FULL)
@@ -136,7 +136,7 @@ def _trust_gate_check(server_name: str, tool_name: str, booked: Optional[list] =
              and not _trust_granted(server_name, tool_name))
     charge = None
     if key in _core._server_cost_policies:  # no table: not even a session lookup, main's path byte for byte
-        from tools.approval_context import get_current_session_key
+        from hermes_agent.tools.approval_context import get_current_session_key
         charge = _costs.pending_charge(key, server_name, tool_name, get_current_session_key())
     if charge is None:
         return _ask_for_call(server_name, tool_name, None, booked, args=args) if gated else None
@@ -185,8 +185,8 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
                        f"once (every further paid call in this chat asks again), or deny to block it.")
         title = f"MCP server '{server_name}' spend limit"
         remember_key = None
-    try:  # lazy: tools.approval routes the prompt to whichever surface owns the session
-        from tools.approval_prompt import request_elicitation_consent
+    try:  # lazy: hermes_agent.tools.approval routes the prompt to whichever surface owns the session
+        from hermes_agent.tools.approval_prompt import request_elicitation_consent
         answer = request_elicitation_consent(message, description, surface=f"mcp-trust/{server_name}", title=title,
                                             remember_key=remember_key)
     except Exception as exc:
@@ -212,7 +212,7 @@ def _ask_for_call(server_name: str, tool_name: str, charge, booked: Optional[lis
 def _check_circuit_breaker(server_name: str) -> Optional[str]:
     """Open-breaker error, or None when calls may proceed. After the cooldown the breaker is
     half-open: the next call probes; success resets, failure re-bumps and re-arms the cooldown."""
-    from tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
     key = _resolve_server_key(server_name)
     failures = _core._server_error_counts.get(key, 0)
     age = time.monotonic() - _core._server_breaker_opened_at.get(key, 0.0)
@@ -234,9 +234,9 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
     """``(server, None)`` when a call may be dispatched, else ``(None, error)``. No session: a
     reconnect may be completing, so wait briefly before a breaker strike; still down -> ask the
     server task to rebuild (probing a dead transport would re-arm the breaker forever)."""
-    from tools import mcp_tool_discovery as _discovery  # lazy: discovery -> registration -> handlers cycle
+    from hermes_agent.tools import mcp_tool_discovery as _discovery  # lazy: discovery -> registration -> handlers cycle
     not_connected = tool_error(f"MCP server '{server_name}' is not connected")
-    from tools.mcp_liveness import unavailable_details
+    from hermes_agent.tools.mcp_liveness import unavailable_details
     details = unavailable_details(server_name)
     if details is not None:
         decl, current, sentence = details
@@ -294,7 +294,7 @@ def _mcp_loop_running() -> bool:
 def _lookup_reconnectable_server(server_name: str, require_loop: bool = False):
     """The registered server object when it can be signalled to reconnect, else None.
     With *require_loop*, also None unless the MCP loop is running (nothing to wait on)."""
-    from tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
     with _core._lock:
         srv = _core._servers.get(_resolve_server_key(server_name))
     ok = srv is not None and hasattr(srv, "_reconnect_event") and (_mcp_loop_running() or not require_loop)
@@ -319,7 +319,7 @@ def _handle_auth_error_and_retry(server_name: str, exc: BaseException, retry_cal
     failure returns the structured ``needs_reauth`` error so the model stops refreshing."""
     if not _is_auth_error(exc):
         return None
-    from tools.mcp_oauth_manager import get_manager
+    from hermes_agent.tools.mcp_oauth_manager import get_manager
     try:
         recovered = _loop._run_on_mcp_loop(lambda: get_manager().handle_401(server_name, None), timeout=10)
     except Exception as rec_exc:
@@ -754,7 +754,7 @@ def _make_utility_handler(op: str, log_label: str, rpc, render, required: Option
     payload, ``required`` validated before any transport work."""
     def _factory(server_name: str, tool_timeout: float):
         def _handler(args: dict, **kwargs) -> str:
-            from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
+            from hermes_agent.tools import mcp_tool_discovery as _discovery  # lazy: import cycle
             server = _discovery._get_connected_server_for_call(server_name)
             if not server or not server.session:
                 return tool_error(f"MCP server '{server_name}' is not connected")
@@ -859,7 +859,7 @@ def _make_check_fn(server_name: str):
     stale connection lingers. With no declaration registered the check is the connection check
     alone. Returns a plain bool: the registry caches ``bool(fn())``.
     """
-    from tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
 
     def _connected() -> bool:
         with _core._lock:

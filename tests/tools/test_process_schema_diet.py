@@ -10,14 +10,14 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from tools.process_registry import PROCESS_SCHEMA
+from hermes_agent.tools.process_registry import PROCESS_SCHEMA
 
 
 class TestProcessSchemaDiet(unittest.TestCase):
 
 
     def test_enum_is_the_verb_source(self):
-        from tools.process_registry import _SESSION_ACTIONS
+        from hermes_agent.tools.process_registry import _SESSION_ACTIONS
         props = PROCESS_SCHEMA["parameters"]["properties"]
         # The enum is the single list of verbs: every session-scoped handler is offered, plus the two
         # non-session verbs dispatched by name in _handle_process.

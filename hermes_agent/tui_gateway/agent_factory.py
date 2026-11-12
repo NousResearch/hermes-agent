@@ -241,7 +241,7 @@ def _persist_live_session_runtime(session: dict | None) -> None:
 def _load_approval_mode() -> str:
     """Effective ``approvals.mode`` via the gate's own ``_get_approval_mode`` (a raw re-read missed the
     managed overlay and ``${VAR}`` expansion)."""
-    from tools.approval_context import _get_approval_mode
+    from hermes_agent.tools.approval_context import _get_approval_mode
     mode = _get_approval_mode()
     return mode if mode in _APPROVAL_MODES else "manual"
 
@@ -325,7 +325,7 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
     """Toolsets that exist because of the CLIENT (off ``_HERMES_CORE_TOOLS``; this is the one gate).
     ``platform`` is the SESSION's source, never a process env var: the desktop may drive a URL/cloud
     backend where ``HERMES_DESKTOP`` is unset (AGENTS.md surface rule)."""
-    from toolsets import CLIENT_SURFACE_TOOLSETS
+    from hermes_agent.toolsets import CLIENT_SURFACE_TOOLSETS
     return set(CLIENT_SURFACE_TOOLSETS) if platform == "desktop" else {"project"}
 
 
@@ -369,7 +369,7 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
         return built_in
     try:  # (enabled, disabled) MCP server names from raw config; both empty on any failure
         from hermes_cli.config import read_raw_config
-        from tools.mcp_tool_common import mcp_server_enabled
+        from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
         raw_cfg = read_raw_config()
         mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
         mcp_names, mcp_disabled = set(), set()
@@ -406,7 +406,7 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
             if selection is not None:
                 return sorted(_with_session_toolsets(selection, session_platform))
     try:
-        from toolsets import validate_toolset
+        from hermes_agent.toolsets import validate_toolset
     except Exception:
         validate_toolset = None
     if explicit and validate_toolset is not None:

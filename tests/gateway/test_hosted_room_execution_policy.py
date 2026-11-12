@@ -22,7 +22,7 @@ from hermes_agent.gateway.hosted_room_peer import (
     issue_room_grant,
     verify_room_grant,
 )
-from tools import approval_context
+from hermes_agent.tools import approval_context
 from hermes_agent.tui_gateway.hosted_room_peer_http import PeerRunsHTTPError
 from hermes_agent.tui_gateway.hosted_room_service import _RouteStatusPeerClient
 

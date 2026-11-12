@@ -12,7 +12,7 @@ import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tests.waiting import wait_until
-from tools import async_delegation as ad
+from hermes_agent.tools import async_delegation as ad
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +55,7 @@ def test_a_batch_that_completed_still_surfaces_its_failed_task():
 
 def test_a_split_unit_labels_its_failed_task_with_that_tasks_goal():
     """Through the real producer: a split unit stores the call's goals, so task 1 is 'B goal', not 'A goal'."""
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     handle = ad.dispatch_async_delegation_batch(
         delegation_id="deleg_call-2", task_indexes=[1], goals=["A goal", "B goal"], context=None, toolsets=None,
         role="leaf", model="m", session_key="", origin_ui_session_id="ui-1", max_async_children=2,
@@ -85,7 +85,7 @@ def test_a_split_unit_that_failed_before_any_task_reported_lists_its_own_tasks(s
 def test_a_split_unit_that_stalls_after_one_task_finished_lists_only_the_stalled_task(monkeypatch):
     """Task 1 finishes (recorded on the unit's row), then task 2 stalls: the forced finalization keeps task 1's
     result, so only task 2 surfaces as failed."""
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     monkeypatch.setattr(ad, "_STALE_IDLE_SECONDS", 0.3)
     monkeypatch.setattr(ad, "_STALE_IN_TOOL_SECONDS", 0.3)
     monkeypatch.setattr(ad, "_STALE_CHECK_INTERVAL", 0.05)
@@ -114,7 +114,7 @@ def test_a_split_unit_that_stalls_after_one_task_finished_lists_only_the_stalled
 @pytest.mark.parametrize("task_indexes, unfinished", [([1, 2], [2]), (None, [0, 2])], ids=["split-unit", "whole-batch"])
 def test_a_unit_whose_runner_raises_after_one_task_finished_lists_only_the_unfinished_tasks(task_indexes, unfinished):
     """The runner-crash twin of the stall test: task 1's recorded result survives, only the rest surface."""
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     goals = ["A goal", "B goal", "C goal"]
 
     def runner():
@@ -133,7 +133,7 @@ def test_a_unit_whose_runner_raises_after_one_task_finished_lists_only_the_unfin
 
 
 def test_a_unit_that_finished_reports_its_runner_results_and_drops_the_recorded_copies():
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     def runner():
         ad.record_unit_child("deleg_call-2", {"task_index": 1, "status": "completed", "summary": "recorded"})

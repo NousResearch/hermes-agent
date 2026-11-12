@@ -141,8 +141,8 @@ def _reconcile_plugin_mcp_servers(runner: Any, home: Path) -> None:
     multiplex = bool(getattr(getattr(runner, "config", None), "multiplex_profiles", False))
 
     def _reconcile() -> None:
-        from tools.mcp_oauth import suppress_interactive_oauth
-        from tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
+        from hermes_agent.tools.mcp_oauth import suppress_interactive_oauth
+        from hermes_agent.tools.mcp_tool_discovery import reconcile_mcp_servers_with_config
         scope = _profile_runtime_scope(home) if multiplex else GatewayTurnMixin._standalone_launch_scope()
         try:
             with scope, suppress_interactive_oauth():

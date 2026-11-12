@@ -2161,7 +2161,7 @@ def _dispatch_lane_task(
         _count_spawn(claimed.assignee)
         return True
     except Exception as exc:
-        from tools.process_registry import RestartSafeScopeUnavailable
+        from hermes_agent.tools.process_registry import RestartSafeScopeUnavailable
 
         # The host refused the spawn (no restart-safe scope): nothing about the
         # card ran, so it must not spend the card's retry budget (#114720).
@@ -2617,7 +2617,7 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
     """
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from hermes_agent.tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
     from hermes_agent.tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
 
     home = Path(hermes_home)
@@ -2725,7 +2725,7 @@ def _restart_safe_worker_argv(task: Task, command: list[str]) -> list[str]:
     (``Type=oneshot`` dispatch timers, #113612) ``outlives_parent=True`` gets the
     worker its own scope so the unit's cgroup teardown cannot kill it.
     """
-    from tools.process_registry import restart_safe_gateway_child_argv
+    from hermes_agent.tools.process_registry import restart_safe_gateway_child_argv
 
     if task.current_run_id is None:
         # Outside managed systemd this is harmless, but a managed dispatch must
@@ -2769,7 +2769,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     profile_arg = normalize_profile_name(task.assignee)
 
     from agent.secret_scope import is_multiplex_active
-    from tools.environments.local import _is_routed_home, build_subprocess_env, strip_launch_profile_env
+    from hermes_agent.tools.environments.local import _is_routed_home, build_subprocess_env, strip_launch_profile_env
 
     try:
         profile_home = resolve_profile_env(profile_arg)
@@ -2779,7 +2779,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         profile_home = None
 
     # Scrub for a ROUTED home, not only under multiplex: the authority test is "does this worker act
-    # for another profile", exactly as served_profile_child_env decides it (tools/environments/local.py).
+    # for another profile", exactly as served_profile_child_env decides it (hermes_agent/tools/environments/local.py).
     # Gating on the gateway-wide flag left B's worker inheriting the dispatcher's own OPENAI_API_KEY and
     # systemd-injected tokens on every single-profile host.
     routed = bool(profile_home) and _is_routed_home(profile_home)
@@ -2870,7 +2870,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
     cmd = _restart_safe_worker_argv(task, cmd)
-    from tools.process_registry import systemd_user_bus_env
+    from hermes_agent.tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
     try:

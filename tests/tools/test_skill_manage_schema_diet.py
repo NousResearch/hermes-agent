@@ -11,7 +11,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from tools.skill_manager_tool import SKILL_MANAGE_SCHEMA
+from hermes_agent.tools.skill_manager_tool import SKILL_MANAGE_SCHEMA
 
 
 class TestSkillManageSchemaDiet(unittest.TestCase):

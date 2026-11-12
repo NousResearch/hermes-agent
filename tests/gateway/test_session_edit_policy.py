@@ -176,8 +176,8 @@ def test_a_policy_stored_before_the_field_restores_as_ask_with_its_identity_unch
 async def test_the_owners_edit_guard_enforces_the_sessions_policy(tmp_path, name, policy, asks):
     from hermes_agent.acp_adapter.edit_approval import maybe_require_edit_approval
     from hermes_agent.gateway.session_policy import build_policy, policy_scope
-    from tools.approval import register_gateway_notify, unregister_gateway_notify
-    from tools.approval_context import reset_current_session_key, set_current_session_key
+    from hermes_agent.tools.approval import register_gateway_notify, unregister_gateway_notify
+    from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
 
     route = f'edit-policy-{policy}-{name}'
     asked = []
@@ -187,7 +187,7 @@ async def test_the_owners_edit_guard_enforces_the_sessions_policy(tmp_path, name
         asked.append(data)
         import threading
         from tests.waiting import wait_until
-        from tools.approval import resolve_gateway_approval
+        from hermes_agent.tools.approval import resolve_gateway_approval
         # The waiter enqueues its entry right after this notify returns; deny it once it is there.
         threading.Thread(target=lambda: wait_until(lambda: resolve_gateway_approval(route, 'deny'), timeout=10,
                                                    what='the edit approval to deny'), daemon=True).start()

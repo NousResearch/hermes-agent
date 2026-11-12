@@ -55,7 +55,7 @@ the id → URL list explicitly instead.
 
 ## Related in-tree implementation
 
-`tools/web_tools.py` grew an in-process version of this idea (a `url -> [n]`
+`hermes_agent/tools/web_tools.py` grew an in-process version of this idea (a `url -> [n]`
 registry plus citation guidance attached to tool results) in PR #44833. That
 path grounds ad-hoc web answers automatically when it lands. This skill is the
 portable half: it works with any retrieval source (browser, curl, CLIs, local

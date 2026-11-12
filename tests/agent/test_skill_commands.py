@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.skills_tool as skills_tool_module
+import hermes_agent.tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
@@ -56,7 +56,7 @@ class TestScanSkillCommands:
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"symlinks unavailable in test environment: {exc}")
 
-        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_root):
             result = scan_skill_commands()
             message = build_skill_invocation_message("/impeccable")
 
@@ -85,8 +85,8 @@ class TestScanSkillCommands:
             return set()
 
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_agent.tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
             patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")
@@ -148,8 +148,8 @@ class TestScanSkillCommands:
             return set()
 
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_agent.tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
             patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")
@@ -210,7 +210,7 @@ class TestScanSkillCommands:
         )
 
         with (
-            patch("tools.skills_tool.SKILLS_DIR", empty_local_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", empty_local_dir),
             patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             token = set_hermes_home_override(profile_a)
@@ -237,7 +237,7 @@ class TestScanSkillCommands:
         """Under a profile home override the scan must read <profile>/skills/,
         not the launch home's import-time ``SKILLS_DIR`` (#67277): a
         multiplexed webhook routed to profile B otherwise sees default's skills.
-        Deliberately does NOT patch ``tools.skills_tool.SKILLS_DIR``.
+        Deliberately does NOT patch ``hermes_agent.tools.skills_tool.SKILLS_DIR``.
         """
         import agent.skill_commands as sc_mod
         from agent.skill_commands import build_skill_invocation_message, get_skill_commands
@@ -283,8 +283,8 @@ class TestScanSkillCommands:
             return set()
 
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_agent.tools.skills_tool._get_disabled_skill_names", side_effect=_disabled_skills),
             patch.object(sc_mod, "_skill_commands_by_key", {}),
         ):
             _make_skill(tmp_path, "shared")
@@ -314,7 +314,7 @@ class TestScanSkillCommands:
         both reduce to the ``/git-helper`` command. The first one scanned must
         keep the command rather than being silently overwritten by the second.
         """
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             # ``a-first`` sorts before ``z-second`` so the index walk visits the
             # underscore-named skill first; that one must win the slash command.
             first = tmp_path / "a-first"
@@ -351,7 +351,7 @@ class TestScanSkillCommands:
         import logging as _logging
         import threading
 
-        import tools.skills_tool as _skills_tool
+        import hermes_agent.tools.skills_tool as _skills_tool
 
         skill_count = 5
         for index in range(skill_count):
@@ -374,8 +374,8 @@ class TestScanSkillCommands:
                 other_scan_finished.wait(timeout=10)
             return real_parse(content)
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch(
-            "tools.skills_tool._parse_frontmatter", parking_parse
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path), patch(
+            "hermes_agent.tools.skills_tool._parse_frontmatter", parking_parse
         ):
             with caplog.at_level(_logging.WARNING, logger="agent.skill_commands"):
                 background = threading.Thread(
@@ -415,13 +415,13 @@ class TestScanSkillCommands:
 
         _make_skill(tmp_path, "shared")
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()
 
             done = threading.Event()
 
             def _read():
-                with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+                with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
                     get_skill_commands()
                 done.set()
 
@@ -442,13 +442,13 @@ class TestScanSkillCommands:
         """A reader during a scan sees the previous map, never a half-built one."""
 
         import agent.skill_commands as skill_commands_module
-        import tools.skills_tool as _skills_tool
+        import hermes_agent.tools.skills_tool as _skills_tool
 
         skill_count = 5
         for index in range(skill_count):
             _make_skill(tmp_path, f"skill-{index}")
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             scan_skill_commands()
 
         real_parse = _skills_tool._parse_frontmatter
@@ -465,8 +465,8 @@ class TestScanSkillCommands:
             observed_sizes.append(len(cached_map))
             return real_parse(content)
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch(
-            "tools.skills_tool._parse_frontmatter", observing_parse
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path), patch(
+            "hermes_agent.tools.skills_tool._parse_frontmatter", observing_parse
         ):
             scan_skill_commands()
 
@@ -477,7 +477,7 @@ class TestScanSkillCommands:
     def test_non_ascii_name_registers_command(self, tmp_path):
         """A CJK skill name slugs to itself (punctuation still stripped) instead of "" and being
         silently dropped (#12351); ``resolve_skill_command_key`` round-trips it."""
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = tmp_path / "novel-clipper"
             skill_dir.mkdir()
             (skill_dir / "SKILL.md").write_text(
@@ -496,14 +496,14 @@ class TestResolveSkillCommandKey:
     """
 
     def test_hyphenated_form_matches_directly(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "claude-code")
             scan_skill_commands()
             assert resolve_skill_command_key("claude-code") == "/claude-code"
 
 
     def test_unknown_command_returns_none(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "claude-code")
             scan_skill_commands()
             assert resolve_skill_command_key("does_not_exist") is None
@@ -512,7 +512,7 @@ class TestResolveSkillCommandKey:
 
 class TestBuildPreloadedSkillsPrompt:
     def test_builds_prompt_for_multiple_named_skills(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "first-skill")
             _make_skill(tmp_path, "second-skill")
             prompt, loaded, missing = build_preloaded_skills_prompt(
@@ -529,7 +529,7 @@ class TestBuildPreloadedSkillsPrompt:
     def test_skips_disabled_skill(self, tmp_path, monkeypatch):
         """A globally-disabled skill must not be force-loaded via -s /
         HERMES_TUI_SKILLS preloading (mirrors the bundle gate, #59156)."""
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "enabled-skill", body="Enabled content.")
             _make_skill(tmp_path, "disabled-skill", body="SECRET DISABLED CONTENT.")
 
@@ -557,7 +557,7 @@ class TestDuplicateNamesAgreeAcrossSurfaces:
 
         from agent import prompt_builder as pb, skill_utils
         from hermes_agent.cron.scheduler_prompt import _load_cron_skill_parts
-        from tools.skills_tool import skill_view, skills_list
+        from hermes_agent.tools.skills_tool import skill_view, skills_list
         local, ext = tmp_path / "local", tmp_path / "ext"
         _make_skill(local, "dup-demo", category="a", body="BODY A")
         (local / "a" / "dup-demo").rename(local / "a" / "one")
@@ -638,7 +638,7 @@ class TestBuildSkillInvocationMessage:
             raising=False,
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "test-skill",
@@ -673,7 +673,7 @@ class TestBuildSkillInvocationMessage:
             raising=False,
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
 
             tokens = set_session_vars(platform="telegram")
@@ -702,7 +702,7 @@ class TestSkillDirectoryHeader:
     don't force the agent into a second ``skill_view()`` round-trip."""
 
     def test_header_contains_absolute_skill_dir(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "abs-dir-skill")
             scan_skill_commands()
             msg = build_skill_invocation_message("/abs-dir-skill", "go")
@@ -716,7 +716,7 @@ class TestTemplateVarSubstitution:
     are replaced before the agent sees the content."""
 
     def test_substitutes_skill_dir(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(
                 tmp_path,
                 "templated",
@@ -733,7 +733,7 @@ class TestTemplateVarSubstitution:
 
     def test_disable_template_vars_via_config(self, tmp_path):
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
             patch(
                 "agent.skill_commands._load_skills_config",
                 return_value={"template_vars": False},
@@ -761,7 +761,7 @@ class TestInlineShellExpansion:
     def test_inline_shell_runs_in_skill_directory(self, tmp_path):
         """Inline snippets get the skill dir as CWD so relative paths work."""
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
             patch(
                 "agent.skill_commands._load_skills_config",
                 return_value={"template_vars": True, "inline_shell": True,
@@ -781,7 +781,7 @@ class TestInlineShellExpansion:
 
     def test_inline_shell_timeout_does_not_break_message(self, tmp_path):
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
             patch(
                 "agent.skill_commands._load_skills_config",
                 return_value={"template_vars": True, "inline_shell": True,
@@ -816,7 +816,7 @@ class TestStackedSkillCommands:
 
     def test_split_stops_at_non_skill_token(self, tmp_path):
         from agent.skill_commands import split_stacked_skill_commands
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             self._setup_three_skills(tmp_path)
             scan_skill_commands()
             keys, instruction = split_stacked_skill_commands(
@@ -830,7 +830,7 @@ class TestStackedSkillCommands:
 
     def test_split_caps_at_five_total(self, tmp_path):
         from agent.skill_commands import split_stacked_skill_commands
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             for i in range(7):
                 _make_skill(tmp_path, f"stk-{i}")
             scan_skill_commands()
@@ -844,7 +844,7 @@ class TestStackedSkillCommands:
 
     def test_stacked_message_skips_missing_skills(self, tmp_path):
         from agent.skill_commands import build_stacked_skill_invocation_message
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             self._setup_three_skills(tmp_path)
             scan_skill_commands()
             result = build_stacked_skill_invocation_message(

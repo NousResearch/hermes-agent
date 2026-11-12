@@ -16,7 +16,7 @@ import asyncio
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask
+from hermes_agent.tools.mcp_tool import MCPServerTask
 
 
 def _group(*excs) -> BaseExceptionGroup:
@@ -65,7 +65,7 @@ def test_flapping_transport_reaches_park_within_budget(monkeypatch, tmp_path):
     bounded number of spawns instead of respawning forever (#62212)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_MAX_RECONNECT_RETRIES", 3)
 
@@ -138,7 +138,7 @@ def test_proven_session_does_not_burn_budget(monkeypatch, tmp_path):
     servers with occasional blips keep reconnecting forever (#57604)."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_MAX_RECONNECT_RETRIES", 3)
 

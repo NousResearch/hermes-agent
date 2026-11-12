@@ -18,7 +18,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import tools.async_delegation as ad
+import hermes_agent.tools.async_delegation as ad
 from hermes_agent.tui_gateway.server import (
     _finalize_session,
     _session_owns_notification_event,
@@ -130,7 +130,7 @@ class TestFinalizeInterruptsOwnDelegations:
         mock_db.get_session.return_value = {"source": "tui"}
         mock_get_db.return_value = mock_db
 
-        with patch("tools.async_delegation.interrupt_for_session") as mock_int:
+        with patch("hermes_agent.tools.async_delegation.interrupt_for_session") as mock_int:
             _finalize_session(self._make_session(), end_reason="tui_close")
 
         mock_int.assert_called_once()
@@ -147,7 +147,7 @@ class TestFinalizeInterruptsOwnDelegations:
         mock_db.get_session.return_value = {"source": "telegram"}
         mock_get_db.return_value = mock_db
 
-        with patch("tools.async_delegation.interrupt_for_session") as mock_int:
+        with patch("hermes_agent.tools.async_delegation.interrupt_for_session") as mock_int:
             _finalize_session(
                 self._make_session(session_key="agent:main:telegram:dm:123", sid="tab9"),
                 end_reason="ws_orphan_reap",

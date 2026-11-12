@@ -4,9 +4,9 @@ import sys
 
 
 def test_session_mcp_registry_isolation_and_scoped_release(tmp_path):
-    from tools.registry import registry, session_tool_scope
-    from tools.mcp_tool_discovery import register_mcp_servers
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    from hermes_agent.tools.registry import registry, session_tool_scope
+    from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
+    from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
 
     script = tmp_path / 'peer.py'
     script.write_text('''import json, os, sys

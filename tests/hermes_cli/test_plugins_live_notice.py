@@ -11,7 +11,7 @@ import pytest
 
 from agent.prompt_builder import CONTROL_FRAME_OPENERS
 from hermes_cli.plugins_activation_live import live_notice
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 SKILL = "blender:blender"
 TOOLS = ["mcp__blender__execute_blender_code", "mcp__blender__get_objects_summary",

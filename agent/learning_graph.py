@@ -54,7 +54,7 @@ def _related(fm: dict[str, Any]) -> list[str]:
 
 def _load_usage() -> dict[str, dict[str, Any]]:
     try:
-        from tools.skill_usage import load_usage
+        from hermes_agent.tools.skill_usage import load_usage
         return load_usage()
     except Exception:
         try:
@@ -161,7 +161,7 @@ def memory_node_id(card: dict[str, Any], index: int) -> str:
 def _memory_cards() -> list[dict[str, Any]]:
     """``MEMORY.md`` / ``USER.md`` entries as the memory tool parses them; every
     entry becomes one card (MEMORY.md cards first, then USER.md)."""
-    from tools.memory_tool import MemoryStore
+    from hermes_agent.tools.memory_tool import MemoryStore
 
     base = get_hermes_home() / "memories"
     cards: list[dict[str, Any]] = []
@@ -208,7 +208,7 @@ def _has_learning_signal(node: SkillNode) -> bool:
     """Graph-worthy: agent-created, user-taught (/learn), or actually used.
 
     ``created_by="learn"`` is a learning-signal marker only — curator management stays keyed
-    strictly on ``"agent"`` (see ``tools.skill_usage._is_curator_managed_record``). External
+    strictly on ``"agent"`` (see ``hermes_agent.tools.skill_usage._is_curator_managed_record``). External
     mounts are never a learning milestone: they were configured by the user, not learned, so
     even a used external skill stays out of the journey graph (#108032).
     """

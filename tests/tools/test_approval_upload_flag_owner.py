@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from tools.approval_detection import detect_dangerous_command
+from hermes_agent.tools.approval_detection import detect_dangerous_command
 
 EXFIL = "upload a secret or credential file via curl/wget (possible exfiltration)"
 PIPE_EXFIL = "pipe a credential file into a curl/wget upload (possible exfiltration)"

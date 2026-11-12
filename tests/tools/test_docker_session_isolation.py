@@ -30,8 +30,8 @@ import os
 
 import pytest
 
-from tools import terminal_tool, terminal_tool_backends
-from tools.terminal_tool_lifecycle import is_persistent_env
+from hermes_agent.tools import terminal_tool, terminal_tool_backends
+from hermes_agent.tools.terminal_tool_lifecycle import is_persistent_env
 
 
 @pytest.fixture(autouse=True)

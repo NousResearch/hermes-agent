@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools import wake_word as ww
+from hermes_agent.tools import wake_word as ww
 
 
 def test_listener_recovers_after_transient_capture_failure(monkeypatch):

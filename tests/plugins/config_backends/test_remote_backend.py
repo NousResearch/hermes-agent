@@ -1127,7 +1127,7 @@ def test_child_for_another_profile_keeps_the_remote_deployment(plane, monkeypatc
     import sys
 
     from hermes_cli.env_loader import load_hermes_dotenv
-    from tools.environments.local import served_profile_child_env
+    from hermes_agent.tools.environments.local import served_profile_child_env
     _drop_process_deployment(plane, monkeypatch, tmp_path)
     env = remote_env(plane)
     (plane.home / ".env").write_text("".join(f"{k}={v}\n" for k, v in env.items()))

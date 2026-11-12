@@ -415,7 +415,7 @@ class McpRuntimeStatus(WireEnum):
 
 
 class McpServerRuntimeRow(Result):
-    """Safe projection of ``tools.mcp_tool_discovery.get_mcp_status`` rows."""
+    """Safe projection of ``hermes_agent.tools.mcp_tool_discovery.get_mcp_status`` rows."""
 
     name: str
     transport: str
@@ -806,7 +806,7 @@ class CatalogPluginPresence(Result):
 
 
 class PluginScanFinding(Result):
-    """One security-scan finding (``tools.plugin_guard``) on a plugin tree the scan blocked."""
+    """One security-scan finding (``hermes_agent.tools.plugin_guard``) on a plugin tree the scan blocked."""
 
     pattern_id: str
     severity: str

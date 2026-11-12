@@ -51,7 +51,7 @@ from agent.replayed_reasoning import codex_reasoning_replay_tokens, strip_opaque
 from agent.context_default_record import last_defaulted_context_length
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
-from tools.todo_tool import TODO_INJECTION_HEADER
+from hermes_agent.tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -1729,7 +1729,7 @@ def _sum_skill_view(name, args, content, content_len, line_count):
 # Runtime notices that clarify producers persisted as user_response before per-response
 # status existed. Only status-less (legacy) entries are checked; explicit status wins.
 _CLARIFY_NON_RESPONSE_PREFIXES = (
-    "The user did not provide a response",  # tools/clarify_tool.TIMEOUT_RESPONSE
+    "The user did not provide a response",  # hermes_agent/tools/clarify_tool.TIMEOUT_RESPONSE
     "[user did not respond",  # gateway clarify delivery timeout
     "[clarify prompt could not be delivered",  # gateway UNDELIVERED*
     "[oneshot mode:",  # the former in-process `hermes -z` runner

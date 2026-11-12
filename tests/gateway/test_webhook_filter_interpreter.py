@@ -5,7 +5,7 @@ import stat
 import pytest
 
 from hermes_agent.gateway.platforms.webhook_filters import WebhookRouteProcessor
-from tools.environments import local
+from hermes_agent.tools.environments import local
 
 
 def _filter_script(body: str):

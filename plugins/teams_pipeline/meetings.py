@@ -12,7 +12,7 @@ from typing import Any, Awaitable
 from urllib.parse import quote, unquote
 
 from plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef
-from tools.microsoft_graph_client import MicrosoftGraphAPIError, MicrosoftGraphClient
+from hermes_agent.tools.microsoft_graph_client import MicrosoftGraphAPIError, MicrosoftGraphClient
 
 # Graph uses both slash keys (users/{id}/...) and quoted keys (users('{id}')/...),
 # so every segment pattern has a quoted group and a slash group.

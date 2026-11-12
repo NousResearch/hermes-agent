@@ -1,4 +1,4 @@
-"""Smart approval: auxiliary-LLM risk assessment for :mod:`tools.approval`.
+"""Smart approval: auxiliary-LLM risk assessment for :mod:`hermes_agent.tools.approval`.
 
 The command text is untrusted — it originates from the primary LLM, which may
 itself be prompt-injected. Defenses: shell comments are stripped before
@@ -10,9 +10,9 @@ Inspired by OpenAI Codex's Smart Approvals guardian subagent.
 
 import logging
 import time
-from tools import approval_context as _ctx
+from hermes_agent.tools import approval_context as _ctx
 
-logger = logging.getLogger("tools.approval")
+logger = logging.getLogger("hermes_agent.tools.approval")
 
 _SYSTEM_PROMPT = (
     "You are a security reviewer for an AI coding agent. You assess whether shell commands are safe to execute.\n\n"

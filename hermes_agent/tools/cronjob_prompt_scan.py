@@ -6,10 +6,10 @@ import re
 
 # Single source of truth shared with the install-time scanner (skills_guard): a narrower
 # cron-local copy once let obfuscated directives slip past this runtime tripwire.
-from tools.threat_patterns import INVISIBLE_CHARS as _CRON_INVISIBLE_CHARS
+from hermes_agent.tools.threat_patterns import INVISIBLE_CHARS as _CRON_INVISIBLE_CHARS
 
 # Logger parity with the origin module (these functions used to log there).
-logger = logging.getLogger("tools.cronjob_tools")
+logger = logging.getLogger("hermes_agent.tools.cronjob_tools")
 
 # Strict patterns — user prompt only. A directive-shaped cron prompt has no business
 # containing `cat ~/.hermes/.env` or `rm -rf /`; there it is a smoking gun, not prose.

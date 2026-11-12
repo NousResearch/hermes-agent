@@ -73,7 +73,7 @@ def _required_path(arguments: dict[str, Any]) -> str:
     path = str(arguments.get("path") or "")
     if not path:
         raise ValueError("path required")
-    from tools.file_tools_paths import _resolve_path_for_task
+    from hermes_agent.tools.file_tools_paths import _resolve_path_for_task
     return str(_resolve_path_for_task(path))
 
 
@@ -94,7 +94,7 @@ def _proposal_for_patch_replace(arguments: dict[str, Any]) -> EditProposal:
     if old_text is None:
         raise ValueError(f"Failed to read file: {path}")
 
-    from tools.fuzzy_match import fuzzy_find_and_replace
+    from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace
 
     new_text, match_count, _strategy, error = fuzzy_find_and_replace(
         old_text, str(old_string), str(new_string), bool(arguments.get("replace_all", False)))

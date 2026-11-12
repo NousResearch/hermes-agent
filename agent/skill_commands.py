@@ -260,7 +260,7 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     if not raw_identifier:
         return None
     try:
-        from tools.skills_tool import _skills_dir, skill_view
+        from hermes_agent.tools.skills_tool import _skills_dir, skill_view
         from agent.skill_utils import normalize_skill_lookup_name
         normalized = normalize_skill_lookup_name(raw_identifier)
         loaded_skill = json.loads(skill_view(normalized, task_id=task_id, preprocess=False))
@@ -292,7 +292,7 @@ def ambiguous_skill_label(identifier: str, payload: dict) -> Optional[str]:
 def _missing_skill_label(identifier: str) -> str:
     """Display form of an identifier that failed to load (failure path only: re-asks skill_view)."""
     try:
-        from tools.skills_tool import skill_view
+        from hermes_agent.tools.skills_tool import skill_view
         from agent.skill_utils import normalize_skill_lookup_name
         payload = json.loads(skill_view(normalize_skill_lookup_name(identifier), preprocess=False))
     except Exception:
@@ -372,7 +372,7 @@ def _build_skill_message(
     session_id: str | None = None,
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
-    from tools.skills_tool import _skills_dir
+    from hermes_agent.tools.skills_tool import _skills_dir
     # Preprocess first so downstream blocks see the expanded content.
     content = preprocess_skill_content(
         str(loaded_skill.get("content") or ""), skill_dir, session_id, skills_cfg=_load_skills_config(),
@@ -425,7 +425,7 @@ def _render_skill_block(
         # Track active usage for Curator lifecycle management (#17782)
         # Track active usage for Curator lifecycle management (#17782)
         # Track active usage for Curator lifecycle management (#17782)
-        from tools.skill_usage import bump_use
+        from hermes_agent.tools.skill_usage import bump_use
         bump_use(skill_name, task_id=task_id)
     except Exception:
         pass
@@ -478,7 +478,7 @@ def skill_command_collision_note(name: str) -> Optional[str]:
 
 def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: dict[str, dict[str, Any]]) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
-    from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
+    from hermes_agent.tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
         return
     frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8-sig'))
@@ -532,7 +532,7 @@ def scan_skill_commands() -> dict[str, dict[str, Any]]:
     signature = _skill_dirs_signature()
     commands: dict[str, dict[str, Any]] = {}
     try:
-        from tools.skills_tool import _get_disabled_skill_names, _skill_catalog
+        from hermes_agent.tools.skills_tool import _get_disabled_skill_names, _skill_catalog
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
         # Only names skill_view resolves to exactly this file get a /command: the shared catalog applies
@@ -616,8 +616,8 @@ def _skill_dirs_signature() -> Optional[tuple]:
     every directory the catalog walks, depth-bounded, plus the disabled set and the platform). None when
     it cannot be computed (a root that cannot be stat'ed), which keeps the published map rather than
     rescanning on every lookup. Any other error raises: the catalog scan itself takes the same signature
-    unguarded (``tools.skills_tool._skill_catalog``), and a swallowed bug would pin a stale map silently."""
-    from tools.skills_tool import _get_disabled_skill_names, skill_search_dirs, _skills_scan_signature
+    unguarded (``hermes_agent.tools.skills_tool._skill_catalog``), and a swallowed bug would pin a stale map silently."""
+    from hermes_agent.tools.skills_tool import _get_disabled_skill_names, skill_search_dirs, _skills_scan_signature
     try:
         roots, _active = skill_search_dirs()
         return _skills_scan_signature([d for _tier, d in roots], _get_disabled_skill_names())
@@ -706,7 +706,7 @@ def get_plugin_skill_commands() -> dict[str, dict[str, Any]]:
 def _scan_plugin_skill_commands(manager, metadata: list, tag: tuple) -> dict[str, dict[str, Any]]:
     """Build the plugin skill projection and publish it with its tag atomically."""
     global _plugin_skill_commands, _plugin_skill_commands_tag
-    from tools.skills_tool import (
+    from hermes_agent.tools.skills_tool import (
         _parse_frontmatter, skill_matches_apps, skill_matches_environment,
         skill_matches_platform,
     )
@@ -806,7 +806,7 @@ def reload_skills() -> dict[str, Any]:
         # platform/profile combination, so every cached identity must rescan.
         _skill_commands_by_key.clear()
         _skill_commands_sig_by_key.clear()
-    from tools.skills_tool import clear_skills_cache
+    from hermes_agent.tools.skills_tool import clear_skills_cache
     clear_skills_cache()  # the scan reads the shared catalog; an explicit reload must not hit its TTL
     invalidate_plugin_skill_commands()
     new_commands = scan_skill_commands()

@@ -17,7 +17,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource
-from tools.process_registry import ProcessRegistry, ProcessSession
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +125,7 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monkeypatch, tmp_path):
-    import tools.process_registry as pr_module
+    import hermes_agent.tools.process_registry as pr_module
     from hermes_agent.gateway.session import SessionSource
 
     sessions = [

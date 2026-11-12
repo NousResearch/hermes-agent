@@ -1,7 +1,7 @@
 """Picker row highlighting for per-capability web backends.
 
 ``web_search``/``web_extract`` resolve ``web.search_backend`` / ``web.extract_backend``
-first and only then fall back to the shared ``web.backend`` (tools/web_tools.py
+first and only then fall back to the shared ``web.backend`` (hermes_agent/tools/web_tools.py
 ``_get_search_backend`` / ``_get_extract_backend``).  The picker row's ``is_active``
 must follow the same precedence, otherwise a vendor that is genuinely serving one
 capability is displayed as inactive (#132511).

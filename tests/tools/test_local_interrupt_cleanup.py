@@ -21,8 +21,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.environments import local as local_mod
-from tools.environments.local import LocalEnvironment
+from hermes_agent.tools.environments import local as local_mod
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 
 @pytest.fixture(autouse=True)
@@ -218,7 +218,7 @@ def test_exit_cleanup_kills_foreground_command_still_running(monkeypatch):
     """The host-exit funnel (CLI, one-shot, messaging gateway, serve atexit) must take an
     in-flight foreground command's process group with it: it runs in its own session, so
     the host exiting mid-command would otherwise orphan it to init."""
-    from tools import terminal_tool_lifecycle
+    from hermes_agent.tools import terminal_tool_lifecycle
 
     env = LocalEnvironment(cwd="/tmp")
     result: dict = {}
@@ -246,8 +246,8 @@ def test_exit_cleanup_kills_foreground_command_still_running(monkeypatch):
 # Child for the hard-exit race tests: it really os._exit()s right after the kill, like the watchdogs.
 _HARD_EXIT_RACE_CHILD = r"""
 import os, sys, threading
-from tools.environments import base
-from tools.environments.local import LocalEnvironment
+from hermes_agent.tools.environments import base
+from hermes_agent.tools.environments.local import LocalEnvironment
 scenario, cmd = sys.argv[1], sys.argv[2]
 env = LocalEnvironment(cwd=os.getcwd())
 if scenario == "spawn_before_publish":
@@ -299,8 +299,8 @@ def test_hard_exit_leaves_no_foreground_survivor_around_the_spawn(scenario, tmp_
 def test_hard_exit_kill_never_blocks_on_a_slow_remote_cancel(monkeypatch):
     """Modal/Daytona/Vercel cancel through a blocking SDK call; the hard-exit kill runs just before
     os._exit, so it must give those one short deadline instead of waiting them out."""
-    from tools.environments import base
-    from tools.environments.base_output import _ThreadedProcessHandle
+    from hermes_agent.tools.environments import base
+    from hermes_agent.tools.environments.base_output import _ThreadedProcessHandle
 
     class _SdkEnv:  # the kill every SDK backend inherits: proc.kill() -> cancel_fn
         _kill_process = base.BaseEnvironment._kill_process

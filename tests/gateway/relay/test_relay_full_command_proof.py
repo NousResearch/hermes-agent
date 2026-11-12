@@ -37,8 +37,8 @@ def _relay(connector):
 
 @pytest.fixture
 def pending(monkeypatch):
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     entry = _ApprovalEntry({"request_id": "r1"})
     monkeypatch.setitem(approval._gateway_queues, "sk", [entry])
@@ -47,7 +47,7 @@ def pending(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_relayed_command_the_connector_must_split_leaves_the_card_deny_only(pending):
-    from tools.approval import resolve_gateway_approval_card
+    from hermes_agent.tools.approval import resolve_gateway_approval_card
 
     connector = _Connector()
     await _relay(connector).send_exec_approval(
@@ -59,7 +59,7 @@ async def test_a_relayed_command_the_connector_must_split_leaves_the_card_deny_o
 
 @pytest.mark.asyncio
 async def test_a_relayed_command_that_fits_one_message_keeps_approve(pending):
-    from tools.approval import resolve_gateway_approval_card
+    from hermes_agent.tools.approval import resolve_gateway_approval_card
 
     connector = _Connector()
     command = "echo " + "B" * 1700 + " # TAIL"  # past the 1,500-char preview, inside one 2,000-char message

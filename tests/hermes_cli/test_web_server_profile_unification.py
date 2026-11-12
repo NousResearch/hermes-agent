@@ -767,7 +767,7 @@ class TestProfileScopedAudio:
     ):
         import base64
 
-        from tools import voice_mode
+        from hermes_agent.tools import voice_mode
 
         seen = {}
 

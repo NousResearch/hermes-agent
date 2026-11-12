@@ -38,7 +38,7 @@ hermes_cli/config.py: proxy schema    The `proxy:` block in DEFAULT_CONFIG.
                                        proxy_cli.cmd_setup, and document it
                                        in the user-guide page.
 
-tools/environments/docker.py
+hermes_agent/tools/environments/docker.py
   _egress_proxy_args_for_docker()     Builds the volume_args / env_overrides /
                                        host_args triple that the Docker backend
                                        injects when `proxy.enabled: true`.

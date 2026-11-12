@@ -14,7 +14,7 @@ import pytest
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     home = tmp_path / 'home'
     home.mkdir()
     monkeypatch.setenv('HERMES_HOME', str(home))
@@ -52,7 +52,7 @@ def _turn(policy, session_id, profile=''):
 
 
 def _plan(session_id):
-    from tools.terminal_tool import _get_env_config, _resolve_container_task_id, _resolve_task_host_cwd
+    from hermes_agent.tools.terminal_tool import _get_env_config, _resolve_container_task_id, _resolve_task_host_cwd
     return _resolve_container_task_id(session_id), _resolve_task_host_cwd(_get_env_config(), session_id)
 
 
@@ -86,7 +86,7 @@ def test_persistent_container_is_keyed_per_workspace_not_per_profile(home, tmp_p
 def test_desktop_workspace_registration_preserves_unmounted_profile_sandbox(
     home, tmp_path, monkeypatch, mount, profile
 ):
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     from hermes_agent.tui_gateway import server
 
     profile_home = home if profile == "default" else home / "profiles" / profile
@@ -144,7 +144,7 @@ def test_desktop_workspace_registration_preserves_unmounted_profile_sandbox(
 
 def test_a_registered_workspace_does_not_split_an_unmounted_profile_sandbox(home, tmp_path):
     """Any ``cwd_source: "session"`` workspace (not just the gated writers') keeps the profile key."""
-    from tools.terminal_tool import register_task_env_overrides, workspace_key_for
+    from hermes_agent.tools.terminal_tool import register_task_env_overrides, workspace_key_for
     ws = tmp_path / 'ws'
     ws.mkdir()
     with _turn(_policy(home, ws, persistent=True, mount=False), 'local-a'):
@@ -154,7 +154,7 @@ def test_a_registered_workspace_does_not_split_an_unmounted_profile_sandbox(home
 
 
 def test_binding_keeps_a_cd_and_follows_a_workspace_move(home, tmp_path):
-    from tools.terminal_tool import get_session_cwd, record_session_cwd
+    from hermes_agent.tools.terminal_tool import get_session_cwd, record_session_cwd
     ws1, ws2 = tmp_path / 'ws1', tmp_path / 'ws2'
     ws1.mkdir(), ws2.mkdir()
     policy = _policy(home, ws1, persistent=False)
@@ -171,7 +171,7 @@ def test_binding_keeps_a_cd_and_follows_a_workspace_move(home, tmp_path):
                                       {'backend': 'docker', 'docker_mount_cwd_to_workspace': False}])
 def test_backends_that_do_not_mount_the_host_cwd_register_nothing(home, tmp_path, terminal):
     from hermes_agent.gateway.session_policy import bind_turn_workspace, build_policy, policy_scope, restore_policy
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     (home / 'config.yaml').write_text(json.dumps({'terminal': terminal}), encoding='utf-8')
     policy = restore_policy(asdict(build_policy({'source': 'cli', 'cwd': str(tmp_path), 'model': 'm'}, {})))
     with policy_scope(policy):
@@ -181,7 +181,7 @@ def test_backends_that_do_not_mount_the_host_cwd_register_nothing(home, tmp_path
 
 def test_delegated_child_shares_its_parents_persistent_workspace_container(home, tmp_path):
     # Review probe (@kshitijk4poor W1, @dokterdok 1): parent `default:ws:<h>`, child `default`.
-    from tools.terminal_tool import register_container_alias
+    from hermes_agent.tools.terminal_tool import register_container_alias
     ws1, ws2 = tmp_path / 'ws1', tmp_path / 'ws2'
     ws1.mkdir(), ws2.mkdir()
     keys = {}
@@ -196,8 +196,8 @@ def test_delegated_child_shares_its_parents_persistent_workspace_container(home,
 
 def test_workspace_container_key_is_idempotent_and_lazy_setup_creates_the_sessions_own(home, tmp_path, monkeypatch):
     # Review probe (@kshitijk4poor W2, @dokterdok 2): get_active_env(effective) -> the profile container.
-    from tools import terminal_tool, terminal_tool_lifecycle
-    from tools.terminal_tool import _resolve_container_task_id
+    from hermes_agent.tools import terminal_tool, terminal_tool_lifecycle
+    from hermes_agent.tools.terminal_tool import _resolve_container_task_id
     ws1 = tmp_path / 'ws1'
     ws1.mkdir()
     other = object()
@@ -224,7 +224,7 @@ def test_workspace_container_key_is_idempotent_and_lazy_setup_creates_the_sessio
 def test_switching_away_from_mounted_docker_drops_the_session_workspace_override(home, tmp_path):
     # Review probe (@kshitijk4poor W3, @dokterdok 3, Greptile): Docker -> SSH kept the old host cwd.
     from hermes_agent.gateway.session_policy import bind_turn_workspace, build_policy, policy_scope, restore_policy
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     ws1 = tmp_path / 'ws1'
     ws1.mkdir()
     with _turn(_policy(home, ws1, persistent=True), 'local-a'):
@@ -239,7 +239,7 @@ def test_switching_away_from_mounted_docker_drops_the_session_workspace_override
 
 def test_unbind_keeps_an_override_the_session_workspace_binding_did_not_register(home, tmp_path):
     from hermes_agent.gateway.session_policy import unbind_turn_workspace
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     terminal_tool.register_task_env_overrides('acp-1', {'cwd': str(tmp_path), 'cwd_source': 'session'})
     unbind_turn_workspace('acp-1')
     assert terminal_tool.resolve_task_overrides('acp-1')['cwd'] == str(tmp_path)
@@ -249,7 +249,7 @@ def test_deleting_a_session_releases_its_workspace_binding(home, tmp_path):
     # Review (@kshitijk4poor W3): the bindings were never cleared on session close.
     from types import SimpleNamespace
     from hermes_agent.gateway.session_mutations import retire_live_sessions
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     ws1 = tmp_path / 'ws1'
     ws1.mkdir()
     with _turn(_policy(home, ws1, persistent=True), 'local-a'):
@@ -263,7 +263,7 @@ def test_deleting_a_session_releases_its_workspace_binding(home, tmp_path):
 def test_idle_reaper_stops_workspace_containers_and_keeps_the_profile_one_running(monkeypatch):
     # Review (@kshitijk4poor W4): one RUNNING container per (profile, workspace), never reclaimed.
     import time
-    from tools import terminal_tool, terminal_tool_lifecycle
+    from hermes_agent.tools import terminal_tool, terminal_tool_lifecycle
     calls = []
 
     class Env:
@@ -293,7 +293,7 @@ def test_side_agent_runs_in_its_sessions_workspace(home, tmp_path, persistent):
     # Review (@kshitijk4poor S2, @dokterdok 4): /bg, /btw and preview restart never bound the workspace.
     from types import SimpleNamespace
     from hermes_agent.gateway.session_tui_side import _side_scope
-    from tools import terminal_tool
+    from hermes_agent.tools import terminal_tool
     ws1 = tmp_path / 'ws1'
     ws1.mkdir()
     policy = _policy(home, ws1, persistent=persistent)
@@ -312,8 +312,8 @@ def test_secondary_profiles_side_agent_never_gets_the_launch_profiles_workspace_
     # Review (@dokterdok, round 2): beta's /bg in a folder with a live default session got default's env.
     from types import SimpleNamespace
     from hermes_agent.gateway.session_tui_side import _side_scope
-    from tools import terminal_tool, terminal_tool_lifecycle
-    from tools.terminal_tool import workspace_key_for
+    from hermes_agent.tools import terminal_tool, terminal_tool_lifecycle
+    from hermes_agent.tools.terminal_tool import workspace_key_for
     ws1 = tmp_path / 'ws1'
     ws1.mkdir()
     beta = home / 'profiles' / 'beta'
@@ -380,7 +380,7 @@ def test_managed_worker_turn_runs_in_its_sessions_workspace(home, tmp_path, monk
 def test_secondary_profiles_managed_worker_turn_keys_its_own_workspace_container(home, tmp_path, monkeypatch):
     from hermes_agent.gateway import session_kanban
     from hermes_agent.gateway.session_policy import policy_scope
-    from tools.terminal_tool import workspace_key_for
+    from hermes_agent.tools.terminal_tool import workspace_key_for
     ws1 = tmp_path / 'ws1'
     ws1.mkdir()
     beta = home / 'profiles' / 'beta'

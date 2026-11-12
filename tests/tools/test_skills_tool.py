@@ -1,4 +1,4 @@
-"""Tests for tools/skills_tool.py — skill discovery and viewing."""
+"""Tests for hermes_agent/tools/skills_tool.py — skill discovery and viewing."""
 
 import json
 import os
@@ -8,8 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.skills_tool as skills_tool_module
-from tools.skills_tool import (
+import hermes_agent.tools.skills_tool as skills_tool_module
+from hermes_agent.tools.skills_tool import (
     _get_required_environment_variables,
     _parse_frontmatter,
     _parse_tags,
@@ -142,7 +142,7 @@ class TestRequiredEnvironmentVariablesNormalization:
         monkeypatch.setenv("FILLED_KEY", "value")
         monkeypatch.setenv("EMPTY_HOST_KEY", "")
 
-        from tools.skills_tool import _is_env_var_persisted
+        from hermes_agent.tools.skills_tool import _is_env_var_persisted
 
         assert _is_env_var_persisted("EMPTY_FILE_KEY", {"EMPTY_FILE_KEY": ""}) is False
         assert (
@@ -154,7 +154,7 @@ class TestRequiredEnvironmentVariablesNormalization:
     def test_active_profile_secret_scope_satisfies_requirement(self):
         """Cron workers must accept a value hydrated from this profile's vault."""
         from agent import secret_scope
-        from tools.skills_tool import _is_env_var_persisted
+        from hermes_agent.tools.skills_tool import _is_env_var_persisted
 
         secret_scope.set_multiplex_active(True)
         token = secret_scope.set_secret_scope({"VAULT_SKILL_API_KEY": "vault-value"})
@@ -167,7 +167,7 @@ class TestRequiredEnvironmentVariablesNormalization:
     def test_unscoped_multiplex_requirement_does_not_read_process_environment(self, monkeypatch):
         """A worker without a profile scope must keep the fail-closed boundary."""
         from agent import secret_scope
-        from tools.skills_tool import _is_env_var_persisted
+        from hermes_agent.tools.skills_tool import _is_env_var_persisted
 
         monkeypatch.setenv("OTHER_PROFILE_SKILL_API_KEY", "other-profile-value")
         secret_scope.set_multiplex_active(True)
@@ -184,7 +184,7 @@ class TestRequiredEnvironmentVariablesNormalization:
 
 class TestGetCategoryFromPath:
     def test_category_derived_from_layout(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             categorized = tmp_path / "mlops" / "axolotl" / "SKILL.md"
             categorized.parent.mkdir(parents=True)
             categorized.touch()
@@ -196,7 +196,7 @@ class TestGetCategoryFromPath:
             assert _get_category_from_path(top_level) is None
 
         # Paths outside SKILLS_DIR have no category.
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
             assert _get_category_from_path(tmp_path / "other" / "SKILL.md") is None
 
 
@@ -207,7 +207,7 @@ class TestGetCategoryFromPath:
 
 class TestFindAllSkills:
     def test_finds_skills_and_skips_non_skill_trees(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "skill-a")
             _make_skill(tmp_path, "skill-b")
             _make_skill(tmp_path, "axolotl", category="mlops")
@@ -256,7 +256,7 @@ class TestFindAllSkills:
             f"---\nname: long\ndescription: {'x' * (MAX_DESCRIPTION_LENGTH + 100)}\n---\n\nBody.\n"
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             skills = {s["name"]: s for s in find_all_skills()}
 
         # If no description in frontmatter, the first non-header line is used.
@@ -271,7 +271,7 @@ class TestFindAllSkills:
         external_category = _symlink_category(skills_root, external_root, "linked")
         _make_skill(external_category.parent, "knowledge-brain", category="linked")
 
-        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_root):
             skills = find_all_skills()
 
         assert [s["name"] for s in skills] == ["knowledge-brain"]
@@ -286,7 +286,7 @@ class TestFindAllSkills:
 class TestSkillsList:
     def test_empty_creates_directory(self, tmp_path):
         skills_dir = tmp_path / "skills"
-        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_dir):
             raw = skills_list()
         result = json.loads(raw)
         assert result["success"] is True
@@ -294,7 +294,7 @@ class TestSkillsList:
         assert skills_dir.exists()
 
     def test_category_filter(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "skill-a", category="devops")
             _make_skill(tmp_path, "skill-b", category="mlops")
             all_result = json.loads(skills_list())
@@ -312,7 +312,7 @@ class TestSkillsList:
         external_category = _symlink_category(skills_root, external_root, "linked")
         _make_skill(external_category.parent, "knowledge-brain", category="linked")
 
-        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_root):
             raw = skills_list(category="linked")
 
         result = json.loads(raw)
@@ -329,7 +329,7 @@ class TestSkillsList:
 
 class TestSkillView:
     def test_view_resolves_by_dir_name_and_frontmatter_name(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "my-skill",
@@ -361,12 +361,12 @@ class TestSkillView:
         assert "Step 1" in by_name["content"]
 
     def test_registered_view_tracks_use_with_task_and_session(self, tmp_path):
-        from tools.skills_tool import _skill_view_with_bump
+        from hermes_agent.tools.skills_tool import _skill_view_with_bump
 
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skill_usage.bump_view") as bump_view,
-            patch("tools.skill_usage.bump_use") as bump_use,
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_agent.tools.skill_usage.bump_view") as bump_view,
+            patch("hermes_agent.tools.skill_usage.bump_use") as bump_use,
         ):
             _make_skill(tmp_path, "my-skill")
             raw = _skill_view_with_bump(
@@ -385,7 +385,7 @@ class TestSkillView:
 
 
     def test_view_reference_files(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "my-skill")
             refs_dir = skill_dir / "references"
             refs_dir.mkdir()
@@ -412,7 +412,7 @@ class TestSkillView:
         available_files that a missing file gets. The plugin-skill sibling
         branch already gates on ``is_file()``; this aligns the local path.
         """
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "my-skill")
             refs_dir = skill_dir / "references"
             refs_dir.mkdir()
@@ -427,8 +427,8 @@ class TestSkillView:
 
     def test_disabled_skill_blocked_enabled_allowed(self, tmp_path):
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool._is_skill_disabled", return_value=True),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_agent.tools.skills_tool._is_skill_disabled", return_value=True),
         ):
             _make_skill(tmp_path, "hidden-skill")
             blocked = json.loads(skill_view("hidden-skill"))
@@ -436,8 +436,8 @@ class TestSkillView:
         assert "disabled" in blocked["error"].lower()
 
         with (
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool._is_skill_disabled", return_value=False),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("hermes_agent.tools.skills_tool._is_skill_disabled", return_value=False),
         ):
             _make_skill(tmp_path, "active-skill")
             allowed = json.loads(skill_view("active-skill"))
@@ -451,7 +451,7 @@ class TestSkillView:
         external_category = _symlink_category(skills_root, external_root, "linked")
         _make_skill(external_category.parent, "knowledge-brain", category="linked")
 
-        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_root):
             raw = skill_view("knowledge-brain")
 
         result = json.loads(raw)
@@ -487,7 +487,7 @@ class TestSkillViewSecureSetupOnLoad:
             raising=False,
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "gif-search",
@@ -536,7 +536,7 @@ class TestSkillViewSecureSetupOnLoad:
             raising=False,
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "gif-search",
@@ -589,7 +589,7 @@ class TestFindAllSkillsPlatformFiltering:
     def test_discovery_filters_on_platform(self, tmp_path):
         # Host-native: a skill tagged only for a platform that is never the
         # host is hidden; untagged and host-including skills are listed.
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "universal-skill")
             _make_skill(tmp_path, "other-only", frontmatter_extra="platforms: [plan9]\n")
             _make_skill(
@@ -612,7 +612,7 @@ class TestFindAllSkillsSecureSetup:
         monkeypatch.delenv("NONEXISTENT_API_KEY_XYZ", raising=False)
         monkeypatch.setenv("MY_PRESENT_KEY", "val")
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "needs-key",
@@ -637,7 +637,7 @@ class TestSkillViewPrerequisites:
         self, tmp_path, monkeypatch
     ):
         monkeypatch.delenv("MISSING_KEY_XYZ", raising=False)
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "gated-skill",
@@ -661,7 +661,7 @@ class TestSkillViewPrerequisites:
     ):
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "remote-ready",
@@ -680,7 +680,7 @@ class TestSkillViewPrerequisites:
         assert result["readiness_status"] == "available"
 
     def test_no_setup_metadata_when_no_required_envs(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "plain-skill")
             raw = skill_view("plain-skill")
         result = json.loads(raw)
@@ -693,7 +693,7 @@ class TestSkillViewPrerequisites:
     ):
         monkeypatch.setenv("TERMINAL_ENV", "docker")
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "backend-ready",
@@ -709,7 +709,7 @@ class TestSkillViewPrerequisites:
         monkeypatch.setenv("TERMINAL_ENV", "local")
         monkeypatch.delenv("SHELL_ONLY_KEY", raising=False)
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "shell-ready",
@@ -751,7 +751,7 @@ class TestSkillViewPrerequisites:
             raising=False,
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "gif-search",
@@ -794,7 +794,7 @@ Do the legacy thing.
             encoding="utf-8",
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             raw = skill_view("legacy-skill")
 
         result = json.loads(raw)
@@ -830,7 +830,7 @@ Do the legacy thing.
             raising=False,
         )
 
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(
                 tmp_path,
                 "gif-search",
@@ -872,7 +872,7 @@ class TestSkillViewCollisionDetection:
     def _patch_dirs(self, local_dir, external_dirs):
         """Patch SKILLS_DIR (module-level) and get_external_skills_dirs at source."""
         return (
-            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch(
                 "agent.skill_utils.get_external_skills_dirs",
                 return_value=list(external_dirs),
@@ -1024,7 +1024,7 @@ class TestSameRootDuplicationResolves:
 
     def _patch_dirs(self, local_dir, external_dirs=()):
         return (
-            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch("agent.skill_utils.get_external_skills_dirs", return_value=list(external_dirs)),
         )
 
@@ -1097,7 +1097,7 @@ class TestTrustWarningSymlinkAware:
     search dir is quiet, a SKILL.md symlinked to a file outside every root still warns."""
 
     def _log(self, name, skill_md, all_dirs, active):
-        from tools.skills_tool import _log_security_warnings
+        from hermes_agent.tools.skills_tool import _log_security_warnings
         _log_security_warnings(name, skill_md, "plain body", list(all_dirs), active)
 
     def test_symlink_resolving_under_a_registered_dir_is_trusted(self, tmp_path, caplog):

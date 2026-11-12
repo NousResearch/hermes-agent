@@ -454,8 +454,8 @@ def streaming_enabled(stt_config: dict[str, Any]) -> bool:
 def _openai_credentials() -> Optional[tuple[str, str]]:
     """Direct OpenAI credentials only: the managed Nous gateway proxies the REST audio API, not
     the Realtime socket."""
-    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
-    from tools.transcription_tools import _resolve_openai_audio_client_config
+    from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection
+    from hermes_agent.tools.transcription_tools import _resolve_openai_audio_client_config
     if read_selection("stt") == NOUS_MANAGED_PROVIDER:
         return None
     try:
@@ -467,8 +467,8 @@ def _openai_credentials() -> Optional[tuple[str, str]]:
 
 def _builtin_session(provider: str, stt_config: dict[str, Any], language: Optional[str],
                      prompt: Optional[str], on_partial: Optional[PartialCallback]) -> Optional[StreamingSession]:
-    from tools import transcription_common as tc
-    from tools import transcription_tools as tt
+    from hermes_agent.tools import transcription_common as tc
+    from hermes_agent.tools import transcription_tools as tt
     raw_section = stt_config.get(provider)
     section: dict[str, Any] = raw_section if isinstance(raw_section, dict) else {}
     if provider == "openai":
@@ -505,7 +505,7 @@ def _plugin_session(provider: str, language: Optional[str], prompt: Optional[str
 
 def streaming_available(stt_config: Optional[dict[str, Any]] = None) -> bool:
     """Cheap capability probe (no connection): would :func:`open_streaming_session` try a wire?"""
-    from tools import transcription_tools as tt
+    from hermes_agent.tools import transcription_tools as tt
     cfg = tt._load_stt_config() if stt_config is None else stt_config
     if not streaming_enabled(cfg):
         return False
@@ -523,7 +523,7 @@ def open_streaming_session(on_partial: Optional[PartialCallback] = None,
 
     None when ``stt.streaming`` is off, the provider has no live wire, or it lacks credentials.
     """
-    from tools import transcription_tools as tt
+    from hermes_agent.tools import transcription_tools as tt
     cfg = tt._load_stt_config() if stt_config is None else stt_config
     if not streaming_enabled(cfg):
         return None

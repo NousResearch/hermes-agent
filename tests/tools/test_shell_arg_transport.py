@@ -5,8 +5,8 @@ import subprocess
 
 import pytest
 
-from tools.environments.local import LocalEnvironment, _find_bash
-from tools.file_operations import ShellFileOperations
+from hermes_agent.tools.environments.local import LocalEnvironment, _find_bash
+from hermes_agent.tools.file_operations import ShellFileOperations
 
 
 class _SerializedShell:

@@ -607,7 +607,7 @@ class WebhookAdapter(BasePlatformAdapter):
 
         async def _fire_cron_job() -> None:
             try:
-                from tools.cronjob_tools import execute_job_for_event
+                from hermes_agent.tools.cronjob_tools import execute_job_for_event
                 # The job store (cron/jobs.json) and the run belong to the ROUTED profile, not the gateway's
                 # default home; to_thread copies contextvars so the scope follows. A cron job is a full agent
                 # run (minutes) — keep it off the gateway event loop.

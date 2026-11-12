@@ -49,7 +49,7 @@ def _mint(command: str, label: str) -> tuple[str, Optional[float]]:
     """Run *command*, returning ``(token, ttl_seconds_or_None)``. The helper runs FOR the profile whose
     provider is being minted: it gets that profile's own env (secrets + HERMES_HOME), never the multiplexer's
     launch environ — an ``op read`` / ``vault kv get`` helper must sign in as the served profile."""
-    from tools.environments.local import served_profile_child_env
+    from hermes_agent.tools.environments.local import served_profile_child_env
 
     try:
         completed = subprocess.run(

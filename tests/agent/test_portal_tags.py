@@ -83,7 +83,7 @@ def test_ambient_context_propagates_via_thread_context_helper():
         reset_conversation_context,
         set_conversation_context,
     )
-    from tools.thread_context import propagate_context_to_thread
+    from hermes_agent.tools.thread_context import propagate_context_to_thread
 
     token = set_conversation_context("moa-root")
     try:

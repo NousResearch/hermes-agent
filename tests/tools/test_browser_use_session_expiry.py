@@ -3,16 +3,16 @@
 from unittest.mock import Mock
 
 from plugins.browser.browser_use import provider as browser_use_provider
-from tools import browser_session as bs
-from tools import browser_session_cloud as bs_cloud
+from hermes_agent.tools import browser_session as bs
+from hermes_agent.tools import browser_session_cloud as bs_cloud
 
 
 def _isolate_browser_state(monkeypatch):
     monkeypatch.setattr(bs, "_active_sessions", {})
     monkeypatch.setattr(bs, "_session_last_activity", {})
     monkeypatch.setattr(bs, "_session_owner_homes", {})
-    monkeypatch.setattr("tools.browser_session_lifecycle.start_cleanup_thread", lambda: None)
-    monkeypatch.setattr("tools.browser_session_cdp.ensure_cdp_supervisor", lambda task_id: None)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_lifecycle.start_cleanup_thread", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.ensure_cdp_supervisor", lambda task_id: None)
 
 
 def test_browser_use_preserves_provider_timeout(monkeypatch):
@@ -81,8 +81,8 @@ def test_expired_cloud_session_is_replaced_without_reusing_dead_cdp(monkeypatch)
         "expires_at": "2999-01-01T00:05:00Z",
     }
     monkeypatch.setattr(bs_cloud, "get_cloud_provider", lambda: provider)
-    monkeypatch.setattr("tools.browser_session_cdp.get_cdp_override", lambda: "")
-    monkeypatch.setattr("tools.browser_session_cdp.stop_cdp_supervisor", lambda key: events.append(("stop", key)))
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.get_cdp_override", lambda: "")
+    monkeypatch.setattr("hermes_agent.tools.browser_session_cdp.stop_cdp_supervisor", lambda key: events.append(("stop", key)))
 
     session = bs.get_session_info("task-1")
 

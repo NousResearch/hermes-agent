@@ -16,7 +16,7 @@ Both fixed together by:
 import threading
 
 import pytest
-from tools import approval_context
+from hermes_agent.tools import approval_context
 
 
 @pytest.fixture(autouse=True)
@@ -25,12 +25,12 @@ def _isolate_approval_state(monkeypatch):
 
     Earlier tests (e.g. tests/acp_adapter/test_permissions.py) lazily load the
     developer's real ``~/.hermes/config.yaml`` command allowlist into
-    ``tools.approval._permanent_approved``. If that allowlist contains a
+    ``hermes_agent.tools.approval._permanent_approved``. If that allowlist contains a
     pattern like "recursive delete", ``rm -rf …`` is auto-approved before
     the interactive callback fires and the GHSA regression assertions fail
     for reasons unrelated to the code under test.
     """
-    import tools.approval as _approval
+    import hermes_agent.tools.approval as _approval
 
     monkeypatch.setattr(_approval, "_permanent_approved", set())
     monkeypatch.setattr(_approval, "_session_approved", {})
@@ -49,7 +49,7 @@ class TestThreadLocalApprovalCallback:
 
     def test_callback_not_visible_in_different_thread(self):
         """Thread A's callback is NOT visible to Thread B."""
-        from tools.terminal_tool import (
+        from hermes_agent.tools.terminal_tool import (
             set_approval_callback,
             _get_approval_callback,
         )
@@ -87,7 +87,7 @@ class TestThreadLocalApprovalCallback:
     def test_main_thread_callback_not_leaked_to_worker(self):
         """A callback set in the main thread does NOT leak into a
         freshly-spawned worker thread."""
-        from tools.terminal_tool import (
+        from hermes_agent.tools.terminal_tool import (
             set_approval_callback,
             _get_approval_callback,
         )
@@ -112,7 +112,7 @@ class TestThreadLocalApprovalCallback:
 
     def test_sudo_password_cache_does_not_leak_across_threads(self):
         """Interactive sudo cache must not bleed into another executor thread."""
-        from tools.terminal_tool_sudo import (
+        from hermes_agent.tools.terminal_tool_sudo import (
             _get_cached_sudo_password,
             _reset_cached_sudo_passwords,
             _set_cached_sudo_password,
@@ -137,7 +137,7 @@ class TestThreadLocalApprovalCallback:
 
 class TestAcpExecAskGate:
     """GHSA-96vc-wcxf-jjff: ACP's _run_agent must set HERMES_INTERACTIVE so
-    that tools.approval.check_all_command_guards takes the CLI-interactive
+    that hermes_agent.tools.approval.check_all_command_guards takes the CLI-interactive
     path (consults the registered callback via prompt_dangerous_approval)
     instead of the non-interactive auto-approve shortcut.
 
@@ -154,7 +154,7 @@ class TestAcpExecAskGate:
         monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
         monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
 
-        from tools.approval import check_all_command_guards
+        from hermes_agent.tools.approval import check_all_command_guards
 
         called_with = []
 

@@ -67,14 +67,14 @@ def approval_timed_out_notice(window: str) -> str:
 
 def approval_timeout_seconds() -> int:
     """The configured ``approvals.timeout`` (default 300s); module attribute so tests can pin it."""
-    from tools.approval_context import _get_approval_timeout
+    from hermes_agent.tools.approval_context import _get_approval_timeout
     return _get_approval_timeout()
 
 
 def format_approval_window(seconds: int) -> str:
     """Human wording for a timeout (300 → "5 minutes"); one formatter shared with the CLI notice and
-    the tool result's ``user_summary`` — see ``tools.approval_context.format_approval_window``."""
-    from tools.approval_context import format_approval_window as _shared
+    the tool result's ``user_summary`` — see ``hermes_agent.tools.approval_context.format_approval_window``."""
+    from hermes_agent.tools.approval_context import format_approval_window as _shared
     return _shared(seconds)
 
 
@@ -167,7 +167,7 @@ async def card_shows_whole_command(adapter: Any, chat_id: str, session_key: str,
     (for a truncated preview) in a full-command send ahead of it. The request was created Deny-only, so a
     tap that lands before this, or during the send, can only deny it; on any failure (or a raise) the
     mark stays."""
-    from tools.approval import restrict_gateway_approval_card_to_deny
+    from hermes_agent.tools.approval import restrict_gateway_approval_card_to_deny
     if truncated:
         restrict_gateway_approval_card_to_deny(session_key, request_id)  # a re-render starts Deny-only too
         if not await send_full_command(adapter, chat_id, command, metadata):

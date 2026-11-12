@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from tools.mcp_oauth_provider import HermesProviderMixin
+from hermes_agent.tools.mcp_oauth_provider import HermesProviderMixin
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
 
     def _hermes_storage(self):
         """The context storage when it is a ``HermesTokenStorage``, else None."""
-        from tools.mcp_oauth import HermesTokenStorage
+        from hermes_agent.tools.mcp_oauth import HermesTokenStorage
         return self.context.storage if isinstance(self.context.storage, HermesTokenStorage) else None
 
     def _log_nonfatal(self, what: str, exc: BaseException) -> None:
@@ -96,14 +96,14 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             except Exception as exc:  # pragma: no cover — the SDK's 401-branch discovery runs next request
                 self._log_nonfatal("pre-flight metadata discovery", exc)
             else:
-                from tools.mcp_oauth_provider import enforce_refresh_token_issuer
+                from hermes_agent.tools.mcp_oauth_provider import enforce_refresh_token_issuer
                 enforce_refresh_token_issuer(self.context)  # metadata (issuer) only just became known
 
     async def _prefetch_oauth_metadata(self) -> None:
         """Fetch PRM + ASM from the well-known endpoints before the first request, via the SDK's own URL
         builders/response handlers so we track whatever the pinned SDK expects."""
         # The SDK's httpx flavour, not Hermes': `create_oauth_metadata_request` returns *its* (httpx2) Request objects.
-        from tools.mcp_tool import sdk_httpx
+        from hermes_agent.tools.mcp_tool import sdk_httpx
         httpx = sdk_httpx()
         if httpx is None:  # pragma: no cover — SDK import would have failed
             return
@@ -111,7 +111,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             build_oauth_authorization_server_metadata_discovery_urls,
             build_protected_resource_metadata_discovery_urls, create_oauth_metadata_request,
             handle_auth_metadata_response, handle_protected_resource_response)
-        from tools.mcp_oauth_provider import stamp_default_user_agent
+        from hermes_agent.tools.mcp_oauth_provider import stamp_default_user_agent
         server_url = self.context.server_url
 
         async def _send(client, url: str, label: str):
@@ -346,9 +346,9 @@ class MCPOAuthManager:
         if _HERMES_PROVIDER_CLS is None:
             logger.warning("MCP OAuth '%s': SDK auth module unavailable", server_name)
             return None
-        from tools.mcp_dashboard_oauth import get_dashboard_oauth_flow  # lazy: circular at import time
-        from tools.mcp_oauth import _OAUTH_AVAILABLE, OAuthNonInteractiveError, _is_interactive
-        from tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
+        from hermes_agent.tools.mcp_dashboard_oauth import get_dashboard_oauth_flow  # lazy: circular at import time
+        from hermes_agent.tools.mcp_oauth import _OAUTH_AVAILABLE, OAuthNonInteractiveError, _is_interactive
+        from hermes_agent.tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
         if not _OAUTH_AVAILABLE:
             return None
         cfg, storage = prepare_oauth_config(server_name, entry.server_url, entry.oauth_config)
@@ -363,7 +363,7 @@ class MCPOAuthManager:
     def remove(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:
         """Evict the provider from cache AND delete tokens from disk (``hermes mcp remove`` / forced re-auth)."""
         entry = self.evict(server_name, hermes_home=hermes_home)
-        from tools.mcp_oauth import remove_oauth_tokens
+        from hermes_agent.tools.mcp_oauth import remove_oauth_tokens
         remove_oauth_tokens(server_name, hermes_home=hermes_home)
         logger.info("MCP OAuth '%s': evicted from cache and removed from disk", server_name)
         return entry
@@ -382,7 +382,7 @@ class MCPOAuthManager:
 
     async def invalidate_if_disk_changed(self, server_name: str, *, hermes_home: str | Path | None = None) -> bool:
         """Force the SDK provider to reload when the tokens file mtime changed (e.g. a cron refresh); True if so."""
-        from tools.mcp_oauth import _get_token_dir, _safe_filename
+        from hermes_agent.tools.mcp_oauth import _get_token_dir, _safe_filename
         from utils import file_cache_version
         entry = self._entries.get(self._key(server_name, hermes_home))
         if entry is None or entry.provider is None:

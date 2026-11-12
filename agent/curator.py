@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
 from agent.skill_utils import get_disabled_skill_names
-from tools import skill_usage
+from hermes_agent.tools import skill_usage
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -194,7 +194,7 @@ def _cron_referenced_skills() -> set[str]:
 def _archive_as_curator(_u, name: str) -> bool:
     """Archive via skill_usage with the ledger actor tagged 'curator', so the ledger entry reads as an autonomous transition, not a foreground call."""
     try:
-        from tools.skill_ledger import reset_ledger_actor, set_ledger_actor
+        from hermes_agent.tools.skill_ledger import reset_ledger_actor, set_ledger_actor
         tok = set_ledger_actor("curator")
     except Exception:
         tok = reset_ledger_actor = None  # type: ignore[assignment]
@@ -210,7 +210,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
     """Move every curator-managed skill between active/stale/archived based on its latest real activity; pinned skills are
     never touched. Built-ins are seeded with a baseline record on first sight so their inactivity clock starts NOW, not at epoch.
     Returns a counter dict."""
-    from tools import skill_usage as _u
+    from hermes_agent.tools import skill_usage as _u
 
     now = now or datetime.now(UTC)
     stale_cutoff = now - timedelta(days=get_stale_after_days())
@@ -224,7 +224,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> dict[str, int
         _u.set_state(name, state)
         counts[key] += 1
 
-    from tools.skill_lock import is_locked_skill
+    from hermes_agent.tools.skill_lock import is_locked_skill
     locked_names = _u.locked_skill_names()  # keyed by directory; rows carry the frontmatter name
     for row in _u.curated_report():
         counts["checked"] += 1
@@ -1153,7 +1153,7 @@ def _run_llm_review(prompt: str) -> dict[str, Any]:
         # refused ("content has not been loaded in this review turn") even after
         # a fresh skill_view. Same seeding as agent/background_review.py.
         with contextlib.suppress(Exception):
-            from tools.skill_manager_guards import _reset_background_review_read_marks
+            from hermes_agent.tools.skill_manager_guards import _reset_background_review_read_marks
 
             _reset_background_review_read_marks()
         # Silence the fork's tool-call chatter (CLI synchronous foreground runs).

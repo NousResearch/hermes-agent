@@ -10,12 +10,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_constants import hermes_home_key
-from tools.connectors.contract import Actor, SettleReason, TargetState
-from tools.connectors.gateway.config import operation_session_key
-from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
-from tools.connectors.run import Kind, run_operation
-from tools.connectors.targets import hosted_names, misrouted_to_mcp_error
-from tools.registry import tool_error
+from hermes_agent.tools.connectors.contract import Actor, SettleReason, TargetState
+from hermes_agent.tools.connectors.gateway.config import operation_session_key
+from hermes_agent.tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
+from hermes_agent.tools.connectors.run import Kind, run_operation
+from hermes_agent.tools.connectors.targets import hosted_names, misrouted_to_mcp_error
+from hermes_agent.tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ class _CatalogBackend:
                 for spec in (_catalog_entry(name).auth.env or []) if not get_env_value(spec.name)]
 
     def start_oauth(self, name: str) -> Any:
-        from tools.connectors import mcp_oauth
+        from hermes_agent.tools.connectors import mcp_oauth
 
         # The TUI/Desktop card path supplies its advertised client redirect in a later part.
         return mcp_oauth.start(name, client_redirect_uri=None)
@@ -127,7 +127,7 @@ class _CatalogBackend:
         """Install an OAuth entry through the card's flow. The configuration is built in memory and
         lands, together with the setup values, only when ``initialize`` accepts the token."""
         from hermes_cli.mcp_catalog import card_install_config, is_installed, record_mcp_install
-        from tools.connectors import mcp_oauth
+        from hermes_agent.tools.connectors import mcp_oauth
 
         fresh = not is_installed(name)
 
@@ -341,7 +341,7 @@ class _Runner:
             if work.attempt is None or operation is None:
                 continue
             if operation.settled_by == SettleReason.interrupt:
-                from tools.connectors.mcp_oauth import cancel_attempt
+                from hermes_agent.tools.connectors.mcp_oauth import cancel_attempt
 
                 cancel_attempt(work.attempt.flow)
             else:
@@ -381,8 +381,8 @@ def adopt_late_connections(agent: Any) -> list[str]:
         if snapshot["status"] != "approved" or snapshot.get("discovery_error"):
             continue
         try:
-            from tools.mcp_tool_config import _load_mcp_config
-            from tools.mcp_tool_discovery import register_mcp_servers
+            from hermes_agent.tools.mcp_tool_config import _load_mcp_config
+            from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
 
             config = _load_mcp_config().get(name)
             if isinstance(config, dict):
@@ -470,8 +470,8 @@ def _fail(operation: ConnectionOperation, target: Target, detail: str) -> None:
 def _register_connected(runner: _Runner, target: Target, name: str) -> tuple[list[str], str]:
     """Register one committed server in the current profile scope and report its callable names."""
     try:
-        from tools.mcp_tool_config import _load_mcp_config
-        from tools.mcp_tool_discovery import register_mcp_servers
+        from hermes_agent.tools.mcp_tool_config import _load_mcp_config
+        from hermes_agent.tools.mcp_tool_discovery import register_mcp_servers
 
         config = _load_mcp_config().get(name)
         if not isinstance(config, dict):
@@ -490,10 +490,10 @@ def _registered_tool_names(name: str, wait_seconds: float = 30.0) -> list[str]:
     own connect, so a large server (hundreds of tools) was reported with no tools three seconds
     before they were registered. A server that failed discovery earlier is parked with no tools
     and is woken once. A server that finished registering with no tools is a valid empty list."""
-    from tools import mcp_tool as _core
-    from tools.mcp_tool_loop import reconnect_mcp_server
-    from tools.mcp_tool_scope import _resolve_server_key
-    from tools.registry import registry
+    from hermes_agent.tools import mcp_tool as _core
+    from hermes_agent.tools.mcp_tool_loop import reconnect_mcp_server
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools.registry import registry
 
     key = _resolve_server_key(name)
     deadline = time.time() + wait_seconds
@@ -779,7 +779,7 @@ def _cancel_attempt(runner: Optional[_Runner], target: Target) -> str:
     flow = getattr(getattr(work, "attempt", None), "flow", None)
     if flow is None:
         return ""
-    from tools.connectors.mcp_oauth import cancel_attempt
+    from hermes_agent.tools.connectors.mcp_oauth import cancel_attempt
 
     return AUTHORIZATION_KEPT if cancel_attempt(flow) else ""
 
@@ -834,7 +834,7 @@ def run_mcp_operation(
     if connection_callback is None:
         return _no_card_result(runner, names, action, session_key)
     try:
-        from tools.connectors.mcp_launch import launch_for
+        from hermes_agent.tools.connectors.mcp_launch import launch_for
 
         return run_operation(
             [Target(n, "mcp", action, launch=launch_for(action, n)) for n in names],

@@ -2,7 +2,7 @@
 
 ``gateway_state.json`` names each unit only while draining and its ``active_agents`` total leaves out
 async delegations, so a CLI asking "may I stop this gateway?" could not see a background subagent
-that ``stop()`` interrupts (``tools.async_delegation.interrupt_all``). The verb answers from the
+that ``stop()`` interrupts (``hermes_agent.tools.async_delegation.interrupt_all``). The verb answers from the
 running process instead: the same units the drain report publishes plus every live delegation.
 """
 
@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 
 def _delegation_units(now: float) -> list[dict[str, Any]]:
-    from tools.async_delegation import _LIVE_STATES, list_async_delegations
+    from hermes_agent.tools.async_delegation import _LIVE_STATES, list_async_delegations
 
     units = []
     for record in list_async_delegations():

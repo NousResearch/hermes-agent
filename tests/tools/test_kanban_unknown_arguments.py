@@ -13,8 +13,8 @@ def test_review_unknown_argument_rejects_before_handoff(tmp_path, monkeypatch):
         monkeypatch.delenv(key, raising=False)
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
-    from tools import kanban_tools  # register actual handlers
-    from tools.registry import registry
+    from hermes_agent.tools import kanban_tools  # register actual handlers
+    from hermes_agent.tools.registry import registry
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
     with kbc.connect_closing() as conn:
@@ -44,8 +44,8 @@ def test_review_unknown_argument_rejects_before_handoff(tmp_path, monkeypatch):
 
 
 def test_registered_kanban_tools_reject_unknown_keys():
-    from tools import kanban_tools
-    from tools.registry import registry
+    from hermes_agent.tools import kanban_tools
+    from hermes_agent.tools.registry import registry
     for name, schema, handler, emoji in kanban_tools._TOOLS:
         result = json.loads(registry.dispatch(name, {'misspelled_argument': True}))
         assert 'unknown parameter' in result.get('error', ''), (name, result)
@@ -56,8 +56,8 @@ def test_undeclared_internal_keys_survive_the_strict_check():
     """``project_id`` (legacy alias of ``project``) and ``session_id`` (internal
     provenance) are read by ``_handle_create`` without being in the LLM-facing
     schema; the unknown-key gate must not reject them (#115641 follow-up)."""
-    from tools import kanban_tools
-    from tools.registry import registry
+    from hermes_agent.tools import kanban_tools
+    from hermes_agent.tools.registry import registry
     # No board in this test: an accepted key set reaches the handler proper and
     # fails on the *next* validation, never on "unknown parameter".
     result = json.loads(registry.dispatch(

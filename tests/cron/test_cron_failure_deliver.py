@@ -300,7 +300,7 @@ class TestToolSurface:
     validation — reusing the same normalize/validate helpers."""
 
     def test_create_stores_failure_deliver(self, cron_env):
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         from hermes_agent.cron.jobs import get_job
 
         result = json.loads(cronjob(
@@ -315,7 +315,7 @@ class TestToolSurface:
 
     def test_create_without_failure_deliver_does_not_persist_the_key(self, cron_env):
         """Existing-job byte-identity: the field only exists when set."""
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         from hermes_agent.cron.jobs import get_job
 
         result = json.loads(cronjob(
@@ -325,7 +325,7 @@ class TestToolSurface:
         assert "failure_deliver" not in get_job(result["job_id"])
 
     def test_create_flattens_list_value_like_deliver(self, cron_env):
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         from hermes_agent.cron.jobs import get_job
 
         result = json.loads(cronjob(
@@ -338,7 +338,7 @@ class TestToolSurface:
         assert get_job(result["job_id"])["failure_deliver"] == "slack,telegram"
 
     def test_create_rejects_bad_bot_chat_profile_same_as_deliver(self, cron_env):
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         via_failure = json.loads(cronjob(
             action="create", prompt="scan", schedule="every 1h",
@@ -355,7 +355,7 @@ class TestToolSurface:
 
     def test_update_sets_and_clears_failure_deliver(self, cron_env):
         from hermes_agent.cron.jobs import create_job, get_job
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
 
         job = create_job(prompt="scan", schedule="every 1h")
         result = json.loads(cronjob(

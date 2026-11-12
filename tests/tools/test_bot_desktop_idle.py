@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from tools.bot_desktop import lease, runtime
+from hermes_agent.tools.bot_desktop import lease, runtime
 
 
 def _running(monkeypatch, tmp_path):
@@ -150,7 +150,7 @@ def test_an_infinite_idle_window_is_off_and_never_overflows_the_next_check(monke
     """``idle_stop_minutes: .inf`` meant "never stop" before the self-stop; the launcher's first-check delay
     is computed from it in start(), where an infinite window raised OverflowError."""
     from hermes_cli import config
-    from tools.bot_desktop.idle_watch import next_check_in
+    from hermes_agent.tools.bot_desktop.idle_watch import next_check_in
     for minutes in (float("inf"), 1e308):  # 1e308 is finite, but not in seconds
         monkeypatch.setattr(config, "load_config_readonly", lambda m=minutes: {"bot_desktop": {"idle_stop_minutes": m}})
         assert runtime.idle_stop_seconds() == 0.0, minutes
@@ -158,7 +158,7 @@ def test_an_infinite_idle_window_is_off_and_never_overflows_the_next_check(monke
 
 
 def test_the_launchers_idle_check_sleeps_until_the_screen_could_be_due():
-    from tools.bot_desktop.idle_watch import next_check_in
+    from hermes_agent.tools.bot_desktop.idle_watch import next_check_in
     assert next_check_in(1800, 600) == 1200  # wakes when the window runs out at the current age
     assert next_check_in(1800, 1795) == 30  # never a tight loop near the edge
     assert next_check_in(1800, 7200) == 1800, "a human holding it past the window: recheck a window later"
@@ -172,7 +172,7 @@ def test_an_idle_check_that_waited_on_the_lock_never_stops_the_replacement_scree
     """The idle decision is taken before ``start.lock``; a stop + start that holds the lock meanwhile replaces
     the screen. The waiting check must re-decide under the lock: the launcher's own check (it names the screen
     it judged) keeps a replacement however idle, the gateway watcher keeps one that is in use."""
-    from tools.bot_desktop import placement, sandbox_host
+    from hermes_agent.tools.bot_desktop import placement, sandbox_host
 
     sd = tmp_path / "bd"
     sd.mkdir()
@@ -221,7 +221,7 @@ def test_an_idle_check_that_waited_on_the_lock_never_stops_the_replacement_scree
 
 def _spawn(monkeypatch, tmp_path) -> dict[str, str]:
     """Runs ``_spawn_and_wait`` up to the launcher's Popen (a launcher that exits at once); the env it got."""
-    from tools.bot_desktop import browser
+    from hermes_agent.tools.bot_desktop import browser
 
     monkeypatch.setattr(runtime, "state_dir", lambda: tmp_path)
     monkeypatch.setattr(runtime, "_ALLOC_LOCK", tmp_path / "alloc.lock")

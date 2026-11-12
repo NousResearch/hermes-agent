@@ -1063,7 +1063,7 @@ def build_cache_parity_fork(
 
 # Install a non-interactive approval callback on this worker thread so any dangerous-command guard the
 # review agent trips resolves to "deny" instead of falling back to input() -- which deadlocks against the
-# parent's prompt_toolkit TUI (#15216). Same pattern as _subagent_auto_deny in tools/delegate_tool.py.
+# parent's prompt_toolkit TUI (#15216). Same pattern as _subagent_auto_deny in hermes_agent/tools/delegate_tool.py.
 def _bg_review_auto_deny(command, description, **kwargs):
     """Non-interactive approval: dangerous-command guards resolve to "deny" instead of input(),
     which would deadlock against the parent's TUI."""
@@ -1084,7 +1084,7 @@ def _bg_review_skip_secret(var_name, prompt, metadata=None):
 
 
 def _set_thread_approval_callback(callback: Any) -> None:
-    from tools.terminal_tool import set_approval_callback
+    from hermes_agent.tools.terminal_tool import set_approval_callback
 
     with suppress(Exception):
         set_approval_callback(callback)
@@ -1118,7 +1118,7 @@ def _review_tool_whitelist(
 ) -> tuple[set, set]:
     """``(whitelist, configured_extra_tools)`` for the review fork — DISPATCH-side only, so the
     advertised ``tools[]`` stays byte-identical to the parent's (prompt-cache parity)."""
-    from model_tools import get_tool_definitions
+    from hermes_agent.model_tools import get_tool_definitions
     # Gate the built-in memory tool on BOTH the profile's memory flags and the trigger that fired
     # (#105921): a skill-nudge review never gets the memory tool, so an unattended fork cannot
     # act on the memory tool's "consolidate now" hint and delete entries no one reviewed.
@@ -1137,7 +1137,7 @@ def _review_tool_whitelist(
     # self-improvement loop — the model never loaded SKILL.md the way the read-before-write guard requires,
     # so almost no patch landed. This is a DISPATCH-side change only: the advertised ``tools[]`` stays
     # byte-identical to the parent's, so prompt-cache parity is untouched. read_file registers the read with
-    # the read-before-write guard (tools/file_tools.py), so a read_file → skill_manage(patch) sequence now
+    # the read-before-write guard (hermes_agent/tools/file_tools.py), so a read_file → skill_manage(patch) sequence now
     # succeeds. Write tools (write_file/patch/terminal) stay denied — autonomous maintenance must go through
     # skill_manage's validation, and the deny message below names that substitute so one denial redirects
     # the model instead of a storm.
@@ -1219,7 +1219,7 @@ def _run_review_fork(
         ),
     )
     with suppress(Exception):
-        from tools.skill_manager_guards import _reset_background_review_read_marks
+        from hermes_agent.tools.skill_manager_guards import _reset_background_review_read_marks
 
         _reset_background_review_read_marks()
     try:
@@ -1295,7 +1295,7 @@ def _run_review_in_thread(
         # driving a Telegram long-poll — for the full duration of the review (tens of seconds), swallowing
         # their console output (#55769 / #55925). ``thread_scoped_silence`` routes only this thread's writes
         # to devnull and leaves all other threads on the real streams.
-        from tools.skills_tool import bind_turn_secret_capture
+        from hermes_agent.tools.skills_tool import bind_turn_secret_capture
         with thread_scoped_silence(), bind_turn_secret_capture(_bg_review_skip_secret):
             _run_review_fork(agent, messages_snapshot, prompt, task_cfg, review_run, st, review_memory, explicit)
         # A buggy/legacy tool response shape must NOT take down the whole review (the outer

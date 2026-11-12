@@ -12,7 +12,7 @@ import tempfile
 
 import pytest
 
-from tools.terminal_tool import terminal_tool
+from hermes_agent.tools.terminal_tool import terminal_tool
 
 
 @pytest.fixture

@@ -60,7 +60,7 @@ def _hud_note(committed, valid_tool_names):
 
 
 def _voice_live_note(committed, valid_tool_names):
-    from tools.voice_live import voice_live_turn_note
+    from hermes_agent.tools.voice_live import voice_live_turn_note
     return voice_live_turn_note(committed.get('voice_context') or '')
 
 
@@ -72,7 +72,7 @@ def surface_note(committed, valid_tool_names=None):
     first, then the HUD read-the-window-below prior or the spoken-delegation contract."""
     notes = []
     if committed.get('interrupted'):
-        from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE
+        from hermes_agent.tools.tts_streaming import SPEECH_INTERRUPTED_NOTE
         notes.append(SPEECH_INTERRUPTED_NOTE)
     render = _SURFACE_NOTES.get(committed.get('surface'))
     if render is not None:

@@ -107,7 +107,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/check_blob_size.py --base HEAD^1
 
-      # tools/lazy_deps.py is an old-updater stub that only raises or stops for relaunch
+      # hermes_agent/tools/lazy_deps.py is an old-updater stub that only raises or stops for relaunch
       # (pm.extras is the only lazy-install surface), so a production import never gets its
       # dependencies. AST-based, fails on inventory errors; contract tests in
       # tests/pm/test_no_lazy_deps.py.

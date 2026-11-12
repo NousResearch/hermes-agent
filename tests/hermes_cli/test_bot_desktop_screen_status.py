@@ -9,7 +9,7 @@ import json
 import pytest
 
 from hermes_cli.subcommands import computer_use_screen
-from tools.bot_desktop import lease, runtime
+from hermes_agent.tools.bot_desktop import lease, runtime
 
 
 def _parse(argv):

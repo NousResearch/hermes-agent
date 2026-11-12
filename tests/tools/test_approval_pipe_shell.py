@@ -2,7 +2,7 @@
 
 import time
 
-from tools.approval import detect_dangerous_command
+from hermes_agent.tools.approval import detect_dangerous_command
 
 
 class TestPipeRemoteToShellPattern:

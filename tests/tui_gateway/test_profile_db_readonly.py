@@ -79,7 +79,7 @@ def test_discover_repos_payload_skips_backfill_on_read_only(monkeypatch, tmp_pat
 def test_bot_chat_unarchive_escalates_to_writer(monkeypatch, tmp_path):
     """An archived-by-accident Bot Chat found via an exact-title lookup on a READ-ONLY foreign
     handle is still resurrected: the write goes through a short-lived registry writer."""
-    from tools.bot_mode_probe import BOT_CHAT_TITLE
+    from hermes_agent.tools.bot_mode_probe import BOT_CHAT_TITLE
 
     foreign = tmp_path / "profiles" / "code"
     foreign.mkdir(parents=True, exist_ok=True)

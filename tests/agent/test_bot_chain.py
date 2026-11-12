@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.gateway.bot_loop_guard import BotLoopGuardSettings
-from tools.bot_mode_probe import NO_REPLY_MARKER
+from hermes_agent.tools.bot_mode_probe import NO_REPLY_MARKER
 
 
 @pytest.fixture

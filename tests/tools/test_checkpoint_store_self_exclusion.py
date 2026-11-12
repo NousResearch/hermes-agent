@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from tools.checkpoint_manager import (
+from hermes_agent.tools.checkpoint_manager import (
     CheckpointManager,
     _project_hash,
     _ref_name,
     _store_path,
 )
-import tools.checkpoint_manager as _cm
+import hermes_agent.tools.checkpoint_manager as _cm
 
 # Tolerant lookup so RED on unmodified main fails inside each test, not at collection.
 _stage_all_args = getattr(_cm, "_stage_all_args", None)
@@ -42,10 +42,10 @@ def home_as_workdir(tmp_path, monkeypatch):
     (home / "config.yaml").write_text("checkpoints:\n  enabled: true\n")
     (home / "notes.md").write_text("one\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", home / "checkpoints")
+    monkeypatch.setattr("hermes_agent.tools.checkpoint_manager.CHECKPOINT_BASE", home / "checkpoints")
     # Use the system git so PM's lazy acquisition does not bootstrap a runtime under HOME.
     monkeypatch.setattr(
-        "tools.checkpoint_manager.selected_git_env",
+        "hermes_agent.tools.checkpoint_manager.selected_git_env",
         lambda base=None: dict(base if base is not None else os.environ),
     )
     return home

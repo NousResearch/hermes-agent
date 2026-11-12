@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.registry import (
+from hermes_agent.tools.registry import (
     ToolRegistry,
     _MAX_LOGGED_ERROR_CHARS,
     _MAX_TOOL_ERROR_CHARS,
@@ -107,7 +107,7 @@ class TestRegisterAndDispatch:
             threading.Thread(target=_register, args=("mcp-foo_bar", "underscore")),
         ]
 
-        with caplog.at_level(logging.ERROR, logger="tools.registry"):
+        with caplog.at_level(logging.ERROR, logger="hermes_agent.tools.registry"):
             for thread in threads:
                 thread.start()
             barrier.wait(timeout=5)
@@ -174,7 +174,7 @@ class TestToolErrorBounding:
     def test_longer_prefix_reaches_logs_than_context(self, caplog):
         import logging
         body = "boom: " + "Z" * 5000
-        with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.registry"):
             result = json.loads(tool_error(body))
         logged = "\n".join(rec.getMessage() for rec in caplog.records)
         assert body[:5000] in logged
@@ -183,7 +183,7 @@ class TestToolErrorBounding:
     def test_log_line_is_bounded_for_huge_bodies(self, caplog):
         import logging
         body = "boom: " + "Z" * 500_000
-        with caplog.at_level(logging.DEBUG, logger="tools.registry"):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.registry"):
             json.loads(tool_error(body))
         for record in caplog.records:
             assert len(record.getMessage()) < _MAX_LOGGED_ERROR_CHARS + 200
@@ -254,7 +254,7 @@ class TestDispatchExceptionLogging:
             schema=_make_schema("boom"),
             handler=lambda args, **kw: (_ for _ in ()).throw(RuntimeError(body)),
         )
-        with caplog.at_level(logging.ERROR, logger="tools.registry"):
+        with caplog.at_level(logging.ERROR, logger="hermes_agent.tools.registry"):
             result = json.loads(reg.dispatch("boom", {}))
         messages = [r.getMessage() for r in caplog.records]
         assert messages, "dispatch should log the failure"
@@ -352,7 +352,7 @@ class TestBuiltinDiscovery:
             encoding="utf-8",
         )
 
-        with patch("tools.registry.importlib.import_module") as mock_import:
+        with patch("hermes_agent.tools.registry.importlib.import_module") as mock_import:
             imported = discover_builtin_tools(tools_dir)
 
         assert imported == ["tools.alpha"]
@@ -381,7 +381,7 @@ class TestPackageToolDiscovery:
 
     def test_package_tool_py_is_imported_under_its_dotted_name(self, tmp_path):
         tools_dir, _ = self._make_pkg(tmp_path)
-        with patch("tools.registry.importlib.import_module") as mock_import:
+        with patch("hermes_agent.tools.registry.importlib.import_module") as mock_import:
             imported = discover_builtin_tools(tools_dir)
         assert imported == ["tools.connectors.tool"]
         mock_import.assert_called_once_with("tools.connectors.tool")
@@ -390,15 +390,15 @@ class TestPackageToolDiscovery:
         tools_dir, pkg = self._make_pkg(tmp_path)
         # Registers at module level, but is not the package's tool.py: discovery must not import it.
         (pkg / "operation.py").write_text(_REGISTERING_SOURCE, encoding="utf-8")
-        with patch("tools.registry.importlib.import_module") as mock_import:
+        with patch("hermes_agent.tools.registry.importlib.import_module") as mock_import:
             imported = discover_builtin_tools(tools_dir)
         assert imported == ["tools.connectors.tool"]
         assert {c.args[0] for c in mock_import.call_args_list} == {"tools.connectors.tool"}
 
     def test_package_without_init_is_skipped_loudly(self, tmp_path, caplog):
         tools_dir, _ = self._make_pkg(tmp_path, init=False)
-        with patch("tools.registry.importlib.import_module") as mock_import, caplog.at_level(
-            logging.WARNING, logger="tools.registry"
+        with patch("hermes_agent.tools.registry.importlib.import_module") as mock_import, caplog.at_level(
+            logging.WARNING, logger="hermes_agent.tools.registry"
         ):
             imported = discover_builtin_tools(tools_dir)
         assert imported == []
@@ -407,10 +407,10 @@ class TestPackageToolDiscovery:
 
     def test_cache_round_trips_the_nested_verdict(self, tmp_path):
         tools_dir, _ = self._make_pkg(tmp_path)
-        with patch("tools.registry.importlib.import_module"):
+        with patch("hermes_agent.tools.registry.importlib.import_module"):
             discover_builtin_tools(tools_dir)
             with patch(
-                "tools.registry._module_registers_tools",
+                "hermes_agent.tools.registry._module_registers_tools",
                 side_effect=AssertionError("nested file was re-scanned despite a cache hit"),
             ):
                 imported = discover_builtin_tools(tools_dir)

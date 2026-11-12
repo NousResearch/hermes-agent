@@ -11,8 +11,8 @@ from __future__ import annotations
 import time
 from types import SimpleNamespace
 
-from tools.environments.local import LocalEnvironment
-import tools.environments.base as base_mod
+from hermes_agent.tools.environments.local import LocalEnvironment
+import hermes_agent.tools.environments.base as base_mod
 
 
 def test_execute_returns_when_wait_loop_never_returns(monkeypatch):
@@ -49,7 +49,7 @@ def test_execute_returns_when_wait_loop_never_returns(monkeypatch):
 
 def test_execute_parent_interrupt_still_kills_wait_on_deadline_worker(monkeypatch):
     """/stop targets the tool-worker tid; the deadline worker must honor it."""
-    from tools.interrupt import set_interrupt, is_interrupted
+    from hermes_agent.tools.interrupt import set_interrupt, is_interrupted
 
     env = LocalEnvironment()
     fake_proc = SimpleNamespace(pid=None, poll=lambda: None, stdout=None)
@@ -60,7 +60,7 @@ def test_execute_parent_interrupt_still_kills_wait_on_deadline_worker(monkeypatc
     def _wait(_proc, timeout=120, *, bounded_capture=False, watch_interrupt_tid=None, output=None):
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
-            from tools.interrupt import is_thread_interrupted
+            from hermes_agent.tools.interrupt import is_thread_interrupted
 
             if is_interrupted() or is_thread_interrupted(watch_interrupt_tid):
                 seen["parent"] = True

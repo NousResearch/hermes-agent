@@ -9,10 +9,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from tools import async_delegation as ad
-from tools import delegate_tool as delegate
-from tools import delegate_tool_results as results
-from tools.process_registry import process_registry
+from hermes_agent.tools import async_delegation as ad
+from hermes_agent.tools import delegate_tool as delegate
+from hermes_agent.tools import delegate_tool_results as results
+from hermes_agent.tools.process_registry import process_registry
 from tests.tools.test_delegate_output_schema import _StubChild, _StubParent
 
 SECRET = "sk-ant-" + "syntheticdelegationcredential" * 3
@@ -142,8 +142,8 @@ def test_redacted_schema_verdict_describes_delivered_summary_without_rerunning_c
 def test_structured_summary_is_redacted_per_value_and_stays_valid_json(wrap):
     """A text pass over JSON lets ``KEY=***`` swallow the closing quote and comma; every
     wrapper the schema validator accepts must survive redaction the same way."""
-    from tools.delegation_output_schema import extract_json_candidate
-    from tools.delegation_redaction import redact_child_result
+    from hermes_agent.tools.delegation_output_schema import extract_json_candidate
+    from hermes_agent.tools.delegation_redaction import redact_child_result
 
     answer = {"env": "OPENAI_API_KEY=sk-proj-" + "a" * 40, "n": 2}
     entry = redact_child_result(

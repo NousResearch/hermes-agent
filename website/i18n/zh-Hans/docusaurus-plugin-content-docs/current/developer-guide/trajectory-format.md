@@ -60,7 +60,7 @@ Hermes Agent 以 ShareGPT 兼容的 JSONL 格式保存对话轨迹，用于训�
 ```
 
 `tool_stats` 和 `tool_error_counts` 字典已规范化，包含所有可能的工具
-（来自 `model_tools.TOOL_TO_TOOLSET_MAP`），缺省值为零，
+（来自 `hermes_agent.model_tools.TOOL_TO_TOOLSET_MAP`），缺省值为零，
 确保各条目的 schema 一致，便于 HuggingFace 数据集加载。
 
 

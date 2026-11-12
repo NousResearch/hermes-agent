@@ -19,7 +19,7 @@ def recipient_key(raw_target: str, sender: Any) -> str:
     order: a registered peer, then a connection-qualified relay row, then a local bot (folder id,
     ``hermes``, friendly name), then any relay row."""
     from agent.turn_author import bot_author_id
-    from tools.bot_mode_dm import _PEER_TARGET_RE, _resolve_local_name
+    from hermes_agent.tools.bot_mode_dm import _PEER_TARGET_RE, _resolve_local_name
 
     name = raw_target.strip().lstrip("@")
     peer = _PEER_TARGET_RE.match(name)
@@ -39,7 +39,7 @@ def recipient_key(raw_target: str, sender: Any) -> str:
 def _relay_row(name: str, sender: Any) -> dict | None:
     from pathlib import Path
 
-    from tools.bot_relay import read_remote_roster, resolve_remote_target
+    from hermes_agent.tools.bot_relay import read_remote_roster, resolve_remote_target
 
     roster = read_remote_roster(Path(sender.home))
     match = resolve_remote_target(name, roster) if roster else None
@@ -77,8 +77,8 @@ def _definitely_not_sent(ack: dict) -> bool:
 def send_gated(targets: list[str], reply: bool, body: str, content_for, sender: Any) -> str:
     """Gate one ``message_agent`` call, then dispatch: the shared transports keep their own rules."""
     from agent.bot_chain import admit_send
-    from tools.bot_mode_dm import _dispatch, _err
-    from tools.bot_mode_dm_coordination import fan_out
+    from hermes_agent.tools.bot_mode_dm import _dispatch, _err
+    from hermes_agent.tools.bot_mode_dm_coordination import fan_out
 
     keys = [recipient_key(target, sender) for target in targets]
     admission = admit_send(sender.agent, keys, body)

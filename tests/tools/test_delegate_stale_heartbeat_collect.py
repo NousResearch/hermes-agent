@@ -13,8 +13,8 @@ import threading
 import time
 from types import SimpleNamespace
 
-from tools import delegate_tool
-from tools.delegate_tool_dispatch import _Batch, _execute_and_aggregate
+from hermes_agent.tools import delegate_tool
+from hermes_agent.tools.delegate_tool_dispatch import _Batch, _execute_and_aggregate
 
 
 class _Child:

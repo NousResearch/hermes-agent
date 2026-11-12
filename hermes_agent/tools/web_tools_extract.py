@@ -5,7 +5,7 @@ refusal -> SSRF filter (in web_tools.web_extract_tool) -> provider resolution
 (strict selection) -> per-URL website policy -> disk cache -> vendor call with
 one-shot keyless rescue -> website policy + SSRF on every page reported under a
 URL that was not requested (redirect targets). Logs under the origin
-(tools.web_tools) logger.
+(hermes_agent.tools.web_tools) logger.
 """
 
 import asyncio
@@ -13,11 +13,11 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from tools.tool_backend_helpers import selection_error, selection_exists
-from tools.url_safety import normalize_url_for_request
-from tools.web_tools_rescue import _rescue_eligible, _rescue_extract
+from hermes_agent.tools.tool_backend_helpers import selection_error, selection_exists
+from hermes_agent.tools.url_safety import normalize_url_for_request
+from hermes_agent.tools.web_tools_rescue import _rescue_eligible, _rescue_extract
 
-logger = logging.getLogger("tools.web_tools")
+logger = logging.getLogger("hermes_agent.tools.web_tools")
 
 _NO_RESULT_ERROR = "Extract backend returned no result for this URL"
 _DEFAULT_EXTRACT_TIMEOUT_S = 120.0
@@ -141,7 +141,7 @@ def _extract_timeout_seconds() -> float:
     A hanging backend (server keeps the response open without finishing) otherwise stalls the
     tool call indefinitely. 0 or a negative value disables the cap.
     """
-    from tools.web_tools import _load_web_config
+    from hermes_agent.tools.web_tools import _load_web_config
     try:
         return float(_load_web_config().get("extract_timeout", _DEFAULT_EXTRACT_TIMEOUT_S))
     except (TypeError, ValueError):
@@ -194,8 +194,8 @@ async def _final_url_refusal(fetched: dict) -> Optional[dict]:
     """Refusal entry when a page's reported (post-redirect) URL fails the website policy or SSRF gate,
     in the shape Firecrawl's own redirect re-check returns; None when it passes. A policy check that
     raises refuses (fail closed): the requested URL passed, but nothing vouches for this one."""
-    from tools.url_safety import async_is_safe_url
-    from tools.website_policy import check_website_access
+    from hermes_agent.tools.url_safety import async_is_safe_url
+    from hermes_agent.tools.website_policy import check_website_access
     final_url, title = fetched["url"], fetched.get("title", "")
     refusal = {"url": final_url, "title": title, "content": "", "raw_content": ""}
     try:
@@ -230,7 +230,7 @@ async def _gate_final_urls(results: list[dict], requested: set[str]) -> list[dic
 async def _dispatch_extract(provider, fetch_urls: list[str], format: Optional[str]) -> list[dict]:
     """Fetch *fetch_urls* (with keyless rescue), re-gate redirect targets, then cache the passes.
     Rescued batches are never cached."""
-    from tools.web_result_cache import extract_cache_put, extract_cache_record_final_url
+    from hermes_agent.tools.web_result_cache import extract_cache_put, extract_cache_record_final_url
     results, rescued = await _fetch_with_rescue(provider, fetch_urls, format)
     requested = set(fetch_urls)
     results = await _gate_final_urls(results, requested)
@@ -260,8 +260,8 @@ async def _cached_final_url_allowed(hit: dict, requested: str) -> bool:
     final_url = hit.pop("final_url", requested)
     if final_url == requested:  # the requested URL already passed both gates
         return True
-    from tools.url_safety import async_is_safe_url
-    from tools.website_policy import check_website_access
+    from hermes_agent.tools.url_safety import async_is_safe_url
+    from hermes_agent.tools.website_policy import check_website_access
     try:
         if check_website_access(final_url) is not None:
             return False
@@ -274,12 +274,12 @@ async def _cached_final_url_allowed(hit: dict, requested: str) -> bool:
 async def _extract_safe_urls(provider, safe_urls: list[str], format: Optional[str]) -> list[dict]:
     """Serve cache hits, fetch the rest, and merge back in ``safe_urls`` order.
 
-    The disk cache (tools/web_result_cache.py) sits AFTER the secret-URL gate, SSRF gate, and provider
+    The disk cache (hermes_agent/tools/web_result_cache.py) sits AFTER the secret-URL gate, SSRF gate, and provider
     resolution, and is gated per-URL on the website policy — a hit skips only the vendor call, never a
     control; policy-blocked URLs are cache misses, judged on both the requested and the cached final URL. Keys include provider and format, so switching either
     within the TTL never serves the other's content."""
-    from tools.web_result_cache import extract_cache_get
-    from tools.website_policy import check_website_access as _check_site
+    from hermes_agent.tools.web_result_cache import extract_cache_get
+    from hermes_agent.tools.website_policy import check_website_access as _check_site
     cached_results, fetch_urls, fetch_positions = {}, [], []
     for position, url in enumerate(safe_urls):
         try:

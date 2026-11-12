@@ -373,7 +373,7 @@ def cmd_status(args) -> None:
     # Memory tool enablement for the CLI platform via the canonical resolver, respecting the
     # check_fn gate when both stores are disabled.
     from hermes_cli.tools_config import _get_platform_tools
-    from tools.memory_tool import check_memory_requirements
+    from hermes_agent.tools.memory_tool import check_memory_requirements
     cli_tools = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
     memory_tool_enabled = ("memory" in cli_tools) and check_memory_requirements()
 

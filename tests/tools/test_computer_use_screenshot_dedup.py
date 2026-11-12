@@ -14,8 +14,8 @@ import zlib
 
 import pytest
 
-import tools.computer_use.tool as cu_tool
-from tools.computer_use.backend import CaptureResult
+import hermes_agent.tools.computer_use.tool as cu_tool
+from hermes_agent.tools.computer_use.backend import CaptureResult
 
 
 def _png_b64(seed: int) -> str:

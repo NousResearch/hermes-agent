@@ -12,7 +12,7 @@ Contract:
     instead of queuing it as the next user turn.
 """
 
-from tools.voice_mode_transcript import is_tts_echo
+from hermes_agent.tools.voice_mode_transcript import is_tts_echo
 
 
 class TestIsTtsEcho:

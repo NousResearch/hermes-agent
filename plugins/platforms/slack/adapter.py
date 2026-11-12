@@ -913,7 +913,7 @@ _SLACK_AUDIO_MIME_TO_EXT = {
     "audio/x-m4a": ".m4a", "audio/m4a": ".m4a", "audio/aac": ".m4a", "audio/flac": ".flac",
     "audio/x-flac": ".flac"}
 
-# Extensions Whisper-family STT accepts (in sync with tools/transcription_tools.SUPPORTED_FORMATS).
+# Extensions Whisper-family STT accepts (in sync with hermes_agent/tools/transcription_tools.SUPPORTED_FORMATS).
 _SLACK_STT_SUPPORTED_EXTS = frozenset(
     {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"})
 
@@ -1066,7 +1066,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # approval / clarify message_ts (or (team_id, ts)) → resolved; blocks double-clicks.
         # Bounded: never-clicked prompts would otherwise leak forever.
         self._approval_resolved: dict[Any, bool] = {}
-        self._approval_request_ids: dict[Any, str] = {}  # same key → tools.approval request id
+        self._approval_request_ids: dict[Any, str] = {}  # same key → hermes_agent.tools.approval request id
         self._clarify_resolved: dict[Any, bool] = {}
         # clarify_id → (channel_id, message_ts, rendered_question) so the gateway can retire a
         # card whose clarify ended without a click (timeout, reset, superseding prose).
@@ -1655,13 +1655,13 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
 
         self._app.command(_slash_pattern)(self._handle_hermes_command)
 
-        # Approval buttons, slash-confirm buttons (tools/slash_confirm.py), feedback.
+        # Approval buttons, slash-confirm buttons (hermes_agent/tools/slash_confirm.py), feedback.
         for _action_id in self._APPROVAL_CHOICES:
             self._app.action(_action_id)(self._handle_approval_action)
         for _action_id in self._CONFIRM_CHOICES:
             self._app.action(_action_id)(self._handle_slash_confirm_action)
         self._app.action("hermes_feedback")(self._handle_feedback_action)
-        # Clarify buttons (tools/clarify_gateway.py); indexed action IDs because
+        # Clarify buttons (hermes_agent/tools/clarify_gateway.py); indexed action IDs because
         # Block Kit requires unique IDs within an actions block.
         self._app.action(re.compile(r"^hermes_clarify_choice_\d+$"))(self._handle_clarify_action)
         self._app.action("hermes_clarify_other")(self._handle_clarify_action)
@@ -2960,7 +2960,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         chat_id = await self._dm_target(chat_id, metadata)
         try:
             from urllib.parse import unquote as _unquote
-            from tools.url_safety import create_ssrf_safe_async_client, is_safe_url as _is_safe_url
+            from hermes_agent.tools.url_safety import create_ssrf_safe_async_client, is_safe_url as _is_safe_url
         except Exception:
             return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         thread_ts = self._resolve_thread_ts(None, metadata)
@@ -3413,7 +3413,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         """Send an image to Slack by uploading the URL as a file."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
-        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+        from hermes_agent.tools.url_safety import create_ssrf_safe_async_client, is_safe_url
         if not is_safe_url(image_url):
             logger.warning("[Slack] Blocked unsafe image URL (SSRF protection)")
             return await super().send_image(
@@ -3422,7 +3422,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
 
             async def _ssrf_redirect_guard(response):
                 """Re-check redirect targets so public URLs cannot bounce into private IPs."""
-                from tools.url_safety import redirect_target_from_response
+                from hermes_agent.tools.url_safety import redirect_target_from_response
                 redirect_url = redirect_target_from_response(response)
                 if redirect_url and not is_safe_url(redirect_url):
                     raise ValueError("Blocked redirect to private/internal address")
@@ -5535,7 +5535,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
             channel_id, msg_ts, self._section_text(message), decision_text,
             "Confirmation prompt", "slash-confirm", team_id or None)
         try:
-            from tools import slash_confirm as _slash_confirm_mod
+            from hermes_agent.tools import slash_confirm as _slash_confirm_mod
             result_text = await _slash_confirm_mod.resolve(session_key, confirm_id, choice)
             if result_text:
                 post_kwargs: dict[str, Any] = {"channel": channel_id, "text": result_text}
@@ -5588,7 +5588,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         # Resolve FIRST (unblocks the agent); render after so a click past the
         # timeout (count == 0) shows "expired", not "approved".
         try:
-            from tools.approval import resolve_gateway_approval_card
+            from hermes_agent.tools.approval import resolve_gateway_approval_card
             count = resolve_gateway_approval_card(session_key, choice, request_id, actor_id=user_id,
                                                   extra=self.config.extra)
             logger.info(
@@ -5643,7 +5643,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         if self._clarify_resolved.pop(msg_ts, True):
             return
         original_text = self._section_text(message, limit=None)
-        from tools import clarify_gateway as _clarify_mod
+        from hermes_agent.tools import clarify_gateway as _clarify_mod
         # "Other" → text-capture mode: mark_awaiting_text flips the entry and the
         # gateway's text-intercept resolves it from the user's next message.
         expired_text = t("platform.slack.clarify.expired", user=user_name)
@@ -6252,7 +6252,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
         ``is_safe_url`` AND the Slack-CDN allowlist (token exfiltration); redirects are
         re-validated; an HTML body (sign-in page) is rejected so bogus bytes are never cached."""
         import httpx
-        from tools.url_safety import (
+        from hermes_agent.tools.url_safety import (
             create_ssrf_safe_async_client, is_safe_url, redirect_target_from_response,
         )
         if not is_safe_url(url):
@@ -6466,7 +6466,7 @@ class SlackAdapter(SlackSocketLifecycleMixin, BasePlatformAdapter):
 # ``interactive_setup``, ``_apply_yaml_config``, ``_is_connected``) that replace the
 # per-platform core touchpoints (the ``Platform.SLACK`` elif in ``hermes_agent/gateway/run.py``, the ``slack_cfg``
 # YAML→env block in ``hermes_agent/gateway/config.py``, the ``_setup_slack`` wizard + ``_PLATFORMS["slack"]`` static dict
-# in ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``tools/send_message_tool.py``).
+# in ``hermes_cli/{setup,gateway}.py``, and the ``_send_slack`` dispatch in ``hermes_agent/tools/send_message_tool.py``).
 # ──────────────────────────────────────────────────────────────────────────
 _slack_dm_cache: dict[str, str] = {}
 _SLACK_DM_CACHE_MAX = 5000

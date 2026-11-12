@@ -2,7 +2,7 @@
 
 import pytest
 
-from tools.process_registry import ProcessRegistry
+from hermes_agent.tools.process_registry import ProcessRegistry
 
 @pytest.fixture
 def registry(tmp_path, monkeypatch):
@@ -48,7 +48,7 @@ class TestWaitYieldRelease:
         import threading
         import time
 
-        from tools.interrupt import request_yield
+        from hermes_agent.tools.interrupt import request_yield
 
         sid = _spawn_sleeper(registry)
         try:
@@ -68,7 +68,7 @@ class TestWaitYieldRelease:
             assert r["process_running"] is True
             # The process was not killed and the yield bit was consumed.
             assert registry.poll(sid)["status"] == "running"
-            from tools.interrupt import is_thread_yield_requested
+            from hermes_agent.tools.interrupt import is_thread_yield_requested
             assert not is_thread_yield_requested(t.ident)
         finally:
             registry.kill_process(sid)

@@ -7,10 +7,10 @@ import os
 import subprocess
 from typing import Any, Dict
 
-from tools.tts_command_provider import _get_provider_section as _get_stt_section
+from hermes_agent.tools.tts_command_provider import _get_provider_section as _get_stt_section
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("tools.transcription_tools")
+logger = logging.getLogger("hermes_agent.tools.transcription_tools")
 
 DEFAULT_PROVIDER = "local"
 DEFAULT_LOCAL_MODEL = "base"

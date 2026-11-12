@@ -1846,7 +1846,7 @@ def test_unsupported_inline_image_subtype_downgrades_to_text_for_anthropic(monke
     """Sibling of the Responses guard: a data:image/svg+xml (or bmp/tiff) part forwarded verbatim as
     ``media_type`` 400s the Anthropic request on every replay — it must become a text placeholder
     while the valid PNG still goes as an image block and ``image/jpg`` is normalized to JPEG."""
-    import tools.vision_tools_image_prep as prep
+    import hermes_agent.tools.vision_tools_image_prep as prep
     monkeypatch.setattr(prep, "_rasterize_svg_to_png", lambda svg_path, out_path: False)
     messages = [{"role": "user", "content": [
         {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},

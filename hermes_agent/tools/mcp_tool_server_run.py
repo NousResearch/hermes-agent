@@ -1,19 +1,19 @@
-"""Lifecycle of :class:`tools.mcp_tool.MCPServerTask`: the long-lived ``run`` state machine
+"""Lifecycle of :class:`hermes_agent.tools.mcp_tool.MCPServerTask`: the long-lived ``run`` state machine
 (connect -> serve -> reconnect/park/recycle), keepalive-driven lifecycle waits, start/shutdown
 and tool deregistration. Origin state and patchable helpers are read through ``_core`` so
-``mock.patch("tools.mcp_tool.X")`` keeps working."""
+``mock.patch("hermes_agent.tools.mcp_tool.X")`` keeps working."""
 
 import asyncio
 import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
-from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
-from tools import mcp_tool_errors as _errors
-from tools import mcp_tool_registration as _registration
-from tools import mcp_tool_sampling as _sampling
+from hermes_agent.tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
+from hermes_agent.tools import mcp_tool_errors as _errors
+from hermes_agent.tools import mcp_tool_registration as _registration
+from hermes_agent.tools import mcp_tool_sampling as _sampling
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 
 @dataclass
@@ -25,7 +25,7 @@ class _RetryBudget:
 
 
 class MCPServerRunMixin:
-    """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
+    """Methods of :class:`hermes_agent.tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
     @staticmethod
     async def _cancel_waiters(*tasks: asyncio.Task) -> None:
@@ -228,7 +228,7 @@ class MCPServerRunMixin:
             # revival of a once-parked server is unattended too. Left interactive, an expired
             # refresh token opened a new authorize tab every _PARKED_RETRY_INTERVAL, all night.
             if outcome == "self-probe":
-                from tools.mcp_oauth import _oauth_interactive_enabled
+                from hermes_agent.tools.mcp_oauth import _oauth_interactive_enabled
 
                 _oauth_interactive_enabled.set(False)
             logger.debug(
@@ -245,11 +245,11 @@ class MCPServerRunMixin:
         task polling this every ``_PARKED_RETRY_INTERVAL`` stays cheap. Fail-open on a
         config-read error: a broken config must not wedge a healthy server's revival."""
         try:
-            from tools import mcp_tool_config as _config
+            from hermes_agent.tools import mcp_tool_config as _config
             entry = (_config._load_mcp_config() or {}).get(self.name)
             if entry is None:
                 return False
-            from tools.mcp_tool_common import mcp_server_enabled
+            from hermes_agent.tools.mcp_tool_common import mcp_server_enabled
             return mcp_server_enabled(entry)
         except Exception:
             return True
@@ -284,7 +284,7 @@ class MCPServerRunMixin:
             # Content-type preflight (Streamable HTTP only; SSE serves text/event-stream): a
             # web-app root returns HTML and would hang the SDK for connect_timeout. Skipped once
             # _ready was ever set and for OAuth servers (a token-less probe sees HTML/401).
-            from tools.mcp_liveness import liveness_for
+            from hermes_agent.tools.mcp_liveness import liveness_for
             if (config.get("transport") != "sse" and not config.get("skip_preflight")
                     and liveness_for(self.name).kind != "server_json"
                     and not self._ready.is_set() and self._auth_type != "oauth"):
@@ -314,7 +314,7 @@ class MCPServerRunMixin:
         fresh one the dashboard had just authorised for the new URL, dropping its tokens/DCR client."""
         if not self._is_http():
             return config
-        from tools import mcp_tool_config as _config
+        from hermes_agent.tools import mcp_tool_config as _config
         fresh = (_config._load_mcp_config() or {}).get(self.name)
         if not isinstance(fresh, dict) or "url" not in fresh or all(
                 fresh.get(k) == config.get(k) for k in self._REMOTE_REBIND_KEYS):
@@ -342,8 +342,8 @@ class MCPServerRunMixin:
                     # Under the owner's FRESH scope: the run task's copied one is the connect-time
                     # snapshot, so a header rendered before the profile's secret source answered
                     # would re-render to the same literal ${VAR} on every probe (#119092).
-                    from tools import mcp_tool_config as _config
-                    from tools.mcp_tool_discovery import _install_owner_secret_scope
+                    from hermes_agent.tools import mcp_tool_config as _config
+                    from hermes_agent.tools.mcp_tool_discovery import _install_owner_secret_scope
                     scope_token = await _install_owner_secret_scope()
                     try:
                         config = _config._require_rendered_remote(self.name, self._refresh_remote_config(config))
@@ -532,7 +532,7 @@ class MCPServerRunMixin:
         connected) hit the authorization server once per session, enough for a rate-limit ban."""
         if self._auth_type == "oauth" and _errors._is_auth_error(root):
             from hermes_constants import get_hermes_home
-            from tools.mcp_oauth import HermesTokenStorage
+            from hermes_agent.tools.mcp_oauth import HermesTokenStorage
             storage = HermesTokenStorage(self.name, hermes_home=get_hermes_home())
             self._auth_park = (storage, storage.credential_stamp())
 

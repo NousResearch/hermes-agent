@@ -47,7 +47,7 @@ def _make_adapter(*, allowed_users=None, allowed_roles=None):
 
 
 def _clear_clarify_state():
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
     with cm._lock:
         cm._entries.clear()
         cm._session_index.clear()
@@ -140,7 +140,7 @@ class TestClarifyChoiceResolve:
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_rejected(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
         cm.register("cidC", "sk-C", "Pick", ["x"])
 
         # Allowlist set, user not in it
@@ -177,7 +177,7 @@ class TestClarifyOtherButton:
 
     @pytest.mark.asyncio
     async def test_other_unauthorized_user_rejected(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
         cm.register("cidE", "sk-E", "Pick", ["x"])
 
         view = ClarifyChoiceView(

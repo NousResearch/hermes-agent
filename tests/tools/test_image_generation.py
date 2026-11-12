@@ -1,4 +1,4 @@
-"""Tests for tools/image_generation_tool.py — FAL multi-model support.
+"""Tests for hermes_agent/tools/image_generation_tool.py — FAL multi-model support.
 
 Covers the pure logic of the new wrapper: catalog integrity, the three size
 families (image_size_preset / aspect_ratio / gpt_literal), the supports
@@ -20,9 +20,9 @@ import pytest
 
 @pytest.fixture
 def image_tool():
-    """Fresh import of tools.image_generation_tool per test."""
+    """Fresh import of hermes_agent.tools.image_generation_tool per test."""
     import importlib
-    import tools.image_generation_tool as mod
+    import hermes_agent.tools.image_generation_tool as mod
     return importlib.reload(mod)
 
 

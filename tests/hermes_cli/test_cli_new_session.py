@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from tools.todo_tool import TodoStore
+from hermes_agent.tools.todo_tool import TodoStore
 
 
 class _FakeCompressor:

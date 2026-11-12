@@ -7,12 +7,12 @@ import json
 import logging
 import mimetypes
 from typing import Any, Dict, List, Optional, Tuple
-from tools.ansi_strip import strip_unicode_tags
-from tools.mcp_tool_common import exact_mcp_identifier, mcp_field
-from tools.mcp_tool_schema import mcp_prefixed_tool_name
-from tools.tool_output_truncate import truncate_head_tail
+from hermes_agent.tools.ansi_strip import strip_unicode_tags
+from hermes_agent.tools.mcp_tool_common import exact_mcp_identifier, mcp_field
+from hermes_agent.tools.mcp_tool_schema import mcp_prefixed_tool_name
+from hermes_agent.tools.tool_output_truncate import truncate_head_tail
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 
 # Hard ceiling for one MCP text payload (chars), deliberately far ABOVE the budget layer's 50K
@@ -137,10 +137,10 @@ def _mcp_native_image_part(path: str) -> Optional[tuple[dict[str, Any], Optional
     note maps embedded coordinates back to the original image (a screenshot's pixels are the screen's)."""
     from pathlib import Path
     from PIL import Image
-    from tools.vision_tools import (_EMBED_MAX_DIMENSION, _MAX_BASE64_BYTES, _build_scale_note,
+    from hermes_agent.tools.vision_tools import (_EMBED_MAX_DIMENSION, _MAX_BASE64_BYTES, _build_scale_note,
                                     _resize_image_for_vision)
-    from tools.vision_tools_history_budget import resolve_embed_target_bytes
-    from tools.vision_tools_image_prep import (_detect_image_mime_type_from_bytes, _normalize_to_supported_image,
+    from hermes_agent.tools.vision_tools_history_budget import resolve_embed_target_bytes
+    from hermes_agent.tools.vision_tools_image_prep import (_detect_image_mime_type_from_bytes, _normalize_to_supported_image,
                                                _validate_raster_image_decodable)
     src = Path(path)
     mime = _detect_image_mime_type_from_bytes(src.read_bytes())
@@ -183,8 +183,8 @@ def _mcp_result_with_native_images(text: str, image_paths: list[str]) -> Any:
         return text
     try:
         import contextvars
-        from tools.vision_tools import _should_use_native_vision_fast_path, _vision_cpu_executor
-        from tools.vision_tools_history_budget import repeat_refusal
+        from hermes_agent.tools.vision_tools import _should_use_native_vision_fast_path, _vision_cpu_executor
+        from hermes_agent.tools.vision_tools_history_budget import repeat_refusal
         if not _should_use_native_vision_fast_path():
             return text
     except Exception:  # deliberate boundary: the MEDIA: paths already carry the images, so any failure keeps the text

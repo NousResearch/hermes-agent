@@ -15,11 +15,11 @@ from __future__ import annotations
 
 import pytest
 
-from tools import approval as A
-from tools import approval_prompt
-from tools import approval_detection
-from tools import approval_context
-from tools import approval_smart
+from hermes_agent.tools import approval as A
+from hermes_agent.tools import approval_prompt
+from hermes_agent.tools import approval_detection
+from hermes_agent.tools import approval_context
+from hermes_agent.tools import approval_smart
 
 BREAKER_MARKER = "CIRCUIT BREAKER:"
 

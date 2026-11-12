@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 def _base_with_archives(tmp_path: Path, monkeypatch, names) -> Path:
-    import tools.checkpoint_manager as ckpt_mgr
+    import hermes_agent.tools.checkpoint_manager as ckpt_mgr
 
     base = tmp_path / "checkpoints"
     for name in names:
@@ -25,7 +25,7 @@ def _base_with_archives(tmp_path: Path, monkeypatch, names) -> Path:
 
 
 def test_undeletable_archive_exits_two_and_is_reported(tmp_path, monkeypatch, capsys):
-    import tools.checkpoint_manager as ckpt_mgr
+    import hermes_agent.tools.checkpoint_manager as ckpt_mgr
     from hermes_cli import checkpoints as checkpoints_cli
 
     base = _base_with_archives(tmp_path, monkeypatch, ["legacy-20200101-000000", "legacy-20200102-000000"])

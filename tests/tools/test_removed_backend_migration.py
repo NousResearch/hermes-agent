@@ -1,7 +1,7 @@
 """Removed-backend migration warnings (registry added in #100540).
 
 A config still pointing at a backend registered in
-``tools.tool_backend_helpers.REMOVED_BACKENDS`` must fail loudly and
+``hermes_agent.tools.tool_backend_helpers.REMOVED_BACKENDS`` must fail loudly and
 specifically:
 
 1. startup — ``validate_config_structure`` emits a warning naming the
@@ -17,9 +17,9 @@ specific vendor's membership.
 
 import pytest
 
-import tools.tool_backend_helpers as tbh
+import hermes_agent.tools.tool_backend_helpers as tbh
 from hermes_cli.config import validate_config_structure
-from tools.tool_backend_helpers import removed_backend_note, selection_error
+from hermes_agent.tools.tool_backend_helpers import removed_backend_note, selection_error
 
 _NOTE = "the LegacySearch backend was removed in v0.0.0 (alternatives: exa, parallel)"
 

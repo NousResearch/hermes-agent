@@ -11,9 +11,9 @@ import pytest
 from agent import secret_scope
 from hermes_agent.gateway.run import _profile_runtime_scope
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools import browser_session_cdp as bs_cdp
-from tools import browser_harness_dirs as harness_dirs
-from tools.browser_harness_dirs import claim_private_dir as _REAL_CLAIM  # conftest stubs it per test
+from hermes_agent.tools import browser_session_cdp as bs_cdp
+from hermes_agent.tools import browser_harness_dirs as harness_dirs
+from hermes_agent.tools.browser_harness_dirs import claim_private_dir as _REAL_CLAIM  # conftest stubs it per test
 
 
 @pytest.fixture
@@ -102,7 +102,7 @@ def test_on_macos_a_served_profile_binds_a_64_char_session_socket(profiles, tmp_
     """Real branch: the dir is claimed under the real short root and a 64-character name binds."""
     import os
     import socket
-    from tools import browser_use_cli as bu_cli
+    from hermes_agent.tools import browser_use_cli as bu_cli
     a, _b = profiles
     monkeypatch.setattr(harness_dirs, "claim_private_dir", _REAL_CLAIM)  # the real claim, real short root
     env = {"HOME": str(tmp_path / ("u" * 40))}
@@ -144,7 +144,7 @@ def test_on_linux_a_served_profiles_64_char_session_socket_fits_sun_path(profile
     64. The served profile gets the same private short dir as on macOS (claim stubbed: no temp-root
     write); the kernel judges the length of the exact path the installed harness binds."""
     import os
-    from tools import browser_use_cli as bu_cli
+    from hermes_agent.tools import browser_use_cli as bu_cli
     a, _b = profiles
     claimed = []
     monkeypatch.setattr(harness_dirs, "claim_private_dir", lambda path: claimed.append(path) or True)
@@ -159,7 +159,7 @@ def test_on_linux_a_served_profiles_64_char_session_socket_fits_sun_path(profile
 
 @pytest.mark.platforms("linux")
 def test_on_linux_a_runtime_dir_that_already_fits_is_kept_and_an_unclaimable_one_stays_long(profiles, monkeypatch):
-    from tools import browser_use_cli as bu_cli
+    from hermes_agent.tools import browser_use_cli as bu_cli
     a, _b = profiles
     claimed = []
     monkeypatch.setattr(harness_dirs, "claim_private_dir", lambda path: claimed.append(path) or True)
@@ -180,7 +180,7 @@ def test_on_linux_a_short_spelling_of_a_long_runtime_dir_is_measured_resolved(pr
     """The harness binds ``Path(BH_RUNTIME_DIR).expanduser().resolve()``: a short relative or symlinked
     spelling of a deep dir still gives an overlong socket, so the length is judged on the resolved path."""
     import os
-    from tools import browser_use_cli as bu_cli
+    from hermes_agent.tools import browser_use_cli as bu_cli
     a, _b = profiles
     deep = tmp_path / ("d" * 60)
     deep.mkdir()
@@ -223,7 +223,7 @@ def test_the_short_socket_dir_is_claimed_only_when_private_and_ours(tmp_path):
 def test_each_served_profile_gets_its_own_harness_tmp_dir(profiles, tmp_path):
     """browser_harness/_ipc.py ``_TMP`` (paths.tmp_dir: BH_TMP_DIR, else <home>/tmp) holds ``shot.png``,
     debug-click overlays and ``bu-<NAME>.log``; one shared dir let profile B read A's screenshots."""
-    from tools import browser_use_cli as bu_cli
+    from hermes_agent.tools import browser_use_cli as bu_cli
     a, b = profiles
     seen = {}
     for home in (a, b):
@@ -240,7 +240,7 @@ def test_each_served_profile_gets_its_own_harness_tmp_dir(profiles, tmp_path):
 
 
 def test_a_served_profile_under_an_inherited_tmp_dir_nests_inside_it(profiles, tmp_path):
-    from tools import browser_use_cli as bu_cli
+    from hermes_agent.tools import browser_use_cli as bu_cli
     a, _b = profiles
     env = {"BH_TMP_DIR": str(tmp_path / "shared-tmp")}
     with _profile_runtime_scope(a, hydrate_secrets=False):
@@ -253,7 +253,7 @@ def test_a_served_profile_under_an_inherited_tmp_dir_nests_inside_it(profiles, t
 def test_an_unscoped_shutdown_reload_reaches_the_daemon_with_its_own_tmp_dir(profiles, monkeypatch):
     """The reaper/shutdown runs outside any profile scope; its ``--reload`` must still carry the
     daemon's own tmp dir, or the harness writes that profile's log into the shared one."""
-    from tools import browser_use_cli as bu_cli
+    from hermes_agent.tools import browser_use_cli as bu_cli
     a, _b = profiles
     with _profile_runtime_scope(a, hydrate_secrets=False):
         env = {"HOME": "/home/u"}
@@ -275,7 +275,7 @@ def test_a_session_that_resolved_the_old_endpoint_during_a_connect_is_closed_not
     """``/browser connect`` reaps, publishes the new endpoint, then reaps again. A tool call that
     resolved the OLD endpoint before the publish but inserted its session after the second reap kept
     driving the old browser. The real ``_browser_connect`` handler runs mid-creation here."""
-    from tools import browser_session as bs, browser_session_lifecycle as lifecycle
+    from hermes_agent.tools import browser_session as bs, browser_session_lifecycle as lifecycle
     from hermes_agent.tui_gateway import server  # binds methods_browser helpers onto server globals
 
     a, _b = profiles
@@ -308,7 +308,7 @@ def test_a_stale_session_is_closed_without_ever_being_handed_to_a_concurrent_cal
     """A session found stale after creation is closed by object, never published first: while its
     backend ``close`` runs, a concurrent ``get_session_info`` for the same key must not find it in
     ``_active_sessions`` (it would return a browser that is being closed underneath it)."""
-    from tools import browser_session as bs, browser_session_lifecycle as lifecycle
+    from hermes_agent.tools import browser_session as bs, browser_session_lifecycle as lifecycle
     from hermes_agent.tui_gateway import server
 
     a, _b = profiles
@@ -344,7 +344,7 @@ def test_a_stale_session_is_closed_without_ever_being_handed_to_a_concurrent_cal
 
 
 def test_another_profiles_connect_does_not_invalidate_this_profiles_new_session(profiles, monkeypatch):
-    from tools import browser_session as bs, browser_session_lifecycle as lifecycle
+    from hermes_agent.tools import browser_session as bs, browser_session_lifecycle as lifecycle
     a, b = profiles
     sessions = {}
     monkeypatch.setattr(bs, "_active_sessions", sessions)
@@ -369,7 +369,7 @@ def test_a_browser_exec_that_routed_to_the_old_endpoint_during_a_connect_reloads
     ``BU_CDP_URL`` before the daemon is recorded. A ``/browser connect`` landing in between reaped
     nothing, and the harness daemon (which latches ``BU_CDP_*`` at spawn) kept the old browser for every
     later call. The real ``_browser_connect`` handler runs between routing and dispatch here."""
-    from tools import browser_use_cli as bu_cli
+    from hermes_agent.tools import browser_use_cli as bu_cli
     from hermes_agent.tui_gateway import server
 
     a, _b = profiles
@@ -414,7 +414,7 @@ def test_a_connect_that_lands_while_browser_exec_spawns_its_daemon_reloads_it(pr
     too, so the next call respawns it on the new endpoint."""
     import json
     import subprocess
-    from tools import browser_use_cli as bu_cli
+    from hermes_agent.tools import browser_use_cli as bu_cli
     from hermes_agent.tui_gateway import server
 
     a, _b = profiles
@@ -450,9 +450,9 @@ def real_profile_launches(tmp_path, monkeypatch):
     """Session + launcher registries isolated; the real-profile and fresh launches register a fake browser
     under whatever key the session layer asks for (what the launcher does), and every stop is recorded."""
     import os
-    from tools import browser_launcher as launcher, browser_lightpanda, browser_session as bs
-    from tools import browser_session_lifecycle as lifecycle
-    from tools.bot_desktop import placement, runtime
+    from hermes_agent.tools import browser_launcher as launcher, browser_lightpanda, browser_session as bs
+    from hermes_agent.tools import browser_session_lifecycle as lifecycle
+    from hermes_agent.tools.bot_desktop import placement, runtime
     import hermes_cli.browser_connect as bc
     for name in ("_active_sessions", "_session_last_activity", "_session_owner_homes", "_cleanup_failures"):
         monkeypatch.setattr(bs, name, {})
@@ -487,7 +487,7 @@ def _consent(home, on: bool) -> None:
 def test_a_consent_off_profile_never_stops_another_profiles_real_profile_browser(profiles, real_profile_launches):
     """Profile B (consent off, the default) creating a local session revokes only ITS real-profile browser;
     profile A's keeps serving A's session."""
-    from tools import browser_session as bs
+    from hermes_agent.tools import browser_session as bs
     a, b = profiles
     _consent(a, True)
     _consent(b, False)
@@ -506,7 +506,7 @@ def test_a_consent_off_profile_never_stops_another_profiles_real_profile_browser
 
 def test_a_consenting_profile_never_reuses_another_profiles_real_profile_browser(profiles, real_profile_launches):
     """Two consenting profiles each get their own real-profile browser (their own snapshot, their own cookies)."""
-    from tools.browser_session_real_profile import real_profile_cdp
+    from hermes_agent.tools.browser_session_real_profile import real_profile_cdp
     a, b = profiles
     _consent(a, True)
     _consent(b, True)

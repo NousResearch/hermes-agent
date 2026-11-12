@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 import pm
-from tools import checkpoint_manager, working_diff
+from hermes_agent.tools import checkpoint_manager, working_diff
 
 
 @pytest.mark.platforms("posix")

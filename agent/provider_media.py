@@ -69,7 +69,7 @@ def save_url(
     callers can fall back to the bare URL; a partial file is never left behind.
 
     The URL is provider-supplied, so every hop is validated with
-    ``tools.url_safety`` before a socket opens (and again at TCP connect by the
+    ``hermes_agent.tools.url_safety`` before a socket opens (and again at TCP connect by the
     guarded transport, closing DNS-rebinding TOCTOU). Caller-supplied *headers*
     (e.g. provider auth) go to the first hop only — a redirect target never
     receives them.
@@ -82,7 +82,7 @@ def save_url(
     """
     import httpx
 
-    from tools.url_safety import create_ssrf_safe_client, is_always_blocked_url, is_safe_url
+    from hermes_agent.tools.url_safety import create_ssrf_safe_client, is_always_blocked_url, is_safe_url
 
     current_url, hop_headers, trusted_hop = url, headers, trusted_origin
     for _ in range(_MAX_SAVE_URL_REDIRECTS + 1):

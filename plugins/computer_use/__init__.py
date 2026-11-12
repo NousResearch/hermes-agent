@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 from plugins import plugin_loader as _loader
 
 if TYPE_CHECKING:
-    from tools.computer_use.backend import ComputerUseProvider
+    from hermes_agent.tools.computer_use.backend import ComputerUseProvider
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,7 @@ def load_computer_use_provider(name: str) -> Optional[ComputerUseProvider]:
 def _load_provider_from_dir(provider_dir: Path) -> Optional[ComputerUseProvider]:
     # Providers hand back live driver sessions, so they load in-process only: load_plugin_module refuses user
     # code under ``plugins.isolation: host`` (warning + None), which surfaces as "could not be loaded".
-    from tools.computer_use.backend import ComputerUseProvider
+    from hermes_agent.tools.computer_use.backend import ComputerUseProvider
     name = provider_dir.name
     is_bundled = provider_dir.parent == _CU_PLUGINS_DIR
     mod = _loader.load_plugin_module(

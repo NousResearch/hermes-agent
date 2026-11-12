@@ -47,7 +47,7 @@ def export_signins() -> dict[str, Any]:
     """``{"status": "disabled"}`` when consent is off (the caller clears what it imported), ``{"status":
     "error", "error": msg}`` when the real-profile browser can't serve, else ``{"status": "ok", "cookies":
     [...], "skipped": n}``."""
-    from tools.browser_session_real_profile import real_profile_cdp, terminate_real_profile_browser
+    from hermes_agent.tools.browser_session_real_profile import real_profile_cdp, terminate_real_profile_browser
     cdp_url, err = real_profile_cdp()
     if cdp_url is None:
         return {"status": "error", "error": err} if err else {"status": "disabled"}

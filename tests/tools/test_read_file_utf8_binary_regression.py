@@ -23,8 +23,8 @@ import shutil
 
 import pytest
 
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import ShellFileOperations
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import ShellFileOperations
 
 pytestmark = pytest.mark.skipif(
     shutil.which("head") is None or shutil.which("base64") is None,

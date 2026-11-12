@@ -18,7 +18,7 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from tools.registry import tool_error
+from hermes_agent.tools.registry import tool_error
 
 # 256 KB keeps a 1568px screenshot cheap enough to ride the session (#92699); the clamp keeps one
 # setting from turning every later request into a multi-megabyte resend or a useless thumbnail.

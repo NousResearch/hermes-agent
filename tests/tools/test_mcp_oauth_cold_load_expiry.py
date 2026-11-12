@@ -51,7 +51,7 @@ class TestSetTokensAbsoluteExpiry:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from mcp.shared.auth import OAuthToken
 
-        from tools.mcp_oauth import HermesTokenStorage
+        from hermes_agent.tools.mcp_oauth import HermesTokenStorage
 
         storage = HermesTokenStorage("srv")
         before = time.time()
@@ -84,7 +84,7 @@ class TestSetTokensAbsoluteExpiry:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from mcp.shared.auth import OAuthToken
 
-        from tools.mcp_oauth import HermesTokenStorage
+        from hermes_agent.tools.mcp_oauth import HermesTokenStorage
 
         storage = HermesTokenStorage("srv")
         asyncio.run(
@@ -110,7 +110,7 @@ class TestGetTokensReconstructsExpiresIn:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from mcp.shared.auth import OAuthToken
 
-        from tools.mcp_oauth import HermesTokenStorage
+        from hermes_agent.tools.mcp_oauth import HermesTokenStorage
 
         storage = HermesTokenStorage("srv")
         asyncio.run(
@@ -138,7 +138,7 @@ class TestGetTokensReconstructsExpiresIn:
     ):
         """An already-expired token reloaded from disk must report expires_in=0."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
+        from hermes_agent.tools.mcp_oauth import HermesTokenStorage, _get_token_dir
 
         token_dir = _get_token_dir()
         token_dir.mkdir(parents=True, exist_ok=True)
@@ -175,7 +175,7 @@ class TestGetTokensReconstructsExpiresIn:
         legacy-format file (mtime = now) keeps most of its TTL.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
+        from hermes_agent.tools.mcp_oauth import HermesTokenStorage, _get_token_dir
 
         token_dir = _get_token_dir()
         token_dir.mkdir(parents=True, exist_ok=True)
@@ -223,8 +223,8 @@ async def test_initialize_seeds_token_expiry_time_from_stored_tokens(
     from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
 
     assert _HERMES_PROVIDER_CLS is not None
     reset_manager_for_tests()
@@ -288,8 +288,8 @@ async def test_initialize_marks_zero_ttl_cold_loaded_token_invalid(
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage, _get_token_dir
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
 
     assert _HERMES_PROVIDER_CLS is not None
     reset_manager_for_tests()
@@ -372,7 +372,7 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
     # The SDK's httpx flavour (httpx2 on mcp >= 2.0). _prefetch_oauth_metadata
     # builds its client from the same module, so the MockTransport and the
     # patched AsyncClient below have to come from there too.
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool import sdk_httpx
     httpx = sdk_httpx()
     from mcp.shared.auth import (
         OAuthClientInformationFull,
@@ -381,8 +381,8 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
     )
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
 
     assert _HERMES_PROVIDER_CLS is not None
     reset_manager_for_tests()
@@ -483,5 +483,5 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
     )
     # Pre-flight discovery requests are SDK-built (no client default headers merged),
     # so they must carry the stamped User-Agent or WAF-fronted providers 403 them (#113771).
-    from tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT
+    from hermes_agent.tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT
     assert seen_user_agents and set(seen_user_agents) == {DEFAULT_AUTH_REQUEST_USER_AGENT}

@@ -3,10 +3,10 @@
 import pytest
 
 from agent import prompt_builder
-import model_tools
+from hermes_agent import model_tools
 from hermes_agent.gateway import run as gateway_run
-from tools import env_probe
-from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+from hermes_agent.tools import env_probe
+from hermes_agent.tools.terminal_scope import reset_terminal_scope, set_terminal_scope
 
 
 @pytest.fixture(autouse=True)

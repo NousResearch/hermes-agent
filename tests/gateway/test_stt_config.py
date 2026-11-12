@@ -52,7 +52,7 @@ async def test_enrich_message_with_transcription_returns_tuple_for_empty_content
     runner._has_setup_skill = lambda: False
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "hermes_agent.tools.transcription_tools.transcribe_audio",
         return_value={
             "success": True,
             "transcript": "hello from a captionless voice note",
@@ -82,7 +82,7 @@ async def test_enrich_message_with_transcription_guards_empty_transcript():
     runner._has_setup_skill = lambda: False
 
     with patch(
-        "tools.transcription_tools.transcribe_audio",
+        "hermes_agent.tools.transcription_tools.transcribe_audio",
         return_value={"success": True, "transcript": "   \n\t", "provider": "local_command"},
     ):
         result, transcripts = await runner._enrich_message_with_transcription(

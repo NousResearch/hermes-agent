@@ -10,8 +10,8 @@ out.mkdir(parents=True, exist_ok=True)
 producer = '''
 import json, shlex, sys
 from hermes_agent.gateway.session_context import scoped_current_session_id
-from tools.terminal_tool import terminal_tool
-from tools.process_registry import process_registry
+from hermes_agent.tools.terminal_tool import terminal_tool
+from hermes_agent.tools.process_registry import process_registry
 with scoped_current_session_id("receipt-owner"):
     code = "import sys,time; time.sleep(.2); print('RECEIPT_STDOUT'); print('RECEIPT_STDERR',file=sys.stderr); sys.exit(7)"
     result = json.loads(terminal_tool(shlex.join([sys.executable, '-c', code]), background=True,
@@ -24,7 +24,7 @@ with scoped_current_session_id("receipt-owner"):
 consumer = '''
 import json,sys
 from hermes_agent.gateway.session_context import scoped_current_session_id
-from tools.process_registry import process_registry
+from hermes_agent.tools.process_registry import process_registry
 with scoped_current_session_id(sys.argv[2]):
     print(json.dumps({'log':process_registry.read_log(sys.argv[1]),
                      'poll':process_registry.poll(sys.argv[1]),

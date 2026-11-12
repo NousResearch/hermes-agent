@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.environments.file_sync import FileSyncManager, _FORCE_SYNC_ENV, iter_sync_files
+from hermes_agent.tools.environments.file_sync import FileSyncManager, _FORCE_SYNC_ENV, iter_sync_files
 
 
 @pytest.fixture
@@ -214,7 +214,7 @@ class TestTransactionalRollback:
     def test_a_file_vanishing_mid_plan_is_retried_not_raised(self, tmp_files, monkeypatch):
         """sync() runs before every terminal command: a file removed between its stat and the
         content check (a credential being rotated) must fail the cycle quietly, not the command."""
-        import tools.environments.file_sync as file_sync_mod
+        import hermes_agent.tools.environments.file_sync as file_sync_mod
 
         upload = MagicMock()
         mgr = _make_manager(tmp_files, upload=upload)
@@ -283,7 +283,7 @@ class TestRateLimiting:
         hit the rate-limit guard and returned early — silently suppressing the
         retry the rollback had just prepared and leaving the remote stale.
         """
-        from tools.environments import file_sync
+        from hermes_agent.tools.environments import file_sync
 
         clock = {"t": 1000.0}
         monkeypatch.setattr(file_sync, "_monotonic", lambda: clock["t"])
@@ -396,7 +396,7 @@ class TestSyncBackSecurity:
         skill.write_text("host-skill", encoding="utf-8")
 
         monkeypatch.setattr(
-            "tools.credential_files.get_credential_file_mounts",
+            "hermes_agent.tools.credential_files.get_credential_file_mounts",
             lambda: [
                 {
                     "host_path": str(credential),
@@ -405,7 +405,7 @@ class TestSyncBackSecurity:
             ],
         )
         monkeypatch.setattr(
-            "tools.credential_files.iter_skills_files",
+            "hermes_agent.tools.credential_files.iter_skills_files",
             lambda container_base="/root/.hermes": [
                 {
                     "host_path": str(skill),
@@ -414,7 +414,7 @@ class TestSyncBackSecurity:
             ],
         )
         monkeypatch.setattr(
-            "tools.credential_files.iter_cache_files",
+            "hermes_agent.tools.credential_files.iter_cache_files",
             lambda container_base="/root/.hermes": [],
         )
 

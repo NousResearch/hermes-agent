@@ -80,7 +80,7 @@ def test_no_attached_viewer_is_headless():
 @pytest.mark.parametrize(('platform', 'installed'), [(Platform.LOCAL, True), (Platform.TELEGRAM, False)])
 def test_scope_installs_the_callback_only_for_local_viewer_turns(platform, installed):
     from hermes_agent.gateway.session_sudo_prompt import sudo_prompt_scope
-    from tools.terminal_tool import _get_sudo_password_callback
+    from hermes_agent.tools.terminal_tool import _get_sudo_password_callback
     events, _ = _events()
     authority = SimpleNamespace(sessions={'s1': SimpleNamespace(event_stream=events)})
     turn = SimpleNamespace(_approval_owner=(authority, 's1', 1),

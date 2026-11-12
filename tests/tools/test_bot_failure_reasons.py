@@ -1,4 +1,4 @@
-"""Tests: typed failure-reason codes (tools/bot_failure_reasons.py, #93091).
+"""Tests: typed failure-reason codes (hermes_agent/tools/bot_failure_reasons.py, #93091).
 
 Pins the closed reason vocabulary, the ordered classifier (incl. the
 auth-beats-quota precedence seen in real Anthropic 401 bodies), the three
@@ -8,7 +8,7 @@ real-world fixtures from live bot runs, and the auto-retryable set.
 import pytest
 
 from agent.secret_scope import UnscopedSecretError
-from tools import bot_failure_reasons as fr
+from hermes_agent.tools import bot_failure_reasons as fr
 
 # Real error text captured from live bot turns.
 FIXTURE_ANTHROPIC_401 = (

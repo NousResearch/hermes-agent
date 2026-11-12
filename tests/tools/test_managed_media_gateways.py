@@ -36,8 +36,8 @@ def _restore_tool_and_agent_modules():
     finally:
         for name in list(sys.modules):
             if (
-                name == "tools"
-                or name.startswith("tools.")
+                name == "hermes_agent.tools"
+                or name.startswith("hermes_agent.tools.")
                 or name == "agent"
                 or name.startswith("agent.")
                 or name in {"fal_client", "openai"}
@@ -62,10 +62,10 @@ def _enable_managed_nous_tools(monkeypatch):
 
 
 def _install_fake_tools_package():
-    tools_package = types.ModuleType("tools")
+    tools_package = types.ModuleType("hermes_agent.tools")
     tools_package.__path__ = [str(TOOLS_DIR)]  # type: ignore[attr-defined]
-    sys.modules["tools"] = tools_package
-    sys.modules["tools.debug_helpers"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.tools"] = tools_package
+    sys.modules["hermes_agent.tools.debug_helpers"] = types.SimpleNamespace(
         DebugSession=lambda *args, **kwargs: types.SimpleNamespace(
             active=False,
             session_id="debug-session",
@@ -74,8 +74,8 @@ def _install_fake_tools_package():
             get_session_info=dict,
         )
     )
-    sys.modules["tools.managed_tool_gateway"] = _load_tool_module(
-        "tools.managed_tool_gateway",
+    sys.modules["hermes_agent.tools.managed_tool_gateway"] = _load_tool_module(
+        "hermes_agent.tools.managed_tool_gateway",
         "managed_tool_gateway.py",
     )
 
@@ -189,11 +189,11 @@ def test_managed_fal_submit_uses_gateway_origin_and_nous_token(monkeypatch):
     # The fake fal_client above answers every SDK touch; the real lazy-dep gate
     # (a version-pinned metadata check) must not refuse first on an install
     # without the fal extra. Replace the sys.modules entry itself so the
-    # loader's ``from tools.lazy_deps import ensure`` resolves to the stub no
+    # loader's ``from hermes_agent.tools.lazy_deps import ensure`` resolves to the stub no
     # matter which tools package object a prior test left behind.
     monkeypatch.setitem(
         sys.modules,
-        "tools.lazy_deps",
+        "hermes_agent.tools.lazy_deps",
         types.SimpleNamespace(ensure=lambda *args, **kwargs: None),
     )
     monkeypatch.delenv("FAL_KEY", raising=False)
@@ -201,7 +201,7 @@ def test_managed_fal_submit_uses_gateway_origin_and_nous_token(monkeypatch):
     monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
 
     image_generation_tool = _load_tool_module(
-        "tools.image_generation_tool",
+        "hermes_agent.tools.image_generation_tool",
         "image_generation_tool.py",
     )
     monkeypatch.setattr(image_generation_tool.uuid, "uuid4", lambda: "fal-submit-123")
@@ -229,8 +229,8 @@ def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatc
     monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "nousresearch.com")
     monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
 
-    tts_tool = _load_tool_module("tools.tts_tool", "tts_tool.py")
-    monkeypatch.setattr(sys.modules["tools.tts_tool_openai"].uuid, "uuid4", lambda: "tts-call-123")
+    tts_tool = _load_tool_module("hermes_agent.tools.tts_tool", "tts_tool.py")
+    monkeypatch.setattr(sys.modules["hermes_agent.tools.tts_tool_openai"].uuid, "uuid4", lambda: "tts-call-123")
     output_path = tmp_path / "speech.mp3"
     tts_tool._generate_openai_tts("hello world", str(output_path), {"openai": {}})
 
@@ -251,7 +251,7 @@ def test_openai_tts_accepts_openai_api_key_as_direct_fallback(monkeypatch, tmp_p
     monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "nousresearch.com")
     monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
 
-    tts_tool = _load_tool_module("tools.tts_tool", "tts_tool.py")
+    tts_tool = _load_tool_module("hermes_agent.tools.tts_tool", "tts_tool.py")
     output_path = tmp_path / "speech.mp3"
     tts_tool._generate_openai_tts("hello world", str(output_path), {"openai": {}})
 
@@ -274,7 +274,7 @@ def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_pat
     monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
 
     transcription_tools = _load_tool_module(
-        "tools.transcription_tools",
+        "hermes_agent.tools.transcription_tools",
         "transcription_tools.py",
     )
     transcription_tools._load_stt_config = lambda: {"provider": "nous"}
@@ -293,7 +293,7 @@ def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_pat
         transcription_response=types.SimpleNamespace(text="hello from gpt-4o"),
     )
     transcription_tools = _load_tool_module(
-        "tools.transcription_tools",
+        "hermes_agent.tools.transcription_tools",
         "transcription_tools.py",
     )
 

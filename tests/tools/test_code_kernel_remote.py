@@ -1,4 +1,4 @@
-"""Remote session kernels (tools/code_kernel_remote.py) — hermes-agent#96873.
+"""Remote session kernels (hermes_agent/tools/code_kernel_remote.py) — hermes-agent#96873.
 
 These tests drive execute_in_remote_kernel against a scripted fake env that
 implements the same contract as docker/ssh/modal envs (run-to-completion
@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from tools.code_kernel_remote import (
+from hermes_agent.tools.code_kernel_remote import (
     _REMOTE_KERNELS,
     RemoteKernel,
     execute_in_remote_kernel,
@@ -92,11 +92,11 @@ class RemoteKernelBase(unittest.TestCase):
         # No approval session key in tests → owner falls back to task id,
         # which is exactly the isolation-by-key behavior under test.
         self._ship = patch(
-            "tools.code_execution_tool._ship_file_to_remote",
+            "hermes_agent.tools.code_execution_tool._ship_file_to_remote",
         )
         self._ship.start()
         self._poll = patch(
-            "tools.code_execution_tool._rpc_poll_loop",
+            "hermes_agent.tools.code_execution_tool._rpc_poll_loop",
         )
         self._poll.start()
 
@@ -259,7 +259,7 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
         self.assertIn("fresh", owners)
 
     def test_over_cap_evicts_least_recently_used(self):
-        with patch("tools.code_kernel._lifecycle_limits", return_value=(2, 1800)):
+        with patch("hermes_agent.tools.code_kernel._lifecycle_limits", return_value=(2, 1800)):
             env = ScriptedEnv(_spawn_ok_handlers([_cell() for _ in range(10)]))
             for i in range(3):
                 execute_in_remote_kernel(
@@ -290,7 +290,7 @@ class TestIdleReapAndCapEviction(RemoteKernelBase):
             ("kill -0", lambda c: {"output": "ALIVE\n", "returncode": 0}),
             ("cat ", slow_cat),
         ])
-        with patch("tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
+        with patch("hermes_agent.tools.code_kernel._lifecycle_limits", return_value=(1, 1800)):
             worker = threading.Thread(target=_run, args=(busy_env,), kwargs={"task": "busy"})
             worker.start()
             # Snapshot: the worker thread inserts into the registry concurrently and a live
@@ -310,7 +310,7 @@ class TestDispatchIntegration(unittest.TestCase):
     """_execute_remote prefers the kernel and falls open to per-call."""
 
     def test_execute_remote_uses_kernel_result(self):
-        from tools.code_execution_tool import _execute_remote
+        from hermes_agent.tools.code_execution_tool import _execute_remote
 
         fake = {
             "status": "success", "stdout": "kernel says hi\n", "stderr": "",
@@ -320,11 +320,11 @@ class TestDispatchIntegration(unittest.TestCase):
         env = ScriptedEnv([
             ("command -v python3", lambda c: {"output": "OK\n", "returncode": 0}),
         ])
-        with patch("tools.code_execution_tool._load_config",
+        with patch("hermes_agent.tools.code_execution_tool._load_config",
                    return_value={"timeout": 30, "max_tool_calls": 5}), \
-             patch("tools.code_execution_tool._get_or_create_env",
+             patch("hermes_agent.tools.code_execution_tool._get_or_create_env",
                    return_value=(env, "ssh")), \
-             patch("tools.code_kernel_remote.execute_in_remote_kernel",
+             patch("hermes_agent.tools.code_kernel_remote.execute_in_remote_kernel",
                    return_value=fake):
             result = json.loads(_execute_remote("print()", "t", ["read_file"]))
         self.assertEqual(result["status"], "success")
@@ -332,7 +332,7 @@ class TestDispatchIntegration(unittest.TestCase):
         self.assertEqual(result["kernel"]["execution_count"], 3)
 
     def test_execute_remote_falls_open_to_per_call(self):
-        from tools.code_execution_tool import _execute_remote
+        from hermes_agent.tools.code_execution_tool import _execute_remote
         from unittest.mock import MagicMock
 
         env = ScriptedEnv([
@@ -340,14 +340,14 @@ class TestDispatchIntegration(unittest.TestCase):
             ("python3 script.py", lambda c: {"output": "per-call ran\n",
                                              "returncode": 0}),
         ])
-        with patch("tools.code_execution_tool._load_config",
+        with patch("hermes_agent.tools.code_execution_tool._load_config",
                    return_value={"timeout": 30, "max_tool_calls": 5}), \
-             patch("tools.code_execution_tool._get_or_create_env",
+             patch("hermes_agent.tools.code_execution_tool._get_or_create_env",
                    return_value=(env, "ssh")), \
-             patch("tools.code_kernel_remote.execute_in_remote_kernel",
+             patch("hermes_agent.tools.code_kernel_remote.execute_in_remote_kernel",
                    return_value=None), \
-             patch("tools.code_execution_tool._ship_file_to_remote"), \
-             patch("tools.code_execution_tool.threading.Thread",
+             patch("hermes_agent.tools.code_execution_tool._ship_file_to_remote"), \
+             patch("hermes_agent.tools.code_execution_tool.threading.Thread",
                    return_value=MagicMock()):
             result = json.loads(_execute_remote("print()", "t", ["read_file"]))
         self.assertEqual(result["status"], "success")

@@ -15,7 +15,7 @@ from datetime import datetime, timezone, UTC
 import pytest
 
 from hermes_agent.hermes_state import SessionDB
-from tools.session_search_tool import (
+from hermes_agent.tools.session_search_tool import (
     _format_timestamp,
     _is_compacted_message,
     _resolve_to_parent,
@@ -142,7 +142,7 @@ class TestBrowseShape:
         shared_db = _DB()
         profile_db = _DB()
         monkeypatch.setattr(
-            "tools.session_search_tool._resolve_profile_db",
+            "hermes_agent.tools.session_search_tool._resolve_profile_db",
             lambda _profile: profile_db,
         )
 
@@ -604,7 +604,7 @@ class TestCompactionSummaryFiltering:
     """session_search discovery must exclude compaction handoffs from bookends."""
 
     def test_is_compaction_summary_detects_prefix(self):
-        from tools.session_search_tool import _is_compaction_summary
+        from hermes_agent.tools.session_search_tool import _is_compaction_summary
         assert _is_compaction_summary("[CONTEXT COMPACTION — REFERENCE ONLY] foo")
         assert _is_compaction_summary("[CONTEXT SUMMARY]: old summary")
         assert not _is_compaction_summary("Hello, how can I help?")
@@ -1137,7 +1137,7 @@ class TestDiscoveryTemporalNarrowing:
     ])
     def test_parse_bound(self, value, expected):
         """Relative durations are now-minus-N (checked as an offset); ISO is absolute UTC."""
-        from tools.session_search_tool import _parse_iso_bound
+        from hermes_agent.tools.session_search_tool import _parse_iso_bound
         if expected is ValueError:
             with pytest.raises(ValueError):
                 _parse_iso_bound(value)
@@ -1150,7 +1150,7 @@ class TestDiscoveryTemporalNarrowing:
         """A June hit must survive even when FTS rank would fill the scan with August rows, so the
         bound has to live in the WHERE clause rather than trim the already-truncated top-N. An
         invalid bound is a tool error, not a silent unbounded search."""
-        monkeypatch.setattr("tools.session_search_tool._DISCOVER_SCAN_LIMIT", 2)
+        monkeypatch.setattr("hermes_agent.tools.session_search_tool._DISCOVER_SCAN_LIMIT", 2)
         for i in range(4):
             sid = f"s_aug_{i}"
             db.create_session(sid, source="cli")
@@ -1217,7 +1217,7 @@ class TestBrowseDefaultLimit:
         from types import SimpleNamespace
 
         from agent.inline_tool_executors import INLINE_TOOL_EXECUTORS, InlineToolContext
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         for i in range(12):
             db.create_session(f"s_browse_{i:02d}", source="cli")

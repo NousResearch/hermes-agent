@@ -11,8 +11,8 @@ import os
 import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home
-from tools.checkpoint_manager import CheckpointManager
-from tools.checkpoint_maintenance import checkpoint_footprint_notice
+from hermes_agent.tools.checkpoint_manager import CheckpointManager
+from hermes_agent.tools.checkpoint_maintenance import checkpoint_footprint_notice
 
 def _write_config(enabled: bool, cap_mb: int) -> None:
     home = get_hermes_home()
@@ -22,7 +22,7 @@ def _write_config(enabled: bool, cap_mb: int) -> None:
 
 def test_notice_only_when_enabled_and_over_cap(tmp_path, monkeypatch):
     base = get_hermes_home() / "checkpoints"
-    monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", base)
+    monkeypatch.setattr("hermes_agent.tools.checkpoint_manager.CHECKPOINT_BASE", base)
     work = tmp_path / "proj"
     work.mkdir()
     (work / "blob.bin").write_bytes(os.urandom(2 * 1024 * 1024))  # incompressible → store > 1 MB
@@ -32,7 +32,7 @@ def test_notice_only_when_enabled_and_over_cap(tmp_path, monkeypatch):
     def unexpected_git(*args, **kwargs):
         raise AssertionError("A storage notice must not inspect commit history")
 
-    monkeypatch.setattr("tools.checkpoint_maintenance._run_git", unexpected_git)
+    monkeypatch.setattr("hermes_agent.tools.checkpoint_maintenance._run_git", unexpected_git)
     notice = checkpoint_footprint_notice()
     assert notice
     assert "across 1 project(s)" in notice

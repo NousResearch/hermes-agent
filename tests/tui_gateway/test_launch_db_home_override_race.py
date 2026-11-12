@@ -203,7 +203,7 @@ def test_foreign_profile_poller_requeues_event_owned_through_another_profiles_li
     checks were false and ``_notif_handle_event`` dropped the event. B must recognise A's live
     continuation as the owner and hand the event back."""
     import threading
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     a_home, b_home = tmp_path / "profiles" / "a", tmp_path / "profiles" / "b"
     a_home.mkdir(parents=True)

@@ -23,8 +23,8 @@ def _qq_tap(button_data):
 
 def _publish_and_hold():
     """A real gateway wait whose notifier is held before any rendering: the request is published."""
-    from tools import approval
-    from tools.approval_gateway_wait import _await_gateway_decision
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _await_gateway_decision
 
     entered, release, out = threading.Event(), threading.Event(), {}
 
@@ -74,8 +74,8 @@ def test_a_published_request_is_deny_only_before_its_card_is_rendered():
 async def test_a_card_that_shows_the_whole_command_lifts_the_mark(monkeypatch):
     from hermes_agent.gateway.platforms.base import SendResult
     from plugins.platforms.qqbot.adapter import QQAdapter
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     entry = _ApprovalEntry({"request_id": "r1"})
     entry.card_deny_only = True  # as every request is created

@@ -17,7 +17,7 @@ from argparse import Namespace
 
 import pytest
 
-import tools.approval as approval_module
+import hermes_agent.tools.approval as approval_module
 from hermes_cli.approvals_suggest import (
     Proposal,
     apply_proposals,
@@ -233,7 +233,7 @@ class TestProposalRedaction:
     def test_credential_in_glob_tokens_falls_back_to_class_key(self, isolated_allowlist):
         """Redaction must never reach a persisted glob: `KEY=*** git *` would be three
         fnmatch wildcards pre-approving any `KEY=… git …` command."""
-        from tools.approval_floors import _command_matches_permanent_allowlist
+        from hermes_agent.tools.approval_floors import _command_matches_permanent_allowlist
 
         cmd = "GITHUB_TOKEN=ghp_16C7e42F292c6912E7710c838347Ae178B4a git push --force origin main"
         proposals = build_proposals([(cmd, "git push --force")] * 3, min_count=1)

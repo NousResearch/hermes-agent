@@ -6,12 +6,12 @@ Disconnecting accounts remains a portal-only user decision.
 
 from typing import Any, Callable, Dict, Optional
 
-from tools.connectors.catalog_tool import MANAGE_CATALOG_SCHEMA, manage_catalog
-from tools.connectors.gateway import config as gateway_config
-from tools.connectors.managed import run_managed_action
-from tools.connectors.mcp import run_mcp_operation
-from tools.connectors.targets import ALIAS_PATTERN, ALL_ACTIONS, MCP_ACTIONS, normalize_targets, validate_action
-from tools.registry import registry, tool_error
+from hermes_agent.tools.connectors.catalog_tool import MANAGE_CATALOG_SCHEMA, manage_catalog
+from hermes_agent.tools.connectors.gateway import config as gateway_config
+from hermes_agent.tools.connectors.managed import run_managed_action
+from hermes_agent.tools.connectors.mcp import run_mcp_operation
+from hermes_agent.tools.connectors.targets import ALIAS_PATTERN, ALL_ACTIONS, MCP_ACTIONS, normalize_targets, validate_action
+from hermes_agent.tools.registry import registry, tool_error
 
 
 def manage_connections(

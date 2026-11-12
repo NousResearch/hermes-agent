@@ -18,7 +18,7 @@ class _ApprovingAgent:
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None, **_kw):
-        from tools.approval_gateway_wait import _ApprovalEntry
+        from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
         entry = _ApprovalEntry({"command": "rm -rf notes"})
         type(self).calls.append((message, entry.authority["requester_id"], entry.authority["requester_name"]))
         return {"final_response": "ok", "messages": [], "api_calls": 1}

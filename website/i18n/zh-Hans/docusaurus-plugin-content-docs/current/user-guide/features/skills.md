@@ -684,7 +684,7 @@ hermes skills install owner/repo/skills/my-workflow
 
 #### tap 的信任级别
 
-新 tap 默认分配 `community` 信任级别。从中安装的 skills 经过标准安全扫描，首次安装时显示第三方警告面板。如果你的组织或广泛受信任的来源应获得更高信任，请将其仓库添加到 `tools/skills_hub.py` 中的 `TRUSTED_REPOS`（需要 Hermes 核心 PR）。
+新 tap 默认分配 `community` 信任级别。从中安装的 skills 经过标准安全扫描，首次安装时显示第三方警告面板。如果你的组织或广泛受信任的来源应获得更高信任，请将其仓库添加到 `hermes_agent/tools/skills_hub.py` 中的 `TRUSTED_REPOS`（需要 Hermes 核心 PR）。
 
 #### Tap 管理
 

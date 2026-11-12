@@ -1,4 +1,4 @@
-"""Tests for the memory/skill write-approval gate (tools/write_approval.py)
+"""Tests for the memory/skill write-approval gate (hermes_agent/tools/write_approval.py)
 and the shared slash-command handlers (hermes_cli/write_approval_commands.py).
 
 Covers the boolean write_approval gate (off by default = write freely; on =
@@ -35,7 +35,7 @@ def _set_approval(subsystem, enabled):
 
 def test_list_pending_skips_non_dict_record(hermes_home):
     """A parseable-but-non-object pending file must be skipped, not crash the sort."""
-    from tools import write_approval as wa
+    from hermes_agent.tools import write_approval as wa
     wa.stage_write("memory", {"action": "add", "target": "user", "content": "ok"},
                    summary="ok", origin="foreground")
     pending_dir = wa._pending_path("memory", "").parent
@@ -45,7 +45,7 @@ def test_list_pending_skips_non_dict_record(hermes_home):
     assert wa.get_pending("memory", "bad") is None
 
 def test_normalize_enabled_coerces_values():
-    from tools import write_approval as wa
+    from hermes_agent.tools import write_approval as wa
     # Real bools pass through.
     assert wa._normalize_enabled(True) is True
     assert wa._normalize_enabled(False) is False
@@ -64,8 +64,8 @@ def test_normalize_enabled_coerces_values():
 
 def test_memory_gate_off_allows_write(hermes_home):
     # Default (gate off) → write straight through, no staging.
-    from tools.memory_tool import memory_tool, MemoryStore
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import memory_tool, MemoryStore
+    from hermes_agent.tools import write_approval as wa
     store = MemoryStore(); store.load_from_disk()
     r = json.loads(memory_tool("add", "user", "save me", store=store))
     assert r["success"] is True
@@ -78,8 +78,8 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, cap
     returned "memory store unavailable" and applied nothing. The CLI handler must
     fall back to a freshly loaded on-disk store, like the gateway path does."""
     import json
-    from tools.memory_tool import memory_tool, MemoryStore
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import memory_tool, MemoryStore
+    from hermes_agent.tools import write_approval as wa
     from hermes_cli.cli_commands_mixin import CLICommandsMixin
 
     _set_approval("memory", True)
@@ -103,7 +103,7 @@ def test_cli_memory_approve_without_live_agent_uses_fresh_store(hermes_home, cap
 
 def test_load_on_disk_store_honors_configured_limits_and_permissions(hermes_home, monkeypatch):
     """Fresh approval stores must match the live agent's limits and target gates."""
-    from tools.memory_tool import MemoryStore, load_on_disk_store
+    from hermes_agent.tools.memory_tool import MemoryStore, load_on_disk_store
 
     # Config override path: helper picks up configured limits and store flags.
     monkeypatch.setattr(
@@ -141,8 +141,8 @@ def test_load_on_disk_store_honors_configured_limits_and_permissions(hermes_home
 
 def test_handle_approve_all(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools.memory_tool import MemoryStore
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import MemoryStore
+    from hermes_agent.tools import write_approval as wa
     store = MemoryStore(); store.load_from_disk()
     wa.stage_write("memory", {"action": "add", "target": "user", "content": "a"},
                    summary="a", origin="foreground")
@@ -158,8 +158,8 @@ def test_handle_approve_surfaces_overwritten_entry(hermes_home):
     approver the FULL entry it overwrote — the store's replaced_entries field used to be
     dropped by _apply_one, so the incident path stayed silent."""
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools.memory_tool import MemoryStore
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import MemoryStore
+    from hermes_agent.tools import write_approval as wa
     store = MemoryStore(); store.load_from_disk()
     entry = "RULE A: gate merges. RULE B: ci per HEAD. RULE C: never squash."
     store.add("memory", entry)
@@ -176,8 +176,8 @@ def test_handle_approve_lists_a_patch_as_the_entry_before_the_edit(hermes_home):
     """An approved patch keeps the rest of its entry; the approve output called it an
     overwrite and told the user to re-add text they had deliberately changed."""
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools.memory_tool import MemoryStore
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import MemoryStore
+    from hermes_agent.tools import write_approval as wa
     store = MemoryStore(); store.load_from_disk()
     entry = "RULE A: gate merges. RULE B: ci per HEAD. RULE C: never squash."
     store.add("memory", entry)
@@ -196,8 +196,8 @@ _REVIEWED = "Staging DB: pg-staging-2 (old cluster, retiring)"
 
 def _review_stages_remove(shape):
     """Seed memory, then stage a remove the way the unattended background review does."""
-    from tools.memory_tool import MemoryStore, memory_tool
-    from tools.skill_provenance import (reset_current_write_origin, reset_review_attended,
+    from hermes_agent.tools.memory_tool import MemoryStore, memory_tool
+    from hermes_agent.tools.skill_provenance import (reset_current_write_origin, reset_review_attended,
                                         set_current_write_origin, set_review_attended)
     store = MemoryStore(); store.load_from_disk()
     for entry in (_KEPT, _REVIEWED):
@@ -219,8 +219,8 @@ def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
     """Approval re-ran the staged old_text search against the file as it is THEN, so it
     deleted the newer entry the live agent had written in place, which the approver never saw."""
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools.memory_tool import load_on_disk_store, memory_tool
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import load_on_disk_store, memory_tool
+    from hermes_agent.tools import write_approval as wa
     store, pid = _review_stages_remove(shape)
     newer = "Staging DB: pg-staging-3 (migrated 2026-09-20, creds in vault 'stg')"
     assert json.loads(memory_tool(action="patch", old_text=_REVIEWED, content=newer, store=store))["success"]
@@ -238,8 +238,8 @@ def test_approve_refuses_staged_remove_whose_entry_changed(hermes_home, shape):
 def test_approve_names_the_entry_a_remove_deleted(hermes_home, shape):
     """Approve listed what a replace overwrote but was silent about what a remove deleted."""
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools.memory_tool import load_on_disk_store
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import load_on_disk_store
+    from hermes_agent.tools import write_approval as wa
     _store, pid = _review_stages_remove(shape)
     out = handle_pending_subcommand(wa.MEMORY, ["approve", pid], memory_store=load_on_disk_store())
     assert _REVIEWED not in load_on_disk_store().memory_entries, out
@@ -250,8 +250,8 @@ def test_approve_refuses_unpinned_legacy_remove(hermes_home):
     """A record staged before removes were pinned to their full entry has no verifiable target,
     so approve refuses it (keeping the record) instead of replaying its old_text search."""
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools.memory_tool import load_on_disk_store
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import load_on_disk_store
+    from hermes_agent.tools import write_approval as wa
     _store, pid = _review_stages_remove("single")
     path = wa._pending_path(wa.MEMORY, pid)
     record = json.loads(path.read_text(encoding="utf-8"))
@@ -267,7 +267,7 @@ def test_approve_refuses_unpinned_legacy_remove(hermes_home):
 
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools import write_approval as wa
+    from hermes_agent.tools import write_approval as wa
     captured = {}
     out = handle_pending_subcommand(
         wa.MEMORY, ["approval", "on"],
@@ -278,7 +278,7 @@ def test_handle_approval_on(hermes_home):
 
 def test_handle_approval_off(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools import write_approval as wa
+    from hermes_agent.tools import write_approval as wa
     captured = {}
     out = handle_pending_subcommand(
         wa.SKILLS, ["approval", "off"],
@@ -296,13 +296,13 @@ def test_handle_approval_off(hermes_home):
 @pytest.fixture
 def approval_callback_cleanup():
     yield
-    from tools.terminal_tool import set_approval_callback
+    from hermes_agent.tools.terminal_tool import set_approval_callback
     set_approval_callback(None)
 
 def test_memory_inline_approve_writes(hermes_home, approval_callback_cleanup):
-    from tools.memory_tool import memory_tool, MemoryStore
-    from tools.terminal_tool import set_approval_callback
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import memory_tool, MemoryStore
+    from hermes_agent.tools.terminal_tool import set_approval_callback
+    from hermes_agent.tools import write_approval as wa
     _set_approval("memory", True)
 
     calls = []
@@ -322,9 +322,9 @@ def test_memory_inline_approve_writes(hermes_home, approval_callback_cleanup):
     assert "approved fact" in calls[0][0]
 
 def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
-    from tools.memory_tool import memory_tool, MemoryStore
-    from tools.terminal_tool import set_approval_callback
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import memory_tool, MemoryStore
+    from hermes_agent.tools.terminal_tool import set_approval_callback
+    from hermes_agent.tools import write_approval as wa
     _set_approval("memory", True)
     set_approval_callback(lambda command, description, **kw: "deny")
 
@@ -342,9 +342,9 @@ def test_headless_memory_write_stages_without_inline_prompt(
 ):
     """`hermes chat -q`, cron and unattended platforms can register the CLI callback but have no human to answer
     it: the write stages at once instead of waiting the approval timeout."""
-    from tools.memory_tool import memory_tool, MemoryStore
-    from tools.terminal_tool import set_approval_callback
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import memory_tool, MemoryStore
+    from hermes_agent.tools.terminal_tool import set_approval_callback
+    from hermes_agent.tools import write_approval as wa
 
     _set_approval("memory", True)
     monkeypatch.setenv(*{"single_query": ("HERMES_SINGLE_QUERY_SESSION", "1"), "cron": ("HERMES_CRON_SESSION", "1"),
@@ -372,8 +372,8 @@ def test_headless_memory_write_stages_without_inline_prompt(
 def test_memory_invalid_params_rejected_before_staging(hermes_home):
     # Param validation must run BEFORE the gate so a broken write is rejected
     # immediately instead of staged and failing at approve time.
-    from tools.memory_tool import memory_tool, MemoryStore
-    from tools import write_approval as wa
+    from hermes_agent.tools.memory_tool import memory_tool, MemoryStore
+    from hermes_agent.tools import write_approval as wa
     _set_approval("memory", True)
     store = MemoryStore(); store.load_from_disk()
     r = json.loads(memory_tool("add", "memory", None, store=store))
@@ -386,7 +386,7 @@ def test_memory_invalid_params_rejected_before_staging(hermes_home):
 # ---------------------------------------------------------------------------
 
 def _stage_one_memory_write():
-    from tools.memory_tool import memory_tool, MemoryStore
+    from hermes_agent.tools.memory_tool import memory_tool, MemoryStore
     store = MemoryStore(); store.load_from_disk()
     r = json.loads(memory_tool("add", "memory", "surface hint fact", store=store))
     assert r.get("staged") is True, r
@@ -394,7 +394,7 @@ def _stage_one_memory_write():
 
 
 def test_staged_hint_names_the_review_command_on_slash_surfaces(hermes_home):
-    from tools import write_approval as wa
+    from hermes_agent.tools import write_approval as wa
     _set_approval("memory", True)
     r = _stage_one_memory_write()
     # No headless markers bound (plain foreground turn) → the slash hint stands.
@@ -403,7 +403,7 @@ def test_staged_hint_names_the_review_command_on_slash_surfaces(hermes_home):
 
 
 def test_staged_hint_names_the_pending_dir_on_headless_surfaces(hermes_home, monkeypatch):
-    from tools import write_approval as wa
+    from hermes_agent.tools import write_approval as wa
     _set_approval("memory", True)
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
     r = _stage_one_memory_write()

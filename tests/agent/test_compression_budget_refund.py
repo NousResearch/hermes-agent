@@ -136,7 +136,7 @@ THRESHOLD = 10_000
 # Each tool result is large enough that the assembled request crosses
 # THRESHOLD every iteration (estimator is ~chars/4), forcing one pre-API
 # compaction per iteration — but stays below the 100K-char per-result
-# persistence threshold (tools/budget_config.py) so it reaches the context
+# persistence threshold (hermes_agent/tools/budget_config.py) so it reaches the context
 # untruncated.
 BIG_TOOL_RESULT = "x" * 60_000
 
@@ -172,8 +172,8 @@ def _coherent_compressor() -> MagicMock:
 @pytest.fixture()
 def agent():
     with (
-        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
@@ -229,7 +229,7 @@ def _run_marathon_turn(
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
         patch(
-            "model_tools.handle_function_call",
+            "hermes_agent.model_tools.handle_function_call",
             lambda name, args, task_id=None, **kwargs: json.dumps(
                 {"ok": True, "payload": BIG_TOOL_RESULT}
             ),

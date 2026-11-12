@@ -2,7 +2,7 @@
 resolved through the module object so test patches on ``hermes_cli.setup.<name>`` take effect."""
 
 import logging
-from tools import tool_backend_helpers
+from hermes_agent.tools import tool_backend_helpers
 
 logger = logging.getLogger("hermes_cli.setup")
 

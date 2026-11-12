@@ -9,7 +9,7 @@ compaction is a chance to lose detail, so the cap is opt-in. The validation matt
 from types import SimpleNamespace
 
 from agent.context_compressor import ContextCompressor
-from tools.delegate_tool import _apply_child_compression_cap, _child_compression_cap_tokens
+from hermes_agent.tools.delegate_tool import _apply_child_compression_cap, _child_compression_cap_tokens
 
 
 def _child(window=1_000_000, threshold=0.50, cap=None):

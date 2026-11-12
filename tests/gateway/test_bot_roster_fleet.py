@@ -89,7 +89,7 @@ class _Fleet:
     async def bot_chats(self):
         """Mint each bot's Bot Chat the way its creator does; return ``{profile: Bot Chat id}``."""
         from tests.waiting import async_wait_until
-        from tools.bot_live_delivery import read_delivery_result
+        from hermes_agent.tools.bot_live_delivery import read_delivery_result
         desktop = self.connect('default', scope='host')
         # default: created by the pre-upgrade CLI, adopted by the Desktop's first open of the bot.
         legacy = self.db('default')

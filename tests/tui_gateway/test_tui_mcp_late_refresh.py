@@ -11,7 +11,7 @@ import threading
 import time
 import types
 
-import model_tools
+from hermes_agent import model_tools
 from hermes_agent.tui_gateway import server
 from hermes_agent.tui_gateway import entry
 

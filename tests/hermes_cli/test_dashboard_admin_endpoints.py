@@ -634,7 +634,7 @@ class TestSkillsHubSourcesEndpoint:
             return srcs
 
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", _fake_router
+            "hermes_agent.tools.skills_hub_search.create_source_router", _fake_router
         )
         r = self.client.get("/api/skills/hub/sources")
         assert r.status_code == 200
@@ -663,7 +663,7 @@ class TestOfficialSkillsCatalogEndpoint:
             _FakeMeta("official/creative/ascii-art", "builtin", "official"),
         ]
         monkeypatch.setattr(
-            "tools.skills_hub_official.OptionalSkillSource.list_local",
+            "hermes_agent.tools.skills_hub_official.OptionalSkillSource.list_local",
             lambda self: metas,
         )
         monkeypatch.setattr(
@@ -694,7 +694,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_returns_skill_md_text(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", list
+            "hermes_agent.tools.skills_hub_search.create_source_router", list
         )
         bundle = _FakeBundle("github/owner/repo/x")
         meta = _FakeMeta("github/owner/repo/x")
@@ -715,7 +715,7 @@ class TestSkillsHubPreviewEndpoint:
 
     def test_preview_404_when_unresolved(self, monkeypatch):
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", list
+            "hermes_agent.tools.skills_hub_search.create_source_router", list
         )
         monkeypatch.setattr(
             "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
@@ -732,10 +732,10 @@ class TestSkillsHubScanEndpoint:
 
 
     def test_scan_returns_verdict_and_policy(self, monkeypatch):
-        from tools.skills_guard import ScanResult, Finding
+        from hermes_agent.tools.skills_guard import ScanResult, Finding
 
         monkeypatch.setattr(
-            "tools.skills_hub_search.create_source_router", list
+            "hermes_agent.tools.skills_hub_search.create_source_router", list
         )
         bundle = _FakeBundle("github/owner/repo/x", trust_level="community")
         monkeypatch.setattr(
@@ -746,7 +746,7 @@ class TestSkillsHubScanEndpoint:
         from pathlib import Path
 
         monkeypatch.setattr(
-            "tools.skills_hub_install.quarantine_bundle", lambda b: Path("/tmp/_fake_q")
+            "hermes_agent.tools.skills_hub_install.quarantine_bundle", lambda b: Path("/tmp/_fake_q")
         )
 
         fake_result = ScanResult(
@@ -768,7 +768,7 @@ class TestSkillsHubScanEndpoint:
             summary="s",
         )
         monkeypatch.setattr(
-            "tools.skills_guard.scan_skill",
+            "hermes_agent.tools.skills_guard.scan_skill",
             lambda path, source="community": fake_result,
         )
         # Avoid touching the filesystem during cleanup.
@@ -1281,7 +1281,7 @@ class TestSkillHubUpdatesEndpoint:
              "status": "up_to_date"},
             {"name": "gone", "identifier": "x/gone", "source": "github", "status": "orphaned"},
         ]
-        monkeypatch.setattr("tools.skills_hub_install.check_for_skill_updates", lambda **_: rows)
+        monkeypatch.setattr("hermes_agent.tools.skills_hub_install.check_for_skill_updates", lambda **_: rows)
         r = self.client.get("/api/skills/hub/updates")
         assert r.status_code == 200
         assert r.json() == {"updates": [

@@ -122,7 +122,7 @@ def find_op(binary_path: str = "") -> Optional[Path]:
 
 def _scrub(text: str) -> str:
     """Full ECMA-48 ANSI strip (so a control sequence can't hide text after a redaction marker) + trim."""
-    from tools.ansi_strip import strip_ansi
+    from hermes_agent.tools.ansi_strip import strip_ansi
 
     return strip_ansi(text).replace("\x1b", "").strip()
 

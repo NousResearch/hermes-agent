@@ -18,7 +18,7 @@ from agent.turn_tool_round import stage_tool_call_message
 from hermes_agent.hermes_state import SessionDB
 from run_agent import AIAgent
 from tests.agent.test_run_agent import _mock_response
-from tools.setup_beat_tool import SETUP_BEAT_SCHEMA
+from hermes_agent.tools.setup_beat_tool import SETUP_BEAT_SCHEMA
 
 
 def _agent():
@@ -62,8 +62,8 @@ def test_an_empty_follow_up_after_a_card_round_keeps_the_cards_line(tool, reused
 
 
 def _loop_agent(db):
-    with (patch("model_tools.get_tool_definitions", return_value=[{"type": "function", "function": SETUP_BEAT_SCHEMA}]),
-          patch("model_tools.check_toolset_requirements", return_value={}),
+    with (patch("hermes_agent.model_tools.get_tool_definitions", return_value=[{"type": "function", "function": SETUP_BEAT_SCHEMA}]),
+          patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
           patch("agent.process_bootstrap.OpenAI")):
         agent = AIAgent(api_key="test-key-1234567890", base_url="https://openrouter.ai/api/v1", platform="desktop",
                         quiet_mode=True, skip_context_files=True, skip_memory=True)

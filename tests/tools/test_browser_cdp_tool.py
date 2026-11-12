@@ -16,11 +16,11 @@ import pytest
 import websockets
 from websockets.asyncio.server import serve
 
-from tools import browser_cdp_tool
+from hermes_agent.tools import browser_cdp_tool
 import requests
-from tools import browser_session_cdp
-from tools import browser_url_policy
-from tools import browser_use_cli
+from hermes_agent.tools import browser_session_cdp
+from hermes_agent.tools import browser_url_policy
+from hermes_agent.tools import browser_use_cli
 
 
 # ---------------------------------------------------------------------------

@@ -8,10 +8,10 @@ import logging
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from tools.registry import tool_error
-from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
+from hermes_agent.tools.registry import tool_error
+from hermes_agent.tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
 
-logger = logging.getLogger("tools.tool_search")
+logger = logging.getLogger("hermes_agent.tools.tool_search")
 
 _SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
 
@@ -83,7 +83,7 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
     ``arguments: object`` bridge. See #5149.
     """
     try:
-        from tools.registry import registry as _registry
+        from hermes_agent.tools.registry import registry as _registry
         # The schema tool_describe served, dynamic overrides included (ElevenLabs drops `text`).
         served = _registry.get_definitions({name}, quiet=True)
         schema = served[0] if served else _registry.get_schema(name)
@@ -108,7 +108,7 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         # Validate the repaired shape dispatch will see; copy because coerce_tool_args may
         # normalize in place (dispatch re-coerces canonically).
         try:
-            from model_tools import coerce_tool_args
+            from hermes_agent.model_tools import coerce_tool_args
             candidate_args = coerce_tool_args(name, dict(args))
         except Exception:
             logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
@@ -229,7 +229,7 @@ def session_unavailable_error(name: str, session_tool_names: Optional[Iterable[s
     catalog that ``tool_search`` can still refresh). A missing GUI surface keeps its own reason."""
     if session_tool_names is None or name in set(session_tool_names):
         return None
-    from tools.tool_search import _core_tool_names, out_of_scope_reason  # late: imports this module
+    from hermes_agent.tools.tool_search import _core_tool_names, out_of_scope_reason  # late: imports this module
     if name not in _core_tool_names() or _registry_entry(name) is None:
         return None
     return out_of_scope_reason(name) or unavailable_in_session_reason(name)
@@ -249,7 +249,7 @@ def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] 
     instead. Stays None for callers with no session context; deliberately never consults the
     global blocklist, because a top-level session legitimately has these tools.
     """
-    from tools.tool_search import _core_tool_names  # late: tool_search imports this module
+    from hermes_agent.tools.tool_search import _core_tool_names  # late: tool_search imports this module
     if name in _core_tool_names() or _registry_entry(name) is not None:
         if session_tool_names is not None and name not in set(session_tool_names):
             return unavailable_in_session_reason(name)
@@ -257,7 +257,7 @@ def not_deferrable_error(name: str, session_tool_names: Optional[Iterable[str]] 
                 "Call it directly instead of via tool_call.")
     suffix = f"__{name}"
     try:
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         candidates = sorted(n for n in registry.get_all_tool_names() if n.endswith(suffix))
     except Exception:
         candidates = []

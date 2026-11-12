@@ -62,7 +62,7 @@ def test_warning_policy_at_real_transport_boundary(tmp_path, monkeypatch, loop_t
         fallbacks.append((platform.value, chat_id, content))
         return {"success": True, "message_id": "direct-id"}
 
-    monkeypatch.setattr("tools.send_message_tool._send_to_platform", standalone)
+    monkeypatch.setattr("hermes_agent.tools.send_message_tool._send_to_platform", standalone)
     adapter = SimpleNamespace(send=send, send_for_platform=relay_send,
                               fronts_platform=lambda p: p == Platform.DISCORD)
     adapters = {} if lane.startswith("standalone") else {

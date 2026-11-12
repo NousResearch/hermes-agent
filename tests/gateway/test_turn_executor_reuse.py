@@ -24,8 +24,8 @@ def _wait_parked(ex, n=1):
 
 def test_a_reused_worker_sees_none_of_the_previous_turns_thread_state():
     from hermes_constants import get_hermes_home, set_hermes_home_override
-    from tools import interrupt, terminal_tool
-    from tools import terminal_tool_sudo as sudo
+    from hermes_agent.tools import interrupt, terminal_tool
+    from hermes_agent.tools import terminal_tool_sudo as sudo
 
     fresh_home = contextvars.Context().run(get_hermes_home)
     ex = _UnboundedThreadExecutor("reuse-probe")

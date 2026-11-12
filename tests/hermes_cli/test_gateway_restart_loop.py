@@ -449,7 +449,7 @@ class TestGatewaySelfTargetingGuard:
     """Verify destructive gateway commands refuse inside the gateway."""
 
     def test_stop_refuses_inside_gateway(self, monkeypatch):
-        from tools import process_registry
+        from hermes_agent.tools import process_registry
         monkeypatch.setattr(
             process_registry, "_is_supervised_gateway_process", lambda: True
         )
@@ -460,7 +460,7 @@ class TestGatewaySelfTargetingGuard:
         assert exc_info.value.code == 1
 
     def test_uninstall_refuses_inside_gateway(self, monkeypatch):
-        from tools import process_registry
+        from hermes_agent.tools import process_registry
         monkeypatch.setattr(
             process_registry, "_is_supervised_gateway_process", lambda: True
         )
@@ -517,8 +517,8 @@ class TestTerminalToolGatewayLifecycleGuard:
         return {"env_type": "local", "cwd": "/tmp", "timeout": 60, "lifetime_seconds": 3600}
 
     def _patch_env(self, monkeypatch, fake_env, *, inside_gateway: bool):
-        import tools.terminal_tool as tt
-        from tools import process_registry
+        import hermes_agent.tools.terminal_tool as tt
+        from hermes_agent.tools import process_registry
         eid = "default"
         monkeypatch.setattr(tt, "_active_environments", {eid: fake_env})
         monkeypatch.setattr(tt, "_last_activity", {eid: 0.0})
@@ -544,7 +544,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         "pkill -f hermes.*gateway",
     ])
     def test_blocks_lifecycle_commands_inside_gateway(self, monkeypatch, cmd):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(command=cmd))
@@ -553,7 +553,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert "Blocked" in result["error"]
 
     def test_force_true_cannot_bypass_block(self, monkeypatch):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
         result = json.loads(tt.terminal_tool(
@@ -566,7 +566,7 @@ class TestTerminalToolGatewayLifecycleGuard:
     def test_blocks_lifecycle_command_hidden_in_referenced_script(
         self, monkeypatch, tmp_path
     ):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         script = tmp_path / "delayed-ops.sh"
         script.write_text("#!/usr/bin/env bash\nsleep 45\nhermes gateway restart\n", encoding="utf-8")
@@ -584,7 +584,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         """#78398: an over-budget root must never reach shlex — not even via
         the launchctl pre-scan that runs before the full guard."""
         from hermes_agent.cron import lifecycle_guard
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
         monkeypatch.setattr(
@@ -614,7 +614,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         "launchctl bootstrap gui/501 /tmp/com.foo.plist",
     ])
     def test_blocks_neutral_label_submit_and_bootstrap(self, monkeypatch, command):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
 
@@ -629,7 +629,7 @@ class TestTerminalToolGatewayLifecycleGuard:
     ])
     def test_submit_and_bootstrap_allowed_outside_gateway(self, monkeypatch, command):
         """The label-independent block applies only inside the gateway process."""
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         calls = []
 
@@ -657,7 +657,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         gateway but are NOT the gateway supervisor.  The env gate must not
         fire for them — only for the actual gateway process (PID-file owner).
         """
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         calls = []
 
@@ -686,7 +686,7 @@ class TestTerminalToolGatewayLifecycleGuard:
     def test_blocks_launchctl_submit_hidden_in_referenced_script(
         self, monkeypatch, tmp_path
     ):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         script = tmp_path / "wrapper.sh"
         script.write_text(
@@ -700,7 +700,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert "referenced script" in result["error"]
 
     def test_relative_script_uses_live_session_cwd(self, monkeypatch, tmp_path):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         script = tmp_path / "relative.sh"
         script.write_text("#!/usr/bin/env bash\nhermes gateway restart\n", encoding="utf-8")
@@ -719,7 +719,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert "referenced script" in result["error"]
 
     def test_blocks_executable_shebang_script(self, monkeypatch, tmp_path):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         script = tmp_path / "delayed.sh"
         script.write_text("#!/usr/bin/env bash\nhermes gateway stop\n", encoding="utf-8")
@@ -731,7 +731,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
 
     def test_launchctl_submit_parser_handles_shell_quoting(self, monkeypatch):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         self._patch_env(monkeypatch, self._make_fake_env(), inside_gateway=True)
         result = json.loads(tt.terminal_tool(
@@ -742,7 +742,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert "KeepAlive" in result["error"]
 
     def test_shell_option_with_value_still_scans_script(self, monkeypatch, tmp_path):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         script = tmp_path / "options.sh"
         script.write_text("#!/usr/bin/env bash\nhermes gateway restart\n", encoding="utf-8")
@@ -755,7 +755,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
 
     def test_shell_c_payload_recursively_scans_script(self, monkeypatch, tmp_path):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         script = tmp_path / "nested.sh"
         script.write_text("#!/usr/bin/env bash\nlaunchctl submit -l ai.hermes.loop -- /bin/true\n", encoding="utf-8")
@@ -775,7 +775,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
 
     def test_nested_wrapper_script_is_scanned(self, monkeypatch, tmp_path):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         inner = tmp_path / "inner.sh"
         inner.write_text("#!/usr/bin/env bash\nhermes gateway restart\n", encoding="utf-8")
@@ -795,7 +795,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
 
     def test_non_regular_referenced_script_fails_closed(self, monkeypatch, tmp_path):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         fifo = tmp_path / "script.fifo"
         os.mkfifo(fifo)
@@ -806,7 +806,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert result["exit_code"] == 1
 
     def test_quoted_launchctl_submit_text_is_not_blocked(self, monkeypatch):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         calls = []
 
@@ -828,7 +828,7 @@ class TestTerminalToolGatewayLifecycleGuard:
         assert calls == [command]
 
     def test_safe_referenced_script_passes_through(self, monkeypatch, tmp_path):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         calls = []
         script = tmp_path / "health-check.sh"
@@ -853,7 +853,7 @@ class TestTerminalToolGatewayLifecycleGuard:
 
     def test_safe_systemctl_commands_pass_through(self, monkeypatch):
         """Non-hermes systemctl commands must not be blocked by this guard."""
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         calls = []
 
@@ -1571,7 +1571,7 @@ class TestCreateJobBlocksLifecycleCommands:
         result['error'] with the #30719 hint, not an unhandled exception."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         (tmp_path / ".hermes").mkdir(parents=True)
-        from tools.cronjob_tools import cronjob
+        from hermes_agent.tools.cronjob_tools import cronjob
         result = json.loads(cronjob(
             action="create", schedule="0 9 * * *",
             prompt="please run hermes gateway restart nightly",
@@ -1662,8 +1662,8 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
     """Remote-backend and two-session cwd regression coverage."""
 
     def _patch_env(self, monkeypatch, fake_env, *, inside_gateway: bool):
-        import tools.terminal_tool as tt
-        from tools import process_registry
+        import hermes_agent.tools.terminal_tool as tt
+        from hermes_agent.tools import process_registry
         eid = "default"
         monkeypatch.setattr(tt, "_active_environments", {eid: fake_env})
         monkeypatch.setattr(tt, "_last_activity", {eid: 0.0})
@@ -1675,7 +1675,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         )
 
     def test_remote_backend_script_read_uses_env_execute(self, monkeypatch, tmp_path):
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
 
         # Path only exists on the remote backend; locally it is absent, so the
         # guard must fall back to a bounded env.execute('head -c ...') read.
@@ -1706,7 +1706,7 @@ class TestTerminalToolGatewayLifecycleGuardRemote:
         """A script the command EXECUTES that the guard cannot scan (here a live SQLite database)
         still fails closed, but the error names that reason instead of claiming a lifecycle
         command the model then rewords and retries in a loop (#113944)."""
-        import tools.terminal_tool as tt
+        import hermes_agent.tools.terminal_tool as tt
         from hermes_cli.sqlite_safe_read import connect_tracked
 
         db = tmp_path / "state.db"

@@ -1564,7 +1564,7 @@ class TestXaiWebSearchBackendPreference:
             lambda: None,
         )
         monkeypatch.setattr(
-            "tools.web_tools._get_search_backend",
+            "hermes_agent.tools.web_tools._get_search_backend",
             lambda: "xai",
         )
         assert codex_mod._xai_prefers_native_web_search() is True
@@ -1578,7 +1578,7 @@ class TestXaiWebSearchBackendPreference:
             lambda: None,
         )
         monkeypatch.setattr(
-            "tools.web_tools._get_search_backend",
+            "hermes_agent.tools.web_tools._get_search_backend",
             lambda: "firecrawl",
         )
         assert codex_mod._xai_prefers_native_web_search() is False

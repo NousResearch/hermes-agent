@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from tools.computer_use import cua_backend
-from tools.computer_use.cua_backend_capture import _CaptureMixin
+from hermes_agent.tools.computer_use import cua_backend
+from hermes_agent.tools.computer_use.cua_backend_capture import _CaptureMixin
 
 
 class _StubCapture(_CaptureMixin):
@@ -65,8 +65,8 @@ class TestCappedWalkHint:
 
     @staticmethod
     def _summary(monkeypatch, n_elements: int, bound: int) -> str:
-        from tools.computer_use import tool
-        from tools.computer_use.backend import CaptureResult, UIElement
+        from hermes_agent.tools.computer_use import tool
+        from hermes_agent.tools.computer_use.backend import CaptureResult, UIElement
         monkeypatch.setattr(tool, "_spill_elements_to_file", lambda cap: "/tmp/elements.json")
         cap = CaptureResult(mode="ax", width=800, height=600, ax_max_elements=bound,
                             elements=[UIElement(index=i + 1, role="AXButton", label=f"b{i}") for i in range(n_elements)])

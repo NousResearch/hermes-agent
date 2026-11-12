@@ -8,7 +8,7 @@ the JSON result returned to the model previously carried raw ``str(e)`` and
 
 import json
 
-from tools import terminal_tool
+from hermes_agent.tools import terminal_tool
 
 SECRET = "sk-proj-AbCdEf1234567890SecretValue999"
 
@@ -30,7 +30,7 @@ def test_generic_exception_result_redacts_error_and_traceback(monkeypatch):
 
 
 def test_degraded_fail_mode_result_redacts_error_and_traceback(monkeypatch):
-    from tools.environments.base import EnvironmentConnectionError
+    from hermes_agent.tools.environments.base import EnvironmentConnectionError
 
     monkeypatch.setenv("TERMINAL_DEGRADED_MODE", "fail")
     exc = EnvironmentConnectionError(

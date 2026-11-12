@@ -198,7 +198,7 @@ def _core_platforms_except(platform: str, *others: str) -> tuple[str, ...]:
     return tuple(sorted({*PLATFORMS, *bundled, *_GATEWAY_ONLY_PLATFORMS, "acp", *others} - {platform}))
 
 
-# Core put the yb_* tools in ``hermes-yuanbao`` only (toolsets.py before Yuanbao left core), so no other
+# Core put the yb_* tools in ``hermes-yuanbao`` only (hermes_agent/toolsets.py before Yuanbao left core), so no other
 # platform's default composite carried them. A third-party plugin platform core never knew stays uncovered.
 _YUANBAO_OFF_PLATFORMS = _core_platforms_except("yuanbao", "homeassistant")
 
@@ -490,7 +490,7 @@ class LeftCoreFeature:
     in_use: Callable[..., bool]               # (home, *, process_env=False) -> bool, read-only
     unchanged: str                            # what migrated users keep, shown on success
     # Credentials core stripped from every child process while it shipped the feature. Core keeps
-    # stripping them (tools/environments/local_env_policy.py): with the plugin absent (migration
+    # stripping them (hermes_agent/tools/environments/local_env_policy.py): with the plugin absent (migration
     # pending, declined or failed) no manifest declares them, and they would reach every child.
     secret_env: tuple[str, ...] = ()
     # Non-secret settings core kept out of children by default (provider blocklist, Tier 2).

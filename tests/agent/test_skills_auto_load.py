@@ -57,7 +57,7 @@ class TestBuildAutoLoadPrompt:
 
         _write_skill(tmp_path, "pinned-skill", "PINNED CONTENT")
         _write_skill(tmp_path, "extra-skill", "EXTRA CONTENT")
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path):
             prompt, loaded, missing = build_preloaded_skills_prompt(
                 ["pinned-skill", "extra-skill"], task_id="s1", excluded_loaded_names={"pinned-skill"},
             )
@@ -73,7 +73,7 @@ class TestSharedPromptPath:
         skill_file = _write_skill(tmp_path, "stable-skill", "ORIGINAL SKILL BYTES")
         cfg = {"skills": {"auto_load": ["stable-skill"]}}
         agent = _bare_agent()
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path), \
              patch("hermes_cli.config.load_config_readonly", return_value=cfg):
             first = agent._build_system_prompt()
             assert "ORIGINAL SKILL BYTES" in first and agent._auto_load_skills_result[1] == ["stable-skill"]
@@ -89,7 +89,7 @@ class TestSharedPromptPath:
         the skills toolset all keep pinned skills out of the prompt."""
         _write_skill(tmp_path, "stable-skill", "ORIGINAL SKILL BYTES")
         cfg = {"skills": {"auto_load": ["stable-skill"]}}
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path), \
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path), \
              patch("hermes_cli.config.load_config_readonly", return_value=cfg):
             monkeypatch.setenv("HERMES_IGNORE_RULES", "true")
             agent = _bare_agent()

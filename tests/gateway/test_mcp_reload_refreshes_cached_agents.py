@@ -106,10 +106,10 @@ async def test_reload_mcp_refreshes_cached_agent_tools():
     ]
 
     with (
-        patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers"),
-        patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=["HassTurnOn", "HassTurnOff"]),
-        patch.dict("tools.mcp_tool._servers", {"homeassistant": object()}, clear=True),
-        patch("model_tools.get_tool_definitions", return_value=fresh_tool_defs),
+        patch("hermes_agent.tools.mcp_tool_lifecycle.shutdown_mcp_servers"),
+        patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=["HassTurnOn", "HassTurnOff"]),
+        patch.dict("hermes_agent.tools.mcp_tool._servers", {"homeassistant": object()}, clear=True),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=fresh_tool_defs),
     ):
         result = await runner._execute_mcp_reload(_make_event())
 
@@ -136,10 +136,10 @@ async def test_reload_mcp_handles_empty_agent_cache():
     assert len(runner._agent_cache) == 0
 
     with (
-        patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers"),
-        patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]),
-        patch.dict("tools.mcp_tool._servers", {}, clear=True),
-        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.tools.mcp_tool_lifecycle.shutdown_mcp_servers"),
+        patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]),
+        patch.dict("hermes_agent.tools.mcp_tool._servers", {}, clear=True),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
     ):
         result = await runner._execute_mcp_reload(_make_event())
 
@@ -164,10 +164,10 @@ async def test_reload_mcp_preserves_per_agent_toolset_overrides():
         return [{"type": "function", "function": {"name": "refreshed"}}]
 
     with (
-        patch("tools.mcp_tool_lifecycle.shutdown_mcp_servers"),
-        patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=["refreshed"]),
-        patch.dict("tools.mcp_tool._servers", {"homeassistant": object()}, clear=True),
-        patch("model_tools.get_tool_definitions", side_effect=_capture_get_tool_definitions),
+        patch("hermes_agent.tools.mcp_tool_lifecycle.shutdown_mcp_servers"),
+        patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=["refreshed"]),
+        patch.dict("hermes_agent.tools.mcp_tool._servers", {"homeassistant": object()}, clear=True),
+        patch("hermes_agent.model_tools.get_tool_definitions", side_effect=_capture_get_tool_definitions),
     ):
         await runner._execute_mcp_reload(_make_event())
 

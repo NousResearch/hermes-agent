@@ -30,7 +30,7 @@ def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None)
 
 
 def _cron_api(**kwargs):
-    from tools.cronjob_tools import cronjob as cronjob_tool
+    from hermes_agent.tools.cronjob_tools import cronjob as cronjob_tool
     return json.loads(cronjob_tool(**kwargs))
 
 

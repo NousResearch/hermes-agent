@@ -14,7 +14,7 @@ def _reset_registry(monkeypatch):
     video_gen_registry._reset_for_tests()
     # Individual tests install a fal_client fake before exercising requests.
     # Avoid making the optional SDK a prerequisite for those mocked paths.
-    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.tools.lazy_deps.ensure", lambda *args, **kwargs: None)
     yield
     video_gen_registry._reset_for_tests()
 

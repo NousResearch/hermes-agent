@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-import tools.image_generation_tool as image_tool
-from tools.interrupt import set_interrupt
+import hermes_agent.tools.image_generation_tool as image_tool
+from hermes_agent.tools.interrupt import set_interrupt
 
 
 class _SlowHandler:

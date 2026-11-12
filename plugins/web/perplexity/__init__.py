@@ -1,7 +1,7 @@
 """Perplexity web search + snippets plugin — bundled, auto-loaded.
 
 Backed by the Perplexity Search API over httpx. Both search and extract are
-sync; the dispatcher in :mod:`tools.web_tools` handles the wrap when the
+sync; the dispatcher in :mod:`hermes_agent.tools.web_tools` handles the wrap when the
 caller is async.
 """
 

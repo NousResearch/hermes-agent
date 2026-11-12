@@ -10,7 +10,7 @@ import sys
 
 
 def _screen_status(args) -> int:
-    from tools.bot_desktop import lease, runtime
+    from hermes_agent.tools.bot_desktop import lease, runtime
     st = runtime.status()
     if bool(getattr(args, "json", False)):
         print(json.dumps({**st.as_dict(), "lease": lease.public_view(lease.get())}, indent=2, sort_keys=True))
@@ -37,7 +37,7 @@ def _screen_status(args) -> int:
 
 
 def _screen_start(args) -> int:
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
     try:
         st = runtime.start()
     except RuntimeError as exc:
@@ -48,11 +48,11 @@ def _screen_start(args) -> int:
 
 
 def _screen_stop(args) -> int:
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
     if runtime.is_supported_host():
         # Same door as display.stop: a human mid-takeover is never yanked by a runbook or a stray
         # `screen stop`; the decision is taken under the lease lock so a takeover cannot race it.
-        from tools.bot_desktop import lease
+        from hermes_agent.tools.bot_desktop import lease
         if lease.release(unless_human=not bool(getattr(args, "force", False))).holder == lease.HUMAN:
             print("Bot Desktop: a human holds this screen; re-run with --force to take it down anyway.")
             return 1
@@ -61,7 +61,7 @@ def _screen_stop(args) -> int:
 
 
 def _screen_install(args) -> int:
-    from tools.bot_desktop import install, runtime
+    from hermes_agent.tools.bot_desktop import install, runtime
     if not runtime.is_supported_host():
         print("Bot Desktop screens run on Linux gateway hosts only.")
         return 1

@@ -14,7 +14,7 @@ asserts the two gaps that were genuinely open plus the relevant regression
 guards.
 """
 
-from tools.approval import detect_dangerous_command
+from hermes_agent.tools.approval import detect_dangerous_command
 
 class TestChownRecursiveLongOptionAbbreviation:
     """chown --recur* abbreviations targeting root must be caught.

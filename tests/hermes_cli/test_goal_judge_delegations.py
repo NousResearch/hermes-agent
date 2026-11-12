@@ -34,7 +34,7 @@ def test_judge_prompt_states_active_delegations_and_a_wait_branch_for_them():
 
 
 def test_count_active_delegations_is_scoped_to_the_spawning_session():
-    from tools import async_delegation as ad
+    from hermes_agent.tools import async_delegation as ad
 
     fake = {
         "a": {"status": "running", "parent_session_id": "root", "session_key": "", "origin_ui_session_id": ""},

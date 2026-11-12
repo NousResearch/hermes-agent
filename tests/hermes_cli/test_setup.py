@@ -133,7 +133,7 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
 
 
 def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tmp_path, monkeypatch):
-    monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
@@ -156,7 +156,7 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
     )
     monkeypatch.setitem(
         sys.modules,
-        "tools.managed_tool_gateway",
+        "hermes_agent.tools.managed_tool_gateway",
         types.SimpleNamespace(
             is_managed_tool_gateway_ready=lambda vendor: vendor == "modal",
             resolve_managed_tool_gateway=lambda vendor: None,

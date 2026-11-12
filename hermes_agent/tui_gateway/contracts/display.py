@@ -23,7 +23,7 @@ class LeaseHolder(WireEnum):
 
 
 class DisplayLease(Result):
-    """``tools/bot_desktop/lease.py::Lease`` as clients may see it: the holder's viewer id is a
+    """``hermes_agent/tools/bot_desktop/lease.py::Lease`` as clients may see it: the holder's viewer id is a
     capability and never leaves the gateway; ``viewer_hash`` lets the holder recognise itself."""
 
     holder: LeaseHolder
@@ -43,7 +43,7 @@ class DisplayImageSwitch(Result):
 
 
 class DisplayStatus(Result):
-    """``tools/bot_desktop/runtime.py::DesktopStatus`` plus the lease and the profile it speaks for."""
+    """``hermes_agent/tools/bot_desktop/runtime.py::DesktopStatus`` plus the lease and the profile it speaks for."""
 
     profile: str
     supported: bool

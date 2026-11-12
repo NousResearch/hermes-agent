@@ -1,5 +1,5 @@
 """Tests for exception-group unwrapping and failure classification in
-``tools/mcp_tool.py`` (#65673, #66092).
+``hermes_agent/tools/mcp_tool.py`` (#65673, #66092).
 
 The MCP SDK's anyio TaskGroups wrap real errors in ``BaseExceptionGroup``,
 whose ``str()`` is "unhandled errors in a TaskGroup (N sub-exceptions)" —
@@ -13,10 +13,10 @@ import logging
 
 import pytest
 
-from tools.mcp_tool_errors import (
+from hermes_agent.tools.mcp_tool_errors import (
     InvalidMcpUrlError, NonMcpEndpointError, _auth_error_detail, _classify_mcp_failure, _mcp_call_failed_message,
     _unwrap_exception_group)
-from tools.mcp_tool import MCPServerTask
+from hermes_agent.tools.mcp_tool import MCPServerTask
 
 
 def _group(*excs, msg="unhandled errors in a TaskGroup") -> BaseExceptionGroup:
@@ -118,7 +118,7 @@ class TestAuthErrorSurfacing:
         pytest.importorskip("mcp.client.auth")
         import json
         from mcp.client.auth import OAuthRegistrationError
-        from tools import mcp_tool_handlers as handlers
+        from hermes_agent.tools import mcp_tool_handlers as handlers
 
         monkeypatch.setattr(handlers._loop, "_run_on_mcp_loop", lambda *_a, **_k: False)
         out = json.loads(handlers._handle_auth_error_and_retry(
@@ -136,7 +136,7 @@ def test_keepalive_failure_logs_root_cause(monkeypatch, tmp_path, caplog):
     str) must log 'BrokenPipeError', not 'unhandled errors in a TaskGroup'."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     class _Task(MCPServerTask):
         async def _keepalive_probe(self):
@@ -149,7 +149,7 @@ def test_keepalive_failure_logs_root_cause(monkeypatch, tmp_path, caplog):
     monkeypatch.setattr(mcp_tool, "_MIN_KEEPALIVE_INTERVAL", 0.01)
 
     async def _scenario():
-        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.mcp_tool"):
             reason = await task._wait_for_lifecycle_event()
         assert reason == "reconnect"
 
@@ -171,7 +171,7 @@ def test_permanent_failure_parks_without_retry_ladder(monkeypatch, tmp_path, cap
     ONE attempt — not burn _MAX_INITIAL_CONNECT_RETRIES identical warnings."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     _real_sleep = asyncio.sleep
 
@@ -197,7 +197,7 @@ def test_permanent_failure_parks_without_retry_ladder(monkeypatch, tmp_path, cap
 
         task = _Task("missing-cmd")
 
-        with caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.mcp_tool"):
             run_task = asyncio.ensure_future(task.run({"command": "nope"}))
             for _ in range(500):
                 await _real_sleep(0)
@@ -243,11 +243,11 @@ def test_initial_auth_failure_parks_and_revives_after_relogin(
 
     httpx = pytest.importorskip("httpx")
 
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)
 
-    from tools import mcp_tool_config as _config
+    from hermes_agent.tools import mcp_tool_config as _config
     monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"figma": {"command": "x"}})
 
     _real_sleep = asyncio.sleep
@@ -282,7 +282,7 @@ def test_initial_auth_failure_parks_and_revives_after_relogin(
 
         task = _Task("figma")
 
-        with caplog.at_level(logging.DEBUG, logger="tools.mcp_tool"):
+        with caplog.at_level(logging.DEBUG, logger="hermes_agent.tools.mcp_tool"):
             run_task = asyncio.ensure_future(task.run({"command": "x"}))
             for _ in range(500):
                 await _real_sleep(0)

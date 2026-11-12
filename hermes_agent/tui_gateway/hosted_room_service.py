@@ -310,7 +310,7 @@ class HostedRoomService:
         return gateway_id, epoch
 
     def _turn_lock(self, profile: str) -> contextlib.AbstractContextManager[Path]:
-        from tools.bot_relay import acquire_turn_lock
+        from hermes_agent.tools.bot_relay import acquire_turn_lock
         return acquire_turn_lock(self.root, profile)
 
     def start(self) -> None:

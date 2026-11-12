@@ -906,7 +906,7 @@ class TestToolsConfigIncludeMode:
         import hermes_cli.tools_config as tc
         # Mock the probe to return three tools
         monkeypatch.setattr(
-            "tools.mcp_tool_discovery.probe_mcp_server_tools",
+            "hermes_agent.tools.mcp_tool_discovery.probe_mcp_server_tools",
             lambda: {"demo": [("a", "desc"), ("b", "desc"), ("c", "desc")]},
         )
         # Mock the checklist to return just the first tool

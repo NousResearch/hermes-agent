@@ -39,7 +39,7 @@ def _make_adapter(extra=None):
 
 
 def _clear_clarify_state():
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
     with cm._lock:
         cm._entries.clear()
         cm._session_index.clear()
@@ -131,7 +131,7 @@ class TestTelegramClarifyCallback:
 
     @pytest.mark.asyncio
     async def test_numeric_choice_resolves_with_choice_text(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         # Pre-register a clarify entry so the callback can look up the choice text
@@ -177,7 +177,7 @@ class TestTelegramClarifyCallback:
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_rejected(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         cm.register("cidC", "sk-auth", "Pick", ["a", "b"])
@@ -238,7 +238,7 @@ class TestTelegramClarifyPromptBinding:
 
     def _ask(self, adapter, clarify_id="cid-bind", session_key="sk-bind"):
         """Register a pending clarify bound to (ASK_CHAT_ID, ASK_MESSAGE_ID)."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
         cm.register(clarify_id, session_key, "Recover the worker?", ["keep running", "stop the worker"])
         adapter._clarify_state[clarify_id] = _ClarifyPrompt(
             session_key=session_key, chat_id=str(self.ASK_CHAT_ID),
@@ -270,7 +270,7 @@ class TestTelegramClarifyPromptBinding:
 
     @pytest.mark.asyncio
     async def test_callback_from_another_message_does_not_resolve(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         self._ask(adapter)
@@ -291,7 +291,7 @@ class TestTelegramClarifyPromptBinding:
 
     @pytest.mark.asyncio
     async def test_callback_from_another_chat_does_not_resolve(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         self._ask(adapter)
@@ -307,7 +307,7 @@ class TestTelegramClarifyPromptBinding:
     @pytest.mark.asyncio
     async def test_mismatched_callback_does_not_flip_to_text_capture(self):
         """The "Other" branch mutates state too, so it fails closed on the same check."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         self._ask(adapter)
@@ -322,7 +322,7 @@ class TestTelegramClarifyPromptBinding:
 
     @pytest.mark.asyncio
     async def test_genuine_tap_on_the_prompt_still_resolves(self):
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         self._ask(adapter)
@@ -340,7 +340,7 @@ class TestTelegramClarifyPromptBinding:
     async def test_prompt_without_a_bound_message_stays_answerable(self):
         """A send that reported no message id leaves nothing to match — resolve rather than
         strand the prompt, since no caller-controlled input can reach that state."""
-        from tools import clarify_gateway as cm
+        from hermes_agent.tools import clarify_gateway as cm
 
         adapter = _make_adapter()
         cm.register("cid-unbound", "sk-unbound", "Pick", ["a", "b"])

@@ -9,8 +9,8 @@ import pytest
 from agent.i18n import t
 from hermes_agent.gateway.config import PlatformConfig
 from plugins.platforms.discord import adapter as discord_adapter
-from tools import approval
-from tools.approval_gateway_wait import _ApprovalEntry
+from hermes_agent.tools import approval
+from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
 
 async def _pending_card(monkeypatch):

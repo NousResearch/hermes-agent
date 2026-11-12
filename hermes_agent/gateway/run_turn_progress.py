@@ -265,7 +265,7 @@ class GatewayTurnProgressMixin:
         from hermes_agent.gateway.warning_notifications import render_notification
         status = kwargs.get("status")
         try:
-            from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
+            from hermes_agent.tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
             if status in SUBAGENT_FAILURE_STATUSES and ctx._run_still_current():
                 line = format_subagent_failure_line(
                     kwargs.get("goal"), status, error=kwargs.get("summary") or preview,

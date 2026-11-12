@@ -2,7 +2,7 @@
 
 from hermes_cli.config import load_config
 from hermes_cli.web_server_config import _schema_with_dynamic_provider_options
-from tools.wake_word import _PROVIDERS, _provider
+from hermes_agent.tools.wake_word import _PROVIDERS, _provider
 
 
 def test_wake_provider_schema_accepts_default_and_resolves_all_options():

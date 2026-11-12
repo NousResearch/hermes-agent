@@ -10,9 +10,9 @@ than offered a call that fails."""
 import json
 from typing import Callable, Optional
 
-from tools import desktop_ui
-from tools.registry import registry, tool_error
-from tools.tour_presets import TourPreset
+from hermes_agent.tools import desktop_ui
+from hermes_agent.tools.registry import registry, tool_error
+from hermes_agent.tools.tour_presets import TourPreset
 
 ACTIONS = ("targets", "show", "start", "next", "prev", "stop")
 SURFACES = ("app", "preview")

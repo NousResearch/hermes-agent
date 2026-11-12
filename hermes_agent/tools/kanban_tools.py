@@ -17,9 +17,9 @@ from typing import Any, Callable, Optional
 
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
-from tools.registry import no_cache_check_fn, registry, tool_error
+from hermes_agent.tools.registry import no_cache_check_fn, registry, tool_error
 from hermes_cli.config import cfg_get, load_config
-from tools.kanban_tools_schemas import (
+from hermes_agent.tools.kanban_tools_schemas import (
     KANBAN_ATTACH_SCHEMA,
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
@@ -35,7 +35,7 @@ KANBAN_LIST_MAX_LIMIT = 200
 # --- Gating ---
 
 def _profile_has_kanban_toolset() -> bool:
-    from tools.kanban_toolset_context import kanban_toolset_requested
+    from hermes_agent.tools.kanban_toolset_context import kanban_toolset_requested
 
     requested = kanban_toolset_requested()
     if requested:
@@ -1009,7 +1009,7 @@ def _download_url_with_cap(url: str, max_bytes: int) -> tuple[bytes, Optional[st
     while streaming, so nothing oversize is buffered)."""
     from urllib.parse import urljoin, urlparse
     import httpx
-    from tools.url_safety import is_safe_url
+    from hermes_agent.tools.url_safety import is_safe_url
     current_url = url
     for _ in range(_MAX_ATTACH_URL_REDIRECTS + 1):
         scheme = (urlparse(current_url).scheme or "").lower()
@@ -1115,7 +1115,7 @@ def _handle_create(args: dict, **kw) -> str:
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
     with _board(args.get("board")) as (kb, conn):
         from hermes_agent.gateway.session_context import get_session_env
-        from tools.async_delegation import _current_origin_session_id
+        from hermes_agent.tools.async_delegation import _current_origin_session_id
         self_tid = (os.environ.get("HERMES_KANBAN_TASK")
                     if _is_dispatcher_owned_worker() else None)
         self_task = kb.get_task(conn, self_tid) if self_tid else None

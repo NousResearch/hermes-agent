@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from pm.environments import install_state_dir, runtime_facts_path, site_packages, venv_python
-from tools import code_execution_env, code_execution_tool
-from tools.code_kernel import shutdown_all_kernels
+from hermes_agent.tools import code_execution_env, code_execution_tool
+from hermes_agent.tools.code_kernel import shutdown_all_kernels
 
 
 @pytest.fixture

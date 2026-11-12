@@ -12,7 +12,7 @@ all and a WAF-fronted authorization server answered 403 (#115329).
 The tests drive the REAL provider classes' request builders end to end: the
 ``httpx.Request`` the SDK would send is what gets inspected, not a mocked
 constructor call. The device-flow test additionally observes the headers on a
-real socket, because that path (``tools.mcp_oauth_device``) sends its own token
+real socket, because that path (``hermes_agent.tools.mcp_oauth_device``) sends its own token
 request instead of yielding it into the SDK's auth flow.
 """
 
@@ -30,22 +30,22 @@ pytest.importorskip(
     reason="MCP SDK required for OAuth support",
 )
 
-from tools.mcp_oauth import (
+from hermes_agent.tools.mcp_oauth import (
     build_oauth_auth,
     token_request_user_agent,
 )
-from tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT
+from hermes_agent.tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT
 
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = is_tty
-    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+    monkeypatch.setattr("hermes_agent.tools.mcp_oauth.sys.stdin", mock_stdin)
 
 
 @pytest.fixture(autouse=True)
 def clean_port_state():
-    import tools.mcp_oauth as mod
+    import hermes_agent.tools.mcp_oauth as mod
 
     mod._assigned_cimd_ports.clear()
     yield
@@ -110,7 +110,7 @@ def _build_provider_via(builder, monkeypatch, tmp_path, cfg):
 
 
 def _manager_builder(server_name, server_url, cfg):
-    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
 
     reset_manager_for_tests()
     return MCPOAuthManager().get_or_build_provider(server_name, server_url, cfg)
@@ -242,17 +242,17 @@ def test_device_flow_token_poll_carries_a_user_agent_on_the_wire(
 ):
     """Every request of an unconfigured device login reaches the server with a User-Agent.
 
-    ``tools.mcp_oauth_device._authorize`` builds its token poll by hand and sends it with
+    ``hermes_agent.tools.mcp_oauth_device._authorize`` builds its token poll by hand and sends it with
     ``client.send()`` — the one token request that never passes through the SDK auth flow's
     default-UA stamp, so it left the socket header-less (#115329).
     """
     from mcp.shared.auth import OAuthClientInformationFull
 
-    from tools.mcp_oauth import _build_client_metadata
-    from tools.mcp_oauth_device import _authorize
-    from tools.mcp_oauth_manager import HermesMCPOAuthProvider
-    from tools.mcp_oauth_provider import prepare_oauth_config
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_oauth import _build_client_metadata
+    from hermes_agent.tools.mcp_oauth_device import _authorize
+    from hermes_agent.tools.mcp_oauth_manager import HermesMCPOAuthProvider
+    from hermes_agent.tools.mcp_oauth_provider import prepare_oauth_config
+    from hermes_agent.tools.mcp_tool import sdk_httpx
 
     base, seen = device_authorization_server
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

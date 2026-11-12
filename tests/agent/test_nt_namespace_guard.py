@@ -62,13 +62,13 @@ class TestNtNamespaceGuard(unittest.TestCase):
         from pathlib import Path
 
         from agent import acp_client, context_references, tool_executor
-        from tools.file_tools import patch_tool, read_file_tool, search_tool, write_file_tool
+        from hermes_agent.tools.file_tools import patch_tool, read_file_tool, search_tool, write_file_tool
 
         bad = "\\??\\UNC\\attacker.example\\share\\x"
         with patch("agent.file_safety.Path") as fs_path, \
-                patch("tools.file_tools._resolve_path_for_task") as ft_resolve, \
-                patch("tools.file_tools_write_guards._resolve_path_for_task") as wg_resolve, \
-                patch("tools.file_tools_paths._resolve_path_for_task") as ckpt_resolve, \
+                patch("hermes_agent.tools.file_tools._resolve_path_for_task") as ft_resolve, \
+                patch("hermes_agent.tools.file_tools_write_guards._resolve_path_for_task") as wg_resolve, \
+                patch("hermes_agent.tools.file_tools_paths._resolve_path_for_task") as ckpt_resolve, \
                 patch.object(Path, "resolve", side_effect=AssertionError("must not resolve")), \
                 patch.object(os.path, "realpath", side_effect=AssertionError("must not realpath")):
             results = [

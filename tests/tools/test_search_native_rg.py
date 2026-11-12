@@ -10,8 +10,8 @@ import json
 
 import pytest
 
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import ShellFileOperations
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import ShellFileOperations
 
 pytestmark = pytest.mark.platforms("posix")  # native rg lane is POSIX-only
 
@@ -89,7 +89,7 @@ def test_native_runner_honours_deadline_and_interrupt_while_rg_is_silent(tree, o
     import threading
     import time
 
-    from tools import interrupt
+    from hermes_agent.tools import interrupt
 
     ops = ops_factory(tree, [])
     started = time.monotonic()

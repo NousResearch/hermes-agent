@@ -14,8 +14,8 @@ import time
 
 import pytest
 
-from tools.browser_supervisor import _SupervisorRegistry
-from tools.browser_supervisor_capture import CapturedCDPInvalid
+from hermes_agent.tools.browser_supervisor import _SupervisorRegistry
+from hermes_agent.tools.browser_supervisor_capture import CapturedCDPInvalid
 
 
 class _FakeCDP:

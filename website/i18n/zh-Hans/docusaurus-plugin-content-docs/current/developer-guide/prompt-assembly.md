@@ -22,7 +22,7 @@ Hermes 刻意将以下内容分离：
 
 - `run_agent.py`
 - `agent/prompt_builder.py`
-- `tools/memory_tool.py`
+- `hermes_agent/tools/memory_tool.py`
 
 ## 已缓存的系统 prompt 层
 

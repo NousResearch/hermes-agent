@@ -57,7 +57,7 @@ class _StopAfterDaybreak(Exception):
 def _admit_turn(monkeypatch, session):
     """Run real turn admission (``_prepare_turn_input``, under the session's real profile scope) and stop just
     after the turn's agent is selected and its Daybreak setting synced."""
-    from tools import approval_context
+    from hermes_agent.tools import approval_context
     monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: [])
     monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
     for name in ("_apply_pending_model_switch", "_sync_agent_model_with_config", "_sync_agent_compression_with_config",

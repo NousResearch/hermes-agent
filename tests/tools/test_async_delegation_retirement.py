@@ -6,7 +6,7 @@ import threading
 def test_async_delegations_hold_busy_accounting_through_finalization(tmp_path, monkeypatch):
     from hermes_cli import backend_retirement
     from hermes_cli.web_server_idle_proof import idle_proof
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     fence = backend_retirement.RetirementFence()
     monkeypatch.setattr(backend_retirement, "retirement", fence)

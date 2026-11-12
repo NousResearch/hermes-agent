@@ -13,7 +13,7 @@ import hermes_cli.web_server_memory as _web_server_memory
 from hermes_cli import plugins_cmd
 from hermes_cli import plugin_catalog
 from hermes_cli import plugins_cmd_catalog
-from tools import registry as tools_registry
+from hermes_agent.tools import registry as tools_registry
 
 
 _PLUGIN_ROW = [("demo", "1.0.0", "demo plugin", "user", "/tmp/demo-plugin", "demo")]

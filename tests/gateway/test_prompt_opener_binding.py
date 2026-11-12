@@ -173,7 +173,7 @@ def test_clarify_with_an_empty_authority_answers_to_anyone():
     """A clarify registered with ``authority={}`` records no restriction, so any admitted sender's
     reply answers it (a plugin's rewritten voice-note reply relies on this)."""
     from hermes_agent.gateway.approval_actor import clarify_refusal
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
 
     clarify_gateway.register("cl-open", "agent:main:telegram:dm:1", "Which one?", None, authority={})
     try:

@@ -41,7 +41,7 @@ _GETS_CONVERSATION_ID = {"handler", "pre_tool_call", "post_tool_call"}  # the na
 @pytest.fixture
 def probe(tmp_path, monkeypatch):
     from hermes_cli import plugins
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     home = tmp_path / "home"
     plugin = home / "plugins" / "conv_probe"
@@ -110,8 +110,8 @@ def test_conversation_id_survives_compression_rotation(path, source, tmp_path, p
 
 
 def test_delegated_child_reports_its_delegators_conversation(tmp_path, probe, monkeypatch):
-    from tools import delegate_tool
-    import tools.delegate_tool_config as delegate_config
+    from hermes_agent.tools import delegate_tool
+    import hermes_agent.tools.delegate_tool_config as delegate_config
 
     monkeypatch.setattr(delegate_tool, "_load_config", dict)
     monkeypatch.setattr(delegate_config, "_load_config", dict)

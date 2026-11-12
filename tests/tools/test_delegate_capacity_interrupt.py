@@ -13,10 +13,10 @@ import pytest
 
 from agent.interrupt_control import InterruptControlMixin
 from agent.turn_context import _bind_interrupt_scope
-from tools import async_delegation
-from tools.delegate_tool_dispatch import _Batch, _dispatch_background
-from tools.interrupt import is_interrupted, set_interrupt
-from tools.process_registry import process_registry
+from hermes_agent.tools import async_delegation
+from hermes_agent.tools.delegate_tool_dispatch import _Batch, _dispatch_background
+from hermes_agent.tools.interrupt import is_interrupted, set_interrupt
+from hermes_agent.tools.process_registry import process_registry
 
 
 class _Parent(InterruptControlMixin):

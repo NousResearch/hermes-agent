@@ -964,7 +964,7 @@ _HOST_DEFAULT_HEADERS: list[tuple[str, Callable[[Any, str], dict[str, str]]]] = 
     ("api.kimi.com", lambda _k, _b: {"User-Agent": "claude-code/0.1.0"}),
     ("portal.qwen.ai", _lazy_headers("agent.client_lifecycle", "_qwen_portal_headers")),
     ("chatgpt.com", _lazy_headers("agent.codex_headers", "codex_cloudflare_headers", pass_key=True)),
-    ("x.ai", _lazy_headers("tools.xai_http", "hermes_xai_default_headers")),
+    ("x.ai", _lazy_headers("hermes_agent.tools.xai_http", "hermes_xai_default_headers")),
 ]
 
 
@@ -1007,11 +1007,11 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     # Capture the registry generation FIRST so a concurrent refresh can detect staleness, and the delegation
     # backend this delegate_task is built from: the session routes on it (agent/delegation_backends.py).
     from agent.delegation_backends import saved_backend
-    from tools.registry import registry as _snapshot_registry
+    from hermes_agent.tools.registry import registry as _snapshot_registry
     agent._tool_snapshot_generation, agent._delegation_backend = _snapshot_registry._generation, saved_backend()
-    import model_tools
+    from hermes_agent import model_tools
     from agent.oneshot_footprint import agent_is_oneshot
-    from toolsets import agent_tool_surface, session_disabled_toolsets, tool_selection_key
+    from hermes_agent.toolsets import agent_tool_surface, session_disabled_toolsets, tool_selection_key
     agent._configured_disabled_toolsets, disabled_toolsets = disabled_toolsets, session_disabled_toolsets(
         disabled_toolsets, getattr(agent, "platform", None), oneshot=agent_is_oneshot(agent))  # pin restore reads both
     agent.disabled_toolsets = disabled_toolsets  # so the tool_search bridge and delegate children drop them too
@@ -1035,7 +1035,7 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
             print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
         if disabled_toolsets:
             print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
-        import model_tools
+        from hermes_agent import model_tools
         requirements = model_tools.check_toolset_requirements()
         missing_reqs = [name for name, available in requirements.items() if not available]
         if missing_reqs:
@@ -1088,7 +1088,7 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     _set_defaults(agent, _SESSION_STATE)
 
     # Filesystem checkpoint manager (transparent — not a tool)
-    from tools.checkpoint_manager import CheckpointManager
+    from hermes_agent.tools.checkpoint_manager import CheckpointManager
     agent._checkpoint_mgr = CheckpointManager(
         enabled=checkpoints_enabled, max_snapshots=checkpoint_max_snapshots,
         max_total_size_mb=checkpoint_max_total_size_mb,
@@ -1105,12 +1105,12 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     # Process-scoped --yolo is persisted so `hermes --resume` restores the bypass
     # (SessionDB.session_yolo_enabled); session-scoped /yolo toggles persist separately.
     with suppress(Exception):
-        from tools.approval import _YOLO_MODE_FROZEN
+        from hermes_agent.tools.approval import _YOLO_MODE_FROZEN
         if _YOLO_MODE_FROZEN:
             agent._session_init_model_config["yolo_mode"] = True
 
     # In-memory todo list for task planning (one per agent/session)
-    from tools.todo_tool import TodoStore
+    from hermes_agent.tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
 
 
@@ -1179,7 +1179,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
     if not skip_memory or _memory_toolset_requested:
         # Memory is optional — don't break agent init
         with suppress(Exception):
-            from tools.memory_tool import (
+            from hermes_agent.tools.memory_tool import (
                 MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,
             )
             mem_config = get_builtin_memory_config(_agent_cfg)
@@ -1278,7 +1278,7 @@ def _apply_agent_section(agent, _agent_cfg):
     # Warm the probe (~0.5s of subprocesses) off-thread so the first prompt build finds it cached.
     if agent._environment_probe:
         with suppress(Exception):
-            from tools.env_probe import warm_environment_probe_async
+            from hermes_agent.tools.env_probe import warm_environment_probe_async
             warm_environment_probe_async()
 
     # "Bot Chat" gate hint for hosts that defer the DB title write past the first prompt build.
@@ -1966,7 +1966,7 @@ def _inject_context_engine_tools(agent):
     # Context engine tool schemas (lcm_*), deduped against existing names (plugins may
     # register the same schemas; duplicates 400 provider-side) and gated on enabled_toolsets
     # so `platform_toolsets: telegram: []` can't leak them.
-    # Skip names that are already present — the model_tools.get_tool_definitions() quiet_mode cache returned a
+    # Skip names that are already present — the hermes_agent.model_tools.get_tool_definitions() quiet_mode cache returned a
     # shared list pre-#17335, so a stray mutation here would poison subsequent agent inits in the same
     # Gateway process and trip provider-side 'duplicate tool name' errors. Even with the cache fix, dedup is
     # the right defense against plugin paths that may register the same schemas via ctx.register_tool().

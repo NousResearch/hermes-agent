@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools import async_delegation as ad
-from tools.process_registry import process_registry
+from hermes_agent.tools import async_delegation as ad
+from hermes_agent.tools.process_registry import process_registry
 
 @pytest.fixture(autouse=True)
 def _clean_state():
@@ -65,7 +65,7 @@ class _Event:
 
 @pytest.mark.asyncio
 async def test_review_command_dispatches_background_subagent(monkeypatch):
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
     from agent import review_engine as re_mod
 
     fake_child = MagicMock()

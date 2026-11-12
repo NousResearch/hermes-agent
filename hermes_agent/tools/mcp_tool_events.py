@@ -22,10 +22,10 @@ import time
 from datetime import datetime
 from typing import Any, Optional
 
-from tools.mcp_tool_common import _parse_boolish
-from tools.registry import tool_error
+from hermes_agent.tools.mcp_tool_common import _parse_boolish
+from hermes_agent.tools.registry import tool_error
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 EVENT_UTILITY_KEYS = ("list_event_types", "subscribe_event", "unsubscribe_event")
 _DEFAULT_TTL_MS = 24 * 3600 * 1000
@@ -424,7 +424,7 @@ def _consent_error(server_name: str, args: dict) -> Optional[str]:
     deliver = args.get("deliver") or "log"
     target = f"'{deliver}' chat {args['deliver_chat_id']}" if args.get("deliver_chat_id") else f"'{deliver}'"
     try:
-        from tools.approval_prompt import request_elicitation_consent
+        from hermes_agent.tools.approval_prompt import request_elicitation_consent
         answer = request_elicitation_consent(
             f"Subscribe to MCP event '{args['name']}' from server '{server_name}'? Each event starts an "
             f"unattended agent run that follows the instructions below and sends its result to {target}.",
@@ -443,8 +443,8 @@ def _make_events_handler(op: str, label: str, rpc, *, needs_name: bool = True, n
     """Like ``mcp_tool_handlers._make_utility_handler``, with ``name`` required and an optional consent gate."""
     def _factory(server_name: str, tool_timeout: float):
         def _handler(args: dict, **kwargs) -> str:
-            from tools import mcp_tool_discovery as _discovery  # lazy: import cycle
-            from tools import mcp_tool_handlers as _handlers
+            from hermes_agent.tools import mcp_tool_discovery as _discovery  # lazy: import cycle
+            from hermes_agent.tools import mcp_tool_handlers as _handlers
             server = _discovery._get_connected_server_for_call(server_name)
             if not server or not server.session:
                 return tool_error(f"MCP server '{server_name}' is not connected")

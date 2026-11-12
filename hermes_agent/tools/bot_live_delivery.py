@@ -111,7 +111,7 @@ def _authority_rpc(home, method, params):
             return asyncio.run(request())
         # A gateway-hosted tool call runs on a thread with a live loop, where asyncio.run() raises
         # before anything is dialed (#139303).
-        from model_tools import _run_async
+        from hermes_agent.model_tools import _run_async
         return _run_async(request())
     except Exception as exc:
         if not rpc_started:

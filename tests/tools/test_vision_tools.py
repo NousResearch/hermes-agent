@@ -1,4 +1,4 @@
-"""Tests for tools/vision_tools.py — URL validation, type hints, error logging."""
+"""Tests for hermes_agent/tools/vision_tools.py — URL validation, type hints, error logging."""
 
 import asyncio
 import base64
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools.vision_tools import (
+from hermes_agent.tools.vision_tools import (
     _validate_image_url_async,
     _handle_vision_analyze,
     _determine_mime_type,
@@ -53,7 +53,7 @@ class TestValidateImageUrl:
     """URL validation on the live (async) download path: urlparse-based netloc check + SSRF."""
 
     def test_accepts_valid_http_and_https_urls(self):
-        with patch("tools.url_safety.socket.getaddrinfo", return_value=_RESOLVES):
+        with patch("hermes_agent.tools.url_safety.socket.getaddrinfo", return_value=_RESOLVES):
             assert _validate("https://example.com/image.jpg") is True
             assert _validate("http://cdn.example.org/photo.png") is True
             # CDN endpoints that redirect to images should still pass.
@@ -135,10 +135,10 @@ class TestHandleVisionAnalyze:
         async def resolve(config=None, env_model=None):
             with ExitStack() as st:
                 mock_tool = st.enter_context(
-                    patch("tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock)
+                    patch("hermes_agent.tools.vision_tools.vision_analyze_tool", new_callable=AsyncMock)
                 )
                 st.enter_context(patch(
-                    "tools.vision_tools._should_use_native_vision_fast_path",
+                    "hermes_agent.tools.vision_tools._should_use_native_vision_fast_path",
                     return_value=False,
                 ))
                 st.enter_context(patch.dict(os.environ, {}, clear=False))
@@ -178,9 +178,9 @@ class TestErrorLoggingExcInfo:
     @pytest.mark.asyncio
     async def test_download_failure_logs_exc_info(self, tmp_path, caplog):
         """After max retries, the download error should include exc_info."""
-        from tools.vision_tools import _download_image
+        from hermes_agent.tools.vision_tools import _download_image
 
-        with patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls:
+        with patch("hermes_agent.tools.vision_tools.httpx.AsyncClient") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
@@ -189,7 +189,7 @@ class TestErrorLoggingExcInfo:
 
             dest = tmp_path / "image.jpg"
             with (
-                caplog.at_level(logging.ERROR, logger="tools.vision_tools"),
+                caplog.at_level(logging.ERROR, logger="hermes_agent.tools.vision_tools"),
                 pytest.raises(ConnectionError),
             ):
                 await _download_image(
@@ -213,10 +213,10 @@ class TestErrorLoggingExcInfo:
 
         with (
             patch(
-                "tools.vision_tools._image_to_base64_data_url",
+                "hermes_agent.tools.vision_tools._image_to_base64_data_url",
                 return_value="data:image/jpeg;base64,abc",
             ),
-            caplog.at_level(logging.WARNING, logger="tools.vision_tools"),
+            caplog.at_level(logging.WARNING, logger="hermes_agent.tools.vision_tools"),
         ):
             mock_response = MagicMock()
             mock_choice = MagicMock()
@@ -224,7 +224,7 @@ class TestErrorLoggingExcInfo:
             mock_response.choices = [mock_choice]
 
             with (
-                patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response),
+                patch("hermes_agent.tools.vision_tools.async_call_llm", new_callable=AsyncMock, return_value=mock_response),
             ):
                 # Make unlink fail to trigger the cleanup warning.
                 def failing_unlink(self, *args, **kwargs):
@@ -258,11 +258,11 @@ class TestVisionConfig:
             with (
                 patch("hermes_cli.config.load_config", return_value=config),
                 patch(
-                    "tools.vision_tools._image_to_base64_data_url",
+                    "hermes_agent.tools.vision_tools._image_to_base64_data_url",
                     return_value="data:image/png;base64,abc",
                 ),
                 patch(
-                    "tools.vision_tools.async_call_llm",
+                    "hermes_agent.tools.vision_tools.async_call_llm",
                     new_callable=AsyncMock,
                     return_value=mock_response,
                 ) as mock_llm,
@@ -302,7 +302,7 @@ class TestVisionSafetyGuards:
         secret = tmp_path / "secret.txt"
         secret.write_text("TOP-SECRET=1\n", encoding="utf-8")
 
-        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("hermes_agent.tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
             result = json.loads(await vision_analyze_tool(str(secret), "extract text"))
 
         assert result["success"] is False
@@ -322,7 +322,7 @@ class TestVisionSafetyGuards:
         secret = tmp_path / ".env"
         secret.write_text("OPENAI_API_KEY=sk-super-secret\n", encoding="utf-8")
 
-        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+        with patch("hermes_agent.tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
             result = json.loads(await vision_analyze_tool(str(secret), "extract text"))
 
         assert result["success"] is False
@@ -332,7 +332,7 @@ class TestVisionSafetyGuards:
     @pytest.mark.asyncio
     async def test_native_fast_path_local_env_file_blocked_via_read_guard(self, tmp_path):
         """Same read guard must apply to the native vision fast path."""
-        from tools.vision_tools import _vision_analyze_native
+        from hermes_agent.tools.vision_tools import _vision_analyze_native
 
         secret = tmp_path / ".env"
         secret.write_text("OPENAI_API_KEY=sk-super-secret\n", encoding="utf-8")
@@ -352,9 +352,9 @@ class TestVisionSafetyGuards:
         }
 
         with (
-            patch("tools.website_policy.check_website_access", return_value=blocked),
-            patch("tools.url_safety.is_safe_url", return_value=True),
-            patch("tools.vision_tools._download_image", new_callable=AsyncMock) as mock_download,
+            patch("hermes_agent.tools.website_policy.check_website_access", return_value=blocked),
+            patch("hermes_agent.tools.url_safety.is_safe_url", return_value=True),
+            patch("hermes_agent.tools.vision_tools._download_image", new_callable=AsyncMock) as mock_download,
         ):
             result = json.loads(await vision_analyze_tool("https://blocked.test/cat.png", "describe"))
 
@@ -364,7 +364,7 @@ class TestVisionSafetyGuards:
 
     @pytest.mark.asyncio
     async def test_download_blocks_redirected_final_url(self, tmp_path):
-        from tools.vision_tools import _download_image
+        from hermes_agent.tools.vision_tools import _download_image
 
         def fake_check(url):
             if url == "https://allowed.test/cat.png":
@@ -399,8 +399,8 @@ class TestVisionSafetyGuards:
                 return False
 
         with (
-            patch("tools.vision_tools.check_website_access", side_effect=fake_check),
-            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            patch("hermes_agent.tools.vision_tools.check_website_access", side_effect=fake_check),
+            patch("hermes_agent.tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
             pytest.raises(PermissionError, match="Blocked by website policy"),
         ):
             mock_client = MagicMock()
@@ -418,7 +418,7 @@ class TestVisionSafetyGuards:
     @pytest.mark.asyncio
     async def test_download_enforces_size_cap_while_streaming(self, tmp_path):
         """Streaming download rejects oversize payloads chunk-by-chunk and cleans up."""
-        from tools.vision_tools import _download_image
+        from hermes_agent.tools.vision_tools import _download_image
 
         class _FakeStreamResponse:
             url = "https://example.com/big.png"
@@ -442,9 +442,9 @@ class TestVisionSafetyGuards:
                 return False
 
         with (
-            patch("tools.vision_tools._VISION_MAX_DOWNLOAD_BYTES", 10),
-            patch("tools.vision_tools.check_website_access", return_value=None),
-            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            patch("hermes_agent.tools.vision_tools._VISION_MAX_DOWNLOAD_BYTES", 10),
+            patch("hermes_agent.tools.vision_tools.check_website_access", return_value=None),
+            patch("hermes_agent.tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
             pytest.raises(ValueError, match="Image too large"),
         ):
             mock_client = MagicMock()
@@ -463,7 +463,7 @@ class TestVisionSafetyGuards:
     @pytest.mark.asyncio
     async def test_download_ignores_malformed_content_length(self, tmp_path):
         """Malformed Content-Length is ignored; streaming size cap still works."""
-        from tools.vision_tools import _download_image
+        from hermes_agent.tools.vision_tools import _download_image
 
         body = VALID_PNG + b"\x00" * 16
         dest = tmp_path / "cat.png"
@@ -490,8 +490,8 @@ class TestVisionSafetyGuards:
                 return False
 
         with (
-            patch("tools.vision_tools.check_website_access", return_value=None),
-            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            patch("hermes_agent.tools.vision_tools.check_website_access", return_value=None),
+            patch("hermes_agent.tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
         ):
             mock_client = MagicMock()
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -566,11 +566,11 @@ class TestLocalPathForms:
 
         with (
             patch(
-                "tools.vision_tools._image_to_base64_data_url",
+                "hermes_agent.tools.vision_tools._image_to_base64_data_url",
                 return_value="data:image/png;base64,abc",
             ),
             patch(
-                "tools.vision_tools.async_call_llm",
+                "hermes_agent.tools.vision_tools.async_call_llm",
                 new_callable=AsyncMock,
                 return_value=mock_response,
             ),
@@ -599,11 +599,11 @@ class TestLocalPathForms:
 
         with (
             patch(
-                "tools.vision_tools._image_to_base64_data_url",
+                "hermes_agent.tools.vision_tools._image_to_base64_data_url",
                 return_value="data:image/png;base64,abc",
             ),
             patch(
-                "tools.vision_tools.async_call_llm",
+                "hermes_agent.tools.vision_tools.async_call_llm",
                 new_callable=AsyncMock,
                 return_value=mock_response,
             ),
@@ -637,11 +637,11 @@ class TestBase64SizeLimit:
         # the resize target above it so the auto-resize can't legitimately
         # shrink the (now decodable) fixture under the limit — this test
         # isolates the pre-flight size REJECTION, not the resize recovery.
-        with patch("tools.vision_tools._MAX_BASE64_BYTES", 1000), \
-             patch("tools.vision_tools._resize_image_for_vision",
+        with patch("hermes_agent.tools.vision_tools._MAX_BASE64_BYTES", 1000), \
+             patch("hermes_agent.tools.vision_tools._resize_image_for_vision",
                    side_effect=lambda p, *a, **k: "data:image/png;base64," +
                    base64.b64encode(Path(p).read_bytes()).decode("ascii")), \
-             patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+             patch("hermes_agent.tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
             result = json.loads(await vision_analyze_tool(str(img), "describe this"))
 
         assert result["success"] is False
@@ -658,7 +658,7 @@ class TestBase64SizeLimit:
         mock_response.choices = [mock_choice]
 
         with patch(
-            "tools.vision_tools.async_call_llm",
+            "hermes_agent.tools.vision_tools.async_call_llm",
             new_callable=AsyncMock,
             return_value=mock_response,
         ):
@@ -690,11 +690,11 @@ class TestErrorClassification:
 
         with (
             patch(
-                "tools.vision_tools._image_to_base64_data_url",
+                "hermes_agent.tools.vision_tools._image_to_base64_data_url",
                 return_value="data:image/png;base64,abc",
             ),
             patch(
-                "tools.vision_tools.async_call_llm",
+                "hermes_agent.tools.vision_tools.async_call_llm",
                 new_callable=AsyncMock,
                 side_effect=api_error,
             ),
@@ -739,7 +739,7 @@ class TestResizeImageForVision:
         # Write enough bytes to exceed a tiny limit
         path.write_bytes(VALID_PNG + b"\x00" * 1000)
 
-        with patch("tools.vision_tools._image_to_base64_data_url") as mock_b64:
+        with patch("hermes_agent.tools.vision_tools._image_to_base64_data_url") as mock_b64:
             # Simulate a large base64 result
             mock_b64.return_value = "data:image/png;base64," + "A" * 200
             with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
@@ -937,7 +937,7 @@ class TestDownloadRetryClassification:
         return mock_client
 
     def test_is_retryable_classification(self):
-        from tools.vision_tools import _is_retryable_download_error
+        from hermes_agent.tools.vision_tools import _is_retryable_download_error
 
         # Non-retryable client errors
         for code in (400, 403, 404, 410):
@@ -956,12 +956,12 @@ class TestDownloadRetryClassification:
     async def test_503_retries_then_raises(self, tmp_path):
         """A 5xx is retried up to max_retries, sleeping between attempts."""
         import httpx
-        from tools.vision_tools import _download_image
+        from hermes_agent.tools.vision_tools import _download_image
 
         mock_client = self._make_client_raising_status(503)
         with (
-            patch("tools.vision_tools.httpx.AsyncClient", return_value=mock_client),
-            patch("tools.vision_tools.check_website_access", return_value=None),
+            patch("hermes_agent.tools.vision_tools.httpx.AsyncClient", return_value=mock_client),
+            patch("hermes_agent.tools.vision_tools.check_website_access", return_value=None),
             patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
             pytest.raises(httpx.HTTPStatusError),
         ):
@@ -986,12 +986,12 @@ class TestVisionCpuBurstCap:
     """The bounded CPU executor caps concurrent encode/resize, not LLM calls."""
 
     def test_worker_count_tracks_host_cpus_with_env_override(self):
-        from tools import vision_tools as vt
+        from hermes_agent.tools import vision_tools as vt
 
         def resolve(host_cpus, env_value=None):
             with (
                 patch.dict(os.environ, {}, clear=False),
-                patch("tools.vision_tools._detect_host_cpus", return_value=host_cpus),
+                patch("hermes_agent.tools.vision_tools._detect_host_cpus", return_value=host_cpus),
                 patch("hermes_cli.config.load_config", side_effect=Exception),
             ):
                 if env_value is None:
@@ -1022,7 +1022,7 @@ class TestVisionCpuBurstCap:
         import threading
         from concurrent.futures import ThreadPoolExecutor
 
-        vt = importlib.import_module("tools.vision_tools")
+        vt = importlib.import_module("hermes_agent.tools.vision_tools")
 
         # The executor is dedicated, not the shared default pool.
         assert isinstance(vt._vision_cpu_executor, ThreadPoolExecutor)
@@ -1052,7 +1052,7 @@ class TestVisionCpuBurstCap:
         import importlib
         from concurrent.futures import ThreadPoolExecutor
 
-        vt = importlib.import_module("tools.vision_tools")
+        vt = importlib.import_module("hermes_agent.tools.vision_tools")
 
         CAP = 3
         N = 12

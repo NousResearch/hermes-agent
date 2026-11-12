@@ -133,8 +133,8 @@ def catalog_names() -> set[str]:
 
 def hosted_names() -> Optional[set[str]]:
     try:
-        from tools.connectors.gateway.client import ConnectorClient
-        from tools.connectors.gateway.config import connectors_available
+        from hermes_agent.tools.connectors.gateway.client import ConnectorClient
+        from hermes_agent.tools.connectors.gateway.config import connectors_available
 
         if not connectors_available():
             return None

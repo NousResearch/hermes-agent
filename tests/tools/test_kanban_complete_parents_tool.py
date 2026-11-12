@@ -2,7 +2,7 @@
 
 ``complete_task`` reports every refusal as bare ``False``. On the CLI surface
 the open PRs #110323/#110330/#110334 make the parents refusal actionable;
-the worker-facing TOOL surface (``tools/kanban_tools._handle_complete`` — the
+the worker-facing TOOL surface (``hermes_agent/tools/kanban_tools._handle_complete`` — the
 call a dispatcher-owned worker actually makes) collapsed it into
 "unknown id, stale run, or already terminal", sending the worker/operator
 chasing stale runs while the real blocker was a reopened or unfinished parent.
@@ -52,7 +52,7 @@ def test_complete_names_unsatisfied_parent(running_child_with_parent):
     """The refusal names the blocking parent instead of crying stale run."""
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
-    from tools import kanban_tools as kt
+    from hermes_agent.tools import kanban_tools as kt
 
     parent_id, child_id = running_child_with_parent
     out = json.loads(kt._handle_complete(

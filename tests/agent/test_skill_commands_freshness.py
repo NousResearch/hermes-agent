@@ -19,10 +19,10 @@ def test_skill_added_on_disk_after_the_first_scan_is_served_without_reload(tmp_p
     import shutil
 
     import agent.skill_commands as sc_mod
-    import tools.skills_tool as st
+    import hermes_agent.tools.skills_tool as st
     from agent.skill_commands import get_skill_commands
 
-    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch.object(sc_mod, "_skill_commands_by_key", {}):
+    with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path), patch.object(sc_mod, "_skill_commands_by_key", {}):
         st.clear_skills_cache()
         _make_skill(tmp_path, "first")
         assert set(get_skill_commands()) == {"/first"}
@@ -36,10 +36,10 @@ def test_skill_added_on_disk_after_the_first_scan_is_served_without_reload(tmp_p
 
 def test_unchanged_skills_dirs_reuse_the_published_map(tmp_path):
     import agent.skill_commands as sc_mod
-    import tools.skills_tool as st
+    import hermes_agent.tools.skills_tool as st
     from agent.skill_commands import get_skill_commands
 
-    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch.object(sc_mod, "_skill_commands_by_key", {}):
+    with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path), patch.object(sc_mod, "_skill_commands_by_key", {}):
         st.clear_skills_cache()
         _make_skill(tmp_path, "steady")
         first = get_skill_commands()
@@ -51,10 +51,10 @@ def test_a_skill_installed_under_an_existing_category_subdir_is_served(tmp_path)
     """``skills/mlops/training/<new>/SKILL.md``: the install moves only ``training``'s mtime, two
     levels below the root, and the published map must still be rescanned (the catalog walks it)."""
     import agent.skill_commands as sc_mod
-    import tools.skills_tool as st
+    import hermes_agent.tools.skills_tool as st
     from agent.skill_commands import get_skill_commands
 
-    with patch("tools.skills_tool.SKILLS_DIR", tmp_path), patch.object(sc_mod, "_skill_commands_by_key", {}):
+    with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path), patch.object(sc_mod, "_skill_commands_by_key", {}):
         st.clear_skills_cache()
         training = tmp_path / "mlops" / "training"
         _make_skill(training, "existing")
@@ -77,8 +77,8 @@ def test_only_an_unreadable_skill_root_keeps_the_published_map():
 
     import agent.skill_commands as sc_mod
 
-    with patch("tools.skills_tool._skills_scan_signature", side_effect=PermissionError("denied")):
+    with patch("hermes_agent.tools.skills_tool._skills_scan_signature", side_effect=PermissionError("denied")):
         assert sc_mod._skill_dirs_signature() is None
-    with patch("tools.skills_tool._skills_scan_signature", side_effect=TypeError("bug")):
+    with patch("hermes_agent.tools.skills_tool._skills_scan_signature", side_effect=TypeError("bug")):
         with pytest.raises(TypeError):
             sc_mod._skill_dirs_signature()

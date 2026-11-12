@@ -24,8 +24,8 @@ from urllib.request import Request, urlopen
 
 def probe(surface, scenario, directory):
     from cli import HermesCLI
-    from tools import process_registry as pr
-    from tools.process_registry_notifications import format_process_notification
+    from hermes_agent.tools import process_registry as pr
+    from hermes_agent.tools.process_registry_notifications import format_process_notification
     from hermes_agent.tui_gateway import server
 
     directory = Path(directory)
@@ -101,7 +101,7 @@ def probe(surface, scenario, directory):
             raw = list(registry.completion_queue.queue)
             delegation = None
             if scenario == 'mixed':
-                from tools import async_delegation as ad
+                from hermes_agent.tools import async_delegation as ad
                 delegation = {'type': 'async_delegation', 'delegation_id': f'deleg-{surface}',
                               'session_key': 'backlog-owner', 'goal': 'Fixture delegation',
                               'status': 'completed', 'summary': 'DELEGATION_RESULT',

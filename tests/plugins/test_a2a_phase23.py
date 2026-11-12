@@ -610,7 +610,7 @@ class TestTaskStore:
 class TestDynamicAgentCards:
     def test_skills_reflect_live_tool_registry(self, monkeypatch):
         """The Agent Card is built from the real tool registry at serve time."""
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.a2a.adapter import A2AAdapter
 
@@ -626,7 +626,7 @@ class TestDynamicAgentCards:
         assert "web_search" in by_name["webz"]["tags"]
 
     def test_advertised_toolsets_restrict_card(self, monkeypatch):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         from hermes_agent.gateway.config import PlatformConfig
         from plugins.platforms.a2a.adapter import A2AAdapter
 

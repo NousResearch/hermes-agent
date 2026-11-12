@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import pytest
 
 from mcp.shared.exceptions import MCPError
-from tools import mcp_tool_events as events
-from tools.mcp_tool_registration import _select_utility_schemas
+from hermes_agent.tools import mcp_tool_events as events
+from hermes_agent.tools.mcp_tool_registration import _select_utility_schemas
 from tests.waiting import async_wait_until
 
 PUBLIC_URL = "https://hermes.example.com"
@@ -87,8 +87,8 @@ class TestUtilitySelection:
     def test_a_native_list_events_tool_keeps_every_event_utility(self):
         # Calendar servers commonly ship a native ``list_events`` tool; a native tool shadows a utility
         # of the same name, which would leave the model no way to list event types.
-        from tools import mcp_tool_registration as reg
-        from tools.mcp_tool_schema import _build_utility_schemas
+        from hermes_agent.tools import mcp_tool_registration as reg
+        from hermes_agent.tools.mcp_tool_schema import _build_utility_schemas
         native = SimpleNamespace(name="list_events", description="Calendar events", inputSchema={"type": "object"})
         utilities = [e for e in _build_utility_schemas("cal") if e["handler_key"] in events.EVENT_UTILITY_KEYS]
         candidates = reg._tool_candidates("cal", [native], lambda name: True, 30)
@@ -168,7 +168,7 @@ class TestSubscribe:
         def consent(message, description, **kwargs):
             shown.update(message=message, description=description)
             return "accept"
-        monkeypatch.setattr("tools.approval_prompt.request_elicitation_consent", consent)
+        monkeypatch.setattr("hermes_agent.tools.approval_prompt.request_elicitation_consent", consent)
         args = {"name": "feed.emission.created", "arguments": ARGS, "instructions": "Post a two-line summary.",
                 "deliver": "telegram", "deliver_chat_id": "-100123"}
         assert events._consent_error("ambush", args) is None

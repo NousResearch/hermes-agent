@@ -2,7 +2,7 @@
 
 import pytest
 
-from tools.file_tools import SEARCH_FILES_SCHEMA
+from hermes_agent.tools.file_tools import SEARCH_FILES_SCHEMA
 
 
 @pytest.mark.platforms("macos")

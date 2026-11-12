@@ -1,6 +1,6 @@
 """Tests for ``hermes approvals test`` — dry-run approval verdict CLI.
 
-The tester must compose the REAL runtime evaluators from ``tools.approval``
+The tester must compose the REAL runtime evaluators from ``hermes_agent.tools.approval``
 (detect_hardline_command, _match_user_deny_rule, detect_dangerous_command,
 the container-skip gate, and the same ``_command_detection_variants``
 normalization/de-obfuscation path) — never reimplement them. It is strictly
@@ -15,9 +15,9 @@ import json
 
 import pytest
 
-import tools.approval as A
-from tools import approval_prompt
-from tools import approval_context
+import hermes_agent.tools.approval as A
+from hermes_agent.tools import approval_prompt
+from hermes_agent.tools import approval_context
 from hermes_cli import approvals_test as at
 
 

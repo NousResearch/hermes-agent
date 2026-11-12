@@ -12,7 +12,7 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-from tools.mcp_tool import _MCP_LIST_MAX_PAGES, _paginate_full_list
+from hermes_agent.tools.mcp_tool import _MCP_LIST_MAX_PAGES, _paginate_full_list
 
 
 def _tool(name):
@@ -50,7 +50,7 @@ class TestPaginateFullList:
 class TestDiscoveryUsesPagination:
     def test_discover_tools_drains_all_pages(self):
         """MCPServerTask._discover_tools registers tools from every page."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         server = MCPServerTask("pag_srv")
         server._config = {"command": "test"}

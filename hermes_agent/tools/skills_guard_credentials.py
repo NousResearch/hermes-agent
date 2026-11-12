@@ -1,10 +1,10 @@
-"""Skill-only credential rules of the skills scanner (``tools.skills_guard``).
+"""Skill-only credential rules of the skills scanner (``hermes_agent.tools.skills_guard``).
 
 A skill's scripts run in the execute_code or terminal child, which never receives a Hermes model-provider key
 (the child-env scrub; GHSA-rhgp-j443-p4rf keeps a skill from declaring one back). Loading the Hermes .env defeats
 that and hands the script every key of the profile, and reading a provider key means the skill depends on getting
 it some other way. Both are high on a skill. Plugins run in-process and read their own keys, so ``plugin_guard``
-scans without these rules. Leaf module: nothing here imports ``tools.skills_guard``."""
+scans without these rules. Leaf module: nothing here imports ``hermes_agent.tools.skills_guard``."""
 
 import io
 import re
@@ -68,7 +68,7 @@ def model_provider_key_names() -> frozenset:
     (``CLAUDE_CODE_OAUTH_TOKEN``, #55878) does reach the skill, so reading it stays medium."""
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.config import OPTIONAL_ENV_VARS
-    from tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
+    from hermes_agent.tools.environments.local_env_policy import _HERMES_PROVIDER_ENV_BLOCKLIST
     names = {var.upper() for pconfig in PROVIDER_REGISTRY.values() for var in pconfig.api_key_env_vars}
     names.update(name.upper() for name, meta in OPTIONAL_ENV_VARS.items()
                  if meta.get("category") == "provider" and meta.get("password"))

@@ -11,7 +11,7 @@ the subagent.steer gateway RPC that fronts the helper.
 import threading
 from unittest.mock import MagicMock
 
-from tools.delegate_tool import (
+from hermes_agent.tools.delegate_tool import (
     _register_subagent,
     _unregister_subagent,
     steer_subagent,
@@ -125,7 +125,7 @@ def test_stale_agent_teardown_cannot_unregister_recycled_id():
 
 
 def test_status_snapshot_never_leaks_owner_or_lifecycle_metadata():
-    from tools.delegate_tool import list_active_subagents
+    from hermes_agent.tools.delegate_tool import list_active_subagents
 
     agent = _StubAgent()
     owner_transport = object()
@@ -163,7 +163,7 @@ class TestMissedSteerRetention:
         import json
         from unittest.mock import MagicMock, patch
 
-        from tools.delegate_tool import delegate_task
+        from hermes_agent.tools.delegate_tool import delegate_task
 
         parent = MagicMock()
         parent._delegate_depth = 0
@@ -201,7 +201,7 @@ class TestMissedSteerRetention:
         import json
         from unittest.mock import MagicMock, patch
 
-        from tools.delegate_tool import delegate_task
+        from hermes_agent.tools.delegate_tool import delegate_task
 
         parent = MagicMock()
         parent._delegate_depth = 0
@@ -231,7 +231,7 @@ class TestMissedSteerRetention:
 
     def test_accepted_steer_racing_completion_is_durably_retained(self):
         """Acceptance wins the registry race, so completion must retain its text."""
-        from tools.delegate_tool import _run_single_child
+        from hermes_agent.tools.delegate_tool import _run_single_child
 
         running = threading.Event()
         allow_return = threading.Event()
@@ -306,7 +306,7 @@ class TestMissedSteerRetention:
 
     def test_steer_after_run_return_is_rejected_before_completion_callback(self):
         """Once the child returns, a blocked completion callback cannot extend acceptance."""
-        from tools.delegate_tool import _run_single_child
+        from hermes_agent.tools.delegate_tool import _run_single_child
 
         callback_entered = threading.Event()
         release_callback = threading.Event()
@@ -428,7 +428,7 @@ class TestSubagentSteerRPC:
 
     def test_run_single_child_binds_exact_runtime_owner_artifacts(self):
         from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-        from tools.delegate_tool import _run_single_child
+        from hermes_agent.tools.delegate_tool import _run_single_child
 
         observed: dict[str, bool] = {}
         owner_transport = self._Transport()
@@ -625,7 +625,7 @@ class TestSubagentSteerRPC:
 
     def test_delegate_capture_uses_dispatch_runtime_artifacts(self):
         import hermes_agent.tui_gateway.server as srv
-        from tools import delegate_tool
+        from hermes_agent.tools import delegate_tool
 
         owner_transport = self._Transport()
         owner_record = {
@@ -668,7 +668,7 @@ class TestSubagentSteerRPC:
 
     def test_commissioning_context_rejects_recycled_runtime_session_record(self):
         import hermes_agent.tui_gateway.server as srv
-        from tools import delegate_tool
+        from hermes_agent.tools import delegate_tool
         from hermes_agent.tui_gateway.transport import bind_transport, reset_transport
 
         owner_transport = self._Transport()

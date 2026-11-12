@@ -40,7 +40,7 @@ def split_targets(target: str, sender: Any) -> list[str]:
     the destination each name reaches (``hermes`` and ``default`` are one bot; a registered peer
     and a local bot whose friendly name matches it are two). A friendly name that itself contains
     a comma ('QA, Release') still resolves whole."""
-    from tools.bot_mode_dm import _resolve_local_name
+    from hermes_agent.tools.bot_mode_dm import _resolve_local_name
 
     raw = str(target or "").strip().lstrip("@")
     if "," not in raw or _resolve_local_name(raw, list(sender.roster_homes), sender.root) is not None:
@@ -56,7 +56,7 @@ def split_targets(target: str, sender: Any) -> list[str]:
 def _destination(name: str, sender: Any) -> tuple[str, str]:
     """``(transport, recipient)`` for ``name``, resolved in ``_dispatch``'s order: a peer target
     first, then a connection-qualified relay name, then a local bot (folder id or friendly name)."""
-    from tools.bot_mode_dm import _PEER_TARGET_RE, _resolve_local_name
+    from hermes_agent.tools.bot_mode_dm import _PEER_TARGET_RE, _resolve_local_name
 
     peer = _PEER_TARGET_RE.match(name)
     if peer or name.lower() in sender.peers:
@@ -70,7 +70,7 @@ def _destination(name: str, sender: Any) -> tuple[str, str]:
 
 def fan_out(targets: list[str], content: str, sender: Any, *, expects_reply: bool) -> str:
     """Dispatch ``content`` to every target; with a reply expected, start the one combined runner."""
-    from tools.bot_mode_dm import _dispatch
+    from hermes_agent.tools.bot_mode_dm import _dispatch
 
     collected: list[dict] = []
     acks = []
@@ -106,7 +106,7 @@ def fan_out(targets: list[str], content: str, sender: Any, *, expects_reply: boo
 
 
 def _start_combined(collected: list[dict], sender: Any) -> dict:
-    from tools.bot_mode_dm import REPLY_COMPLETION_CHARS, _dm_dir, _spawn_delivery, _unlink_dm_file
+    from hermes_agent.tools.bot_mode_dm import REPLY_COMPLETION_CHARS, _dm_dir, _spawn_delivery, _unlink_dm_file
 
     fd, spec = tempfile.mkstemp(prefix="fanout-", suffix=".json", dir=_dm_dir(), text=True)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -128,7 +128,7 @@ def _start_combined(collected: list[dict], sender: Any) -> dict:
 def _runner_output(command: str) -> str:
     """How a sub-runner reports: the live lane (``--run-delivery query-file``) prints one JSON
     payload; the relay waiter and the ``hermes peer dm`` transport print the reply as text."""
-    from tools.bot_mode_dm import _runner_argv
+    from hermes_agent.tools.bot_mode_dm import _runner_argv
 
     argv = shlex.split(command)
     marker = argv.index("--run-delivery") if "--run-delivery" in argv else len(argv)
@@ -164,7 +164,7 @@ def run_fan_out(spec_path: str) -> int:
     for thread in threads:
         thread.join()
     settled = sum(result.get("status") == "settled" for result in results)
-    from tools.bot_mode_dm_outcome import combined_summary
+    from hermes_agent.tools.bot_mode_dm_outcome import combined_summary
 
     for result in results:
         result.pop("outcome", None)  # the summary below says it once, by name
@@ -198,8 +198,8 @@ def _outcome(output: str, returncode: int, stdout: str, stderr: str = "") -> dic
 
 def cancel_own_delivery(delivery_id: str, raw_target: str, sender: Any) -> str:
     """Withdraw the caller's own queued request, or stop the turn it started, on a local teammate."""
-    from tools.bot_live_delivery import _TERMINAL, _authority_rpc, read_delivery_result
-    from tools.bot_mode_dm import _err, _resolve_local_name
+    from hermes_agent.tools.bot_live_delivery import _TERMINAL, _authority_rpc, read_delivery_result
+    from hermes_agent.tools.bot_mode_dm import _err, _resolve_local_name
 
     if not _HEX_ID_RE.fullmatch(delivery_id):
         return _err("cancel takes the delivery_id from your own message_agent ack. Do not retry.")

@@ -13,7 +13,7 @@ from hermes_cli.cli_output import (
     print_warning as _print_warning)
 from hermes_cli.config import get_env_value
 from hermes_cli.tools_config_cua import _cua_driver_install_ready, install_cua_driver
-from tools.transcription_common import DEFAULT_LOCAL_MODEL, STT_MODEL_CATALOG
+from hermes_agent.tools.transcription_common import DEFAULT_LOCAL_MODEL, STT_MODEL_CATALOG
 
 _LOCAL_STT_MODEL_SUMMARY = ", ".join(
     f"{model} (default)" if model == DEFAULT_LOCAL_MODEL else model for model in STT_MODEL_CATALOG["local"]
@@ -29,7 +29,7 @@ def _info_lines(*lines: str) -> None:
 def _ensure_browser_use_cli() -> None:
     """Confirm browser_exec's engine is runnable. It is browser-harness, a core dependency of
     Hermes's own venv, so there is nothing to download; a miss means the venv needs a re-sync."""
-    from tools.browser_use_cli import _find_cli
+    from hermes_agent.tools.browser_use_cli import _find_cli
 
     if _find_cli() is not None:
         _print_success("    browser_exec ready (browser-harness, bundled with Hermes)")
@@ -41,7 +41,7 @@ def _ensure_browser_use_cli() -> None:
 def _post_setup_lightpanda() -> None:
     # browser_exec spawns ``lightpanda serve`` and attaches over CDP. No Chromium needed.
     _ensure_browser_use_cli()
-    from tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
+    from hermes_agent.tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
 
     lightpanda_bin = find_lightpanda_binary()
     if lightpanda_bin:
@@ -332,14 +332,14 @@ def _chromium_installed() -> bool:
 def _browser_harness_installed() -> bool:
     """Installed-check for the ``browserbase`` hook: cloud providers host their own Chromium, so
     browser_exec's engine is the whole local contract."""
-    from tools.browser_use_cli import _find_cli
+    from hermes_agent.tools.browser_use_cli import _find_cli
     return _find_cli() is not None
 
 
 def _lightpanda_installed() -> bool:
     """True when a lightpanda binary is on PATH or in a known install dir."""
     try:
-        from tools.browser_lightpanda import find_lightpanda_binary
+        from hermes_agent.tools.browser_lightpanda import find_lightpanda_binary
         return find_lightpanda_binary() is not None
     except Exception:
         return False

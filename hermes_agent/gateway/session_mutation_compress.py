@@ -256,6 +256,6 @@ def _request_tokens(agent, messages, row=None):
             pin = json.loads(row.get('tool_names') or 'null')
         except (TypeError, ValueError):
             pin = None  # a pin hash whose row was swept resolves to itself
-        from tools.mcp_tool_agent import pinned_tool_defs
+        from hermes_agent.tools.mcp_tool_agent import pinned_tool_defs
         tools = pinned_tool_defs(pin) or None
     return estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tools)

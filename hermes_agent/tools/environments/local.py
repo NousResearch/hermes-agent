@@ -18,17 +18,17 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from hermes_constants import get_process_hermes_home
-from tools.environments.base import BaseEnvironment
-from tools.environments.base_output import _pipe_stdin
+from hermes_agent.tools.environments.base import BaseEnvironment
+from hermes_agent.tools.environments.base_output import _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.process_identity import own_process_groups, release_process_groups
-from tools.environments.local_env_policy import (
+from hermes_agent.tools.environments.local_env_policy import (
     _ALWAYS_STRIP_FOLDED, _ALWAYS_STRIP_KEYS, _HERMES_PROVIDER_ENV_BLOCKLIST, _HERMES_PROVIDER_ENV_FORCE_PREFIX,
     _is_hermes_internal_secret, _is_provider_env_blocklisted, _is_terminal_first_party_env,
     _home_adapter_secret_env, _matches_terminal_first_party_prefix, _plugin_terminal_env_strip_keys,
     _registered_adapter_secret_env, _registry_adapter_secret_env,
     strip_profile_gate_env, strip_supervised_process_identity)
-from tools.environments.local_pythonpath import (
+from hermes_agent.tools.environments.local_pythonpath import (
     _build_hermes_repo_root_aliases, _strip_hermes_owned_pythonpath_and_runtime_markers)
 from hermes_cli._startup_fast import project_root_str
 
@@ -282,7 +282,7 @@ def _filter_secret_env(
     context-entitled first-party ``BUZZ_*`` vars; the latter are used directly, never
     scope-resolved (UnscopedSecretError under multiplex)."""
     try:
-        from tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
+        from hermes_agent.tools.env_passthrough import is_env_passthrough, resolve_passthrough_value
     except Exception:
         is_env_passthrough, resolve_passthrough_value = (lambda _: False), (lambda _n, fb: fb)
     plugin_strip_folded = frozenset(k.upper() for k in plugin_strip)
@@ -331,7 +331,7 @@ def _scrubbed_env(parts, plugin_strip: frozenset, fix_path) -> dict:
     # profile's own .env / sources) — the filter above can only see names already present.
     # Unguarded on purpose: a scope/config failure here must be loud, not silently drop the
     # declared secret again (#114209); _scrub_child_env calls it the same way.
-    from tools.env_passthrough import scoped_passthrough_additions
+    from hermes_agent.tools.env_passthrough import scoped_passthrough_additions
     out.update((k, v) for k, v in scoped_passthrough_additions(out).items() if k not in plugin_strip)
     path_key = _path_env_key(out)
     # Keep bare ``hermes`` invocations available to child jobs even when the gateway was launched by a
@@ -806,7 +806,7 @@ def _make_run_env(env: dict) -> dict:
     # ``DISPLAY=:0 cmd`` prefix, which bash applies after this env. Empty (or module missing) →
     # the seat env passes through untouched.
     try:
-        from tools.bot_desktop.runtime import published_env
+        from hermes_agent.tools.bot_desktop.runtime import published_env
         published = published_env()
     except Exception:
         published = {}
@@ -817,7 +817,7 @@ def _make_run_env(env: dict) -> dict:
 
 
 # --- Hermes venv / repo-root detection (module-level, computed once) ---
-# Owned here; read lazily by tools.environments.local_pythonpath (tests patch here).
+# Owned here; read lazily by hermes_agent.tools.environments.local_pythonpath (tests patch here).
 # The Electron app prepends the repo root to PYTHONPATH so the backend can ``import
 # tools``; other subprocesses must not inherit it. Aliases: launchers may emit other
 # spellings — the Windows gateway launcher renders Hermes-owned paths under the

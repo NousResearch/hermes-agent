@@ -114,7 +114,7 @@ async def test_boot_replays_the_launch_ledger_before_secondaries_and_watchers(mo
     """The gateway's idle notification loop (``_async_delegation_watcher``, spawned after this phase)
     reads ``completion_queue`` directly, so the launch profile's durable completions must already
     be queued by the boot hook — in the LAUNCH scope, before any secondary is bound (#123265)."""
-    from tools import async_delegation, process_registry as pr_mod
+    from hermes_agent.tools import async_delegation, process_registry as pr_mod
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "launch"))
     monkeypatch.setattr(pr_mod.process_registry, "_completions_restored", False)
     order = []

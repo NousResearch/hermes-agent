@@ -14,7 +14,7 @@ import sys
 from pathlib import PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
-logger = logging.getLogger("tools.computer_use.cua_backend")
+logger = logging.getLogger("hermes_agent.tools.computer_use.cua_backend")
 
 # PM owns the pinned binary; an explicit override remains externally owned.
 _CUA_DRIVER_CMD_ENV = "HERMES_CUA_DRIVER_CMD"
@@ -31,7 +31,7 @@ _SEMVER_RE = re.compile(r"v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?")
 
 def _cb():
     """Facade module (config/policy helpers), looked up lazily to avoid the import cycle."""
-    from tools.computer_use import cua_backend
+    from hermes_agent.tools.computer_use import cua_backend
     return cua_backend
 
 def _driver_json(driver_cmd: str, *args: str, timeout: float) -> Optional[dict[str, Any]]:

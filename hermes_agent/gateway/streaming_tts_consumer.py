@@ -34,7 +34,7 @@ class StreamingTTSConsumer:
     def __init__(self, adapter: Any, chat_id: str, tts_config: dict[str, Any],
                  loop: asyncio.AbstractEventLoop, *, metadata: Optional[dict[str, Any]] = None,
                  audio_format: Optional[AudioFormat] = None) -> None:
-        from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
+        from hermes_agent.tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         self._adapter, self._chat_id, self._loop, self._metadata = adapter, chat_id, loop, metadata
         # Resolved once; None => inactive, gateway falls back to whole-file TTS.
         self._streamer = resolve_streaming_provider(tts_config)
@@ -184,9 +184,9 @@ class StreamingTTSConsumer:
         """Synthesise one clause via the streamer and write PCM chunks."""
         if self._streamer is None or (self._handle is not None and self._handle.aborted):
             return
-        if self._strip_markdown is None:  # lazy import: tools.tts_tool would cycle at module load
+        if self._strip_markdown is None:  # lazy import: hermes_agent.tools.tts_tool would cycle at module load
             try:
-                from tools.tts_text_normalize import _strip_markdown_for_tts as _strip
+                from hermes_agent.tools.tts_text_normalize import _strip_markdown_for_tts as _strip
                 self._strip_markdown = _strip
             except ImportError:
                 self._strip_markdown = lambda t: t

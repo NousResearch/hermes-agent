@@ -9,8 +9,8 @@ Live-QA findings (Aug 2026, locked KDE desktop):
 
 import pytest
 
-from tools.computer_use import cua_backend as cb
-from tools.computer_use import cua_backend_driver as cb_driver
+from hermes_agent.tools.computer_use import cua_backend as cb
+from hermes_agent.tools.computer_use import cua_backend_driver as cb_driver
 
 
 # ── _empty_discovery_reason ─────────────────────────────────────────────

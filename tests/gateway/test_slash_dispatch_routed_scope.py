@@ -14,7 +14,7 @@ from hermes_agent.gateway.platforms.base import MessageEvent, MessageType
 from hermes_agent.gateway.run import GatewayRunner, _profile_runtime_scope
 from hermes_agent.gateway.session import SessionSource
 from hermes_constants import get_hermes_home
-from tools import write_approval as wa
+from hermes_agent.tools import write_approval as wa
 
 
 @pytest.fixture

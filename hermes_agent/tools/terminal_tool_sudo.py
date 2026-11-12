@@ -1,8 +1,8 @@
 """Sudo password plumbing and shell-command rewrites for the terminal tool: per-scope
 password cache, /dev/tty prompt, the quote-aware shell scanner behind the real-sudo rewrite
 (``sudo -S -p ''``) and the compound-background brace-group rewrite, and the NOPASSWD probe.
-Split out of ``tools/terminal_tool.py``; every public/patched name is re-imported there so
-``tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before."""
+Split out of ``hermes_agent/tools/terminal_tool.py``; every public/patched name is re-imported there so
+``hermes_agent.tools.terminal_tool.<name>`` keeps resolving (and monkeypatching) as before."""
 
 import logging
 import os
@@ -19,7 +19,7 @@ from contextvars import ContextVar
 from utils import env_var_enabled
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("tools.terminal_tool")
+logger = logging.getLogger("hermes_agent.tools.terminal_tool")
 
 # Interactive sudo password cache, scoped to the session key when present, else callback
 # identity (ACP / CLI), else the current thread — so one session can never reuse another's
@@ -38,7 +38,7 @@ def get_sudo_prompt_command() -> str:
 
 def _get_sudo_password_cache_scope() -> str:
     """Return the cache scope for interactive sudo passwords."""
-    from tools.terminal_tool import _current_session_key, _get_sudo_password_callback
+    from hermes_agent.tools.terminal_tool import _current_session_key, _get_sudo_password_callback
     session_key = _current_session_key()
     if session_key:
         return f"session:{session_key}"
@@ -186,15 +186,15 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45, *, command: str = "") -
     """Prompt for a sudo password; "" on skip (empty Enter), timeout, or error. Prefers the
     CLI-registered callback (prompt_toolkit-integrated); otherwise reads /dev/tty (msvcrt on
     Windows) with echo disabled. Human wait time is excluded from tool deadlines (``human_wait_window``)."""
-    from tools.human_input_hooks import human_input_request
+    from hermes_agent.tools.human_input_hooks import human_input_request
     # The password never reaches the hook; only how the prompt ended.
     with human_input_request("sudo", prompt=command) as human:
-        from tools.terminal_tool import _get_sudo_password_callback
+        from hermes_agent.tools.terminal_tool import _get_sudo_password_callback
         _sudo_cb = _get_sudo_password_callback()
         if _sudo_cb is not None:
             token = _sudo_prompt_command.set(command)
             try:
-                from tools.approval_human_wait import human_wait_window
+                from hermes_agent.tools.approval_human_wait import human_wait_window
                 with human_wait_window():
                     password = _sudo_cb() or ""
                 human.outcome = "provided" if password else "skipped"
@@ -223,7 +223,7 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45, *, command: str = "") -
             print("  Password (hidden): ", end="", flush=True)
             password_thread = threading.Thread(target=_read_hidden_password, args=(result,), daemon=True)
             password_thread.start()
-            from tools.approval_human_wait import human_wait_window
+            from hermes_agent.tools.approval_human_wait import human_wait_window
             with human_wait_window():
                 password_thread.join(timeout=timeout_seconds)
             if not result["done"]:
@@ -442,7 +442,7 @@ def _rewrite_compound_background(command: str) -> str:
 def _no_sudo_user() -> bool:
     """A delegated child or a `hermes chat -q` run: nobody can answer a sudo prompt. Single-query only
     (not _no_user_can_answer): cron strips HERMES_INTERACTIVE and unattended platforms register no sudo callback."""
-    from tools.approval_context import _is_single_query_approval_context
+    from hermes_agent.tools.approval_context import _is_single_query_approval_context
     return _in_delegated_child_context() or _is_single_query_approval_context()
 
 
@@ -461,7 +461,7 @@ def _transform_sudo_command(
     an interactive prompt (45s timeout, cached on success) when a UI is reachable.
     ``sudo_nopasswd_check`` (supplied by ``BaseEnvironment``) runs ``sudo -n true`` inside the
     selected backend; a True result skips the prompt and the ``-S`` rewrite entirely."""
-    from tools.terminal_tool import _get_sudo_password_callback
+    from hermes_agent.tools.terminal_tool import _get_sudo_password_callback
     if command is None:
         return None, None
     transformed, sudo_count = _rewrite_real_sudo_invocations(command)

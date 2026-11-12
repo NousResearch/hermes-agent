@@ -105,7 +105,7 @@ def handle_api_error(
 
     # Process is exiting mid-flight: retries/rotation/fallbacks are futile and the
     # retry trace spams the shell. One log line.
-    from tools.interpreter_shutdown import interpreter_shutting_down
+    from hermes_agent.tools.interpreter_shutdown import interpreter_shutting_down
 
     if interpreter_shutting_down(api_error):
         logger.warning(

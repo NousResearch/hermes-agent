@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import kanban_db_dispatch
-from tools.terminal_scope import get_terminal_scope
+from hermes_agent.tools.terminal_scope import get_terminal_scope
 
 
 class _StopSpawn(Exception):
@@ -47,7 +47,7 @@ def test_worker_profile_scope_installs_the_assigned_profiles_terminal_policy(pro
 def _spawn_env_for_profile_b(monkeypatch, tmp_path):
     """Run ``_default_spawn`` far enough to capture the worker env, never spawning anything."""
     from hermes_cli.kanban_db import Task
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     captured: list[dict] = []
 
@@ -86,7 +86,7 @@ def test_launch_profiles_own_worker_keeps_its_credentials(tmp_path, monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "dispatcher-launch-key")
 
     from hermes_cli.kanban_db import Task
-    from tools import process_registry
+    from hermes_agent.tools import process_registry
 
     captured: list[dict] = []
 

@@ -25,7 +25,7 @@ def main():
     registered = rpc('worker.register', **scope, kind='compute')
     scope['epoch'] = registered['owner_epoch']
     store = RuntimeSessionStore(rpc, scope, home / 'worker-outboxes' / 'tool-worker')
-    from tools.async_delegation_worker import worker_ledger
+    from hermes_agent.tools.async_delegation_worker import worker_ledger
     assert worker_ledger().store is store
     from run_agent import AIAgent
     agent = AIAgent(model='worker-model', provider='custom', base_url=command['url'], api_key='loopback-only',

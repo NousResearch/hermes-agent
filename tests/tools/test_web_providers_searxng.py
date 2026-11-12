@@ -114,12 +114,12 @@ class TestSearXNGSearchProviderSearch:
 class TestIsBackendAvailable:
     def test_searxng_available_when_url_set(self, monkeypatch):
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
-        from tools.web_tools import _is_backend_available
+        from hermes_agent.tools.web_tools import _is_backend_available
         assert _is_backend_available("searxng") is True
 
 
     def test_unknown_backend_still_false(self):
-        from tools.web_tools import _is_backend_available
+        from hermes_agent.tools.web_tools import _is_backend_available
         assert _is_backend_available("unknownbackend") is False
 
 
@@ -130,7 +130,7 @@ class TestIsBackendAvailable:
 
 class TestGetBackendSearXNG:
     def test_configured_searxng_returns_searxng(self, monkeypatch):
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
         assert web_tools._get_backend() == "searxng"
@@ -138,7 +138,7 @@ class TestGetBackendSearXNG:
 
     def test_searxng_does_not_override_higher_priority_provider(self, monkeypatch):
         """Exa (higher priority than searxng) should win in auto-detect."""
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", dict)
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
         monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
@@ -152,7 +152,7 @@ class TestGetBackendSearXNG:
         """#34290 follow-up: a config-only SEARXNG_URL (absent from process env)
         must still drive auto-detect via the now config-aware ``_has_env``."""
         from hermes_cli import config as hermes_config
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", dict)
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
         monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
@@ -176,7 +176,7 @@ class TestGetBackendSearXNG:
 
 class TestCheckWebApiKey:
     def test_searxng_satisfies_check_web_api_key(self, monkeypatch):
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
         assert web_tools.check_web_api_key() is True
@@ -184,7 +184,7 @@ class TestCheckWebApiKey:
     def test_searxng_config_only_satisfies_check_web_api_key(self, monkeypatch):
         """#34290 follow-up: config-only SEARXNG_URL satisfies the credential check."""
         from hermes_cli import config as hermes_config
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
         monkeypatch.delenv("SEARXNG_URL", raising=False)
         monkeypatch.setattr(
@@ -195,7 +195,7 @@ class TestCheckWebApiKey:
         assert web_tools.check_web_api_key() is True
 
     def test_no_credentials_fails(self, monkeypatch):
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
         from agent import web_search_registry
         monkeypatch.setattr(web_tools, "_load_web_config", dict)
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
@@ -232,7 +232,7 @@ class TestSearXNGOnlyExtractCrawlErrors:
 
     def test_web_extract_searxng_returns_clear_error(self, monkeypatch):
         import asyncio
-        from tools import web_tools
+        from hermes_agent.tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "searxng"})
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
@@ -241,7 +241,7 @@ class TestSearXNGOnlyExtractCrawlErrors:
             return True
 
         monkeypatch.setattr(web_tools, "async_is_safe_url", _allow_ssrf)
-        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False, raising=False)
+        monkeypatch.setattr("hermes_agent.tools.interrupt.is_interrupted", lambda: False, raising=False)
 
         result_str = asyncio.get_event_loop().run_until_complete(
             web_tools.web_extract_tool(["https://example.com"])

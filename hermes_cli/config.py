@@ -2009,7 +2009,7 @@ def write_platform_config_field(
     save_config(config)
 
 
-# ``terminal.<key>`` -> env var read by tools.terminal_tool. Every key maps to ``TERMINAL_<KEY>``
+# ``terminal.<key>`` -> env var read by hermes_agent.tools.terminal_tool. Every key maps to ``TERMINAL_<KEY>``
 # except ``backend`` (historically ``TERMINAL_ENV``).
 TERMINAL_CONFIG_ENV_MAP = {
     "backend": "TERMINAL_ENV",
@@ -2061,7 +2061,7 @@ def apply_terminal_config_to_env(
     *, env: Optional[dict[str, str]] = None, config: Optional[dict[str, Any]] = None,
     override: Optional[bool] = None) -> dict[str, str]:
     """Bridge ``terminal.*`` config into the env vars terminal tools read.
-    ``tools.terminal_tool`` is environment-driven because it also runs in child processes (TUI,
+    ``hermes_agent.tools.terminal_tool`` is environment-driven because it also runs in child processes (TUI,
     dashboard PTY, gateway workers); this gives those launch paths the same bridge as the CLI
     without importing ``cli.py``. Explicit keys in the user's raw ``terminal`` section override
     matching env values; merged defaults only backfill missing env vars."""

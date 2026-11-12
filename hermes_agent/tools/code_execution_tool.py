@@ -4,11 +4,11 @@
 The LLM writes a Python script that calls Hermes tools via RPC, collapsing
 multi-step tool chains into one inference turn; only the script's stdout returns
 to the LLM. Local backend: a persistent per-conversation session kernel
-(tools/code_kernel.py) over a Unix socket (loopback TCP on Windows). Remote
-backends: a remote session kernel (tools/code_kernel_remote.py) falling open to a
+(hermes_agent/tools/code_kernel.py) over a Unix socket (loopback TCP on Windows). Remote
+backends: a remote session kernel (hermes_agent/tools/code_kernel_remote.py) falling open to a
 per-call script ship, tool calls as request files polled via env.execute()
-(needs Python 3 on the backend). Siblings: tools/code_execution_env.py (env
-scrubbing, interpreter/cwd), tools/code_execution_rpc.py (RPC servers).
+(needs Python 3 on the backend). Siblings: hermes_agent/tools/code_execution_env.py (env
+scrubbing, interpreter/cwd), hermes_agent/tools/code_execution_rpc.py (RPC servers).
 """
 
 import json
@@ -24,15 +24,15 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional, Tuple
 
-from tools.thread_context import propagate_context_to_thread
-from tools.registry import registry, tool_error
+from hermes_agent.tools.thread_context import propagate_context_to_thread
+from hermes_agent.tools.registry import registry, tool_error
 
 from hermes_time import get_timezone_name
-from tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
-from tools.code_execution_rpc import (
+from hermes_agent.tools.code_execution_env import _resolve_child_cwd, _resolve_child_python
+from hermes_agent.tools.code_execution_rpc import (
     _execute_checked, _private_dirs_cmd, _remote_write, _rpc_poll_loop, tool_errors_since,
 )
-from tools.tool_output_truncate import head_tail_split, truncation_notice
+from hermes_agent.tools.tool_output_truncate import head_tail_split, truncation_notice
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ def _spill_full_stdout(stdout_text: str) -> Optional[str]:
     try:
         import hashlib
         from hermes_constants import get_hermes_dir
-        from tools.spill_safety import write_text_exclusive
+        from hermes_agent.tools.spill_safety import write_text_exclusive
         if len(stdout_text) > MAX_SPILLED_STDOUT_BYTES:
             stdout_text = (stdout_text[:MAX_SPILLED_STDOUT_BYTES]
                            + f"\n\n[... spill capped at {MAX_SPILLED_STDOUT_BYTES:,} bytes ...]")
@@ -107,8 +107,8 @@ def check_sandbox_requirements() -> bool:
     if not SANDBOX_AVAILABLE:
         return False
     try:
-        from tools.terminal_tool import _get_env_config
-        from tools.terminal_tool_backends import _check_vercel_sandbox_requirements
+        from hermes_agent.tools.terminal_tool import _get_env_config
+        from hermes_agent.tools.terminal_tool_backends import _check_vercel_sandbox_requirements
         config = _get_env_config()
     except Exception:
         logger.debug("Could not resolve terminal config for execute_code availability", exc_info=True)
@@ -405,9 +405,9 @@ def _call(tool_name, args):
 def _get_or_create_env(task_id: str):
     """``(env, env_type)`` — the environment the terminal/file tools share for *task_id*, created on
     first use (same double-checked per-task lock pattern as file_tools._get_file_ops)."""
-    from tools.terminal_tool_backends import (_container_config_from_config, _create_environment,
+    from hermes_agent.tools.terminal_tool_backends import (_container_config_from_config, _create_environment,
                                               _local_config_from_config, _ssh_config_from_config)
-    from tools.terminal_tool import (
+    from hermes_agent.tools.terminal_tool import (
         _active_environments, _env_lock, _get_env_config, _last_activity,
         _start_cleanup_thread, _creation_locks, _creation_locks_lock, _task_env_overrides,
         _resolve_container_task_id, _resolve_task_host_cwd, _is_container_backend, _select_image,
@@ -506,7 +506,7 @@ def _env_temp_dir(env: Any) -> str:
 
 def _format_interrupted_output(stdout_text: str) -> str:
     """Append an interruption marker without guessing who caused it."""
-    from tools.interrupt import get_interrupt_reason
+    from hermes_agent.tools.interrupt import get_interrupt_reason
     reason = get_interrupt_reason()
     marker = f"[execution interrupted — {reason}]" if reason else "[execution interrupted]"
     return f"{stdout_text}\n{marker}" if stdout_text else marker
@@ -515,7 +515,7 @@ def _format_interrupted_output(stdout_text: str) -> str:
 def _clean_output(stdout_text: str) -> tuple[str, dict[str, Any]]:
     """Shared output pipeline: byte-cap (with spill), ANSI strip, secret redaction. code_file=True:
     output often echoes source/config — skip ENV/JSON/f-string false positives, still mask credentials."""
-    from tools.ansi_strip import strip_ansi
+    from hermes_agent.tools.ansi_strip import strip_ansi
     from agent.redact import redact_sensitive_text
     stdout_text, metadata = _truncate_stdout_text(stdout_text)
     return redact_sensitive_text(strip_ansi(stdout_text), code_file=True), metadata
@@ -611,7 +611,7 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
                              generate_hermes_tools_module(list(sandbox_tools), transport="file"))
         _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
         # Wrapped so the thread inherits the turn's approval context + callbacks
-        # (tools.thread_context) — else sandbox RPC tool calls lose approval routing.
+        # (hermes_agent.tools.thread_context) — else sandbox RPC tool calls lose approval routing.
         # See #30882.
         rpc_thread = threading.Thread(
             target=propagate_context_to_thread(_rpc_poll_loop), daemon=True,
@@ -660,10 +660,10 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
 def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[list[str]],
                     reset: bool = False) -> str:
     """Run code on the remote terminal backend: the owner's persistent remote session kernel
-    (tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
+    (hermes_agent/tools/code_kernel_remote.py) first, else the per-call script ship — the fail-open route when
     a kernel cannot be spawned and the only route for hosts that cannot sustain a background process."""
-    from tools.terminal_tool import _resolve_container_task_id
-    from tools.terminal_tool_lifecycle import _call_in_flight
+    from hermes_agent.tools.terminal_tool import _resolve_container_task_id
+    from hermes_agent.tools.terminal_tool_lifecycle import _call_in_flight
     _cfg = _load_config()
     timeout, max_tool_calls = _cfg.get("timeout", DEFAULT_TIMEOUT), _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
     sandbox_tools, effective_task_id = _sandbox_tools_for(enabled_tools), task_id or "default"
@@ -682,7 +682,7 @@ def _execute_remote(code: str, task_id: Optional[str], enabled_tools: Optional[l
                 # --- Session-kernel path (hermes-agent#96873) ------------------- Same always-on model as
                 # local: one persistent kernel per owner, rebuilt on the run-to-completion transport (detached
                 # runner + file cell protocol).
-                from tools.code_kernel_remote import execute_in_remote_kernel
+                from hermes_agent.tools.code_kernel_remote import execute_in_remote_kernel
                 kernel_result = execute_in_remote_kernel(
                     code, env=env, env_type=env_type, task_env_id=effective_task_id,
                     sandbox_tools=frozenset(sandbox_tools), timeout=timeout,
@@ -722,7 +722,7 @@ def execute_code(
     # policy is unresolved, so refuse rather than inherit the launch process's ambient policy.
     try:
         # See #68559.
-        from tools.terminal_scope import enforce_no_refusal
+        from hermes_agent.tools.terminal_scope import enforce_no_refusal
         enforce_no_refusal()
     except Exception as refusal:
         return tool_error(f"execute_code refused: {refusal} "
@@ -740,8 +740,8 @@ def execute_code(
     # The identity probe ends in a kernel process query that has wedged on macOS
     # (#111922); share the cell's own deadline and fail CLOSED when it renders no verdict.
     from agent.deadline import run_bounded_sync
-    from tools.process_registry import _is_supervised_gateway_process
-    from tools.terminal_tool import _PRE_EXEC_GUARD_MIN_TIMEOUT_S
+    from hermes_agent.tools.process_registry import _is_supervised_gateway_process
+    from hermes_agent.tools.terminal_tool import _PRE_EXEC_GUARD_MIN_TIMEOUT_S
     _probe_timeout = max(_load_config().get("timeout", DEFAULT_TIMEOUT), _PRE_EXEC_GUARD_MIN_TIMEOUT_S)
     _probe = run_bounded_sync(
         _is_supervised_gateway_process, _probe_timeout, label="execute_code.lifecycle-guard",
@@ -766,14 +766,14 @@ def execute_code(
                 "it could complete (SIGTERM propagates to child processes). "
                 "Run the lifecycle command from a shell outside the gateway."
             )
-    from tools.terminal_tool import _get_env_config, _docker_has_host_access
+    from hermes_agent.tools.terminal_tool import _get_env_config, _docker_has_host_access
     _env_config = _get_env_config()
     env_type = _env_config["env_type"]
     # Arbitrary Python never passes through terminal()/DANGEROUS_PATTERNS, so guard the whole
     # script before either dispatch path spawns it — in this (tool-executor) thread, which holds
     # the session context. A Docker sandbox with host bind mounts gets no container fast-path.
     # See #30882.
-    from tools.approval import check_execute_code_guard
+    from hermes_agent.tools.approval import check_execute_code_guard
     _guard = check_execute_code_guard(code, env_type, has_host_access=_docker_has_host_access(_env_config))
     if not _guard.get("approved", False):
         return _error_result(_guard.get("message") or "execute_code blocked by approval guard.",
@@ -781,15 +781,15 @@ def execute_code(
     # Clear a stale interrupt bit that landed during the blocking approval-wait so it can't
     # kill the just-approved run on the first poll. A genuine post-clear interrupt re-sets it.
     if _guard.get("user_approved"):
-        from tools.interrupt import clear_current_thread_interrupt
+        from hermes_agent.tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
     from hermes_cli.observability.shared_metrics_loop import record_execution_backend
     if env_type != "local":
         return record_execution_backend("code", "remote", _execute_remote(code, task_id, enabled_tools, reset=bool(reset)))
-    from tools.interrupt import is_interrupted as _is_interrupted
+    from hermes_agent.tools.interrupt import is_interrupted as _is_interrupted
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
-    from tools.code_kernel import execute_in_session_kernel
+    from hermes_agent.tools.code_kernel import execute_in_session_kernel
     _cfg = _load_config()
     _mode = _get_execution_mode()
     return record_execution_backend("code", "local", execute_in_session_kernel(
@@ -939,7 +939,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
     }
 
 
-# Registration-time schema (all sandbox tools, configured mode); model_tools.py rebuilds per-session.
+# Registration-time schema (all sandbox tools, configured mode); hermes_agent/model_tools.py rebuilds per-session.
 EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 

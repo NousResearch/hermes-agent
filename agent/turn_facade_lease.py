@@ -180,7 +180,7 @@ class DurableTurnLease:
         if not message:
             return
         agent = self.agent
-        from tools.interrupt import set_interrupt as _set_interrupt
+        from hermes_agent.tools.interrupt import set_interrupt as _set_interrupt
 
         with getattr(agent, "_pending_redirect_lock", None) or nullcontext():
             if getattr(agent, "_interrupt_message", None) != message:

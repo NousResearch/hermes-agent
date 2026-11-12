@@ -36,8 +36,8 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
 
 def _make_agent(max_iterations: int = 10, config: dict | None = None) -> AIAgent:
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value=config or {}),
         patch("agent.process_bootstrap.OpenAI"),
     ):

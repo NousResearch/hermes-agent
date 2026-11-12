@@ -1,7 +1,7 @@
 """REAL-BROWSER regressions for the ``browser:`` real-profile saved-password resolver.
 
 These tests drive a REAL Chrome (``--password-store=basic``) with seeded saved logins over CDP and
-run the production resolver (``tools.browser_real_profile_logins.resolve_login_password``) unmodified
+run the production resolver (``hermes_agent.tools.browser_real_profile_logins.resolve_login_password``) unmodified
 against it — Chrome's own PasswordAutofillAgent fills the field, exactly as in production. They
 reproduce bugs an independent Chrome-151 review found that the CDP-substring fake in
 ``tests/agent/test_vault_backend_browser.py`` cannot: that fake returns canned values keyed on an
@@ -249,7 +249,7 @@ def live(tmp_path, _schema):
     procs: list[subprocess.Popen] = []
 
     def run(creds, html, handle_user, *, name):
-        from tools.browser_real_profile_logins import resolve_login_password
+        from hermes_agent.tools.browser_real_profile_logins import resolve_login_password
 
         port = _free_port()
         origin = f"http://127.0.0.1:{port}"
@@ -360,7 +360,7 @@ def test_whitespace_username_resolves_through_the_backend(tmp_path, _schema, mon
         try:
             # The lifecycle call that would (re)build the snapshot is a no-op here: the seeded profile
             # already has Login Data, and the live browser is the one we launched.
-            monkeypatch.setattr("tools.browser_session_real_profile.real_profile_cdp",
+            monkeypatch.setattr("hermes_agent.tools.browser_session_real_profile.real_profile_cdp",
                                 lambda: (ws_url, None))
             backend = next(b for b in enabled_backends() if b.name == "browser")
             item = next(i for i in backend.list_items() if i.origin == origin)
@@ -381,7 +381,7 @@ def test_redirect_off_origin_still_refused_live(live, tmp_path, _schema):
     """Round-1 origin guard, live: the saved URL 302s to a DIFFERENT origin that has its own saved
     login; Chrome autofills THAT site's password. The resolver must refuse because the final page's
     origin is not the handle's saved origin."""
-    from tools.browser_real_profile_logins import resolve_login_password
+    from hermes_agent.tools.browser_real_profile_logins import resolve_login_password
 
     victim_port = _free_port()
     victim_origin = f"http://127.0.0.1:{victim_port}"

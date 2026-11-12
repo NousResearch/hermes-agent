@@ -13,7 +13,7 @@ import pytest
 
 from hermes_cli import plugins as plugins_mod
 from hermes_cli.plugins_manifest import _portable_data_namespace
-from tools.skills_tool import skill_view
+from hermes_agent.tools.skills_tool import skill_view
 
 
 def _home(tmp_path, monkeypatch, *, enabled, disabled=()):

@@ -23,7 +23,7 @@ def may_answer_live_turn(runner, event) -> bool:
     ``ask_choice`` registers one before any turn slot is claimed) or an idle-time prompt
     (slash-confirm, ``/update``). A read only: nothing is routed before the delivery is prepared,
     and a miss only means it queues like any follow-up."""
-    from tools import clarify_gateway, slash_confirm
+    from hermes_agent.tools import clarify_gateway, slash_confirm
     key = runner._session_key_for_source(event.source)
     if runner._is_session_running(key) or clarify_gateway.has_pending(key) or slash_confirm.get_pending(key):
         return True

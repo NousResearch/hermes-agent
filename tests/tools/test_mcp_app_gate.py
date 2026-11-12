@@ -12,8 +12,8 @@ from hermes_platform import declaration
 
 @pytest.mark.parametrize("connection", ["live", "recycled", "lazy", "absent"])
 def test_check_fn_composes_connection_and_registered_requirement(tmp_path, monkeypatch, connection):
-    from tools import mcp_tool, mcp_tool_handlers
-    from tools.mcp_tool_scope import _resolve_server_key
+    from hermes_agent.tools import mcp_tool, mcp_tool_handlers
+    from hermes_agent.tools.mcp_tool_scope import _resolve_server_key
 
     monkeypatch.setattr(declaration, "_REGISTRY", {})
     core = mcp_tool

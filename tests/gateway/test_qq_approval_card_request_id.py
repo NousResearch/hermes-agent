@@ -22,8 +22,8 @@ def _qq():
 
 
 def _queue(monkeypatch, *request_ids):
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     entries = [_ApprovalEntry({"request_id": rid}) for rid in request_ids]
     monkeypatch.setitem(approval._gateway_queues, SK, list(entries))
@@ -53,7 +53,7 @@ async def _tap(adapter, button_data):
 async def test_a_tap_while_the_full_command_is_still_sending_approves_nothing(monkeypatch):
     """The full command goes out in chunks before the card. A tap that lands mid-send (an old card's
     Allow, or a forged one) must not approve the request: until every chunk lands it is Deny-only."""
-    from tools import approval
+    from hermes_agent.tools import approval
 
     (pending,) = _queue(monkeypatch, "b")
     pending.card_deny_only = True  # as every request is created
@@ -124,8 +124,8 @@ async def test_qq_card_approve_and_deny_resolve_their_request(monkeypatch):
 def test_a_card_tap_checks_and_settles_in_one_step(monkeypatch):
     """Nothing can join the queue between a tap's check and its settle: an id-less tap that found no
     pending request never settles a Deny-only one enqueued right after the check."""
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     monkeypatch.delitem(approval._gateway_queues, SK, raising=False)
     late = _ApprovalEntry({"request_id": "b"})

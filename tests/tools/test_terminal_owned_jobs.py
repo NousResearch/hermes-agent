@@ -132,8 +132,8 @@ def test_a_checkpoint_recovering_hosts_jobs_outlive_its_crash(tmp_path):
 
 
 def _record_calls(monkeypatch):
-    from tools import process_registry_ownership as registry_mod
-    from tools.environments import local as local_mod
+    from hermes_agent.tools import process_registry_ownership as registry_mod
+    from hermes_agent.tools.environments import local as local_mod
 
     calls = []
     for mod in (registry_mod, local_mod):
@@ -146,8 +146,8 @@ def _record_calls(monkeypatch):
 
 
 def test_a_finished_job_and_a_returned_command_release_their_group(monkeypatch, tmp_path):
-    from tools.environments.local import LocalEnvironment
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     calls = _record_calls(monkeypatch)
     registry = ProcessRegistry()
@@ -166,9 +166,9 @@ def test_a_finished_job_and_a_returned_command_release_their_group(monkeypatch, 
 def test_a_command_yielded_to_background_keeps_its_group_until_the_job_ends(monkeypatch, tmp_path):
     import threading
 
-    from tools.environments.local import LocalEnvironment
-    from tools.interrupt import request_yield
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.interrupt import request_yield
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     calls = _record_calls(monkeypatch)
     env = LocalEnvironment(cwd=str(tmp_path), timeout=60)
@@ -204,7 +204,7 @@ def test_a_failed_handoff_leaves_the_foreground_owner_its_group(monkeypatch, tmp
     it (a gateway had already released it; elsewhere the dead session kept it)."""
     import types
 
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     calls = _record_calls(monkeypatch)
     registry = ProcessRegistry()
@@ -225,7 +225,7 @@ def test_a_failed_handoff_leaves_the_foreground_owner_its_group(monkeypatch, tmp
 
 
 def test_unowned_jobs_are_never_handed_to_the_supervisor(monkeypatch, tmp_path):
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     calls = _record_calls(monkeypatch)
     registry = ProcessRegistry()
@@ -240,7 +240,7 @@ def test_a_managed_workers_jobs_are_never_handed_to_the_supervisor(monkeypatch, 
     """A managed worker is a per-turn interpreter: the next turn's worker adopts its jobs from the
     checkpoint and reads their output log, so the jobs must outlive the worker that started them."""
     from agent import runtime_session_store
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
 
     calls = _record_calls(monkeypatch)
     monkeypatch.setattr(runtime_session_store, "_worker_process", True)

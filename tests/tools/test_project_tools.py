@@ -5,8 +5,8 @@ import json
 import pytest
 
 from hermes_cli import projects_db as pdb
-from tools import project_tools, terminal_tool
-from tools.registry import registry
+from hermes_agent.tools import project_tools, terminal_tool
+from hermes_agent.tools.registry import registry
 
 
 def _use_projects_db(monkeypatch, tmp_path):

@@ -1,6 +1,6 @@
 """macOS ``open`` frontmost raise-ladder for the terminal tool.
 
-Split out of ``tools/terminal_tool.py`` (PR #95286, Jackal991): a pure,
+Split out of ``hermes_agent/tools/terminal_tool.py`` (PR #95286, Jackal991): a pure,
 deterministic string rewrite — no subprocess calls at transform time — that
 appends a verified raise-ladder to file-opening ``open`` invocations so the
 opened document lands in front of the Hermes window instead of behind it.

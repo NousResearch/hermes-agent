@@ -54,7 +54,7 @@ def _run(job, adapters):
     config.get_home_channel = lambda p: None
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=config), \
          patch("hermes_agent.cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-         patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
         error = _deliver_result(job, "hello", adapters=adapters, loop=loop)
     return error, standalone

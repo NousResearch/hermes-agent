@@ -13,8 +13,8 @@ ROUTE = "agent:main:telegram:dm:42"  # unmultiplexed / legacy route: identical i
 def two_profiles(tmp_path, monkeypatch):
     from agent import secret_scope
     from hermes_agent.hermes_state import SessionDB
-    from tools import delegate_tool_registry as reg
-    from tools.process_registry import process_registry
+    from hermes_agent.tools import delegate_tool_registry as reg
+    from hermes_agent.tools.process_registry import process_registry
     from hermes_agent.tui_gateway import launch_profile_policy, server
 
     launch = tmp_path / "launch-home"
@@ -42,7 +42,7 @@ def two_profiles(tmp_path, monkeypatch):
     monkeypatch.setattr(process_registry, "get", procs.get)
 
     def spawn(pid, *, parent="", key=ROUTE):
-        from tools.process_registry import ProcessSession
+        from hermes_agent.tools.process_registry import ProcessSession
         procs[pid] = ProcessSession(id=pid, command="sleep 90", session_key=key, parent_session_id=parent)
 
     def roster(profile=None):

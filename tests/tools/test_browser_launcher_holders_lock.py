@@ -1,4 +1,4 @@
-"""The Windows holder lock (``tools/browser_launcher_holders.records_lock``) retries only lock contention, and only
+"""The Windows holder lock (``hermes_agent/tools/browser_launcher_holders.records_lock``) retries only lock contention, and only
 for a bounded time: a lock leaked by a hung process fails the caller with a clear error instead of hanging it,
 and any other ``msvcrt`` error surfaces at once."""
 
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import browser_launcher_holders as holders
+from hermes_agent.tools import browser_launcher_holders as holders
 
 
 @pytest.mark.parametrize("code", sorted({errno.EACCES, errno.EDEADLK, getattr(errno, "EDEADLOCK", errno.EDEADLK)}))

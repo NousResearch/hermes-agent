@@ -84,13 +84,13 @@ with open(config_path, "w") as f:
 
 # Fresh import — must not have anything cached.
 for name in list(sys.modules):
-    if (name.startswith("tools.")
+    if (name.startswith("hermes_agent.tools.")
             or name.startswith("agent.")
             or name.startswith("plugins.")
             or name.startswith("hermes_cli.")):
         sys.modules.pop(name, None)
 
-import tools.image_generation_tool as image_tool
+import hermes_agent.tools.image_generation_tool as image_tool
 
 dispatch_kind = None
 provider_name = None

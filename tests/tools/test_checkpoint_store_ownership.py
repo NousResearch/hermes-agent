@@ -8,8 +8,8 @@ import subprocess
 import sys
 from threading import Thread
 
-import tools.checkpoint_manager as checkpoints
-from tools import checkpoint_maintenance
+import hermes_agent.tools.checkpoint_manager as checkpoints
+from hermes_agent.tools import checkpoint_maintenance
 
 
 def test_active_snapshot_owns_store_until_its_ref_is_published(tmp_path, monkeypatch):
@@ -24,7 +24,7 @@ def test_active_snapshot_owns_store_until_its_ref_is_published(tmp_path, monkeyp
     program = '''
 import sys
 from pathlib import Path
-from tools import checkpoint_manager as c
+from hermes_agent.tools import checkpoint_manager as c
 c.CHECKPOINT_BASE = Path(sys.argv[1])
 
 run = c._run_git

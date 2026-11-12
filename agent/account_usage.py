@@ -343,7 +343,7 @@ def _fetch_portal_account(timeout: float):
     drained so GC never logs "exception was never retrieved"."""
     import contextvars
     from hermes_cli.nous_account import get_nous_portal_account_info
-    from tools.daemon_pool import DaemonThreadPoolExecutor
+    from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
 
     context = contextvars.copy_context()
     pool = DaemonThreadPoolExecutor(max_workers=1)

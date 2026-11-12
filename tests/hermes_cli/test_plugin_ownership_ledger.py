@@ -120,7 +120,7 @@ def test_load_force_reload_and_unload_remove_every_manager_registration(
     import hermes_cli.plugins as plugins_mod
     from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_cli.plugins import PluginManager
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     hermes_home = tmp_path / "hermes"
     _write_plugin(hermes_home)
@@ -263,7 +263,7 @@ def test_reverse_unload_restores_an_overridden_platform_registration():
 def test_targeted_unload_does_not_resurrect_an_older_tool_override():
     """The tool overlay follows the same arbitrary-order ownership contract."""
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     name = "ledger_out_of_order_tool"
     scope = registry.current_scope_key()
@@ -306,7 +306,7 @@ def test_targeted_unload_does_not_resurrect_an_older_tool_override():
 def test_rejected_tool_registration_does_not_claim_global_fallback():
     """Effective fallback identity cannot masquerade as a successful write."""
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     name = "ledger_rejected_tool"
     previous = registry.snapshot_registration(name)
@@ -347,7 +347,7 @@ def test_rejected_tool_registration_does_not_claim_global_fallback():
 def test_plugin_context_cannot_shadow_same_toolset_global_with_core_callable():
     """Explicit context scope cannot launder an imported/core handler."""
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     name = "ledger_same_toolset_global"
     previous = registry.snapshot_registration(name)
@@ -382,7 +382,7 @@ def test_plugin_context_cannot_shadow_same_toolset_global_with_core_callable():
 def test_rejected_tool_registration_does_not_claim_local_predecessor():
     """A same-handler rejection cannot manufacture a replacement lease."""
     from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     name = "ledger_rejected_local_tool"
     scope = registry.current_scope_key()
@@ -425,7 +425,7 @@ def test_scoped_plugin_cannot_deregister_a_process_global_tool():
 
     import pytest
 
-    from tools.registry import ToolRegistry
+    from hermes_agent.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     name = "ledger_global_base"
@@ -452,7 +452,7 @@ def test_shared_entrypoint_module_uses_the_active_profile_scope(tmp_path):
     import pytest
 
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.registry import ToolRegistry
+    from hermes_agent.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     module_name = "third_party.shared_hermes_plugin"
@@ -520,7 +520,7 @@ def test_decorated_plugin_callable_keeps_its_defining_module_scope(tmp_path):
     """functools.wraps must not replace the plugin wrapper's provenance."""
     import functools
 
-    from tools.registry import ToolRegistry
+    from hermes_agent.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     module_name = "third_party.decorated_plugin"
@@ -552,7 +552,7 @@ def test_decorated_plugin_callable_keeps_its_defining_module_scope(tmp_path):
 
 def test_entrypoint_policy_uses_the_most_specific_module_prefix(tmp_path):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.registry import ToolRegistry
+    from hermes_agent.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     broad_scope = str((tmp_path / "broad").resolve())
@@ -1114,7 +1114,7 @@ def test_direct_plugin_platform_registration_infers_immutable_scope(tmp_path):
     """The documented direct registry API cannot leak into another profile."""
     from hermes_agent.gateway.platform_registry import PlatformEntry, platform_registry
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.registry import registry as tool_registry
+    from hermes_agent.tools.registry import registry as tool_registry
 
     home_a = str((tmp_path / "direct-a").resolve())
     home_b = tmp_path / "direct-b"
@@ -1172,7 +1172,7 @@ def test_same_name_tool_and_platform_are_isolated_by_hermes_home(
     from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_cli.plugins import PluginManager
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     home_a = tmp_path / "profile-a"
     home_b = tmp_path / "profile-b"
@@ -1234,7 +1234,7 @@ def test_manager_discovery_uses_its_home_not_the_ambient_profile(
     from hermes_agent.gateway.platform_registry import platform_registry
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     from hermes_cli.plugins import PluginManager
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     home_a = tmp_path / "retained-a"
     home_b = tmp_path / "ambient-b"

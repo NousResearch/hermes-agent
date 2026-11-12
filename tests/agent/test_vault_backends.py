@@ -75,7 +75,7 @@ def _enabled(exe):
 
 def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypatch):
     exe, log = fake_bw
-    from tools.browser_vault_tool import browser_vault_fill, browser_vault_list
+    from hermes_agent.tools.browser_vault_tool import browser_vault_fill, browser_vault_list
 
     patcher, backend = _enabled(exe)
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")  # headless: nobody can answer a prompt
@@ -96,7 +96,7 @@ def test_locked_manager_is_reported_not_prompted_when_headless(fake_bw, monkeypa
 
 def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake_bw):
     exe, log = fake_bw
-    from tools.browser_vault_tool import browser_vault_fill, browser_vault_list
+    from hermes_agent.tools.browser_vault_tool import browser_vault_fill, browser_vault_list
 
     patcher, backend = _enabled(exe)
     prompts = []
@@ -108,11 +108,11 @@ def test_unlock_uses_vendor_passwordenv_contract_then_fill_routes_by_prefix(fake
     unlock_mod.set_unlock_prompt_callback(prompt)
     try:
         with patcher, patch("agent.vault_backends.enabled_backends", return_value=[backend]), \
-             patch("tools.browser_vault_tool._current_page_origin", return_value="https://example.com"), \
-             patch("tools.browser_vault_tool._eval_js", return_value={"success": True, "result": json.dumps([
+             patch("hermes_agent.tools.browser_vault_tool._current_page_origin", return_value="https://example.com"), \
+             patch("hermes_agent.tools.browser_vault_tool._eval_js", return_value={"success": True, "result": json.dumps([
                  {"tag": "input", "type": "password", "name": "password", "id": "pw", "autocomplete": "current-password",
                   "visible": True}])}), \
-             patch("tools.browser_vault_tool._eval_js_secret", return_value={"success": True, "result": json.dumps(
+             patch("hermes_agent.tools.browser_vault_tool._eval_js_secret", return_value={"success": True, "result": json.dumps(
                  {"filled": 1})}) as secret_eval:
             out = json.loads(browser_vault_fill("bw:abc", task_id="t"))
             out.pop("next")

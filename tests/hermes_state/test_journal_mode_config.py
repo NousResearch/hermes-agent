@@ -286,7 +286,7 @@ def test_real_db_openers_honor_configured_delete(monkeypatch, tmp_path):
     from hermes_cli import kanban_db_connect as kbc
     from hermes_agent.hermes_state import SessionDB
     from plugins.platforms.discord.recovery import DiscordRecoveryStore
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
 
     observed: dict[str, str] = {}
 

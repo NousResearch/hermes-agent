@@ -52,8 +52,8 @@ def write_approvers(approvers):
 def pending_from(user_id, user_name, session_key, platform="telegram"):
     """Enqueue an approval the way the agent thread does, inside the requester's turn."""
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import approval as approval_mod
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval as approval_mod
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     tokens = set_session_vars(platform=platform, user_id=user_id, user_name=user_name, session_key=session_key)
     try:
@@ -66,7 +66,7 @@ def pending_from(user_id, user_name, session_key, platform="telegram"):
 
 @pytest.fixture(autouse=True)
 def _clean_queues():
-    from tools import approval as approval_mod
+    from hermes_agent.tools import approval as approval_mod
 
     approval_mod._gateway_queues.clear()
     yield

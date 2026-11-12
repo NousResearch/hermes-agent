@@ -35,8 +35,8 @@ def test_custom_server_precedes_builtins_and_carries_language_id():
 @pytest.mark.timeout(60)
 def test_service_gets_diagnostics_from_config_declared_server(tmp_path, monkeypatch):
     """End to end from config.yaml: the only production path from ``lsp.servers`` to a running server."""
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
 
     home = tmp_path / "home"
     home.mkdir()

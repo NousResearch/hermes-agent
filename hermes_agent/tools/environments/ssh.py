@@ -11,11 +11,11 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
-from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
-from tools.environments.base_output import _popen_bash
-from tools.environments.file_sync import (
+from hermes_agent.tools.environments.base import BaseEnvironment, EnvironmentConnectionError
+from hermes_agent.tools.environments.base_output import _popen_bash
+from hermes_agent.tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
-from tools.environments.remote_common import (
+from hermes_agent.tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ class SSHEnvironment(BaseEnvironment):
     def __init__(self, host: str, user: str, cwd: str = "~",
                  timeout: int = 60, port: int = 22, key_path: str = "",
                  probe_only: bool = False, sync_files: bool = True, persistent: bool = True):
-        from tools.terminal_tool_config import coerce_ssh_remote_cwd
+        from hermes_agent.tools.terminal_tool_config import coerce_ssh_remote_cwd
 
         # cwd may be a raw terminal.cwd naming a directory on the machine running Hermes; coercion is
         # idempotent, so callers that already coerced are unaffected.

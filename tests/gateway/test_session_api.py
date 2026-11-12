@@ -300,7 +300,7 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
 
         def run_conversation(self, user_message, conversation_history, task_id):
             from hermes_agent.gateway.session_context import get_session_env
-            from tools.environments.local import _make_run_env
+            from hermes_agent.tools.environments.local import _make_run_env
 
             observed["task_id"] = task_id
             observed["context_session_id"] = get_session_env("HERMES_SESSION_ID")

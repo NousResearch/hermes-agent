@@ -15,7 +15,7 @@ import threading
 
 import pytest
 
-from tools import tts_command_provider, tts_tool, tts_tool_lifecycle, tts_tool_local
+from hermes_agent.tools import tts_command_provider, tts_tool, tts_tool_lifecycle, tts_tool_local
 
 
 @pytest.fixture(autouse=True)
@@ -364,7 +364,7 @@ def test_command_hook_thread_resolves_passthrough_under_the_callers_scope(monkey
     the caller's secret scope or ``resolve_passthrough_value`` fails closed and the hook never
     runs (#120481)."""
     from agent import secret_scope as ss
-    from tools.env_passthrough import resolve_passthrough_value
+    from hermes_agent.tools.env_passthrough import resolve_passthrough_value
 
     seen: list = []
     done = threading.Event()

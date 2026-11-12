@@ -55,12 +55,12 @@ def _cua_version_summary(raw: str, *, limit: int = 120) -> str:
 
 
 def _resolved_cua_driver_cmd() -> Optional[str]:
-    from tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
+    from hermes_agent.tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd
     return resolve_cua_driver_cmd()
 
 
 def _cua_driver_env() -> dict:
-    from tools.computer_use.cua_backend import sanitized_cua_driver_env
+    from hermes_agent.tools.computer_use.cua_backend import sanitized_cua_driver_env
     return sanitized_cua_driver_env()
 
 
@@ -69,7 +69,7 @@ _CUA_DRIVER_CONTRACT_CACHE: dict = {}
 
 def _cua_driver_contract_status(binary: Optional[str] = None) -> dict:
     """Cache the runtime manifest check by binary identity for UI polling."""
-    from tools.computer_use.cua_backend_driver import cua_driver_runtime_contract_status
+    from hermes_agent.tools.computer_use.cua_backend_driver import cua_driver_runtime_contract_status
     resolved = binary or _resolved_cua_driver_cmd()
     if not resolved:
         return cua_driver_runtime_contract_status(None)
@@ -92,7 +92,7 @@ def _cua_driver_install_ready() -> bool:
     if not state.get("ready"):
         return False
     if sys.platform == "darwin":
-        from tools.computer_use.cua_backend_daemon import _resolve_cua_driver_app_path
+        from hermes_agent.tools.computer_use.cua_backend_daemon import _resolve_cua_driver_app_path
         return bool(_resolve_cua_driver_app_path(state["binary"]))
     # On-demand default (#97389): with computer_use.autostart off, a missing
     # cua-driver-serve logon task is intentional, not a repair condition —
@@ -140,7 +140,7 @@ def install_cua_driver(upgrade: bool = False, show_installer_progress: bool = Tr
             binary, verbose=show_installer_progress):
         return _fail("    cua-driver is compatible, but Windows autostart setup failed.")
     if sys.platform == "darwin":
-        from tools.computer_use.cua_backend_daemon import (
+        from hermes_agent.tools.computer_use.cua_backend_daemon import (
             _resolve_cua_driver_app_path, _validate_cua_driver_app_signature)
 
         app = _resolve_cua_driver_app_path(binary)

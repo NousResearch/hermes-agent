@@ -66,7 +66,7 @@ def _home_with_plugins(tmp_path, monkeypatch, plugins: dict, isolation="host"):
 def test_plugin_runs_out_of_process_with_ctx_round_trips_and_survives_host_crash(tmp_path, monkeypatch):
     from agent import image_gen_registry
     from agent.image_gen_provider import ImageGenProvider
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     _home_with_plugins(tmp_path, monkeypatch, {"hostprobe": PROBE_PLUGIN, "platformprobe": PLATFORM_PLUGIN})
     manager = PluginManager()
@@ -129,7 +129,7 @@ def test_managed_scope_pins_host_isolation_over_the_profiles_own_config(tmp_path
     """The isolated party must not be able to opt out: an operator pin in the managed scope
     (/etc/hermes/config.yaml) wins over a profile config that says in_process."""
     from hermes_cli import managed_scope
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     _home_with_plugins(tmp_path, monkeypatch, {"hostprobe": PROBE_PLUGIN}, isolation="in_process")
     managed = tmp_path / "managed"
@@ -202,7 +202,7 @@ def register(ctx):
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_async_plugin_code_calls_back_in_the_callers_session(tmp_path, monkeypatch):
     import contextvars
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     session = contextvars.ContextVar("session", default="<unset>")
     session.set("host-creator")  # whoever first touches the host must not leak into later calls
@@ -286,8 +286,8 @@ def test_host_plugin_can_launch_status_and_steer_subagent(tmp_path, monkeypatch)
     import threading
     from types import SimpleNamespace
     from agent.subagent_lifecycle import bind_subagent_parent, SubagentLifecycleService
-    from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
-    from tools.registry import registry
+    from hermes_agent.tools.delegate_tool_registry import _register_subagent, _unregister_subagent
+    from hermes_agent.tools.registry import registry
 
     body = '''
 import json, os
@@ -317,8 +317,8 @@ def register(ctx):
         assert finish.wait(5)
         return {"status": "completed", "summary": "host child done"}
 
-    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
-    monkeypatch.setattr("tools.delegate_tool._run_single_child", run)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._build_child_agent", build)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._run_single_child", run)
     _home_with_plugins(tmp_path, monkeypatch, {"hostlife": body})
     manager = PluginManager()
     manager.discover_and_load()
@@ -395,7 +395,7 @@ def test_late_failure_of_an_abandoned_load_leaves_the_reloaded_plugin_alone(tmp_
     # so that late failure must not unload the live load.
     from hermes_cli import plugin_host, plugins_loader
     from tests.waiting import wait_until
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     state = tmp_path / "state"
     state.mkdir()

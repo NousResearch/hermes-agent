@@ -46,7 +46,7 @@ def _event(text="custom answer"):
 
 
 def _clear_clarify_state():
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     with cm._lock:
         cm._entries.clear()
@@ -65,7 +65,7 @@ async def test_active_session_routes_typed_choice_clarify_reply_to_runner_not_bu
     never resolved.
     """
     _clear_clarify_state()
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     adapter = _ClarifyBypassAdapter()
     adapter._message_handler = AsyncMock(return_value="")
@@ -97,7 +97,7 @@ async def test_active_session_bypass_uses_profile_namespaced_key_under_multiplex
     a pending clarify is routed to the busy-session queue instead of
     resolving it -- the turn then hangs until the clarify's 3600s timeout."""
     _clear_clarify_state()
-    from tools import clarify_gateway as cm
+    from hermes_agent.tools import clarify_gateway as cm
 
     adapter = _ClarifyBypassAdapter()
     adapter._message_handler = AsyncMock(return_value="")

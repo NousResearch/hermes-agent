@@ -9,7 +9,7 @@ same applies to overwriting the interpreter through the file tools.
 Two questions, one coordinate system:
 
 * :func:`command_deletes_runtime` — would a shell command delete a protected
-  path? Wired into the approval floor (``tools.approval._floor_block``), so it
+  path? Wired into the approval floor (``hermes_agent.tools.approval._floor_block``), so it
   cannot be bypassed by yolo / approvals.mode=off / cron approve mode.
 * :func:`is_protected_path` — is a filesystem path protected? Wired into the
   file-safety write classifier, covering write/patch/move/delete.

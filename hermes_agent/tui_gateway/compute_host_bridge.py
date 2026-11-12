@@ -217,7 +217,7 @@ def _scrub_preview_vault_reply(session: dict, method: str | None, frame: dict) -
     result = frame.get("result")
     if not isinstance(result, dict) or not isinstance(result.get("value"), str):
         return frame
-    from tools.browser_vault_preview import redact_preview_result
+    from hermes_agent.tools.browser_vault_preview import redact_preview_result
     with _session_profile_runtime_scope(session):
         scrubbed = redact_preview_result(result["value"])
     if scrubbed == result["value"]:

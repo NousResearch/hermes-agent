@@ -3,7 +3,7 @@
 Main's TUI sidecar wired two things per session (``hermes_agent/tui_gateway/session_notifications.py::
 _wire_desktop_sinks`` and ``hermes_agent/tui_gateway/agent_callbacks.py::_agent_cbs``):
 
-* the ``tools.desktop_ui`` emitter, so ``desktop_preview`` open/close, ``focus_pane``,
+* the ``hermes_agent.tools.desktop_ui`` emitter, so ``desktop_preview`` open/close, ``focus_pane``,
   ``close_terminal`` and the other window events reach the renderer as ``event`` frames;
 * the GUI callbacks (``read_preview_callback``, ``drive_preview_callback``,
   ``read_terminal_callback``, ``read_window_below_callback``, ``theme_callback``, ``tour_callback``,
@@ -95,7 +95,7 @@ def _install_emitter() -> None:
     global _emitter_installed
     if _emitter_installed:
         return
-    from tools import desktop_ui
+    from hermes_agent.tools import desktop_ui
     desktop_ui.set_emitter(_emit)
     _emitter_installed = True
 
@@ -119,7 +119,7 @@ def _install_process_sinks() -> None:
     global _process_sinks_installed
     if _process_sinks_installed:
         return
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     if getattr(process_registry, "on_output", None) is None:
         process_registry.on_output = lambda session, chunk: _publish_process(
             session, "agent.terminal.output", {"process_id": session.id, "chunk": chunk})
@@ -131,7 +131,7 @@ def _install_process_sinks() -> None:
 
 def _install_connection_hook() -> None:
     """``connection.update`` for an operation opened by one of our turns, on the session that owns it (same session key and profile, as the sidecar matches its own); any other operation goes to the hook this one wraps (the sidecar's, for its own sessions). Re-wraps whenever another hook replaced it, so install order does not matter."""
-    from tools.connectors.operation import ConnectionOperation
+    from hermes_agent.tools.connectors.operation import ConnectionOperation
     previous = ConnectionOperation.on_change
     if getattr(previous, "_local_desktop_ui", False):
         return

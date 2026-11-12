@@ -13,12 +13,12 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
-from tools.bot_desktop import placement
-from tools import browser_launcher as launcher
-from tools import browser_lightpanda
-from tools import browser_session as bs
-from tools import browser_session_cloud as bs_cloud
-from tools import browser_session_real_profile as rp
+from hermes_agent.tools.bot_desktop import placement
+from hermes_agent.tools import browser_launcher as launcher
+from hermes_agent.tools import browser_lightpanda
+from hermes_agent.tools import browser_session as bs
+from hermes_agent.tools import browser_session_cloud as bs_cloud
+from hermes_agent.tools import browser_session_real_profile as rp
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +32,7 @@ def _no_running_real_profile_browser(monkeypatch):
 def _fresh_local_launch(monkeypatch) -> list:
     """The session layer's fresh-browser path with the launcher stubbed; returns ``(key, kwargs)`` per launch."""
     launches: list = []
-    monkeypatch.setattr("tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
+    monkeypatch.setattr("hermes_agent.tools.bot_desktop.runtime.tool_placement", lambda: placement.GATEWAY)  # host browser
     monkeypatch.setattr(bs, "ensure_screen_for_headed_chromium", lambda: None)
     monkeypatch.setattr(browser_lightpanda, "using_lightpanda_engine", lambda: False)
     monkeypatch.setattr(launcher, "launch_chromium", lambda key, **kw: launches.append((key, kw)) or (
@@ -273,7 +273,7 @@ class TestRealProfileCdpLaunch:
         records.mkdir()
         monkeypatch.setattr(launcher, "_records_dir", lambda _home: records)
         monkeypatch.setattr(launcher, "_start_time", lambda pid: None)
-        monkeypatch.setattr("tools.browser_session_cloud.chromium_args", list)
+        monkeypatch.setattr("hermes_agent.tools.browser_session_cloud.chromium_args", list)
         monkeypatch.setattr(launcher, "needs_chromium_sandbox_bypass", lambda: True)
         captured = {}
 
@@ -450,53 +450,53 @@ class TestBrowserExecLocalArg:
         return {}
 
     def test_local_forces_real_profile_under_cloud_backend(self):
-        import tools.browser_use_cli as bu
+        import hermes_agent.tools.browser_use_cli as bu
         env = self._env()
         with patch.object(bu, "_real_profile_consented", return_value=True), \
-             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value=""), \
-             patch("tools.browser_session_cloud.get_cloud_provider", return_value=Mock()), \
-             patch("tools.browser_session_real_profile.real_profile_cdp",
+             patch("hermes_agent.tools.browser_session_cdp.get_cdp_override_raw", return_value=""), \
+             patch("hermes_agent.tools.browser_session_cloud.get_cloud_provider", return_value=Mock()), \
+             patch("hermes_agent.tools.browser_session_real_profile.real_profile_cdp",
                    return_value=("http://127.0.0.1:9251", None)):
             err = bu._resolve_real_profile_cdp(env, force_local=True)
         assert err is None
         assert env.get("BU_CDP_URL") == "http://127.0.0.1:9251"
 
     def test_no_force_keeps_cloud_backend(self):
-        import tools.browser_use_cli as bu
+        import hermes_agent.tools.browser_use_cli as bu
         env = self._env()
         with patch.object(bu, "_real_profile_consented", return_value=True), \
-             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value=""), \
-             patch("tools.browser_session_cloud.get_cloud_provider", return_value=Mock()):
+             patch("hermes_agent.tools.browser_session_cdp.get_cdp_override_raw", return_value=""), \
+             patch("hermes_agent.tools.browser_session_cloud.get_cloud_provider", return_value=Mock()):
             err = bu._resolve_real_profile_cdp(env, force_local=False)
         assert err is None
         assert "BU_CDP_URL" not in env and "BU_CDP_WS" not in env
 
     def test_local_backend_upgrades_without_force(self):
-        import tools.browser_use_cli as bu
+        import hermes_agent.tools.browser_use_cli as bu
         env = self._env()
         with patch.object(bu, "_real_profile_consented", return_value=True), \
              patch.object(bu, "_read_browser_cfg", return_value={}), \
-             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value=""), \
-             patch("tools.browser_session_cloud.get_cloud_provider", return_value=None), \
-             patch("tools.browser_session_real_profile.real_profile_cdp",
+             patch("hermes_agent.tools.browser_session_cdp.get_cdp_override_raw", return_value=""), \
+             patch("hermes_agent.tools.browser_session_cloud.get_cloud_provider", return_value=None), \
+             patch("hermes_agent.tools.browser_session_real_profile.real_profile_cdp",
                    return_value=("http://127.0.0.1:9251", None)):
             err = bu._resolve_real_profile_cdp(env, force_local=False)
         assert err is None
         assert env.get("BU_CDP_URL") == "http://127.0.0.1:9251"
 
     def test_consent_off_is_inert(self):
-        import tools.browser_use_cli as bu
+        import hermes_agent.tools.browser_use_cli as bu
         env = self._env()
         with patch.object(bu, "_real_profile_consented", return_value=False):
             err = bu._resolve_real_profile_cdp(env, force_local=True)
         assert err is None and env == {}
 
     def test_launch_failure_fails_closed(self):
-        import tools.browser_use_cli as bu
+        import hermes_agent.tools.browser_use_cli as bu
         env = self._env()
         with patch.object(bu, "_real_profile_consented", return_value=True), \
-             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value=""), \
-             patch("tools.browser_session_real_profile.real_profile_cdp",
+             patch("hermes_agent.tools.browser_session_cdp.get_cdp_override_raw", return_value=""), \
+             patch("hermes_agent.tools.browser_session_real_profile.real_profile_cdp",
                    return_value=(None, "chrome exited")):
             err = bu._resolve_real_profile_cdp(env, force_local=True)
         assert err == "chrome exited"
@@ -505,13 +505,13 @@ class TestBrowserExecLocalArg:
     def test_local_request_falls_back_to_a_fresh_local_browser_never_the_cloud(self):
         """browser_exec(local=True) under a cloud backend: a real profile that can't load runs on the
         local sidecar (which never loads the profile) with the note, and the route keeps it."""
-        import tools.browser_use_cli as bu
+        import hermes_agent.tools.browser_use_cli as bu
         env = self._env()
         rp = Mock(return_value=(None, "chrome holds the Cookies"))
         with patch.object(bu, "_real_profile_consented", return_value=True), \
-             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value=""), \
-             patch("tools.browser_session_cloud.get_cloud_provider", return_value=Mock()), \
-             patch("tools.browser_session_real_profile.real_profile_cdp", rp), \
+             patch("hermes_agent.tools.browser_session_cdp.get_cdp_override_raw", return_value=""), \
+             patch("hermes_agent.tools.browser_session_cloud.get_cloud_provider", return_value=Mock()), \
+             patch("hermes_agent.tools.browser_session_real_profile.real_profile_cdp", rp), \
              patch.object(bu, "_resolve_backend_cdp", return_value=None) as backend:
             assert bu._route_backend(env, "", "t1", True) is None
             assert "chrome holds the Cookies" in env[bu._REAL_PROFILE_FALLBACK_SENTINEL]
@@ -521,7 +521,7 @@ class TestBrowserExecLocalArg:
         assert [c.kwargs["force_local_sidecar"] for c in backend.call_args_list] == [True, True]
 
     def test_explicit_bu_env_override_wins(self):
-        import tools.browser_use_cli as bu
+        import hermes_agent.tools.browser_use_cli as bu
         env = {"BU_CDP_WS": "ws://operator-override"}
         with patch.object(bu, "_real_profile_consented", return_value=True):
             err = bu._resolve_real_profile_cdp(env, force_local=True)
@@ -530,24 +530,24 @@ class TestBrowserExecLocalArg:
         assert "BU_CDP_URL" not in env
 
     def test_operator_cdp_override_wins(self):
-        import tools.browser_use_cli as bu
+        import hermes_agent.tools.browser_use_cli as bu
         env = self._env()
         with patch.object(bu, "_real_profile_consented", return_value=True), \
-             patch("tools.browser_session_cdp.get_cdp_override_raw", return_value="ws://connect"):
+             patch("hermes_agent.tools.browser_session_cdp.get_cdp_override_raw", return_value="ws://connect"):
             err = bu._resolve_real_profile_cdp(env, force_local=True)
         assert err is None and env == {}
 
 
 class TestBrowserExecSchemaGating:
     def test_local_arg_absent_without_consent(self):
-        import tools.browser_use_cli as bu
+        import hermes_agent.tools.browser_use_cli as bu
         with patch.object(bu, "_real_profile_consented", return_value=False):
             overrides = bu._dynamic_schema_overrides()
         assert "parameters" not in overrides
         assert "local" not in bu.BROWSER_EXEC_SCHEMA["parameters"]["properties"]
 
     def test_local_arg_present_with_consent(self):
-        import tools.browser_use_cli as bu
+        import hermes_agent.tools.browser_use_cli as bu
         with patch.object(bu, "_real_profile_consented", return_value=True):
             overrides = bu._dynamic_schema_overrides()
         props = overrides["parameters"]["properties"]

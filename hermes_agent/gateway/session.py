@@ -231,7 +231,7 @@ def _slack_tools_loaded() -> bool:
     intentionally not per-session). False on any error so a bad config never promises tools.
     """
     try:
-        from tools.mcp_tool_discovery import get_registered_mcp_server_names
+        from hermes_agent.tools.mcp_tool_discovery import get_registered_mcp_server_names
         if any("slack" in name.lower() for name in get_registered_mcp_server_names()):
             return True
     except Exception:
@@ -551,7 +551,7 @@ class SessionEntry:
     # Exact session-context/channel inputs from the last human turn. Append-only dataclass field so
     # older positional construction of transport_profile keeps its meaning.
     prompt_pin: Optional[dict[str, Any]] = None
-    # Gateway ``/yolo`` bypass for this lane, mirrored from ``tools.approval``'s in-memory set so a restart
+    # Gateway ``/yolo`` bypass for this lane, mirrored from ``hermes_agent.tools.approval``'s in-memory set so a restart
     # keeps it. Tri-state: True/False is an explicit toggle (an OFF stays off, even over a ``--yolo`` launch);
     # None means nobody toggled it (new, branched, reset, migrated, cron entries, and every conversation
     # boundary, ``_clear_session_boundary_security_state``), so the session's launch policy applies.

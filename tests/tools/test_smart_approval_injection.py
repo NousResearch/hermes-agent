@@ -14,7 +14,7 @@ Defenses under test:
 import unittest
 from unittest.mock import MagicMock, patch
 
-from tools.approval_smart import _strip_line_comment, _strip_shell_comments, _smart_approve
+from hermes_agent.tools.approval_smart import _strip_line_comment, _strip_shell_comments, _smart_approve
 
 
 # ── _strip_line_comment ──────────────────────────────────────────────────
@@ -175,7 +175,7 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         response = self._make_response("")
         response.choices[0].finish_reason = "length"
         mock_call_llm.return_value = response
-        with self.assertLogs("tools.approval", level="WARNING") as logs:
+        with self.assertLogs("hermes_agent.tools.approval", level="WARNING") as logs:
             assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
         assert any("empty answer" in message and "length" in message
                    for message in logs.output), logs.output
@@ -187,7 +187,7 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         response = self._make_response(None)
         response.choices[0].finish_reason = None
         mock_call_llm.return_value = response
-        with self.assertLogs("tools.approval", level="WARNING") as logs:
+        with self.assertLogs("hermes_agent.tools.approval", level="WARNING") as logs:
             assert _smart_approve("rm -rf /", "recursive delete") == "escalate"
         assert any("finish_reason=None" in message for message in logs.output), logs.output
 
@@ -196,7 +196,7 @@ class TestSmartApprovePromptHardening(unittest.TestCase):
         """The WARNING is specific to empty answers — firing on healthy calls too would
         train operators to skim past it, the exact failure #117428 describes."""
         mock_call_llm.return_value = self._make_response("APPROVE")
-        with self.assertNoLogs("tools.approval", level="WARNING"):
+        with self.assertNoLogs("hermes_agent.tools.approval", level="WARNING"):
             assert _smart_approve("python -c 'print(1)'", "script execution") == "approve"
 
 

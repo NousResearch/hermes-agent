@@ -232,9 +232,9 @@ def _peers(root: Path) -> list[str]:
 
 
 def _remote_roster(root: Path) -> list[dict]:
-    """Desktop relay roster (``tools/bot_relay.py``); [] on any failure."""
+    """Desktop relay roster (``hermes_agent/tools/bot_relay.py``); [] on any failure."""
     def _read():
-        from tools.bot_relay import read_remote_roster
+        from hermes_agent.tools.bot_relay import read_remote_roster
 
         return read_remote_roster(root)
 
@@ -256,7 +256,7 @@ def _remote_paragraph(root: Path) -> str:
     roster = _remote_roster(root)
     if not roster:
         return ""
-    from tools.bot_relay import remote_target_forms
+    from hermes_agent.tools.bot_relay import remote_target_forms
 
     lines = [
         _bullet(f"@{form}", f"on {row['connection_label'] or row['connection_id']}", row["title"], row["description"])

@@ -13,7 +13,7 @@ import threading
 import pytest
 
 from agent.terminal_env_provider import TerminalEnvironmentProvider
-from tools import terminal_tool
+from hermes_agent.tools import terminal_tool
 from hermes_agent.tui_gateway import server
 
 

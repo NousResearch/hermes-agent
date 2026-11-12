@@ -156,7 +156,7 @@ class _Registry:
 
 
 _REGISTRY = _Registry()
-from tools.daemon_pool import DaemonThreadPoolExecutor as _DaemonExecutor  # daemon: a wedged child never blocks exit
+from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor as _DaemonExecutor  # daemon: a wedged child never blocks exit
 _EXECUTOR = _DaemonExecutor(max_workers=8, thread_name_prefix="hermes-lifecycle")
 _SECRET = secrets.token_bytes(32)
 _ACTIVE_PARENT_AGENT: contextvars.ContextVar[Any] = contextvars.ContextVar("hermes_subagent_lifecycle_parent", default=None)
@@ -289,7 +289,7 @@ class SubagentLifecycleService:
             if request.correlation_id and correlation_key in _REGISTRY.correlations:
                 raise SubagentLifecycleError("Duplicate correlation_id for this parent session.")
         # Lazy: delegate construction stays internal, plugins never import private delegation helpers.
-        from tools.delegate_tool import (
+        from hermes_agent.tools.delegate_tool import (
             _build_child_preserving_parent_tools, _credential_overrides, _load_config, _resolve_delegation_credentials,
             DEFAULT_MAX_ITERATIONS,
         )
@@ -383,7 +383,7 @@ class SubagentLifecycleService:
         with _REGISTRY.lock:
             if record.result is not None:
                 return False
-        from tools.delegate_tool_registry import steer_subagent
+        from hermes_agent.tools.delegate_tool_registry import steer_subagent
         return steer_subagent(record.handle.subagent_id, text.strip())
 
     def _record(self, handle: SubagentHandle | Mapping[str, Any]) -> Optional[_Record]:
@@ -418,7 +418,7 @@ class SubagentLifecycleService:
                 record.state = SubagentState.RUNNING
             record.started_at = record.updated_at = time.time()
         try:
-            from tools.delegate_tool import _run_child_lifecycle
+            from hermes_agent.tools.delegate_tool import _run_child_lifecycle
             raw = _run_child_lifecycle(0, goal, record.agent, parent)
             is_dict = isinstance(raw, dict)
             raw = raw if is_dict else {}
@@ -463,7 +463,7 @@ class SubagentLifecycleService:
         if not request.allowed_toolsets:
             return
         # Plugin and registry-alias toolsets count as known, as they do for delegate_task.
-        from toolsets import validate_toolset
+        from hermes_agent.toolsets import validate_toolset
         unknown = {name for name in request.allowed_toolsets if not validate_toolset(name)}
         if unknown:
             raise SubagentLifecycleError(f"Unknown toolsets: {', '.join(sorted(unknown))}.")

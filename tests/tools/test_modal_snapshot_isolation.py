@@ -65,18 +65,18 @@ def _install_modal_test_modules(
     hermes_home = tmp_path / "hermes-home"
     os.environ["HERMES_HOME"] = str(hermes_home)
 
-    tools_package = types.ModuleType("tools")
+    tools_package = types.ModuleType("hermes_agent.tools")
     tools_package.__path__ = [str(TOOLS_DIR)]  # type: ignore[attr-defined]
-    sys.modules["tools"] = tools_package
+    sys.modules["hermes_agent.tools"] = tools_package
 
-    env_package = types.ModuleType("tools.environments")
+    env_package = types.ModuleType("hermes_agent.tools.environments")
     env_package.__path__ = [str(TOOLS_DIR / "environments")]  # type: ignore[attr-defined]
-    sys.modules["tools.environments"] = env_package
+    sys.modules["hermes_agent.tools.environments"] = env_package
 
     # The faked modal module below answers every SDK touch; the real lazy-dep
     # gate (a version-pinned metadata check) must not refuse first on an
     # install without the modal extra.
-    sys.modules["tools.lazy_deps"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.tools.lazy_deps"] = types.SimpleNamespace(
         ensure=lambda *args, **kwargs: None
     )
 
@@ -123,7 +123,7 @@ def _install_modal_test_modules(
         except OSError:
             return None
 
-    sys.modules["tools.environments.base"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.tools.environments.base"] = types.SimpleNamespace(
         BaseEnvironment=_DummyBaseEnvironment,
         _ThreadedProcessHandle=_DummyThreadedProcessHandle,
         _load_json_store=_load_json_store,
@@ -131,8 +131,8 @@ def _install_modal_test_modules(
         _update_json_store=_update_json_store,
         _file_mtime_key=_file_mtime_key,
     )
-    sys.modules["tools.interrupt"] = types.SimpleNamespace(is_interrupted=lambda: False)
-    sys.modules["tools.credential_files"] = types.SimpleNamespace(
+    sys.modules["hermes_agent.tools.interrupt"] = types.SimpleNamespace(is_interrupted=lambda: False)
+    sys.modules["hermes_agent.tools.credential_files"] = types.SimpleNamespace(
         get_credential_file_mounts=list,
         iter_skills_files=lambda **kw: [],
         iter_cache_files=lambda **kw: [],
@@ -210,7 +210,7 @@ def test_modal_environment_migrates_legacy_snapshot_key_and_uses_snapshot_id(tmp
     snapshot_store.parent.mkdir(parents=True, exist_ok=True)
     snapshot_store.write_text(json.dumps({"task-legacy": "im-legacy123"}))
 
-    modal_module = _load_module("tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
+    modal_module = _load_module("hermes_agent.tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
     monkeypatch.setattr(modal_module, "ensure_lazy_dep", lambda extra: None)
     env = modal_module.ModalEnvironment(image="python:3.11", task_id="task-legacy")
 
@@ -224,7 +224,7 @@ def test_modal_environment_migrates_legacy_snapshot_key_and_uses_snapshot_id(tmp
 
 def test_resolve_modal_image_uses_snapshot_ids_and_registry_images(tmp_path):
     state = _install_modal_test_modules(tmp_path)
-    modal_module = _load_module("tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
+    modal_module = _load_module("hermes_agent.tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
 
     snapshot_image = modal_module._resolve_modal_image("im-snapshot123")
     registry_image = modal_module._resolve_modal_image("python:3.11")
@@ -240,7 +240,7 @@ def test_persistent_cleanup_snapshots_without_expiry(tmp_path, monkeypatch):
     """The SDK default retains a filesystem snapshot for 30 days; an idle persistent
     sandbox would then silently restart from the base image, so Hermes must opt out."""
     state = _install_modal_test_modules(tmp_path, snapshot_id="im-fresh")
-    modal_module = _load_module("tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
+    modal_module = _load_module("hermes_agent.tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
     monkeypatch.setattr(modal_module, "ensure_lazy_dep", lambda extra: None)
 
     env = modal_module.ModalEnvironment(image="python:3.11", task_id="task-ttl")
@@ -256,8 +256,8 @@ def test_concurrent_snapshot_stores_keep_both_tasks(tmp_path, monkeypatch):
     import threading
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    import tools.environments.base as base_module
-    import tools.environments.modal as modal_module
+    import hermes_agent.tools.environments.base as base_module
+    import hermes_agent.tools.environments.modal as modal_module
     from tests.lock_contention import watch_file_lock_contention
     from tests.waiting import wait_until
 
@@ -302,7 +302,7 @@ def test_snapshot_store_update_proceeds_when_the_lock_is_unavailable(tmp_path, m
     import contextlib
 
     import hermes_cli.auth as auth_module
-    import tools.environments.modal as modal_module
+    import hermes_agent.tools.environments.modal as modal_module
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
 
@@ -323,7 +323,7 @@ def test_cleanup_drops_the_sandbox_handle_even_if_stopping_the_worker_fails(tmp_
     """Terminate went through, then the worker's loop shutdown raced and raised: the env must
     still read as closed and cleanup must not raise (teardown settles its processes only then)."""
     _install_modal_test_modules(tmp_path)
-    modal_module = _load_module("tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
+    modal_module = _load_module("hermes_agent.tools.environments.modal", TOOLS_DIR / "environments" / "modal.py")
     monkeypatch.setattr(modal_module, "ensure_lazy_dep", lambda extra: None)
     env = modal_module.ModalEnvironment(image="python:3.11", task_id="task-stop-race")
     worker = env._worker

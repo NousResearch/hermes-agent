@@ -39,7 +39,7 @@ def _model_short(model: Optional[str]) -> str:
 
 def _env_cwd() -> str:
     try:
-        from tools.terminal_scope import terminal_env
+        from hermes_agent.tools.terminal_scope import terminal_env
     except ImportError:
         return os.environ.get("TERMINAL_CWD", "")
     return terminal_env("TERMINAL_CWD", "")

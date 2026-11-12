@@ -33,10 +33,10 @@ def _reloaded_profile(authority, monkeypatch):
     authority.runner.config = SimpleNamespace(multiplex_profiles=False)
     authority.runner._mcp_reload_refresh_cached_agents = lambda multiplex, profile: None
     monkeypatch.setattr('hermes_agent.gateway.session_authorities.served_profile_name', lambda profile_id: 'default')
-    monkeypatch.setattr('tools.mcp_tool_discovery.reconcile_mcp_servers_with_config',
+    monkeypatch.setattr('hermes_agent.tools.mcp_tool_discovery.reconcile_mcp_servers_with_config',
                         lambda: {'removed': [], 'added': [], 'pending': []})
-    monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_not_connected', lambda: ['parked'])
-    monkeypatch.setattr('tools.mcp_tool_discovery.mcp_servers_ready', lambda: ['old'])
+    monkeypatch.setattr('hermes_agent.tools.mcp_tool_discovery.mcp_servers_not_connected', lambda: ['parked'])
+    monkeypatch.setattr('hermes_agent.tools.mcp_tool_discovery.mcp_servers_ready', lambda: ['old'])
 
 
 def _refusal(reply):

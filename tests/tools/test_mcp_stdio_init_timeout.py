@@ -64,8 +64,8 @@ class TestStdioInitializeTimeout:
     def test_hanging_initialize_is_bounded_not_leaked(self):
         """A stdio server that hangs at ``initialize`` must fail within
         ``connect_timeout`` — not block ``_run_stdio`` forever (#59349)."""
-        from tools import mcp_tool
-        from tools import mcp_tool_config as _mcp_config
+        from hermes_agent.tools import mcp_tool
+        from hermes_agent.tools import mcp_tool_config as _mcp_config
 
         server = mcp_tool.MCPServerTask("leak-guard")
         config = {"command": "fake-mcp", "args": [], "connect_timeout": 0.2}
@@ -75,7 +75,7 @@ class TestStdioInitializeTimeout:
                  patch.object(mcp_tool, "ClientSession", _fake_client_session), \
                  patch.object(_mcp_config, "_resolve_stdio_command", lambda c, e: (c, e)), \
                  patch.object(_mcp_config, "_write_stderr_log_header", lambda *_a, **_k: None), \
-                 patch("tools.osv_check.check_package_for_malware",
+                 patch("hermes_agent.tools.osv_check.check_package_for_malware",
                        lambda *_a, **_k: None):
                 start = time.monotonic()
                 # The outer 5s guard exists ONLY so a regression can't hang the

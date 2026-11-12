@@ -364,7 +364,7 @@ DESTRUCTIVE_UPDATE_ARGS = {
 
 def _cronjob(**kwargs):
     import json as _json
-    from tools.cronjob_tools import cronjob
+    from hermes_agent.tools.cronjob_tools import cronjob
 
     return _json.loads(cronjob(**kwargs))
 

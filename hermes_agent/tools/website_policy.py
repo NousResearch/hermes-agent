@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
-from tools.url_safety import _normalize_hostname as _normalize_host
+from hermes_agent.tools.url_safety import _normalize_hostname as _normalize_host
 
 logger = logging.getLogger(__name__)
 

@@ -39,7 +39,7 @@ def matrix_env(tmp_path, monkeypatch):
 
     # This matrix supplies its own SDK fake; lazy installation is neither
     # required nor permitted by the hermetic test runner.
-    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_agent.tools.lazy_deps.ensure", lambda *args, **kwargs: None)
 
     fal_calls: list[dict[str, Any]] = []
     xai_calls: list[dict[str, Any]] = []
@@ -124,7 +124,7 @@ def _invoke_tool(home, cfg: dict, args: dict, tool_name: str = "video_generate")
     if hasattr(cfg_mod, "_invalidate_load_config_cache"):
         cfg_mod._invalidate_load_config_cache()
 
-    from tools.registry import discover_builtin_tools, registry
+    from hermes_agent.tools.registry import discover_builtin_tools, registry
     if tool_name not in registry._tools:
         discover_builtin_tools()
     handler = registry._tools[tool_name].handler
@@ -243,8 +243,8 @@ def test_xai_text_only_via_tool_surface(matrix_env):
 def test_model_is_never_an_agent_choice(matrix_env):
     """No generation tool advertises a ``model`` parameter, and a ``model`` smuggled into the call
     is ignored: the configured ``video_gen.model`` is what reaches the provider request."""
-    import tools.video_generation_tool as vt
-    import tools.xai_video_tools as xt
+    import hermes_agent.tools.video_generation_tool as vt
+    import hermes_agent.tools.xai_video_tools as xt
     home, fal_calls, _ = matrix_env
 
     result = _invoke_tool(

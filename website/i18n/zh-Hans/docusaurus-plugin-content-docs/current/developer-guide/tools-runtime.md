@@ -10,17 +10,17 @@ Hermes 工具是自注册函数，按 toolset（工具集）分组，并通过�
 
 主要文件：
 
-- `tools/registry.py`
-- `model_tools.py`
-- `toolsets.py`
-- `tools/terminal_tool.py`
-- `tools/environments/*`
+- `hermes_agent/tools/registry.py`
+- `hermes_agent/model_tools.py`
+- `hermes_agent/toolsets.py`
+- `hermes_agent/tools/terminal_tool.py`
+- `hermes_agent/tools/environments/*`
 
 ## 工具注册模型
 
 每个工具模块在导入时调用 `registry.register(...)`。
 
-`model_tools.py` 负责导入/发现工具模块，并构建供模型使用的 schema 列表。
+`hermes_agent/model_tools.py` 负责导入/发现工具模块，并构建供模型使用的 schema 列表。
 
 ### `registry.register()` 的工作原理
 
@@ -46,10 +46,10 @@ registry.register(
 
 ### 发现机制：`discover_builtin_tools()`
 
-当 `model_tools.py` 被导入时，会调用 `tools/registry.py` 中的 `discover_builtin_tools()`。该函数使用 AST 解析扫描所有 `tools/*.py` 文件，找出包含顶层 `registry.register()` 调用的模块，然后导入它们：
+当 `hermes_agent/model_tools.py` 被导入时，会调用 `hermes_agent/tools/registry.py` 中的 `discover_builtin_tools()`。该函数使用 AST 解析扫描所有 `hermes_agent/tools/*.py` 文件，找出包含顶层 `registry.register()` 调用的模块，然后导入它们：
 
 ```python
-# tools/registry.py（简化版）
+# hermes_agent/tools/registry.py（简化版）
 def discover_builtin_tools(tools_dir=None):
     tools_path = Path(tools_dir) if tools_dir else Path(__file__).parent
     for path in sorted(tools_path.glob("*.py")):
@@ -65,7 +65,7 @@ def discover_builtin_tools(tools_dir=None):
 
 核心工具发现完成后，还会发现 MCP 工具和插件工具：
 
-1. **MCP 工具** — `tools.mcp_tool.discover_mcp_tools()` 读取 MCP 服务器配置，并注册来自外部服务器的工具。
+1. **MCP 工具** — `hermes_agent.tools.mcp_tool.discover_mcp_tools()` 读取 MCP 服务器配置，并注册来自外部服务器的工具。
 2. **插件工具** — `hermes_cli.plugins.discover_plugins()` 加载用户/项目/pip 插件，这些插件可能注册额外的工具。
 
 ## 工具可用性检查（`check_fn`）
@@ -105,7 +105,7 @@ Toolset 是工具的命名集合。Hermes 通过以下方式解析它们：
 
 ### `get_tool_definitions()` 如何过滤工具
 
-主入口点为 `model_tools.get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)`：
+主入口点为 `hermes_agent.model_tools.get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode)`：
 
 1. **若提供了 `enabled_toolsets`** — 仅包含这些 toolset 中的工具。每个 toolset 名称通过 `resolve_toolset()` 解析，将复合 toolset 展开为单个工具名称。
 
@@ -134,7 +134,7 @@ Toolset 是工具的命名集合。Hermes 通过以下方式解析它们：
     ↓
 run_agent.py agent 循环
     ↓
-model_tools.handle_function_call(name, args, task_id, user_task)
+hermes_agent.model_tools.handle_function_call(name, args, task_id, user_task)
     ↓
 [Agent 循环工具？] → 由 agent 循环直接处理（todo、memory、session_search、delegate_task）
     ↓
@@ -183,7 +183,7 @@ registry.dispatch(name, args, **kwargs)
 
 ## DANGEROUS_PATTERNS 审批流程
 
-终端工具集成了定义在 `tools/approval.py` 中的危险命令审批系统：
+终端工具集成了定义在 `hermes_agent/tools/approval.py` 中的危险命令审批系统：
 
 1. **模式检测** — `DANGEROUS_PATTERNS` 是一个 `(regex, description)` 元组列表，涵盖破坏性操作：
    - 递归删除（`rm -rf`）

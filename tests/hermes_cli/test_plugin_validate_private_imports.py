@@ -115,7 +115,7 @@ def test_skill_catalog_seams_are_public_and_drive_the_skills_tools(tmp_path, mon
     import importlib
     import json
 
-    from tools import skills_tool
+    from hermes_agent.tools import skills_tool
 
     for module, name in _SKILL_CATALOG_SEAMS:
         assert hasattr(importlib.import_module(module), name), f"{module}.{name}"

@@ -1,4 +1,4 @@
-"""Tests for tools/microsoft_graph_client.py."""
+"""Tests for hermes_agent/tools/microsoft_graph_client.py."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from tools.microsoft_graph_auth import GraphCredentials, MicrosoftGraphTokenProvider
-from tools.microsoft_graph_client import (
+from hermes_agent.tools.microsoft_graph_auth import GraphCredentials, MicrosoftGraphTokenProvider
+from hermes_agent.tools.microsoft_graph_client import (
     MicrosoftGraphAPIError,
     MicrosoftGraphClient,
     MicrosoftGraphClientError,

@@ -7,10 +7,10 @@ import os
 import time
 from typing import Dict, Optional
 from hermes_cli.process_identity import is_owner_death_supervisor, release_process_groups
-from tools.mcp_tool_common import _core
-from tools import mcp_tool_loop as _loop
+from hermes_agent.tools.mcp_tool_common import _core
+from hermes_agent.tools import mcp_tool_loop as _loop
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 # Live stdio MCP children (pid -> server_name), added after connection and removed on normal
 # shutdown, so they can be force-killed if SDK teardown fails.
@@ -137,8 +137,8 @@ def _reregister_orphaned_adopters() -> None:
     from pathlib import Path
     from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools import mcp_tool_discovery as _discovery
-    from tools.mcp_tool_config import _load_mcp_config
+    from hermes_agent.tools import mcp_tool_discovery as _discovery
+    from hermes_agent.tools.mcp_tool_config import _load_mcp_config
     for adopter, names in pending.items():
         home_token = secret_token = None
         try:
@@ -170,7 +170,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     the wait for the close to land on the MCP loop — a caller running one pass per served
     profile under a total budget divides it, or N profiles × 15s starve the wildcard pass that
     actually stops the loop."""
-    from tools.mcp_tool_scope import _key_name
+    from hermes_agent.tools.mcp_tool_scope import _key_name
     wildcard = scope is None and names is None
     with _core._lock:
         selected = [key for key in _core._servers if wildcard or _core._server_scope_keys.get(key) == scope]
@@ -241,7 +241,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     # A removed subset still shares its profile's log with the remaining servers.
     # Full/profile shutdown must also release handles left by completed CLI/UI probes.
     if names is None:
-        from tools.mcp_tool_config import _close_mcp_stderr_logs
+        from hermes_agent.tools.mcp_tool_config import _close_mcp_stderr_logs
         _close_mcp_stderr_logs(scope=scope)
 
 

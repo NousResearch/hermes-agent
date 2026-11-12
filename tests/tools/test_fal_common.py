@@ -1,4 +1,4 @@
-"""Tests for tools/fal_common.py — shared FAL.ai SDK plumbing.
+"""Tests for hermes_agent/tools/fal_common.py — shared FAL.ai SDK plumbing.
 
 Covers: import_fal_client, _normalize_fal_queue_url_format,
 _extract_http_status, _ManagedFalSyncClient (init + submit).
@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.fal_common import (
+from hermes_agent.tools.fal_common import (
     _ManagedFalSyncClient,
     _extract_http_status,
     _normalize_fal_queue_url_format,

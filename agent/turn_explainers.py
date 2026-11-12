@@ -62,7 +62,7 @@ def _file_mutation_identity(path: str, task_id: Optional[str]) -> str:
     on case-insensitive hosts. A failure recorded as ``notes.md`` and the write that later
     lands as ``/repo/notes.md`` (or ``Notes.md`` on Windows) must meet on the same key."""
     try:
-        from tools.file_tools_paths import _resolve_path_for_task
+        from hermes_agent.tools.file_tools_paths import _resolve_path_for_task
 
         resolved = str(_resolve_path_for_task(path, task_id or "default"))
     except Exception:
@@ -140,7 +140,7 @@ class TurnExplainersMixin:
             # Hermes-authored content from later user hand-edits.
             mgr = getattr(self, "_checkpoint_mgr", None)
             if mgr is not None and getattr(mgr, "enabled", False):
-                from tools.file_tools_paths import container_backend_for_task
+                from hermes_agent.tools.file_tools_paths import container_backend_for_task
                 if container_backend_for_task(task_id or "default") is None:  # container paths carry no host ledger entry
                     for _p in landed_paths:
                         with suppress(Exception):

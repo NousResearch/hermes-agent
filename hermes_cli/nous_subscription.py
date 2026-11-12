@@ -9,9 +9,9 @@ from hermes_cli.config import get_env_value, load_config
 from hermes_cli.nous_account import (
     NousPortalAccountInfo, format_nous_portal_entitlement_message, get_nous_portal_account_info,
 )
-from tools.managed_tool_gateway import is_managed_tool_gateway_ready
+from hermes_agent.tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
-from tools.tool_backend_helpers import (
+from hermes_agent.tools.tool_backend_helpers import (
     fal_key_is_configured, has_direct_modal_credentials, normalize_browser_cloud_provider, normalize_modal_mode,
     resolve_modal_backend_state, resolve_openai_audio_api_key
 )
@@ -159,7 +159,7 @@ def _provider_is_nous(config: dict[str, object]) -> bool:
 
 def _toolset_enabled(config: dict[str, object], toolset_key: str) -> bool:
     """True when some platform's configured toolsets cover every tool of ``toolset_key``."""
-    from toolsets import resolve_toolset
+    from hermes_agent.toolsets import resolve_toolset
 
     platform_toolsets = config.get("platform_toolsets")
     if not isinstance(platform_toolsets, dict) or not platform_toolsets:
@@ -187,7 +187,7 @@ def _toolset_enabled(config: dict[str, object], toolset_key: str) -> bool:
 def _has_browser_harness() -> bool:
     """browser_exec's engine (browser-harness, a core venv dependency) is importable: the only local
     requirement for a cloud browser provider, which hosts its own Chromium."""
-    from tools.browser_use_cli import _find_cli
+    from hermes_agent.tools.browser_use_cli import _find_cli
 
     return _find_cli() is not None
 
@@ -231,7 +231,7 @@ def _local_stt_backend_available() -> bool:
     if get_env_value("HERMES_LOCAL_STT_COMMAND"):
         return True
     try:
-        from tools.transcription_tools import _HAS_FASTER_WHISPER
+        from hermes_agent.tools.transcription_tools import _HAS_FASTER_WHISPER
 
         return bool(_HAS_FASTER_WHISPER)
     except Exception:
@@ -288,7 +288,7 @@ def managed_image_partner(config: dict[str, object]) -> Optional[str]:
     """Partner the image request is dispatched to (``"FAL"``, ``"Krea"`` or ``"Nous Portal"``);
     ``None`` when a direct vendor owns it. Reads the stored values the way the runtime dispatcher
     does, so the label and the route cannot disagree."""
-    from tools.image_generation_managed import FAL, KREA, PORTAL, managed_route
+    from hermes_agent.tools.image_generation_managed import FAL, KREA, PORTAL, managed_route
 
     section = _section(config, "image_gen")
     return {FAL: "FAL", KREA: "Krea", PORTAL: "Nous Portal"}.get(
@@ -522,7 +522,7 @@ def _get_gateway_direct_credentials() -> dict[str, bool]:
     return {
         "web": _any_env("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "EXA_API_KEY", "SEARXNG_URL"),
         # Env-configured keyless local backend: a reachable self-hosted SearXNG is a working web setup even
-        # with no stored selection (the autodetect cascade in tools/web_tools.py picks it up), so it must
+        # with no stored selection (the autodetect cascade in hermes_agent/tools/web_tools.py picks it up), so it must
         # not be classified "unconfigured" and pre-checked (#92647).
         "image_gen": fal_direct,
         "video_gen": fal_direct,

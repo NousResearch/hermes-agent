@@ -19,8 +19,8 @@ from agent.review_engine import (
     snapshot_recent_messages,
     start_review,
 )
-from tools import async_delegation as ad
-from tools.process_registry import process_registry
+from hermes_agent.tools import async_delegation as ad
+from hermes_agent.tools.process_registry import process_registry
 
 @pytest.fixture(autouse=True)
 def _clean_state():
@@ -150,7 +150,7 @@ def _fake_parent():
 def test_delegate_task_credentials_cfg_overrides_delegation_config(monkeypatch):
     """The per-call credentials_cfg dict must reach the credential resolver
     instead of the global delegation config section."""
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
 
     seen = {}
 
@@ -190,7 +190,7 @@ def test_delegate_task_credentials_cfg_overrides_delegation_config(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_start_review_dispatches_background_and_completes(monkeypatch):
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
 
     captured = {}
 
@@ -318,7 +318,7 @@ def test_briefing_includes_loaded_skills_instruction():
     assert "skill_view" in context
 
 def test_start_review_threads_loaded_skills_into_context(monkeypatch):
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
 
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"
@@ -359,12 +359,12 @@ def test_start_review_threads_loaded_skills_into_context(monkeypatch):
 
 # ---------------------------------------------------------------------------
 # Workspace context files — ALL subagents (reviewer included) get AGENTS.md
-# et al. in their child system prompt (tools/delegate_tool.py)
+# et al. in their child system prompt (hermes_agent/tools/delegate_tool.py)
 # ---------------------------------------------------------------------------
 
 def test_child_system_prompt_embeds_workspace_context(tmp_path):
     """Real file I/O through the same loader the main system prompt uses."""
-    from tools.delegate_tool import _build_child_system_prompt
+    from hermes_agent.tools.delegate_tool import _build_child_system_prompt
 
     workspace = tmp_path / "proj"
     workspace.mkdir()

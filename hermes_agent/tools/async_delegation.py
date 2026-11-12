@@ -22,10 +22,10 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools.daemon_pool import DaemonThreadPoolExecutor
-from tools.thread_context import propagate_context_to_thread
-from tools.async_delegation_worker import worker_ledger, require_ledger_owner
-from tools.delegation_redaction import redact_child_result, redact_completion_event
+from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
+from hermes_agent.tools.thread_context import propagate_context_to_thread
+from hermes_agent.tools.async_delegation_worker import worker_ledger, require_ledger_owner
+from hermes_agent.tools.delegation_redaction import redact_child_result, redact_completion_event
 
 logger = logging.getLogger(__name__)
 
@@ -319,7 +319,7 @@ def recover_abandoned_delegations() -> int:
             diagnostics = {"last_known_status": last_state, "task_transcripts": task.get("task_transcripts") or {}}
             # Verbatim transcript tails + a git snapshot of the owner's cwd, so the parent can
             # continue or re-dispatch from the event alone instead of opening files (#116000).
-            from tools.async_delegation_recovery_hints import git_state_hint, transcript_tails
+            from hermes_agent.tools.async_delegation_recovery_hints import git_state_hint, transcript_tails
             if tails := transcript_tails(diagnostics["task_transcripts"]):
                 diagnostics["transcript_tails"] = tails
             if hint := git_state_hint(task.get("owner_cwd")):
@@ -516,7 +516,7 @@ def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> 
     recover_abandoned_delegations()
     now = time.time() if now is None else now
     home = hermes_home_key(get_hermes_home())
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     live = _queued_completion_ids(target_queue, process_registry.completion_queue)
     with _orphan_lock:
         offered = {delegation_id for key, delegation_id in _offered if key == home}
@@ -1127,7 +1127,7 @@ def _push_completion_event(record: dict[str, Any], result: dict[str, Any], statu
     is_batch = bool(record.get("is_batch"))
     label = " batch" if is_batch else ""
     try:
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
     except Exception as exc:  # pragma: no cover
         logger.error(f"Async delegation{label} %s finished but process_registry import failed; "
                      "result lost: %s", record.get("delegation_id"), exc)
@@ -1188,7 +1188,7 @@ def push_task_failure_notice(delegation_id: str, entry: dict[str, Any], *, n_tas
             return
         snapshot = dict(record)
     try:
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
     except Exception as exc:  # pragma: no cover
         logger.error("Async delegation batch %s: task failure notice dropped (process_registry import): %s", delegation_id, exc)
         return

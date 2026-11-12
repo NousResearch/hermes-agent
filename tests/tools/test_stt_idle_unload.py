@@ -29,12 +29,12 @@ import wave
 from unittest.mock import MagicMock, patch
 
 
-from tools.transcription_tools import (
+from hermes_agent.tools.transcription_tools import (
     _get_idle_unload_seconds,
     _unload_local_model,
     _start_idle_unload_watcher,
 )
-import tools.transcription_tools as tt
+import hermes_agent.tools.transcription_tools as tt
 
 
 # ============================================================================
@@ -234,7 +234,7 @@ class TestUnloadDuringTranscriptionRace:
                           side_effect=kwargs_then_unload), \
              patch.object(tt, "_local_model", mock_model), \
              patch.object(tt, "_local_model_name", "base"):
-            from tools.transcription_tools import _transcribe_local
+            from hermes_agent.tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(wav_path), "base")
 
         assert result["success"] is True, result.get("error")

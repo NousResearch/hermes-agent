@@ -275,8 +275,8 @@ class GatewayNotificationOwnershipMixin:
         so the next delivery re-runs the pre-flight; boundary verdicts stay dropped."""
         if verdict != "retry" or not completion_ids:
             return
-        from tools.async_delegation import requeue_admitted_completion
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.async_delegation import requeue_admitted_completion
+        from hermes_agent.tools.process_registry import process_registry
         runner = cast(Any, self)
         with runner._completion_delivery_lock:
             for delegation_id in completion_ids:

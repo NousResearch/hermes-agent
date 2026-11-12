@@ -51,7 +51,7 @@ def test_tui_import_exposes_auth_registry_to_provider_plugins(tmp_path):
         [
             sys.executable,
             "-c",
-            "from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST; "
+            "from hermes_agent.tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST; "
             "from hermes_cli.auth import PROVIDER_REGISTRY; "
             "cfg = PROVIDER_REGISTRY['import-order-probe']; "
             "assert cfg.name == 'Plugin injection', cfg; "

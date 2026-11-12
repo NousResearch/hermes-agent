@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from agent.image_gen_provider import ImageGenProvider
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +61,7 @@ def _managed_krea_model() -> str | None:
     """The stored native Krea id when the stored selection routes to the Krea gateway (a managed
     ``nous`` pick, or no provider set), else ``None``."""
     from plugins.image_gen._common import load_image_gen_config
-    from tools.image_generation_managed import KREA, managed_route
+    from hermes_agent.tools.image_generation_managed import KREA, managed_route
 
     cfg = load_image_gen_config()
     model = cfg.get("model")

@@ -341,7 +341,7 @@ def _lookup_supports_vision(
     per-model ``ProviderProfile.model_capabilities`` reaches this through the
     catalog probe. The provider-wide ``ProviderProfile.supports_vision`` flag is
     deliberately NOT consulted: it declares that tool-result messages may carry
-    images (``tools.vision_tools``), not that every model on the provider can see
+    images (``hermes_agent.tools.vision_tools``), not that every model on the provider can see
     user attachments — relays such as ``router`` set it for mixed catalogs.
     """
     # Named custom providers are canonicalized to ``provider="custom"``; the

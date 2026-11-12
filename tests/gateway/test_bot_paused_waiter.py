@@ -13,7 +13,7 @@ pytest_plugins = ['tests.gateway.test_session_bot_retry']
 async def test_paused_bot_follower_rearms_until_its_durable_completion(bot, monkeypatch):
     from hermes_agent.gateway.session_bot import deliver
     from hermes_agent.gateway.session_contract import SessionRef
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
 
     authority = bot.authority
     schedule = authority._schedule

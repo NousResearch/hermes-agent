@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from tools.environments.local import LocalEnvironment, _resolve_local_initial_cwd
+from hermes_agent.tools.environments.local import LocalEnvironment, _resolve_local_initial_cwd
 import pytest
 
 

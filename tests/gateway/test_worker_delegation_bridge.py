@@ -18,12 +18,12 @@ from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import RuntimeStoreError, begin_runtime_epoch, register_worker_execution
 from hermes_agent.gateway.session_contract import SessionRef
 from hermes_agent.gateway.session_worker import _claim
-from tools.async_delegation import _initialize_schema
+from hermes_agent.tools.async_delegation import _initialize_schema
 
 
 def test_bridge_publishes_committed_completion_and_rejects_another_principal(tmp_path, monkeypatch):
     from hermes_agent.gateway.session_worker_delegation import worker_delegation_request
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     target = queue.Queue()
     monkeypatch.setattr(process_registry, 'completion_queue', target)
     db = SessionDB(tmp_path / 'state.db')

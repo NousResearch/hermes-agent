@@ -17,7 +17,7 @@ so transport-side mutation cannot leak back into config.
 
 from unittest.mock import MagicMock, patch
 
-from tools.delegate_tool import (
+from hermes_agent.tools.delegate_tool import (
     _merge_request_overrides,
     _resolve_delegation_credentials,
 )

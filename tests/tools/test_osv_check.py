@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from unittest.mock import patch, MagicMock
 
-from tools.osv_check import (
+from hermes_agent.tools.osv_check import (
     check_package_for_malware,
     _infer_ecosystem,
     _parse_package_from_args,
@@ -85,7 +85,7 @@ class TestParsePackageFromArgs:
 class TestCheckPackageForMalware:
     @pytest.fixture(autouse=True)
     def _fresh_cache(self, tmp_path, monkeypatch):
-        from tools import osv_check
+        from hermes_agent.tools import osv_check
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with osv_check._cache_lock:
             osv_check._cache.clear()
@@ -103,7 +103,7 @@ class TestCheckPackageForMalware:
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
+        with patch("hermes_agent.tools.osv_check.urllib.request.urlopen", return_value=mock_response):
             result = check_package_for_malware("npx", ["-y", "@modelcontextprotocol/server-filesystem"])
         assert result is None
 
@@ -119,7 +119,7 @@ class TestCheckPackageForMalware:
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
+        with patch("hermes_agent.tools.osv_check.urllib.request.urlopen", return_value=mock_response):
             result = check_package_for_malware("npx", ["evil-pkg"])
         assert result is not None
         assert "BLOCKED" in result
@@ -133,7 +133,7 @@ class TestCheckPackageForMalware:
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
+        with patch("hermes_agent.tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
             check_package_for_malware("uvx", ["mcp-server-fetch"])
             # Verify PyPI ecosystem was sent
             call_data = json.loads(mock_url.call_args[0][0].data)
@@ -151,7 +151,7 @@ class TestCheckPackageForMalware:
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
+        with patch("hermes_agent.tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
             for _ in range(50):
                 assert check_package_for_malware("uvx", ["mcp-server-fetch"]) is None
         assert mock_url.call_count == 1
@@ -165,7 +165,7 @@ class TestCheckPackageForMalware:
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
+        with patch("hermes_agent.tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
             first = check_package_for_malware("npx", ["evil-pkg"])
             second = check_package_for_malware("npx", ["evil-pkg"])
         assert first is not None and "BLOCKED" in first
@@ -180,27 +180,27 @@ class TestCheckPackageForMalware:
         mock_response.__exit__ = MagicMock(return_value=False)
 
         with patch(
-            "tools.osv_check.urllib.request.urlopen",
+            "hermes_agent.tools.osv_check.urllib.request.urlopen",
             side_effect=OSError("network down"),
         ):
             assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
         # Network is back: the next check must hit OSV, not a cached fail-open.
         with patch(
-            "tools.osv_check.urllib.request.urlopen", return_value=mock_response
+            "hermes_agent.tools.osv_check.urllib.request.urlopen", return_value=mock_response
         ) as mock_url:
             assert check_package_for_malware("uvx", ["mcp-server-time"]) is None
         assert mock_url.call_count == 1
 
     def test_cache_expiry_requeries(self, monkeypatch):
         """Expired entries re-query instead of serving stale verdicts."""
-        from tools import osv_check
+        from hermes_agent.tools import osv_check
 
         mock_response = MagicMock()
         mock_response.read.return_value = json.dumps({"vulns": []}).encode()
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
+        with patch("hermes_agent.tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
             check_package_for_malware("uvx", ["mcp-server-fetch"])
             # Force-expire the entry.
             with osv_check._cache_lock:
@@ -212,7 +212,7 @@ class TestCheckPackageForMalware:
 
     def test_disk_cache_persists_and_reloads(self, tmp_path, monkeypatch):
         """A warm disk cache is reused by a fresh in-process cache."""
-        from tools import osv_check
+        from hermes_agent.tools import osv_check
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
@@ -221,7 +221,7 @@ class TestCheckPackageForMalware:
         mock_response.__enter__ = lambda s: s
         mock_response.__exit__ = MagicMock(return_value=False)
 
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
+        with patch("hermes_agent.tools.osv_check.urllib.request.urlopen", return_value=mock_response):
             check_package_for_malware("uvx", ["mcp-server-persist"])
 
         cache_file = tmp_path / "cache" / "osv_check.json"
@@ -231,14 +231,14 @@ class TestCheckPackageForMalware:
             osv_check._cache.clear()
             osv_check._disk_cache_loaded = False
 
-        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url2:
+        with patch("hermes_agent.tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url2:
             check_package_for_malware("uvx", ["mcp-server-persist"])
 
         assert mock_url2.call_count == 0, "disk cache must satisfy the second call"
 
     def test_disk_cache_retries_after_transient_oserror(self, tmp_path, monkeypatch):
         """A busy/unreadable cache file must not disable disk loads for the process."""
-        from tools import osv_check
+        from hermes_agent.tools import osv_check
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cache_file = tmp_path / "cache" / "osv_check.json"

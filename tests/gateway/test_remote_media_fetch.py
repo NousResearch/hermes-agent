@@ -12,7 +12,7 @@ import pytest
 
 from hermes_agent.gateway import media_fetch
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter
-from tools.environments.base import BaseEnvironment, FileFetchError
+from hermes_agent.tools.environments.base import BaseEnvironment, FileFetchError
 
 
 class _FakeRemoteEnv:

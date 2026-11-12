@@ -22,7 +22,7 @@ from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
     tool_may_have_side_effect,
 )
-from tools.threat_patterns import scan_for_threats
+from hermes_agent.tools.threat_patterns import scan_for_threats
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ def _is_destructive_command(cmd: str) -> bool:
 
 def _extend_tool_timeout(tool_name: str, default: float | None) -> float | None:
     """A registered transport budget must not be cut short by the generic executor."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     entry = registry.get_entry(tool_name)
     if default is None or entry is None or entry.execution_timeout is None:
@@ -124,7 +124,7 @@ def _requires_extended_tool_deadline(tool_name: str) -> bool:
 def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     """Whether an MCP tool's server opted into parallel calls; False if MCP is unavailable."""
     try:
-        from tools.mcp_tool_discovery import is_mcp_tool_parallel_safe
+        from hermes_agent.tools.mcp_tool_discovery import is_mcp_tool_parallel_safe
         return is_mcp_tool_parallel_safe(tool_name)
     except Exception:
         return False
@@ -149,7 +149,7 @@ def _peel_bridge_call(tool_name: str, function_args: dict) -> tuple[str, dict]:
     bridge call stays a sequential barrier and fails at dispatch as before.
     """
     try:
-        from tools.tool_search import (
+        from hermes_agent.tools.tool_search import (
             CONNECTOR_BATCH_SENTINEL,
             TOOL_CALL_NAME,
             is_connector_name,

@@ -6,7 +6,7 @@ Secret/sudo prompts remain native; no response is published or journaled here.
 from copy import deepcopy
 
 from hermes_agent.hermes_state_runtime import RuntimeStoreError
-from tools.approval import list_gateway_approvals, resolve_gateway_approval
+from hermes_agent.tools.approval import list_gateway_approvals, resolve_gateway_approval
 
 
 class PendingControls:
@@ -85,7 +85,7 @@ class PendingControls:
                                     event_type=kind + '.settled')
                 return {'status': 'resolved', 'prompt_id': prompt_id}
             if kind == 'clarify':
-                from tools.clarify_gateway import resolve_gateway_clarify
+                from hermes_agent.tools.clarify_gateway import resolve_gateway_clarify
                 if (not isinstance(response, dict) or set(response) != {'answer'}
                         or not isinstance(response['answer'], str)):
                     raise RuntimeStoreError('invalid_params')

@@ -49,7 +49,7 @@ LOG_FILES = {
     # posix.sh): stage log including the `desktop --force-build --build-only`
     # retry stderr.
     "handoff": "desktop-update-handoff.log",
-    # Every stdio MCP subprocess's stderr (tools/mcp_tool.py redirects it
+    # Every stdio MCP subprocess's stderr (hermes_agent/tools/mcp_tool.py redirects it
     # here, with per-server session markers) — the "MCP output channel".
     "mcp": "mcp-stderr.log",
 }
@@ -74,7 +74,7 @@ def log_file_path(log_name: str) -> Optional[Path]:
 _TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})")
 _LEVEL_RE = re.compile(r"\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s")
 # Logger name: the token before ":" after the level and optional "[session]" tag,
-# e.g. "INFO hermes_agent.gateway.run:" or "INFO [sess_abc] tools.terminal_tool:".
+# e.g. "INFO hermes_agent.gateway.run:" or "INFO [sess_abc] hermes_agent.tools.terminal_tool:".
 _LOGGER_NAME_RE = re.compile(r"\s(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)(?:\s+\[.*?\])?\s+(\S+):")
 _LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
 

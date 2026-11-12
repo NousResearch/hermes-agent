@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from tools.environments import docker as docker_env
+from hermes_agent.tools.environments import docker as docker_env
 
 
 @pytest.fixture(autouse=True)
@@ -31,7 +31,7 @@ _HOST_OWNED = b"/workspace/repo/HEAD\0"  # a no-symlink walk for host-owned entr
 def _fake_docker(monkeypatch, security_options: str, fail: str = ""):
     docker_env._cgroup_limits_ok = True
     try:  # the daemon-mode probe is cached per process
-        importlib.import_module("tools.environments.docker_ownership")._remapping_cache.clear()
+        importlib.import_module("hermes_agent.tools.environments.docker_ownership")._remapping_cache.clear()
     except ImportError:
         pass
     calls: list[tuple[list[str], bytes]] = []

@@ -61,7 +61,7 @@ class TestStandaloneDeliverySkipsDuringShutdown:
         }
         send_mock = AsyncMock(return_value={"success": True})
         with patch("hermes_agent.gateway.config.load_gateway_config", return_value=self._telegram_cfg()), \
-             patch("tools.send_message_tool._send_to_platform", new=send_mock), \
+             patch("hermes_agent.tools.send_message_tool._send_to_platform", new=send_mock), \
              patch("sys.is_finalizing", return_value=True):
             result = _deliver_result(job, "daily report body")
 

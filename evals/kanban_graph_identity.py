@@ -27,7 +27,7 @@ def main():
     sys.path.insert(0, str(args.repo))
     from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
     from hermes_cli.kanban_db_dispatch import dispatch_once
-    from tools.kanban_tools import _handle_create
+    from hermes_agent.tools.kanban_tools import _handle_create
     from hermes_cli.kanban_decompose import _apply_fanout, _Routing
     graph = importlib.import_module("hermes_cli.kanban_db_graph") if (args.repo / "hermes_cli/kanban_db_graph.py").exists() else kb
     decompose = graph.decompose_triage_task

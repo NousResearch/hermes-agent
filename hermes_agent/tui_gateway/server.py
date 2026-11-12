@@ -36,7 +36,7 @@ from hermes_cli.process_identity import release_process_group_once_empty, spawn_
 from hermes_agent.tui_gateway.pet_sheet import _clone_pet_payload, _pet_row_frame_counts, _pet_sheet_revision, _pet_state_rows
 from utils import is_truthy_value
 from hermes_agent.hermes_state_ids import new_session_id
-from tools.environments.local import hermes_subprocess_env
+from hermes_agent.tools.environments.local import hermes_subprocess_env
 from agent.fast_mode import STATIC_TIERS
 from agent.replay_cleanup import canonicalize_replay_history
 from agent.reasoning_effort import clamp_effort, route_supported_efforts
@@ -683,7 +683,7 @@ def _open_requests(sid: str) -> list[dict]:
 def _pending_connection_request_payload(sid: str) -> dict | None:
     """The open connection operation on *sid* as its ``connection.request`` payload, so a client
     that missed the event (or restarted) restores the card with the server's deadline."""
-    from tools.connectors import live
+    from hermes_agent.tools.connectors import live
 
     session = _sessions.get(sid)
     operation = (live.current(str(session.get("session_key") or ""), profile_home=session.get("profile_home"))
@@ -694,7 +694,7 @@ def _pending_connection_request_payload(sid: str) -> dict | None:
 def _pending_approval_request_payload(session_key: str) -> dict | None:
     """Read the oldest unresolved approval in a session, if there is one."""
     try:
-        from tools.approval import get_pending_gateway_approval
+        from hermes_agent.tools.approval import get_pending_gateway_approval
         approval = get_pending_gateway_approval(session_key)
     except Exception:
         logger.debug("failed to read pending approval for %s", session_key, exc_info=True)
@@ -707,11 +707,11 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     would otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
     See #48456, #50767.
 
-    The wait is owned by ``tools.approval``'s queue (its own timeout, ``/approve all``, coalescing), so the request
+    The wait is owned by ``hermes_agent.tools.approval``'s queue (its own timeout, ``/approve all``, coalescing), so the request
     is queue-backed: the response resolves the queue entry, and the entry's own resolution (any surface, timeout,
     interrupt) withdraws the request with ``request.cancel``."""
     from hermes_agent.tui_gateway import server_requests
-    from tools import approval as _approval
+    from hermes_agent.tools import approval as _approval
     payload = _approval_request_payload(data)
     request_id = str(payload.get("request_id") or "")
     session_key = str((_sessions.get(sid) or {}).get("session_key") or "")
@@ -981,7 +981,7 @@ def _clarify_timeout_seconds() -> float | None:
     """Clarify wait for the TUI/desktop bridge from the canonical config (gateway/CLI parity); 300s
     historical default if config can't be read; ``<= 0`` = unlimited → None (never auto-skip)."""
     with contextlib.suppress(Exception):
-        from tools.clarify_gateway import get_clarify_timeout
+        from hermes_agent.tools.clarify_gateway import get_clarify_timeout
         timeout = get_clarify_timeout()
         return timeout if timeout > 0 else None
     return 300
@@ -1324,7 +1324,7 @@ def _get_usage(agent) -> dict:
         usage["plan_gauge"] = gauge
     # Live count of background/async subagents (CLI status bar ⛓ parity, same async_delegation registry).
     with contextlib.suppress(Exception):
-        from tools.async_delegation import active_count as _async_active_count
+        from hermes_agent.tools.async_delegation import active_count as _async_active_count
         usage["active_subagents"] = _async_active_count()
     # Dev-only live credits-spent readout, gated on HERMES_DEV_CREDITS so the payload stays clean otherwise.
     if is_truthy_value(os.environ.get("HERMES_DEV_CREDITS")):
@@ -1466,7 +1466,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # yolo ORs the same three sources check_all_command_guards() does (approvals.mode=off, the process
     # --yolo env, the per-session flag): the session flag alone would show "off" while config auto-approves.
     try:
-        from tools.approval import _YOLO_MODE_FROZEN, is_session_yolo_enabled
+        from hermes_agent.tools.approval import _YOLO_MODE_FROZEN, is_session_yolo_enabled
         session_yolo = bool(is_session_yolo_enabled(session_key)) if session_key else False
         approval_mode = _load_approval_mode()
         yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or approval_mode == "off"
@@ -1515,7 +1515,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
     live_agent = agent is not None and not sess.get("_compute_host_active")
     if live_agent:
         with contextlib.suppress(Exception):
-            from model_tools import get_toolset_for_tool
+            from hermes_agent.model_tools import get_toolset_for_tool
             info["tools"] = {}
             for t in getattr(agent, "tools", []) or []:
                 name = t["function"]["name"]
@@ -1525,7 +1525,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
             info["skills"] = get_available_skills()
     info["mcp_servers"] = []
     with contextlib.suppress(Exception):
-        from tools.mcp_tool_discovery import get_mcp_status
+        from hermes_agent.tools.mcp_tool_discovery import get_mcp_status
         info["mcp_servers"] = get_mcp_status()
     with contextlib.suppress(Exception):
         info["system_prompt"] = (
@@ -1589,7 +1589,7 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
             if int(getattr(agent, "_user_turn_count", 0) or 0) > 0 or int(getattr(agent, "_api_call_count", 0) or 0) > 0:
                 return  # conversation started: a rebuild would invalidate the cached prompt prefix
             try:
-                from tools.mcp_tool_agent import refresh_agent_mcp_tools
+                from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
                 added = refresh_agent_mcp_tools(agent, quiet_mode=True)
             except Exception as exc:
                 logger.warning("Late MCP refresh: tool snapshot rebuild failed for %s: %s", sid, exc)
@@ -1907,7 +1907,7 @@ def _session_processes(session: dict) -> list:
     # (#42674, #35652): a turn finishing in session B must not consume an event that belongs to session A.
     # The registry requeues every addressed event this session cannot positively claim; the poller then
     # delivers it to a live owner or drops an orphan.
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     key = str(session.get("session_key") or "")
     owned = []
     for entry in process_registry.list_sessions():

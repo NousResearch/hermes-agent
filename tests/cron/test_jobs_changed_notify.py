@@ -101,7 +101,7 @@ def test_tool_create_registers_provider_before_reporting_success(
     provider = make_cron_provider(register_job=registered.append, name="recording")
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: provider)
 
-    from tools.cronjob_tools import cronjob
+    from hermes_agent.tools.cronjob_tools import cronjob
     import json
 
     out = json.loads(
@@ -121,7 +121,7 @@ def test_tool_create_reports_partial_registration_failure(
     provider = make_cron_provider(register_job=_fail_registration, name="failing")
     monkeypatch.setattr(sp, "resolve_cron_scheduler", lambda: provider)
 
-    from tools.cronjob_tools import cronjob
+    from hermes_agent.tools.cronjob_tools import cronjob
     import json
 
     out = json.loads(cronjob(action="create", prompt="echo hi", schedule="every 5m", name="w"))

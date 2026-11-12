@@ -15,13 +15,13 @@ def _policy(authority, sid, specs, tmp_path):
 
 
 def _editor_tools():
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     return [n for n in registry.get_all_tool_names() if n.startswith('mcp__')]
 
 
 def test_a_broken_editor_server_is_left_out_of_the_session(server_spec, tmp_path):
-    from tools.registry import registry
-    from tools.mcp_tool import _servers
+    from hermes_agent.tools.registry import registry
+    from hermes_agent.tools.mcp_tool import _servers
     silent = {'name': 'silent', 'command': sys.executable, 'args': ['-c', 'import time; time.sleep(120)'], 'env': []}
     authority = owner()
     started = time.monotonic()

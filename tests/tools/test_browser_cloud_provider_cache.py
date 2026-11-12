@@ -15,7 +15,7 @@ from unittest.mock import Mock
 import pytest
 
 from hermes_constants import hermes_home_key
-from tools import browser_session_cloud as bs_cloud
+from hermes_agent.tools import browser_session_cloud as bs_cloud
 
 
 @pytest.fixture(autouse=True)
@@ -50,7 +50,7 @@ class TestCloudProviderCachePolicy:
             resolutions.append(home)
             return providers[home]
 
-        monkeypatch.setattr("tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
+        monkeypatch.setattr("hermes_agent.tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
         monkeypatch.setattr("agent.browser_registry.get_provider", resolve)
         home_a = tmp_path / "browser-a"
         home_b = tmp_path / "browser-b"
@@ -106,7 +106,7 @@ class TestCloudProviderCachePolicy:
             "hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {"cloud_provider": "cache-replacement"}},
         )
-        monkeypatch.setattr("tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
+        monkeypatch.setattr("hermes_agent.tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
         token = set_hermes_home_override(home)
         try:
             browser_registry.register_provider(first, scope=home)
@@ -177,7 +177,7 @@ class TestCloudProviderCachePolicy:
             "hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {"cloud_provider": "cache-race"}},
         )
-        monkeypatch.setattr("tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
+        monkeypatch.setattr("hermes_agent.tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
         monkeypatch.setattr("agent.browser_registry.get_provider", racing_get)
         browser_registry.register_provider(first, scope=home)
 
@@ -259,14 +259,14 @@ class TestCloudProviderCachePolicy:
         def exploding_factory(name):
             raise RuntimeError("missing dependency")
 
-        monkeypatch.setattr("tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
+        monkeypatch.setattr("hermes_agent.tools.browser_session_cloud._ensure_browser_plugins_loaded", lambda: None)
         monkeypatch.setattr("agent.browser_registry.get_provider", exploding_factory)
         monkeypatch.setattr(
             "hermes_cli.config_effective.load_user_config_effective",
             lambda: {"browser": {"cloud_provider": "browser-use"}},
         )
 
-        with caplog.at_level(logging.WARNING, logger="tools.browser_session_cloud"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.browser_session_cloud"):
             assert bs_cloud.get_cloud_provider() is None
 
         assert _resolution_cached() is False

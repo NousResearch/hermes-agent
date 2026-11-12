@@ -3,7 +3,7 @@
 ``search`` reads the plugin catalog (the Plugins tab's resolver) and the skills hub and says what is
 already installed in this chat's profile. ``install`` opens the same connection operation
 ``manage_connections`` opens, with rows of kind ``plugin`` / ``skill``; the host installs each row
-the user approves (``tools/connectors/catalog.py``). The model sends catalog ids and an action,
+the user approves (``hermes_agent/tools/connectors/catalog.py``). The model sends catalog ids and an action,
 nothing else: the pin, scan, target profile and activation are the host's.
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, List, Optional
 
-from tools.registry import tool_error
+from hermes_agent.tools.registry import tool_error
 
 ACTIONS = ("search", "install")
 ITEM_KINDS = ("plugin", "skill")
@@ -123,10 +123,10 @@ def manage_catalog(
 
 def install(items: list[dict[str, str]], *, session_id: Optional[str], tool_call_id: Optional[str],
             connection_callback: Callable[[dict[str, Any]], Optional[str]], installer: Any = None) -> str:
-    from tools.connectors.catalog import open_runner
-    from tools.connectors.gateway.config import operation_session_key
-    from tools.connectors.operation import Target
-    from tools.connectors.run import Kind, run_operation
+    from hermes_agent.tools.connectors.catalog import open_runner
+    from hermes_agent.tools.connectors.gateway.config import operation_session_key
+    from hermes_agent.tools.connectors.operation import Target
+    from hermes_agent.tools.connectors.run import Kind, run_operation
 
     seen, targets = set(), []
     for item in items:
@@ -161,7 +161,7 @@ def search(query: str, kind: Optional[str], *, installer: Any = None) -> dict[st
 def _plugin_rows(query: str) -> list[dict[str, Any]]:
     from hermes_cli.plugin_catalog import filter_entries, load_catalog_live
     from hermes_cli.plugins_cmd import PluginOperationError, _read_install_metadata
-    from tools.connectors.catalog import _display
+    from hermes_agent.tools.connectors.catalog import _display
 
     try:
         installed = {str(rec["catalog"]["name"]) for rec in _read_install_metadata().values()
@@ -174,9 +174,9 @@ def _plugin_rows(query: str) -> list[dict[str, Any]]:
 
 
 def _skill_rows(query: str) -> list[dict[str, Any]]:
-    from tools.skills_hub import HubLockFile, installed_entry
-    from tools.skills_hub_github import GitHubAuth
-    from tools.skills_hub_search import create_source_router, unified_search
+    from hermes_agent.tools.skills_hub import HubLockFile, installed_entry
+    from hermes_agent.tools.skills_hub_github import GitHubAuth
+    from hermes_agent.tools.skills_hub_search import create_source_router, unified_search
 
     installed = HubLockFile().by_identifier()
     return [{"id": r.identifier, "kind": "skill", "display": r.name,

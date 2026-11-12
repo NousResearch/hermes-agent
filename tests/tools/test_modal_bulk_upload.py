@@ -7,7 +7,7 @@ import tarfile
 from unittest.mock import AsyncMock, MagicMock
 
 
-from tools.environments import modal as modal_env
+from hermes_agent.tools.environments import modal as modal_env
 
 
 def _make_mock_modal_env(monkeypatch, tmp_path):

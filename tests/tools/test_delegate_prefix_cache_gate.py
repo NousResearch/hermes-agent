@@ -8,9 +8,9 @@ import pytest
 
 from hermes_constants import get_hermes_home
 from tests.waiting import wait_until
-from tools import delegate_tool_dispatch
-from tools.delegate_tool_child_run import _attach_child
-from tools.delegate_tool_prefix_gate import PrefixCacheGate
+from hermes_agent.tools import delegate_tool_dispatch
+from hermes_agent.tools.delegate_tool_child_run import _attach_child
+from hermes_agent.tools.delegate_tool_prefix_gate import PrefixCacheGate
 
 
 def _child(**kw):

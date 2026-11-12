@@ -12,9 +12,9 @@ import pytest
 def test_parked_self_probe_skips_disabled_or_deleted_entry(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-    from tools import mcp_tool
-    from tools import mcp_tool_config as _config
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_config as _config
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     monkeypatch.setattr(mcp_tool, "_MAX_RECONNECT_RETRIES", 1)
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)

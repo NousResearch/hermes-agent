@@ -12,7 +12,7 @@ from tests.acp_adapter.test_session_mcp_policy import owner, policy
 
 def test_workspace_move_respawns_held_stdio_servers_in_the_new_folder(server_spec, tmp_path):
     from hermes_agent.gateway.session_local_mcp import release_editor_mcp
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     script = tmp_path / 'owned_mcp.py'
     script.write_text(script.read_text().replace("os.environ['BORROWED_CREDENTIAL']", 'os.getcwd()'))
     old, new = tmp_path / 'project-a', tmp_path / 'project-b'

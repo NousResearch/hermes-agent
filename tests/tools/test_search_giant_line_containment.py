@@ -19,7 +19,7 @@ import subprocess
 
 import pytest
 
-from tools.file_operations import ShellFileOperations
+from hermes_agent.tools.file_operations import ShellFileOperations
 
 # Big enough to prove containment, small enough to keep the test fast.
 GIANT = 5 * 1024 * 1024  # 5MB single line

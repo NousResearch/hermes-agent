@@ -5,8 +5,8 @@ footer is unreadable from the sandbox (#72389, #81984, #77015)."""
 import os
 import re
 
-from tools import delegate_tool_results
-from tools import web_tools_truncate
+from hermes_agent.tools import delegate_tool_results
+from hermes_agent.tools import web_tools_truncate
 
 
 def _footer_path(text: str) -> str:

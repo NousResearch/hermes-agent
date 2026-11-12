@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
-from tools import delegate_tool
+from hermes_agent.tools import delegate_tool
 
 
 class _SlowUnwindingChild:
@@ -70,7 +70,7 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
     monkeypatch.setattr(delegate_tool, "_get_child_timeout", lambda: 0.5)
     monkeypatch.setattr(delegate_tool, "_get_worktree_isolation", lambda: False)
 
-    from tools.daemon_pool import DaemonThreadPoolExecutor
+    from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
 
     submit = DaemonThreadPoolExecutor.submit
 

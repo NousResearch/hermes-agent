@@ -2825,7 +2825,7 @@ class TestInboundMediaAuthorizationGate:
     @pytest.mark.asyncio
     async def test_send_to_platform_live_buzz_delivers_all_media(self, monkeypatch, tmp_path):
         from hermes_agent.gateway.config import Platform
-        from tools.send_message_tool import _send_to_platform
+        from hermes_agent.tools.send_message_tool import _send_to_platform
 
         first = tmp_path / "first.txt"
         second = tmp_path / "second.pdf"

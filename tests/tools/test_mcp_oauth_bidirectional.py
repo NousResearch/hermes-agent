@@ -51,13 +51,13 @@ async def test_hermes_provider_forwards_401_triggers_refresh(tmp_path, monkeypat
     # The SDK's httpx flavour (httpx2 on mcp >= 2.0): the provider is an
     # Auth subclass from that module and its auth_flow only accepts its own
     # Request/Response types.
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool import sdk_httpx
     httpx = sdk_httpx()
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
 
     assert _HERMES_PROVIDER_CLS is not None
 
@@ -136,13 +136,13 @@ async def test_long_lived_resource_request_does_not_block_concurrent_post(
     acquiring its Bearer token.  Hermes narrows that lock around resource I/O
     while retaining it for OAuth state transitions.
     """
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool import sdk_httpx
     httpx = sdk_httpx()
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
 
     assert _HERMES_PROVIDER_CLS is not None
 
@@ -253,14 +253,14 @@ async def test_fabricated_dcr_registration_rejected_before_network(tmp_path, mon
     registration_endpoint -> fabricated registration POST) through the
     generator manually, exactly like the other tests in this file.
     """
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool import sdk_httpx
     httpx = sdk_httpx()
     from mcp.client.auth import OAuthRegistrationError
     from mcp.shared.auth import OAuthClientMetadata
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
 
     assert _HERMES_PROVIDER_CLS is not None, "SDK OAuth types must be available"
 
@@ -359,13 +359,13 @@ async def test_advertised_registration_endpoint_passes_through(tmp_path, monkeyp
     fabricated URL **and** no advertised registration_endpoint) must let
     such servers through; otherwise every legitimate DCR flow breaks.
     """
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool import sdk_httpx
     httpx = sdk_httpx()
     from mcp.shared.auth import OAuthClientMetadata
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
 
     assert _HERMES_PROVIDER_CLS is not None, "SDK OAuth types must be available"
 
@@ -454,13 +454,13 @@ async def test_guard_ignores_non_fabricated_post_paths(tmp_path, monkeypatch):
     blocked ASM fetch) never trips the guard: the SDK's guess may be a real
     endpoint, and the discovery-context error explains a failure there.
     """
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool import sdk_httpx
     httpx = sdk_httpx()
     from mcp.shared.auth import OAuthClientMetadata, OAuthMetadata
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
 
     assert _HERMES_PROVIDER_CLS is not None, "SDK OAuth types must be available"
 

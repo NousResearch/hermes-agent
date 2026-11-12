@@ -64,9 +64,9 @@ async def _run_browser_flow(tmp_path, monkeypatch, *, issuer, authorization_serv
     from mcp.shared.auth import OAuthClientMetadata
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage, _authorization_code_result
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage, _authorization_code_result
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from hermes_agent.tools.mcp_tool import sdk_httpx
 
     httpx = sdk_httpx()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -116,7 +116,7 @@ async def test_google_authorization_url_asks_for_offline_access(tmp_path, monkey
         tmp_path / "other", monkeypatch, issuer=OTHER_AS, authorization_servers=[OTHER_AS])
     assert response.status_code == 200
     assert not any(key in ("access_type", "prompt") for key, _ in parse_qsl(urlsplit(seen["authorize_url"]).query))
-    from tools.mcp_oauth_provider import google_offline_access_params
+    from hermes_agent.tools.mcp_oauth_provider import google_offline_access_params
 
     def ctx(issuer):
         return SimpleNamespace(oauth_metadata=SimpleNamespace(issuer=issuer) if issuer is not None else None)
@@ -132,10 +132,10 @@ async def test_device_flow_normalizes_issuer_and_asks_google_for_offline_access(
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_device import DeviceOAuthMetadata, _authorize, _device_metadata
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth_device import DeviceOAuthMetadata, _authorize, _device_metadata
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS
+    from hermes_agent.tools.mcp_tool import sdk_httpx
 
     httpx = sdk_httpx()
 

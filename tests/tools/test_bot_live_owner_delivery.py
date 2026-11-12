@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import bot_live_delivery as mailbox
+from hermes_agent.tools import bot_live_delivery as mailbox
 
 
 class _FakeAuthority:
@@ -103,7 +103,7 @@ def test_live_dm_bom_readers_preserve_pinned_intent(tmp_path, monkeypatch, inten
     damaged intent retains its evidence instead of retrying a transport."""
     import hermes_cli.gateway_runtime as runtime
     from hermes_agent.hermes_state import SessionDB
-    from tools import bot_mode_dm
+    from hermes_agent.tools import bot_mode_dm
 
     db = SessionDB(db_path=tmp_path / "state.db")
     db.create_session(session_id="chat", source="cli")
@@ -212,7 +212,7 @@ def test_canonical_owner_is_the_authority_and_follows_compression(tmp_path, monk
 
 
 def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id(tmp_path, monkeypatch):
-    from tools import bot_live_delivery as mailbox
+    from hermes_agent.tools import bot_live_delivery as mailbox
 
     authority = _FakeAuthority()
     monkeypatch.setattr(mailbox, "authority_delivery", authority)
@@ -230,7 +230,7 @@ def test_delivery_keeps_the_sender_and_refuses_a_different_one_under_the_same_id
 
 def test_non_dict_ticket_fails_exact_id_reads_closed(tmp_path):
     """Malformed is not absent: an exact-id receipt read raises instead of reporting "no record"."""
-    from tools import bot_live_delivery as mailbox
+    from hermes_agent.tools import bot_live_delivery as mailbox
 
     bad = tmp_path / "runtime" / mailbox.DELIVERY_DIR_NAME / f"{'e' * 32}.json"
     bad.parent.mkdir(parents=True)
@@ -331,8 +331,8 @@ def test_pre_dial_failure_is_a_definite_no_send_not_ambiguous(tmp_path, monkeypa
     """#139303: a dial that dies before ``bot_relay.deliver`` reached the socket admits
     nothing — the pinned intent is dropped and the sender hears 'safe to resend',
     instead of the old 'ambiguous / do not resend' that stranded the DM."""
-    from tools import bot_live_delivery as live
-    from tools import bot_mode_dm
+    from hermes_agent.tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_mode_dm
 
     def refused(home, params):
         raise live.PreDialError("dial refused before the RPC went out")
@@ -356,8 +356,8 @@ def test_pre_dial_failure_is_a_definite_no_send_not_ambiguous(tmp_path, monkeypa
 def test_pre_dial_failure_on_a_retried_intent_stays_ambiguous(tmp_path, monkeypatch):
     """An intent pinned by an earlier attempt may already be admitted: a later pre-dial death
     proves nothing about that attempt, so the outcome stays unknown and the evidence is kept."""
-    from tools import bot_live_delivery as live
-    from tools import bot_mode_dm
+    from hermes_agent.tools import bot_live_delivery as live
+    from hermes_agent.tools import bot_mode_dm
 
     def refused(home, params):
         raise live.PreDialError("dial refused before the RPC went out")

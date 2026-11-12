@@ -22,7 +22,7 @@ Primary files:
 
 - `run_agent.py`
 - `agent/prompt_builder.py`
-- `tools/memory_tool.py`
+- `hermes_agent/tools/memory_tool.py`
 
 ## Cached system prompt layers
 

@@ -27,10 +27,10 @@ import stat
 import threading
 import time
 
-from tools.file_state import _evict_oldest
-from tools.file_tools_paths import _authoritative_workspace_root, _resolve_path_for_task
+from hermes_agent.tools.file_state import _evict_oldest
+from hermes_agent.tools.file_tools_paths import _authoritative_workspace_root, _resolve_path_for_task
 
-logger = logging.getLogger("tools.file_tools")
+logger = logging.getLogger("hermes_agent.tools.file_tools")
 
 _read_tracker_lock = threading.Lock()
 _read_tracker: dict = {}

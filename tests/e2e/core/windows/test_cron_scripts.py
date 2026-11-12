@@ -8,7 +8,7 @@ The ``.sh`` case launches Hermes with the PATH a NATIVE Windows process has (Sta
 Scheduled Task, Desktop): Git's ``cmd`` dir only, no ``Git\\bin`` / ``Git\\usr\\bin``, so
 the only ``bash`` a bare PATH lookup finds is the WSL stub in System32 (or none). Git for
 Windows is installed at its standard location the whole time, which is exactly the host
-the canonical resolver (``tools/environments/local.py::_find_bash``) handles.
+the canonical resolver (``hermes_agent/tools/environments/local.py::_find_bash``) handles.
 """
 
 from __future__ import annotations

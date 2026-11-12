@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from hermes_agent.hermes_state import SessionDB
 from hermes_agent.hermes_state_runtime import begin_runtime_epoch
-from tools.bot_live_delivery import _locked, _read, _write
+from hermes_agent.tools.bot_live_delivery import _locked, _read, _write
 
 
 def _recover_one(tmp_path, record):

@@ -192,7 +192,7 @@ class GatewayInboundHooksMixin:
         ``cwd`` is a local session's folder; None keeps the gateway's own (messaging)."""
         proc = None
         try:
-            from tools.environments.local import build_subprocess_env
+            from hermes_agent.tools.environments.local import build_subprocess_env
             proc = await asyncio.create_subprocess_shell(
                 exec_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 env=build_subprocess_env(), cwd=cwd,

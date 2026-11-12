@@ -25,7 +25,7 @@ import pytest
 
 @pytest.fixture
 def mcp_loop():
-    from tools import mcp_tool_loop as _mcp_loop
+    from hermes_agent.tools import mcp_tool_loop as _mcp_loop
 
     _mcp_loop._ensure_mcp_loop()
     yield _mcp_loop

@@ -15,8 +15,8 @@ async def probe():
     from hermes_cli import web_server
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     from tests.gateway.fixtures.local_recovery_probe import rpc
-    from tools.delegate_tool import is_spawn_paused
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.delegate_tool import is_spawn_paused
+    from hermes_agent.tools.process_registry import process_registry
     from websockets.asyncio.client import connect
 
     home = Path(os.environ['HERMES_HOME'])

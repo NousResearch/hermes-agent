@@ -126,7 +126,7 @@ def test_retired_dependency_entrypoints_handoff_without_fallback(module, name, a
     ("hermes_cli.update_cmd", "_cmd_update_impl", [], False),
 ])
 def test_lazy_installer_inside_historical_update_hands_off(module, name, specs, declares_version, fresh_child):
-    from tools.lazy_deps import install_specs
+    from hermes_agent.tools.lazy_deps import install_specs
 
     # Run a frozen old-caller-shaped function, not a mocked context detector.
     # The walk crosses the intermediate helper frame to reach the matching
@@ -186,7 +186,7 @@ def test_ensure_uv_stops_both_historical_return_contracts(unpack, status, fresh_
 
 def test_retired_probes_and_refreshes_do_no_work(no_external_work, tmp_path):
     from hermes_cli import _install_repair, backup, banner, config, main, update_cmd
-    from tools import browser_tool
+    from hermes_agent.tools import browser_tool
 
     assert _install_repair._sync_windows_cli_launchers(tmp_path) == []
     # Unknown, not an invented "no live holders" result.

@@ -12,7 +12,7 @@ import sqlite3
 
 import pytest
 
-from tools import async_delegation as ad
+from hermes_agent.tools import async_delegation as ad
 
 
 class _TrackingConnection:

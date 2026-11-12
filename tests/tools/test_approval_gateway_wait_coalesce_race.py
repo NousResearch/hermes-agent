@@ -7,8 +7,8 @@ where the leader's prompt goes away without an answer and where two identical re
 
 import threading
 
-from tools import approval as mod
-from tools import approval_gateway_wait as wait_mod
+from hermes_agent.tools import approval as mod
+from hermes_agent.tools import approval_gateway_wait as wait_mod
 
 
 SESSION_KEY = "approval-coalesce-race"

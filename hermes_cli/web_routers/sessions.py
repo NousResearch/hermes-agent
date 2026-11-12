@@ -611,7 +611,7 @@ async def get_session_latest_descendant(session_id: str, profile: Optional[str] 
 
 def _stored_tool_call_labels(message: dict) -> dict:
     from agent.display import tool_labels_for_call
-    from tools.tool_labels import BRIDGE_TOOL_NAMES
+    from hermes_agent.tools.tool_labels import BRIDGE_TOOL_NAMES
 
     out = {}
     for call in message.get("tool_calls") or ():

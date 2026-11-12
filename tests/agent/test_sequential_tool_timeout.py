@@ -11,7 +11,7 @@ import pytest
 
 from agent.tool_executor import execute_tool_calls_sequential
 from run_agent import AIAgent
-from tools.clarify_gateway import resolve_clarify_timeout
+from hermes_agent.tools.clarify_gateway import resolve_clarify_timeout
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +38,7 @@ def _deterministic_worker_start(monkeypatch):
     generous headroom to reach the dispatch — which is the behavior these
     tests mean to pin.
     """
-    from tools import daemon_pool
+    from hermes_agent.tools import daemon_pool
 
     real_executor = daemon_pool.DaemonThreadPoolExecutor
 
@@ -62,7 +62,7 @@ def _deterministic_worker_start(monkeypatch):
 def _make_agent(tmp_path: Path) -> AIAgent:
     with (
         patch(
-            "model_tools.get_tool_definitions",
+            "hermes_agent.model_tools.get_tool_definitions",
             return_value=[
                 {
                     "type": "function",
@@ -74,7 +74,7 @@ def _make_agent(tmp_path: Path) -> AIAgent:
                 }
             ],
         ),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("run_agent._hermes_home", tmp_path),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
@@ -143,7 +143,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
     started = time.monotonic()
     try:
         with (
-            patch("model_tools.handle_function_call", side_effect=_dispatch),
+            patch("hermes_agent.model_tools.handle_function_call", side_effect=_dispatch),
             patch(
                 "agent.tool_executor._emit_terminal_post_tool_call",
                 side_effect=_capture_terminal_event,
@@ -168,7 +168,7 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
 
 def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):
     from hermes_cli import lifecycle
-    import model_tools
+    from hermes_agent import model_tools
 
     agent = _make_agent(tmp_path)
     release_first = threading.Event()
@@ -253,10 +253,10 @@ def test_sequential_tool_interrupt_hides_lifecycle_cancel_detail(tmp_path, monke
 
     monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "30")
     monkeypatch.setattr(
-        "tools.delegate_tool._build_child_preserving_parent_tools",
+        "hermes_agent.tools.delegate_tool._build_child_preserving_parent_tools",
         lambda **_kwargs: agent,
     )
-    monkeypatch.setattr("tools.delegate_tool._run_child_lifecycle", _run_child)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._run_child_lifecycle", _run_child)
     lifecycle = SubagentLifecycleService(
         lambda: SimpleNamespace(
             session_id="parent-lifecycle-cancel-output",
@@ -266,7 +266,7 @@ def test_sequential_tool_interrupt_hides_lifecycle_cancel_detail(tmp_path, monke
 
     try:
         with (
-            patch("model_tools.handle_function_call", side_effect=_dispatch),
+            patch("hermes_agent.model_tools.handle_function_call", side_effect=_dispatch),
             patch(
                 "agent.tool_executor._emit_terminal_post_tool_call",
                 side_effect=lambda *_args, **kwargs: terminal_events.append(kwargs),
@@ -305,7 +305,7 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
     agent = _make_agent(tmp_path)
     monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "1.0")
     monkeypatch.setattr(
-        "tools.clarify_gateway.get_clarify_timeout",
+        "hermes_agent.tools.clarify_gateway.get_clarify_timeout",
         lambda: clarify_timeout,
     )
 
@@ -327,7 +327,7 @@ def test_sequential_timeout_does_not_cut_clarify_human_wait(
     messages: list[dict] = []
     started = time.monotonic()
     with (
-        patch("model_tools.handle_function_call", side_effect=_dispatch),
+        patch("hermes_agent.model_tools.handle_function_call", side_effect=_dispatch),
         patch(
             "agent.tool_executor._emit_terminal_post_tool_call",
             side_effect=_capture_terminal_event,

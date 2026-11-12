@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required")
 
-import tools.mcp_oauth as mo
+import hermes_agent.tools.mcp_oauth as mo
 
 
 def _free_port() -> int:

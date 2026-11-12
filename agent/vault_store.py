@@ -60,7 +60,7 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 _LOCK = threading.Lock()
 
-# fcntl is Unix-only; Windows locks a byte range with msvcrt (same shape as tools/skill_usage.py).
+# fcntl is Unix-only; Windows locks a byte range with msvcrt (same shape as hermes_agent/tools/skill_usage.py).
 msvcrt = None
 try:
     import fcntl

@@ -20,7 +20,7 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import parse_qs, urlparse
 
 # Logger-name parity with the origin module (records must look unchanged).
-logger = logging.getLogger("tools.browser_supervisor")
+logger = logging.getLogger("hermes_agent.tools.browser_supervisor")
 
 
 def _redact_supervisor_text(value: str) -> str:

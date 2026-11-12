@@ -8,7 +8,7 @@ had just refused. The adapter fix improved the error STRING while the
 user-visible behaviour stayed identical to base.
 
 These tests drive the real `hermes_agent.gateway.run` classifier and the real
-`tools.slash_confirm` registry; only the SendResult (the connector's answer)
+`hermes_agent.tools.slash_confirm` registry; only the SendResult (the connector's answer)
 is constructed.
 """
 

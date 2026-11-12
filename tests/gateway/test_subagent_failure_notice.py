@@ -5,7 +5,7 @@ Covers the Aug 2026 community report: a delegate_task child that dies
 with tool_progress off — the parent model saw the error but the human never
 did. Now:
 
-- ``tools.delegate_tool.format_subagent_failure_line`` renders one clean,
+- ``hermes_agent.tools.delegate_tool.format_subagent_failure_line`` renders one clean,
   human-readable line (no tracebacks/JSON walls).
 - ``TurnRunner.progress_callback`` intercepts ``subagent.complete`` events
   with a terminal failure status FIRST (before every progress-queue gate)
@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from hermes_agent.gateway.turn_context import TurnContext
-from tools.delegate_tool import (
+from hermes_agent.tools.delegate_tool import (
     SUBAGENT_FAILURE_STATUSES,
     _clean_error_text,
     format_subagent_failure_line,

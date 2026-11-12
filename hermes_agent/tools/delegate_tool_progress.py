@@ -9,9 +9,9 @@ import posixpath
 import threading
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
-from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+from hermes_agent.tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
 
-logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 # Terminal child statuses that mean "the subagent did NOT deliver a usable result". Shared by the CLI spinner echo,
 # the gateway failure notice, and the parent-facing failure summary so every surface agrees.
@@ -39,7 +39,7 @@ def _safe_progress(cb: Any, event_type: Any, *args: Any, **kwargs: Any) -> None:
 def _clean_error_text(error: Any, max_chars: int = 200) -> str:
     """Reduce an error payload (traceback / JSON wall) to one clean line: the exception message (last line of a
     traceback) or the first non-empty line, hard-capped in length."""
-    from tools.delegation_redaction import redact_child_text
+    from hermes_agent.tools.delegation_redaction import redact_child_text
     lines = [ln.strip() for ln in redact_child_text(str(error or ""), force=False).strip().splitlines() if ln.strip()]
     if not lines:
         return ""
@@ -232,8 +232,8 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     Hermes runs).
     """
     from agent.runtime_cwd import scope_terminal_cwd
-    from tools.terminal_scope import terminal_env
-    from tools.terminal_tool_config import coerce_ssh_remote_cwd
+    from hermes_agent.tools.terminal_scope import terminal_env
+    from hermes_agent.tools.terminal_tool_config import coerce_ssh_remote_cwd
 
     env_type = terminal_env("TERMINAL_ENV", "local")
     on_ssh = env_type.strip().lower() == "ssh"

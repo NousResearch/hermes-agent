@@ -7,7 +7,7 @@ health_report says ok and every capture returns 0x0 silently. The guard
 turns that into a failed check + degraded overall + recovery hint.
 """
 
-from tools.computer_use.doctor import _apply_display_count_guard
+from hermes_agent.tools.computer_use.doctor import _apply_display_count_guard
 
 
 def _report(status="pass", count=0, overall="ok", name="screen_capture_capability"):

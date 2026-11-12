@@ -144,7 +144,7 @@ class TestVoiceAttachmentTempCleanup:
             seen["wav_path"] = path
             raise httpx.TransportError("boom")
 
-        with mock.patch("tools.url_safety.is_safe_url", return_value=True):
+        with mock.patch("hermes_agent.tools.url_safety.is_safe_url", return_value=True):
             adapter._call_stt = mock.AsyncMock(side_effect=_raise_transport_error)
             transcript = asyncio.run(
                 adapter._stt_voice_attachment(
@@ -860,9 +860,9 @@ class TestDefaultInteractionDispatch:
 
         # Patch the *module-level* function that _default_interaction_dispatch
         # imports lazily.
-        import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
+        import hermes_agent.tools.approval
+        orig = hermes_agent.tools.approval.resolve_gateway_approval
+        hermes_agent.tools.approval.resolve_gateway_approval = fake_resolve
         try:
             from plugins.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
@@ -873,7 +873,7 @@ class TestDefaultInteractionDispatch:
             })
             await adapter._default_interaction_dispatch(event)
         finally:
-            tools.approval.resolve_gateway_approval = orig
+            hermes_agent.tools.approval.resolve_gateway_approval = orig
 
         assert resolve_calls == [("agent:main:qqbot:dm:u-42", "once", False)]
 
@@ -887,9 +887,9 @@ class TestDefaultInteractionDispatch:
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
-        import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
+        import hermes_agent.tools.approval
+        orig = hermes_agent.tools.approval.resolve_gateway_approval
+        hermes_agent.tools.approval.resolve_gateway_approval = fake_resolve
         try:
             from plugins.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
@@ -900,7 +900,7 @@ class TestDefaultInteractionDispatch:
             })
             await adapter._default_interaction_dispatch(event)
         finally:
-            tools.approval.resolve_gateway_approval = orig
+            hermes_agent.tools.approval.resolve_gateway_approval = orig
 
         assert resolve_calls == []
 
@@ -979,9 +979,9 @@ class TestProfileNamespaceApprovalAuthz:
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
-        import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
+        import hermes_agent.tools.approval
+        orig = hermes_agent.tools.approval.resolve_gateway_approval
+        hermes_agent.tools.approval.resolve_gateway_approval = fake_resolve
         try:
             from plugins.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
@@ -992,7 +992,7 @@ class TestProfileNamespaceApprovalAuthz:
             })
             await adapter._default_interaction_dispatch(event)
         finally:
-            tools.approval.resolve_gateway_approval = orig
+            hermes_agent.tools.approval.resolve_gateway_approval = orig
 
         assert resolve_calls == [("agent:coder:qqbot:c2c:u-42", "once", False)]
 
@@ -1007,9 +1007,9 @@ class TestProfileNamespaceApprovalAuthz:
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
-        import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
+        import hermes_agent.tools.approval
+        orig = hermes_agent.tools.approval.resolve_gateway_approval
+        hermes_agent.tools.approval.resolve_gateway_approval = fake_resolve
         try:
             from plugins.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
@@ -1020,7 +1020,7 @@ class TestProfileNamespaceApprovalAuthz:
             })
             await adapter._default_interaction_dispatch(event)
         finally:
-            tools.approval.resolve_gateway_approval = orig
+            hermes_agent.tools.approval.resolve_gateway_approval = orig
 
         assert resolve_calls == [("agent:coder:qqbot:group:g-1:owner", "once", False)]
 
@@ -1035,9 +1035,9 @@ class TestProfileNamespaceApprovalAuthz:
             resolve_calls.append((session_key, choice, resolve_all))
             return 1
 
-        import tools.approval
-        orig = tools.approval.resolve_gateway_approval
-        tools.approval.resolve_gateway_approval = fake_resolve
+        import hermes_agent.tools.approval
+        orig = hermes_agent.tools.approval.resolve_gateway_approval
+        hermes_agent.tools.approval.resolve_gateway_approval = fake_resolve
         try:
             from plugins.platforms.qqbot.keyboards import parse_interaction_event
             event = parse_interaction_event({
@@ -1048,7 +1048,7 @@ class TestProfileNamespaceApprovalAuthz:
             })
             await adapter._default_interaction_dispatch(event)
         finally:
-            tools.approval.resolve_gateway_approval = orig
+            hermes_agent.tools.approval.resolve_gateway_approval = orig
 
         assert resolve_calls == []
 

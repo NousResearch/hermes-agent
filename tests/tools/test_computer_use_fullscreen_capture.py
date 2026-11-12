@@ -88,7 +88,7 @@ class _FakeSession:
 
 
 def _make_backend(session: _FakeSession):
-    from tools.computer_use.cua_backend import CuaDriverBackend
+    from hermes_agent.tools.computer_use.cua_backend import CuaDriverBackend
 
     backend = CuaDriverBackend()
     backend._session = session
@@ -208,8 +208,8 @@ class TestDesktopShellLane:
 class TestNoteInSummary:
     def test_capture_response_appends_note_line(self, tmp_path, monkeypatch):
         import hermes_constants
-        from tools.computer_use.backend import CaptureResult
-        from tools.computer_use import tool as cu_tool
+        from hermes_agent.tools.computer_use.backend import CaptureResult
+        from hermes_agent.tools.computer_use import tool as cu_tool
 
         monkeypatch.setattr(hermes_constants, "get_hermes_dir",
                             lambda *a, **k: tmp_path)

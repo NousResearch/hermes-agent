@@ -6,8 +6,8 @@ import signal
 from unittest.mock import patch, MagicMock
 
 import pytest
-from tools import mcp_tool_lifecycle as _mcp_lifecycle
-from tools import mcp_tool_loop as _mcp_loop
+from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
+from hermes_agent.tools import mcp_tool_loop as _mcp_loop
 
 
 # ---------------------------------------------------------------------------
@@ -18,7 +18,7 @@ class TestMCPLoopExceptionHandler:
     """_mcp_loop_exception_handler suppresses benign 'Event loop is closed'."""
 
     def test_suppresses_event_loop_closed(self):
-        from tools.mcp_tool_loop import _mcp_loop_exception_handler
+        from hermes_agent.tools.mcp_tool_loop import _mcp_loop_exception_handler
         loop = MagicMock()
         context = {"exception": RuntimeError("Event loop is closed")}
         # Should NOT call default handler
@@ -28,7 +28,7 @@ class TestMCPLoopExceptionHandler:
 
     def test_probe_cleanup_does_not_stop_loop_with_registered_servers(self):
         """Probe cleanup must not kill the shared loop used by live MCP tools."""
-        import tools.mcp_tool as mcp_mod
+        import hermes_agent.tools.mcp_tool as mcp_mod
 
         with mcp_mod._lock:
             mcp_mod._servers.clear()
@@ -70,7 +70,7 @@ class TestStdioPidTracking:
         import sys as _sys
         import threading
 
-        from tools.mcp_tool_lifecycle import _snapshot_child_pids
+        from hermes_agent.tools.mcp_tool_lifecycle import _snapshot_child_pids
 
         procs = []
         started = threading.Event()
@@ -94,9 +94,9 @@ class TestStdioPidTracking:
 
     def test_kill_orphaned_handles_dead_pids(self):
         """_kill_orphaned_mcp_children gracefully handles already-dead PIDs."""
-        from tools.mcp_tool_lifecycle import (
+        from hermes_agent.tools.mcp_tool_lifecycle import (
             _kill_orphaned_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids)
-        from tools.mcp_tool import _lock
+        from hermes_agent.tools.mcp_tool import _lock
 
         # Use a PID that definitely doesn't exist
         fake_pid = 999999999
@@ -105,7 +105,7 @@ class TestStdioPidTracking:
             _orphan_stdio_pid_servers[fake_pid] = "orphan"
 
         # Should not raise (ProcessLookupError is caught)
-        with patch("tools.mcp_tool.time.sleep"):
+        with patch("hermes_agent.tools.mcp_tool.time.sleep"):
             _kill_orphaned_mcp_children()
 
         with _lock:
@@ -114,9 +114,9 @@ class TestStdioPidTracking:
 
     def test_run_stdio_reaps_orphans_before_spawn(self):
         """_run_stdio kills orphaned PIDs from prior failed attempts (#57355)."""
-        from tools.mcp_tool_lifecycle import (
+        from hermes_agent.tools.mcp_tool_lifecycle import (
             _orphan_stdio_pids)
-        from tools.mcp_tool import _lock, MCPServerTask
+        from hermes_agent.tools.mcp_tool import _lock, MCPServerTask
         from unittest.mock import patch, MagicMock, AsyncMock
 
         # Seed an orphan PID that belongs to a prior failed connection.
@@ -142,21 +142,21 @@ class TestStdioPidTracking:
             # _run_stdio should reap orphans before it gets to the
             # stdio_client spawn.  Patch the OSV check (local import)
             # and stdio_client so no real subprocess is spawned.
-            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-                 patch("tools.mcp_tool_config._build_safe_env", return_value={}), \
-                 patch("tools.mcp_tool_config._resolve_stdio_command",
+            with patch("hermes_agent.tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("hermes_agent.tools.mcp_tool_config._build_safe_env", return_value={}), \
+                 patch("hermes_agent.tools.mcp_tool_config._resolve_stdio_command",
                        return_value=("echo", {})), \
-                 patch("tools.mcp_tool_config._write_stderr_log_header"), \
-                 patch("tools.mcp_tool.check_package_for_malware",
+                 patch("hermes_agent.tools.mcp_tool_config._write_stderr_log_header"), \
+                 patch("hermes_agent.tools.mcp_tool.check_package_for_malware",
                        return_value=None, create=True), \
-                 patch("tools.osv_check.check_package_for_malware",
+                 patch("hermes_agent.tools.osv_check.check_package_for_malware",
                        return_value=None):
                 # Patch stdio_client to raise so the test exits quickly
                 cm = MagicMock()
                 cm.__aenter__ = AsyncMock(side_effect=RuntimeError("test"))
                 cm.__aexit__ = AsyncMock(return_value=False)
-                with patch("tools.mcp_tool.stdio_client", return_value=cm), \
-                     patch("tools.mcp_tool.time.sleep"):
+                with patch("hermes_agent.tools.mcp_tool.stdio_client", return_value=cm), \
+                     patch("hermes_agent.tools.mcp_tool.time.sleep"):
                     try:
                         await server._run_stdio(config)
                     except Exception:
@@ -170,9 +170,9 @@ class TestStdioPidTracking:
 
     def test_kill_orphaned_can_filter_by_server_name(self):
         """Reconnect cleanup reaps only the orphan owned by that MCP server."""
-        from tools.mcp_tool_lifecycle import (
+        from hermes_agent.tools.mcp_tool_lifecycle import (
             _kill_orphaned_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids)
-        from tools.mcp_tool import _lock
+        from hermes_agent.tools.mcp_tool import _lock
 
         target_pid = 454545
         other_pid = 464646
@@ -183,9 +183,9 @@ class TestStdioPidTracking:
             _orphan_stdio_pid_servers[target_pid] = "feishu"
             _orphan_stdio_pid_servers[other_pid] = "mimir"
 
-        with patch("tools.mcp_tool.os.kill") as mock_kill, \
+        with patch("hermes_agent.tools.mcp_tool.os.kill") as mock_kill, \
              patch("hermes_agent.gateway.status._pid_exists", return_value=False), \
-             patch("tools.mcp_tool.time.sleep"):
+             patch("hermes_agent.tools.mcp_tool.time.sleep"):
             _kill_orphaned_mcp_children(server_name="feishu")
 
         mock_kill.assert_called_once_with(target_pid, signal.SIGTERM)
@@ -210,9 +210,9 @@ class TestStdioPgroupReaping:
     """_kill_orphaned_mcp_children reaps via killpg when a pgid is tracked."""
 
     def _reset_state(self):
-        from tools.mcp_tool_lifecycle import (
+        from hermes_agent.tools.mcp_tool_lifecycle import (
             _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes)
-        from tools.mcp_tool import _lock
+        from hermes_agent.tools.mcp_tool import _lock
         with _lock:
             _stdio_pids.clear()
             _orphan_stdio_pids.clear()
@@ -228,9 +228,9 @@ class TestStdioPgroupReaping:
         not signal the stale number, or it kills a stranger (observed: a desktop
         browser whose session leader reused a dead MCP child's PID).
         """
-        from tools.mcp_tool_lifecycle import (
+        from hermes_agent.tools.mcp_tool_lifecycle import (
             _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids, _stdio_starttimes)
-        from tools.mcp_tool import _lock
+        from hermes_agent.tools.mcp_tool import _lock
 
         self._reset_state()
         fake_pid = 454545
@@ -240,11 +240,11 @@ class TestStdioPgroupReaping:
             _stdio_starttimes[fake_pid] = 111111  # recorded at spawn
 
         # Current start time differs -> PID was recycled -> guard must skip.
-        with patch("tools.mcp_tool_lifecycle._leader_start_time", return_value=222222), \
-             patch("tools.mcp_tool.os.killpg") as mock_killpg, \
-             patch("tools.mcp_tool.os.kill") as mock_kill, \
+        with patch("hermes_agent.tools.mcp_tool_lifecycle._leader_start_time", return_value=222222), \
+             patch("hermes_agent.tools.mcp_tool.os.killpg") as mock_killpg, \
+             patch("hermes_agent.tools.mcp_tool.os.kill") as mock_kill, \
              patch("hermes_agent.gateway.status._pid_exists", return_value=True), \
-             patch("tools.mcp_tool.time.sleep"):
+             patch("hermes_agent.tools.mcp_tool.time.sleep"):
             _kill_orphaned_mcp_children()
 
         mock_killpg.assert_not_called()
@@ -252,9 +252,9 @@ class TestStdioPgroupReaping:
 
     def test_kill_orphaned_signals_when_start_time_matches(self):
         """The orphan IS signalled when its leader start-time still matches."""
-        from tools.mcp_tool_lifecycle import (
+        from hermes_agent.tools.mcp_tool_lifecycle import (
             _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids, _stdio_starttimes)
-        from tools.mcp_tool import _lock
+        from hermes_agent.tools.mcp_tool import _lock
 
         self._reset_state()
         fake_pid = 464646
@@ -263,19 +263,19 @@ class TestStdioPgroupReaping:
             _stdio_pgids[fake_pid] = fake_pid
             _stdio_starttimes[fake_pid] = 333333
 
-        with patch("tools.mcp_tool_lifecycle._leader_start_time", return_value=333333), \
-             patch("tools.mcp_tool.os.killpg") as mock_killpg, \
+        with patch("hermes_agent.tools.mcp_tool_lifecycle._leader_start_time", return_value=333333), \
+             patch("hermes_agent.tools.mcp_tool.os.killpg") as mock_killpg, \
              patch("hermes_agent.gateway.status._pid_exists", return_value=False), \
-             patch("tools.mcp_tool.time.sleep"):
+             patch("hermes_agent.tools.mcp_tool.time.sleep"):
             _kill_orphaned_mcp_children()
 
         mock_killpg.assert_any_call(fake_pid, signal.SIGTERM)
 
     def test_kill_orphaned_without_baseline_keeps_legacy_behaviour(self):
         """No recorded start time (macOS / capture raced exit) -> best-effort killpg."""
-        from tools.mcp_tool_lifecycle import (
+        from hermes_agent.tools.mcp_tool_lifecycle import (
             _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids, _stdio_starttimes)
-        from tools.mcp_tool import _lock
+        from hermes_agent.tools.mcp_tool import _lock
 
         self._reset_state()
         fake_pid = 474747
@@ -284,9 +284,9 @@ class TestStdioPgroupReaping:
             _stdio_pgids[fake_pid] = fake_pid
             # No _stdio_starttimes entry.
 
-        with patch("tools.mcp_tool.os.killpg") as mock_killpg, \
+        with patch("hermes_agent.tools.mcp_tool.os.killpg") as mock_killpg, \
              patch("hermes_agent.gateway.status._pid_exists", return_value=False), \
-             patch("tools.mcp_tool.time.sleep"):
+             patch("hermes_agent.tools.mcp_tool.time.sleep"):
             _kill_orphaned_mcp_children()
 
         mock_killpg.assert_any_call(fake_pid, signal.SIGTERM)
@@ -294,8 +294,8 @@ class TestStdioPgroupReaping:
 
     def test_killpg_used_when_pgid_tracked(self, monkeypatch):
         """SIGTERM and SIGKILL route through killpg when pgid is known."""
-        from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids
-        from tools.mcp_tool import _lock
+        from hermes_agent.tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids
+        from hermes_agent.tools.mcp_tool import _lock
 
         self._reset_state()
         fake_pid = 525252
@@ -312,8 +312,8 @@ class TestStdioPgroupReaping:
         if not hasattr(os, "killpg"):
             pytest.skip("os.killpg not available on this platform")
 
-        with patch("tools.mcp_tool.os.killpg") as mock_killpg, \
-             patch("tools.mcp_tool.os.kill") as mock_kill, \
+        with patch("hermes_agent.tools.mcp_tool.os.killpg") as mock_killpg, \
+             patch("hermes_agent.tools.mcp_tool.os.kill") as mock_kill, \
              patch("hermes_agent.gateway.status._pid_exists", return_value=True), \
              patch("time.sleep"):
             _kill_orphaned_mcp_children()
@@ -333,8 +333,8 @@ class TestStdioPgroupReaping:
         group, killpg(pgid) would signal the gateway itself and crash it.
         The guard must skip killpg for that pgid and fall through to per-pid
         os.kill instead."""
-        from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids
-        from tools.mcp_tool import _lock
+        from hermes_agent.tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, _orphan_stdio_pids, _stdio_pgids
+        from hermes_agent.tools.mcp_tool import _lock
 
         if not hasattr(os, "killpg") or not hasattr(os, "getpgrp"):
             pytest.skip("os.killpg/os.getpgrp not available on this platform")
@@ -353,9 +353,9 @@ class TestStdioPgroupReaping:
         fake_sigkill = 9
         monkeypatch.setattr(signal, "SIGKILL", fake_sigkill, raising=False)
 
-        with patch("tools.mcp_tool.os.getpgrp", return_value=gateway_pgid), \
-             patch("tools.mcp_tool.os.killpg") as mock_killpg, \
-             patch("tools.mcp_tool.os.kill") as mock_kill, \
+        with patch("hermes_agent.tools.mcp_tool.os.getpgrp", return_value=gateway_pgid), \
+             patch("hermes_agent.tools.mcp_tool.os.killpg") as mock_killpg, \
+             patch("hermes_agent.tools.mcp_tool.os.kill") as mock_kill, \
              patch("hermes_agent.gateway.status._pid_exists", return_value=True), \
              patch("time.sleep"):
             _kill_orphaned_mcp_children()
@@ -377,8 +377,8 @@ class TestStdioPgroupReaping:
 
     def test_no_pgid_uses_per_pid_kill(self, monkeypatch):
         """When no pgid is recorded (e.g. Windows), fall back to os.kill."""
-        from tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, _orphan_stdio_pids
-        from tools.mcp_tool import _lock
+        from hermes_agent.tools.mcp_tool_lifecycle import _kill_orphaned_mcp_children, _orphan_stdio_pids
+        from hermes_agent.tools.mcp_tool import _lock
 
         self._reset_state()
         fake_pid = 747474
@@ -386,7 +386,7 @@ class TestStdioPgroupReaping:
             _orphan_stdio_pids.add(fake_pid)
             # No entry in _stdio_pgids.
 
-        with patch("tools.mcp_tool.os.kill") as mock_kill, \
+        with patch("hermes_agent.tools.mcp_tool.os.kill") as mock_kill, \
              patch("hermes_agent.gateway.status._pid_exists", return_value=False), \
              patch("time.sleep"):
             # killpg may or may not exist; either way the no-pgid path skips it.
@@ -448,7 +448,7 @@ class TestStdioPgroupReaping:
 
         # Spawn parent in its own session (mirrors stdio_client behaviour) and record
         # the start-time baseline production captures at spawn.
-        from tools.mcp_tool_lifecycle import _leader_start_time
+        from hermes_agent.tools.mcp_tool_lifecycle import _leader_start_time
         parent = subprocess.Popen(
             [sys.executable, str(parent_script)],
             start_new_session=True, stdin=subprocess.PIPE,
@@ -469,10 +469,10 @@ class TestStdioPgroupReaping:
         assert os.getpgid(grandchild_pid) == parent_pgid
 
         # Drive the reaper: register the parent pid + pgid + start baseline as an orphan.
-        from tools.mcp_tool_lifecycle import (
+        from hermes_agent.tools.mcp_tool_lifecycle import (
             _kill_orphaned_mcp_children, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids,
             _stdio_starttimes)
-        from tools.mcp_tool import _lock
+        from hermes_agent.tools.mcp_tool import _lock
         with _lock:
             _stdio_pids.clear()
             _orphan_stdio_pids.clear()
@@ -524,7 +524,7 @@ class TestMCPInitialConnectionRetry:
 
     def test_initial_connect_retry_respects_shutdown(self):
         """Shutdown during initial retry backoff aborts cleanly."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         async def _run():
             server = MCPServerTask("test-shutdown")
@@ -539,7 +539,7 @@ class TestMCPInitialConnectionRetry:
                 raise AssertionError("Should not attempt after shutdown")
 
             with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
-                 patch('tools.mcp_tool_common._jittered', lambda s: 0.01):
+                 patch('hermes_agent.tools.mcp_tool_common._jittered', lambda s: 0.01):
                 task = asyncio.ensure_future(server.run({"command": "fake"}))
 
                 # Give the first attempt time to fail, then set shutdown
@@ -573,7 +573,7 @@ class TestMCPLoopDrainOnStop:
         ``shutdown()``, so this drain is their only reaper.
         """
         import time
-        import tools.mcp_tool as mcp_mod
+        import hermes_agent.tools.mcp_tool as mcp_mod
 
         state = {
             "started": False,
@@ -657,8 +657,8 @@ class TestMCPLoopDrainOnStop:
 
     def test_drain_is_bounded_when_task_ignores_cancellation(self, caplog):
         """A cancellation-resistant task must not hang final MCP shutdown."""
-        import tools.mcp_tool as mcp_mod
-        from tools import mcp_tool_lifecycle as _mcp_lifecycle
+        import hermes_agent.tools.mcp_tool as mcp_mod
+        from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
 
         async def _run():
             release = asyncio.Event()
@@ -694,8 +694,8 @@ class TestMCPLoopDrainOnStop:
     ):
         """A blocked loop must drain after it resumes, not stop ahead of the drain."""
         import threading
-        import tools.mcp_tool as mcp_mod
-        from tools import mcp_tool_loop as _mcp_loop
+        import hermes_agent.tools.mcp_tool as mcp_mod
+        from hermes_agent.tools import mcp_tool_loop as _mcp_loop
 
         parked_started = threading.Event()
         cleanup_ran = threading.Event()

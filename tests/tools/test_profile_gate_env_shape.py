@@ -3,8 +3,8 @@ merely contains ``_ALLOWED_`` is script data and must survive the routed-child s
 
 import os
 
-from tools.environments.local import build_subprocess_env
-from tools.environments.local_env_policy import is_profile_gate_env
+from hermes_agent.tools.environments.local import build_subprocess_env
+from hermes_agent.tools.environments.local_env_policy import is_profile_gate_env
 
 
 def test_operator_allowlist_shaped_vars_are_not_gates_but_platform_gates_are():

@@ -1,6 +1,6 @@
 """Voice Mode -- push-to-talk recording and playback for the CLI.
 
-Capture via sounddevice, WAV via stdlib wave, STT via tools.transcription_tools,
+Capture via sounddevice, WAV via stdlib wave, STT via hermes_agent.tools.transcription_tools,
 playback via sounddevice or system players. Optional deps: the ``audio-io`` / ``stt-whisper``
 extras, installed through PM (``hermes tools`` configures speech-to-text).
 """
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 from hermes_constants import is_termux as _is_termux_environment
 from hermes_platform.host.runtime import is_wsl
-from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
+from hermes_agent.tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
 
 # ── Recording parameters ──
 SAMPLE_RATE = 16000  # Whisper native rate
@@ -559,7 +559,7 @@ class _RecorderBase:
         self._live: Any = None
 
     def _open_live_session(self, sample_rate: int) -> None:
-        from tools.transcription_streaming import open_streaming_session
+        from hermes_agent.tools.transcription_streaming import open_streaming_session
         try:
             self._live = open_streaming_session(on_partial=self.on_live_partial)
         except Exception:
@@ -957,7 +957,7 @@ def _live_result(wav_path: str) -> Optional[dict[str, Any]]:
 def transcribe_recording(wav_path: str, model: Optional[str] = None) -> dict[str, Any]:
     """Transcribe a WAV via ``transcribe_audio()``, filtering Whisper hallucinations;
     returns ``{success, transcript[, error]}``."""
-    from tools.transcription_tools import transcribe_audio
+    from hermes_agent.tools.transcription_tools import transcribe_audio
 
     result = _live_result(wav_path)
     if result is None:
@@ -1101,7 +1101,7 @@ def _run_system_player(cmd: list[str]) -> bool:
     try:
         # Sibling of the TTS/STT credential scrub: players must not inherit tokens/keys.
         # See #56332, #70342.
-        from tools.environments.local import hermes_subprocess_env
+        from hermes_agent.tools.environments.local import hermes_subprocess_env
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
                                 env=hermes_subprocess_env(inherit_credentials=False))
         _set_active_playback(proc)
@@ -1484,7 +1484,7 @@ def _check_plugin_stt_provider(provider: str) -> bool:
         return False
 
 
-# STT providers handled natively by tools.transcription_tools -> status label.
+# STT providers handled natively by hermes_agent.tools.transcription_tools -> status label.
 _NATIVE_STT_LABELS = {
     "local": "local faster-whisper",
     "local_command": "local command",
@@ -1500,7 +1500,7 @@ _NATIVE_STT_LABELS = {
 def check_voice_requirements() -> dict[str, Any]:
     """Check voice mode requirements: ``{available, audio_available, stt_available,
     missing_packages, details, environment}``."""
-    from tools.transcription_tools import (
+    from hermes_agent.tools.transcription_tools import (
         _get_provider, _load_stt_config, _resolve_command_stt_provider_config, is_stt_enabled)
     stt_config = _load_stt_config()
     stt_enabled = is_stt_enabled(stt_config)

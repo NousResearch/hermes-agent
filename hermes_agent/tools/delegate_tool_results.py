@@ -7,11 +7,11 @@ import json
 import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
-from tools.delegation_redaction import (
+from hermes_agent.tools.delegation_redaction import (
     parent_copy, redact_child_result, redact_child_text, redact_child_value, redact_summary,
 )
 
-logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 def _stringify_tool_content(content: Any) -> str:
     """Stable text for tool-result content. Some OpenAI-compatible paths return
@@ -180,7 +180,7 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
         cache_dir = get_hermes_dir("cache/delegation", "delegation_cache")
         cache_dir.mkdir(parents=True, exist_ok=True)
         path = cache_dir / f"subagent-summary-{task_index}-{_dt.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.txt"
-        from tools.spill_safety import write_text_exclusive
+        from hermes_agent.tools.spill_safety import write_text_exclusive
         # Exclusive symlink-refusing create; not private because cache/delegation is bind-mounted read-only into
         # remote backends whose container UID must be able to read it.
         # ``summary`` is already the forced, structure-preserving projection (_trim_summary_with_footer); a
@@ -203,7 +203,7 @@ def _trim_summary_with_footer(summary: str, cap: int, task_index: int) -> tuple[
     spill_path = _spill_summary_to_file(task_index, forced)
     if spill_path:
         # Agent-visible path: the parent's read_file runs inside the active backend (#81984, #77015).
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         spill_path = to_agent_visible_cache_path(spill_path)
     model_text = _head_tail_with_footer(str(summary), cap, spill_path)
     return parent_copy(model_text, _head_tail_with_footer(forced, cap, spill_path)), spill_path
@@ -282,7 +282,7 @@ def _apply_summary_budget(results: list[dict[str, Any]], parent_agent) -> None:
     """Trim subagent summaries in-place so a batch can't overflow the parent's context window (full text spilled to
     disk). Per-summary cap = MIN(dynamic headroom budget, static ``delegation.max_summary_chars`` ceiling; 0 =
     disabled); over-cap summaries become head+tail plus a pointer to the spill file."""
-    from tools.delegate_tool import _load_config
+    from hermes_agent.tools.delegate_tool import _load_config
     summaries = [r for r in results if isinstance(r, dict) and isinstance(r.get("summary"), str) and r["summary"]]
     if not summaries:
         return
@@ -314,8 +314,8 @@ _CHILD_CONSTRUCTION_LOCK = threading.RLock()
 
 def _build_child_preserving_parent_tools(**kwargs):
     """Build a child without leaking its resolved toolset into the parent."""
-    from tools.delegate_tool import _build_child_agent
-    import model_tools
+    from hermes_agent.tools.delegate_tool import _build_child_agent
+    from hermes_agent import model_tools
     with _CHILD_CONSTRUCTION_LOCK:
         parent_tool_names = list(model_tools._last_resolved_tool_names)
         try:
@@ -429,7 +429,7 @@ def _finalize_child_results(
 
 def _run_child_lifecycle(task_index: int, goal: str, child=None, parent_agent=None) -> dict[str, Any]:
     """Run one child and apply the same host lifecycle used by delegate_task."""
-    from tools.delegate_tool import _run_single_child
+    from hermes_agent.tools.delegate_tool import _run_single_child
     result = _run_single_child(task_index, goal, child, parent_agent)
     result.setdefault("task_index", task_index)
     task = {"goal": goal}

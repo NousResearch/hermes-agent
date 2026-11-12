@@ -8,7 +8,7 @@ the same filename and the second synthesis overwrote the first.
 import datetime as real_datetime
 from types import SimpleNamespace
 
-from tools import tts_tool
+from hermes_agent.tools import tts_tool
 
 
 def test_default_output_paths_differ_within_the_same_second(tmp_path, monkeypatch):

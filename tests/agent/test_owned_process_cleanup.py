@@ -5,8 +5,8 @@ import sys
 
 from agent.turn_context import _bind_turn_identity
 from run_agent import AIAgent
-from tools.process_registry import ProcessRegistry
-from tools.terminal_tool import terminal_tool
+from hermes_agent.tools.process_registry import ProcessRegistry
+from hermes_agent.tools.terminal_tool import terminal_tool
 
 
 def _agent():
@@ -24,7 +24,7 @@ def _spawn(agent, task_id, tmp_path):
 
 
 def test_child_close_kills_only_its_processes(tmp_path, monkeypatch):
-    import tools.process_registry as processes
+    import hermes_agent.tools.process_registry as processes
     registry = ProcessRegistry()
     monkeypatch.setattr(processes, "process_registry", registry)
     parent, child, sibling, unstarted = [_agent() for _ in range(4)]
@@ -49,7 +49,7 @@ def test_child_close_kills_only_its_processes(tmp_path, monkeypatch):
 
 
 def test_close_reclaims_processes_from_previous_turns(tmp_path, monkeypatch):
-    import tools.process_registry as processes
+    import hermes_agent.tools.process_registry as processes
     registry = ProcessRegistry()
     monkeypatch.setattr(processes, "process_registry", registry)
     agent = _agent()

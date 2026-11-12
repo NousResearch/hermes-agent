@@ -16,9 +16,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.file_tools_read_tracking import _read_tracker, _read_tracker_lock, _task_data
-from tools.skills_tool import _skill_view_with_bump
-from tools.skills_tool_dedup import _skill_view_tracker, reset_skill_view_dedup
+from hermes_agent.tools.file_tools_read_tracking import _read_tracker, _read_tracker_lock, _task_data
+from hermes_agent.tools.skills_tool import _skill_view_with_bump
+from hermes_agent.tools.skills_tool_dedup import _skill_view_tracker, reset_skill_view_dedup
 
 TASK = "rewrite-boundary-task"
 FILE_KEY = ("/x/big.txt", 1, 2000)
@@ -62,15 +62,15 @@ def _dedup_state():
 def _run(agent, history, monkeypatch):
     tool_defs = [{"type": "function", "function": {"name": "skill_view", "description": "skill_view",
                                                    "parameters": {"type": "object", "properties": {}}}}]
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda *a, **kw: tool_defs)
-    monkeypatch.setattr("model_tools.check_toolset_requirements", lambda *a, **kw: {})
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda *a, **kw: tool_defs)
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", lambda *a, **kw: {})
     agent.tool_delay = 0
     agent.save_trajectories = False
     with (
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
-        patch("model_tools.handle_function_call",
+        patch("hermes_agent.model_tools.handle_function_call",
               lambda name, args, task_id=None, **_kw: _skill_view_with_bump(args, task_id=task_id)),
     ):
         result = agent.run_conversation("go on", conversation_history=history, task_id=TASK)

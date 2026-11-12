@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from tools.approval import detect_dangerous_command
+from hermes_agent.tools.approval import detect_dangerous_command
 
 
 def _is_dangerous(cmd: str) -> bool:

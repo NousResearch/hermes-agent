@@ -46,8 +46,8 @@ def test_bundled_skills_have_no_role_tag_placeholder():
 
 def test_tool_error_strings_have_no_role_tag():
     # Tool results enter history and are re-sent every turn, like a skill_view load.
-    from tools.connectors.gateway.merge import partition_calls
-    from tools.tool_search_validation import not_deferrable_error
+    from hermes_agent.tools.connectors.gateway.merge import partition_calls
+    from hermes_agent.tools.tool_search_validation import not_deferrable_error
 
     messages = [
         not_deferrable_error("no_such_tool_xyz"),

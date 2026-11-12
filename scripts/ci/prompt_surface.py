@@ -85,12 +85,12 @@ def _pin_environment() -> None:
     hermes_time.now = lambda: FIXED_NOW  # type: ignore[assignment]
     # Every registered tool counts as available, as on a fully configured install: check_fns
     # read credentials, binaries and the tool store, which vary by host and would hide schemas.
-    import tools.registry as registry_module
+    import hermes_agent.tools.registry as registry_module
     registry_module._check_fn_cached = lambda _fn: True  # type: ignore[assignment]
     from agent import skill_utils
     skill_utils._ENV_DETECT_CACHE.update({"docker": False, "s6": False})
     # The toolchain probe line reports the host's python/node/pip; it is environment, not code.
-    from tools import env_probe
+    from hermes_agent.tools import env_probe
     env_probe.get_environment_probe_line = lambda **_k: ""  # type: ignore[assignment]
 
 
@@ -154,7 +154,7 @@ def _render_child(out: Path) -> int:
     failures = _ImportFailures()
     logging.getLogger().addHandler(failures)
     _pin_environment()
-    from tools.skills_sync import sync_skills
+    from hermes_agent.tools.skills_sync import sync_skills
     sync_skills(quiet=True)
 
     prompts, tools_by_surface = {}, {}

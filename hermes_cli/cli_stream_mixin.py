@@ -231,7 +231,7 @@ class CLIStreamMixin:
     def _print_user_message_preview(self, user_input: str) -> None:
         """Render a user message using the normal chat scrollback style."""
         from cli import ChatConsole, _accent_hex, _cprint
-        from tools.process_registry_notifications import TimelineNotification
+        from hermes_agent.tools.process_registry_notifications import TimelineNotification
         if isinstance(user_input, TimelineNotification):
             from hermes_agent.gateway.warning_notifications import render_notification
             render_notification(lambda: ChatConsole().print(f"[dim]◈ {_escape(user_input.display_text)}[/dim]"),
@@ -637,7 +637,7 @@ class CLIStreamMixin:
         from cli import _DIM, _RST, _cprint
         import asyncio as _asyncio
         from hermes_agent.gateway.warning_notifications import render_notification
-        from tools.vision_tools import vision_analyze_tool
+        from hermes_agent.tools.vision_tools import vision_analyze_tool
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "
             "Include any text, code, data, objects, people, layout, colors, "

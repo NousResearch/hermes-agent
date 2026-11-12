@@ -525,7 +525,7 @@ class TestRunConversationCodexPath:
         time — a prompt-injection-safe process-scoped bypass) should flow
         through to codex app-server routing so gateway/cron contexts do not
         fail closed when the user launched with yolo mode."""
-        import tools.approval as _approval
+        import hermes_agent.tools.approval as _approval
 
         captured = self._capture_routing_agent(monkeypatch)
         monkeypatch.setattr(_approval, "_YOLO_MODE_FROZEN", True)
@@ -554,7 +554,7 @@ class TestRunConversationCodexPath:
         ):
             agent = _make_codex_agent()
             with patch(
-                "tools.approval.is_approval_bypass_active_for_session",
+                "hermes_agent.tools.approval.is_approval_bypass_active_for_session",
                 return_value=True,
             ), patch.object(
                 agent, "_spawn_background_review", return_value=None

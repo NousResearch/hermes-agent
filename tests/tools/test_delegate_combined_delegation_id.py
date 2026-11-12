@@ -13,7 +13,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from tools.delegate_tool_dispatch import _Batch, _execute_and_aggregate
+from hermes_agent.tools.delegate_tool_dispatch import _Batch, _execute_and_aggregate
 
 
 class _CompletingChild:
@@ -74,8 +74,8 @@ def _batch(live_deleg_id):
 
 
 def test_combined_result_names_the_live_delegation_id(monkeypatch):
-    monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: None)
-    monkeypatch.setattr("tools.delegate_tool._get_worktree_isolation", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._get_child_timeout", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._get_worktree_isolation", lambda: False)
 
     combined = _execute_and_aggregate(_batch("deleg_join1"))
 
@@ -83,8 +83,8 @@ def test_combined_result_names_the_live_delegation_id(monkeypatch):
 
 
 def test_combined_result_omits_the_key_when_live_transcripts_were_unavailable(monkeypatch):
-    monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: None)
-    monkeypatch.setattr("tools.delegate_tool._get_worktree_isolation", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._get_child_timeout", lambda: None)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._get_worktree_isolation", lambda: False)
 
     combined = _execute_and_aggregate(_batch(None))
 

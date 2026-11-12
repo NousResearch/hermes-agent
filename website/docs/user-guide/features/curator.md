@@ -212,7 +212,7 @@ are true:
 Currently, only the **background self-improvement review fork** sets this marker
 — when it creates a new umbrella skill during its periodic review pass (~every 10
 agent turns). The background fork runs with a write origin of `"background_review"`
-(via `tools/skill_provenance.py`), which is the only path that triggers the
+(via `hermes_agent/tools/skill_provenance.py`), which is the only path that triggers the
 `mark_agent_created()` call in `skill_manage`.
 
 Skills the foreground agent creates via `skill_manage(action="create")` during a

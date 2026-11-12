@@ -2,7 +2,7 @@
 
 import pytest
 
-from tools.fuzzy_match import IDENTICAL_STRINGS_ERROR, fuzzy_find_and_replace
+from hermes_agent.tools.fuzzy_match import IDENTICAL_STRINGS_ERROR, fuzzy_find_and_replace
 
 
 class TestExactMatch:
@@ -480,7 +480,7 @@ class TestNewlineLiteralDrift:
 
 class TestFindClosestLines:
     def setup_method(self):
-        from tools.fuzzy_match import find_closest_lines
+        from hermes_agent.tools.fuzzy_match import find_closest_lines
         self.find_closest_lines = find_closest_lines
 
     def test_finds_similar_line(self):
@@ -497,7 +497,7 @@ class TestFormatNoMatchHint:
     """
 
     def setup_method(self):
-        from tools.fuzzy_match import format_no_match_hint
+        from hermes_agent.tools.fuzzy_match import format_no_match_hint
         self.fmt = format_no_match_hint
 
     def test_fires_on_could_not_find_with_match(self):
@@ -705,7 +705,7 @@ class TestContextAwareCorrectness:
     def test_no_match_on_large_file_is_fast(self):
         """The anchor pre-filter keeps a no-match scan from being O(file×pattern)."""
         import time
-        from tools.fuzzy_match import _strategy_context_aware
+        from hermes_agent.tools.fuzzy_match import _strategy_context_aware
 
         big = "\n".join(f"line {i} content here" for i in range(10000))
         patt = "\n".join(f"nomatch xyzzy {i}" for i in range(40))
@@ -730,7 +730,7 @@ class TestBackslashDoublingDrift:
     """
 
     def setup_method(self):
-        from tools.fuzzy_match import fuzzy_find_and_replace
+        from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace
         self.replace = fuzzy_find_and_replace
 
     def _make(self, n_file: int, n_args: int):

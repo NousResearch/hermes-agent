@@ -2,7 +2,7 @@
 the live section in Bot Chat only, so every copy in SOUL.md must vanish — at load time for
 sessions that start before the migration runs, and on disk once the migration runs."""
 
-from tools import bot_mode_probe
+from hermes_agent.tools import bot_mode_probe
 
 LEGACY = "# Me\n\nBe terse.\n\n## Messaging other agents\n\nold plugin text\n- `bot-a`\n"
 

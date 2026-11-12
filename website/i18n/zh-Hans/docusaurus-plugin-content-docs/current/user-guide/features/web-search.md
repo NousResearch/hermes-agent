@@ -364,7 +364,7 @@ xAI Web Search **不在**自动检测链中——设置了 `XAI_API_KEY`（或�
 ```bash
 # 从 Hermes 源码目录的干净 shell 运行
 source ./activate
-python -m tools.web_tools
+python -m hermes_agent.tools.web_tools
 ```
 
 这将打印活动后端及其状态：

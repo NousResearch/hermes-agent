@@ -12,11 +12,11 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
-from tools.environments.base_output import _ThreadedProcessHandle
-from tools.environments.file_sync import (
+from hermes_agent.tools.environments.base import BaseEnvironment, _load_json_store, _update_json_store
+from hermes_agent.tools.environments.base_output import _ThreadedProcessHandle
+from hermes_agent.tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
-from tools.environments.remote_common import bash_argv, ensure_lazy_dep
+from hermes_agent.tools.environments.remote_common import bash_argv, ensure_lazy_dep
 
 logger = logging.getLogger(__name__)
 

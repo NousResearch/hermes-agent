@@ -84,7 +84,7 @@ async def test_initialization_failure_is_a_failed_receipt_not_completed(api, own
 
 @pytest.mark.asyncio
 async def test_run_sse_carries_controls_tool_payloads_and_authoritative_cancellation(api, owner):
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
     admitted = admit_api_turn(api, session_id='sse', user_message='hello', conversation_history=[])
     _, ref, _row = admitted
     launch, queue = _launch(api, admitted)
@@ -290,7 +290,7 @@ async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, 
     from hermes_agent.gateway import hosted_rooms
     from hermes_agent.gateway.hosted_room_peer import decode_room_grant, issue_room_grant
     from hermes_agent.gateway.platforms.api_server_authority_runs import run_projection
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
     api._api_key = 'sk-secret'
     now = time.time()
     grant = issue_room_grant(

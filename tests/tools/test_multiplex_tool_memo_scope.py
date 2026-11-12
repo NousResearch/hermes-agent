@@ -36,8 +36,8 @@ def _under(home, fn):
 
 
 def test_checkpoint_and_snapshot_paths_follow_active_profile(two_profiles):
-    import tools.process_registry as pr
-    from tools.environments import modal
+    import hermes_agent.tools.process_registry as pr
+    from hermes_agent.tools.environments import modal
 
     prof_a, prof_b = two_profiles
     _under(prof_a, pr._checkpoint_path)  # warm under A
@@ -47,10 +47,10 @@ def test_checkpoint_and_snapshot_paths_follow_active_profile(two_profiles):
 
 
 def test_config_caches_are_keyed_by_profile(two_profiles):
-    import tools.browser_session_cloud as bsc
-    import tools.file_tools as ft
-    import tools.tool_output_limits as tol
-    from tools.browser_session_lifecycle import cleanup_all_browsers
+    import hermes_agent.tools.browser_session_cloud as bsc
+    import hermes_agent.tools.file_tools as ft
+    import hermes_agent.tools.tool_output_limits as tol
+    from hermes_agent.tools.browser_session_lifecycle import cleanup_all_browsers
 
     prof_a, prof_b = two_profiles
     tol._reset_tool_output_limits_cache()
@@ -67,8 +67,8 @@ def test_config_caches_are_keyed_by_profile(two_profiles):
 
 
 def test_skill_manage_schema_stable_but_creation_follows_active_profile(two_profiles):
-    import tools.skill_manager_tool
-    from tools.registry import registry
+    import hermes_agent.tools.skill_manager_tool
+    from hermes_agent.tools.registry import registry
 
     prof_a, prof_b = two_profiles
     for home, create_dir in ((prof_a, "brain-a"), (prof_b, "brain-b")):

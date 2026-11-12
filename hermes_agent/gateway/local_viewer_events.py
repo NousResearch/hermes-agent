@@ -92,7 +92,7 @@ def _is_active_session_subagent(turn, payload: dict, event_type: str = "") -> bo
     if not isinstance(subagent_id, str) or not subagent_id:
         return False
     import sys
-    registry = sys.modules.get("tools.delegate_tool_registry")
+    registry = sys.modules.get("hermes_agent.tools.delegate_tool_registry")
     holder = getattr(getattr(turn, "_ctx", None), "agent_holder", None)
     turn_agent = holder[0] if isinstance(holder, list) and holder else None
     if registry is None or turn_agent is None:
@@ -234,7 +234,7 @@ def complete_fields(turn, call_id, tool_name=None, args=None, result=None, *, is
 
 def todo_state(tool_name, result) -> dict | None:
     """The client-safe ``{todos, revision}`` snapshot a todo tool's result carries, else None."""
-    from tools.todo_tool import is_todo_tool_name
+    from hermes_agent.tools.todo_tool import is_todo_tool_name
     if not is_todo_tool_name(tool_name):
         return None
     import json
@@ -255,9 +255,9 @@ def prompt_timeout_s(turn, kind) -> int | None:
         return None
     # Both readers fall back to their defaults themselves; they never raise.
     if kind == "approval":
-        from tools.approval_context import _get_approval_timeout
+        from hermes_agent.tools.approval_context import _get_approval_timeout
         seconds = int(_get_approval_timeout())
     else:
-        from tools.clarify_gateway import get_clarify_timeout
+        from hermes_agent.tools.clarify_gateway import get_clarify_timeout
         seconds = int(get_clarify_timeout())
     return seconds if seconds > 0 else None

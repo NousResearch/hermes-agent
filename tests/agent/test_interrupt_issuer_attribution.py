@@ -11,7 +11,7 @@ import threading
 
 from agent.interrupt_compat import request_hard_interrupt
 from agent.interrupt_control import interrupt_issuer, interrupt_skip_wording
-from tools.interrupt import set_interrupt
+from hermes_agent.tools.interrupt import set_interrupt
 
 
 def _bare_agent():
@@ -172,7 +172,7 @@ def test_soft_interrupt_with_tool_reason_is_attributed_to_the_system():
             with (
                 patch.object(tab, "_TerminalBatch", _Batch),
                 patch("hermes_agent.gateway.session_context.get_session_env", return_value="desktop"),
-                patch("tools.approval._gateway_notify_cb", lambda _k: object()),
+                patch("hermes_agent.tools.approval._gateway_notify_cb", lambda _k: object()),
                 patch.object(te, "_parse_tool_call", _parse),
                 tab.terminal_approval_batch(agent, [1, 2], [], "t"),
             ):

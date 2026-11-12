@@ -18,14 +18,14 @@ import importlib.util as _ilu
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from tools.transcription_audio import _find_whisper_binary, _prepare_local_audio, _run_quiet
-from tools.transcription_common import (
+from hermes_agent.tools.transcription_audio import _find_whisper_binary, _prepare_local_audio, _run_quiet
+from hermes_agent.tools.transcription_common import (
     DEFAULT_LOCAL_MODEL, DEFAULT_LOCAL_STT_LANGUAGE, GROQ_MODELS, LOCAL_STT_COMMAND_ENV, RETIRED_GROQ_MODELS,
     OPENAI_MODELS, STT_MODEL_CATALOG, _config_number, _error_result, _log_prompt_unsupported, _ok_result,
     _process_error_detail)
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("tools.transcription_tools")
+logger = logging.getLogger("hermes_agent.tools.transcription_tools")
 
 
 _LOCAL_LANGUAGE_ALIASES = {
@@ -63,7 +63,7 @@ def _get_local_command_template() -> Optional[str]:
     configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
     if configured:
         return configured
-    from tools.transcription_whisper_cpp import whisper_cpp_command
+    from hermes_agent.tools.transcription_whisper_cpp import whisper_cpp_command
     managed_command = whisper_cpp_command()
     if managed_command:
         return managed_command
@@ -237,7 +237,7 @@ _LOGPROB_THRESHOLD_DEFAULT = -1.0
 
 def build_local_transcribe_kwargs(stt_config: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Kwargs for EVERY local faster-whisper ``model.transcribe`` call — single owner of the anti-hallucination hardening."""
-    from tools.transcription_tools import _load_stt_config, _resolve_stt_language
+    from hermes_agent.tools.transcription_tools import _load_stt_config, _resolve_stt_language
     stt_config = stt_config if isinstance(stt_config, dict) else _load_stt_config()
     local_cfg = stt_config.get("local") or {}
     # ``vad: null`` in YAML means "default on".
@@ -299,7 +299,7 @@ def _transcribe_local_command(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> dict[str, Any]:
     """Run the configured local STT command template and read back a .txt transcript."""
-    from tools.transcription_tools import _resolve_stt_language
+    from hermes_agent.tools.transcription_tools import _resolve_stt_language
     if prompt:
         _log_prompt_unsupported("STT provider 'local_command'")
     command_template = _get_local_command_template()
@@ -311,7 +311,7 @@ def _transcribe_local_command(
     normalized_model = _normalize_local_model(model_name)
     try:
         if not os.getenv(LOCAL_STT_COMMAND_ENV, "").strip():
-            from tools.transcription_whisper_cpp import ensure_whisper_cpp_models, whisper_cpp_command
+            from hermes_agent.tools.transcription_whisper_cpp import ensure_whisper_cpp_models, whisper_cpp_command
             if command_template == whisper_cpp_command():
                 ensure_whisper_cpp_models(normalized_model)
         with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
@@ -324,7 +324,7 @@ def _transcribe_local_command(
             # Scrub Hermes secrets from the child env (same policy as _run_command_stt).
             # Scrub Hermes secrets from the child env (sibling path to #56332 / _run_command_stt — this
             # local-whisper path previously inherited the full process environment).
-            from tools.environments.local import hermes_subprocess_env
+            from hermes_agent.tools.environments.local import hermes_subprocess_env
             _run_quiet(shlex.split(command), timeout=300, env=hermes_subprocess_env(inherit_credentials=False))
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:

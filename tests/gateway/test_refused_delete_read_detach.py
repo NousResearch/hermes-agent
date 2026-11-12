@@ -106,7 +106,7 @@ async def test_releasing_a_refused_deletes_read_leaves_a_live_messaging_chat_unf
     which fences the chat's route against new async delegations until a viewer attaches again."""
     from hermes_agent.gateway.session_controls import AuthorityConnection
     from tests.gateway.test_authority_cold_route_recovery import _cold, _seed, _source
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     route = _seed(tmp_path, 'lane', _source())
     cold = await _cold(tmp_path)

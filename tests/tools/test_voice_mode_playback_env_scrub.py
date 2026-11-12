@@ -19,7 +19,7 @@ def test_play_audio_file_scrubbed_env(tmp_path, monkeypatch):
         proc.returncode = 0
         return proc
 
-    import tools.voice_mode as vm
+    import hermes_agent.tools.voice_mode as vm
 
     with patch.object(vm, "platform") as plat, patch.object(
         vm.shutil, "which", return_value="/usr/bin/ffplay"

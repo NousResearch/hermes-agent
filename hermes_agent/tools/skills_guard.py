@@ -17,7 +17,7 @@ from datetime import datetime, timezone, UTC
 from pathlib import Path
 from typing import List, Tuple
 
-from tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
+from hermes_agent.tools.skills_guard_credentials import SKILL_ONLY_PATTERNS, code_views, raise_provider_key_reads
 
 
 SCANNER_VERSION = "skills-guard-v11"
@@ -700,7 +700,7 @@ def _mask_prose_link_destinations(lines: list[str]) -> list[str]:
 def scan_file(file_path: Path, rel_path: str = "", *, skill: bool = False) -> list[Finding]:
     """Threat-pattern + invisible-unicode scan of one file; *rel_path* is the display path (default: file
     name). Regex findings dedupe per pattern per line; invisible chars yield one per line. *skill* adds the
-    skill-only credential rules (``tools.skills_guard_credentials``)."""
+    skill-only credential rules (``hermes_agent.tools.skills_guard_credentials``)."""
     rel_path = rel_path or file_path.name
     if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
         return []
@@ -792,7 +792,7 @@ def _content_digest(skill_path: Path) -> str:
 
 def content_hash(skill_path: Path) -> str:
     """Short integrity hash (paths mixed in, so swapping two files' contents changes it). MUST stay symmetric
-    with ``tools.skills_hub_install.bundle_content_hash`` — change both at once."""
+    with ``hermes_agent.tools.skills_hub_install.bundle_content_hash`` — change both at once."""
     return f"sha256:{_content_digest(skill_path)[:16]}"
 
 

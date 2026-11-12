@@ -7,7 +7,7 @@ import zipfile
 import httpx
 import pytest
 
-from tools import skills_hub_clawhub as clawhub
+from hermes_agent.tools import skills_hub_clawhub as clawhub
 
 
 def _archive():
@@ -80,7 +80,7 @@ def test_rate_limit_exhaustion_closes_responses_and_sleeps_only_between_attempts
 
 @pytest.mark.parametrize("destination", ["https://download.example/bundle", "http://127.0.0.1/private", "https://blocked.example/bundle"])
 def test_stream_rechecks_redirect_policy_and_closes_clients(monkeypatch, destination):
-    from tools import skills_hub, url_safety
+    from hermes_agent.tools import skills_hub, url_safety
 
     requests = []
     clients = []

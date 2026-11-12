@@ -10,8 +10,8 @@ import random
 
 import pytest
 
-from tools.file_operations import describe_binary_file, identify_binary_bytes
-from tools.file_tools import read_file_tool
+from hermes_agent.tools.file_operations import describe_binary_file, identify_binary_bytes
+from hermes_agent.tools.file_tools import read_file_tool
 
 _RNG = random.Random(20260810)
 

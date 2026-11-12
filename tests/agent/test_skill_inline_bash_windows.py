@@ -17,7 +17,7 @@ def test_inline_shell_keeps_output_contract(tmp_path, command, expected):
 
 @pytest.mark.platforms("windows")
 def test_inline_shell_resolver_failure_is_a_marker(tmp_path, monkeypatch):
-    from tools.environments import local
+    from hermes_agent.tools.environments import local
 
     def unavailable():
         raise RuntimeError('Git Bash unavailable')
@@ -28,7 +28,7 @@ def test_inline_shell_resolver_failure_is_a_marker(tmp_path, monkeypatch):
 
 @pytest.mark.platforms("windows")
 def test_disabled_inline_shell_does_not_resolve_bash(tmp_path, monkeypatch):
-    from tools.environments import local
+    from hermes_agent.tools.environments import local
 
     def unexpected():
         pytest.fail('disabled inline shell must not resolve an interpreter')

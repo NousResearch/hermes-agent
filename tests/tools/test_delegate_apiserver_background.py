@@ -21,7 +21,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from hermes_agent.gateway.session_context import set_session_vars
-from tools.process_registry import process_registry
+from hermes_agent.tools.process_registry import process_registry
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +75,7 @@ def _fake_parent():
 
 
 def _patch_delegate(monkeypatch):
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
 
     fake_child = MagicMock()
     fake_child._delegate_role = "leaf"

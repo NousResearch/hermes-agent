@@ -49,7 +49,7 @@ def test_launch_yolo_reseeds_after_a_session_boundary(tmp_path):
     from hermes_agent.gateway.config import Platform
     from hermes_agent.gateway.session import SessionSource
     from hermes_agent.gateway.session_managed_worker import _session_yolo
-    from tools.approval import clear_session
+    from hermes_agent.tools.approval import clear_session
     store = _store(tmp_path)
     entry = store.get_or_create_session(SessionSource(platform=Platform.LOCAL, chat_id='bnd', user_id='h'))
     authority = SimpleNamespace(runner=SimpleNamespace(session_store=store))

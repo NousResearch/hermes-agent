@@ -13,7 +13,7 @@ results that were produced before it fired.  These tests pin the contract:
 
 These exercise the REAL production dispatch surfaces:
 
-    * sequential -> ``model_tools.handle_function_call`` (tool_executor ~1256/1298)
+    * sequential -> ``hermes_agent.model_tools.handle_function_call`` (tool_executor ~1256/1298)
     * concurrent -> ``agent._invoke_tool`` (tool_executor ~539)
 
 Mocking the genuine dispatch surface keeps the tests deterministic (no real
@@ -63,10 +63,10 @@ def _make_agent():
     (hermes_home / "logs").mkdir(parents=True, exist_ok=True)
     with (
         patch(
-            "model_tools.get_tool_definitions",
+            "hermes_agent.model_tools.get_tool_definitions",
             return_value=_make_tool_defs("web_search"),
         ),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("run_agent._hermes_home", hermes_home),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
@@ -334,7 +334,7 @@ def test_persistence_cause_resets_between_turns():
 
 # ---------------------------------------------------------------------------
 # Contract 2: the SEQUENTIAL path flushes each tool result immediately, BEFORE
-# the next tool dispatches.  Dispatch goes through model_tools.handle_function_call
+# the next tool dispatches.  Dispatch goes through hermes_agent.model_tools.handle_function_call
 # (the real production surface), which we mock for determinism.
 # ---------------------------------------------------------------------------
 def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_dispatch():
@@ -362,7 +362,7 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
     agent._flush_messages_to_session_db = MagicMock(side_effect=_record_flush)
 
     with (
-        patch("model_tools.handle_function_call", side_effect=_fake_dispatch) as disp,
+        patch("hermes_agent.model_tools.handle_function_call", side_effect=_fake_dispatch) as disp,
         patch(
             "agent.tool_executor.maybe_persist_tool_result",
             side_effect=lambda **kwargs: kwargs["content"],
@@ -414,7 +414,7 @@ def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
     agent._flush_messages_to_session_db = MagicMock()
 
     with (
-        patch("model_tools.handle_function_call", side_effect=_interrupt_dispatch),
+        patch("hermes_agent.model_tools.handle_function_call", side_effect=_interrupt_dispatch),
         patch(
             "agent.tool_executor.maybe_persist_tool_result",
             side_effect=lambda **kwargs: kwargs["content"],
@@ -466,7 +466,7 @@ def test_tool_result_is_durable_before_ui_completion_on_abnormal_exit(
     agent.tool_complete_callback = _ui_completion
     assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
     dispatch_patch = (
-        patch("model_tools.handle_function_call", return_value="repository result")
+        patch("hermes_agent.model_tools.handle_function_call", return_value="repository result")
         if executor_mode == "sequential"
         else patch.object(agent, "_invoke_tool", return_value="repository result")
     )
@@ -506,7 +506,7 @@ def test_tool_result_is_durable_before_ui_completion_on_abnormal_exit(
 def test_connector_data_use_rides_the_tool_message_and_survives_a_reload(tmp_path, executor_mode):
     """A requirement recorded during dispatch lands on the tool message as metadata (content untouched)
     and comes back from the session DB on resume."""
-    from tools.connectors.data_use import record_data_use
+    from hermes_agent.tools.connectors.data_use import record_data_use
 
     agent = _make_agent()
     db_path = tmp_path / "state.db"
@@ -521,7 +521,7 @@ def test_connector_data_use_rides_the_tool_message_and_survives_a_reload(tmp_pat
         return '{"results": [{"response": "inbox"}]}'
 
     try:
-        with (patch("model_tools.handle_function_call", side_effect=_dispatch),
+        with (patch("hermes_agent.model_tools.handle_function_call", side_effect=_dispatch),
               patch("agent.tool_executor.maybe_persist_tool_result", side_effect=lambda **kw: kw["content"])):
             getattr(agent, f"_execute_tool_calls_{executor_mode}")(
                 SimpleNamespace(content="", tool_calls=[_mock_tool_call(call_id="mail-call")]), messages, "task-1")
@@ -544,7 +544,7 @@ def test_failed_tool_result_persist_blocks_completion_projection(executor_mode):
     agent._flush_messages_to_session_db = MagicMock(return_value=False)
     agent.tool_complete_callback = MagicMock()
     dispatch_patch = (
-        patch("model_tools.handle_function_call", return_value="repository result")
+        patch("hermes_agent.model_tools.handle_function_call", return_value="repository result")
         if executor_mode == "sequential"
         else patch.object(agent, "_invoke_tool", return_value="repository result")
     )
@@ -583,7 +583,7 @@ def test_segmented_batch_stops_before_later_segment_after_persist_failure():
 
     with (
         patch.object(agent, "_invoke_tool", return_value="first result") as invoke,
-        patch("model_tools.handle_function_call", return_value="second result") as dispatch,
+        patch("hermes_agent.model_tools.handle_function_call", return_value="second result") as dispatch,
         patch(
             "agent.tool_executor.maybe_persist_tool_result",
             side_effect=lambda **kwargs: kwargs["content"],

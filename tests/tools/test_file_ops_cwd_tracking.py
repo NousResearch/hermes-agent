@@ -20,7 +20,7 @@ import pytest
 
 import pytest
 
-from tools.file_operations import ShellFileOperations
+from hermes_agent.tools.file_operations import ShellFileOperations
 
 
 class _FakeEnv:

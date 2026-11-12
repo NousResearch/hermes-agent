@@ -121,7 +121,7 @@ def clarify_tool(questions, callback: Optional[Callable] = None) -> str:
     if callback is None:
         return tool_error(_UNAVAILABLE)
     from agent.redact import redact_approval_display
-    from tools.human_input_hooks import human_input_request
+    from hermes_agent.tools.human_input_hooks import human_input_request
 
     def prose(texts):
         if not texts:
@@ -212,7 +212,7 @@ CLARIFY_SCHEMA = {
 }
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 registry.register(
     name="clarify",

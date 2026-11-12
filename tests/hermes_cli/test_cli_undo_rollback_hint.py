@@ -9,7 +9,7 @@ import pytest
 
 from hermes_agent.hermes_state import SessionDB
 from tests.hermes_cli.test_cli_init import _make_cli
-from tools.checkpoint_manager import CheckpointManager
+from hermes_agent.tools.checkpoint_manager import CheckpointManager
 
 
 @pytest.fixture

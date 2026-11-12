@@ -8,9 +8,9 @@ import json
 
 import pytest
 
-from tools.bot_desktop import lease
-from tools.computer_use import tool
-from tools.computer_use.backend import ActionResult, CaptureResult
+from hermes_agent.tools.bot_desktop import lease
+from hermes_agent.tools.computer_use import tool
+from hermes_agent.tools.computer_use.backend import ActionResult, CaptureResult
 
 
 @pytest.fixture(autouse=True)

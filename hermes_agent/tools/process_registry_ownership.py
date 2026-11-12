@@ -31,7 +31,7 @@ class ProcessOwnershipMixin:
         managed worker, a per-turn interpreter whose jobs the next turn's worker adopts with their
         output log (worker_output_log); and Windows, where the layer-3 job object covers ownership."""
         from agent.runtime_session_store import is_worker_process
-        from tools.process_registry import _IS_WINDOWS, _is_supervised_gateway_process
+        from hermes_agent.tools.process_registry import _IS_WINDOWS, _is_supervised_gateway_process
 
         return not (_IS_WINDOWS or persist_on_release or self._jobs_outlive_host
                     or is_worker_process() or _is_supervised_gateway_process())
@@ -81,7 +81,7 @@ class ProcessOwnershipMixin:
     def _reap_untracked(self, session: Any, proc: subprocess.Popen) -> None:
         """Post-Popen setup failed: kill the orphaned subprocess (and any setsid
         descendants) so nothing leaks untracked."""
-        from tools.process_registry import _stop_systemd_unit
+        from hermes_agent.tools.process_registry import _stop_systemd_unit
 
         with suppress(Exception):
             if session.systemd_unit:

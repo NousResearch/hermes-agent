@@ -20,7 +20,7 @@ async def test_gateway_boot_discovers_mcp_under_every_profile_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import hermes_agent.gateway.run as gateway_run
-    from tools import mcp_tool_discovery as _mcp_discovery
+    from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
 
     homes = [("default", tmp_path / "default"), ("worker", tmp_path / "worker")]
     for _name, home in homes:
@@ -49,9 +49,9 @@ async def test_reload_mcp_only_touches_requesting_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from hermes_agent.gateway.run import GatewayRunner
-    from tools import mcp_tool
-    from tools import mcp_tool_discovery as _mcp_discovery
-    from tools import mcp_tool_lifecycle as _mcp_lifecycle
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+    from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
 
     worker_home = tmp_path / "profiles" / "worker"
     worker_home.mkdir(parents=True)
@@ -108,9 +108,9 @@ async def test_reload_mcp_formats_scoped_connection_keys_before_refreshing_cache
 ) -> None:
     """Connection-ledger tuple keys are internal; reload reports server names and completes refresh."""
     from hermes_agent.gateway.run import GatewayRunner
-    from tools import mcp_tool
-    from tools import mcp_tool_discovery as _mcp_discovery
-    from tools import mcp_tool_lifecycle as _mcp_lifecycle
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+    from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
 
     launch_scope = hermes_home_key(tmp_path / "default")
     worker_home = tmp_path / "profiles" / "worker"
@@ -156,9 +156,9 @@ async def test_reload_mcp_reports_a_shared_server_to_a_non_owner_profile(
 ) -> None:
     """A shared connection remains visible when its peer profile reloads MCP."""
     from hermes_agent.gateway.run import GatewayRunner
-    from tools import mcp_tool
-    from tools import mcp_tool_discovery as _mcp_discovery
-    from tools import mcp_tool_lifecycle as _mcp_lifecycle
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+    from hermes_agent.tools import mcp_tool_lifecycle as _mcp_lifecycle
 
     worker_home = tmp_path / "profiles" / "worker"
     worker_home.mkdir(parents=True)
@@ -174,7 +174,7 @@ async def test_reload_mcp_reports_a_shared_server_to_a_non_owner_profile(
         get_or_create_session=MagicMock(side_effect=RuntimeError("skip transcript")),
     )
 
-    from tools import mcp_tool_registration as _mcp_registration
+    from hermes_agent.tools import mcp_tool_registration as _mcp_registration
     # Premise: both profiles resolve the connection's inputs identically (the reload runs under
     # the worker's runtime scope, which this fake's owner never had).
     monkeypatch.setattr(_mcp_registration, "_adopter_identity_digest", lambda *_args: "same-identity")
@@ -190,7 +190,7 @@ async def test_reload_mcp_reports_a_shared_server_to_a_non_owner_profile(
     monkeypatch.setattr(mcp_tool, "_mcp_registry_scope", lambda: worker_scope)
 
     def fake_discover() -> list[str]:
-        from tools import mcp_tool_registration as _mcp_registration
+        from hermes_agent.tools import mcp_tool_registration as _mcp_registration
         _mcp_registration.register_connected_into_current_scope({"shared": {}})
         return ["mcp__shared__tool"]
 
@@ -222,8 +222,8 @@ def test_scope_visibility_rejects_a_foreign_or_differently_authenticated_route(
 ) -> None:
     """A profile may only see a live connection whose route AND credentials match its own config;
     otherwise it would call tools as the owning profile's identity."""
-    from tools import mcp_tool
-    from tools import mcp_tool_registration as _mcp_registration
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_registration as _mcp_registration
 
     worker_scope = hermes_home_key(tmp_path / "worker")
     launch_scope = hermes_home_key(tmp_path / "default")
@@ -246,11 +246,11 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
         reset_hermes_home_override,
         set_hermes_home_override,
     )
-    from tools import mcp_tool
-    from tools import mcp_tool_config as _mcp_config
-    from tools import mcp_tool_discovery as _mcp_discovery
-    from tools import mcp_tool_registration as _mcp_registration
-    from tools.registry import registry
+    from hermes_agent.tools import mcp_tool
+    from hermes_agent.tools import mcp_tool_config as _mcp_config
+    from hermes_agent.tools import mcp_tool_discovery as _mcp_discovery
+    from hermes_agent.tools import mcp_tool_registration as _mcp_registration
+    from hermes_agent.tools.registry import registry
 
     worker_home = tmp_path / "profiles" / "worker"
     launch_home = tmp_path / "default"
@@ -344,7 +344,7 @@ def test_shared_server_tools_are_callable_and_removed_on_non_owner_reload(
 
 
 def test_deregister_scope_kwarg_targets_overlay_and_keeps_plugin_confinement() -> None:
-    from tools.registry import ToolRegistry
+    from hermes_agent.tools.registry import ToolRegistry
 
     reg = ToolRegistry()
     reg.register("mcp__s__t", "mcp-s", {"name": "mcp__s__t", "description": "d"},

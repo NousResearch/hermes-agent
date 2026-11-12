@@ -8,7 +8,7 @@ import hermes_agent.gateway.run as gateway_run
 from hermes_agent.gateway.config import Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session import SessionSource
-from tools.approval import disable_session_yolo, is_session_yolo_enabled
+from hermes_agent.tools.approval import disable_session_yolo, is_session_yolo_enabled
 
 
 @pytest.fixture(autouse=True)
@@ -90,7 +90,7 @@ def test_launch_yolo_revocation_survives_the_next_turn(monkeypatch):
         turn()
         assert is_session_yolo_enabled(key) is False
     finally:
-        from tools.approval import clear_session
+        from hermes_agent.tools.approval import clear_session
         clear_session(key)
 
 
@@ -100,7 +100,7 @@ async def test_yolo_survives_gateway_restart_and_dies_at_session_boundary(tmp_pa
     conversation boundary (/new, /resume) clears both copies so a restart cannot revive it."""
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
-    from tools.approval_yolo import restore_session_yolo
+    from hermes_agent.tools.approval_yolo import restore_session_yolo
 
     def _runner():
         runner = _make_runner()
@@ -134,7 +134,7 @@ async def test_owner_yolo_off_is_not_revived_by_the_persisted_restore(tmp_path):
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.session import SessionStore
     from hermes_agent.gateway.session_busy_controls import busy_config
-    from tools.approval_yolo import restore_session_yolo
+    from hermes_agent.tools.approval_yolo import restore_session_yolo
 
     runner = _make_runner()
     runner.session_store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())

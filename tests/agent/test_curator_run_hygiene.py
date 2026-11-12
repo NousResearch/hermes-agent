@@ -17,7 +17,7 @@ def env(tmp_path, monkeypatch):
     (home / "skills").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
-    import tools.skill_usage as usage
+    import hermes_agent.tools.skill_usage as usage
     from agent import curator
     import agent.curator_backup as cb
     for m in (usage, cb, curator):

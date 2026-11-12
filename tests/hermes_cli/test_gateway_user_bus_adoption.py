@@ -56,7 +56,7 @@ def test_service_gateway_boot_adopts_its_user_bus(monkeypatch):
     # Worker environments are snapshots of os.environ taken at various points in the
     # dispatch paths, so the bus address must also survive the secret scrubber they all
     # go through — otherwise systemd-run still cannot connect and the fix is a no-op.
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
 
     worker_env = build_subprocess_env(scrub_secrets=True)
     assert worker_env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={runtime_dir}/bus"

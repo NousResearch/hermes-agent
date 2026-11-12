@@ -27,7 +27,7 @@ def filter_to_enabled_toolsets(unavailable: list[dict], enabled: Iterable[str],
 
     ``enabled`` is the CLI's toolset selection as configured — on a default install that is a
     composite bundle such as ``["hermes-cli"]``, never the individual names ``check_tool_availability``
-    reports — so each entry is expanded to tool names through ``resolve`` (``toolsets.resolve_toolset``)
+    reports — so each entry is expanded to tool names through ``resolve`` (``hermes_agent.toolsets.resolve_toolset``)
     and an unavailable toolset counts as enabled when its name is listed directly or any of its tools
     is inside the expansion. An empty selection means "everything", so nothing is filtered."""
     names = [str(t) for t in (enabled or []) if str(t)]
@@ -51,7 +51,7 @@ def filter_to_enabled_toolsets(unavailable: list[dict], enabled: Iterable[str],
 
 def current_terminal_backend() -> str:
     """The terminal backend selected for this process (``terminal.backend`` / TERMINAL_ENV), e.g. 'docker'."""
-    from tools.terminal_tool import _get_env_config
+    from hermes_agent.tools.terminal_tool import _get_env_config
     return str(_get_env_config().get("env_type") or "local")
 
 

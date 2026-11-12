@@ -138,7 +138,7 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
     """Sync bundled skills, set up file logging + startup security audit, and the -v/-q stderr handler."""
     from hermes_agent.gateway.run import (_best_effort, _gateway_stderr_formatter, _hermes_home, logging)
     def _sync_skills() -> None:
-        from tools.skills_sync import sync_skills
+        from hermes_agent.tools.skills_sync import sync_skills
         sync_skills(quiet=True)
 
     _best_effort(_sync_skills)
@@ -722,7 +722,7 @@ def _start_gateway_early_environment_probe() -> None:
         agent_cfg = load_config_readonly().get("agent")
         if isinstance(agent_cfg, dict) and not agent_cfg.get("environment_probe", True):
             return
-        from tools.env_probe import warm_environment_probe_async
+        from hermes_agent.tools.env_probe import warm_environment_probe_async
         warm_environment_probe_async()
     except Exception:
         logger.debug("early environment probe did not start", exc_info=True)

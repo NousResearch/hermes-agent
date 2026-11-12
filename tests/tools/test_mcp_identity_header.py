@@ -39,13 +39,13 @@ from unittest.mock import MagicMock, patch
 
 class TestResolveIdentityHeader:
     def test_returns_none_when_unset(self):
-        from tools.mcp_tool_errors import _resolve_identity_header
+        from hermes_agent.tools.mcp_tool_errors import _resolve_identity_header
 
         assert _resolve_identity_header("srv", {}) is None
         assert _resolve_identity_header("srv", {"url": "https://x"}) is None
 
     def test_static_mode_returns_name_value(self):
-        from tools.mcp_tool_errors import _resolve_identity_header
+        from hermes_agent.tools.mcp_tool_errors import _resolve_identity_header
 
         result = _resolve_identity_header("srv", {
             "identity_header": {
@@ -57,7 +57,7 @@ class TestResolveIdentityHeader:
         assert result == ("X-User-Id", "alice")
 
     def test_static_is_default_value_from(self):
-        from tools.mcp_tool_errors import _resolve_identity_header
+        from hermes_agent.tools.mcp_tool_errors import _resolve_identity_header
 
         result = _resolve_identity_header("srv", {
             "identity_header": {"name": "X-User-Id", "value": "bob"},
@@ -65,7 +65,7 @@ class TestResolveIdentityHeader:
         assert result == ("X-User-Id", "bob")
 
     def test_profile_mode_uses_active_profile_name(self):
-        from tools.mcp_tool_errors import _resolve_identity_header
+        from hermes_agent.tools.mcp_tool_errors import _resolve_identity_header
 
         with patch(
             "hermes_cli.profiles.get_active_profile_name",
@@ -80,7 +80,7 @@ class TestResolveIdentityHeader:
         assert result == ("X-Hermes-Profile", "workbot")
 
     def test_missing_name_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool_errors import _resolve_identity_header
+        from hermes_agent.tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {
@@ -90,7 +90,7 @@ class TestResolveIdentityHeader:
         assert any("identity_header" in r.message for r in caplog.records)
 
     def test_static_missing_value_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool_errors import _resolve_identity_header
+        from hermes_agent.tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {
@@ -100,7 +100,7 @@ class TestResolveIdentityHeader:
         assert any("identity_header" in r.message for r in caplog.records)
 
     def test_unknown_value_from_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool_errors import _resolve_identity_header
+        from hermes_agent.tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {
@@ -114,7 +114,7 @@ class TestResolveIdentityHeader:
         assert any("identity_header" in r.message for r in caplog.records)
 
     def test_non_dict_config_warns_and_returns_none(self, caplog):
-        from tools.mcp_tool_errors import _resolve_identity_header
+        from hermes_agent.tools.mcp_tool_errors import _resolve_identity_header
 
         with caplog.at_level(logging.WARNING):
             result = _resolve_identity_header("srv", {
@@ -132,7 +132,7 @@ def _drive_http(server, config):
     kwargs passed to ``httpx.AsyncClient``. Mirrors the pattern in
     ``test_mcp_client_cert.py``.
     """
-    from tools.mcp_tool import MCPServerTask, sdk_httpx
+    from hermes_agent.tools.mcp_tool import MCPServerTask, sdk_httpx
 
     captured: dict = {}
 
@@ -170,12 +170,12 @@ def _drive_http(server, config):
         self._shutdown_event.set()
 
     async def _drive():
-        with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
-             patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+        with patch("hermes_agent.tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool._MCP_NEW_HTTP", True), \
              patch.object(sdk_httpx(), "AsyncClient", DummyAsyncClient), \
-             patch("tools.mcp_tool.streamable_http_client",
+             patch("hermes_agent.tools.mcp_tool.streamable_http_client",
                    return_value=DummyTransportCtx()), \
-             patch("tools.mcp_tool.ClientSession", DummySession), \
+             patch("hermes_agent.tools.mcp_tool.ClientSession", DummySession), \
              patch.object(MCPServerTask, "_discover_tools", _discover_tools):
             await server._run_http(config)
 
@@ -184,7 +184,7 @@ def _drive_http(server, config):
 
 class TestHTTPIdentityHeader:
     def test_header_attached_when_configured(self):
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         server = MCPServerTask("remote")
         captured = _drive_http(server, {
@@ -198,7 +198,7 @@ class TestHTTPIdentityHeader:
         assert headers.get("X-User-Id") == "alice"
 
     def test_header_absent_when_not_configured(self):
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         server = MCPServerTask("remote")
         captured = _drive_http(server, {
@@ -210,7 +210,7 @@ class TestHTTPIdentityHeader:
     def test_explicit_header_with_same_name_wins(self):
         """A user-set per-server header of the same name (any casing) is
         not overridden by the identity header."""
-        from tools.mcp_tool import MCPServerTask
+        from hermes_agent.tools.mcp_tool import MCPServerTask
 
         server = MCPServerTask("remote")
         captured = _drive_http(server, {

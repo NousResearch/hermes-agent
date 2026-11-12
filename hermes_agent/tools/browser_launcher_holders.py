@@ -1,4 +1,4 @@
-"""Cross-process holders of a shared-profile Chromium (``tools/browser_launcher.py``).
+"""Cross-process holders of a shared-profile Chromium (``hermes_agent/tools/browser_launcher.py``).
 
 A persistent profile (``browser.user_data_dir``, the Bot Desktop profile, the real-profile copy) has ONE
 Chromium, launched by whichever Hermes process got there first; every other process attaches to it. Each
@@ -142,7 +142,7 @@ def _load(path: Path) -> Optional[dict]:
 def process_alive(pid, start_time) -> bool:
     """``pid`` is still the process that wrote a record or lease: alive, and with the recorded start time
     (a recycled pid has another one)."""
-    from tools import browser_launcher as launcher
+    from hermes_agent.tools import browser_launcher as launcher
     if not isinstance(pid, int) or not launcher._pid_alive(pid):
         return False
     return start_time is None or launcher._start_time(pid) == start_time
@@ -150,7 +150,7 @@ def process_alive(pid, start_time) -> bool:
 
 def write_lease(record: Path, browser) -> None:
     """This process holds ``browser`` (caller holds :func:`records_lock`)."""
-    from tools import browser_launcher as launcher
+    from hermes_agent.tools import browser_launcher as launcher
     from utils import atomic_json_write
     me = os.getpid()
     atomic_json_write(_lease_path(record, me), {

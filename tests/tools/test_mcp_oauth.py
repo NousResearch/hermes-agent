@@ -1,4 +1,4 @@
-"""Tests for tools/mcp_oauth.py — OAuth 2.1 PKCE support for MCP servers."""
+"""Tests for hermes_agent/tools/mcp_oauth.py — OAuth 2.1 PKCE support for MCP servers."""
 
 import json
 import stat
@@ -17,7 +17,7 @@ pytest.importorskip(
     reason="MCP SDK 1.26.0+ required for OAuth support",
 )
 
-from tools.mcp_oauth import (
+from hermes_agent.tools.mcp_oauth import (
     HermesTokenStorage,
     OAuthNonInteractiveError,
     build_oauth_auth,
@@ -39,14 +39,14 @@ def _find_free_port() -> int:
 
 async def _wait_for_callback():
     """Await the per-flow waiter on the legacy module-level port (the removed shim)."""
-    import tools.mcp_oauth as mod
+    import hermes_agent.tools.mcp_oauth as mod
     return await mod._make_callback_waiter(mod._oauth_port)()
 
 
 def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = is_tty
-    monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+    monkeypatch.setattr("hermes_agent.tools.mcp_oauth.sys.stdin", mock_stdin)
 
 
 def _hit_callback_when_ready(url: str, timeout: float = 15.0) -> None:
@@ -169,7 +169,7 @@ class TestHermesTokenStorage:
     def test_corrupt_tokens_returns_none(self, tmp_path, monkeypatch):
         import asyncio
         from mcp.shared.auth import OAuthMetadata
-        from tools.mcp_oauth_device import DeviceOAuthMetadata
+        from hermes_agent.tools.mcp_oauth_device import DeviceOAuthMetadata
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("bad-server")
@@ -211,7 +211,7 @@ class TestHermesTokenStorage:
         # message echoes the failing field's input — i.e. the token.
         (d / "bad-server.json").write_text(json.dumps({"access_token": [secret], "token_type": "Bearer"}))
 
-        with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.mcp_oauth"):
             assert asyncio.run(storage.get_tokens()) is None
         assert any("Corrupt" in r.message for r in caplog.records)
         assert secret not in caplog.text
@@ -223,7 +223,7 @@ class TestHermesTokenStorage:
 
 class TestBuildOAuthAuth:
     def test_returns_none_without_sdk(self, monkeypatch):
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
         monkeypatch.setattr(mod, "_OAUTH_AVAILABLE", False)
         result = build_oauth_auth("test", "https://example.com")
         assert result is None
@@ -412,7 +412,7 @@ class TestCallbackPortReservation:
 
     def test_reserved_port_cannot_be_stolen(self):
         import socket as sock
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
 
         port = mod._reserve_callback_port()
         try:
@@ -427,7 +427,7 @@ class TestCallbackPortReservation:
                 reserved.close()
 
     def test_pinned_port_is_not_reserved(self):
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
 
         cfg: dict = {"redirect_port": 49399}
         port = mod._configure_callback_port(cfg)
@@ -441,7 +441,7 @@ class TestCallbackPortReservation:
         callback round-trips through it."""
         import asyncio
         import threading
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
 
         # cimd: false keeps this on the ephemeral branch. A CIMD-eligible
         # config would take a pinned port instead, and this test would pass
@@ -480,7 +480,7 @@ class TestCallbackPortReservation:
         """
         import asyncio
         import threading
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
 
         monkeypatch.setattr(mod, "_is_interactive", lambda: False)
         monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
@@ -564,7 +564,7 @@ class TestCallbackPortReservation:
         then calls storage.get_client_info(). A poisoned client.json must fall through to a
         freshly reserved ephemeral port and read as "no registration", so the flow re-registers
         instead of crashing on every attempt until the file is removed by hand (#112568)."""
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
 
         storage = self._seed_client_info(tmp_path, payload)
         cfg: dict = {"cimd": False}  # keep the fresh-port branch, as the sibling tests do
@@ -627,7 +627,7 @@ class TestInvalidateTokensOnClientChange:
         return storage, d
 
     def test_changed_client_id_drops_tokens(self, tmp_path, monkeypatch):
-        from tools.mcp_oauth import _invalidate_tokens_on_client_change
+        from hermes_agent.tools.mcp_oauth import _invalidate_tokens_on_client_change
         storage, d = self._seed(tmp_path, monkeypatch)
         _invalidate_tokens_on_client_change(storage, "client-b", None)
         assert not (d / "chg-server.json").exists()
@@ -636,14 +636,14 @@ class TestInvalidateTokensOnClientChange:
         assert (d / "chg-server.client.json").exists()
 
     def test_changed_secret_drops_tokens(self, tmp_path, monkeypatch):
-        from tools.mcp_oauth import _invalidate_tokens_on_client_change
+        from hermes_agent.tools.mcp_oauth import _invalidate_tokens_on_client_change
         storage, d = self._seed(tmp_path, monkeypatch,
                                 client_secret="old-secret")
         _invalidate_tokens_on_client_change(storage, "client-a", "new-secret")
         assert not (d / "chg-server.json").exists()
 
     def test_same_client_preserves_tokens(self, tmp_path, monkeypatch):
-        from tools.mcp_oauth import _invalidate_tokens_on_client_change
+        from hermes_agent.tools.mcp_oauth import _invalidate_tokens_on_client_change
         storage, d = self._seed(tmp_path, monkeypatch,
                                 client_secret="sec")
         _invalidate_tokens_on_client_change(storage, "client-a", "sec")
@@ -651,7 +651,7 @@ class TestInvalidateTokensOnClientChange:
         assert (d / "chg-server.meta.json").exists()
 
     def test_no_prior_client_info_is_noop(self, tmp_path, monkeypatch):
-        from tools.mcp_oauth import _invalidate_tokens_on_client_change
+        from hermes_agent.tools.mcp_oauth import _invalidate_tokens_on_client_change
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("fresh-server")
         d = tmp_path / "mcp-tokens"
@@ -667,7 +667,7 @@ class TestInvalidateTokensOnClientChange:
         """_maybe_preregister_client wires the check in before overwriting
         client.json — the full config-edit flow drops stale tokens."""
         pytest.importorskip("mcp")
-        from tools.mcp_oauth import (
+        from hermes_agent.tools.mcp_oauth import (
             _build_client_metadata, _maybe_preregister_client,
         )
         storage, d = self._seed(tmp_path, monkeypatch)
@@ -690,11 +690,11 @@ class TestIsInteractive:
     """_is_interactive() detects headless/daemon/container environments."""
 
     def test_suppress_interactive_oauth_disables_stdin_prompts(self, monkeypatch):
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = True
-        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        monkeypatch.setattr("hermes_agent.tools.mcp_oauth.sys.stdin", mock_stdin)
 
         assert _is_interactive() is True
         with mod.suppress_interactive_oauth():
@@ -709,11 +709,11 @@ class TestIsInteractive:
         (the original fix's defect); a ContextVar does."""
         import asyncio
         import threading
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = True
-        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        monkeypatch.setattr("hermes_agent.tools.mcp_oauth.sys.stdin", mock_stdin)
 
         loop = asyncio.new_event_loop()
         loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
@@ -756,7 +756,7 @@ class TestWaitForCallbackNoBlocking:
         Marked interactive so the fail-fast non-interactive guard (#57836)
         does not short-circuit — this test exercises the timeout path.
         """
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
         import asyncio
 
         mod._oauth_port = _find_free_port()
@@ -783,7 +783,7 @@ class TestBuildOAuthAuthNonInteractive:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = False
-        monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
+        monkeypatch.setattr("hermes_agent.tools.mcp_oauth.sys.stdin", mock_stdin)
 
         with pytest.raises(OAuthNonInteractiveError, match="non-interactive"):
             build_oauth_auth("atlassian", "https://mcp.atlassian.com/v1/mcp")
@@ -802,7 +802,7 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
 
     def test_wait_for_callback_rejects_before_binding_when_noninteractive(self, monkeypatch):
         """No listener bound and no poll loop entered when non-interactive."""
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
         import asyncio
 
         mod._oauth_port = _find_free_port()
@@ -822,7 +822,7 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
 
     def test_redirect_handler_rejects_and_does_not_open_browser(self, monkeypatch, capsys):
         """Non-interactive redirect must not print an auth URL or open a browser."""
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
         import asyncio
 
         monkeypatch.setattr(mod, "_is_interactive", lambda: False)
@@ -845,7 +845,7 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
         interactive path still prints the URL and does not raise, proving the
         guard does not over-fire and swallow legitimate authorization.
         """
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
         import asyncio
 
         monkeypatch.setattr(mod, "_is_interactive", lambda: True)
@@ -874,7 +874,7 @@ _PROXY_REDIRECT = "https://oauth.example.ts.net/callback"
 ])
 def test_build_client_metadata_token_endpoint_auth(cfg, expected_auth):
     pytest.importorskip("mcp")
-    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+    from hermes_agent.tools.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     _configure_callback_port(cfg)
     md = _build_client_metadata(cfg)
@@ -890,7 +890,7 @@ def test_build_client_metadata_token_endpoint_auth(cfg, expected_auth):
     ({"redirect_host": "localhost"}, "http://localhost:1234/callback"),
 ])
 def test_resolve_redirect_uri(cfg, expected):
-    from tools.mcp_oauth import _resolve_redirect_uri
+    from hermes_agent.tools.mcp_oauth import _resolve_redirect_uri
 
     assert _resolve_redirect_uri(cfg, 1234) == expected
 
@@ -905,7 +905,7 @@ def test_build_oauth_auth_preserves_server_url_path():
     itself for authorization-server discovery via
     ``OAuthContext.get_authorization_base_url``; Hermes must not pre-strip.
     """
-    from tools import mcp_oauth
+    from hermes_agent.tools import mcp_oauth
 
     captured: dict = {}
 
@@ -960,7 +960,7 @@ class TestWaitForCallbackPasteIntegration:
 
     def test_paste_prompt_NOT_shown_when_interactivity_suppressed(self, monkeypatch):
         """Background MCP discovery must not race the CLI/TUI stdin reader."""
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
 
         mod._oauth_port = _find_free_port()
         mock_stdin = MagicMock()
@@ -985,7 +985,7 @@ class TestPasteCallbackSkipToken:
 
     @pytest.mark.parametrize("token", ["skip", "QUIT"])
     def test_skip_tokens_set_sentinel(self, monkeypatch, token):
-        from tools.mcp_oauth import _USER_SKIPPED_SENTINEL
+        from hermes_agent.tools.mcp_oauth import _USER_SKIPPED_SENTINEL
         result = self._empty_result()
         monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: token + "\n"))
         _paste_callback_reader(result)
@@ -1006,7 +1006,7 @@ class TestWaitForCallbackSkipIntegration:
 
     def test_skip_raises_non_interactive_error(self, monkeypatch):
         """Skip token must raise OAuthNonInteractiveError (mcp_tool handles as non-fatal)."""
-        import tools.mcp_oauth as mod
+        import hermes_agent.tools.mcp_oauth as mod
         mod._oauth_port = _find_free_port()
         monkeypatch.setattr(mod, "_is_interactive", lambda: True)
         monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
@@ -1051,7 +1051,7 @@ def test_cancelled_waiter_releases_pinned_port_for_retry(monkeypatch):
     retry reuses the same port and previously died with EADDRINUSE because the listener thread parked
     in select() kept the closed socket alive (#113771)."""
     import socket
-    import tools.mcp_oauth as mo
+    import hermes_agent.tools.mcp_oauth as mo
 
     monkeypatch.setattr(mo, "_is_interactive", lambda: False)
     monkeypatch.setattr(mo, "_raise_if_non_interactive", lambda lead: None)
@@ -1078,7 +1078,7 @@ def test_cancelled_waiter_releases_pinned_port_for_retry(monkeypatch):
 
 
 def test_figma_provider_defaults_set_allowlisted_client_name():
-    from tools.mcp_oauth import (
+    from hermes_agent.tools.mcp_oauth import (
         apply_oauth_provider_defaults,
         _FIGMA_DCR_CLIENT_NAME,
         _FIGMA_DEFAULT_SCOPE,
@@ -1094,7 +1094,7 @@ def test_figma_provider_defaults_set_allowlisted_client_name():
 
 
 def test_humanize_non_registration_403_passthrough():
-    from tools.mcp_oauth import humanize_oauth_registration_error
+    from hermes_agent.tools.mcp_oauth import humanize_oauth_registration_error
 
     assert (
         humanize_oauth_registration_error(
@@ -1110,7 +1110,7 @@ def test_humanize_404_registration_error_guidance():
     """A 404 on the registration endpoint surfaces pre-registered-client
     guidance instead of the raw SDK traceback (GH#78190 — Google's hosted
     Gmail/Drive MCP servers answer the SDK's guessed /register with 404)."""
-    from tools.mcp_oauth import humanize_oauth_registration_error
+    from hermes_agent.tools.mcp_oauth import humanize_oauth_registration_error
 
     msg = humanize_oauth_registration_error(
         "gmail",
@@ -1125,7 +1125,7 @@ def test_humanize_404_registration_error_guidance():
 
 def test_humanize_404_non_registration_passthrough():
     """A 404 that has nothing to do with registration stays raw."""
-    from tools.mcp_oauth import humanize_oauth_registration_error
+    from hermes_agent.tools.mcp_oauth import humanize_oauth_registration_error
 
     assert (
         humanize_oauth_registration_error(

@@ -1965,7 +1965,7 @@ class TestMatrixImageOnlyMediaNormalization:
     async def test_external_media_download_follows_safe_redirect(self, monkeypatch):
         """A redirect to another allowed URL is followed and its body returned."""
         import aiohttp
-        from tools import url_safety
+        from hermes_agent.tools import url_safety
 
         class _Content:
             async def iter_chunked(self, _size):
@@ -2033,7 +2033,7 @@ class TestMatrixImageOnlyMediaNormalization:
     @pytest.mark.asyncio
     async def test_send_image_failure_log_redacts_signed_url(self, caplog, monkeypatch):
         from hermes_agent.gateway.platforms.base import SendResult
-        from tools import url_safety
+        from hermes_agent.tools import url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token#frag"
         self.adapter._download_external_media_with_cap = AsyncMock(
@@ -2052,7 +2052,7 @@ class TestMatrixImageOnlyMediaNormalization:
     @pytest.mark.asyncio
     async def test_send_image_failure_response_preserves_caption(self, monkeypatch):
         from hermes_agent.gateway.platforms.base import SendResult
-        from tools import url_safety
+        from hermes_agent.tools import url_safety
 
         signed_url = "https://example.com/image.png?signature=secret-token#fragment"
         self.adapter._download_external_media_with_cap = AsyncMock(

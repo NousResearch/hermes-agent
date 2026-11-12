@@ -31,7 +31,7 @@ def homes(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_every_pass_shares_the_callers_budget(homes, monkeypatch):
-    import tools.mcp_tool_lifecycle as lifecycle
+    import hermes_agent.tools.mcp_tool_lifecycle as lifecycle
 
     seen: list[tuple] = []
 
@@ -51,7 +51,7 @@ async def test_every_pass_shares_the_callers_budget(homes, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_teardown_thread_does_not_inherit_the_callers_home_override(tmp_path, monkeypatch):
-    import tools.mcp_tool_lifecycle as lifecycle
+    import hermes_agent.tools.mcp_tool_lifecycle as lifecycle
     from hermes_constants import (
         get_hermes_home_override, reset_hermes_home_override, set_hermes_home_override)
 

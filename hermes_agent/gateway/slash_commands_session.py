@@ -88,10 +88,10 @@ def _compress_preview_reply(history, partial: bool, keep_last, focus_topic, agg_
 def _reset_process_scoped_tool_state() -> None:
     """Drop env-passthrough and credential-file state at a conversation boundary (best-effort)."""
     with contextlib.suppress(Exception):
-        from tools.env_passthrough import clear_env_passthrough
+        from hermes_agent.tools.env_passthrough import clear_env_passthrough
         clear_env_passthrough()
     with contextlib.suppress(Exception):
-        from tools.credential_files import clear_credential_files
+        from hermes_agent.tools.credential_files import clear_credential_files
         clear_credential_files()
 
 
@@ -219,7 +219,7 @@ class GatewaySessionCommandsMixin:
         # In-flight async delegations end WITH the conversation: once the id rotates their
         # completions have no live owner. Expire by durable id, routing key as legacy fallback.
         with contextlib.suppress(Exception):
-            from tools.async_delegation import interrupt_for_session
+            from hermes_agent.tools.async_delegation import interrupt_for_session
             interrupt_for_session(session_key=session_key, reason="session_reset",
                                   parent_session_id=str(getattr(old_entry, "session_id", "") or ""))
         _reset_process_scoped_tool_state()
@@ -675,7 +675,7 @@ class GatewaySessionCommandsMixin:
                   count=result["rewound_count"], preview=preview)
         if (mgr := self._checkpoint_manager(source)) is not None:
             # Same manager and cwd /rollback lists.
-            from tools.checkpoint_undo_hint import format_undo_rollback_hint, undo_changed_files
+            from hermes_agent.tools.checkpoint_undo_hint import format_undo_rollback_hint, undo_changed_files
             files = await asyncio.to_thread(undo_changed_files, mgr, self._terminal_cwd(), result.get("undo_since"))
             if line := format_undo_rollback_hint(files):
                 reply += "\n" + line

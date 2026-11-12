@@ -164,7 +164,7 @@ class TurnLivenessWatchdog:
         returning, where no activity stamps exist. The frame at the moment of the stall
         is the only direct evidence; the turn thread's frame is marked so the log names
         the wedged call site (in-tree precedent for thread-stack diagnostics:
-        ``tools/delegate_tool_child_run.py``). Best-effort: never raises into the tick.
+        ``hermes_agent/tools/delegate_tool_child_run.py``). Best-effort: never raises into the tick.
         """
         try:
             import sys

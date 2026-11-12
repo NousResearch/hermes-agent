@@ -306,7 +306,7 @@ def rename_pet(slug: str, display_name: str) -> str | None:
 def _http_get(url: str, timeout: float):
     """GET *url* with the petdex UA, following redirects; raises on HTTP errors.
     Manifest-derived URLs are remote-party-controlled — SSRF-checked first."""
-    from tools.url_safety import create_ssrf_safe_client, is_safe_url
+    from hermes_agent.tools.url_safety import create_ssrf_safe_client, is_safe_url
 
     if not is_safe_url(url):
         raise ValueError(f"Pet store URL failed the SSRF safety check: {url}")
@@ -321,7 +321,7 @@ def _download(url: str, dest: Path, *, timeout: float) -> None:
     import httpx
 
     try:
-        from tools.url_safety import create_ssrf_safe_client, is_safe_url
+        from hermes_agent.tools.url_safety import create_ssrf_safe_client, is_safe_url
 
         if not is_safe_url(url):
             raise ValueError(f"Pet store URL failed the SSRF safety check: {url}")

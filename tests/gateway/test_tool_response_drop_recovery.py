@@ -298,7 +298,7 @@ class TestPostStopInterruptSwallow:
         )
         reaped = []
         reaped_event = threading.Event()
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         def _record_reap(task_id, baseline, *, source):
             reaped.append((task_id, baseline, source))

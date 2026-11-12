@@ -26,7 +26,7 @@ from agent.transports.types import NormalizedResponse, ToolCall, Usage
 # declarations); aliased on the wire, mapped back in normalize_response.
 # xAI's chat-completions API reserves the function name ``tool_search`` for its own server-side tool and
 # rejects any request declaring a client function with that name (HTTP 400 "The function name tool_search is
-# reserved for the tool_search tool", #95003). The Tool Search bridge (tools/tool_search.py) assembles its
+# reserved for the tool_search tool", #95003). The Tool Search bridge (hermes_agent/tools/tool_search.py) assembles its
 # client-side discovery tool under the same literal name for every provider, so Grok providers are unusable
 # whenever the bridge is active. Mirror the web_search treatment in transports/codex.py
 # (_rename_client_web_search_for_xai): alias the wire declaration and map the alias back in

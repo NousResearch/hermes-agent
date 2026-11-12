@@ -65,7 +65,7 @@ def test_a_served_profiles_tick_authors_board_records_as_that_profile(board_env,
     """A→B→A under the home override with ``HERMES_PROFILE`` unset (the multiplexed tick shape):
     comment author and ``created_by`` are the ticking profile's, never ``"worker"``. A launch-side
     ``HERMES_PROFILE`` pin does not re-label a served profile's writes."""
-    from tools import kanban_tools as kt
+    from hermes_agent.tools import kanban_tools as kt
     root, tid = board_env
     monkeypatch.setenv("HERMES_PROFILE", "launch-host")  # the launch process's own pin
 
@@ -87,7 +87,7 @@ def test_a_dispatched_worker_keeps_its_pinned_identity_and_an_unnamed_caller_sta
         board_env, monkeypatch):
     """Control: no override → the dispatcher's ``HERMES_PROFILE`` pin wins over the process home;
     absence: nothing names a profile and the home is not a profile → ``"worker"``."""
-    from tools import kanban_tools as kt
+    from hermes_agent.tools import kanban_tools as kt
     _root, tid = board_env
 
     monkeypatch.setenv("HERMES_PROFILE", "pinned-bot")

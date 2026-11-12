@@ -19,7 +19,7 @@ import pytest
 
 from hermes_agent.gateway.platforms.base import AudioFormat, StreamingTTSHandle
 from hermes_agent.gateway.streaming_tts_consumer import StreamingTTSConsumer
-from tools.tts_streaming import SentenceChunker
+from hermes_agent.tools.tts_streaming import SentenceChunker
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ def gateway_tts_turn(monkeypatch, tmp_path):
 
     def make(loop):
         streamer, adapter = Streamer(), Adapter()
-        monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: streamer)
+        monkeypatch.setattr("hermes_agent.tools.tts_streaming.resolve_streaming_provider", lambda cfg: streamer)
         tts = StreamingTTSConsumer(adapter, "voice", {}, loop)
         ctx = TurnContext(
             streaming_tts_consumer_holder=[tts], user_config={},
@@ -341,7 +341,7 @@ class TestStreamerFormatAndLooping:
 
     def test_audio_format_tracks_resolved_streamer(self):
         streamer = FakeStreamer(chunks_per_clause=1, sample_rate=48000, channels=2, sample_width=4)
-        from tools import tts_streaming
+        from hermes_agent.tools import tts_streaming
         original_resolve = tts_streaming.resolve_streaming_provider
         tts_streaming.resolve_streaming_provider = lambda *_args, **_kwargs: streamer
         loop = asyncio.new_event_loop()
@@ -356,7 +356,7 @@ class TestStreamerFormatAndLooping:
 
     def test_chunker_min_len_comes_from_tts_streaming_config(self):
         """The gateway consumer honours tts.streaming.min_len (#96927) instead of the class default."""
-        from tools import tts_streaming
+        from hermes_agent.tools import tts_streaming
         original_resolve = tts_streaming.resolve_streaming_provider
         tts_streaming.resolve_streaming_provider = lambda *_args, **_kwargs: None
         loop = asyncio.new_event_loop()

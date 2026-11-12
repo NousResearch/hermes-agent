@@ -38,7 +38,7 @@ DEFAULT_SESSION_INACTIVITY_TIMEOUT = int(DEFAULT_CONFIG.get("browser", {}).get("
 
 
 def _get_session_inactivity_timeout() -> int:
-    from tools.browser_session_cloud import inactivity_timeout
+    from hermes_agent.tools.browser_session_cloud import inactivity_timeout
     return inactivity_timeout(env_int("BROWSER_INACTIVITY_TIMEOUT", DEFAULT_SESSION_INACTIVITY_TIMEOUT))
 
 
@@ -72,8 +72,8 @@ def build_browser_env() -> dict:
     (Chrome's SingletonSocket overflows the AF_UNIX path cap under a deep scratch dir)."""
     from agent.proxy_bypass import add_loopback_no_proxy
     from hermes_constants import socket_safe_tmpdir
-    from tools.bot_desktop.runtime import desktop_env
-    from tools.environments.local import served_profile_child_env
+    from hermes_agent.tools.bot_desktop.runtime import desktop_env
+    from hermes_agent.tools.environments.local import served_profile_child_env
     env = add_loopback_no_proxy(desktop_env(served_profile_child_env(inherit_credentials=False)))
     env["TMPDIR"] = socket_safe_tmpdir()
     return env
@@ -87,7 +87,7 @@ def shares_bot_desktop_browser(session_info: dict[str, Any]) -> bool:
     human lease with the screen already gone still fences (computer_use does the same)."""
     if not (session_info.get("features") or {}).get("local"):
         return False
-    from tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease, runtime as _bd_runtime
     return bool(_bd_runtime.published_env().get("DISPLAY")) or _bd_lease.human_holds()
 
 
@@ -96,7 +96,7 @@ def human_holds_shared_browser(session_info: dict[str, Any]) -> bool:
     janitor treats that as activity (reaping it mid-login kills the human's session, #110064)."""
     if not shares_bot_desktop_browser(session_info):
         return False
-    from tools.bot_desktop import lease as _bd_lease
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease
     return _bd_lease.human_holds()
 
 
@@ -108,7 +108,7 @@ def run_fenced(session_info: dict[str, Any], fn: Callable[[], dict[str, Any]]) -
     """
     if not shares_bot_desktop_browser(session_info):
         return fn()
-    from tools.bot_desktop import lease as _bd_lease
+    from hermes_agent.tools.bot_desktop import lease as _bd_lease
     try:
         admitted = _bd_lease.assert_agent_may_act()
     except _bd_lease.HumanHasControl as e:
@@ -124,9 +124,9 @@ def run_fenced(session_info: dict[str, Any], fn: Callable[[], dict[str, Any]]) -
 def ensure_screen_for_headed_chromium() -> None:
     """Tool-call boundary for ``bot_desktop.auto_start``: a headed Chromium is about to start, so a headless
     profile gets its screen first. Headless browsing and Lightpanda never bring one up."""
-    from tools.browser_session_cloud import is_headed_mode
+    from hermes_agent.tools.browser_session_cloud import is_headed_mode
     if is_headed_mode():
-        from tools.bot_desktop.runtime import ensure_started_for_tool
+        from hermes_agent.tools.bot_desktop.runtime import ensure_started_for_tool
         ensure_started_for_tool()
 
 
@@ -171,10 +171,10 @@ def _bot_desktop_target() -> Optional[tuple[str, dict[str, Any]]]:
     """``(launcher key, launch kwargs)`` for the shared Bot Desktop profile while its host screen is up: the
     agent's Chromium and the dock's Browser icon are THE SAME browser (binary + user-data-dir), and a dock
     instance a human already started is attached, never relaunched."""
-    from tools.bot_desktop import runtime as _bd_runtime
+    from hermes_agent.tools.bot_desktop import runtime as _bd_runtime
     if not _bd_runtime.published_env().get("DISPLAY"):
         return None
-    from tools.bot_desktop import browser as _bd_browser
+    from hermes_agent.tools.bot_desktop import browser as _bd_browser
     udd = str(_bd_browser.profile_dir())
     return f"profile:{udd}", {"executable": _bd_browser.executable(), "user_data_dir": udd, "ephemeral": False,
                               "extra_args": _bd_browser.SHARED_PROFILE_ARGS}
@@ -186,7 +186,7 @@ def _launch_target(cache_key: str) -> tuple[str, dict[str, Any], bool]:
     bot_desktop = _bot_desktop_target()
     if bot_desktop is not None:
         return bot_desktop[0], bot_desktop[1], True
-    from tools.browser_session_cloud import user_data_dir
+    from hermes_agent.tools.browser_session_cloud import user_data_dir
     udd = user_data_dir()
     if udd:
         return f"profile:{udd}", {"user_data_dir": udd, "ephemeral": False}, True
@@ -194,7 +194,7 @@ def _launch_target(cache_key: str) -> tuple[str, dict[str, Any], bool]:
 
 
 def _create_chromium_session(cache_key: str) -> dict[str, Any]:
-    from tools.bot_desktop import placement, runtime
+    from hermes_agent.tools.bot_desktop import placement, runtime
     try:
         # Policy first: a refused placement raises, a terminal placement starts its sandbox screen; neither
         # ever falls back to a host browser.
@@ -202,9 +202,9 @@ def _create_chromium_session(cache_key: str) -> dict[str, Any]:
     except RuntimeError as exc:
         raise RuntimeError(f"The browser cannot run here: {exc}") from exc
     if where == placement.TERMINAL:
-        from tools.browser_session_sandbox import create_sandbox_session
+        from hermes_agent.tools.browser_session_sandbox import create_sandbox_session
         return create_sandbox_session(cache_key)
-    from tools.browser_launcher import launch_chromium
+    from hermes_agent.tools.browser_launcher import launch_chromium
     ensure_screen_for_headed_chromium()  # first: an auto-started screen selects the Bot Desktop profile
     launcher_key, kwargs, shared = _launch_target(cache_key)
     browser, err = launch_chromium(launcher_key, **kwargs)
@@ -217,8 +217,8 @@ def _create_chromium_session(cache_key: str) -> dict[str, Any]:
 
 
 def _create_lightpanda_session(cache_key: str) -> dict[str, Any]:
-    from tools.browser_lightpanda import launch_lightpanda
-    from tools.browser_session_cloud import is_local_backend
+    from hermes_agent.tools.browser_lightpanda import launch_lightpanda
+    from hermes_agent.tools.browser_session_cloud import is_local_backend
     info = _session_record("lp", None, {"local": True, "lightpanda": True})
     server, err = launch_lightpanda(info["session_name"], block_private_networks=not is_local_backend())
     if err:
@@ -235,7 +235,7 @@ def _create_local_session(cache_key: str, allow_real_profile: bool = True) -> di
     reach an arbitrary internal host the model chose."""
     fallback_note = None
     if allow_real_profile:
-        from tools.browser_session_real_profile import real_profile_cdp, real_profile_fallback_note, real_profile_key
+        from hermes_agent.tools.browser_session_real_profile import real_profile_cdp, real_profile_fallback_note, real_profile_key
         cdp_url, err = real_profile_cdp()
         if err:
             logger.warning("real-profile unavailable for %s, using a fresh browser: %s", cache_key, err)
@@ -245,7 +245,7 @@ def _create_local_session(cache_key: str, allow_real_profile: bool = True) -> di
             info.update(launcher_key=real_profile_key(), shared_profile=True)
             logger.info("Created real-profile local session %s for %s", info["session_name"], cache_key)
             return info
-    from tools.browser_lightpanda import using_lightpanda_engine
+    from hermes_agent.tools.browser_lightpanda import using_lightpanda_engine
     info = _create_lightpanda_session(cache_key) if using_lightpanda_engine() else _create_chromium_session(cache_key)
     if fallback_note:
         info["real_profile_unavailable"] = fallback_note
@@ -255,7 +255,7 @@ def _create_local_session(cache_key: str, allow_real_profile: bool = True) -> di
 def _create_cloud_session_or_fallback(cache_key: str, provider) -> dict[str, Any]:
     """Cloud session; on failure (429, quota, outage) a LOCAL launcher session marked ``fallback_from_cloud``.
     ``cdp_url`` is resolved here because some providers return an HTTP discovery URL."""
-    from tools.browser_session_cdp import resolve_cdp_override
+    from hermes_agent.tools.browser_session_cdp import resolve_cdp_override
     try:
         session_info = provider.create_session(cache_key)
         if not session_info or not isinstance(session_info, dict):
@@ -278,8 +278,8 @@ def _create_cloud_session_or_fallback(cache_key: str, provider) -> dict[str, Any
 
 def _create_session_for_key(cache_key: str, force_local: bool) -> dict[str, Any]:
     """Fresh session (runs OUTSIDE the lock: cloud mode makes a network call, a launch takes seconds)."""
-    from tools.browser_session_cdp import get_cdp_override
-    from tools.browser_session_cloud import get_cloud_provider
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override
+    from hermes_agent.tools.browser_session_cloud import get_cloud_provider
     override = get_cdp_override()
     if override and not force_local:
         logger.info("Created CDP browser session for %s", cache_key)
@@ -300,22 +300,22 @@ def _backend_dead(session_info: dict[str, Any]) -> bool:
     not enough: when another key relaunched it after a crash, this record still names the dead endpoint."""
     features = session_info.get("features") or {}
     if features.get("lightpanda"):
-        from tools.browser_lightpanda import get_server
+        from hermes_agent.tools.browser_lightpanda import get_server
         server = get_server(session_info.get("session_name", ""))
         return server is None or not server.is_alive()
     if features.get("sandbox"):
-        from tools.browser_session_sandbox import sandbox_browser_alive
+        from hermes_agent.tools.browser_session_sandbox import sandbox_browser_alive
         return not sandbox_browser_alive(session_info)
     launcher_key = session_info.get("launcher_key")
     if launcher_key:
-        from tools.browser_launcher import get_browser
+        from hermes_agent.tools.browser_launcher import get_browser
         browser = get_browser(launcher_key)
         return browser is None or browser.cdp_url != session_info.get("cdp_url")
     return False
 
 
 def _reuse_or_evict(cache_key: str) -> Optional[dict[str, Any]]:
-    from tools import browser_session_lifecycle as _lifecycle
+    from hermes_agent.tools import browser_session_lifecycle as _lifecycle
     with _cleanup_lock:
         existing = _active_sessions.get(cache_key)
     if existing is None:
@@ -342,8 +342,8 @@ def _publish(cache_key: str, session_info: dict[str, Any], home_key: str) -> dic
 def get_session_info(cache_key: Optional[str] = None) -> dict[str, Any]:
     """Get or create the session for ``cache_key`` (thread-safe); starts the inactivity janitor and touches
     activity. A ``::local`` key forces a local browser even with a cloud provider configured."""
-    from tools import browser_session_lifecycle as _lifecycle
-    from tools.browser_session_cdp import ensure_cdp_supervisor, live_cdp_generation
+    from hermes_agent.tools import browser_session_lifecycle as _lifecycle
+    from hermes_agent.tools.browser_session_cdp import ensure_cdp_supervisor, live_cdp_generation
     key = cache_key or "default"
     _lifecycle.start_cleanup_thread()
     _lifecycle.update_session_activity(key)
@@ -385,7 +385,7 @@ def _atexit_cleanup() -> None:
     """atexit only — NO SIGINT/SIGTERM handlers calling sys.exit(): a SystemExit raised inside a
     prompt_toolkit key-binding callback corrupts the coroutine state and makes the process unkillable."""
     try:
-        from tools.browser_session_lifecycle import emergency_cleanup_all_sessions, stop_cleanup_thread
+        from hermes_agent.tools.browser_session_lifecycle import emergency_cleanup_all_sessions, stop_cleanup_thread
     except ImportError:  # half-updated tree mid-`hermes update` (#112437): nothing resolvable to clean
         return
     emergency_cleanup_all_sessions()

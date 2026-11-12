@@ -139,7 +139,7 @@ def _stop_turns_before_exit(budget_s: float | None = None) -> None:
             t.join(max(0.0, until - time.monotonic()))
 
     _join(deadline - budget / 2)
-    from tools.environments.base import kill_live_foreground_processes
+    from hermes_agent.tools.environments.base import kill_live_foreground_processes
     kill_live_foreground_processes(now=True)
     _join(deadline)
 

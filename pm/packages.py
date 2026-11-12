@@ -1133,7 +1133,7 @@ class CuaDriver(BinaryPackage):
     def _probe_env(self) -> dict:
         """The probe IS a first run: it must not mint telemetry state."""
         try:
-            from tools.computer_use.cua_backend import cua_driver_child_env
+            from hermes_agent.tools.computer_use.cua_backend import cua_driver_child_env
 
             return cua_driver_child_env()
         except Exception:

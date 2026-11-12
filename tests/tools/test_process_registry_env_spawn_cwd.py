@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from tools.environments.local import LocalEnvironment
-from tools.process_registry import ProcessRegistry
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.process_registry import ProcessRegistry
 
 
 @pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")

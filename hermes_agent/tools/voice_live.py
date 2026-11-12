@@ -117,7 +117,7 @@ def _resolve_credentials(live: dict[str, Any]) -> tuple[str, str]:
 
     The Nous-managed audio proxy does not carry ``/live/sessions``; this mode is direct-key only.
     """
-    from tools.tool_backend_helpers import resolve_openai_audio_api_key
+    from hermes_agent.tools.tool_backend_helpers import resolve_openai_audio_api_key
     api_key = str(live.get("api_key") or "").strip() or resolve_openai_audio_api_key()
     base_url = str(live.get("base_url") or DEFAULT_LIVE_BASE_URL).strip().rstrip("/")
     return api_key, base_url

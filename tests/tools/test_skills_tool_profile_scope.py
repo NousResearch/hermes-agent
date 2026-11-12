@@ -22,7 +22,7 @@ def _write_skill(root: Path, category: str, name: str, description: str) -> Path
 
 def _reload_skills_tool(import_home: Path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(import_home))
-    from tools import skills_tool
+    from hermes_agent.tools import skills_tool
 
     return importlib.reload(skills_tool)
 
@@ -55,7 +55,7 @@ def test_skill_view_uses_live_profile_home_after_module_import(tmp_path, monkeyp
 
 
 def test_explicit_skills_dir_monkeypatch_still_wins(tmp_path, monkeypatch):
-    """Existing tests can still override tools.skills_tool.SKILLS_DIR directly."""
+    """Existing tests can still override hermes_agent.tools.skills_tool.SKILLS_DIR directly."""
     default_home = tmp_path / "default-home"
     profile_home = tmp_path / "profiles" / "orchestrator"
     patched_root = tmp_path / "patched"

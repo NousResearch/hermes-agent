@@ -12,7 +12,7 @@ def test_kanban_submission_enters_single_query_approval_context(tmp_path, monkey
     from hermes_agent.gateway.session_kanban import run_task
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_db_connect import connect
-    from tools.approval_context import _is_single_query_approval_context
+    from hermes_agent.tools.approval_context import _is_single_query_approval_context
 
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
@@ -117,8 +117,8 @@ def test_durable_kanban_admission_preserves_headless_policy_in_worker(kanban_own
     from hermes_agent.gateway.session_managed_worker import _bootstrap, worker_turn_scope
     from hermes_agent.gateway.session_policy import policy_for_source
     from hermes_agent.hermes_state_runtime import list_session_admissions
-    from tools.approval import request_tool_approval
-    from tools.approval_context import _is_single_query_approval_context
+    from hermes_agent.tools.approval import request_tool_approval
+    from hermes_agent.tools.approval_context import _is_single_query_approval_context
 
     owner = kanban_owner({**_CONFIG, 'approvals': {'mode': 'smart', 'single_query_mode': mode}})
     authority = owner.authority

@@ -1,9 +1,9 @@
-"""Tests for tools/cronjob_tools.py — prompt scanning, schedule/list/remove dispatchers."""
+"""Tests for hermes_agent/tools/cronjob_tools.py — prompt scanning, schedule/list/remove dispatchers."""
 
 import json
 import pytest
 
-from tools.cronjob_tools import (
+from hermes_agent.tools.cronjob_tools import (
     _scan_cron_prompt,
     check_cronjob_requirements,
     cronjob,
@@ -105,7 +105,7 @@ class TestScanCronPrompt:
 # Skill-assembled cron prompt scanning (looser pattern set)
 # =========================================================================
 
-from tools.cronjob_prompt_scan import _scan_cron_skill_assembled
+from hermes_agent.tools.cronjob_prompt_scan import _scan_cron_skill_assembled
 
 
 class TestScanCronSkillAssembled:
@@ -434,7 +434,7 @@ class TestAgentCannotSetModelPin:
     if a model hallucinates the old parameters."""
 
     def test_schema_has_no_inference_pin_params(self):
-        from tools.cronjob_tools import CRONJOB_SCHEMA
+        from hermes_agent.tools.cronjob_tools import CRONJOB_SCHEMA
 
         props = CRONJOB_SCHEMA["parameters"]["properties"]
         assert "model" not in props
@@ -446,7 +446,7 @@ class TestAgentCannotSetModelPin:
         """An update through the agent handler must not clear or change a
         user-set pin (grandfathered agent-era pins included)."""
         from hermes_agent.cron.jobs import get_job
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         created = json.loads(
             cronjob(
@@ -491,7 +491,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
     def test_create_persists_attach_to_session(self):
         from hermes_agent.cron.jobs import get_job
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         created = json.loads(
             registry.dispatch(
@@ -518,7 +518,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
     def test_update_persists_attach_to_session(self):
         from hermes_agent.cron.jobs import get_job
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         created = json.loads(
             registry.dispatch(
@@ -571,7 +571,7 @@ class TestRegisteredHandlerForwardsAttachToSession:
 
     def test_omitted_create_leaves_field_absent(self):
         from hermes_agent.cron.jobs import get_job
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
 
         created = json.loads(
             registry.dispatch(
@@ -647,7 +647,7 @@ class TestValidateCronBaseUrl:
 
     @staticmethod
     def _v(*args):
-        from tools.cronjob_tools import _validate_cron_base_url
+        from hermes_agent.tools.cronjob_tools import _validate_cron_base_url
         return _validate_cron_base_url(*args)
 
     @staticmethod

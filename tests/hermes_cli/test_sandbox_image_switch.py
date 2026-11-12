@@ -65,7 +65,7 @@ def test_bridge_treats_a_preset_env_image_as_pinned_and_keeps_a_launcher_verdict
 # ── pin verdict, routed profile scope ───────────────────────────────────────────────────────────
 
 def test_terminal_scope_recomputes_the_pin_per_profile(home, tmp_path):
-    from tools.terminal_scope import build_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import build_profile_terminal_scope
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE
 
     _write(home, {"backend": "docker"})
@@ -89,7 +89,7 @@ def test_terminal_scope_recomputes_the_pin_per_profile(home, tmp_path):
 def test_terminal_scope_pins_an_image_written_in_the_profile_env_even_when_it_spells_the_default(home):
     """Provenance, not value: the approval writes the default's exact tag, and a profile whose .env carries
     TERMINAL_DOCKER_IMAGE chose it. The scope must agree with the bridge's verdict for the same input."""
-    from tools.terminal_scope import build_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import build_profile_terminal_scope
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE
 
     _write(home, {"backend": "docker"})
@@ -112,7 +112,7 @@ def _fake_docker(tmp_path, monkeypatch, ps_output: str) -> Path:
     exe.chmod(exe.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.setenv("PS_OUTPUT", ps_output)
-    from tools.environments import docker as docker_env
+    from hermes_agent.tools.environments import docker as docker_env
     monkeypatch.setattr(docker_env, "_docker_executable", None)
     return exe
 
@@ -145,7 +145,7 @@ def test_decide_pins_and_either_answer_ends_the_offer(home, tmp_path, monkeypatc
     _fake_docker(tmp_path, monkeypatch, f"hermes-abc\t{LEGACY_SANDBOX_IMAGE}\n")
     _write(home, {"backend": "docker"})
     evicted = []
-    monkeypatch.setattr("tools.terminal_tool_lifecycle._evict_environment_for_task", lambda task: evicted.append(task))
+    monkeypatch.setattr("hermes_agent.tools.terminal_tool_lifecycle._evict_environment_for_task", lambda task: evicted.append(task))
 
     p = sw.pending()
     assert p is not None
@@ -174,7 +174,7 @@ def test_interactive_offer_writes_only_on_a_yes_or_no(home, tmp_path, monkeypatc
     from hermes_cli.config_defaults import DEFAULT_SANDBOX_IMAGE, LEGACY_SANDBOX_IMAGE
 
     _fake_docker(tmp_path, monkeypatch, f"hermes-abc\t{LEGACY_SANDBOX_IMAGE}\n")
-    monkeypatch.setattr("tools.terminal_tool_lifecycle._evict_environment_for_task", lambda task: None)
+    monkeypatch.setattr("hermes_agent.tools.terminal_tool_lifecycle._evict_environment_for_task", lambda task: None)
     _write(home, {"backend": "docker"})
     printed = []
 
@@ -191,7 +191,7 @@ def test_interactive_offer_writes_only_on_a_yes_or_no(home, tmp_path, monkeypatc
 def test_pending_reads_a_bound_terminal_scope_not_the_launch_env(home, tmp_path, monkeypatch):
     from hermes_cli import sandbox_image_switch as sw
     from hermes_cli.config_defaults import LEGACY_SANDBOX_IMAGE
-    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from hermes_agent.tools.terminal_scope import reset_terminal_scope, set_terminal_scope
 
     _fake_docker(tmp_path, monkeypatch, f"hermes-abc\t{LEGACY_SANDBOX_IMAGE}\n")
     _write(home, {"backend": "docker"})

@@ -1,7 +1,7 @@
 """Connector work in the shared metrics: the search-to-execute chain and the batch and search rows.
 
 Each entry of a connector ``tool_call`` batch dispatches with its own call id (``<id>#<position>``,
-``tools/connectors/dispatch.py``), so entries count as their own calls; the wrapper's post under the
+``hermes_agent/tools/connectors/dispatch.py``), so entries count as their own calls; the wrapper's post under the
 bare id is dropped once an entry ran. Connector slugs, tool names and query text never leave this
 module: rows carry only buckets and closed enums.
 """
@@ -27,7 +27,7 @@ def _call_entries(args: Any) -> list[dict[str, Any]]:
     """The ``calls[]`` entries of a ``tool_call`` invocation; [] when the arguments do not parse."""
     if not isinstance(args, dict):
         return []
-    from tools.tool_search_validation import normalize_tool_call_entries
+    from hermes_agent.tools.tool_search_validation import normalize_tool_call_entries
 
     entries, err = normalize_tool_call_entries(args)
     return [] if err else entries

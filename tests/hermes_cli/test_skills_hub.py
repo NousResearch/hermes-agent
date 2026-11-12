@@ -19,7 +19,7 @@ class _DummyLockFile:
 @pytest.fixture()
 def hub_env(monkeypatch, tmp_path):
     """Set up isolated hub directory paths and return (monkeypatch, tmp_path)."""
-    import tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub as hub
 
     hub_dir = tmp_path / "skills" / ".hub"
     monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path / "skills")
@@ -51,9 +51,9 @@ _BUILTIN_MANIFEST = {"builtin-skill": "abc123"}
 @pytest.fixture()
 def three_source_env(monkeypatch, hub_env):
     """Populate hub/builtin/local skills for source-classification tests."""
-    import tools.skills_hub as hub
-    from tools import skills_sync
-    from tools import skills_tool
+    import hermes_agent.tools.skills_hub as hub
+    from hermes_agent.tools import skills_sync
+    from hermes_agent.tools import skills_tool
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([_HUB_ENTRY]))
     monkeypatch.setattr(skills_tool, "find_all_skills", lambda **_kwargs: list(_ALL_THREE_SKILLS))
@@ -71,7 +71,7 @@ def _capture(source_filter: str = "all") -> str:
 
 
 def _capture_check(monkeypatch, results, name=None) -> str:
-    import tools.skills_hub_install as hub_install
+    import hermes_agent.tools.skills_hub_install as hub_install
 
     sink = StringIO()
     console = Console(file=sink, force_terminal=False, color_system=None)
@@ -81,8 +81,8 @@ def _capture_check(monkeypatch, results, name=None) -> str:
 
 
 def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, bool]]]:
-    import tools.skills_hub as hub
-    import tools.skills_hub_install as hub_install
+    import hermes_agent.tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub_install as hub_install
     import hermes_cli.skills_hub as cli_hub
 
     sink = StringIO()
@@ -146,7 +146,7 @@ def test_check_for_skill_updates_does_not_fall_back_across_registries(tmp_path, 
     the old code reports `update_available` (sourced from the wrong registry)
     while the fixed code reports `unavailable`.
     """
-    from tools.skills_hub_install import check_for_skill_updates
+    from hermes_agent.tools.skills_hub_install import check_for_skill_updates
 
     class _ForeignBundle:
         name = "reddit"
@@ -168,7 +168,7 @@ def test_check_for_skill_updates_does_not_fall_back_across_registries(tmp_path, 
         def inspect(self, identifier):
             return _ForeignBundle()
 
-    from tools import skills_hub as hub
+    from hermes_agent.tools import skills_hub as hub
     monkeypatch.setattr(hub, "SKILLS_DIR", tmp_path)
     (tmp_path / "reddit").mkdir()
     lock = _DummyLockFile([
@@ -199,7 +199,7 @@ def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
     showed the wrong skill.
     """
     from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
-    from tools.skills_hub_models import SkillBundle, SkillMeta
+    from hermes_agent.tools.skills_hub_models import SkillBundle, SkillMeta
 
     class CatalogSource:
         def inspect(self, identifier):
@@ -250,7 +250,7 @@ def test_resolve_does_not_pair_catalog_meta_with_foreign_same_name_bundle():
 
 def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
     from hermes_cli.skills_hub import _resolve_source_meta_and_bundle
-    from tools.skills_hub_models import SkillMeta
+    from hermes_agent.tools.skills_hub_models import SkillMeta
 
     class CatalogSource:
         def inspect(self, identifier):
@@ -288,10 +288,10 @@ def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
 def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch, tmp_path):
     """A preview's (and an install's) sequential resolver calls must share one guarded connection pool."""
     import hermes_cli.skills_hub as cli_hub
-    import tools.skills_hub as hub
-    import tools.skills_hub_search as search
-    import tools.skills_hub_clawhub as clawhub
-    from tools.skills_hub_models import SkillBundle, SkillMeta
+    import hermes_agent.tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub_search as search
+    import hermes_agent.tools.skills_hub_clawhub as clawhub
+    from hermes_agent.tools.skills_hub_models import SkillBundle, SkillMeta
 
     clients = []
     client_kwargs = []
@@ -393,10 +393,10 @@ def _make_url_bundle_fetcher(name="", awaiting_name=True, url="https://example.c
 
 def _install_mocks(monkeypatch, tmp_path, source_factory, category_hint=""):
     """Wire the minimum set of monkeypatches for a do_install dry run."""
-    import tools.skills_hub as hub
-    import tools.skills_hub_install as hub_install
-    import tools.skills_hub_search as hub_search
-    import tools.skills_guard as guard
+    import hermes_agent.tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub_install as hub_install
+    import hermes_agent.tools.skills_hub_search as hub_search
+    import hermes_agent.tools.skills_guard as guard
 
     q_path = tmp_path / "skills" / ".hub" / "quarantine" / "pending"
     q_path.mkdir(parents=True)
@@ -470,9 +470,9 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     sink = StringIO()
     console = Console(file=sink, force_terminal=False, color_system=None, width=40)
 
-    with patch("tools.skills_hub_search.unified_search", return_value=[_LONG_RESULT]), \
-         patch("tools.skills_hub_search.create_source_router", return_value={}), \
-         patch("tools.skills_hub_github.GitHubAuth"):
+    with patch("hermes_agent.tools.skills_hub_search.unified_search", return_value=[_LONG_RESULT]), \
+         patch("hermes_agent.tools.skills_hub_search.create_source_router", return_value={}), \
+         patch("hermes_agent.tools.skills_hub_github.GitHubAuth"):
         do_search("weather", console=console, as_json=True)
 
     # JSON goes to stdout via print(), not the Rich console sink.
@@ -499,9 +499,9 @@ def _update_env(monkeypatch, tmp_path, *, edit_after_install: bool):
     Returns (console_sink, installs_list).
     """
     import hermes_cli.skills_hub as cli_hub
-    import tools.skills_hub as hub
-    import tools.skills_hub_install as hub_install
-    from tools.skills_guard import content_hash
+    import hermes_agent.tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub_install as hub_install
+    from hermes_agent.tools.skills_guard import content_hash
 
     skills_dir = tmp_path / "skills"
     skill_dir = skills_dir / "category" / "hub-skill"
@@ -578,7 +578,7 @@ def test_do_update_unmodified_skill_updates_normally(monkeypatch, tmp_path):
 def _stale_env(monkeypatch):
     """do_install where the index has metadata but the files are gone (404)."""
     import hermes_cli.skills_hub as cli_hub
-    import tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub as hub
 
     class StaleSource:
         def source_id(self):
@@ -629,7 +629,7 @@ def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_
     """No index hit — or a throttled fetch that only *looks* like a stale entry — keeps the
     generic message (plus the rate-limit hint), never the stale-entry verdict."""
     import hermes_cli.skills_hub as cli_hub
-    import tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub as hub
     from hermes_cli.skills_hub import do_install
 
     class ThrottledSource:
@@ -661,7 +661,7 @@ def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_
 
 
 def _meta(name, identifier, source="clawhub"):
-    from tools.skills_hub_models import SkillMeta
+    from hermes_agent.tools.skills_hub_models import SkillMeta
 
     return SkillMeta(name=name, description="", source=source, identifier=identifier,
                      trust_level="community")
@@ -674,7 +674,7 @@ def _sink_console():
 
 def _stub_search(monkeypatch, results):
     """unified_search is late-bound inside _resolve_short_name, so patch its module."""
-    import tools.skills_hub_search as search
+    import hermes_agent.tools.skills_hub_search as search
 
     monkeypatch.setattr(search, "unified_search", lambda *args, **kwargs: list(results))
 
@@ -696,11 +696,11 @@ def test_install_by_name_resolves_to_the_skill_it_names(monkeypatch, tmp_path, i
         assert cli_hub._resolve_short_name(identifier, [], console) == "@emergencescience/blender-bpy-enhanced"
         assert "No exact match" not in sink.getvalue()
         return
-    from tools import skills_sync
+    from hermes_agent.tools import skills_sync
 
-    import tools.skills_hub as hub
-    from tools import skill_usage
-    from tools.skills_hub import HubLockFile
+    import hermes_agent.tools.skills_hub as hub
+    from hermes_agent.tools import skill_usage
+    from hermes_agent.tools.skills_hub import HubLockFile
 
     # hub_env's undo leaves its resolved paths as real globals; drop them so the hub follows the profile.
     for stale in [n for n in vars(hub) if n.isupper() and n.endswith(("_DIR", "_FILE", "_LOG"))]:
@@ -752,8 +752,8 @@ def test_built_in_restore_survives_leftovers_and_records_every_outcome_as_bundle
     retry), refused a skill already present behind a symlinked category the loader follows, and a
     failed restore was labelled a hub install."""
     import hermes_cli.skills_hub as cli_hub
-    import tools.skills_hub as hub
-    from tools import skill_usage, skills_sync
+    import hermes_agent.tools.skills_hub as hub
+    from hermes_agent.tools import skill_usage, skills_sync
 
     for stale in [n for n in vars(hub) if n.isupper() and n.endswith(("_DIR", "_FILE", "_LOG"))]:
         monkeypatch.delitem(vars(hub), stale)
@@ -784,8 +784,8 @@ def test_built_in_restore_into_a_leftover_dir_never_writes_through_links_or_over
     """The leftover-tolerant restore copied with dirs_exist_ok: it followed a symlinked file out of
     skills/ (clobbering the target), overwrote a user-edited file, and called a dir holding another
     skill's SKILL.md the built-in "already available"."""
-    from tools import skill_usage, skills_sync
-    from tools.skills_sync_bundled_ops import ensure_bundled_skill
+    from hermes_agent.tools import skill_usage, skills_sync
+    from hermes_agent.tools.skills_sync_bundled_ops import ensure_bundled_skill
 
     src = dict(skills_sync._discover_bundled_skills(skills_sync._get_bundled_dir()))["arxiv"]
     dest = skill_usage._skills_dir() / src.parent.name / "arxiv"

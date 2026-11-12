@@ -1053,7 +1053,7 @@ def _restart_argv_is_host_gateway(argv: list[str]) -> bool:
 
 def _host_gateway_watcher_env() -> dict[str, str]:
     """Scrubbed default-profile env for a detached host-gateway respawn watcher."""
-    from tools.environments.local import host_gateway_child_env
+    from hermes_agent.tools.environments.local import host_gateway_child_env
     env = host_gateway_child_env()
     env.pop("_HERMES_GATEWAY", None)
     return env
@@ -5014,7 +5014,7 @@ def _stop_installed_service(system: bool) -> bool:
 
 def _refuse_from_inside_gateway(verb: str, reason: str) -> None:
     """Refuse self-targeting stop/restart/uninstall from inside the gateway process (#92560)."""
-    from tools.process_registry import _is_supervised_gateway_process
+    from hermes_agent.tools.process_registry import _is_supervised_gateway_process
     if _is_supervised_gateway_process():
         print_error(
             f"Refusing to {verb} the gateway from inside the gateway process.\n"

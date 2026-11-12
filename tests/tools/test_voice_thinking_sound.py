@@ -1,4 +1,4 @@
-"""Tests for the ambient voice-chat "thinking" sound (tools/voice_mode.py).
+"""Tests for the ambient voice-chat "thinking" sound (hermes_agent/tools/voice_mode.py).
 
 Contract:
   - `voice.thinking_sound` config gates it (default True).
@@ -22,7 +22,7 @@ np = pytest.importorskip(
     "numpy", reason="numpy is a lazy voice dependency, absent in hermetic CI"
 )
 
-import tools.voice_mode as vm
+import hermes_agent.tools.voice_mode as vm
 
 
 class _FakeSD:

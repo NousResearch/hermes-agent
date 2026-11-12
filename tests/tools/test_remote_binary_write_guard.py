@@ -17,10 +17,10 @@ from types import SimpleNamespace
 
 import pytest
 
-import tools.file_tools as file_tools_mod
-from tools import terminal_tool
-from tools.environments.local import LocalEnvironment, _bash_safe_path
-from tools.registry import registry
+import hermes_agent.tools.file_tools as file_tools_mod
+from hermes_agent.tools import terminal_tool
+from hermes_agent.tools.environments.local import LocalEnvironment, _bash_safe_path
+from hermes_agent.tools.registry import registry
 
 _KEEP = "KEEPME line"
 _BROKEN = "CHANGED line"

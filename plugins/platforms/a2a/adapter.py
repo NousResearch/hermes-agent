@@ -485,7 +485,7 @@ class A2AAdapter(BasePlatformAdapter):
         static fallback without a registry."""
         configured = (agent or {}).get("advertised_toolsets") if agent else self._advertised_toolsets
         try:
-            from tools.registry import registry as tool_registry
+            from hermes_agent.tools.registry import registry as tool_registry
             allowed = set(configured or []) or None
             mapping = {n: tool_registry.get_tool_names_for_toolset(n)
                        for n in tool_registry.get_registered_toolset_names() if allowed is None or n in allowed}

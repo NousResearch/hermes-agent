@@ -8,7 +8,7 @@ Hermes process can reap the Chromium of an owner that crashed, after proving the
 a throwaway profile's in its home (``<HERMES_HOME>/cache/browser/chromium-records``), a persistent profile's
 in that profile's own dir under :func:`_shared_profiles_root` (per OS user: every home pinning the dir shares
 it). A shared-profile Chromium other Hermes processes attached to is stopped only by its last holder
-(``tools/browser_launcher_holders.py``).
+(``hermes_agent/tools/browser_launcher_holders.py``).
 
 Stop is always parent-first (``ProcessRegistry._terminate_host_pid``): Chromium reaps its own
 zygotes and renderers on SIGTERM, and killing a zygote first turns a clean exit into a crash dump.
@@ -36,7 +36,7 @@ from typing import Any, Callable, Optional
 logger = logging.getLogger(__name__)
 
 # THE Chromium startup flags for a host where its sandbox cannot work. The Bot Desktop dock's Browser
-# icon (same binary, same profile) uses the same list (``tools.bot_desktop.browser.dock_argv``), or the
+# icon (same binary, same profile) uses the same list (``hermes_agent.tools.bot_desktop.browser.dock_argv``), or the
 # human's click dies while the agent's launch works.
 CHROMIUM_SANDBOX_BYPASS_ARGS: tuple[str, ...] = ("--no-sandbox", "--disable-dev-shm-usage")
 
@@ -192,7 +192,7 @@ def _default_user_data_dir(key: str, home_key: str) -> str:
     named sessions), and each launch wipes its throwaway dir first. The name carries the owner's pid and
     start time: a process that dies before its launch record exists leaves the dir to the reaper
     (:func:`_reclaim_throwaway_dirs`)."""
-    from tools.browser_launcher_holders import ns_tag
+    from hermes_agent.tools.browser_launcher_holders import ns_tag
     digest = hashlib.sha256(f"{home_key}\0{key}".encode()).hexdigest()[:16]
     pid = os.getpid()
     started = _start_time(pid)
@@ -203,7 +203,7 @@ def _default_user_data_dir(key: str, home_key: str) -> str:
 def _launch_timeout(timeout: Optional[float]) -> float:
     if timeout is not None:
         return float(timeout)
-    from tools.browser_session_cloud import command_timeout
+    from hermes_agent.tools.browser_session_cloud import command_timeout
     return float(max(command_timeout(), _MIN_FIRST_LAUNCH_TIMEOUT_S))
 
 
@@ -215,7 +215,7 @@ def _resolve_headed(headed: Optional[bool], env: dict) -> bool:
     """Headless unless ``browser.headed``; a display-less Linux host stays headless (a headed launch
     would die there). Windows obeys the same rule: headless unless the user opted in (#64867)."""
     if headed is None:
-        from tools.browser_session_cloud import is_headed_mode
+        from hermes_agent.tools.browser_session_cloud import is_headed_mode
         headed = is_headed_mode()
     if not headed:
         return False
@@ -223,7 +223,7 @@ def _resolve_headed(headed: Optional[bool], env: dict) -> bool:
 
 
 def _configured_chromium_args() -> list[str]:
-    from tools.browser_session_cloud import chromium_args
+    from hermes_agent.tools.browser_session_cloud import chromium_args
     return chromium_args()
 
 
@@ -334,7 +334,7 @@ def _foreign_record_names(user_data_dir: str, pid: int) -> bool:
     """A launch record from another PID namespace names ``pid`` as shared profile ``user_data_dir``'s browser: the one
     serving the profile's DevTools endpoint now, or one not yet up there (its record has no endpoint). An earlier
     launch there that reached another endpoint is not that browser, whatever pid number it had."""
-    from tools.browser_launcher_holders import same_namespace
+    from hermes_agent.tools.browser_launcher_holders import same_namespace
     state = _shared_state_dir(user_data_dir)
     if state is None:
         return False
@@ -445,7 +445,7 @@ def _attach_running(key: str, user_data_dir: str, home_key: str) -> Optional[Lau
                             owned=False, ephemeral=False, home_key=home_key)
     records = _state_dir(browser)
     if records is not None:
-        from tools import browser_launcher_holders as holders
+        from hermes_agent.tools import browser_launcher_holders as holders
         _bind_launch_record(records, browser)
         _adopt_record(browser)
         holders.write_lease(_record_path(browser), browser)  # its launcher's exit must not stop it under us
@@ -482,7 +482,7 @@ def _attach_foreign(key: str, user_data_dir: str, home_key: str, pid: int) -> Op
     browser.foreign = True
     records = _state_dir(browser)
     if records is not None:
-        from tools import browser_launcher_holders as holders
+        from hermes_agent.tools import browser_launcher_holders as holders
         _bind_launch_record(records, browser)
         holders.write_lease(_record_path(browser), browser)  # its launcher's exit must not stop it under us
     return browser
@@ -532,7 +532,7 @@ def _start_shared(key: str, executable: str, udd: str, home_key: str, prepare,
     probe and the lease. A first launch holds the lock for its whole readiness wait; the reaper skips a busy
     profile instead of waiting (:func:`_reap_shared_profiles`). A browser another environment holds is attached
     through its endpoint, or refused; never launched over."""
-    from tools import browser_launcher_holders as holders
+    from hermes_agent.tools import browser_launcher_holders as holders
     state = _shared_state_dir(udd)
     with holders.records_lock(state) if state is not None else contextlib.nullcontext():
         foreign = _foreign_holder(udd)
@@ -573,7 +573,7 @@ def launch_chromium(key: str, *, executable: Optional[str] = None, user_data_dir
     # Loaded now, not first at teardown: stopping the browser from an atexit hook must not be this module's
     # first import (Python refuses new atexit registrations during shutdown, orphaning the browser). An
     # attacher needs it too: it is the one that stops a shared browser when it is the last holder.
-    import tools.process_registry
+    import hermes_agent.tools.process_registry
     with _key_lock(key):  # one launch per key; other keys launch concurrently
         existing = get_browser(key)
         if existing is not None:
@@ -604,7 +604,7 @@ def _launch_owned(key: str, executable: str, udd: str, *, ephemeral: bool, packa
                   extra_args, env, timeout, home_key: str, sandbox_bypass: bool,
                   ) -> tuple[Optional[LaunchedBrowser], Optional[str]]:
     if env is None:
-        from tools.browser_session import build_browser_env
+        from hermes_agent.tools.browser_session import build_browser_env
         env = build_browser_env()
     try:
         _prepare_dir(udd, ephemeral)
@@ -732,7 +732,7 @@ def _forget(key: str, browser: LaunchedBrowser, *, drop_record: bool = True) -> 
     if not browser.ephemeral and heir is None:
         record = _record_path(browser)
         if record is not None:
-            from tools.browser_launcher_holders import drop_lease
+            from hermes_agent.tools.browser_launcher_holders import drop_lease
             drop_lease(record)
     if browser.owned and drop_record:
         _remove_record(browser)
@@ -741,10 +741,10 @@ def _forget(key: str, browser: LaunchedBrowser, *, drop_record: bool = True) -> 
 
 
 def _terminate(pid: Optional[int], start_time: Optional[int], proc: Optional[subprocess.Popen]) -> None:
-    """Parent-first teardown (tools/AGENTS.md): SIGTERM the browser alone, then its snapshot survivors."""
+    """Parent-first teardown (hermes_agent/tools/AGENTS.md): SIGTERM the browser alone, then its snapshot survivors."""
     if not pid:
         return
-    from tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry import ProcessRegistry
     try:
         ProcessRegistry._terminate_host_pid(pid, start_time)
     except OSError as exc:
@@ -778,7 +778,7 @@ def _stop_locked(key: str) -> None:
         with _lock:
             _forget(key, browser)
         return
-    from tools.browser_launcher_holders import records_lock
+    from hermes_agent.tools.browser_launcher_holders import records_lock
     with records_lock(record.parent):  # the decision and the forget are one step: another key may be the heir
         if _heir_key(browser) is None and _last_holder_out(record, browser):
             _terminate(browser.pid, browser.start_time, proc)
@@ -791,7 +791,7 @@ def _last_holder_out(record: Path, browser: LaunchedBrowser) -> bool:
     """Drop this process's hold on shared-profile ``browser`` (caller holds the records lock). True when it
     must stop it now: no other live Hermes process holds it, and Hermes launched it (a launch record names
     it). Otherwise a record this process holds, or whose owner is gone, goes to a live holder."""
-    from tools import browser_launcher_holders as holders
+    from hermes_agent.tools import browser_launcher_holders as holders
     holders.drop_lease(record)
     if browser.foreign:  # its pid names nobody here: stopped (or reaped) only from its own environment
         return False
@@ -881,7 +881,7 @@ def _record_is(record: dict, browser: LaunchedBrowser) -> bool:
     """``record`` describes this launch of ``browser``: same pid and profile, and its start time; for a browser of
     another environment (its pid is another namespace's number and its start time unreadable here), a record from
     another namespace naming the DevTools browser id its endpoint serves."""
-    from tools.browser_launcher_holders import same_namespace
+    from hermes_agent.tools.browser_launcher_holders import same_namespace
     if record.get("pid") != browser.pid or not _same_profile(record.get("user_data_dir"), browser.user_data_dir):
         return False
     if browser.foreign:
@@ -913,12 +913,12 @@ def _record_path(browser: LaunchedBrowser) -> Optional[Path]:
 
 def _record_name(browser: LaunchedBrowser) -> str:
     """The launch record ``browser``'s leases are keyed by: the one it was bound to, else this namespace's name."""
-    from tools.browser_launcher_holders import ns_tag
+    from hermes_agent.tools.browser_launcher_holders import ns_tag
     return browser.record_name or f"{_profile_digest(browser.user_data_dir)[:16]}-{browser.pid}{ns_tag()}.json"
 
 
 def _write_record(browser: LaunchedBrowser) -> None:
-    from tools import browser_launcher_holders as holders
+    from hermes_agent.tools import browser_launcher_holders as holders
     from utils import atomic_json_write
     record = {"owner_pid": os.getpid(), "owner_start_time": _start_time(os.getpid()), "pid": browser.pid,
               "start_time": browser.start_time, "user_data_dir": browser.user_data_dir,
@@ -943,7 +943,7 @@ def _remove_record(browser: LaunchedBrowser) -> None:
 
 def _owner_alive(record: dict) -> bool:
     """The record's owner is alive, or cannot be proven gone (it was written in another PID namespace)."""
-    from tools.browser_launcher_holders import same_namespace
+    from hermes_agent.tools.browser_launcher_holders import same_namespace
     if not same_namespace(record):
         return True
     owner = record.get("owner_pid")
@@ -1025,7 +1025,7 @@ def _load_record(path: Path) -> Optional[dict]:
 
 def _reap_record(path: Path, home: Optional[str]) -> bool:
     """Caller holds the records lock."""
-    from tools import browser_launcher_holders as holders
+    from hermes_agent.tools import browser_launcher_holders as holders
     record = _load_record(path)
     if record is None or not holders.same_namespace(record):  # another namespace's pids name nobody here
         return False
@@ -1079,7 +1079,7 @@ def _reap_state_dir(records: Path, home: Optional[str]) -> int:
     if not _is_private_dir(records):
         logger.debug("browser: not reaping from %s: not a private directory of this user", records)
         return 0
-    from tools import browser_launcher_holders as holders
+    from hermes_agent.tools import browser_launcher_holders as holders
     with holders.records_lock(records, blocking=home is not None) as locked:
         if not locked:
             logger.debug("browser: %s is busy (a launch or stop holds it); reaping it next pass", records)
@@ -1105,7 +1105,7 @@ def _reclaim_throwaway_dirs(home: str) -> None:
     root = _ephemeral_root(home)
     if not os.path.lexists(root) or not _is_private_dir(root):
         return
-    from tools.browser_launcher_holders import ns_tag, process_alive
+    from hermes_agent.tools.browser_launcher_holders import ns_tag, process_alive
     try:
         entries = list(root.iterdir())
     except OSError as exc:

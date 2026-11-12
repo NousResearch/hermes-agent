@@ -31,8 +31,8 @@ def test_init_tries_fallback_when_primary_returns_none():
         return None, None  # primary exhausted
 
     with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
-         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
-         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
          patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         agent = AIAgent(
@@ -53,8 +53,8 @@ def test_init_tries_fallback_when_primary_returns_none():
 def test_init_raises_when_no_fallback_configured():
     """When primary returns None and no fallback is set, should raise."""
     with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
-         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
-         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
          patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         with pytest.raises(RuntimeError, match="no API key was found"):
@@ -89,8 +89,8 @@ def test_init_tries_fallback_when_openrouter_pool_exhausted():
         return None, None  # openrouter pool exhausted
 
     with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
-         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
-         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
          patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         agent = AIAgent(
@@ -116,8 +116,8 @@ def test_init_openrouter_exhausted_without_chain_keeps_generic_error():
     """openrouter exhausted + no usable fallback keeps the generic
     'No LLM provider configured' error (not the named-provider one)."""
     with patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)), \
-         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
-         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
          patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         with pytest.raises(RuntimeError, match="No LLM provider configured"):
@@ -170,8 +170,8 @@ def test_init_fallback_recomputes_api_mode_for_per_model_profile_exception():
     with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
          patch("providers.get_provider_profile",
                side_effect=lambda name: _RELAY if name == "acme-relay" else real_get_profile(name)), \
-         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
-         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
          patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         agent = AIAgent(
@@ -205,8 +205,8 @@ def test_init_fallback_keeps_codex_responses_for_openai_codex():
         return None, None
 
     with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve), \
-         patch("model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
-         patch("model_tools.check_toolset_requirements", return_value={}), \
+         patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs()), \
+         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}), \
          patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
 
         agent = AIAgent(

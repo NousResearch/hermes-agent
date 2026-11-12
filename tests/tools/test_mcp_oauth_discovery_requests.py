@@ -30,13 +30,13 @@ async def _noop_callback():
 
 
 async def _make_flow(tmp_path, monkeypatch, *, registered=True):
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool import sdk_httpx
     httpx = sdk_httpx()
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
     from pydantic import AnyUrl
 
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
 
     assert _HERMES_PROVIDER_CLS is not None
 
@@ -74,7 +74,7 @@ async def _make_flow(tmp_path, monkeypatch, *, registered=True):
 
 @pytest.mark.asyncio
 async def test_discovery_request_gets_default_user_agent(tmp_path, monkeypatch):
-    from tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT
+    from hermes_agent.tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT
 
     httpx, req, flow = await _make_flow(tmp_path, monkeypatch)
     outbound = await flow.__anext__()
@@ -112,7 +112,7 @@ async def test_registration_failure_after_failed_discovery_leads_with_discovery(
     host; the surfaced error must name the metadata refusal first, not only the fallback 404 (#113771),
     and must not be mistaken for a DCR allowlist refusal by the humanizer."""
     from mcp.client.auth.oauth2 import OAuthRegistrationError
-    from tools.mcp_oauth import humanize_oauth_registration_error
+    from hermes_agent.tools.mcp_oauth import humanize_oauth_registration_error
 
     httpx, _req, flow = await _make_flow(tmp_path, monkeypatch, registered=False)
     outbound = await flow.__anext__()

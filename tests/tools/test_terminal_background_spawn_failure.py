@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from tools.process_registry import process_registry
-from tools.terminal_tool_background import spawn_background_process
+from hermes_agent.tools.process_registry import process_registry
+from hermes_agent.tools.terminal_tool_background import spawn_background_process
 
 
 class _SandboxEnv:

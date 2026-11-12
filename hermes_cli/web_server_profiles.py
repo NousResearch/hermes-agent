@@ -82,7 +82,7 @@ def _approval_mode_of(config: dict[str, Any]) -> str:
     broadcast comparison use in-memory documents: re-reading through the config cache after
     a save can serve the pre-save document when the replacement file collides on the
     (mtime_ns, size) cache key, suppressing the broadcast exactly when the mode changed."""
-    from tools.approval_context import _normalize_approval_mode
+    from hermes_agent.tools.approval_context import _normalize_approval_mode
     approvals = config.get("approvals")
     default_mode = (DEFAULT_CONFIG.get("approvals") or {}).get("mode", "manual")
     mode = approvals.get("mode", default_mode) if isinstance(approvals, dict) else default_mode
@@ -210,21 +210,21 @@ def _profile_scope(profile: Optional[str]):
     """Scope config + skill-directory resolution to ``profile`` for one request.
 
     Two seams: (1) ``load_config``/``save_config`` resolve ``get_hermes_home()`` at call
-    time, so the contextvar override reaches them; (2) ``tools.skills_tool`` /
-    ``tools.skill_manager_tool`` bind ``SKILLS_DIR`` at import time, so both are retargeted
+    time, so the contextvar override reaches them; (2) ``hermes_agent.tools.skills_tool`` /
+    ``hermes_agent.tools.skill_manager_tool`` bind ``SKILLS_DIR`` at import time, so both are retargeted
     under a lock and restored after. For the dashboard's own profile config resolution is
     untouched, but the skill-module globals are still retargeted to the *current*
     ``get_hermes_home()`` so writes land in the live home even when the import-time binding
     is stale (test isolation, late HERMES_HOME override). Yields the profile dir for a named
     profile, None for the current one.
 
-    ``tools.skills_sync`` (reset/diff/list-modified/opt-in/opt-out/ repair-official) needs NO retargeting:
+    ``hermes_agent.tools.skills_sync`` (reset/diff/list-modified/opt-in/opt-out/ repair-official) needs NO retargeting:
     since #65828 its directory lookups resolve at call time through the same contextvar override set in step
     1.
     """
     from hermes_constants import get_hermes_home
-    from tools import skills_tool as _skills_tool
-    from tools import skill_manager_tool as _skill_mgr
+    from hermes_agent.tools import skills_tool as _skills_tool
+    from hermes_agent.tools import skill_manager_tool as _skill_mgr
     with _config_profile_scope(profile) as scoped:
         profile_dir = get_hermes_home() if scoped is None else scoped
         modules = (_skills_tool, _skill_mgr)
@@ -291,7 +291,7 @@ def _config_profile_scope(profile: Optional[str]):
 
 
 # Terminal backend picker rows — GUI counterpart of terminal.backend. Keep in sync with
-# tools/terminal_tool.py::_create_environment and the terminal.backend enum.
+# hermes_agent/tools/terminal_tool.py::_create_environment and the terminal.backend enum.
 
 # --------------------------------------------------------------------------- Terminal execution backend
 # picker — the GUI counterpart of terminal.backend in config.yaml. Each row carries a fast, defensive health
@@ -439,7 +439,7 @@ def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
     ``clawhub/<slug>`` id a catalog card installs. Search lists a ClawHub skill by its bare
     slug; a client looks such a hit up under that card id, going by the hit's source."""
     try:
-        from tools.skills_hub import HubLockFile
+        from hermes_agent.tools.skills_hub import HubLockFile
         if _is_current_profile(profile):
             lock = HubLockFile()
         else:

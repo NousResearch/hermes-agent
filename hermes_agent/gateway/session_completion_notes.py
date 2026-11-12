@@ -50,7 +50,7 @@ def _wakes_unviewed_parent(authority, session_id, live, descriptor):
     would be refused the background and run inside the wake turn. Not past ``UNATTENDED_WAKE_LIMIT``."""
     if not descriptor.get('wakes_parent'):
         return False
-    from tools.async_delegation import refused_for_session
+    from hermes_agent.tools.async_delegation import refused_for_session
     if refused_for_session((authority.profile_id, session_id)) or live.unattended_wakes >= UNATTENDED_WAKE_LIMIT:
         return False
     live.unattended_wakes += 1

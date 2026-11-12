@@ -7,7 +7,7 @@ user docs: `website/docs/user-guide/features/skills.md`, `curator.md`.
 
 - **`skills/`** — built-in, loadable by default, organised by category (`skills/github/`, `skills/mlops/`).
 - **`optional-skills/`** — heavier/niche skills shipped but NOT active; installed via
-  `hermes skills install official/<category>/<skill>` (adapter `tools/skills_hub_official.py`
+  `hermes skills install official/<category>/<skill>` (adapter `hermes_agent/tools/skills_hub_official.py`
   `OptionalSkillSource`). Categories: `autonomous-ai-agents, blockchain, communication, creative,
   devops, email, health, mcp, migration, mlops, productivity, research, security, web-development`.
 
@@ -67,7 +67,7 @@ Background maintenance that tracks usage on agent-created skills and auto-archiv
 archives go to `~/.hermes/skills/.archive/` and are restorable. Core `agent/curator.py` (review
 loop, auto-transitions, LLM review prompt) + `agent/curator_backup.py` (pre-run tar.gz snapshots);
 CLI `hermes_cli/curator.py` → `hermes curator status|run|pause|resume|pin|unpin|archive|restore|
-prune|backup|rollback`; telemetry `tools/skill_usage.py` owns `~/.hermes/skills/.usage.json`
+prune|backup|rollback`; telemetry `hermes_agent/tools/skill_usage.py` owns `~/.hermes/skills/.usage.json`
 (`use_count`, `view_count`, `patch_count`, `last_activity_at`, `state` active/stale/archived,
 `pinned`). Config `curator:` — `enabled, interval_hours, min_idle_hours, stale_after_days,
 archive_after_days, backup.*`; its LLM calls route through `auxiliary` (`agent/AGENTS.md`).

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from tools.browser_cdp_tool import _redact_cdp_output
+from hermes_agent.tools.browser_cdp_tool import _redact_cdp_output
 
 SECRET = "sk-" + "a" * 30
 WALKERS = [_redact_cdp_output]

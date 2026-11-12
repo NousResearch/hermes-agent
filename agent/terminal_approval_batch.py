@@ -14,7 +14,7 @@ import time
 from contextlib import contextmanager
 from typing import Any
 
-from tools.thread_context import propagate_context_to_thread
+from hermes_agent.tools.thread_context import propagate_context_to_thread
 
 _batch: contextvars.ContextVar[Any] = contextvars.ContextVar("terminal_approval_batch", default=None)
 _slot: contextvars.ContextVar[Any] = contextvars.ContextVar("terminal_approval_slot", default=None)
@@ -42,7 +42,7 @@ class _TerminalSlot:
             raise _CancelledPreparation("Terminal approval preparation cancelled; command was not started")
 
     def prepare(self, ref):
-        from tools import terminal_tool as tt
+        from hermes_agent.tools import terminal_tool as tt
         self.check_cancelled()
         self.args = copy.deepcopy(ref.args)
         self.preparing = True
@@ -51,7 +51,7 @@ class _TerminalSlot:
             # shell state later, after the previous result has been persisted.
             config = tt._get_env_config()
             if isinstance(ref.args.get("command"), str):
-                from tools.approval_context import set_current_observability_context, reset_current_observability_context
+                from hermes_agent.tools.approval_context import set_current_observability_context, reset_current_observability_context
                 tokens = set_current_observability_context(
                     tool_call_id=ref.call_id, session_id=self.batch.agent.session_id or "",
                     turn_id=getattr(self.batch.agent, "_current_turn_id", "") or "",
@@ -95,10 +95,10 @@ class _TerminalSlot:
 class _TerminalBatch:
     def __init__(self, agent, messages, task_id, parsed):
         from agent.tool_executor import _ConcurrentToolAuthorizationGate
-        from tools.daemon_pool import DaemonThreadPoolExecutor
+        from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
         self.agent, self.messages, self.task_id = agent, messages, task_id
         self.cancelled = threading.Event()
-        self.pending_approvals = []  # guarded by tools.approval._lock
+        self.pending_approvals = []  # guarded by hermes_agent.tools.approval._lock
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.executor = DaemonThreadPoolExecutor(max_workers=len(parsed))
         self.slots = [_TerminalSlot(self, pc, i) for i, pc in enumerate(parsed)]
@@ -127,7 +127,7 @@ class _TerminalBatch:
 
     def close(self):
         from agent.tool_executor import _interrupt_worker_tids
-        from tools import approval
+        from hermes_agent.tools import approval
         # Withdraw only this batch's requests, including a worker wedged in
         # notify_cb. Thread interrupts alone leave those requests actionable.
         with approval._lock:
@@ -231,7 +231,7 @@ def consume_prepared_guard(command, env_type, has_host_access):
     if slot.batch.failure_seen and slot.decision is not None:
         slot.decision = None
         return None
-    from tools.approval_context import _approval_tool_call_id
+    from hermes_agent.tools.approval_context import _approval_tool_call_id
     if (_approval_tool_call_id.get() != slot.parsed.ref(slot.batch.task_id).call_id
             or slot.guard_key != (command, env_type, has_host_access)):
         return None
@@ -240,7 +240,7 @@ def consume_prepared_guard(command, env_type, has_host_access):
     # approvals.mode off, the allowlist, a clean command) is policy, and the policy in force NOW
     # governs: switching YOLO or "Approvals: off" off mid-batch must stop the later commands.
     if decision is not None and decision.get("approved") and not decision.get("user_approved"):
-        from tools.approval_context import _get_approval_mode
+        from hermes_agent.tools.approval_context import _get_approval_mode
         if not (decision.get("smart_approved") and _get_approval_mode() == "smart"):
             return None
     return decision
@@ -292,7 +292,7 @@ def terminal_approval_runs(agent, calls):
 @contextmanager
 def terminal_approval_batch(agent, calls, messages, task_id):
     from hermes_agent.gateway.session_context import get_session_env
-    from tools import approval
+    from hermes_agent.tools import approval
     from agent.tool_executor import _parse_tool_call
     if (len(calls) < 2 or get_session_env("HERMES_SESSION_SOURCE") != "desktop"
             or approval._gateway_notify_cb(approval.get_current_session_key()) is None):

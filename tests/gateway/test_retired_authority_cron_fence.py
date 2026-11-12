@@ -32,7 +32,7 @@ async def _settle(authority, receipt):
 
 
 def _no_receipt(db, home):
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     return read_delivery_result(home, 'e' * 64) is None
 
 

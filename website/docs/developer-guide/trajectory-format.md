@@ -61,7 +61,7 @@ Each line in the file is a self-contained JSON object. There are two variants:
 ```
 
 The `tool_stats` and `tool_error_counts` dictionaries are normalized to include
-ALL possible tools (from `model_tools.TOOL_TO_TOOLSET_MAP`) with zero defaults,
+ALL possible tools (from `hermes_agent.model_tools.TOOL_TO_TOOLSET_MAP`) with zero defaults,
 ensuring consistent schema across entries for HuggingFace dataset loading.
 
 

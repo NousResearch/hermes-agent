@@ -1,7 +1,7 @@
 """Read the real-profile browser's saved logins for the vault's read-only ``browser:`` backend.
 
 NO decryption happens here. Two decryption-free reads, both from the already-running real-profile
-browser Hermes owns (``tools.browser_session_real_profile.real_profile_cdp``), the same mechanism
+browser Hermes owns (``hermes_agent.tools.browser_session_real_profile.real_profile_cdp``), the same mechanism
 PR #150283 used for cookies:
 
 - **list metadata** — ``origin_url`` and ``username_value`` are PLAINTEXT columns in the profile's

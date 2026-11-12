@@ -121,7 +121,7 @@ def make_mock(sanitized_name: str):
 
 
 def register_epic_tools_adversarial() -> int:
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     tools = load_epic_tools("full")
     for tdef in tools:
         registry.register(
@@ -214,7 +214,7 @@ def run_one(scenario, mode, rep, out_dir: Path):
     base.reset_module_state()
     n_registered = register_epic_tools_adversarial()
 
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     original_dispatch = registry.dispatch
     call_log: list[dict[str, Any]] = []
 

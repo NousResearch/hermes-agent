@@ -1,9 +1,9 @@
 """xAI Grok-Imagine video generation backend.
 
 Text-, image- and reference-to-video through the unified video provider; edit/extend are exposed by
-``tools.xai_video_tools`` via ``run_xai_video_edit`` / ``run_xai_video_extend``. Auth: xAI Grok OAuth tokens
+``hermes_agent.tools.xai_video_tools`` via ``run_xai_video_edit`` / ``run_xai_video_extend``. Auth: xAI Grok OAuth tokens
 (preferred — billed to the user's SuperGrok / X Premium+ subscription) or ``XAI_API_KEY``, both via
-``tools.xai_http.resolve_xai_http_credentials``. With xAI storage enabled the primary ``video`` / ``public_url``
+``hermes_agent.tools.xai_http.resolve_xai_http_credentials``. With xAI storage enabled the primary ``video`` / ``public_url``
 fields are the stored files-cdn HTTPS link; pass it as ``video_url`` for edit/extend (sent as ``video.url``).
 """
 
@@ -54,9 +54,9 @@ _MODELS: dict[str, dict[str, Any]] = {
 
 
 def _xai_http(helper: str, fallback: Any, *args: Any, log: Optional[str] = None) -> Any:
-    """``tools.xai_http.<helper>(*args)``, or ``fallback`` when it is unavailable or raises (never breaks video gen)."""
+    """``hermes_agent.tools.xai_http.<helper>(*args)``, or ``fallback`` when it is unavailable or raises (never breaks video gen)."""
     try:
-        from tools import xai_http
+        from hermes_agent.tools import xai_http
         return getattr(xai_http, helper)(*args)
     except Exception as exc:
         if log:
@@ -259,7 +259,7 @@ async def _submit_xai_video_payload(api_key: str, base_url: str, endpoint: str, 
     """POST ``payload`` to ``/videos/{endpoint}``, poll ``/videos/{request_id}`` to a terminal status, shape the response."""
     prompt, resolved_model = payload["prompt"], payload["model"]
     try:
-        from tools.xai_http import build_xai_storage_options, maybe_mark_xai_storage_notice_seen, read_xai_imagine_storage_config
+        from hermes_agent.tools.xai_http import build_xai_storage_options, maybe_mark_xai_storage_notice_seen, read_xai_imagine_storage_config
         storage_options = build_xai_storage_options("video_gen", filename_prefix="hermes-xai-video", extension="mp4")
         storage_notice = maybe_mark_xai_storage_notice_seen("video_gen")
         storage_cfg = read_xai_imagine_storage_config("video_gen")

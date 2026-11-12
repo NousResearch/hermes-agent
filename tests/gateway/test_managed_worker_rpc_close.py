@@ -48,7 +48,7 @@ def _execute(tmp_path, monkeypatch, events, *, start_error=None, close_error=Non
     monkeypatch.setattr(worker, 'WorkerControls', Controls)
     monkeypatch.setattr('agent.runtime_session_store.WorkerRPC', RPC)
     monkeypatch.setattr('agent.runtime_session_store.RuntimeSessionStore', Store)
-    monkeypatch.setattr('tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
+    monkeypatch.setattr('hermes_agent.tools.process_registry.process_registry.recover_from_checkpoint', lambda: None)
     monkeypatch.setattr('run_agent.AIAgent', Agent)
     monkeypatch.setattr('agent.title_generator.wait_for_title_upgrades', lambda: None)
     worker.execute(frame, SimpleNamespace(send=lambda kind, **payload: events.append(kind)))

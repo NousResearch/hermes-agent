@@ -350,14 +350,14 @@ def _set_yolo(rid, params, key, value, session):
     scope = _word(params.get("scope") or "session")
     raw = _word(value)
     if scope == "global":
-        from tools.approval_context import _normalize_approval_mode
+        from hermes_agent.tools.approval_context import _normalize_approval_mode
         appr = _load_cfg().get("approvals")
         appr = appr if isinstance(appr, dict) else {}
         enable = _BOOL_WORDS.get(raw, _normalize_approval_mode(appr.get("mode", "manual")) != "off")
         _write_config_key("approvals.mode", "off" if enable else "manual")  # binary: no "smart" restore
         _emit_all_session_info()  # reflect the flip in every live indicator
     elif session:
-        from tools.approval_yolo import toggle_session_yolo
+        from hermes_agent.tools.approval_yolo import toggle_session_yolo
         # Row id prefers the agent's session_id: after compression the key can still name the ended parent (#20001).
         row_id = getattr(session.get("agent"), "session_id", None) or session["session_key"]
 

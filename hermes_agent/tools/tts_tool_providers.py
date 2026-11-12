@@ -1,4 +1,4 @@
-"""Cloud TTS backends for ``tools.tts_tool``: Edge, ElevenLabs, xAI, MiniMax, Mistral, Gemini.
+"""Cloud TTS backends for ``hermes_agent.tools.tts_tool``: Edge, ElevenLabs, xAI, MiniMax, Mistral, Gemini.
 
 Each ``_generate_<provider>(text, output_path, tts_config) -> path`` writes one final-encoded
 file. Shared here: bounded upstream response reading (16 MiB cap so a hostile endpoint can't
@@ -20,10 +20,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
-from tools.tts_tool_delivery import _origin, _section, _wrap_pcm_as_wav, _write_wav_bytes_as
-from tools.xai_http import hermes_xai_user_agent
+from hermes_agent.tools.tts_tool_delivery import _origin, _section, _wrap_pcm_as_wav, _write_wav_bytes_as
+from hermes_agent.tools.xai_http import hermes_xai_user_agent
 
-logger = logging.getLogger("tools.tts_tool")
+logger = logging.getLogger("hermes_agent.tools.tts_tool")
 
 DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
 DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
@@ -285,7 +285,7 @@ def _clamped_number(raw: Any, cast, lo, hi):
 
 
 def _generate_xai_tts(text: str, output_path: str, tts_config: dict[str, Any]) -> str:
-    from tools.xai_http import resolve_xai_http_credentials
+    from hermes_agent.tools.xai_http import resolve_xai_http_credentials
 
     # TTS is API-billed: a subscription OAuth bearer can authorize chat while
     # returning 403 for /v1/tts, so prefer an explicit XAI_API_KEY over OAuth.

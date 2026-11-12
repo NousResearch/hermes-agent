@@ -7,7 +7,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from tools import tts_tool
+from hermes_agent.tools import tts_tool
 
 _EL_CONFIG = {"provider": "elevenlabs", "elevenlabs": {"voice_id": "configuredVoice001"}}
 
@@ -15,7 +15,7 @@ _EL_CONFIG = {"provider": "elevenlabs", "elevenlabs": {"voice_id": "configuredVo
 @pytest.mark.parametrize("config, exposed", [
     (_EL_CONFIG, True), ({"provider": "edge"}, False), ({"provider": "openai"}, False)])
 def test_voice_selection_surface_follows_provider(config, exposed):
-    with patch("tools.tts_tool._load_tts_config", return_value=config):
+    with patch("hermes_agent.tools.tts_tool._load_tts_config", return_value=config):
         schema = tts_tool._tts_schema_overrides()
         searched = json.loads(tts_tool.text_to_speech_tool("", find_voices={"query": "orc"}))
     props = schema["parameters"]["properties"]
@@ -37,9 +37,9 @@ def test_voice_id_reaches_elevenlabs_and_is_ignored_elsewhere(tmp_path):
             seen.append(voice_id)
             return [b"ID3\x03\x00\x00\x00\x00\x00\x00"]
 
-    with patch("tools.tts_tool._import_elevenlabs", return_value=_FakeElevenLabs), \
-         patch("tools.tts_tool._resolve_provider_key", return_value="el-test-key"), \
-         patch("tools.tts_tool._load_tts_config", return_value=_EL_CONFIG):
+    with patch("hermes_agent.tools.tts_tool._import_elevenlabs", return_value=_FakeElevenLabs), \
+         patch("hermes_agent.tools.tts_tool._resolve_provider_key", return_value="el-test-key"), \
+         patch("hermes_agent.tools.tts_tool._load_tts_config", return_value=_EL_CONFIG):
         ok = json.loads(tts_tool.text_to_speech_tool(
             "Hail, traveler.", output_path=str(tmp_path / "a.mp3"), voice_id="pickedVoice0042"))
         default = json.loads(tts_tool.text_to_speech_tool(
@@ -82,10 +82,10 @@ def test_find_voices_pages_both_sources(find, path, expected_params, body, next_
         calls.append((url, dict(params or {}), headers))
         return httpx.Response(200, json=body)
 
-    with patch("tools.tts_tool._load_tts_config", return_value=_EL_CONFIG), \
-         patch("tools.tts_tool._resolve_provider_key", return_value="el-test-key"), \
-         patch("tools.tts_elevenlabs_voices.httpx.get", side_effect=fake_get):
-        from tools.registry import registry  # through the registered handler, as the model calls it
+    with patch("hermes_agent.tools.tts_tool._load_tts_config", return_value=_EL_CONFIG), \
+         patch("hermes_agent.tools.tts_tool._resolve_provider_key", return_value="el-test-key"), \
+         patch("hermes_agent.tools.tts_elevenlabs_voices.httpx.get", side_effect=fake_get):
+        from hermes_agent.tools.registry import registry  # through the registered handler, as the model calls it
         entry = registry.get_entry("text_to_speech")
         assert entry is not None
         result = json.loads(entry.handler({"find_voices": find}))
@@ -107,7 +107,7 @@ def test_provider_switch_reshapes_the_schema_at_once(monkeypatch):
     listing must add them, and switching back must drop them."""
     import os
 
-    import model_tools
+    from hermes_agent import model_tools
     from hermes_constants import get_hermes_home
 
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el-test-key")
@@ -130,7 +130,7 @@ def test_provider_switch_reshapes_the_schema_at_once(monkeypatch):
 def test_deferred_find_voices_passes_the_bridge(monkeypatch):
     """A deferred text_to_speech is validated against the schema tool_describe serves: ElevenLabs'
     find_voices carries no text and must still reach the handler through tool_call."""
-    import model_tools
+    from hermes_agent import model_tools
     from hermes_constants import get_hermes_home
 
     monkeypatch.setenv("ELEVENLABS_API_KEY", "el-test-key")

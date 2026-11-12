@@ -8,8 +8,8 @@ separately and the results are combined or delivered as multiple files.
 import json
 
 
-from tools.tts_tool import _resolve_max_text_length
-from tools.tts_tool_delivery import FALLBACK_MAX_TEXT_LENGTH
+from hermes_agent.tools.tts_tool import _resolve_max_text_length
+from hermes_agent.tools.tts_tool_delivery import FALLBACK_MAX_TEXT_LENGTH
 
 
 class TestResolveMaxTextLength:
@@ -59,12 +59,12 @@ class TestTextToSpeechToolChunking:
                         destination.write(source.read())
             return output_path
 
-        monkeypatch.setattr("tools.tts_tool._generate_openai_tts", fake_openai)
-        monkeypatch.setattr("tools.tts_tool_delivery._concat_audio_files", fake_combine)
-        monkeypatch.setattr("tools.tts_tool._load_tts_config",
+        monkeypatch.setattr("hermes_agent.tools.tts_tool._generate_openai_tts", fake_openai)
+        monkeypatch.setattr("hermes_agent.tools.tts_tool_delivery._concat_audio_files", fake_combine)
+        monkeypatch.setattr("hermes_agent.tools.tts_tool._load_tts_config",
                             lambda: {"provider": "openai"})
 
-        from tools.tts_tool import text_to_speech_tool
+        from hermes_agent.tools.tts_tool import text_to_speech_tool
         out = str(tmp_path / "out.mp3")
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 
@@ -84,11 +84,11 @@ class TestTextToSpeechToolChunking:
                 f.write(b"\x00")
             return out
 
-        monkeypatch.setattr("tools.tts_tool._generate_xai_tts", fake_xai)
-        monkeypatch.setattr("tools.tts_tool._load_tts_config",
+        monkeypatch.setattr("hermes_agent.tools.tts_tool._generate_xai_tts", fake_xai)
+        monkeypatch.setattr("hermes_agent.tools.tts_tool._load_tts_config",
                             lambda: {"provider": "xai"})
 
-        from tools.tts_tool import text_to_speech_tool
+        from hermes_agent.tools.tts_tool import text_to_speech_tool
         out = str(tmp_path / "out.mp3")
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 
@@ -114,13 +114,13 @@ class TestTextToSpeechToolChunking:
                         destination.write(source.read())
             return output_path
 
-        monkeypatch.setattr("tools.tts_tool._generate_openai_tts", fake_openai)
-        monkeypatch.setattr("tools.tts_tool_delivery._concat_audio_files", fake_combine)
-        monkeypatch.setattr("tools.tts_tool._load_tts_config",
+        monkeypatch.setattr("hermes_agent.tools.tts_tool._generate_openai_tts", fake_openai)
+        monkeypatch.setattr("hermes_agent.tools.tts_tool_delivery._concat_audio_files", fake_combine)
+        monkeypatch.setattr("hermes_agent.tools.tts_tool._load_tts_config",
                             lambda: {"provider": "openai",
                                      "openai": {"max_text_length": 100}})
 
-        from tools.tts_tool import text_to_speech_tool
+        from hermes_agent.tools.tts_tool import text_to_speech_tool
         out = str(tmp_path / "out.mp3")
         result = json.loads(text_to_speech_tool(text=text, output_path=out))
 

@@ -16,8 +16,8 @@ directories, matching ripgrep's default behavior.
 
 import pytest
 
-from tools.file_operations import ShellFileOperations
-from tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import ShellFileOperations
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 
 @pytest.fixture
@@ -173,7 +173,7 @@ class TestIgnoreFileWritten:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         # Patch module-level paths
-        import tools.skills_hub as hub_mod
+        import hermes_agent.tools.skills_hub as hub_mod
         monkeypatch.setattr(hub_mod, "HERMES_HOME", tmp_path)
         monkeypatch.setattr(hub_mod, "SKILLS_DIR", tmp_path / "skills")
         monkeypatch.setattr(hub_mod, "HUB_DIR", tmp_path / "skills" / ".hub")
@@ -194,7 +194,7 @@ class TestIgnoreFileWritten:
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        import tools.skills_hub as hub_mod
+        import hermes_agent.tools.skills_hub as hub_mod
         monkeypatch.setattr(hub_mod, "HERMES_HOME", tmp_path)
         monkeypatch.setattr(hub_mod, "SKILLS_DIR", tmp_path / "skills")
         monkeypatch.setattr(hub_mod, "HUB_DIR", tmp_path / "skills" / ".hub")

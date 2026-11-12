@@ -74,7 +74,7 @@ def _gh_env(profile_home: str | None) -> dict[str, str] | None:
     """
     if not profile_home:
         return None
-    from tools.environments.local import _is_routed_home, hermes_subprocess_env, served_profile_child_env
+    from hermes_agent.tools.environments.local import _is_routed_home, hermes_subprocess_env, served_profile_child_env
     base = hermes_subprocess_env(inherit_credentials=True)
     routed = _is_routed_home(profile_home)
     if routed:

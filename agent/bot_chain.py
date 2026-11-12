@@ -80,7 +80,7 @@ def on_turn_start(agent: Any, turn_author: Optional[dict], display_kind: Optiona
     if not settings.enabled:
         return
     from hermes_agent.gateway.response_filters import is_machinery_display_kind
-    from tools.bot_mode_probe import NO_REPLY_MARKER
+    from hermes_agent.tools.bot_mode_probe import NO_REPLY_MARKER
     now = time.monotonic()
     with _LOCK:
         key = _bound_key(agent)

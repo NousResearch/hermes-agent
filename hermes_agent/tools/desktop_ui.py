@@ -16,7 +16,7 @@ import json
 from typing import Callable, FrozenSet, Optional
 
 from hermes_agent.gateway.session_context import get_session_env
-from tools.registry import tool_error
+from hermes_agent.tools.registry import tool_error
 
 # (sid, event, payload) sink, installed by the desktop gateway.
 _emit: Optional[Callable[[str, str, dict], None]] = None

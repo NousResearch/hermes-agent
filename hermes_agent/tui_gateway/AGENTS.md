@@ -86,7 +86,7 @@ Off-turn paths bind the same way: `session_lifecycle.py::_finalize_session` / `_
 enter `_session_profile_runtime_scope(session)` around `on_session_end`, the memory commit and
 `agent.close()` (their callers are unscoped reapers, Timers, atexit and pool threads); background
 threads start via `agent.memory_provider.spawn_context_thread`, never bare `threading.Thread`;
-children act for the served profile through `tools/environments/local.py::served_profile_child_env`
+children act for the served profile through `hermes_agent/tools/environments/local.py::served_profile_child_env`
 (`hermes -p X` workers, `key_cmd` helpers, browser drivers), never `dict(os.environ)`. Grep for
 unscoped handlers before adding one: `rg -n "^(async )?def " hermes_agent/tui_gateway/methods_*.py | rg -v
 _profile_scoped`. Probe with two on-disk homes and a `.env` name present only in the secondary:
@@ -105,7 +105,7 @@ profile's does not, and that `os.environ` is unchanged afterwards.
 | Slash commands | local handler + fallthrough | `slash.exec` → `_SlashWorker` (`slash_worker_client.py`); `command.dispatch` |
 | Completions | `useCompletion` hook | `complete.slash`, `complete.path` (under a non-local `terminal.backend`, `complete.path` lists the directory through the session's terminal backend — never the gateway host, whose same-named tree would look right and be wrong) |
 | Theming | `theme.ts` + `branding.tsx` | `gateway.ready` carries skin data |
-| Connection operations (desktop card) | desktop `store/connection-request.ts` | `connection.request` → `connection.update`* → `connection.respond {op_id}`; `connectors.operation.status`. The op lives in `tools/connectors/live.py`; the card never parks the tool thread (`methods_connectors.py`). |
+| Connection operations (desktop card) | desktop `store/connection-request.ts` | `connection.request` → `connection.update`* → `connection.respond {op_id}`; `connectors.operation.status`. The op lives in `hermes_agent/tools/connectors/live.py`; the card never parks the tool thread (`methods_connectors.py`). |
 
 ## Shared subagent snapshots
 

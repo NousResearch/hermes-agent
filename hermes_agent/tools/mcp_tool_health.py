@@ -7,18 +7,18 @@ import json
 import logging
 import time
 from typing import Iterable, Optional
-from tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
-from tools.mcp_tool_schema import mcp_prefixed_tool_name
-from tools.mcp_tool_common import _core
-from tools import mcp_tool_registration as _registration
+from hermes_agent.tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
+from hermes_agent.tools.mcp_tool_schema import mcp_prefixed_tool_name
+from hermes_agent.tools.mcp_tool_common import _core
+from hermes_agent.tools import mcp_tool_registration as _registration
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 _KEEPALIVE_RPC_TIMEOUT = 30.0
 
 
 class MCPServerHealthMixin:
-    """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
+    """Methods of :class:`hermes_agent.tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
     __slots__ = ()
 
@@ -124,7 +124,7 @@ class MCPServerHealthMixin:
 
     def _deregister_owned(self, tool_names: Iterable[str]) -> None:
         """Deregister *tool_names* this server's toolset still owns (never a colliding name owned by another server)."""
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         for tool_name in tool_names:
             if registry.get_toolset_for_tool(tool_name) == f"mcp-{self.name}":
                 _registration._deregister_mcp_tool_all_scopes(self, tool_name)

@@ -15,16 +15,16 @@ import os
 from pathlib import Path
 
 from agent.file_safety import get_nt_namespace_error
-from tools import file_state
-from tools.binary_extensions import (
+from hermes_agent.tools import file_state
+from hermes_agent.tools.binary_extensions import (
     has_binary_extension,
     has_opaque_document_extension,
     is_pdf_path,
     is_sqlite_sidecar,
 )
-from tools.file_tools_paths import (
+from hermes_agent.tools.file_tools_paths import (
     _expand_tilde, _resolve_path_for_task, _ssh_path_escapes_home, _terminal_env_type_for_task)
-from tools.file_tools_read_tracking import _has_full_write_baseline, _is_own_blind_patch, _read_mtime_drifted
+from hermes_agent.tools.file_tools_read_tracking import _has_full_write_baseline, _is_own_blind_patch, _read_mtime_drifted
 import itertools
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
@@ -171,7 +171,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             f"Refusing to write to Hermes config file: {filepath}\n"
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead.")
-    from tools.skill_lock import path_refusal
+    from hermes_agent.tools.skill_lock import path_refusal
     if reason := path_refusal(candidates):
         return f"Refusing to write to {filepath}: {reason}"
     return None
@@ -282,10 +282,10 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     denied = blocked.format(why="was denied by the user.")
 
     try:
-        import tools.approval as _approval
-        from tools.approval_context import _fire_approval_hook, get_current_session_key
-        from tools.approval_gateway_wait import _await_gateway_decision
-        from tools.approval_prompt import prompt_dangerous_approval
+        import hermes_agent.tools.approval as _approval
+        from hermes_agent.tools.approval_context import _fire_approval_hook, get_current_session_key
+        from hermes_agent.tools.approval_gateway_wait import _await_gateway_decision
+        from hermes_agent.tools.approval_prompt import prompt_dangerous_approval
     except Exception:
         return blocked.format(why=_APPROVAL_UNAVAILABLE)
 
@@ -315,7 +315,7 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     else:
         # CLI surface: per-thread approval callback (prompt_toolkit panel).
         try:
-            from tools.terminal_tool import _get_approval_callback
+            from hermes_agent.tools.terminal_tool import _get_approval_callback
             callback = _get_approval_callback()
         except Exception:
             callback = None
@@ -325,11 +325,11 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
             return blocked.format(why=_NO_HUMAN)
         # -q (every kanban worker), cron and unattended platforms can have a callback registered that nobody
         # answers: fail closed now, and never auto-approve, whatever approvals.<context>_mode says.
-        from tools.approval_context import _no_user_can_answer
+        from hermes_agent.tools.approval_context import _no_user_can_answer
         if _no_user_can_answer():
             return blocked.format(why=_NO_HUMAN)
         # Same observer payload as the gateway branch (#131876), fired like the
-        # dangerous-command CLI prompt in tools/approval.py.
+        # dangerous-command CLI prompt in hermes_agent/tools/approval.py.
         hook_kwargs = dict(command=display, description=description, pattern_key="protected_instruction_file",
                            pattern_keys=["protected_instruction_file"], session_key=session_key, surface="cli")
         _fire_approval_hook("pre_approval_request", **hook_kwargs)
@@ -385,7 +385,7 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
         "without the user's explicit consent.")
 
     try:
-        import tools.approval as _approval
+        import hermes_agent.tools.approval as _approval
     except Exception:
         return blocked.format(why=_APPROVAL_UNAVAILABLE)
 
@@ -410,7 +410,7 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
     """Return the container-side Hermes mirror prefix for persistent Docker file tools."""
     try:
-        from tools.terminal_tool import (
+        from hermes_agent.tools.terminal_tool import (
             _active_environments, _env_lock, _get_env_config, _resolve_container_task_id)
         container_key = _resolve_container_task_id(task_id)
         with _env_lock:
@@ -450,7 +450,7 @@ def _target_regular_file_state(filepath: str, task_id: str = "default") -> str:
     keep ``Path.is_file`` semantics; anything not proven absent is
     ``"unavailable"`` and callers must fail closed.
     """
-    from tools.file_tools import _file_ops_uses_host_paths, _get_file_ops
+    from hermes_agent.tools.file_tools import _file_ops_uses_host_paths, _get_file_ops
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except Exception:

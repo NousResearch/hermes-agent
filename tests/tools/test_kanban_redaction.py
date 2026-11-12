@@ -48,7 +48,7 @@ def worker_env(monkeypatch, tmp_path):
 
 def test_kanban_comment_body_scrubbed_github_pat(worker_env):
     """ghp_ PAT in comment body must be masked before DB write."""
-    from tools import kanban_tools as kt
+    from hermes_agent.tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     secret = "ghp_" + "A" * 40
@@ -66,7 +66,7 @@ def test_kanban_comment_body_scrubbed_github_pat(worker_env):
 
 def test_kanban_block_reason_scrubbed_jwt(worker_env):
     """JWT in block reason must be masked before DB write."""
-    from tools import kanban_tools as kt
+    from hermes_agent.tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     # Minimal valid-ish JWT (header.payload.sig)
@@ -94,7 +94,7 @@ def test_kanban_block_reason_scrubbed_jwt(worker_env):
 
 def test_kanban_comment_no_secret_passthrough(worker_env):
     """Plain text without credential patterns must pass through unchanged."""
-    from tools import kanban_tools as kt
+    from hermes_agent.tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     plain = "hello from the pipeline — no secrets here"
@@ -115,7 +115,7 @@ def test_kanban_comment_no_secret_passthrough(worker_env):
 def test_scrub_respects_force_flag_regardless_of_config(worker_env, monkeypatch):
     """force=True must fire even when HERMES_REDACT_SECRETS=false is set."""
     monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")
-    from tools import kanban_tools as kt
+    from hermes_agent.tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     secret = "ghp_" + "C" * 40
@@ -135,7 +135,7 @@ def test_scrub_respects_force_flag_regardless_of_config(worker_env, monkeypatch)
 
 def test_kanban_complete_result_field_scrubbed(worker_env):
     """Legacy result field must be scrubbed just like summary."""
-    from tools import kanban_tools as kt
+    from hermes_agent.tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
     secret = "sk-" + "D" * 48

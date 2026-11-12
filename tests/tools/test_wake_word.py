@@ -1,4 +1,4 @@
-"""Tests for tools.wake_word — the "Hey Hermes" hotword detector.
+"""Tests for hermes_agent.tools.wake_word — the "Hey Hermes" hotword detector.
 
 No live audio or network: the sounddevice import is faked, engines are stubbed,
 and lazy-dep availability is monkeypatched. Covers config resolution, engine
@@ -20,7 +20,7 @@ import pm
 import importlib
 
 pm_ensure = importlib.import_module("pm.install")
-import tools.wake_word as ww
+import hermes_agent.tools.wake_word as ww
 
 
 # ── Config helpers ───────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ def test_wake_surface_enabled_gate():
 
 
 def test_looks_like_path():
-    from tools.wake_word_engines import _looks_like_path
+    from hermes_agent.tools.wake_word_engines import _looks_like_path
     assert _looks_like_path("models/hey_hermes.onnx")
     assert _looks_like_path("custom.ppn")
     assert not _looks_like_path("hey_jarvis")
@@ -123,7 +123,7 @@ def test_engine_classes_are_owned_by_the_extracted_module():
     """wake_word imports the extracted engines and must not shadow them with
     copies — two class families carrying thresholds/model lookup/cleanup is
     exactly the bug class where fixes to the apparent owner do nothing."""
-    from tools import wake_word_engines as engines
+    from hermes_agent.tools import wake_word_engines as engines
 
     assert ww._Engine is engines._Engine
     assert ww._OpenWakeWordEngine is engines._OpenWakeWordEngine
@@ -142,7 +142,7 @@ def test_engine_construction_ensures_audio_io_only_for_local_capture(monkeypatch
     capture; the extracted _ensure_dep fixed that but was dead code because
     wake_word shadowed the extracted classes.
     """
-    from tools import wake_word_engines as engines
+    from hermes_agent.tools import wake_word_engines as engines
 
     ensured: list[str] = []
 
@@ -295,7 +295,7 @@ def test_tts_ready_is_a_probe_never_an_installer(monkeypatch):
             AssertionError("check_tts_requirements must not run when deps are missing")
         ),
     )
-    monkeypatch.setitem(sys.modules, "tools.tts_tool", fake_tts)
+    monkeypatch.setitem(sys.modules, "hermes_agent.tools.tts_tool", fake_tts)
 
     # Deps missing + lazy installs allowed → ready (installs at first speak).
     monkeypatch.setattr(pm, "available", lambda f: False)
@@ -753,7 +753,7 @@ def test_starved_read_available_falls_back_to_blocking_read(monkeypatch, caplog)
     monkeypatch.setattr(ww, "_import_audio", lambda: (types.SimpleNamespace(InputStream=_stream), None))
     monkeypatch.setattr(ww, "_READ_STALL_FALLBACK_SECONDS", 0.1)
     det = ww.WakeWordDetector(_FakeEngine(fire=False), on_wake=lambda: None)
-    with caplog.at_level("WARNING", logger="tools.wake_word"):
+    with caplog.at_level("WARNING", logger="hermes_agent.tools.wake_word"):
         det.start()
         assert det.running is True
         deadline = time.monotonic() + 3
@@ -870,7 +870,7 @@ def test_stream_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
 
 
 def _hold_machine_lock(path: str, ready, release) -> None:
-    from tools import wake_word
+    from hermes_agent.tools import wake_word
 
     handle = wake_word._acquire_machine_lock(Path(path))
     ready.set()

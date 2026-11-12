@@ -22,7 +22,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.tts_command_provider import (
+from hermes_agent.tools.tts_command_provider import (
     DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH,
     DEFAULT_COMMAND_TTS_OUTPUT_FORMAT,
     DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS,
@@ -34,7 +34,7 @@ from tools.tts_command_provider import (
     run_command_provider as _run_command_tts,
     shell_quote_context as _shell_quote_context,
 )
-from tools.tts_tool import (
+from hermes_agent.tools.tts_tool import (
     BUILTIN_TTS_PROVIDERS,
     _generate_command_tts,
     _get_command_tts_output_format,
@@ -131,7 +131,7 @@ class TestCommandTtsEnv:
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_popen)
+        monkeypatch.setattr("hermes_agent.tools.tts_command_provider.spawn_owned", fake_popen)
 
         result = _run_command_tts("echo hi", timeout=1)
 
@@ -417,7 +417,7 @@ class TestTextToSpeechToolWithCommandProvider:
         def fake_load():
             return cfg["tts"]
 
-        with patch("tools.tts_tool._load_tts_config", fake_load):
+        with patch("hermes_agent.tools.tts_tool._load_tts_config", fake_load):
             result = text_to_speech_tool(text="hi", output_path=str(out))
         data = json.loads(result)
         assert data["success"] is True, data
@@ -441,7 +441,7 @@ class TestTextToSpeechToolWithCommandProvider:
         }
         out = tmp_path / "clip.ogg"
 
-        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+        with patch("hermes_agent.tools.tts_tool._load_tts_config", return_value=cfg):
             result = text_to_speech_tool(text="hi", output_path=str(out))
         data = json.loads(result)
         assert data["success"] is True
@@ -458,7 +458,7 @@ class TestTextToSpeechToolWithCommandProvider:
                 "broken": {"type": "command", "command": "   "},
             },
         }
-        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+        with patch("hermes_agent.tools.tts_tool._load_tts_config", return_value=cfg):
             result = text_to_speech_tool(text="hi", output_path=str(tmp_path / "x.mp3"))
         data = json.loads(result)
         # The response should not carry the command-provider error text.
@@ -472,7 +472,7 @@ class TestCheckTtsRequirements:
             "provider": "x",
             "providers": {"x": {"type": "command", "command": "echo x"}},
         }
-        with patch("tools.tts_tool._load_tts_config", return_value=cfg):
+        with patch("hermes_agent.tools.tts_tool._load_tts_config", return_value=cfg):
             assert check_tts_requirements() is True
 
 
@@ -505,7 +505,7 @@ class TestCommandTtsEnvPassthrough:
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_popen)
+        monkeypatch.setattr("hermes_agent.tools.tts_command_provider.spawn_owned", fake_popen)
 
         result = _run_command_tts(
             "echo hi", timeout=1, env_passthrough=["MY_TTS_API_KEY"]
@@ -517,7 +517,7 @@ class TestCommandTtsEnvPassthrough:
         assert "OPENAI_API_KEY" not in env
 
     def test_allowlist_parsed_from_provider_config(self):
-        from tools.tts_command_provider import command_env_passthrough as _command_provider_env_passthrough
+        from hermes_agent.tools.tts_command_provider import command_env_passthrough as _command_provider_env_passthrough
 
         assert _command_provider_env_passthrough(
             {"env_passthrough": ["A_KEY", " B_KEY ", ""]}
@@ -539,7 +539,7 @@ class TestCommandProviderSpawnGroupKwargs:
 
     def test_nt_branch_hides_the_console_window(self, monkeypatch):
         from hermes_cli import _subprocess_compat
-        from tools.tts_command_provider import provider_popen_group_kwargs
+        from hermes_agent.tools.tts_command_provider import provider_popen_group_kwargs
 
         # Pin the compat module's host probe so the nt data branch is assertable
         # on every host (the helper caches IS_WINDOWS from the real platform).
@@ -553,7 +553,7 @@ class TestCommandProviderSpawnGroupKwargs:
 
     def test_nt_branch_matches_the_shared_detach_bundle(self, monkeypatch):
         from hermes_cli import _subprocess_compat
-        from tools.tts_command_provider import provider_popen_group_kwargs
+        from hermes_agent.tools.tts_command_provider import provider_popen_group_kwargs
 
         monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
         assert provider_popen_group_kwargs("nt")["creationflags"] == (
@@ -561,7 +561,7 @@ class TestCommandProviderSpawnGroupKwargs:
         )
 
     def test_posix_branch_leaves_the_group_to_spawn_owned(self):
-        from tools.tts_command_provider import provider_popen_group_kwargs
+        from hermes_agent.tools.tts_command_provider import provider_popen_group_kwargs
 
         # spawn_owned makes the child a session/group leader (and ties the group to our life).
         assert provider_popen_group_kwargs("posix") == {}
@@ -590,7 +590,7 @@ class TestCommandProviderSpawnGroupKwargs:
             captured.update(kwargs)
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.subprocess.Popen", fake_popen)
+        monkeypatch.setattr("hermes_agent.tools.tts_command_provider.subprocess.Popen", fake_popen)
 
         result = _run_command_tts("echo hi", timeout=1)
 
@@ -624,7 +624,7 @@ class TestCommandProviderSpawnGroupKwargs:
             captured.update(kwargs, purpose=purpose)
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_spawn_owned)
+        monkeypatch.setattr("hermes_agent.tools.tts_command_provider.spawn_owned", fake_spawn_owned)
 
         result = _run_command_tts("echo hi", timeout=1)
 
@@ -643,7 +643,7 @@ class TestIdleKillConsoleHidden:
 
     @pytest.mark.platforms("windows")
     def test_idle_kill_taskkill_hides_console_windows(self, monkeypatch):
-        import tools.tts_command_provider as mod
+        import hermes_agent.tools.tts_command_provider as mod
 
         runs = []
         real_run = subprocess.run

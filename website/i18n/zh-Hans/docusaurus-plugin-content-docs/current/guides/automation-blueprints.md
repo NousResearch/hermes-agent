@@ -121,7 +121,7 @@ hermes cron create "0 9 * * 1" \
 1. Run: gh pr list --repo NousResearch/hermes-agent --state merged --json number,title,files,mergedAt --limit 30
 2. Filter to PRs merged in the last 7 days
 3. For each merged PR, check if it modified:
-   - Tool schemas (tools/*.py) — may need docs/reference/tools-reference.md update
+   - Tool schemas (hermes_agent/tools/*.py) — may need docs/reference/tools-reference.md update
    - CLI commands (hermes_cli/commands.py, hermes_cli/main.py) — may need docs/reference/cli-commands.md update
    - Config options (hermes_cli/config.py) — may need docs/user-guide/configuration.md update
    - Environment variables — may need docs/reference/environment-variables.md update

@@ -16,9 +16,9 @@ import time
 import unittest
 from unittest.mock import patch, MagicMock
 
-from tools import file_state
-from tools.file_tools import read_file_tool, write_file_tool, patch_tool
-from tools.file_tools_read_tracking import _read_tracker, reset_file_dedup
+from hermes_agent.tools import file_state
+from hermes_agent.tools.file_tools import read_file_tool, write_file_tool, patch_tool
+from hermes_agent.tools.file_tools_read_tracking import _read_tracker, reset_file_dedup
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ class TestStalenessCheck(unittest.TestCase):
         except OSError:
             pass
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_no_warning_when_file_unchanged(self, mock_ops):
         """Read then write with no external modification — no warning."""
         mock_ops.return_value = _make_fake_ops("original content\n", 18)
@@ -188,7 +188,7 @@ class TestStalenessCheck(unittest.TestCase):
         self.assertNotIn("Warning:", refused["error"])
 
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_relative_path_uses_recorded_session_cwd_for_staleness_tracking(self, mock_ops):
         """Relative-path stale tracking must follow the session's recorded cwd."""
         start_dir = os.path.join(self._tmpdir, "start")
@@ -207,7 +207,7 @@ class TestStalenessCheck(unittest.TestCase):
         fake_ops.write_file = MagicMock(side_effect=AssertionError("must not write stale content"))
         mock_ops.return_value = fake_ops
 
-        from tools import terminal_tool
+        from hermes_agent.tools import terminal_tool
 
         # The session cd'd into the worktree (recorded by the completed command).
         terminal_tool.record_session_cwd("live_task", live_dir)
@@ -253,7 +253,7 @@ class TestPatchStaleness(unittest.TestCase):
         except OSError:
             pass
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_patch_warns_on_stale_file(self, mock_ops):
         """Patch should warn if the target file changed since last read."""
         mock_ops.return_value = _make_fake_ops("original line\n", 15)
@@ -271,7 +271,7 @@ class TestPatchStaleness(unittest.TestCase):
         self.assertIn("_warning", result)
         self.assertIn("modified since you last read", result["_warning"])
 
-    @patch("tools.file_tools._get_file_ops")
+    @patch("hermes_agent.tools.file_tools._get_file_ops")
     def test_patch_no_warning_when_fresh(self, mock_ops):
         """Patch with no external changes — no warning."""
         mock_ops.return_value = _make_fake_ops("original line\n", 15)

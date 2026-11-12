@@ -3,7 +3,7 @@ import json
 
 
 def test_local_dm_cannot_fall_back_to_a_cli_turn(tmp_path, monkeypatch, capsys):
-    from tools import bot_mode_dm as dm
+    from hermes_agent.tools import bot_mode_dm as dm
     payload = tmp_path / 'dm.txt'
     payload.write_text('private DM')
     calls = []

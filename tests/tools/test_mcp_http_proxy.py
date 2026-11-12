@@ -29,15 +29,15 @@ def env_only_proxy(monkeypatch):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(urllib.request, "getproxies", urllib.request.getproxies_environment)
     monkeypatch.setattr(urllib.request, "proxy_bypass", urllib.request.proxy_bypass_environment)
-    from tools.mcp_tool import _ensure_mcp_sdk, sdk_httpx
+    from hermes_agent.tools.mcp_tool import _ensure_mcp_sdk, sdk_httpx
 
     if not _ensure_mcp_sdk() or sdk_httpx() is None:
         pytest.skip("mcp SDK not installed")
 
 
 def test_proxy_env_becomes_a_mount_and_no_proxy_stays_direct(env_only_proxy, monkeypatch):
-    from tools.mcp_tool import sdk_httpx
-    from tools.mcp_tool_transport import _mcp_proxy_mounts
+    from hermes_agent.tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool_transport import _mcp_proxy_mounts
 
     httpx = sdk_httpx()
     assert _mcp_proxy_mounts(httpx, URL, True, None) is None  # no proxy configured: direct
@@ -90,20 +90,20 @@ async def _drive(streams):
 
 def test_both_client_builders_carry_proxy_mounts_next_to_the_body_cap(env_only_proxy, monkeypatch):
     monkeypatch.setenv("HTTPS_PROXY", PROXY)
-    from tools.mcp_tool import MCPServerTask, sdk_httpx
+    from hermes_agent.tools.mcp_tool import MCPServerTask, sdk_httpx
 
     server = MCPServerTask("remote")
     streams = server._streamable_http_transport(URL, {}, 5.0, True, None, None, False, set())
     _RecordingClient.captured = {}
     with patch.object(sdk_httpx(), "AsyncClient", _RecordingClient), \
-         patch("tools.mcp_tool.streamable_http_client", MagicMock(return_value=_async_cm((MagicMock(), MagicMock())))):
+         patch("hermes_agent.tools.mcp_tool.streamable_http_client", MagicMock(return_value=_async_cm((MagicMock(), MagicMock())))):
         asyncio.run(_drive(streams))
     captured = _RecordingClient.captured
     assert captured["mounts"]["https://"] is not None  # proxy restored
     assert captured["transport"] is not None  # wire-body cap still the default transport
 
     _RecordingClient.captured = {}
-    with patch("tools.mcp_tool.sse_client", MagicMock(return_value=_async_cm((MagicMock(), MagicMock())))) as sse, \
+    with patch("hermes_agent.tools.mcp_tool.sse_client", MagicMock(return_value=_async_cm((MagicMock(), MagicMock())))) as sse, \
          patch.object(sdk_httpx(), "AsyncClient", _RecordingClient):
         server._sse_transport(URL, {}, 5.0, True, None, None, False)
         sse.call_args.kwargs["httpx_client_factory"](headers={"X-Test": "1"}, timeout=None, auth=None)
@@ -119,7 +119,7 @@ def test_preflight_probe_uses_the_same_proxy_mounts_as_the_connect_client(env_on
     import httpx
 
     monkeypatch.setenv("HTTPS_PROXY", PROXY)
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     class _Probe(_RecordingClient):
         async def head(self, *a, **k):

@@ -45,7 +45,7 @@ import time
 import uuid
 from typing import Any, Callable
 
-from tools.clarify_batch import settle_batch
+from hermes_agent.tools.clarify_batch import settle_batch
 
 logger = logging.getLogger(__name__)
 
@@ -332,7 +332,7 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
             if req.qids:
                 # Batch clarify: answers locked early via clarify.lock belong to the final set even when
                 # the closing response only carries the tail the user answered last (one rule with the
-                # session owner's registry: ``tools.clarify_batch``).
+                # session owner's registry: ``hermes_agent.tools.clarify_batch``).
                 req.result = settle_batch(req.locked, req.result)
             req.answered = True
     if "error" in frame:

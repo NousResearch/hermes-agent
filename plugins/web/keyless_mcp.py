@@ -116,7 +116,7 @@ _BACKEND_KEYS = ("backend", "search_backend", "extract_backend")
 
 def _web_config_selects(name: str) -> bool:
     """True when any ``web.backend`` / ``search_backend`` / ``extract_backend`` names *name*."""
-    import tools.web_tools as _wt
+    import hermes_agent.tools.web_tools as _wt
     web_cfg = _wt._load_web_config()
     return any((web_cfg.get(key) or "").lower().strip() == name for key in _BACKEND_KEYS)
 

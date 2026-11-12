@@ -5,13 +5,13 @@ import logging
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.connectors.contract import Actor, SettleReason, TargetState, allowed
-from tools.connectors.gateway.config import ensure_guest_identity, operation_session_key
-from tools.connectors.gateway.errors import RateLimited, ToolGatewayError
-from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
-from tools.connectors.run import Kind, run_operation
-from tools.connectors.targets import HostedTarget, catalog_names, hosted_names, misrouted_to_hosted_error
-from tools.registry import tool_error
+from hermes_agent.tools.connectors.contract import Actor, SettleReason, TargetState, allowed
+from hermes_agent.tools.connectors.gateway.config import ensure_guest_identity, operation_session_key
+from hermes_agent.tools.connectors.gateway.errors import RateLimited, ToolGatewayError
+from hermes_agent.tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
+from hermes_agent.tools.connectors.run import Kind, run_operation
+from hermes_agent.tools.connectors.targets import HostedTarget, catalog_names, hosted_names, misrouted_to_hosted_error
+from hermes_agent.tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +56,8 @@ def managed_client(*, creates_guest: bool, initiator: Optional[str] = AGENT_TOOL
     it may create the guest identity when the user has none (a connect, an explicit list); a page
     read passes False and holds a token already. ``initiator`` names who asked, so every link the
     client mints is attributed."""
-    from tools.connectors.gateway.client import ConnectorClient
-    from tools.connectors.gateway.errors import ToolGatewayError
+    from hermes_agent.tools.connectors.gateway.client import ConnectorClient
+    from hermes_agent.tools.connectors.gateway.errors import ToolGatewayError
 
     if creates_guest and (setup_error := ensure_guest_identity()):
         raise ToolGatewayError(setup_error, code=GUEST_SETUP_FAILED, retryable=True)
@@ -101,7 +101,7 @@ def mint(client: Any, operation: ConnectionOperation, names: list[str], *, reini
     existing account a repair restarts; the gateway then needs no alias to find it. A repair without
     one (Try again) reuses the account the named target already minted, so a rename in between
     cannot point the retry at another login."""
-    from tools.connectors.gateway.client import return_to_args
+    from hermes_agent.tools.connectors.gateway.client import return_to_args
 
     if not names:
         return
@@ -308,7 +308,7 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
 
 
 def portal_accounts() -> list[dict[str, Any]]:
-    from tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
 
     return PortalConnectorClient().list_accounts()
 
@@ -389,7 +389,7 @@ def _status_result(client: Any, connectors: list[str]) -> str:
 def _display_result(client: Any, suggested: list[str], *, session_id: Optional[str], tool_call_id: Optional[str],
                     connection_callback: Optional[Callable[[dict[str, Any]], Optional[str]]], call: Any) -> str:
     """The desktop card when one can draw; elsewhere the status list and where to connect."""
-    from tools.connectors.display import OFF_DESKTOP_NOTE, run_display
+    from hermes_agent.tools.connectors.display import OFF_DESKTOP_NOTE, run_display
 
     if connection_callback is None:
         return json.dumps({**json.loads(_status_result(client, [])), "note": OFF_DESKTOP_NOTE}, ensure_ascii=False)
@@ -400,8 +400,8 @@ def _display_result(client: Any, suggested: list[str], *, session_id: Optional[s
 def _rename_result(target: HostedTarget) -> str:
     """Rename the one account of ``target.name`` called ``target.alias`` (or, when unnamed, labelled
     so) to ``target.to``. Synchronous: no operation and no card."""
-    from tools.connectors.gateway.errors import GatewayUnavailable, IdempotencyConflict
-    from tools.connectors.portal.client import PortalConnectorClient
+    from hermes_agent.tools.connectors.gateway.errors import GatewayUnavailable, IdempotencyConflict
+    from hermes_agent.tools.connectors.portal.client import PortalConnectorClient
 
     rows = [r for r in portal_accounts() if str(r.get("connector", "")).lower() == target.name]
     matches = [r for r in rows if r.get("alias") == target.alias] or [
@@ -442,7 +442,7 @@ def run_managed_action(
     connectors_available: Optional[Callable[[], bool]] = None,
     card_surface: bool = False,
 ) -> str:
-    from tools.managed_gateway_identity import CallRef
+    from hermes_agent.tools.managed_gateway_identity import CallRef
 
     if connectors_available is not None and not connectors_available():
         return tool_error("Connectors are not available in this session.")

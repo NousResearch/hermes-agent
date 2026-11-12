@@ -134,7 +134,7 @@ def _compute_toolsets_breakdown(tools: list[Any]) -> list[dict[str, Any]]:
     """Per-toolset schema-byte breakdown, largest-first (tie-broken by name). Each tool is
     attributed to its single canonical toolset so ``json_bytes`` sums to the grand total.
     """
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     tool_to_toolset = registry.get_tool_to_toolset_map()
     groups: dict[str, dict[str, Any]] = {}

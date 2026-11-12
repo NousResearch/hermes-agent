@@ -27,7 +27,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
-import tools.delegate_tool as dt
+import hermes_agent.tools.delegate_tool as dt
 
 
 def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
@@ -46,8 +46,8 @@ def _make_real_child():
     from run_agent import AIAgent
 
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("hermes_cli.config.load_config", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
@@ -136,7 +136,7 @@ def test_cron_sync_fallback_returns_and_spawns_no_review_fork(monkeypatch):
                 return_value=False,
             ),
             patch(
-                "tools.async_delegation._current_origin_session_id",
+                "hermes_agent.tools.async_delegation._current_origin_session_id",
                 return_value="",
             ),
         ):

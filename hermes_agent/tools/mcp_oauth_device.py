@@ -63,7 +63,7 @@ async def _device_metadata(client, server_url, auth_server_url):
     """Issuer-bound device metadata of one authorization server; raises when it is unusable."""
     from mcp.client.auth.utils import build_oauth_authorization_server_metadata_discovery_urls
 
-    from tools.mcp_oauth_provider import metadata_issued_by_origin
+    from hermes_agent.tools.mcp_oauth_provider import metadata_issued_by_origin
 
     for url in build_oauth_authorization_server_metadata_discovery_urls(auth_server_url, server_url):
         response = await client.get(url)
@@ -142,8 +142,8 @@ def _positive_seconds(value, label):
 
 
 async def _authorize(client, provider, cfg):
-    from tools.mcp_oauth_provider import google_offline_access_params
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_oauth_provider import google_offline_access_params
+    from hermes_agent.tools.mcp_tool import sdk_httpx
 
     context = provider.context
     resource = context.get_resource_url()
@@ -203,10 +203,10 @@ async def _authorize(client, provider, cfg):
 
 async def login_device(name, server_url, oauth_config):
     """Authorize then commit state in the active profile; failed grants preserve old state."""
-    from tools.mcp_oauth import _build_client_metadata
-    from tools.mcp_oauth_manager import HermesMCPOAuthProvider, get_manager
-    from tools.mcp_oauth_provider import prepare_oauth_config
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_oauth import _build_client_metadata
+    from hermes_agent.tools.mcp_oauth_manager import HermesMCPOAuthProvider, get_manager
+    from hermes_agent.tools.mcp_oauth_provider import prepare_oauth_config
+    from hermes_agent.tools.mcp_tool import sdk_httpx
 
     cfg, storage = prepare_oauth_config(name, server_url, oauth_config)
     # Device flow never binds a callback socket or uses the hosted browser CIMD.

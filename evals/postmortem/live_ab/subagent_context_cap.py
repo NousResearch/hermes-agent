@@ -8,7 +8,7 @@ os.environ["HERMES_HOME"] = home
 os.environ["HERMES_STREAM_RETRIES"] = "0"
 try:
     from run_agent import AIAgent
-    import tools.delegate_tool as dt
+    import hermes_agent.tools.delegate_tool as dt
     parent = AIAgent(api_key="k", base_url="https://example.com/v1", provider="test-provider",
                      model="anthropic/claude-fable-5.1", quiet_mode=True, skip_context_files=True, skip_memory=True)
     # find the child-construction function by name

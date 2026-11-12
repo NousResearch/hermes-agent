@@ -96,8 +96,8 @@ def _quiet_compressor() -> MagicMock:
 @pytest.fixture()
 def agent():
     with (
-        patch("model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
@@ -129,7 +129,7 @@ def _run_tool_loop(agent, n_tool_iterations: int, task_id=None):
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
         patch(
-            "model_tools.handle_function_call",
+            "hermes_agent.model_tools.handle_function_call",
             lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True}),
         ),
     ):
@@ -309,8 +309,8 @@ class TestCommittedPruneIsDedupBoundary:
 
     @staticmethod
     def _seed_dedup(tmp_path, task_id):
-        from tools.file_tools_read_tracking import _read_tracker, _read_tracker_lock, _task_data
-        from tools.skills_tool_dedup import dedup_skill_view, reset_skill_view_dedup
+        from hermes_agent.tools.file_tools_read_tracking import _read_tracker, _read_tracker_lock, _task_data
+        from hermes_agent.tools.skills_tool_dedup import dedup_skill_view, reset_skill_view_dedup
 
         skill_md = tmp_path / "SKILL.md"
         skill_md.write_text("# s\n", encoding="utf-8")
@@ -325,8 +325,8 @@ class TestCommittedPruneIsDedupBoundary:
 
     @staticmethod
     def _dedup_state(task_id):
-        from tools.file_tools_read_tracking import _read_tracker
-        from tools.skills_tool_dedup import _skill_view_tracker
+        from hermes_agent.tools.file_tools_read_tracking import _read_tracker
+        from hermes_agent.tools.skills_tool_dedup import _skill_view_tracker
 
         skill_stubbed = ("bigskill", "") in _skill_view_tracker.get(task_id, {})
         file_in_generation = ("/x/big.txt", 1, 2000) in _read_tracker[task_id]["dedup_generation_reads"]

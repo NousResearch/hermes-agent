@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools import delegate_tool
-from tools.registry import registry
+from hermes_agent.tools import delegate_tool
+from hermes_agent.tools.registry import registry
 
 
 @pytest.mark.parametrize("legacy_role", [None, "leaf", "orchestrator"])

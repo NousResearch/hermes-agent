@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
-# Toolsets a one-shot session never gets (``toolsets.session_disabled_toolsets(oneshot=True)``): the toolset is
+# Toolsets a one-shot session never gets (``hermes_agent.toolsets.session_disabled_toolsets(oneshot=True)``): the toolset is
 # the surface gate, so the tool list, the tool_search bridge and delegate children all lose them together.
 ONESHOT_DISABLED_TOOLSETS = ("clarify",)
 
@@ -72,7 +72,7 @@ def agent_is_oneshot(agent: Any) -> bool:
 
 def oneshot_tool_schemas(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """*tools* with ``delegate_task`` swapped for its one-shot variant (no live-control parameters)."""
-    from tools.delegate_tool import oneshot_delegate_function
+    from hermes_agent.tools.delegate_tool import oneshot_delegate_function
     return [
         {**tool, "function": oneshot_delegate_function(tool["function"])}
         if (tool.get("function") or {}).get("name") == "delegate_task" else tool

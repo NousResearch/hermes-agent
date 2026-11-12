@@ -740,7 +740,7 @@ def _session_waiting(session_id: str) -> bool:
     if not session_id:
         return False
     try:
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         return bool(process_registry.is_session_waiting(session_id))
     except Exception:
@@ -964,7 +964,7 @@ def count_active_delegations(session_id: Optional[str]) -> int:
     if not session_id:
         return 0
     try:
-        from tools.async_delegation import _LIVE_STATES, _session_records
+        from hermes_agent.tools.async_delegation import _LIVE_STATES, _session_records
         return len(_session_records(_LIVE_STATES, "", "", str(session_id)))
     except Exception:
         return 0
@@ -1029,7 +1029,7 @@ def gather_background_processes(task_id: Optional[str] = None, *, owner_task_id:
     grandchild's ``proc_*`` session (one run: 7 of 7 root verdicts were WAIT on child-owned processes;
     parked 3 h 22 min at the end while nothing of its own was running)."""
     try:
-        from tools.process_registry import process_registry
+        from hermes_agent.tools.process_registry import process_registry
 
         sessions = process_registry.list_sessions(task_id=task_id) or []
     except Exception as exc:

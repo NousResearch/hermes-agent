@@ -17,8 +17,8 @@ import tempfile
 
 import pytest
 
-import tools.terminal_tool as tt
-from tools.environments.local import LocalEnvironment
+import hermes_agent.tools.terminal_tool as tt
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 
 @pytest.fixture(autouse=True)

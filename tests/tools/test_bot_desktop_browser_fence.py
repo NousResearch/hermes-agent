@@ -8,7 +8,7 @@ import subprocess
 
 import pytest
 
-from tools.bot_desktop import lease, runtime
+from hermes_agent.tools.bot_desktop import lease, runtime
 
 
 @pytest.fixture(autouse=True)
@@ -21,8 +21,8 @@ def _fresh(monkeypatch):
 
 def _wire_browser_exec(monkeypatch, run_cli):
     """Route browser_exec through the local session layer without starting a real browser."""
-    from tools import browser_lightpanda, browser_session, browser_session_cdp, browser_session_cloud
-    from tools import browser_use_cli as browser_use
+    from hermes_agent.tools import browser_lightpanda, browser_session, browser_session_cdp, browser_session_cloud
+    from hermes_agent.tools import browser_use_cli as browser_use
 
     monkeypatch.setattr(browser_use, "_find_cli", lambda: ["browser-use"])
     monkeypatch.setattr(browser_use, "_base_subprocess_env", dict)
@@ -70,7 +70,7 @@ def test_browser_exec_result_crossing_a_takeover_is_discarded(monkeypatch):
 
 
 def test_run_fenced_refuses_a_local_session_while_human_controls_shared_browser():
-    from tools.browser_session import run_fenced
+    from hermes_agent.tools.browser_session import run_fenced
 
     dispatched: list = []
     lease.acquire("human-viewer")
@@ -81,7 +81,7 @@ def test_run_fenced_refuses_a_local_session_while_human_controls_shared_browser(
 
 
 def test_run_fenced_discards_a_result_crossing_a_takeover():
-    from tools.browser_session import run_fenced
+    from hermes_agent.tools.browser_session import run_fenced
 
     def run_then_takeover():
         lease.acquire("human-viewer")
@@ -98,7 +98,7 @@ def test_real_profile_local_browser_is_fenced_by_provenance_even_without_a_live_
     DISPLAY, so it IS the human's browser: the fence keys on the ``local`` feature, not on the
     transport. And a stranded human lease with the screen already down must still fence (computer_use
     does), not silently unfence the browser."""
-    from tools.browser_session import run_fenced
+    from hermes_agent.tools.browser_session import run_fenced
 
     dispatched: list = []
     monkeypatch.setattr(runtime, "published_env", dict)
@@ -114,8 +114,8 @@ def test_vault_page_operations_respect_the_human_lease(monkeypatch):
     """The vault tools reach the page over the supervisor socket, outside `_run_browser_command`: while a
     human holds the screen they must be refused like every other page access, and never focus, inspect or
     write to the form the human is typing into."""
-    from tools import browser_session
-    from tools import browser_vault_tool as vault
+    from hermes_agent.tools import browser_session
+    from hermes_agent.tools import browser_vault_tool as vault
 
     monkeypatch.setitem(browser_session._active_sessions, "default",
                         {"session_name": "review", "cdp_url": None, "features": {"local": True}})
@@ -135,8 +135,8 @@ def test_secret_write_re_admits_after_a_takeover_during_the_code_prompt(monkeypa
     """`enter_code` blocks on the user's code INSIDE the handler fence. A takeover during that wait must
     refuse the write itself: the outer fence only discards the result afterwards, and by then the code is
     already in the page the human is typing into."""
-    from tools import browser_session
-    from tools import browser_vault_tool as vault
+    from hermes_agent.tools import browser_session
+    from hermes_agent.tools import browser_vault_tool as vault
 
     monkeypatch.setitem(browser_session._active_sessions, "default",
                         {"session_name": "review", "cdp_url": None, "features": {"local": True}})

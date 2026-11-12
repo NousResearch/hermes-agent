@@ -402,7 +402,7 @@ class TestNormalizeSkillLookupName:
             link.symlink_to(external)
         except OSError:
             pytest.skip("Symlinks not supported")
-        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
+        monkeypatch.setattr("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_dir)
         assert normalize_skill_lookup_name(str(link)) == "my-skill"
 
 
@@ -484,7 +484,7 @@ class TestBOMToleranceSiblingSites:
     def test_blueprints_split_frontmatter_bom(self):
         # str.lstrip() does NOT strip U+FEFF (it is not whitespace), so the
         # pre-existing lstrip() in _split_frontmatter never covered it.
-        from tools.blueprints import _split_frontmatter
+        from hermes_agent.tools.blueprints import _split_frontmatter
 
         fm = _split_frontmatter("\ufeff---\nname: bp\n---\nbody")
         assert fm is not None

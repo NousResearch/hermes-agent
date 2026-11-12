@@ -755,7 +755,7 @@ def test_branch_carries_a_live_yolo_onto_the_gateway_child(store):
     """CLI-20: the gateway's branch child starts without the parent's `/yolo` toggle while the CLI moves
     its own flag over (status bar YOLO); the CLI sets the child's bypass on the gateway too."""
     from hermes_cli.cli_init_mixin import CLIInitMixin
-    from tools import approval
+    from hermes_agent.tools import approval
     db, client = store
     base = client.rpc
 
@@ -785,7 +785,7 @@ def test_branch_never_shows_yolo_the_gateway_refused(store):
     being logged as a best-effort persist, and the child's local flag stays off (no YOLO display while the
     gateway still asks)."""
     from hermes_cli.cli_init_mixin import CLIInitMixin
-    from tools import approval
+    from hermes_agent.tools import approval
     db, client = store
     base = client.rpc
 

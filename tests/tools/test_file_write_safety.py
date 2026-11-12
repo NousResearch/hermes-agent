@@ -186,8 +186,8 @@ class TestSafeRootDenialMessageIntegration:
 
     @pytest.fixture
     def ops(self, tmp_path: Path):
-        from tools.environments.local import LocalEnvironment
-        from tools.file_operations import ShellFileOperations
+        from hermes_agent.tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.file_operations import ShellFileOperations
         env = LocalEnvironment(cwd=str(tmp_path))
         return ShellFileOperations(env, cwd=str(tmp_path))
 
@@ -234,31 +234,31 @@ class TestCheckSensitivePathMacOSBypass:
 
     @pytest.mark.platforms("linux")
     def test_etc_hosts_blocked(self):
-        from tools.file_tools_write_guards import _check_sensitive_path
+        from hermes_agent.tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/etc/hosts") is not None
 
     @pytest.mark.platforms("linux")
     def test_private_etc_hosts_blocked(self):
-        from tools.file_tools_write_guards import _check_sensitive_path
+        from hermes_agent.tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/hosts") is not None
 
     @pytest.mark.platforms("linux")
     def test_private_etc_ssh_config_blocked(self):
-        from tools.file_tools_write_guards import _check_sensitive_path
+        from hermes_agent.tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/ssh/sshd_config") is not None
 
     @pytest.mark.platforms("linux")
     def test_private_var_blocked(self):
-        from tools.file_tools_write_guards import _check_sensitive_path
+        from hermes_agent.tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
 
     @pytest.mark.platforms("linux")
     def test_boot_still_blocked(self):
-        from tools.file_tools_write_guards import _check_sensitive_path
+        from hermes_agent.tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/boot/grub/grub.cfg") is not None
 
     def test_safe_path_allowed(self):
-        from tools.file_tools_write_guards import _check_sensitive_path
+        from hermes_agent.tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/tmp/safe_file.txt") is None
 
 
@@ -273,8 +273,8 @@ class TestAtomicWrite:
 
     @pytest.fixture
     def ops(self, tmp_path: Path):
-        from tools.environments.local import LocalEnvironment
-        from tools.file_operations import ShellFileOperations
+        from hermes_agent.tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.file_operations import ShellFileOperations
         env = LocalEnvironment(cwd=str(tmp_path))
         return ShellFileOperations(env, cwd=str(tmp_path))
 
@@ -320,8 +320,8 @@ class TestBomHandling:
 
     @pytest.fixture
     def ops(self, tmp_path: Path):
-        from tools.environments.local import LocalEnvironment
-        from tools.file_operations import ShellFileOperations
+        from hermes_agent.tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.file_operations import ShellFileOperations
         env = LocalEnvironment(cwd=str(tmp_path))
         return ShellFileOperations(env, cwd=str(tmp_path))
 
@@ -415,7 +415,7 @@ class TestBomHandling:
     @staticmethod
     def _noisy_env():
         """A real shell whose merged stdout carries a connect banner, as remote backends do."""
-        from tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.environments.local import LocalEnvironment
 
         class Env(LocalEnvironment):
             def execute(self, command, *args, **kwargs):
@@ -431,7 +431,7 @@ class TestBomHandling:
         # never reach the decode. "TERM" is four base64 characters: unfenced it decodes to b"LDL" and
         # lands at the head of the file. Remote backends announce things on connect, so the local
         # native fast path is off here and the base64 transport is what runs.
-        from tools.file_operations import ShellFileOperations
+        from hermes_agent.tools.file_operations import ShellFileOperations
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
 
         target = tmp_path / "conf.txt"
@@ -448,7 +448,7 @@ class TestBomHandling:
         # in front of the byte-exact read, so backend noise joined onto its base64 decides whether a
         # file is editable at all and what a refusal reports about it. The sample must be the file's
         # own leading bytes, not the backend's banner decoded into them.
-        from tools.file_operations import ShellFileOperations
+        from hermes_agent.tools.file_operations import ShellFileOperations
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
 
         target = tmp_path / "head.bin"
@@ -462,7 +462,7 @@ class TestBomHandling:
     def _env_without(*missing: str):
         """A real shell where only the named BINARIES are absent (busybox, distroless)."""
         import re as _re
-        from tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.environments.local import LocalEnvironment
         stub = "( echo 'sh: not found' >&2; exit 127 )"  # a SUBSHELL: `exit` must not kill the shell
 
         class Env(LocalEnvironment):
@@ -476,7 +476,7 @@ class TestBomHandling:
     def test_byte_exact_read_falls_back_to_hex_without_base64(self, tmp_path: Path, monkeypatch):
         # base64 is not on every backend. The sample path already degrades when it is missing
         # (_detect_binary), so the byte-exact read must too, and byte-exactly.
-        from tools.file_operations import ShellFileOperations
+        from hermes_agent.tools.file_operations import ShellFileOperations
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
         target = tmp_path / "conf.txt"
         original = b"HEADER\nVERSION=1\n"
@@ -492,7 +492,7 @@ class TestBomHandling:
         # `Add File` uses read_file_raw's error as its existence check. A backend with no byte
         # transport at all makes that read FAIL, which must not read as "the path is free" —
         # that writes the Add payload over the file the check exists to protect.
-        from tools.file_operations import ShellFileOperations
+        from hermes_agent.tools.file_operations import ShellFileOperations
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
         target = tmp_path / "KEEP.txt"
         precious = b"KEEP ME\n"
@@ -509,7 +509,7 @@ class TestBomHandling:
             self, tmp_path: Path, monkeypatch):
         # Validation must keep "the read failed" apart from "the path is absent" for a Move
         # destination too, and the apply must re-check it before `mv` replaces whatever is there.
-        from tools.file_operations import ShellFileOperations
+        from hermes_agent.tools.file_operations import ShellFileOperations
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
         dst = tmp_path / "dst.txt"
         dst.write_bytes(b"PRECIOUS DESTINATION\n")
@@ -530,7 +530,7 @@ class TestBomHandling:
         # The fence drops noise around the read, not noise printed WHILE it runs: a BASH_ENV DEBUG
         # hook firing for the transport command alone puts text inside the payload that still
         # decodes ("TERM" is b"LDL"; "4c 44" is hex). Such a read must fail, and no edit may write.
-        from tools.file_operations import ShellFileOperations
+        from hermes_agent.tools.file_operations import ShellFileOperations
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
         hook = tmp_path / "hook.sh"
         hook.write_text(f"trap '[[ $BASH_COMMAND == {transport}* ]] && echo \"{noise}\"' DEBUG\n")
@@ -569,8 +569,8 @@ class TestBomHandling:
         # to take a FIFO; the native path must hand it over instead of opening it. Stubbing the
         # shell read keeps this about the native branch: if it opens the FIFO the test hangs.
         import signal
-        from tools.file_operations import ExecuteResult, ShellFileOperations
-        from tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.file_operations import ExecuteResult, ShellFileOperations
+        from hermes_agent.tools.environments.local import LocalEnvironment
         fifo = tmp_path / "pipe"
         os.mkfifo(fifo)  # no writer: a blocking open never returns
         ops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)), cwd=str(tmp_path))
@@ -593,8 +593,8 @@ class TestBomHandling:
         # A user rc / BASH_ENV with `set -x` must not break byte-exact reads, or every edit fails
         # its read. (The post-write sha256 check under noisy stdout is a separate issue.)
         import shutil
-        from tools.file_operations import ShellFileOperations
-        from tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.file_operations import ShellFileOperations
+        from hermes_agent.tools.environments.local import LocalEnvironment
         if not shutil.which("bash"):
             pytest.skip("bash not installed")
         monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
@@ -624,7 +624,7 @@ class TestProtectedInstructionFiles:
 
     @pytest.fixture(autouse=True)
     def _gate_on(self, monkeypatch):
-        import tools.file_tools_write_guards as ft
+        import hermes_agent.tools.file_tools_write_guards as ft
         monkeypatch.setattr(
             ft, "_protected_instruction_config", lambda: (True, [])
         )
@@ -633,7 +633,7 @@ class TestProtectedInstructionFiles:
     @pytest.fixture
     def approvals(self, monkeypatch):
         """Install a CLI approval callback; record calls; scripted answers."""
-        from tools.terminal_tool import set_approval_callback
+        from hermes_agent.tools.terminal_tool import set_approval_callback
         state = {"calls": [], "answer": "deny"}
 
         def cb(command, description, **kwargs):
@@ -648,7 +648,7 @@ class TestProtectedInstructionFiles:
 
     def _write(self, path, content="injected"):
         import json
-        from tools.file_tools import write_file_tool
+        from hermes_agent.tools.file_tools import write_file_tool
         return json.loads(write_file_tool(str(path), content))
 
     # ---- core behavior -------------------------------------------------
@@ -675,7 +675,7 @@ class TestProtectedInstructionFiles:
 
     def test_prompts_even_under_yolo(self, tmp_path, approvals, monkeypatch):
         """The whole point: auto-approve/yolo must NOT bypass this gate."""
-        import tools.approval as A
+        import hermes_agent.tools.approval as A
         monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", True)
         target = tmp_path / "AGENTS.md"
         approvals["answer"] = "deny"
@@ -718,7 +718,7 @@ class TestProtectedInstructionFiles:
         assert not target.exists()
 
     def test_config_disabled_skips_gate(self, tmp_path, approvals, monkeypatch):
-        import tools.file_tools_write_guards as ft
+        import hermes_agent.tools.file_tools_write_guards as ft
         monkeypatch.setattr(
             ft, "_protected_instruction_config", lambda: (False, [])
         )
@@ -727,7 +727,7 @@ class TestProtectedInstructionFiles:
         assert approvals["calls"] == []
 
     def test_extra_patterns_from_config(self, tmp_path, approvals, monkeypatch):
-        import tools.file_tools_write_guards as ft
+        import hermes_agent.tools.file_tools_write_guards as ft
         monkeypatch.setattr(
             ft, "_protected_instruction_config", lambda: (True, ["*.mdc"])
         )
@@ -791,7 +791,7 @@ class TestProtectedInstructionFiles:
         self, tmp_path, approvals, monkeypatch
     ):
         """~/.hermes itself is governed by existing guards, not this gate."""
-        import tools.file_tools_write_guards as ft
+        import hermes_agent.tools.file_tools_write_guards as ft
         fake_home = tmp_path / ".hermes"
         (fake_home / "notes").mkdir(parents=True)
         monkeypatch.setattr(
@@ -804,7 +804,7 @@ class TestProtectedInstructionFiles:
     # ---- patch tool -----------------------------------------------------
 
     def test_patch_replace_mode_is_gated(self, tmp_path, approvals):
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         import json
         target = tmp_path / "SOUL.md"
         target.write_text("be kind\n", encoding="utf-8")
@@ -821,7 +821,7 @@ class TestProtectedInstructionFiles:
     ):
         """Policy: one protected file gates the ENTIRE patch (deny = nothing
         applies, including the innocent file)."""
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         import json
         agents = tmp_path / "AGENTS.md"
         agents.write_text("rules\n", encoding="utf-8")
@@ -847,7 +847,7 @@ class TestProtectedInstructionFiles:
         assert len(approvals["calls"]) == 1
 
     def test_patch_v4a_approved_applies(self, tmp_path, approvals):
-        from tools.file_tools import patch_tool
+        from hermes_agent.tools.file_tools import patch_tool
         import json
         agents = tmp_path / "AGENTS.md"
         agents.write_text("rules\n", encoding="utf-8")
@@ -867,8 +867,8 @@ class TestProtectedInstructionFiles:
     # ---- gateway round-trip ----------------------------------------------
 
     def test_gateway_notify_resolve_once_allows(self, tmp_path):
-        import tools.approval as A
-        from tools import approval_context
+        import hermes_agent.tools.approval as A
+        from hermes_agent.tools import approval_context
         session_key = "protected-files-test-session"
         token = approval_context.set_current_session_key(session_key)
         try:
@@ -896,8 +896,8 @@ class TestProtectedInstructionFiles:
         users tapped it and got re-prompted on every write (#81887). Asserting
         the two layers together is what catches that drift.
         """
-        import tools.approval as A
-        from tools import approval_context
+        import hermes_agent.tools.approval as A
+        from hermes_agent.tools import approval_context
         from hermes_agent.tui_gateway.server import _approval_request_payload
 
         session_key = "protected-files-payload-session"
@@ -930,7 +930,7 @@ class TestProfileHomeExemptsHermesRoot:
 
     @pytest.fixture(autouse=True)
     def _gate_on(self, monkeypatch):
-        import tools.file_tools_write_guards as ft
+        import hermes_agent.tools.file_tools_write_guards as ft
         monkeypatch.setattr(
             ft, "_protected_instruction_config", lambda: (True, [])
         )
@@ -941,7 +941,7 @@ class TestProfileHomeExemptsHermesRoot:
 
     @pytest.fixture
     def approvals(self, monkeypatch):
-        from tools.terminal_tool import set_approval_callback
+        from hermes_agent.tools.terminal_tool import set_approval_callback
         state = {"calls": [], "answer": "deny"}
 
         def cb(command, description, **kwargs):
@@ -954,7 +954,7 @@ class TestProfileHomeExemptsHermesRoot:
 
     def _write(self, path, content="injected"):
         import json
-        from tools.file_tools import write_file_tool
+        from hermes_agent.tools.file_tools import write_file_tool
         return json.loads(write_file_tool(str(path), content))
 
     def _profile_layout(self, tmp_path: Path):
@@ -968,7 +968,7 @@ class TestProfileHomeExemptsHermesRoot:
     def test_named_profile_scope_exempts_root_direct_files(self, tmp_path, monkeypatch, approvals):
         """Under a named profile bound by the per-turn scope (multiplex path), the ROOT's own store is
         not project-local ``.hermes`` config: the write lands with no approval prompt."""
-        import tools.file_tools_write_guards as ft
+        import hermes_agent.tools.file_tools_write_guards as ft
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         root, profile = self._profile_layout(tmp_path)
@@ -989,7 +989,7 @@ class TestProfileHomeExemptsHermesRoot:
         """Negatives hold with a named profile active: a checkout's ``.hermes/config.yaml`` and
         protected basenames stay gated (fail-closed, unwritten), and a coincidental
         ``.../profiles/<name>`` tree that is NOT a Hermes root never exempts its parent."""
-        import tools.file_tools_write_guards as ft
+        import hermes_agent.tools.file_tools_write_guards as ft
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
         _root, profile = self._profile_layout(tmp_path)
@@ -1035,7 +1035,7 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
         return a, b
 
     def test_home_getter_tracks_active_profile_after_a_prior_scope(self, tmp_path):
-        import tools.file_tools_write_guards as ft
+        import hermes_agent.tools.file_tools_write_guards as ft
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,
@@ -1058,7 +1058,7 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
     def test_config_hard_block_refuses_beta_config_even_after_alpha_turn(self, tmp_path):
         """End-to-end: the ``config.yaml`` hard-block must fire for beta's own
         config under beta's scope, regardless of alpha having run first."""
-        import tools.file_tools_write_guards as ft
+        import hermes_agent.tools.file_tools_write_guards as ft
         from hermes_constants import (
             reset_hermes_home_override,
             set_hermes_home_override,

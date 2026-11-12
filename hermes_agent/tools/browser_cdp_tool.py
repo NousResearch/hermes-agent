@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Any, Callable, Dict, Optional
 
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ def _run_async(coro):
 
 def _resolve_cdp_endpoint() -> str:
     """Normalized CDP WebSocket URL via ``browser_session_cdp.get_cdp_override``, or ""."""
-    from tools.browser_session_cdp import get_cdp_override
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override
     return (get_cdp_override() or "").strip()
 
 
@@ -135,7 +135,7 @@ def _blocked(message: str, method: str) -> str:
 
 
 def _expression_private_target(params: dict[str, Any], blocked: Callable[[str], bool]) -> Optional[str]:
-    from tools.browser_url_policy import expression_targets_private_url
+    from hermes_agent.tools.browser_url_policy import expression_targets_private_url
     return expression_targets_private_url(str(params.get("expression") or ""), blocked=blocked)
 
 
@@ -179,7 +179,7 @@ def _current_page_private_url(endpoint: str, target_id: Optional[str]) -> Option
     is known passes on that URL alone. A browser-level call (no target) or a worker / iframe / unknown
     target runs with some page's origin (a SharedWorker's ``fetch('/')`` reads its private page;
     ``Storage.*`` spans every origin), so it is refused while ANY page target is private."""
-    from tools.browser_url_policy import url_blocked
+    from hermes_agent.tools.browser_url_policy import url_blocked
     if not endpoint or not _WS_AVAILABLE:
         return _PAGE_URL_UNVERIFIED
     try:
@@ -212,7 +212,7 @@ def _param_url_literals(value: Any, key: str = "") -> list[str]:
     """Every URL a CDP call's params name: each ``url`` value whole, plus the ``http(s)://`` and
     protocol-relative ``//host`` literals in every string at any depth (``Network.loadNetworkResource``,
     ``Runtime.callFunctionOn`` bodies, ``Page.addScriptToEvaluateOnNewDocument`` sources, injected HTML)."""
-    from tools.browser_url_policy import url_literals
+    from hermes_agent.tools.browser_url_policy import url_literals
     if isinstance(value, str):
         return ([value.strip()] if key == "url" and value.strip() else []) + url_literals(value, protocol_relative=True)
     if isinstance(value, dict):
@@ -237,7 +237,7 @@ def _browser_cdp_private_guard(*, method: str, params: dict[str, Any], endpoint:
     Raw CDP shares the cloud/private-network boundary of ``browser_exec``'s URL policy and must not become
     its bypass, so a page whose URL cannot be verified as public refuses page-reading methods.
     """
-    from tools.browser_url_policy import eval_ssrf_guard_active, literal_targets_metadata, url_blocked
+    from hermes_agent.tools.browser_url_policy import eval_ssrf_guard_active, literal_targets_metadata, url_blocked
     guard_active = eval_ssrf_guard_active()
     guard = _METHOD_PARAM_GUARDS.get(method)
     if guard_active and guard is not None:
@@ -317,7 +317,7 @@ def _browser_cdp_via_supervisor(task_id: str, frame_id: str, method: str, params
                                 timeout: float) -> str:
     """Route a CDP call through the live supervisor session for an OOPIF frame."""
     try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+        from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
     except Exception as exc:  # pragma: no cover — defensive
         return tool_error(f"CDP supervisor is not available: {exc}. frame_id routing requires a running "
                           "supervisor attached via /browser connect or an active Browserbase session.")
@@ -491,8 +491,8 @@ def _browser_cdp_check() -> bool:
     ``cdp_url`` isn't surfaced) and the browser surface exists (browser-harness importable). Raw (no-I/O)
     gate: check_fns run at every startup, and resolving the endpoint over HTTP here would block launch on
     a stale endpoint."""
-    from tools.browser_session_cdp import get_cdp_override_raw
-    from tools.browser_use_cli import browser_exec_available
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override_raw
+    from hermes_agent.tools.browser_use_cli import browser_exec_available
     return bool(browser_exec_available() and get_cdp_override_raw())
 
 

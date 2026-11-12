@@ -15,7 +15,7 @@ import re
 
 import pytest
 
-from tools.environments.local import LocalEnvironment
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 _PATH_LINE = re.compile(r'^(?:declare -x|export) PATH="(.*)"$', re.MULTILINE)
 
@@ -28,13 +28,13 @@ def _managed_setup(tmp_path, monkeypatch, *, profile_body: str):
     managed.mkdir()
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(
-        "tools.environments.local._resolve_shell_init_files", lambda: [str(profile)]
+        "hermes_agent.tools.environments.local._resolve_shell_init_files", lambda: [str(profile)]
     )
     monkeypatch.setattr(
-        "tools.environments.local._resolve_hermes_bin_dir", lambda: str(managed)
+        "hermes_agent.tools.environments.local._resolve_hermes_bin_dir", lambda: str(managed)
     )
     monkeypatch.setattr(
-        "tools.environments.local._managed_runtime_path_entries", list
+        "hermes_agent.tools.environments.local._managed_runtime_path_entries", list
     )
     return managed
 
@@ -145,8 +145,8 @@ def test_background_command_keeps_spawn_path_dirs_a_login_profile_resets(tmp_pat
     from types import SimpleNamespace
 
     from tests.waiting import wait_until
-    from tools.process_registry import ProcessRegistry
-    from tools.terminal_tool_background import _spawn
+    from hermes_agent.tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.terminal_tool_background import _spawn
 
     profile_bin, parent_bin = tmp_path / "profile-bin", tmp_path / "parent-bin"
     for d in (profile_bin, parent_bin):
@@ -159,7 +159,7 @@ def test_background_command_keeps_spawn_path_dirs_a_login_profile_resets(tmp_pat
     login_shell.write_text(f'#!/usr/bin/env bash\nPATH="{profile_bin}:/usr/local/bin:/usr/bin:/bin"\n'
                            'exec /bin/bash --noprofile --norc -c "$2"\n', encoding="utf-8")
     login_shell.chmod(0o755)
-    monkeypatch.setattr("tools.process_registry._find_shell", lambda: str(login_shell))
+    monkeypatch.setattr("hermes_agent.tools.process_registry._find_shell", lambda: str(login_shell))
     registry = ProcessRegistry()
     session = _spawn(registry, env=SimpleNamespace(env={"PATH": f"{parent_bin}:/usr/bin:/bin"}),
                      env_type="local", command='only-in-parent; printf "PATH=%s\\n" "$PATH"',

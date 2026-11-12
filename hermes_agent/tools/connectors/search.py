@@ -4,9 +4,9 @@ import functools
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from tools.connectors.gateway.bridge import NOT_SET_UP, NOT_SET_UP_MESSAGE, SIGN_IN_EXPIRED, UNREACHABLE
-from tools.connectors.gateway.names import format_connector_name, is_connector_name, vendor_slug_candidates
-from tools.tool_search_catalog import CatalogEntry, _fn, _tokenize
+from hermes_agent.tools.connectors.gateway.bridge import NOT_SET_UP, NOT_SET_UP_MESSAGE, SIGN_IN_EXPIRED, UNREACHABLE
+from hermes_agent.tools.connectors.gateway.names import format_connector_name, is_connector_name, vendor_slug_candidates
+from hermes_agent.tools.tool_search_catalog import CatalogEntry, _fn, _tokenize
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ def connections_in_scope(tool_defs: Iterable[dict[str, Any]]) -> bool:
 def connectors_unavailable(failure: str, *, verb: str,
                            names: Optional[list[str]] = None) -> dict[str, Any]:
     if failure == NOT_SET_UP:
-        from tools.connectors.gateway.config import guest_setup_failure
+        from hermes_agent.tools.connectors.gateway.config import guest_setup_failure
 
         hint = (f"{NOT_SET_UP_MESSAGE} Hosted apps (Gmail, Calendar, Notion and more) are then searchable. "
                 "If the request is better served by the tools above, use those instead.")
@@ -40,7 +40,7 @@ def connectors_unavailable(failure: str, *, verb: str,
 
 def _connector_entry(name: str, connector: str, slug: str, schema: dict[str, Any]) -> CatalogEntry:
     description = str(schema.get("description") or "")
-    from tools.connectors.gateway.files import model_parameters
+    from hermes_agent.tools.connectors.gateway.files import model_parameters
 
     parameters = model_parameters(name, schema.get("input_schema"))
     tool_def = {"type": "function", "function": {
@@ -58,7 +58,7 @@ def connector_entries_by_group(
     per_query: list[list[CatalogEntry]] = [[] for _ in queries]
     try:
         if connector_search is None:
-            from tools.connectors.gateway.bridge import connector_search_hits
+            from hermes_agent.tools.connectors.gateway.bridge import connector_search_hits
 
             connector_search = functools.partial(connector_search_hits, call=call)
         leg = connector_search([{"use_case": q} for q in queries])
@@ -114,7 +114,7 @@ def remote_schemas_for(
         return {}, None
     try:
         if connector_describe is None:
-            from tools.connectors.gateway.bridge import connector_describe as describe
+            from hermes_agent.tools.connectors.gateway.bridge import connector_describe as describe
 
             connector_describe = functools.partial(describe, call=call)
         leg = connector_describe(connector_names)

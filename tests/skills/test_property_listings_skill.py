@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from tools.skills_hub_official import OptionalSkillSource
+from hermes_agent.tools.skills_hub_official import OptionalSkillSource
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,7 +17,7 @@ def test_optional_catalog_fetch_preserves_a_usable_property_recipe(tmp_path, mon
     assert matches, "Property tasks must be discoverable in the optional catalog"
     bundle = source.fetch(matches[0].identifier)
     assert bundle is not None
-    from tools.skills_tool import skill_view
+    from hermes_agent.tools.skills_tool import skill_view
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     destination = tmp_path / "skills" / bundle.name

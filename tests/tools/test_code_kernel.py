@@ -39,8 +39,8 @@ def _force_local_terminal(monkeypatch):
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
-from tools.code_execution_tool import execute_code
-from tools.code_kernel import _KERNELS, shutdown_all_kernels
+from hermes_agent.tools.code_execution_tool import execute_code
+from hermes_agent.tools.code_kernel import _KERNELS, shutdown_all_kernels
 
 
 @contextmanager
@@ -50,7 +50,7 @@ def _kernel_config(**overrides):
     always on; the retired ``kernel_mode`` key is ignored by the tool."""
     config = {"mode": "strict", "timeout": 30}
     config.update(overrides)
-    with patch("tools.code_execution_tool._load_config", return_value=config):
+    with patch("hermes_agent.tools.code_execution_tool._load_config", return_value=config):
         yield
 
 
@@ -188,7 +188,7 @@ class TestModelFacingReset(unittest.TestCase):
         way out of poisoned state. A stale ``kernel_mode: per-call`` key must not
         drop it from the schema, and a model-shaped call routed through the
         registered handler must actually discard the kernel's state."""
-        from tools.code_execution_tool import _execute_code_handler, build_execute_code_schema
+        from hermes_agent.tools.code_execution_tool import _execute_code_handler, build_execute_code_schema
 
         with _kernel_config(kernel_mode="per-call"):
             schema = build_execute_code_schema(mode="strict")
@@ -218,7 +218,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
     """
 
     def _run_as(self, session_key, code, task_id, **kwargs):
-        from tools.approval_context import reset_current_session_key, set_current_session_key
+        from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
 
         token = set_current_session_key(session_key)
         try:
@@ -318,7 +318,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         """The pin is not a leak: when the child is torn down (the delegate_task cleanup path calls
         ``shutdown_kernels_for_delegated_child``) its kernels die and stop counting."""
         from agent.delegation_context import delegated_child_context
-        from tools.code_kernel import shutdown_kernels_for_delegated_child
+        from hermes_agent.tools.code_kernel import shutdown_kernels_for_delegated_child
 
         with _kernel_config():
             with delegated_child_context("child-done"):
@@ -337,7 +337,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         self.assertIn("2", still["output"])
 
     def test_session_clear_disposes_the_owners_kernels(self):
-        from tools.approval import clear_session
+        from hermes_agent.tools.approval import clear_session
 
         with _kernel_config():
             self._run_as("conv-a", "x = 41", task_id="turn-1")
@@ -406,7 +406,7 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
             return proc
 
         results = []
-        with patch("tools.code_kernel.subprocess.Popen", side_effect=_capturing_popen):
+        with patch("hermes_agent.tools.code_kernel.subprocess.Popen", side_effect=_capturing_popen):
             with _kernel_config():
                 def _cell():
                     results.append(self._run_as("conv-a", "import time; time.sleep(0.3)", task_id="t"))
@@ -437,7 +437,7 @@ class TestInScriptToolErrors(unittest.TestCase):
                 return json.dumps({"error": "Refusing to overwrite a.py: never read"})
             return json.dumps({"ok": True})
 
-        with _kernel_config(), patch("model_tools.handle_function_call", new=_handle):
+        with _kernel_config(), patch("hermes_agent.model_tools.handle_function_call", new=_handle):
             failed = _run("import hermes_tools\nhermes_tools.write_file('a.py', 'x')\nprint('done')\n")
             clean = _run("import hermes_tools\nhermes_tools.web_search(query='q')\n")
         self.assertEqual(failed["status"], "success", failed)
@@ -450,7 +450,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
 
     def _recorder(self, seen):
         def _handle(tool_name, tool_args, task_id=None):
-            from tools.thread_context import _callback_api
+            from hermes_agent.tools.thread_context import _callback_api
 
             (get_approval, _set_a), *_rest = _callback_api()
             seen.append(
@@ -465,12 +465,12 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         return _handle
 
     def test_a_later_cells_rpc_runs_under_that_cells_authority(self):
-        from tools.terminal_tool import set_approval_callback
+        from hermes_agent.tools.terminal_tool import set_approval_callback
 
         seen = []
         cell = "import hermes_tools\nhermes_tools.web_search(query='q')\n"
         with _kernel_config(), patch(
-            "model_tools.handle_function_call", new=self._recorder(seen)
+            "hermes_agent.model_tools.handle_function_call", new=self._recorder(seen)
         ):
             def cb_one():
                 return "one"
@@ -498,11 +498,11 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         # boundary — under cell 2's authority, allow-list, and budget — the
         # operative enforcement a per-script static scan cannot provide once
         # state persists (composition contract with the execute-code guard).
-        from tools.terminal_tool import set_approval_callback
+        from hermes_agent.tools.terminal_tool import set_approval_callback
 
         seen = []
         with _kernel_config(), patch(
-            "model_tools.handle_function_call", new=self._recorder(seen)
+            "hermes_agent.model_tools.handle_function_call", new=self._recorder(seen)
         ):
             def cb_one():
                 return "one"
@@ -523,7 +523,7 @@ class TestPerCellRpcAuthority(unittest.TestCase):
         self.assertIs(seen[0]["approval_cb"], cb_two)
 
     def test_a_settled_cells_authority_refuses_dispatch(self):
-        from tools.code_kernel import CellAuthority
+        from hermes_agent.tools.code_kernel import CellAuthority
 
         authority = CellAuthority("turn-1")
         authority.retire()
@@ -548,7 +548,7 @@ class TestBackgroundIdleReaper(unittest.TestCase):
     on its own schedule, and staging dirs that outlived a dead host are swept by age."""
 
     def _run_as(self, session_key, code, task_id, **kwargs):
-        from tools.approval_context import reset_current_session_key, set_current_session_key
+        from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
 
         token = set_current_session_key(session_key)
         try:
@@ -559,7 +559,7 @@ class TestBackgroundIdleReaper(unittest.TestCase):
     def test_reap_once_sweeps_idle_kernels_without_a_new_acquire(self):
         import time as time_module
 
-        from tools.code_kernel import _reap_once
+        from hermes_agent.tools.code_kernel import _reap_once
 
         with _kernel_config(kernel_idle_timeout=1):
             self._run_as("conv-a", "x = 41", task_id="turn-1")
@@ -572,7 +572,7 @@ class TestBackgroundIdleReaper(unittest.TestCase):
             self.assertFalse(stale.alive())
 
     def test_reap_once_spares_attached_and_fresh_kernels(self):
-        from tools.code_kernel import _reap_once
+        from hermes_agent.tools.code_kernel import _reap_once
 
         with _kernel_config(kernel_idle_timeout=1):
             fresh = self._run_as("conv-fresh", "x = 1", task_id="turn-1")
@@ -590,10 +590,10 @@ class TestStaleStagingDirSweep(unittest.TestCase):
     def test_week_old_kernel_dirs_go_and_fresh_ones_stay(self):
         import time as time_module
 
-        from tools.code_kernel import _sweep_stale_staging_dirs
+        from hermes_agent.tools.code_kernel import _sweep_stale_staging_dirs
 
         with tempfile.TemporaryDirectory() as tmp:
-            with patch("tools.code_kernel.tempfile.gettempdir", return_value=tmp):
+            with patch("hermes_agent.tools.code_kernel.tempfile.gettempdir", return_value=tmp):
                 old = Path(tmp, "hermes_kernel_old")
                 young = Path(tmp, "hermes_kernel_young")
                 bystander = Path(tmp, "unrelated_dir")

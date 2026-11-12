@@ -74,10 +74,10 @@ def test_delegated_child_context_suppresses_env_gated_kanban_tools(monkeypatch, 
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    import tools.kanban_tools
+    import hermes_agent.tools.kanban_tools
     from agent.delegation_context import delegated_child_context
-    from model_tools import _clear_tool_defs_cache, get_tool_definitions
-    from tools.registry import invalidate_check_fn_cache
+    from hermes_agent.model_tools import _clear_tool_defs_cache, get_tool_definitions
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
 
     invalidate_check_fn_cache()
     _clear_tool_defs_cache()
@@ -101,8 +101,8 @@ def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monk
             self._session_db = kwargs.get("session_db")
 
     import run_agent
-    from tools import delegate_tool
-    from tools import delegate_tool_config
+    from hermes_agent.tools import delegate_tool
+    from hermes_agent.tools import delegate_tool_config
 
     monkeypatch.setattr(run_agent, "AIAgent", FakeAgent)
     monkeypatch.setattr(delegate_tool, "_load_config", dict)
@@ -156,7 +156,7 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
 
     from agent.delegation_context import delegated_child_context
-    from tools.code_execution_env import _scrub_child_env
+    from hermes_agent.tools.code_execution_env import _scrub_child_env
 
     with delegated_child_context():
         env = _scrub_child_env(
@@ -187,7 +187,7 @@ def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
     kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
     from agent.delegation_context import delegated_child_context
     from hermes_cli import kanban_db_connect as kbc
-    from tools import kanban_tools
+    from hermes_agent.tools import kanban_tools
 
     conn = kbc.connect()
     try:
@@ -199,7 +199,7 @@ def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
         # symptom assertions below, not on this attribute probe.
         monkeypatch.setattr(kanban_tools, "_auto_heartbeat_fence_warned", False, raising=False)
 
-        with caplog.at_level(logging.WARNING, logger="tools.kanban_tools"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.kanban_tools"):
             assert kanban_tools.heartbeat_current_worker_from_env() is False
             monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
             assert kanban_tools.heartbeat_current_worker_from_env() is False
@@ -232,7 +232,7 @@ def test_delegate_child_kanban_cli_cannot_delete_parent_board(
     assert kb.board_exists("victim")
 
     from agent.delegation_context import delegated_child_context
-    from tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.environments.local import LocalEnvironment
 
     code = (
         "from hermes_cli import kanban; "
@@ -264,7 +264,7 @@ def test_delegate_child_attach_url_guard_leaves_no_row_or_file(monkeypatch, tmp_
     from hermes_cli import kanban_db_connect as kbc
 
     from agent.delegation_context import delegated_child_context
-    from tools import kanban_tools
+    from hermes_agent.tools import kanban_tools
 
     def forbidden_download(*_args, **_kwargs):
         raise AssertionError("delegated child guard must run before URL download")
@@ -297,8 +297,8 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
     """Deterministic E2E: a delegated child cannot complete its parent task."""
     kb, tid, workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
     from hermes_cli import kanban_db_connect as kbc
-    from tools import delegate_tool
-    from tools import kanban_tools
+    from hermes_agent.tools import delegate_tool
+    from hermes_agent.tools import kanban_tools
 
     class Parent:
         _current_task_id = tid

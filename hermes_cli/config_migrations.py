@@ -560,7 +560,7 @@ def _migrate_to_41(results: dict[str, Any], quiet: bool) -> None:
     if not _local_files_allowed():
         return  # SOUL.md files only, across the whole roster
     from hermes_constants import get_hermes_home
-    from tools.bot_mode_probe import _PROTOCOL_HEADING, _hermes_root, _roster, strip_legacy_protocol
+    from hermes_agent.tools.bot_mode_probe import _PROTOCOL_HEADING, _hermes_root, _roster, strip_legacy_protocol
 
     cleaned: list[str] = []
     for name, profile_dir in _roster(_hermes_root(get_hermes_home())):

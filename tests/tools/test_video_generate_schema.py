@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-import tools.video_generation_tool as vt
-from tools.video_generation_tool import (
+import hermes_agent.tools.video_generation_tool as vt
+from hermes_agent.tools.video_generation_tool import (
     _build_dynamic_video_schema,
 )
 

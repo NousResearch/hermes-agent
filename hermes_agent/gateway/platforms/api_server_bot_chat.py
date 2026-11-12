@@ -39,7 +39,7 @@ async def create_peer_bot_chat(adapter, body):
     answers: no authority, another title, an explicit id, or the chat exists (its title conflict).
     The owner mints on the profile's own policy, so a create carrying anything else (a model
     lock, route, options, system prompt) is refused by name before anything is written."""
-    from tools.bot_mode_probe import BOT_CHAT_TITLE
+    from hermes_agent.tools.bot_mode_probe import BOT_CHAT_TITLE
     authority = _authority(adapter.gateway_runner)
     if (authority is None or str(body.get('title') or '').strip() != BOT_CHAT_TITLE
             or body.get('id') or body.get('session_id')):
@@ -166,7 +166,7 @@ async def await_live_delivery(adapter, home, record, timeout, *, should_stop=Non
     authority = _authority(adapter.gateway_runner)
     if authority is not None and record.get('admission_id'):
         return await await_peer_receipt(authority, record, timeout, should_stop=should_stop)
-    from tools.bot_live_delivery import await_delivery_async
+    from hermes_agent.tools.bot_live_delivery import await_delivery_async
     return await await_delivery_async(home, record['delivery_id'], timeout, should_stop=should_stop) or record
 
 

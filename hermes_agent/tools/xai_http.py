@@ -164,7 +164,7 @@ def _resolve_explicit_xai_api_key() -> str:
     Both the preferred-key and the no-OAuth fallback paths go through here so scope policy
     (incl. failing closed in a multiplexed gateway turn) is never re-implemented per caller.
     """
-    from tools.tool_backend_helpers import resolve_provider_secret
+    from hermes_agent.tools.tool_backend_helpers import resolve_provider_secret
     return resolve_provider_secret("XAI_API_KEY", "xai")
 
 
@@ -192,7 +192,7 @@ def resolve_xai_http_credentials(
     location) are honored — not just ones already exported into ``os.environ``. This keeps direct xAI
     endpoints (images, TTS, STT, etc.) aligned with the main runtime auth model and preserves the regression
     contract from PR #17140 / #17163.
-    The key is read through :func:`tools.tool_backend_helpers.resolve_provider_secret` so profile secret
+    The key is read through :func:`hermes_agent.tools.tool_backend_helpers.resolve_provider_secret` so profile secret
     scoping is identical to the fallback branch, and the base URL honors ``HERMES_XAI_BASE_URL`` /
     ``XAI_BASE_URL`` behind the same origin-pinning validation as the OAuth branch. See #87045, #88040.
     """

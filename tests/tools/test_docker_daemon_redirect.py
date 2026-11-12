@@ -10,7 +10,7 @@ A daemon redirect makes a local-looking command operate on a different
 requires approval regardless of subcommand.
 """
 
-from tools.approval import detect_dangerous_command
+from hermes_agent.tools.approval import detect_dangerous_command
 
 
 class TestDockerDaemonRedirect:

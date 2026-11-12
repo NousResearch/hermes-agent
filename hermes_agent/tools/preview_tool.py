@@ -7,9 +7,9 @@ agent-level callback dispatch (agent_runtime_helpers -> agent.read_preview_callb
 Lives in the ``desktop_ui`` toolset — desktop-app sessions only.
 """
 
-from tools import desktop_ui
-from tools.open_preview_tool import _normalize_target, open_preview_tool
-from tools.registry import registry, tool_error
+from hermes_agent.tools import desktop_ui
+from hermes_agent.tools.open_preview_tool import _normalize_target, open_preview_tool
+from hermes_agent.tools.registry import registry, tool_error
 
 
 def preview_close(url: str = "") -> str:

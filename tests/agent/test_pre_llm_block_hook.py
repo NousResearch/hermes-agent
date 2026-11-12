@@ -81,7 +81,7 @@ def test_blocked_turn_never_reaches_the_provider_and_stores_only_the_placeholder
     Turn 2 (a fresh agent reloading the session) replays the placeholder, never the prompt."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     from agent.message_metadata import withheld_prompt_text
-    from tools.session_search_tool import session_search
+    from hermes_agent.tools.session_search_tool import session_search
 
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

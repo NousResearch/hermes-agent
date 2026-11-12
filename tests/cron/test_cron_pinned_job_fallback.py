@@ -99,7 +99,7 @@ def _run(tmp_path, job, *, primary_error=None):
          patch("hermes_cli.env_loader.load_hermes_dotenv"), \
          patch("hermes_cli.env_loader.reset_secret_source_cache"), \
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=resolve), \
-         patch("tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
+         patch("hermes_agent.tools.mcp_tool_discovery.discover_mcp_tools", return_value=[]), \
          patch("run_agent.AIAgent") as agent_cls:
         agent_cls.return_value.run_conversation.return_value = {"final_response": "ok"}
         success, _output, _final, error = _run_owned_job(dict(job), tmp_path)

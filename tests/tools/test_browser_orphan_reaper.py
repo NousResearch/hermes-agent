@@ -1,6 +1,6 @@
 """Tests for the browser orphan reaper: Chromium launched by a Hermes process that exited without
 cleaning up is found through the launcher's per-profile records and stopped, but only after its
-identity is proven (``tools.browser_launcher.reap_orphaned_browsers``, driven by
+identity is proven (``hermes_agent.tools.browser_launcher.reap_orphaned_browsers``, driven by
 ``browser_session_lifecycle.reap_orphaned_browser_sessions``)."""
 
 import json
@@ -14,10 +14,10 @@ from unittest.mock import patch
 import pytest
 
 from tests.waiting import wait_until
-from tools import browser_launcher as launcher
-from tools.browser_launcher_holders import ns_identity
-from tools import browser_session as bs
-from tools import browser_session_lifecycle as lifecycle
+from hermes_agent.tools import browser_launcher as launcher
+from hermes_agent.tools.browser_launcher_holders import ns_identity
+from hermes_agent.tools import browser_session as bs
+from hermes_agent.tools import browser_session_lifecycle as lifecycle
 
 _DEAD_OWNER = 99999
 _LIVE_OTHER_OWNER = 88888
@@ -67,7 +67,7 @@ class TestReapOrphanedBrowserSessions:
         monkeypatch.setattr(launcher, "_pid_alive", _alive(4242))  # browser alive, owning hermes gone
         monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
         monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
-        monkeypatch.setattr("tools.browser_lightpanda.reap_orphaned_lightpanda", lambda: 0)
+        monkeypatch.setattr("hermes_agent.tools.browser_lightpanda.reap_orphaned_lightpanda", lambda: 0)
 
         assert lifecycle.reap_orphaned_browser_sessions() == 1
 
@@ -313,7 +313,7 @@ def test_records_of_every_served_profile_are_reaped(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "_pid_alive", _alive(1111, 2222))
     monkeypatch.setattr(launcher, "_start_time", lambda pid: 777)
     monkeypatch.setattr(launcher, "_cmdline_names_dir", lambda pid, udd: True)
-    monkeypatch.setattr("tools.browser_lightpanda.reap_orphaned_lightpanda", lambda: 0)
+    monkeypatch.setattr("hermes_agent.tools.browser_lightpanda.reap_orphaned_lightpanda", lambda: 0)
     for home, pid in ((home_a, 1111), (home_b, 2222)):
         rec_dir = home / "cache" / "browser" / "chromium-records"
         rec_dir.mkdir(mode=0o700, parents=True)
@@ -348,11 +348,11 @@ class TestPeriodicOrphanReap:
         orig_running = bs._cleanup_running
         bs._cleanup_running = True
         try:
-            with patch("tools.browser_session_lifecycle.reap_orphaned_browser_sessions",
+            with patch("hermes_agent.tools.browser_session_lifecycle.reap_orphaned_browser_sessions",
                        side_effect=lambda: reap_calls.append(1)), \
-                 patch("tools.browser_session_lifecycle.cleanup_inactive_sessions",
+                 patch("hermes_agent.tools.browser_session_lifecycle.cleanup_inactive_sessions",
                        side_effect=fake_cleanup), \
-                 patch("tools.browser_session_lifecycle.time.sleep"):
+                 patch("hermes_agent.tools.browser_session_lifecycle.time.sleep"):
                 lifecycle._janitor()
         finally:
             bs._cleanup_running = orig_running

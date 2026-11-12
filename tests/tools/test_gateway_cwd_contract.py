@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tools import code_execution_tool, file_tools, terminal_tool
+from hermes_agent.tools import code_execution_tool, file_tools, terminal_tool
 
 
 def test_terminal_env_config_uses_terminal_cwd(monkeypatch, tmp_path):

@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from tools.tool_output_limits import _coerce_int, _coerce_positive_int
+from hermes_agent.tools.tool_output_limits import _coerce_int, _coerce_positive_int
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ def spill_if_oversized(
     saved_path: Optional[str] = None
     try:
         spill_dir = _resolve_spill_dir(cfg.get("directory"), session_id)
-        from tools.spill_safety import ensure_spill_dir, write_text_exclusive
+        from hermes_agent.tools.spill_safety import ensure_spill_dir, write_text_exclusive
         # Hook context may embed raw secrets: private perms + exclusive,
         # symlink-refusing create (the per-session dir is predictable).
         ensure_spill_dir(spill_dir, private=True)

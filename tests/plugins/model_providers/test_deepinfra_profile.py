@@ -14,7 +14,7 @@ import pytest
 
 @pytest.fixture
 def deepinfra_profile():
-    import model_tools
+    from hermes_agent import model_tools
     import providers
 
     profile = providers.get_provider_profile("deepinfra")

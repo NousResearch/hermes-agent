@@ -3,7 +3,7 @@
 Binary discovery, the shared ffmpeg m4a encode (transcode + silence trim),
 source/format validation, WeChat .silk decoding, CAF conversion and the
 best-effort cloud pre-upload silence trim. Facade-owned state (``_HAS_PILK``,
-``_safe_find_spec``) is read lazily from ``tools.transcription_tools``.
+``_safe_find_spec``) is read lazily from ``hermes_agent.tools.transcription_tools``.
 """
 
 from __future__ import annotations
@@ -19,12 +19,12 @@ from typing import Any, Dict, Optional
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from utils import is_truthy_value
-from tools.transcription_common import (
+from hermes_agent.tools.transcription_common import (
     COMMON_LOCAL_BIN_DIRS, LOCAL_NATIVE_AUDIO_FORMATS, MAX_FILE_SIZE, SUPPORTED_FORMATS,
     _config_number, _error_result, _lazy_ensure_quietly, _process_error_detail)
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("tools.transcription_tools")
+logger = logging.getLogger("hermes_agent.tools.transcription_tools")
 
 
 def _find_binary(binary_name: str) -> Optional[str]:
@@ -115,7 +115,7 @@ def _validate_audio_file(file_path: str, *, enforce_size_limit: bool = True) -> 
 
 def _prepare_audio_for_transcription(file_path: str) -> tuple[Optional[str], Optional[str], Optional[dict[str, Any]]]:
     """Convert a decoder-safe .silk source to a temporary supported WAV file."""
-    from tools.transcription_tools import _HAS_PILK, _safe_find_spec
+    from hermes_agent.tools.transcription_tools import _HAS_PILK, _safe_find_spec
     audio_path = Path(file_path)
     if audio_path.suffix.lower() != ".silk":
         return file_path, None, None

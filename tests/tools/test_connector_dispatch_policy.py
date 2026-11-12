@@ -7,10 +7,10 @@ import pytest
 
 @pytest.mark.parametrize("blocked_by", ["hook", "execution"])
 def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blocked_by):
-    import model_tools
+    from hermes_agent import model_tools
     from hermes_cli import plugins
-    from tools.registry import invalidate_check_fn_cache
-    from tools.connectors.gateway import bridge, config
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
+    from hermes_agent.tools.connectors.gateway import bridge, config
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
@@ -78,10 +78,10 @@ def test_remote_entries_run_request_hook_and_execution_policies(monkeypatch, blo
 
 
 def test_stop_during_a_connector_batch_leaves_unstarted_entries_unsent(monkeypatch):
-    import model_tools
-    from tools.interrupt import set_interrupt
-    from tools.registry import invalidate_check_fn_cache
-    from tools.connectors.gateway import bridge, config
+    from hermes_agent import model_tools
+    from hermes_agent.tools.interrupt import set_interrupt
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
+    from hermes_agent.tools.connectors.gateway import bridge, config
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
@@ -112,9 +112,9 @@ def test_stop_during_a_connector_batch_leaves_unstarted_entries_unsent(monkeypat
 
 
 def test_disabled_connections_cannot_be_called_through_a_stale_schema(monkeypatch):
-    from tools.connectors import managed
-    from tools.connectors.gateway import config
-    from tools.registry import registry
+    from hermes_agent.tools.connectors import managed
+    from hermes_agent.tools.connectors.gateway import config
+    from hermes_agent.tools.registry import registry
 
     monkeypatch.setattr(config, "connectors_available", lambda: False)
     monkeypatch.setattr(managed, "managed_client",
@@ -124,10 +124,10 @@ def test_disabled_connections_cannot_be_called_through_a_stale_schema(monkeypatc
 
 
 def test_a_connector_batch_collects_the_union_of_data_use_and_keeps_it_out_of_the_result(monkeypatch):
-    import model_tools
-    from tools.connectors.data_use import collect_data_use
-    from tools.connectors.gateway import bridge, config
-    from tools.registry import invalidate_check_fn_cache
+    from hermes_agent import model_tools
+    from hermes_agent.tools.connectors.data_use import collect_data_use
+    from hermes_agent.tools.connectors.gateway import bridge, config
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)

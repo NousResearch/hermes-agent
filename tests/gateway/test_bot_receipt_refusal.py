@@ -32,7 +32,7 @@ def _scan_warnings(caplog, key):
 async def test_refused_delivery_leaves_a_terminal_receipt_the_scan_accepts(bot, monkeypatch, caplog):
     from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
     from hermes_agent.gateway.session_bot_mailbox import scan_receipts
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     params = dict(id=KEY, profile='default', message='ping')
     refusing = _refuse(monkeypatch, 'permission_denied')
     with pytest.raises(RuntimeStoreError, match='permission_denied'):
@@ -73,7 +73,7 @@ async def test_a_transient_refusal_leaves_the_same_id_resendable(bot, monkeypatc
     """An owner-state refusal (a drain for restart/update, storage, a fenced epoch) says nothing
     about the delivery: no receipt is kept, and the same-id resend once it clears admits once."""
     from hermes_agent.gateway.session_bot import deliver
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     params = dict(id=KEY, profile='default', message='ping')
     refusing = _refuse(monkeypatch, reason)
     with pytest.raises(RuntimeStoreError, match=reason):
@@ -94,7 +94,7 @@ async def test_a_cron_report_parked_across_a_drain_is_delivered_on_the_next_tick
     import json
     from hermes_agent.cron.bot_chat_legacy import drain_legacy_pending
     from hermes_agent.gateway.session_bot import deliver
-    from tools import bot_live_delivery as mailbox
+    from hermes_agent.tools import bot_live_delivery as mailbox
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(mailbox, 'authority_delivery', lambda home, params: asyncio.run_coroutine_threadsafe(
         deliver(bot.connection, params), loop).result())
@@ -176,7 +176,7 @@ async def test_a_pin_without_refusal_proof_still_warns(bot, monkeypatch, caplog)
     explicit unknown record, and the bulk scan keeps warning about it."""
     from hermes_agent.gateway.session_bot import deliver
     from hermes_agent.gateway.session_bot_mailbox import scan_receipts
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     real = type(bot.authority).admit_automation
     async def committed_then_refused(self, *args):
         await real(self, *args)

@@ -9,8 +9,8 @@ import pytest
 
 from hermes_agent.gateway.run import _profile_runtime_scope
 from hermes_constants import hermes_home_key
-from tools import browser_session as bs, browser_session_cdp as bs_cdp, browser_session_lifecycle as lifecycle
-from tools.browser_supervisor import SUPERVISOR_REGISTRY
+from hermes_agent.tools import browser_session as bs, browser_session_cdp as bs_cdp, browser_session_lifecycle as lifecycle
+from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
 
 
 @pytest.fixture
@@ -91,7 +91,7 @@ def test_each_profile_drives_and_reaps_its_own_harness_daemon(profiles, monkeypa
     with one shared runtime dir B's exec drove A's connected browser and A's reap stopped B's daemon."""
     import json
     import stat
-    from tools import browser_use_cli as bu_cli
+    from hermes_agent.tools import browser_use_cli as bu_cli
 
     a, b = profiles
     shared = tmp_path / "harness-runtime"

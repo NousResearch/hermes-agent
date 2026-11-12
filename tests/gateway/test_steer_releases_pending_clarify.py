@@ -14,7 +14,7 @@ from hermes_agent.gateway.config import GatewayConfig, Platform
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.run import GatewayRunner
 from hermes_agent.gateway.session import SessionSource
-from tools import clarify_gateway
+from hermes_agent.tools import clarify_gateway
 
 SESSION_KEY = "key"
 CLARIFY_ID = "clarify-145161"

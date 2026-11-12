@@ -1,7 +1,7 @@
 """The real-profile snapshot (the overlay of the user's Cookies / Login Data onto the profile copy) is part of the
 launch step under the copy dir's cross-process launcher lock: two Hermes processes of one profile never copy into
 the same snapshot dir at once, nor over a copy-browser that just came up (the later one attaches instead), and a
-different profile's copy never waits on it (``tools/browser_session_real_profile.py``).
+different profile's copy never waits on it (``hermes_agent/tools/browser_session_real_profile.py``).
 """
 
 from __future__ import annotations

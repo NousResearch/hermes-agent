@@ -9,7 +9,7 @@ import json
 import pytest
 
 from tests.tools.test_bot_mode_dm import _canonical_target, _capture_spawn, _FakeAgent, _managed_home
-from tools import bot_mode_dm, bot_mode_probe, bot_relay
+from hermes_agent.tools import bot_mode_dm, bot_mode_probe, bot_relay
 
 
 @pytest.fixture(autouse=True)

@@ -20,7 +20,7 @@ import subprocess
 import threading
 from typing import Optional, Sequence
 
-from tools.environments.base import BaseEnvironment
+from hermes_agent.tools.environments.base import BaseEnvironment
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +31,8 @@ def exec_prefix(env: BaseEnvironment, *, user: Optional[str] = None, interactive
     ``user`` selects the sandbox-side account (docker only; ssh runs as the configured login).
     ``interactive`` keeps stdin open (``docker exec -i``); ssh always does.
     """
-    from tools.environments.docker import DockerEnvironment
-    from tools.environments.ssh import SSHEnvironment
+    from hermes_agent.tools.environments.docker import DockerEnvironment
+    from hermes_agent.tools.environments.ssh import SSHEnvironment
 
     if isinstance(env, DockerEnvironment):
         container = getattr(env, "_container_id", None)
@@ -97,7 +97,7 @@ def remote_argv(prefix: Sequence[str], argv: Sequence[str], *, env: Optional[dic
 
 
 def shell_joined(env: BaseEnvironment) -> bool:
-    from tools.environments.ssh import SSHEnvironment
+    from hermes_agent.tools.environments.ssh import SSHEnvironment
     return isinstance(env, SSHEnvironment)
 
 

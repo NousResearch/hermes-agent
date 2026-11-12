@@ -13,7 +13,7 @@ import hermes_agent.gateway.run as gateway_run
 
 
 def _quiet_tool_side(monkeypatch, tool_count):
-    import model_tools
+    from hermes_agent import model_tools
 
     monkeypatch.setattr(model_tools, "get_tool_definitions", lambda quiet_mode=False, **_kw: ["t"] * tool_count)
     monkeypatch.setattr(

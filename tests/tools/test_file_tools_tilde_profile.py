@@ -20,8 +20,8 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.file_tools_paths as ft
-from tools import terminal_tool
+import hermes_agent.tools.file_tools_paths as ft
+from hermes_agent.tools import terminal_tool
 
 
 # ---------------------------------------------------------------------------

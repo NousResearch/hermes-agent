@@ -1,6 +1,6 @@
 """Capture target selection must never implicitly target Cua Driver itself."""
 
-from tools.computer_use.cua_backend_capture import _select_capture_target
+from hermes_agent.tools.computer_use.cua_backend_capture import _select_capture_target
 
 
 def _window(app_name: str, pid: int, window_id: int, z_index: int):

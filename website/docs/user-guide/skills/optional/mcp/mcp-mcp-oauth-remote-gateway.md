@@ -59,7 +59,7 @@ Do NOT use this for:
 
 ## Why the Built-in OAuth Flow Fails on a Remote Gateway
 
-Hermes' native MCP OAuth client (`tools/mcp_oauth.py`):
+Hermes' native MCP OAuth client (`hermes_agent/tools/mcp_oauth.py`):
 
 1. Picks a free local port `P`.
 2. Registers a dynamic OAuth client with the AS, sending `redirect_uri = http://127.0.0.1:P/callback`.
@@ -80,7 +80,7 @@ responds without any "Added/Reconnected: X" line in `change_detail`.
 
 Before any manual token surgery, check whether the built-in flow's fallbacks
 already cover the deployment. When Hermes detects a remote session it prints two
-options alongside the authorize URL (`tools/mcp_oauth.py`):
+options alongside the authorize URL (`hermes_agent/tools/mcp_oauth.py`):
 
 1. **Paste-back** — on an interactive TTY, a stdin reader races the HTTP
    listener. The user authorizes, the browser fails to connect to
@@ -150,7 +150,7 @@ env | grep -iE "HERMES|RAILWAY|CONTAINER"
 echo "$DISPLAY $WAYLAND_DISPLAY $SSH_CLIENT"
 ```
 
-No display + a remote indicator = remote gateway. `tools/mcp_oauth.py::_can_open_browser()`
+No display + a remote indicator = remote gateway. `hermes_agent/tools/mcp_oauth.py::_can_open_browser()`
 uses these same env vars, so if Hermes' own auto-detect says "headless", the
 built-in flow won't work.
 
@@ -260,7 +260,7 @@ When the user pastes the callback URL:
 
 ### 8. Write tokens in Hermes' exact schema
 
-`tools/mcp_oauth.py::HermesTokenStorage` expects two files under
+`hermes_agent/tools/mcp_oauth.py::HermesTokenStorage` expects two files under
 `$HERMES_HOME/mcp-tokens/` (create dir with `0o700`, files with `0o600`):
 
 **`<server_name>.json`** — the `OAuthToken` pydantic model:
@@ -340,7 +340,7 @@ tools. Refresh happens automatically before `expires_in` elapses.
 
 1. **Do not assume "headless" means "OAuth impossible."** The built-in flow works fine for local CLI; the issue is strictly remote deployments where the user's browser and the Hermes process are on different machines. Check the execution environment before claiming OAuth isn't an option.
 
-2. **Read the source, not just the skill docs.** `tools/mcp_oauth.py` and the MCP config reference in `website/docs/` are the authoritative references. Grep the tree before telling the user a feature "doesn't exist."
+2. **Read the source, not just the skill docs.** `hermes_agent/tools/mcp_oauth.py` and the MCP config reference in `website/docs/` are the authoritative references. Grep the tree before telling the user a feature "doesn't exist."
 
 3. **Cloudflare UA filter.** Many MCP/OAuth providers front their infra with Cloudflare, which 403s `python-urllib/*` user agents on metadata endpoints even though those endpoints are public. Set `User-Agent: python-httpx/0.27` (or any browser-like string) on every request in this flow. Hermes itself uses httpx, so this is never a problem in the real connection path.
 
@@ -350,7 +350,7 @@ tools. Refresh happens automatically before `expires_in` elapses.
 
 6. **`/reload-mcp` is silent on failure.** If the reload shows "No MCP tools available" with no `change_detail` line, a server is in config but failed to connect and no error bubbled up. Tail the error log, smoke-test the token directly with a manual `initialize` POST, and — if everything looks good — ask for a full process restart.
 
-7. **Circuit breaker can survive `/reload-mcp`.** `tools/mcp_tool.py` keeps a module-level error-count dict with a small threshold. Once tripped (e.g. after token expiry produces several consecutive failures), the tool handler can short-circuit before calling the server, so no successful call resets the counter. Symptom: reload says "Reconnected: X" but subsequent calls still fail with "server unreachable" in the same conversation. Recovery order: try `/reload-mcp` FIRST (cheap, no chat-process blip) — on current builds it can clear the counter; only escalate to a full gateway process restart if a live call STILL short-circuits after reload. Do not lead with "you must restart."
+7. **Circuit breaker can survive `/reload-mcp`.** `hermes_agent/tools/mcp_tool.py` keeps a module-level error-count dict with a small threshold. Once tripped (e.g. after token expiry produces several consecutive failures), the tool handler can short-circuit before calling the server, so no successful call resets the counter. Symptom: reload says "Reconnected: X" but subsequent calls still fail with "server unreachable" in the same conversation. Recovery order: try `/reload-mcp` FIRST (cheap, no chat-process blip) — on current builds it can clear the counter; only escalate to a full gateway process restart if a live call STILL short-circuits after reload. Do not lead with "you must restart."
 
 8. **Refresh on an expired access_token + a tripped breaker is a deadlock.** The auto-refresh logic runs inside the MCP call path, which the breaker short-circuits once tripped. Manually refreshing the token on disk does not help by itself — pair a manual token refresh with a full restart, not a `/reload-mcp`.
 

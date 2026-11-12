@@ -16,12 +16,12 @@ import json
 import threading
 from unittest.mock import MagicMock, patch
 
-from tools.delegate_tool import (
+from hermes_agent.tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     _run_single_child,
     delegate_task,
 )
-from tools.delegation_output_schema import (
+from hermes_agent.tools.delegation_output_schema import (
     append_output_contract,
     build_retry_message,
     validate_output,
@@ -262,7 +262,7 @@ class TestRunSingleChildSchemaValidation:
         so the kanban stop guard nudges the child toward a board tool it does not have
         (#109735 / #87671)."""
         from agent.delegation_context import is_delegated_child_context
-        from tools.delegate_tool_child_run import _validate_child_output_schema
+        from hermes_agent.tools.delegate_tool_child_run import _validate_child_output_schema
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
         seen: list = []
@@ -297,9 +297,9 @@ def _make_mock_parent():
 class TestDelegateTaskDispatch:
     def test_non_dict_output_schema_rejected(self):
         with (
-            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("hermes_agent.tools.delegate_tool._load_config", return_value={}),
             patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
+                "hermes_agent.tools.delegate_tool._resolve_delegation_credentials",
                 return_value={
                     "provider": None,
                     "model": None,
@@ -322,9 +322,9 @@ class TestDelegateTaskDispatch:
 
     def test_invalid_json_schema_rejected_at_dispatch(self):
         with (
-            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("hermes_agent.tools.delegate_tool._load_config", return_value={}),
             patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
+                "hermes_agent.tools.delegate_tool._resolve_delegation_credentials",
                 return_value={
                     "provider": None,
                     "model": None,
@@ -356,9 +356,9 @@ class TestDelegateTaskDispatch:
             return child
 
         with (
-            patch("tools.delegate_tool._load_config", return_value={}),
+            patch("hermes_agent.tools.delegate_tool._load_config", return_value={}),
             patch(
-                "tools.delegate_tool._resolve_delegation_credentials",
+                "hermes_agent.tools.delegate_tool._resolve_delegation_credentials",
                 return_value={
                     "provider": None,
                     "model": None,
@@ -368,7 +368,7 @@ class TestDelegateTaskDispatch:
                 },
             ),
             patch(
-                "tools.delegate_tool._build_child_preserving_parent_tools",
+                "hermes_agent.tools.delegate_tool._build_child_preserving_parent_tools",
                 side_effect=fake_build,
             ),
         ):

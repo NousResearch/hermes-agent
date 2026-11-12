@@ -1,4 +1,4 @@
-"""Result dataclasses and pure text helpers shared by ``tools.file_operations``
+"""Result dataclasses and pure text helpers shared by ``hermes_agent.tools.file_operations``
 and its search/lint mixins. Leaf module (imports nothing from ``tools`` at module
 scope) so nothing cycles. The ``to_dict`` output of every class here IS tool
 behavior — key names, order and omission rules are pinned by tests and read by
@@ -301,7 +301,7 @@ def normalize_read_pagination(offset: Any = DEFAULT_READ_OFFSET,
     """Clamp read_file pagination so invalid values can never reach a sed range
     like ``0,-1p`` (schemas declare bounds, but not every caller enforces them).
     The ``limit`` ceiling is ``tool_output.max_lines`` from config.yaml."""
-    from tools.tool_output_limits import get_max_lines
+    from hermes_agent.tools.tool_output_limits import get_max_lines
     normalized_offset = max(1, _coerce_int(offset, DEFAULT_READ_OFFSET))
     normalized_limit = max(1, min(_coerce_int(limit, DEFAULT_READ_LIMIT), get_max_lines()))
     return normalized_offset, normalized_limit

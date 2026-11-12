@@ -64,7 +64,7 @@ class GatewayInboundTranscriptionMixin:
             return (self._prepend_media_prefix("\n\n".join(notes), user_text) if notes else user_text), []
 
         try:
-            from tools.transcription_tools import (
+            from hermes_agent.tools.transcription_tools import (
                 transcribe_audio, transcribe_audio_local_fallback
             )
         except ModuleNotFoundError as e:
@@ -185,7 +185,7 @@ class GatewayInboundTranscriptionMixin:
     def _untranscribed_audio_note(path: str) -> str:
         """One minimal neutral marker for every STT failure. Never mention "no STT provider" or setup
         steps — persisted in history they make the model keep volunteering STT-setup advice."""
-        from tools.credential_files import to_agent_visible_cache_path
+        from hermes_agent.tools.credential_files import to_agent_visible_cache_path
         agent_path = to_agent_visible_cache_path(os.path.abspath(path))
         return f"[voice message could not be transcribed automatically; the audio is available at: {agent_path}]"
 

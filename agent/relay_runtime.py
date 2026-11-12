@@ -60,7 +60,7 @@ class _Lazy:
 def _new_scope_op_executor() -> Any:
     # Daemon workers: a wedged call abandoned at timeout cannot block interpreter exit;
     # ``Future.result(timeout=...)`` still bounds callers when every worker is wedged.
-    from tools.daemon_pool import DaemonThreadPoolExecutor
+    from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
     return DaemonThreadPoolExecutor(max_workers=8, thread_name_prefix="relay-scope-op")
 
 

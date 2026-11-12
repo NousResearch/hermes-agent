@@ -68,7 +68,7 @@ def test_frontmatter_slug_matched_even_when_dir_name_differs(
         raising=False,
     )
     with patch(
-        "tools.skills_tool._get_disabled_skill_names",
+        "hermes_agent.tools.skills_tool._get_disabled_skill_names",
         return_value={"Stable Diffusion Image Generation"},
     ), patch(
         "agent.skill_utils.get_all_skills_dirs",
@@ -93,7 +93,7 @@ def test_unknown_command_still_returns_none(
     _write_skill(tmp_skills, "creative/ascii-art", "ascii-art")
 
     with patch(
-        "tools.skills_tool._get_disabled_skill_names", return_value=set()
+        "hermes_agent.tools.skills_tool._get_disabled_skill_names", return_value=set()
     ), patch(
         "agent.skill_utils.get_all_skills_dirs", return_value=[tmp_skills]
     ):

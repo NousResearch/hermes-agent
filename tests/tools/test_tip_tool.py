@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from tools import tip_tool as tt
+from hermes_agent.tools import tip_tool as tt
 
 
 @pytest.fixture

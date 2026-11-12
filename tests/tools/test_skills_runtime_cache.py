@@ -5,9 +5,9 @@ import py_compile
 
 import pytest
 
-from tools import skills_sync as ss
-from tools.skills_sync_bundled_ops import diff_bundled_skill, list_user_modified_bundled_skills
-from tools.skills_sync_optional import _skill_file_list
+from hermes_agent.tools import skills_sync as ss
+from hermes_agent.tools.skills_sync_bundled_ops import diff_bundled_skill, list_user_modified_bundled_skills
+from hermes_agent.tools.skills_sync_optional import _skill_file_list
 
 
 def _legacy_hash(directory):

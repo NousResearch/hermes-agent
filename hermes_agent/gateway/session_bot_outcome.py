@@ -26,7 +26,7 @@ def owner_stopped(result):
 
 def forgotten_reply(authority, admission_id, record):
     """The marked fallback reply for ``record``'s settled-but-empty admission, or None."""
-    from tools.bot_mode_probe import NO_REPLY_MARKER
+    from hermes_agent.tools.bot_mode_probe import NO_REPLY_MARKER
     author = record.get('author') or {}
     if not author.get('is_bot') or NO_REPLY_MARKER in (record.get('message') or ''):
         return None

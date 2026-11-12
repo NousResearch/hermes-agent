@@ -1,6 +1,6 @@
 """Provider-agnostic streaming TTS: sentence text → int16 mono PCM chunk iterator.
 
-``stream_tts_to_speaker`` (``tools.tts_tool``) owns the sentence buffer, sounddevice
+``stream_tts_to_speaker`` (``hermes_agent.tools.tts_tool``) owns the sentence buffer, sounddevice
 output and stop/queue protocol; this module owns the *provider* half so playback
 starts on sentence one. True streamers (``StreamingTTSProvider.stream``) wrap chunked
 APIs; providers with no chunked API (edge, the default) get per-sentence playback via
@@ -18,10 +18,10 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from agent.think_scrubber import THINK_TAG_NAMES
-from tools.tool_backend_helpers import resolve_openai_audio_api_key
-from tools.tts_tool import _get_provider, _load_tts_config
-from tools.tts_tool_plugins import _plugin_pcm_streaming_provider, _plugin_voice_kwargs
-from tools.tts_tool_providers import DEFAULT_XAI_SAMPLE_RATE
+from hermes_agent.tools.tool_backend_helpers import resolve_openai_audio_api_key
+from hermes_agent.tools.tts_tool import _get_provider, _load_tts_config
+from hermes_agent.tools.tts_tool_plugins import _plugin_pcm_streaming_provider, _plugin_voice_kwargs
+from hermes_agent.tools.tts_tool_providers import DEFAULT_XAI_SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ def _resolve_key(env_var: str, provider_id: str) -> str:
     """Provider secret lookup (config > env/.env > credential pool); seam over ``tts_tool._resolve_provider_key``.
     ALL streaming-provider key lookups go through here — never bare ``get_env_value``."""
     try:
-        from tools.tts_tool import _resolve_provider_key
+        from hermes_agent.tools.tts_tool import _resolve_provider_key
         return _resolve_provider_key(env_var, provider_id) or ""
     except Exception:
         from hermes_cli.config import get_env_value
@@ -173,7 +173,7 @@ _PROVIDER_PRIORITY: list[str] = ["elevenlabs", "gemini", "openai", "xai"]
 
 class _PluginPCMStreamer(StreamingTTSProvider):
     """A plugin ``TTSProvider`` that opted into raw PCM (``streams_pcm``; see
-    ``tools.tts_tool_plugins._plugin_pcm_streaming_provider``) behind this ABC."""
+    ``hermes_agent.tools.tts_tool_plugins._plugin_pcm_streaming_provider``) behind this ABC."""
 
     def __init__(self, provider: Any, sample_rate: int, tts_config: dict):
         super().__init__(tts_config, tts_config.get(provider.name) or {})
@@ -235,8 +235,8 @@ class ElevenLabsStreamer(StreamingTTSProvider):
         return bool(_resolve_key("ELEVENLABS_API_KEY", "elevenlabs"))
 
     def stream(self, text: str) -> Iterator[bytes]:
-        from tools.tts_tool import _import_elevenlabs
-        from tools.tts_tool_providers import (
+        from hermes_agent.tools.tts_tool import _import_elevenlabs
+        from hermes_agent.tools.tts_tool_providers import (
             DEFAULT_ELEVENLABS_STREAMING_MODEL_ID, DEFAULT_ELEVENLABS_VOICE_ID, _elevenlabs_environment_kwargs,
         )
         client = _import_elevenlabs()(
@@ -301,7 +301,7 @@ class OpenAIStreamer(StreamingTTSProvider):
         client = OpenAI(
             api_key=(self.section.get("api_key") or resolve_openai_audio_api_key()),
             base_url=(self.section.get("base_url") or get_env_value("OPENAI_BASE_URL") or None))
-        from tools.tts_tool_openai import _openai_extra_body
+        from hermes_agent.tools.tts_tool_openai import _openai_extra_body
         extra = {"extra_body": body} if (body := _openai_extra_body(self.section)) else {}
         with client.audio.speech.with_streaming_response.create(
             model=self.section.get("model", "gpt-4o-mini-tts"), voice=self.section.get("voice", "alloy"),
@@ -332,7 +332,7 @@ class GeminiStreamer(StreamingTTSProvider):
         import base64
         import json as _json
         import requests
-        from tools.tts_tool_providers import (
+        from hermes_agent.tools.tts_tool_providers import (
             DEFAULT_GEMINI_TTS_BASE_URL, DEFAULT_GEMINI_TTS_MODEL, DEFAULT_GEMINI_TTS_VOICE)
         from hermes_cli.config import get_env_value
         api_key = _gemini_key()
@@ -415,7 +415,7 @@ class XAIStreamer(StreamingTTSProvider):
     @staticmethod
     def available() -> bool:
         try:
-            from tools.xai_http import resolve_xai_http_credentials
+            from hermes_agent.tools.xai_http import resolve_xai_http_credentials
             # Same ordering as the sync path: the subscription OAuth bearer
             # authorizes but 403s on metered TTS, so an explicit key wins (#87045).
             return bool(str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip())
@@ -482,8 +482,8 @@ class XAIStreamer(StreamingTTSProvider):
 
         import websockets
 
-        from tools.tts_tool_providers import DEFAULT_XAI_LANGUAGE, DEFAULT_XAI_VOICE_ID
-        from tools.xai_http import resolve_xai_http_credentials
+        from hermes_agent.tools.tts_tool_providers import DEFAULT_XAI_LANGUAGE, DEFAULT_XAI_VOICE_ID
+        from hermes_agent.tools.xai_http import resolve_xai_http_credentials
         api_key = str(resolve_xai_http_credentials(prefer_api_key=True).get("api_key") or "").strip()
         if not api_key:
             raise RuntimeError("No xAI credentials for streaming TTS")

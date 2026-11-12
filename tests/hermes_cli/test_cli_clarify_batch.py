@@ -148,7 +148,7 @@ class TestClarifyBatchPanel:
             _q(1, "Never answered?", ["x", "y"]),
         ]
         with patch(
-            "tools.clarify_gateway.resolve_clarify_timeout", return_value=1
+            "hermes_agent.tools.clarify_gateway.resolve_clarify_timeout", return_value=1
         ):
             thread, result = _start_batch(cli, questions)
             state = cli._clarify_state
@@ -399,7 +399,7 @@ class TestClarifyBellOnPrompt:
         cli.bell_on_prompt = bell_on_prompt
         out = io.StringIO()
         with patch("cli.sys.stdout", out), patch(
-            "tools.clarify_gateway.resolve_clarify_timeout", return_value=60
+            "hermes_agent.tools.clarify_gateway.resolve_clarify_timeout", return_value=60
         ):
             thread = threading.Thread(
                 target=cli._clarify_callback, args=([_q(0, "Color?", ["red", "blue"])],), daemon=True

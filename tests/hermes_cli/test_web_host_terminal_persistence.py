@@ -72,7 +72,7 @@ def test_shell_scopes_passthrough_after_eager_activation(
 ):
     from agent import secret_scope
     from hermes_constants import get_hermes_home_override
-    from tools.terminal_scope import get_terminal_scope
+    from hermes_agent.tools.terminal_scope import get_terminal_scope
     from hermes_agent.tui_gateway import launch_profile_policy
 
     root = tmp_path / ".hermes"

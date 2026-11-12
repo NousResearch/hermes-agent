@@ -23,7 +23,7 @@ def test_browser_setup_respects_provider_and_native_owner(monkeypatch, capsys, t
         baked.write_text('/opt/hermes/chromium/chrome', encoding='utf-8')
     found = iter([None, None if docker_image else '/pm/chromium/chrome'])
     with (
-        patch('tools.browser_use_cli._find_cli', return_value=['harness']) as install,
+        patch('hermes_agent.tools.browser_use_cli._find_cli', return_value=['harness']) as install,
         patch('hermes_cli.browser_runtime.BAKED_EXECUTABLE_FILE', baked),
         patch('hermes_cli.browser_runtime.chromium_executable', side_effect=lambda **_kw: next(found)) as chromium,
         patch('hermes_constants.is_termux', return_value=False),
@@ -62,7 +62,7 @@ def test_local_browser_row_ready_only_when_setup_would_be_a_noop(harness, chromi
     from hermes_cli.tools_config_post_setup import _POST_SETUP_READY
 
     with (
-        patch('tools.browser_use_cli._find_cli', return_value=['harness'] if harness else None),
+        patch('hermes_agent.tools.browser_use_cli._find_cli', return_value=['harness'] if harness else None),
         patch('hermes_cli.browser_runtime.chromium_executable', return_value=chromium),
     ):
         assert _POST_SETUP_READY['chromium']() is ready

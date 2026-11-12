@@ -14,9 +14,9 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 if TYPE_CHECKING:  # annotations only; the real import is per-call in apply_v4a_operations
-    from tools.file_operations_common import PatchResult
+    from hermes_agent.tools.file_operations_common import PatchResult
 
-from tools.file_operations_common import PatchResult
+from hermes_agent.tools.file_operations_common import PatchResult
 
 
 class OperationType(Enum):
@@ -137,7 +137,7 @@ def _split_hunk(hunk: Hunk) -> tuple[list[str], list[str]]:
 def _no_match_hint(error: Optional[str], search_pattern: str, content: str) -> str:
     """Best-effort 'Did you mean...' suffix; never lets a hint failure mask the real error."""
     with contextlib.suppress(Exception):
-        from tools.fuzzy_match import format_no_match_hint
+        from hermes_agent.tools.fuzzy_match import format_no_match_hint
         return format_no_match_hint(error, 0, search_pattern, content)
     return ""
 
@@ -180,7 +180,7 @@ def _overlay_key(path: str, file_ops: Any) -> str:
 def _backend_is_windows(env: Any, cwd: str) -> bool:
     """A local env on a Windows host, or a backend whose cwd is a drive path. Remote
     sandboxes (docker, ssh, modal ...) are POSIX shells even when Hermes runs on Windows."""
-    from tools.environments.local import _IS_WINDOWS
+    from hermes_agent.tools.environments.local import _IS_WINDOWS
     return bool(_IS_WINDOWS and getattr(env, "is_local", False)) or bool(
         re.match(r"^[A-Za-z]:[\\/]", cwd))
 
@@ -188,7 +188,7 @@ def _backend_is_windows(env: Any, cwd: str) -> bool:
 def _validate_operations(operations: list[PatchOperation], file_ops: Any) -> list[str]:
     """Dry-run every operation -> error strings (empty = safe). UPDATE hunks are simulated in
     order so later hunks see post-earlier-hunk content, exactly as apply will."""
-    from tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
+    from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace, is_already_applied
     errors: list[str] = []
     real_change_count = 0
     # Overlay so inter-op state validates (a MOVE creating the path a later UPDATE targets),
@@ -461,7 +461,7 @@ def _insert_addition_only(new_content: str, hunk: Hunk, insert_text: str) -> tup
 
 def _apply_update(op: PatchOperation, file_ops: Any) -> ApplyResult:
     """Apply each hunk via fuzzy replace, then write once."""
-    from tools.fuzzy_match import boundary_note, fuzzy_find_and_replace, is_already_applied
+    from hermes_agent.tools.fuzzy_match import boundary_note, fuzzy_find_and_replace, is_already_applied
     read_result = file_ops.read_file_raw(op.file_path)  # raw: no line numbers / truncation
     if read_result.error:
         return _fail(f"Cannot read file: {read_result.error}")

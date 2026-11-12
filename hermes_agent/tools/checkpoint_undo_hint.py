@@ -60,7 +60,7 @@ def undo_span_start(target_timestamp, kept_history=()) -> Optional[float]:
 def _span_base_tree(mgr, abs_dir: str, since: float) -> Optional[str]:
     """Tree to diff the working tree against (see the module docstring); None when no snapshot was taken in
     the span, so there is nothing to report."""
-    from tools import checkpoint_manager as cm
+    from hermes_agent.tools import checkpoint_manager as cm
 
     store = cm._store_path()
     if not (store / "HEAD").exists():
@@ -77,7 +77,7 @@ def _span_base_tree(mgr, abs_dir: str, since: float) -> Optional[str]:
 def _changed_files(abs_dir: str, tree: str) -> Optional[list[str]]:
     """Paths whose working-tree state differs from ``tree``: tracked changes and deletions plus new files,
     through a throwaway index (no object, ref or project index is written), None on failure."""
-    from tools import checkpoint_manager as cm
+    from hermes_agent.tools import checkpoint_manager as cm
 
     store = cm._store_path()
     excludes = cm._exclude_store_args(store.parent, abs_dir)
@@ -98,7 +98,7 @@ def undo_changed_files(mgr, cwd: str, since, *, task_id: Optional[str] = "defaul
     """Files the turns from ``since`` (``undo_span_start``) onward changed under ``cwd``, best effort. ``[]``:
     checkpoints off or refused here, no timestamp, no snapshot of the span, or nothing changed.
     ``task_id=None``: the caller already applied ``unsupported_backend_reason`` under its own scope."""
-    from tools import checkpoint_manager as cm
+    from hermes_agent.tools import checkpoint_manager as cm
 
     if mgr is None or not getattr(mgr, "enabled", False) or (since_ts := _epoch(since)) is None:
         return []
@@ -134,7 +134,7 @@ def undo_hint_payload(mgr, cwd: str, since, *, task_id: Optional[str] = "default
 def checkpoint_taken_at(cwd: str, commit: str) -> Optional[tuple[float, bool]]:
     """``(when, exact)`` checkpoint ``commit`` was taken: the exact time its body records, else its git
     author second (``exact`` False: older snapshots); None when unreadable."""
-    from tools import checkpoint_manager as cm
+    from hermes_agent.tools import checkpoint_manager as cm
 
     store = cm._store_path()
     if not commit or not (store / "HEAD").exists():

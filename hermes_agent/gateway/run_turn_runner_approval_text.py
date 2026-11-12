@@ -28,7 +28,7 @@ def approval_text_prompt(adapter: Any, chat_id: str, session_key: str, request_i
             return text
     text, deny_only = _cutting_text_prompt(adapter, chat_id, command, description, prefix, **flags)
     if deny_only:
-        from tools.approval import restrict_gateway_approval_card_to_deny
+        from hermes_agent.tools.approval import restrict_gateway_approval_card_to_deny
         restrict_gateway_approval_card_to_deny(session_key, request_id)
     return text
 

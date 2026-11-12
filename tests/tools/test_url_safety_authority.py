@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.url_safety import async_is_safe_url, is_always_blocked_url, is_safe_url
+from hermes_agent.tools.url_safety import async_is_safe_url, is_always_blocked_url, is_safe_url
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +75,7 @@ class TestIsSafeUrlRefusesAmbiguousAuthority:
         assert await async_is_safe_url("http://127.0.0.1:8080\\@1.1.1.1") is False
 
     def test_log_omits_userinfo_credentials(self, caplog):
-        with caplog.at_level(logging.WARNING, logger="tools.url_safety"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.url_safety"):
             assert is_safe_url("https://alice:hunter2@example.com/") is False
         assert "userinfo" in caplog.text
         assert "hunter2" not in caplog.text

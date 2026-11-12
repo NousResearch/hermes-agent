@@ -17,7 +17,7 @@ import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
-from tools.delegate_tool import delegate_task
+from hermes_agent.tools.delegate_tool import delegate_task
 
 
 def _make_mock_parent(depth=0):
@@ -62,14 +62,14 @@ class TestBatchDuplicateGoalsAllowed(unittest.TestCase):
                 "api_calls": 1, "duration_seconds": 1.0, "_child_role": None}
 
     def test_exact_duplicate_goals_accepted(self):
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
             mock_run.side_effect = [self._completed(0), self._completed(1)]
             result = _call([{"goal": GOOD_A}, {"goal": GOOD_A}])
         self.assertNotIn("error", result)
         self.assertEqual(len(result["results"]), 2)
 
     def test_case_whitespace_variant_duplicates_accepted(self):
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
             mock_run.side_effect = [self._completed(0), self._completed(1)]
             result = _call([{"goal": GOOD_A}, {"goal": "  " + GOOD_A.upper() + "  "}])
         self.assertNotIn("error", result)
@@ -112,7 +112,7 @@ class TestBatchPlaceholderGoals(unittest.TestCase):
             "Rewrite the loop so {i} interpolates via f-strings correctly",
         ]
         for bad_free_goal in code_goals:
-            with patch("tools.delegate_tool._run_single_child") as mock_run:
+            with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
                 mock_run.side_effect = [
                     {"task_index": 0, "status": "completed", "summary": "ok",
                      "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
@@ -143,7 +143,7 @@ class TestSingleTaskBatch(unittest.TestCase):
         """A one-entry tasks[] array is the canonical single-task call (the
         advertised interface is tasks-only), so it must NOT be rejected —
         and short goals are legitimate for a single task."""
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
             mock_run.return_value = {
                 "task_index": 0, "status": "completed", "summary": "done",
                 "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,
@@ -154,7 +154,7 @@ class TestSingleTaskBatch(unittest.TestCase):
 
 class TestValidBatchStillRuns(unittest.TestCase):
     def test_two_distinct_goals_pass_validation(self):
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
             mock_run.side_effect = [
                 {"task_index": 0, "status": "completed", "summary": "A done",
                  "api_calls": 1, "duration_seconds": 1.0, "_child_role": None},
@@ -168,7 +168,7 @@ class TestValidBatchStillRuns(unittest.TestCase):
     def test_single_goal_form_unaffected_by_batch_checks(self):
         # goal="test" is short — must NOT trip the batch-only length check.
         parent = _make_mock_parent()
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
             mock_run.return_value = {
                 "task_index": 0, "status": "completed", "summary": "ok",
                 "api_calls": 1, "duration_seconds": 1.0, "_child_role": None,
@@ -188,8 +188,8 @@ class TestOwnerRefusalMidBatch(unittest.TestCase):
         built = MagicMock()
         parent = _make_mock_parent()
         refusal = ValueError("the gateway owner refused another subagent")
-        with patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=[built, refusal]), \
-                patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("hermes_agent.tools.delegate_tool._build_child_preserving_parent_tools", side_effect=[built, refusal]), \
+                patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
             result = json.loads(delegate_task(tasks=[{"goal": GOOD_A}, {"goal": GOOD_B}], parent_agent=parent))
         self.assertIn("refused another subagent", result["error"])
         mock_run.assert_not_called()

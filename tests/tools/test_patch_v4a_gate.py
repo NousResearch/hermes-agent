@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-import tools.file_tools as ft
+import hermes_agent.tools.file_tools as ft
 
 
 def _family(prov, model):

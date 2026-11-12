@@ -411,7 +411,7 @@ def _install_single_query_signal_handlers(cli):
     def _kill_foreground_and_exit(*_):
         # The worker's command runs in its own process group: SIGKILL it or it outlives os._exit.
         with suppress(Exception):
-            from tools.environments.base import kill_live_foreground_processes
+            from hermes_agent.tools.environments.base import kill_live_foreground_processes
             kill_live_foreground_processes(now=True)
         os._exit(0)
 
@@ -496,7 +496,7 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
     os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
     from hermes_cli.quiet_single_query import exit_single_query
     if os.environ.get("HERMES_KANBAN_TASK"):
-        from tools.kanban_tools import register_current_worker_from_env
+        from hermes_agent.tools.kanban_tools import register_current_worker_from_env
         if not register_current_worker_from_env():
             # No exit trailer: the task log now belongs to the run that replaced this one.
             print(t("cli.single_query.kanban_run_reclaimed"), file=sys.stderr)

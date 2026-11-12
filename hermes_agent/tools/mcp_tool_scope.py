@@ -1,6 +1,6 @@
-"""Connection-ledger keys for tools.mcp_tool under a profile multiplexer.
+"""Connection-ledger keys for hermes_agent.tools.mcp_tool under a profile multiplexer.
 
-Every ledger in ``tools.mcp_tool`` (``_servers``, connecting/error/cooldown maps, circuit
+Every ledger in ``hermes_agent.tools.mcp_tool`` (``_servers``, connecting/error/cooldown maps, circuit
 breaker, lazy configs, trust metadata) is keyed by a *connection key*: the bare server name
 outside a multiplexer (single-profile processes are unchanged, byte for byte), and
 ``(owner_scope, name)`` under one. Two profiles that both configure ``github`` with their own
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Optional, Tuple, Union
 
-from tools.mcp_tool_common import _core
+from hermes_agent.tools.mcp_tool_common import _core
 
 ServerKey = str | tuple[str, str]
 
@@ -63,7 +63,7 @@ def _resolve_server_key(name: str, scope: Optional[str] = None, *, current: bool
     return own
 
 
-# Ledgers keyed by connection key (``tools.mcp_tool``).
+# Ledgers keyed by connection key (``hermes_agent.tools.mcp_tool``).
 _KEYED_LEDGERS = (
     "_servers", "_server_scope_keys", "_server_tool_scopes", "_server_connect_errors",
     "_lazy_server_configs", "_lazy_server_fingerprints", "_lazy_server_tool_names",
@@ -77,7 +77,7 @@ def rekey_unscoped_connections(scope: str) -> None:
     """Move every bare-name connection under ``(scope, name)``. A single-profile process keys its
     connections by bare name; once it starts multiplexing, the launch profile's lookups resolve
     ``(launch scope, name)``, so without this its live servers read as disconnected until a restart."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     with _core._lock:
         for attr in _KEYED_LEDGERS:
             ledger = getattr(_core, attr)
@@ -99,6 +99,6 @@ def rekey_unscoped_connections(scope: str) -> None:
         for key in set(_core._servers) | set(_core._lazy_server_tool_names):
             if _key_scope(key) == scope:
                 _core._server_tool_scopes.setdefault(key, set()).add(scope)
-    from tools.mcp_tool_costs import rekey_unscoped
+    from hermes_agent.tools.mcp_tool_costs import rekey_unscoped
     rekey_unscoped(scope)  # chats' spend totals follow their server's policy key
     registry.move_to_scope(tool_names, scope)

@@ -25,7 +25,7 @@ def test_callers_do_not_mutate_the_shared_cached_object(tmp_path, monkeypatch):
     import copy
 
     from hermes_cli.env_loader import _load_secrets_config
-    from tools.terminal_scope import build_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import build_profile_terminal_scope
 
     home = tmp_path / "profiles" / "work"
     home.mkdir(parents=True)

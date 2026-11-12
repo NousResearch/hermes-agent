@@ -176,11 +176,11 @@ def voice(monkeypatch):
         def stream(self, _text):
             yield b"\x01\x02"
 
-    monkeypatch.setattr("tools.tts_streaming.resolve_streaming_provider", lambda cfg: Streamer())
-    monkeypatch.setattr("tools.tts_tool._load_tts_config", dict)
-    monkeypatch.setattr("tools.tts_tool._get_provider", lambda cfg: "fake")
-    monkeypatch.setattr("tools.tts_tool._resolve_max_text_length", lambda provider, cfg: 4000)
-    monkeypatch.setattr("tools.transcription_streaming.open_streaming_session", lambda **_kwargs: None)
+    monkeypatch.setattr("hermes_agent.tools.tts_streaming.resolve_streaming_provider", lambda cfg: Streamer())
+    monkeypatch.setattr("hermes_agent.tools.tts_tool._load_tts_config", dict)
+    monkeypatch.setattr("hermes_agent.tools.tts_tool._get_provider", lambda cfg: "fake")
+    monkeypatch.setattr("hermes_agent.tools.tts_tool._resolve_max_text_length", lambda provider, cfg: 4000)
+    monkeypatch.setattr("hermes_agent.tools.transcription_streaming.open_streaming_session", lambda **_kwargs: None)
 
 
 def _speaks(client, url):

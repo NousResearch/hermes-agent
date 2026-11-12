@@ -23,7 +23,7 @@ import pytest
 
 
 def _patch_sdk_async_client(dummy):
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool import sdk_httpx
 
     return patch.object(sdk_httpx(), "AsyncClient", dummy)
 
@@ -69,7 +69,7 @@ def _transport_yielding(*values):
     ("mcp 1.x", (MagicMock(), MagicMock(), (lambda: None))),
 ])
 def test_run_http_accepts_the_arity_each_sdk_generation_yields(sdk, streams):
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     server = MCPServerTask("remote")
     seen: dict = {}
@@ -79,12 +79,12 @@ def test_run_http_accepts_the_arity_each_sdk_generation_yields(sdk, streams):
         self._shutdown_event.set()
 
     async def _drive():
-        with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
-             patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+        with patch("hermes_agent.tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool._MCP_NEW_HTTP", True), \
              _patch_sdk_async_client(_DummyAsyncClient), \
-             patch("tools.mcp_tool.streamable_http_client",
+             patch("hermes_agent.tools.mcp_tool.streamable_http_client",
                    return_value=_transport_yielding(*streams)), \
-             patch("tools.mcp_tool.ClientSession", _DummySession), \
+             patch("hermes_agent.tools.mcp_tool.ClientSession", _DummySession), \
              patch.object(MCPServerTask, "_discover_tools", _discover_tools):
             await server._run_http({"url": "https://example.com/mcp"})
 
@@ -96,7 +96,7 @@ def test_run_http_accepts_the_arity_each_sdk_generation_yields(sdk, streams):
 
 def test_the_session_streams_are_the_first_two_yielded():
     """Positional, not named: 1.x's third element is not a stream."""
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     server = MCPServerTask("remote")
     read, write = MagicMock(), MagicMock()
@@ -111,12 +111,12 @@ def test_the_session_streams_are_the_first_two_yielded():
         self._shutdown_event.set()
 
     async def _drive():
-        with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
-             patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+        with patch("hermes_agent.tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+             patch("hermes_agent.tools.mcp_tool._MCP_NEW_HTTP", True), \
              _patch_sdk_async_client(_DummyAsyncClient), \
-             patch("tools.mcp_tool.streamable_http_client",
+             patch("hermes_agent.tools.mcp_tool.streamable_http_client",
                    return_value=_transport_yielding(read, write, (lambda: None))), \
-             patch("tools.mcp_tool.ClientSession", _CapturingSession), \
+             patch("hermes_agent.tools.mcp_tool.ClientSession", _CapturingSession), \
              patch.object(MCPServerTask, "_discover_tools", _discover_tools):
             await server._run_http({"url": "https://example.com/mcp"})
 
@@ -135,7 +135,7 @@ def test_the_seeded_protocol_header_matches_the_handshake_the_client_sends():
     server answered `params._meta is missing the required envelope key(s)` --
     observed against a live MCP endpoint, not hypothesised.
     """
-    from tools import mcp_tool
+    from hermes_agent.tools import mcp_tool
 
     try:
         from mcp.client.session import LATEST_HANDSHAKE_VERSION as sdk_handshake
@@ -149,7 +149,7 @@ def test_the_seeded_header_is_the_handshake_version_on_the_wire():
     """Asserted through the header dict `_run_http` actually builds."""
     from unittest.mock import patch as _patch
 
-    from tools.mcp_tool import MCPServerTask, LATEST_HANDSHAKE_VERSION
+    from hermes_agent.tools.mcp_tool import MCPServerTask, LATEST_HANDSHAKE_VERSION
 
     server = MCPServerTask("remote")
     seen: dict = {}
@@ -163,12 +163,12 @@ def test_the_seeded_header_is_the_handshake_version_on_the_wire():
         self._shutdown_event.set()
 
     async def _drive():
-        with _patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
-             _patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+        with _patch("hermes_agent.tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+             _patch("hermes_agent.tools.mcp_tool._MCP_NEW_HTTP", True), \
              _patch_sdk_async_client(_CapturingAsyncClient), \
-             _patch("tools.mcp_tool.streamable_http_client",
+             _patch("hermes_agent.tools.mcp_tool.streamable_http_client",
                     return_value=_transport_yielding(MagicMock(), MagicMock())), \
-             _patch("tools.mcp_tool.ClientSession", _DummySession), \
+             _patch("hermes_agent.tools.mcp_tool.ClientSession", _DummySession), \
              _patch.object(MCPServerTask, "_discover_tools", _discover_tools):
             await server._run_http({"url": "https://example.com/mcp"})
 
@@ -182,7 +182,7 @@ def test_an_explicit_protocol_header_still_wins():
     """The override exists so a server needing a specific revision can have it."""
     from unittest.mock import patch as _patch
 
-    from tools.mcp_tool import MCPServerTask
+    from hermes_agent.tools.mcp_tool import MCPServerTask
 
     server = MCPServerTask("remote")
     seen: dict = {}
@@ -196,12 +196,12 @@ def test_an_explicit_protocol_header_still_wins():
         self._shutdown_event.set()
 
     async def _drive():
-        with _patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
-             _patch("tools.mcp_tool._MCP_NEW_HTTP", True), \
+        with _patch("hermes_agent.tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+             _patch("hermes_agent.tools.mcp_tool._MCP_NEW_HTTP", True), \
              _patch_sdk_async_client(_CapturingAsyncClient), \
-             _patch("tools.mcp_tool.streamable_http_client",
+             _patch("hermes_agent.tools.mcp_tool.streamable_http_client",
                     return_value=_transport_yielding(MagicMock(), MagicMock())), \
-             _patch("tools.mcp_tool.ClientSession", _DummySession), \
+             _patch("hermes_agent.tools.mcp_tool.ClientSession", _DummySession), \
              _patch.object(MCPServerTask, "_discover_tools", _discover_tools):
             await server._run_http({
                 "url": "https://example.com/mcp",

@@ -40,7 +40,7 @@ async def test_connection_preserves_server_grant(tmp_path, binding):
 async def test_question_response_does_not_grant_execution_control(tmp_path):
     from hermes_agent.gateway.session_contract import SessionActor, SessionRef
     from hermes_agent.hermes_state_runtime import RuntimeStoreError, admit_session_input, claim_session_input
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
 
     with SessionDB(db_path=tmp_path / 'state.db') as db:
         db.create_session('s', source='test')

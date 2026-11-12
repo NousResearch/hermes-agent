@@ -9,7 +9,7 @@ import pytest
 
 
 def _names(selection, disabled=None):
-    from model_tools import get_tool_definitions
+    from hermes_agent.model_tools import get_tool_definitions
 
     return {
         row["function"]["name"]
@@ -29,7 +29,7 @@ def test_saved_opt_in_roundtrip_reaches_schema_and_board(surface, tmp_path, monk
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
     from hermes_cli.config import load_config, save_config
     from hermes_cli.tools_config import _apply_toolset_change, _get_platform_tools
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     save_config({"platform_toolsets": {"cli": ["file"], "telegram": ["file"]}})
 

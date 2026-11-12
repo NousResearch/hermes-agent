@@ -50,8 +50,8 @@ def main():
         if command.get('probe_constructors'):
             from concurrent.futures import ThreadPoolExecutor
             from hermes_agent.hermes_state_registry import release_or_close
-            from tools.delegate_tool import _open_child_session_db
-            from tools.async_delegation import _connect
+            from hermes_agent.tools.delegate_tool import _open_child_session_db
+            from hermes_agent.tools.async_delegation import _connect
             from hermes_agent.cron.scheduler import _open_cron_session_db, run_job
             operations = {'child': lambda: _open_child_session_db(agent),
                           'cron': lambda: _open_cron_session_db({'id': 'worker-probe'}),

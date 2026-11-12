@@ -142,7 +142,7 @@ hermes-agent/
     → prompt_builder.build_system_prompt()
     → runtime_provider.resolve_runtime_provider()
     → API 调用（chat_completions / codex_responses / anthropic_messages）
-    → tool_calls? → model_tools.handle_function_call() → 循环
+    → tool_calls? → hermes_agent.model_tools.handle_function_call() → 循环
     → 最终响应 → 显示 → 保存至 SessionDB
 ```
 
@@ -210,7 +210,7 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 
 ### 工具系统
 
-中央工具注册表（`tools/registry.py`），包含约 28 个 toolset 中的 70+ 个已注册工具。每个工具文件在导入时自行注册。注册表负责 schema 收集、分发、可用性检查和错误包装。终端工具支持 7 种后端（local、Docker、SSH、Daytona、Modal、Singularity、Vercel Sandbox）。
+中央工具注册表（`hermes_agent/tools/registry.py`），包含约 28 个 toolset 中的 70+ 个已注册工具。每个工具文件在导入时自行注册。注册表负责 schema 收集、分发、可用性检查和错误包装。终端工具支持 7 种后端（local、Docker、SSH、Daytona、Modal、Singularity、Vercel Sandbox）。
 
 → [工具运行时](./tools-runtime.md)
 
@@ -264,13 +264,13 @@ CLI、gateway、cron、ACP 及辅助调用共用的运行时解析器。将 `(pr
 ## 文件依赖链
 
 ```text
-tools/registry.py  （无依赖——被所有工具文件导入）
+hermes_agent/tools/registry.py  （无依赖——被所有工具文件导入）
        ↑
-tools/*.py  （每个文件在导入时调用 registry.register()）
+hermes_agent/tools/*.py  （每个文件在导入时调用 registry.register()）
        ↑
-model_tools.py  （导入 tools/registry 并触发工具发现）
+hermes_agent/model_tools.py  （导入 hermes_agent/tools/registry 并触发工具发现）
        ↑
 run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
-这条依赖链意味着工具注册发生在导入时，早于任何 agent 实例的创建。任何在顶层调用 `registry.register()` 的 `tools/*.py` 文件都会被自动发现——无需手动维护导入列表。
+这条依赖链意味着工具注册发生在导入时，早于任何 agent 实例的创建。任何在顶层调用 `registry.register()` 的 `hermes_agent/tools/*.py` 文件都会被自动发现——无需手动维护导入列表。

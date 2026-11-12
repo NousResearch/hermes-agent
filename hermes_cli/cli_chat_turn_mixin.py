@@ -59,7 +59,7 @@ class CLIChatTurnMixin:
         the concise voice-response prefix, #65827)
         """
         from cli import ChatConsole, _ChatTurn, _DIM, _RST, _accent_hex, _cprint, set_secret_capture_callback
-        from tools.process_registry_notifications import TimelineNotification
+        from hermes_agent.tools.process_registry_notifications import TimelineNotification
         # Single-query and direct chat callers do not go through run().
         set_secret_capture_callback(self._secret_capture_callback)
         # Reset per turn; only a real interrupt flips it, so early returns leave it False.
@@ -137,7 +137,7 @@ class CLIChatTurnMixin:
         from cli import logger
         if turn.thinking_started:
             try:
-                from tools.voice_mode import stop_thinking_sound
+                from hermes_agent.tools.voice_mode import stop_thinking_sound
                 stop_thinking_sound()
             except Exception:
                 pass
@@ -214,7 +214,7 @@ class CLIChatTurnMixin:
             agent._persist_user_message_override = None
             agent._persist_user_message_timestamp = None
             staged_user_message = stamp_message_timestamp({"role": "user", "content": message})
-            from tools.process_registry_notifications import TimelineNotification
+            from hermes_agent.tools.process_registry_notifications import TimelineNotification
             if isinstance(message, TimelineNotification):
                 staged_user_message.update(content=str(message), display_kind=message.display_kind,
                                            display_metadata={"display_text": message.display_text,
@@ -242,8 +242,8 @@ class CLIChatTurnMixin:
         # macOS via the bare except below (#84046).
         if self._voice_tts:
             try:
-                from tools.tts_tool import check_tts_requirements
-                from tools.tts_tool_speaker import stream_tts_to_speaker
+                from hermes_agent.tools.tts_tool import check_tts_requirements
+                from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
                 turn.use_streaming_tts = check_tts_requirements()
             except Exception:
                 logging.debug("streaming TTS arm check failed", exc_info=True)
@@ -307,7 +307,7 @@ class CLIChatTurnMixin:
         # Bind the approval session key so ``is_current_session_yolo_enabled()`` resolves
         # against the same key ``/yolo`` toggles under (``enable_session_yolo(self.session_id)``).
         try:
-            from tools.approval_context import reset_current_session_key, set_current_session_key
+            from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
             _approval_session_token = set_current_session_key(self.session_id or "default")
         except Exception:
             reset_current_session_key = None  # type: ignore[assignment]
@@ -324,7 +324,7 @@ class CLIChatTurnMixin:
                 _taken_notes[_note_attr] = _note
                 setattr(self, _note_attr, None)
         # Barged mid-speech (VAD or record key)? Tell the model it was cut off.
-        from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
+        from hermes_agent.tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
         if take_speech_interrupted():
             agent_message = _prepend_note_to_message(agent_message, SPEECH_INTERRUPTED_NOTE)
         _moa_cfg = getattr(self, "_pending_moa_config", None)
@@ -417,7 +417,7 @@ class CLIChatTurnMixin:
         # records or a barge capture is live. voice.thinking_sound gates it (default on).
         if self._voice_mode:
             try:
-                from tools.voice_mode import start_thinking_sound
+                from hermes_agent.tools.voice_mode import start_thinking_sound
                 turn.thinking_started = start_thinking_sound(should_play=lambda: (
                     self._voice_tts_done.is_set() and not self._voice_recording
                     and not self._voice_barge_capture.is_set()))
@@ -515,7 +515,7 @@ class CLIChatTurnMixin:
         # titling and the exit summary target the live child, not the ended parent.
         if (self.agent and getattr(self.agent, "session_id", None)
                 and self.agent.session_id != self.session_id):
-            from tools.approval_yolo import transfer_session_yolo
+            from hermes_agent.tools.approval_yolo import transfer_session_yolo
             transfer_session_yolo(self.session_id, self.agent.session_id)
             self.session_id = self.agent.session_id
             self._write_terminal_breadcrumb()

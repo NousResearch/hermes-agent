@@ -34,9 +34,9 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.environments.base import BaseEnvironment
-from tools.environments import local as local_mod
-from tools.environments.local import (
+from hermes_agent.tools.environments.base import BaseEnvironment
+from hermes_agent.tools.environments import local as local_mod
+from hermes_agent.tools.environments.local import (
     LocalEnvironment,
     _bash_safe_path,
     _git_bash_bin_dirs,
@@ -336,7 +336,7 @@ class TestWrapCommandWindowsNativeCwd:
 def test_git_bash_dirs_stay_first_when_hermes_tools_move_behind_the_users(monkeypatch):
     """Git Bash's coreutils are store dirs too, but bash must find them before System32's."""
     import pm.install
-    from tools.environments import local as local_mod
+    from hermes_agent.tools.environments import local as local_mod
 
     bash_dir, node_dir, system32 = "/store/git/usr/bin", "/store/node", "/windows/system32"
     monkeypatch.setattr(pm.install, "_store_path_dirs", lambda: [bash_dir, node_dir])

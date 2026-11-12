@@ -5,12 +5,12 @@ from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple, Union
 
 from agent.skill_utils import is_excluded_skill_path
-from tools.skills_hub_github import GitHubAuth, GitHubSource, _skip_bundle_file, _tree_members
-from tools.skills_hub_models import (
+from hermes_agent.tools.skills_hub_github import GitHubAuth, GitHubSource, _skip_bundle_file, _tree_members
+from hermes_agent.tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _hermes_tags, _matches_query, _memo_json, _parse_frontmatter, hub,
 )
 
-logger = logging.getLogger("tools.skills_hub")
+logger = logging.getLogger("hermes_agent.tools.skills_hub")
 
 # Identifier prefixes stripped when matching index entries loosely.
 _INDEX_ID_PREFIXES = ("skills-sh/", "skills.sh/", "official/", "github/", "clawhub/")
@@ -296,7 +296,7 @@ class HermesIndexSource(SkillSource):
 
     def _ensure_loaded(self) -> dict:
         if not self._loaded:
-            from tools.skills_hub_search import _load_hermes_index
+            from hermes_agent.tools.skills_hub_search import _load_hermes_index
             self._index, self._loaded = _load_hermes_index(), True
         return self._index or {}
 

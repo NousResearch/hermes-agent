@@ -56,7 +56,7 @@ def owner(tmp_path, monkeypatch, server_spec):
     try:
         yield build, discovered, {'mcp_servers': [server_spec]}
     finally:
-        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
         for authority in built:
             for scope in list(getattr(authority, '_editor_mcp_held', {})):
                 shutdown_mcp_servers(scope=scope)

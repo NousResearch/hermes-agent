@@ -1,4 +1,4 @@
-"""Unit tests for tools/tool_backend_helpers.py.
+"""Unit tests for hermes_agent/tools/tool_backend_helpers.py.
 
 Tests cover:
 - managed_nous_tools_enabled() subscription-based gate
@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli.nous_account import NousPaidServiceAccessInfo, NousPortalAccountInfo
-from tools.tool_backend_helpers import (
+from hermes_agent.tools.tool_backend_helpers import (
     coerce_modal_mode,
     has_direct_modal_credentials,
     managed_nous_tools_enabled,
@@ -190,7 +190,7 @@ class TestResolveModalBackendState:
     def _resolve(monkeypatch, mode, *, has_direct, managed_ready, nous_enabled=False):
         """Helper to call resolve_modal_backend_state with feature flag control."""
         monkeypatch.setattr(
-            "tools.tool_backend_helpers.managed_nous_tools_enabled",
+            "hermes_agent.tools.tool_backend_helpers.managed_nous_tools_enabled",
             lambda: nous_enabled,
         )
         return resolve_modal_backend_state(

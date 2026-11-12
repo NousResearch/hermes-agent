@@ -304,7 +304,7 @@ class TestMediaUpload:
         import httpcore
         from httpcore._backends.auto import AutoBackend
         from plugins.platforms.wecom.adapter import WeComAdapter
-        from tools.url_safety import SSRFConnectionBlocked
+        from hermes_agent.tools.url_safety import SSRFConnectionBlocked
 
         for proxy_var in (
             "HTTP_PROXY",

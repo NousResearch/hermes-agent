@@ -57,7 +57,7 @@ def _route_deferred_call(agent, tc) -> bool:
     """Rewrite a call to a deferred tool by its real name into the ``tool_call`` bridge call, so
     the executor's scope check, schema probe and hooks run on it as on a model-written one."""
     from agent.tool_executor import _canonical_tool_name, _tool_search_scoped_names
-    from tools.tool_search_catalog import TOOL_CALL_NAME
+    from hermes_agent.tools.tool_search_catalog import TOOL_CALL_NAME
 
     # A legacy alias (``process``) names a deferred tool too, and hints still spell it that way.
     name = _canonical_tool_name(tc.function.name)

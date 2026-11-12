@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable
 
-from tools.connectors.portal.client import validate_slug
-from tools.connectors.portal.errors import InvalidConnectorSlug
-from tools.connectors.portal.wire import PolicyBody, UnrestrictedPolicyBody
+from hermes_agent.tools.connectors.portal.client import validate_slug
+from hermes_agent.tools.connectors.portal.errors import InvalidConnectorSlug
+from hermes_agent.tools.connectors.portal.wire import PolicyBody, UnrestrictedPolicyBody
 
 if TYPE_CHECKING:
     from hermes_agent.tui_gateway.contracts.connectors import ConnectorChange, ToolsChange

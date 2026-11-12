@@ -47,7 +47,7 @@ def _make_run_dispatcher(behaviors):
 
 
 def _force_termux(monkeypatch):
-    monkeypatch.setattr("tools.voice_mode._is_termux_environment", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.voice_mode._is_termux_environment", lambda: True)
 
 
 # ── _termux_api_app_installed: probe ladder ───────────────────────────────
@@ -58,8 +58,8 @@ class TestTermuxApiAppInstalledProbeLadder:
     table pinned so future "simplifications" can't silently regress it."""
 
     def test_returns_false_outside_termux(self, monkeypatch):
-        monkeypatch.setattr("tools.voice_mode._is_termux_environment", lambda: False)
-        from tools.voice_mode import _termux_api_app_installed
+        monkeypatch.setattr("hermes_agent.tools.voice_mode._is_termux_environment", lambda: False)
+        from hermes_agent.tools.voice_mode import _termux_api_app_installed
         assert _termux_api_app_installed() is False
 
     def test_pm_confirms_package_returns_true(self, monkeypatch):
@@ -71,9 +71,9 @@ class TestTermuxApiAppInstalledProbeLadder:
                 stderr="",
             ),
         })
-        monkeypatch.setattr("tools.voice_mode.subprocess.run", run)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.subprocess.run", run)
 
-        from tools.voice_mode import _termux_api_app_installed
+        from hermes_agent.tools.voice_mode import _termux_api_app_installed
         assert _termux_api_app_installed() is True
 
 
@@ -88,9 +88,9 @@ class TestTermuxApiAppInstalledProbeLadder:
                 stderr="",
             ),
         })
-        monkeypatch.setattr("tools.voice_mode.subprocess.run", run)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.subprocess.run", run)
 
-        from tools.voice_mode import _termux_api_app_installed
+        from hermes_agent.tools.voice_mode import _termux_api_app_installed
         assert _termux_api_app_installed() is True
 
     def test_pm_nonzero_exit_then_cmd_confirms(self, monkeypatch):
@@ -105,9 +105,9 @@ class TestTermuxApiAppInstalledProbeLadder:
                 stderr="",
             ),
         })
-        monkeypatch.setattr("tools.voice_mode.subprocess.run", run)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.subprocess.run", run)
 
-        from tools.voice_mode import _termux_api_app_installed
+        from hermes_agent.tools.voice_mode import _termux_api_app_installed
         assert _termux_api_app_installed() is True
 
     def test_both_probes_inconclusive_but_binary_present_returns_true(self, monkeypatch):
@@ -121,14 +121,14 @@ class TestTermuxApiAppInstalledProbeLadder:
             "pm": FileNotFoundError("pm: command not found"),
             "cmd": FileNotFoundError("cmd: command not found"),
         })
-        monkeypatch.setattr("tools.voice_mode.subprocess.run", run)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.subprocess.run", run)
         monkeypatch.setattr(
-            "tools.voice_mode.shutil.which",
+            "hermes_agent.tools.voice_mode.shutil.which",
             lambda name: "/data/data/com.termux/files/usr/bin/termux-microphone-record"
             if name == "termux-microphone-record" else None,
         )
 
-        from tools.voice_mode import _termux_api_app_installed
+        from hermes_agent.tools.voice_mode import _termux_api_app_installed
         assert _termux_api_app_installed() is True
 
 
@@ -142,9 +142,9 @@ class TestTermuxApiAppInstalledProbeLadder:
                 stderr="",
             ),
         })
-        monkeypatch.setattr("tools.voice_mode.subprocess.run", run)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.subprocess.run", run)
 
-        from tools.voice_mode import _termux_api_app_installed
+        from hermes_agent.tools.voice_mode import _termux_api_app_installed
         assert _termux_api_app_installed() is True
 
 
@@ -167,11 +167,11 @@ class TestDetectAudioEnvironmentTermuxFallback:
 
         # No sounddevice — we go down the Termux:API branch.
         monkeypatch.setattr(
-            "tools.voice_mode._import_audio",
+            "hermes_agent.tools.voice_mode._import_audio",
             lambda: (_ for _ in ()).throw(ImportError("no audio libs")),
         )
         monkeypatch.setattr(
-            "tools.voice_mode._termux_microphone_command",
+            "hermes_agent.tools.voice_mode._termux_microphone_command",
             lambda: "/data/data/com.termux/files/usr/bin/termux-microphone-record",
         )
         # Both probes fail (the #31015 reproduction).
@@ -179,14 +179,14 @@ class TestDetectAudioEnvironmentTermuxFallback:
             "pm": FileNotFoundError("pm: command not found"),
             "cmd": FileNotFoundError("cmd: command not found"),
         })
-        monkeypatch.setattr("tools.voice_mode.subprocess.run", run)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.subprocess.run", run)
         monkeypatch.setattr(
-            "tools.voice_mode.shutil.which",
+            "hermes_agent.tools.voice_mode.shutil.which",
             lambda name: "/data/data/com.termux/files/usr/bin/termux-microphone-record"
             if name == "termux-microphone-record" else None,
         )
 
-        from tools.voice_mode import detect_audio_environment
+        from hermes_agent.tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
 
         assert result["available"] is True, (
@@ -213,20 +213,20 @@ class TestDetectAudioEnvironmentTermuxFallback:
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
 
         monkeypatch.setattr(
-            "tools.voice_mode._import_audio",
+            "hermes_agent.tools.voice_mode._import_audio",
             lambda: (_ for _ in ()).throw(ImportError("no audio libs")),
         )
         monkeypatch.setattr(
-            "tools.voice_mode._termux_microphone_command",
+            "hermes_agent.tools.voice_mode._termux_microphone_command",
             lambda: "/data/data/com.termux/files/usr/bin/termux-microphone-record",
         )
         run = _make_run_dispatcher({
             "pm": SimpleNamespace(returncode=0, stdout="", stderr=""),
             "cmd": SimpleNamespace(returncode=0, stdout="", stderr=""),
         })
-        monkeypatch.setattr("tools.voice_mode.subprocess.run", run)
+        monkeypatch.setattr("hermes_agent.tools.voice_mode.subprocess.run", run)
 
-        from tools.voice_mode import detect_audio_environment
+        from hermes_agent.tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
 
         assert result["available"] is False

@@ -14,7 +14,7 @@ from tests.gateway.test_approval_requester_binding import pending_from, write_ap
 
 @pytest.fixture(autouse=True)
 def _clean_queues():
-    from tools import approval as approval_mod
+    from hermes_agent.tools import approval as approval_mod
 
     approval_mod._gateway_queues.clear()
     yield
@@ -23,8 +23,8 @@ def _clean_queues():
 
 def _group_pending(user_id, user_name, session_key):
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import approval as approval_mod
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval as approval_mod
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     tokens = set_session_vars(platform="telegram", chat_type="group", user_id=user_id, user_name=user_name,
                               session_key=session_key)
@@ -59,7 +59,7 @@ def test_an_id_less_tap_settles_nothing_even_for_the_requester():
     whoever taps (#62359); the requester then answers their own card by id. Bob's request expiring
     never lets his id-less tap reach Alice's, and Bob may not answer Alice's by id either."""
     from hermes_agent.gateway.approval_actor import approval_refusal
-    from tools import approval
+    from hermes_agent.tools import approval
 
     write_approvers([])
     bob = pending_from("bob", "Bob", "s")
@@ -80,7 +80,7 @@ async def test_a_telegram_tap_settles_only_what_the_tapper_may_answer(monkeypatc
     from unittest.mock import AsyncMock, MagicMock
 
     from tests.gateway.test_telegram_approval_buttons import _make_adapter
-    from tools import approval
+    from hermes_agent.tools import approval
 
     write_approvers([])
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
@@ -102,7 +102,7 @@ async def test_a_telegram_tap_settles_only_what_the_tapper_may_answer(monkeypatc
 
 def _wait_in_thread(user, session_key, notify, outcomes):
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools.approval_gateway_wait import _await_gateway_decision
+    from hermes_agent.tools.approval_gateway_wait import _await_gateway_decision
 
     tokens = set_session_vars(platform="telegram", user_id=user, user_name=user.title(), session_key=session_key)
     try:
@@ -114,7 +114,7 @@ def _wait_in_thread(user, session_key, notify, outcomes):
 def test_another_requesters_deny_does_not_answer_a_coalesced_wait(monkeypatch):
     """Identical requests from two requesters do not share one prompt under the opt-in: Bob's deny
     answers Bob, and Alice gets her own prompt that only she (or an approver) answers."""
-    from tools import approval
+    from hermes_agent.tools import approval
 
     write_approvers([])
     prompts, outcomes, cond = [], {}, threading.Condition()
@@ -142,7 +142,7 @@ def test_another_requesters_deny_does_not_answer_a_coalesced_wait(monkeypatch):
 
 
 def test_same_requester_identical_requests_still_coalesce():
-    from tools import approval
+    from hermes_agent.tools import approval
 
     write_approvers([])
     prompts, outcomes, cond = [], {}, threading.Condition()

@@ -1,7 +1,7 @@
 """Speaker-side streaming pipeline: ``stream_tts_to_speaker``.
 
 Turns a queue of LLM text deltas into audio the moment each sentence is complete. Two paths
-share the sentence cutter (``tools.tts_streaming``): :class:`_StreamerPlayback` for a registered
+share the sentence cutter (``hermes_agent.tools.tts_streaming``): :class:`_StreamerPlayback` for a registered
 chunked streamer (prefetch thread per sentence, one FIFO playback worker through a sounddevice
 OutputStream or temp WAV + system player) and :class:`_SyncSentencePipeline` for every other
 provider (per-sentence ``text_to_speech_tool`` on a single-thread executor, overlapped with
@@ -22,10 +22,10 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Callable, Iterable, Iterator, List, Optional
 
-from tools.tts_text_normalize import _strip_markdown_for_tts
-from tools.tts_tool_delivery import _origin, _remove_quietly as _unlink_quietly
+from hermes_agent.tools.tts_text_normalize import _strip_markdown_for_tts
+from hermes_agent.tools.tts_tool_delivery import _origin, _remove_quietly as _unlink_quietly
 
-logger = logging.getLogger("tools.tts_tool")
+logger = logging.getLogger("hermes_agent.tools.tts_tool")
 
 def _align_int16_chunks(chunks: Iterable[bytes], stop_evt: threading.Event, *, pad_tail: bool = True) -> Iterator[bytes]:
     """Yield int16-aligned byte chunks; a dangling odd byte is padded at the end (or dropped)."""
@@ -58,7 +58,7 @@ def _play_via_tempfile(audio_iter: Iterable[bytes], stop_evt: threading.Event, s
         # wave.open() on a file object does NOT close it; on Windows the open write
         # handle blocks the player and the unlink below (WinError 32).
         tmp.close()
-        from tools.voice_mode import play_audio_file
+        from hermes_agent.tools.voice_mode import play_audio_file
         play_audio_file(tmp_path)
     except Exception as exc:
         logger.warning("Temp-file TTS fallback failed: %s", exc)
@@ -146,7 +146,7 @@ class _SyncSentencePipeline:
             try:
                 tmp_path = future.result()
                 if tmp_path and not self._stop.is_set() and os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
-                    from tools.voice_mode import play_audio_file
+                    from hermes_agent.tools.voice_mode import play_audio_file
                     play_audio_file(tmp_path)
             except Exception as exc:
                 logger.warning("Sync per-sentence TTS failed: %s", exc)
@@ -309,7 +309,7 @@ class _StreamerPlayback:
             return
         import numpy as _np
         try:
-            from tools.voice_mode import mark_audio_output_active
+            from hermes_agent.tools.voice_mode import mark_audio_output_active
         except Exception:
             mark_audio_output_active = lambda _active: None
         self._np, self._reinit_count, self._current_stream, self._current_rate = _np, 0, None, None
@@ -345,7 +345,7 @@ def stream_tts_to_speaker(
         tts_config = origin._load_tts_config()
         # Prefer a chunked streamer for low time-to-first-audio; otherwise per-sentence sync
         # synthesis (universal — edge + every non-streamer).
-        from tools.tts_streaming import SentenceChunker, resolve_streaming_provider
+        from hermes_agent.tools.tts_streaming import SentenceChunker, resolve_streaming_provider
         streamer = resolve_streaming_provider(tts_config, preferred=provider)
         stream_max_len = 0
         if streamer is None:

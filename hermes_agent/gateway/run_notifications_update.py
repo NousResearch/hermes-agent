@@ -213,7 +213,7 @@ class GatewayUpdateNotificationsMixin:
 
     async def _send_update_output(self, target: _UpdateTarget, text: str) -> None:
         """Send buffered update output as fenced chunks that fit message limits (Telegram: 4096)."""
-        from tools.ansi_strip import strip_ansi
+        from hermes_agent.tools.ansi_strip import strip_ansi
         clean = strip_ansi(text).strip()
         if not clean:
             return
@@ -374,7 +374,7 @@ class GatewayUpdateNotificationsMixin:
                 return _defer("Update notification deferred: %s adapter not connected yet", platform_str)
             if chat_id:
                 metadata = self._pending_marker_metadata(platform, chat_id, pending, adapter)
-                from tools.ansi_strip import strip_ansi
+                from hermes_agent.tools.ansi_strip import strip_ansi
                 output = strip_ansi(output).strip()
                 if exit_code == 0:
                     msg = t("gateway.update.finished_success")

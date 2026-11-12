@@ -1,9 +1,9 @@
-"""Pre-gate floors for :mod:`tools.approval`: decisions that never reach a prompt.
+"""Pre-gate floors for :mod:`hermes_agent.tools.approval`: decisions that never reach a prompt.
 
 Unconditional blocks (hardline, ``sudo -S`` password piping, the user's own
 ``approvals.deny`` globs) and the permanent command allowlist match. All of
 them run BEFORE yolo / ``approvals.mode: off`` / cron approve-mode; the
-allowlist runs after. Session state stays in ``tools.approval`` and is read
+allowlist runs after. Session state stays in ``hermes_agent.tools.approval`` and is read
 through it at call time.
 """
 
@@ -12,12 +12,12 @@ import logging
 import re
 import time
 import uuid
-from tools import approval_context as _ctx
+from hermes_agent.tools import approval_context as _ctx
 from utils import unlink_files_older_than
-from tools.approval_detection import (
+from hermes_agent.tools.approval_detection import (
     _MALFORMED_EXEC_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION, _deny_command_variants)
 
-logger = logging.getLogger("tools.approval")
+logger = logging.getLogger("hermes_agent.tools.approval")
 
 
 def _match_user_deny_rule(command: str) -> str | None:
@@ -186,7 +186,7 @@ def _matching_permanent_allowlist_entry(command: str) -> str | None:
     Permanent approvals historically store dangerous-pattern keys such as
     ``recursive delete``; manual entries are command text, possibly with
     shell-style wildcards like ``podman *``."""
-    from tools import approval as _a
+    from hermes_agent.tools import approval as _a
     command = (command or "").strip()
     if not command or _has_allowlist_shell_operator(command):
         return None

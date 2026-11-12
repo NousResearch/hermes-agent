@@ -1,6 +1,6 @@
 """Pending gateway approvals dropped by interrupt/reap/teardown must be loud, not silent (#106678).
 
-``_interrupt_session_turn`` deny-resolves ``tools.approval._gateway_queues`` so the agent thread
+``_interrupt_session_turn`` deny-resolves ``hermes_agent.tools.approval._gateway_queues`` so the agent thread
 unblocks (silence is not consent), and ``_teardown_session`` pops the queue via
 ``unregister_gateway_notify``. Before the ``approval.cancelled`` broadcast the drop was invisible:
 a reconnecting client saw its parked prompt card answer ``resolved: 0`` (or a bare 4001 on
@@ -18,8 +18,8 @@ from __future__ import annotations
 import pytest
 
 from hermes_agent.tui_gateway import server
-from tools.approval import _gateway_queues, list_gateway_approvals, resolve_gateway_approval
-from tools.approval_gateway_wait import _ApprovalEntry
+from hermes_agent.tools.approval import _gateway_queues, list_gateway_approvals, resolve_gateway_approval
+from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
 
 SESSION_KEY = "20260909_120000_aaaaaa"

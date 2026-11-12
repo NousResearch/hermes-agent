@@ -41,7 +41,7 @@ def test_rotate_immediately_when_credential_already_exhausted():
     pool.mark_exhausted_and_rotate.return_value = entries[1]
 
     from run_agent import AIAgent
-    with patch("model_tools.get_tool_definitions", return_value=[]),          patch("model_tools.check_toolset_requirements", return_value={}),          patch("agent.process_bootstrap.OpenAI"):
+    with patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),          patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),          patch("agent.process_bootstrap.OpenAI"):
         agent = MagicMock(spec=AIAgent)
         agent._credential_pool = pool
         agent._swap_credential = MagicMock()

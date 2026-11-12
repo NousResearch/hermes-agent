@@ -1,8 +1,8 @@
-"""Tests for tools/clarify_tool.py - Interactive clarifying questions."""
+"""Tests for hermes_agent/tools/clarify_tool.py - Interactive clarifying questions."""
 
 import json
 
-from tools.clarify_tool import (
+from hermes_agent.tools.clarify_tool import (
     clarify_tool,
     MAX_CHOICES,
     MAX_QUESTIONS,
@@ -202,7 +202,7 @@ class TestRegistryMultiSelectPassThrough:
     """The registered tool handler must forward multi_select from tool args."""
 
     def test_handler_passes_multi_select(self):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         entry = registry.get_entry("clarify")
         seen = {}
 
@@ -218,7 +218,7 @@ class TestRegistryMultiSelectPassThrough:
         assert result["responses"][0]["user_response"] == ["a", "b"]
 
     def test_handler_default_single_select(self):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         entry = registry.get_entry("clarify")
         seen = {}
 
@@ -261,7 +261,7 @@ class TestClarifyBatchValidation:
 
     def test_over_limit_choice_is_rejected_at_the_source(self):
         """#124127: a choice longer than a surface renders is refused, not silently dropped downstream."""
-        from tools.clarify_tool import MAX_CHOICE_CHARS
+        from hermes_agent.tools.clarify_tool import MAX_CHOICE_CHARS
         long_choice = "x" * (MAX_CHOICE_CHARS + 1)
         result = _ask(lambda questions: _reply({}), [{"question": "Pick?", "choices": ["short", long_choice]}])
         assert "error" in result and str(MAX_CHOICE_CHARS) in result["error"]
@@ -370,7 +370,7 @@ class TestRegistryBatchPassThrough:
     """The registered handler forwards `questions` from tool args."""
 
     def test_handler_passes_questions(self):
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         entry = registry.get_entry("clarify")
         seen = {}
 

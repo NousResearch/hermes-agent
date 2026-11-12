@@ -339,7 +339,7 @@ class MattermostAdapter(BasePlatformAdapter):
                                 kind: str = "file", metadata: _Metadata = None) -> SendResult:
         """Download a URL and upload it as a file attachment (text fallback with the URL on failure)."""
         from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
 
         async def fallback() -> SendResult:
             return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to, metadata=metadata)
@@ -398,7 +398,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 return None
             return p.read_bytes(), p.name, mimetypes.guess_type(p.name)[0] or "image/png"
         from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("Mattermost: blocked unsafe image URL in batch")
             return None

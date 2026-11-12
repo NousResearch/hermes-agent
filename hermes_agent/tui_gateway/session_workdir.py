@@ -86,7 +86,7 @@ def _profile_terminal_policy(profile_home) -> dict:
     unreadable profile."""
     if not profile_home:
         return {}
-    from tools.terminal_scope import TerminalPolicyUnavailable, build_profile_terminal_scope
+    from hermes_agent.tools.terminal_scope import TerminalPolicyUnavailable, build_profile_terminal_scope
     try:
         return build_profile_terminal_scope(Path(profile_home))
     except TerminalPolicyUnavailable:
@@ -294,7 +294,7 @@ def _host_cwd_is_terminal_cwd(profile_home) -> bool:
     backend = _bound_terminal_backend(profile_home)
     if backend in {"local", "docker"}:
         return True
-    from tools.terminal_tool_config import _BUILTIN_BACKENDS
+    from hermes_agent.tools.terminal_tool_config import _BUILTIN_BACKENDS
     if backend in _BUILTIN_BACKENDS:
         return False
     # An unknown or unloaded plugin is treated as remote: sending it a host path is the failure this guards. The
@@ -455,7 +455,7 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     if not _session_is_local_backend(session):
         return False
     try:
-        from tools.terminal_tool import get_session_cwd
+        from hermes_agent.tools.terminal_tool import get_session_cwd
         if not (recorded := get_session_cwd(session.get("session_key") or "")):
             return False
     except Exception:
@@ -510,15 +510,15 @@ def _register_session_cwd(session: dict | None) -> None:
     if hints is not None and hasattr(hints, "rebind_working_dir"):
         hints.rebind_working_dir(str(session.get("cwd")))
     with contextlib.suppress(Exception):
-        from tools.terminal_tool import _ensure_terminal_env_bridged, register_task_env_overrides
-        from tools.terminal_tool_config import _tenv, _tenv_bool
+        from hermes_agent.tools.terminal_tool import _ensure_terminal_env_bridged, register_task_env_overrides
+        from hermes_agent.tools.terminal_tool_config import _tenv, _tenv_bool
         cwd, cwd_source = _terminal_task_cwd_with_source(session)
         # The cwd/override record is keyed by the ROUTED home (#123989). session.create is a plain
         # @method, so bind the session's own profile home here or the record lands under the raw key
         # and the scoped turn (`profile:<p>:<key>`) misses it until the first `cd`. Callers already
         # inside the session's scope (the turn) bind nothing: the routed home is theirs already.
         import hermes_constants as hc
-        from tools.terminal_scope import TerminalPolicyUnavailable, install_and_reset_profile_terminal_scope
+        from hermes_agent.tools.terminal_scope import TerminalPolicyUnavailable, install_and_reset_profile_terminal_scope
 
         with contextlib.ExitStack() as stack:
             profile_home = session.get("profile_home")
@@ -581,7 +581,7 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
             model_config[flag] = True
     if isinstance(composer_profile := session.get("composer_override_profile"), dict):
         model_config["composer_override_profile"] = composer_profile
-    from tools.approval_yolo import with_session_yolo  # a /yolo toggled before the row existed
+    from hermes_agent.tools.approval_yolo import with_session_yolo  # a /yolo toggled before the row existed
     return row_model, with_session_yolo(model_config, session.get("session_key") or "")
 
 
@@ -971,7 +971,7 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     # The synchronous DB write claims ordering authority; git probes may publish only for that exact generation.
     _persist_session_cwd_and_schedule_git_meta(session, resolved)
     with contextlib.suppress(Exception):
-        from tools.terminal_tool_lifecycle import cleanup_vm
+        from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
         cleanup_vm(session["session_key"])
     return resolved
 

@@ -19,7 +19,7 @@ import pytest
 
 from hermes_agent.gateway.config import Platform
 from tests.gateway.restart_test_helpers import make_restart_runner
-from tools import browser_session_lifecycle as bt_lifecycle
+from hermes_agent.tools import browser_session_lifecycle as bt_lifecycle
 
 @pytest.fixture(autouse=True)
 def _reset_cron_running_set():
@@ -198,8 +198,8 @@ class TestShutdownDeliversNoticeBeforeDisconnect:
         """The whole point is ordering: a notice sent after teardown is lost,
         which is the bug."""
         import hermes_agent.cron.scheduler as sched
-        import tools.process_registry as _pr
-        import tools.terminal_tool as _tt
+        import hermes_agent.tools.process_registry as _pr
+        import hermes_agent.tools.terminal_tool as _tt
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the interrupt path

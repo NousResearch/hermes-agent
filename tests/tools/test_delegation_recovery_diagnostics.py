@@ -28,7 +28,7 @@ def test_unfinished_delegation_recovery_keeps_transcript_locator(tmp_path, split
 import json, os, threading
 from pathlib import Path
 from unittest.mock import MagicMock
-import tools.delegate_tool as dt
+import hermes_agent.tools.delegate_tool as dt
 parent = MagicMock()
 parent._delegate_depth = 0
 parent.session_id = "diagnostic-parent"
@@ -51,7 +51,7 @@ dt._build_child_agent = build
 dt._run_single_child = child
 dt._resolve_delegation_credentials = lambda *a, **k: creds
 if os.environ['REPRO_MISSING'] == '1':
-    import tools.delegation_live_log as live
+    import hermes_agent.tools.delegation_live_log as live
     original = live.create_live_transcripts
     def missing(*args, **kwargs):
         ident, writers, paths = original(*args, **kwargs)
@@ -73,8 +73,8 @@ os._exit(0)
     assert all(Path(path).is_file() for path in transcripts)
     consumer = r'''
 import json, queue
-from tools import async_delegation as ad
-from tools.process_registry import format_process_notification
+from hermes_agent.tools import async_delegation as ad
+from hermes_agent.tools.process_registry import format_process_notification
 q = queue.Queue()
 count = ad.restore_undelivered_completions(q)
 events = [q.get_nowait() for _ in range(count)]

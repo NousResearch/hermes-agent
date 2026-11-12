@@ -23,20 +23,20 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE, get_sandbox_dir
-from tools.terminal_tool_config import (
+from hermes_agent.tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE, get_sandbox_dir
+from hermes_agent.tools.terminal_tool_config import (
     _host_path_key, _is_windows_drive_path, cwd_follows_host_mount, home_profile_name,
 )
-from tools.environments.base_output import _popen_bash
-from tools.environments.docker_egress import (
+from hermes_agent.tools.environments.base_output import _popen_bash
+from hermes_agent.tools.environments.docker_egress import (
     _EGRESS_LABEL_KEY, _critical_egress_env_names, _egress_enforce_on_docker, _egress_proxy_args_for_docker,
     _egress_reuse_fingerprint, check_docker_env_collisions, check_extra_args_collisions,
     check_forward_env_collisions, merge_egress_env,
 )
-from tools.environments.docker_ownership import (
+from hermes_agent.tools.environments.docker_ownership import (
     hand_back_sandbox_files, reclaim_sandbox_files, strip_sandbox_privileges)
-from tools.environments.path_utils import sanitize_task_id_for_path
-from tools.environments.remote_common import (
+from hermes_agent.tools.environments.path_utils import sanitize_task_id_for_path
+from hermes_agent.tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
 
 logger = logging.getLogger(__name__)
@@ -556,7 +556,7 @@ def _readonly_skill_mount_args() -> list[str]:
     which would exit 125)."""
     args: list[str] = []
     try:
-        import tools.credential_files as cf
+        import hermes_agent.tools.credential_files as cf
         for getter, expects_file, noun in _RO_MOUNT_SOURCES:
             for entry in getattr(cf, getter)():
                 src = Path(entry["host_path"])
@@ -1290,7 +1290,7 @@ class DockerEnvironment(BaseEnvironment):
         atexit hook joins via ``wait_for_cleanup`` so the work completes before exit.
 
         Cleanup runs on a daemon thread with bounded ``subprocess.run`` calls (not the racy ``Popen(... &)``
-        pattern from before PR #33645). The atexit hook in ``tools/terminal_tool.py`` waits up to 15s for
+        pattern from before PR #33645). The atexit hook in ``hermes_agent/tools/terminal_tool.py`` waits up to 15s for
         the thread to finish before the interpreter exits, so ``docker stop`` / ``docker rm`` actually
         completes when we do trigger it.
         """

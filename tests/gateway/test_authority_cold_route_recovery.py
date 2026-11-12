@@ -306,7 +306,7 @@ async def test_a_row_its_route_moved_past_stays_writable_on_its_own_key(tmp_path
 async def test_closing_or_deleting_a_superseded_row_leaves_the_successor_route_alone(tmp_path, monkeypatch):
     """Viewer close interrupts/refuses delegations and evicts by route; delete evicts by route. On a
     superseded mount that route is the successor's, so neither touches it."""
-    import tools.async_delegation as delegation
+    import hermes_agent.tools.async_delegation as delegation
     from hermes_agent.gateway.session_mutations import retire_live_sessions
     from hermes_agent.gateway.session_viewer_close import close_viewer_session
     cold, _successor = await _superseded(tmp_path)

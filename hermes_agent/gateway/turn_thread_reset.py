@@ -1,6 +1,6 @@
 """Make a reused turn-executor thread look like a new one to its next item.
 
-Turn code keys some state by the running thread instead of by turn: ``tools.interrupt`` bits and
+Turn code keys some state by the running thread instead of by turn: ``hermes_agent.tools.interrupt`` bits and
 reasons by thread id, per-turn callbacks in module ``threading.local`` objects, and the sudo
 password cache's thread scope (the fallback when a turn has no session key). A new thread starts
 with none of it; a parked executor worker (hermes_agent/gateway/turn_executor.py) must drop all of it before it
@@ -38,10 +38,10 @@ _PER_TURN_THREAD_LOCALS = (
 def reset_reused_thread_state() -> None:
     """Drop the calling thread's turn-keyed state (call from the worker itself, between items)."""
     tid = threading.get_ident()
-    interrupt = sys.modules.get("tools.interrupt")
+    interrupt = sys.modules.get("hermes_agent.tools.interrupt")
     if interrupt is not None:
         interrupt.set_interrupt(False, tid)  # clears the bit, its reason and a pending yield
-    sudo = sys.modules.get("tools.terminal_tool_sudo")
+    sudo = sys.modules.get("hermes_agent.tools.terminal_tool_sudo")
     if sudo is not None:
         with sudo._sudo_password_cache_lock:
             sudo._sudo_password_cache.pop(f"thread:{tid}", None)

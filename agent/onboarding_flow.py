@@ -2,7 +2,7 @@
 
 Pure: no I/O, no clock. ``apply(record, event, facts, now=...)`` returns the next record, the result
 the model reads, and the key of the reminder that rides on it (``agent/onboarding_text.py`` renders
-it). The record is stored by ``agent/onboarding_record.py``; ``tools/setup_beat_tool.py`` drives it.
+it). The record is stored by ``agent/onboarding_record.py``; ``hermes_agent/tools/setup_beat_tool.py`` drives it.
 """
 
 from __future__ import annotations

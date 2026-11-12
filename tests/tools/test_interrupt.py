@@ -13,10 +13,10 @@ import pytest
 # ---------------------------------------------------------------------------
 
 class TestInterruptModule:
-    """Tests for tools/interrupt.py"""
+    """Tests for hermes_agent/tools/interrupt.py"""
 
     def test_set_and_check(self):
-        from tools.interrupt import set_interrupt, is_interrupted
+        from hermes_agent.tools.interrupt import set_interrupt, is_interrupted
         set_interrupt(False)
         assert not is_interrupted()
 
@@ -27,7 +27,7 @@ class TestInterruptModule:
         assert not is_interrupted()
 
     def test_is_thread_interrupted_checks_target_tid_not_caller(self):
-        from tools.interrupt import (
+        from hermes_agent.tools.interrupt import (
             set_interrupt, is_interrupted, is_thread_interrupted, _interrupted_threads, _lock,
         )
         with _lock:
@@ -43,7 +43,7 @@ class TestInterruptModule:
 
     def test_clear_current_thread_interrupt_leaves_other_threads(self):
         """clear_current_thread_interrupt only touches the calling thread."""
-        from tools.interrupt import (
+        from hermes_agent.tools.interrupt import (
             set_interrupt, is_interrupted, clear_current_thread_interrupt,
             _interrupted_threads, _lock,
         )
@@ -62,7 +62,7 @@ class TestInterruptModule:
             _interrupted_threads.discard(other_tid)
 
     def test_run_if_not_interrupted_skips_callback_when_already_interrupted(self):
-        from tools.interrupt import run_if_not_interrupted, set_interrupt
+        from hermes_agent.tools.interrupt import run_if_not_interrupted, set_interrupt
 
         callbacks = []
         set_interrupt(True)
@@ -77,7 +77,7 @@ class TestInterruptModule:
     def test_run_if_not_interrupted_orders_callback_before_concurrent_interrupt(
         self, callback_should_fail, monkeypatch
     ):
-        from tools import interrupt
+        from hermes_agent.tools import interrupt
 
         class CallbackFailure(Exception):
             pass
@@ -242,8 +242,8 @@ class TestSIGKILLEscalation:
     @pytest.mark.platforms("posix")
     def test_sigterm_trap_killed_within_2s(self, tmp_path):
         """A process that traps SIGTERM should be SIGKILL'd after 1s grace."""
-        from tools.interrupt import set_interrupt
-        from tools.environments.local import LocalEnvironment
+        from hermes_agent.tools.interrupt import set_interrupt
+        from hermes_agent.tools.environments.local import LocalEnvironment
 
         set_interrupt(False)
         env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
@@ -288,7 +288,7 @@ class TestRunToolCleanupOnBaseException:
     def test_cleanup_on_base_exception(self):
         from unittest.mock import MagicMock
         import types
-        from tools.interrupt import set_interrupt, _interrupted_threads, _lock
+        from hermes_agent.tools.interrupt import set_interrupt, _interrupted_threads, _lock
 
         # Clear global state
         with _lock:

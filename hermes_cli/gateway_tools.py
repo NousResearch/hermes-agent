@@ -2,7 +2,7 @@
 
 On main the CLI process ran every ``terminal(background=true)`` itself, so the live-work dock,
 the status bar's ``⚙ N`` segment, ``/stop`` and the dock's tail view read
-``tools.process_registry`` in-process. Rewired, the processes run in the gateway: this view
+``hermes_agent.tools.process_registry`` in-process. Rewired, the processes run in the gateway: this view
 answers the same calls (``list_sessions`` / ``get`` / ``count_running`` / ``kill_process`` /
 ``kill_all``) from the session's ``process.list`` / ``process.kill`` / ``process.stop`` verbs, so
 main's dock and command code render unchanged.
@@ -85,7 +85,7 @@ class GatewayProcessView:
         finally:
             self._lock.release()
 
-    # -- the tools.process_registry surface main's CLI calls ---------------------------------
+    # -- the hermes_agent.tools.process_registry surface main's CLI calls ---------------------------------
     def list_sessions(self):
         self.refresh()
         now = time.time()
@@ -185,7 +185,7 @@ class GatewayProcessView:
     def subagent_control(self, action, subagent_id, message=None):
         """Steer (``subagent.steer``) or stop (``subagent.interrupt``) one child of this session, in
         the shape ``delegate_tool_registry._handle_control_action`` answers: ``note`` or ``error``."""
-        from tools.delegate_tool_registry import _CONTROL_OUTCOMES
+        from hermes_agent.tools.delegate_tool_registry import _CONTROL_OUTCOMES
 
         status, note, failure = _CONTROL_OUTCOMES[action]
         try:
@@ -214,7 +214,7 @@ class LocalSubagents:
         self._paths: dict = {}
 
     def subagent_rows(self, *, busy):
-        from tools.delegate_tool_registry import _list_payload, list_active_subagents
+        from hermes_agent.tools.delegate_tool_registry import _list_payload, list_active_subagents
         parent = getattr(self.cli, "agent", None)
         entries = _list_payload(parent)["subagents"] if parent is not None else []
         # The scoped control-plane snapshot supplies authority and transcript paths; the public
@@ -232,7 +232,7 @@ class LocalSubagents:
 
     def subagent_control(self, action, subagent_id, message=None):
         import json
-        from tools.delegate_tool_registry import _handle_control_action
+        from hermes_agent.tools.delegate_tool_registry import _handle_control_action
         return json.loads(_handle_control_action(action, subagent_id, message, getattr(self.cli, "agent", None)))
 
 
@@ -274,11 +274,11 @@ def process_view():
 
 
 def process_registry():
-    """``tools.process_registry.process_registry`` for main's dock, status bar and ``/stop``."""
+    """``hermes_agent.tools.process_registry.process_registry`` for main's dock, status bar and ``/stop``."""
     view = process_view()
     if view is not None:
         return view
-    from tools.process_registry import process_registry as local
+    from hermes_agent.tools.process_registry import process_registry as local
     return local
 
 
@@ -288,8 +288,8 @@ def background_counts():
     if view is not None:
         return {"active_background_processes": view.count_running(),
                 "active_background_subagents": view.active_delegations()}
-    from tools.async_delegation import active_count
-    from tools.process_registry import process_registry as local
+    from hermes_agent.tools.async_delegation import active_count
+    from hermes_agent.tools.process_registry import process_registry as local
     return {"active_background_processes": local.count_running(), "active_background_subagents": active_count()}
 
 

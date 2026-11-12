@@ -163,7 +163,7 @@ def _attach_todo_state(payload: dict, session: dict) -> dict:
 
 def _todo_state_from_db(db, session_id: str) -> dict | None:
     """Cold-resume Todo snapshot without the REST page or model-history limits."""
-    from tools.todo_tool import MAX_TODO_RESULT_CHARS
+    from hermes_agent.tools.todo_tool import MAX_TODO_RESULT_CHARS
     getter = getattr(db, "get_latest_todo_result", None)
     if not callable(getter):
         return None
@@ -186,7 +186,7 @@ def _todo_state_from_history(history) -> dict | None:
     if not isinstance(history, list) or not history:
         return None
     try:
-        from tools.todo_tool import MAX_TODO_RESULT_CHARS, is_todo_tool_call
+        from hermes_agent.tools.todo_tool import MAX_TODO_RESULT_CHARS, is_todo_tool_call
         todo_call_ids = {
             call.get("id")
             for msg in history if isinstance(msg, dict)
@@ -239,7 +239,7 @@ def _tool_labels(name: str, args: dict) -> list[dict] | None:
 
 
 def _connector_tool_lifecycle(name: str, args: dict) -> bool:
-    from tools.connectors import is_connector_name
+    from hermes_agent.tools.connectors import is_connector_name
 
     if name == "manage_connections" or is_connector_name(name):
         return True
@@ -359,7 +359,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload["image_path"] = image_path
     if _session_verbose(sid) and (result_text := _tool_result_text(result)):
         payload["result_text"] = result_text
-    from tools.todo_tool import is_todo_tool_name
+    from hermes_agent.tools.todo_tool import is_todo_tool_name
 
     todo_state = _normalize_todo_state(payload.get("result")) if is_todo_tool_name(name) else None
     if todo_state is not None:

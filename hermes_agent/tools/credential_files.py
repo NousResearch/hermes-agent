@@ -55,7 +55,7 @@ def _contained_host_path(rel: str, hermes_home: Path, abs_msg: str, traversal_ms
         logger.warning(abs_msg, rel)
         return None
     host_path = hermes_home / rel
-    from tools.path_security import validate_within_dir  # resolves symlinks and ``..`` before checking
+    from hermes_agent.tools.path_security import validate_within_dir  # resolves symlinks and ``..`` before checking
 
     if containment_error := validate_within_dir(host_path, hermes_home):
         logger.warning(traversal_msg, rel, containment_error)
@@ -351,14 +351,14 @@ _HOME_RELATIVE_BACKENDS = frozenset({"ssh", "daytona", "vercel_sandbox"})
 def _terminal_backend() -> str:
     """Active ``TERMINAL_ENV`` through the per-turn terminal scope (a routed multiplex profile's
     backend, never the launch profile's process env)."""
-    from tools.terminal_scope import terminal_env
+    from hermes_agent.tools.terminal_scope import terminal_env
     return (terminal_env("TERMINAL_ENV") or "local").strip().lower()
 
 
 def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.hermes") -> str:
     """Translate a host cache path to where the active backend (TERMINAL_ENV) sees it.
 
-    Mirrors ``_agent_cache_base_for_env`` in tools/image_generation_tool.py: docker/modal mount at
+    Mirrors ``_agent_cache_base_for_env`` in hermes_agent/tools/image_generation_tool.py: docker/modal mount at
     ``/root/.hermes``; ssh/daytona/vercel_sandbox under ``~/.hermes``; plugin backends declare
     ``cache_path_base`` (None = host paths stay correct, e.g. the singularity plugin); local/unknown
     unchanged.

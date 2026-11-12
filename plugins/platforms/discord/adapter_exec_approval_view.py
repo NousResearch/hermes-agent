@@ -111,7 +111,7 @@ def build_exec_approval_view(discord, base, *, unauthorized):
             # Unblock the waiting agent thread FIRST. A click after the approval
             # wait timed out (count == 0) must not claim "Approved".
             try:
-                from tools.approval import resolve_gateway_approval_card
+                from hermes_agent.tools.approval import resolve_gateway_approval_card
                 count = resolve_gateway_approval_card(
                     self.session_key, choice, self.request_id, actor_id=getattr(interaction.user, "id", ""),
                     extra=self.approval_extra or {})

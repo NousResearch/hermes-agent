@@ -49,11 +49,11 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
 
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", lambda **kwargs: _FakeClient())
     monkeypatch.setattr(
-        "model_tools.get_tool_definitions",
+        "hermes_agent.model_tools.get_tool_definitions",
         lambda *args, **kwargs: [{"function": {"name": "read_file"}}],
     )
     monkeypatch.setattr(
-        "model_tools.handle_function_call",
+        "hermes_agent.model_tools.handle_function_call",
         lambda name, args, task_id=None, **kwargs: json.dumps({"ok": True, "args": args}),
     )
 

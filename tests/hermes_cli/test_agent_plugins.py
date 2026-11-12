@@ -174,7 +174,7 @@ def test_unknown_trust_value_disables_package(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("transport", ["stdio", "streamable-http"])
 def test_server_timeout_is_opt_in_and_scoped_to_its_server(tmp_path: Path, transport: str) -> None:
-    from tools.mcp_tool_common import _resolve_tool_timeout
+    from hermes_agent.tools.mcp_tool_common import _resolve_tool_timeout
 
     server = {"type": "stdio", "command": "python"} if transport == "stdio" else {
         "type": "streamable-http", "url": "https://mcp.example.com/mcp"}

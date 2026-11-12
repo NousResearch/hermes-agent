@@ -9,8 +9,8 @@ import logging
 
 import pytest
 
-from tools import mcp_tool_config as _mcp_config
-from tools.mcp_tool_config import _warn_hidden_whitespace
+from hermes_agent.tools import mcp_tool_config as _mcp_config
+from hermes_agent.tools.mcp_tool_config import _warn_hidden_whitespace
 
 
 @pytest.fixture(autouse=True)
@@ -26,7 +26,7 @@ def test_clean_config_no_warnings(caplog):
         "headers": {"Authorization": "Bearer abc123"},
         "args": ["--flag", "value"],
     }
-    with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.mcp_tool"):
         flagged = _warn_hidden_whitespace("clean", config)
     assert flagged == []
     assert not [r for r in caplog.records if "hidden" in r.getMessage()]
@@ -35,7 +35,7 @@ def test_clean_config_no_warnings(caplog):
 def test_trailing_newline_in_header_flagged(caplog):
     config = {"url": "https://example.com/mcp",
               "headers": {"Authorization": "Bearer abc123\n"}}
-    with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.mcp_tool"):
         flagged = _warn_hidden_whitespace("srv", config)
     assert flagged == ["headers.Authorization"]
     messages = [r.getMessage() for r in caplog.records]
@@ -78,7 +78,7 @@ def test_non_string_values_ignored():
 
 def test_warning_deduped_per_process(caplog):
     config = {"url": "https://x.com "}
-    with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.mcp_tool"):
         first = _warn_hidden_whitespace("srv", config)
         second = _warn_hidden_whitespace("srv", config)
     # Both calls still report the flagged path (return value is for callers)...
@@ -102,7 +102,7 @@ def test_load_mcp_config_emits_warning(tmp_path, monkeypatch, caplog):
     }
     with mock_patch("hermes_cli.config.load_config",
                     return_value={"mcp_servers": servers}), \
-         caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+         caplog.at_level(logging.WARNING, logger="hermes_agent.tools.mcp_tool"):
         result = _mcp_config._load_mcp_config()
 
     assert "pasted" in result

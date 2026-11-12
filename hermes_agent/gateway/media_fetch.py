@@ -31,7 +31,7 @@ from hermes_agent.gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 # Telegram bot uploads cap at 50 MB; the other platforms are in the same range. Independent of
-# tools.image_source._MAX_HOST_READ_BYTES (250 MiB, local reads): do not sync the two.
+# hermes_agent.tools.image_source._MAX_HOST_READ_BYTES (250 MiB, local reads): do not sync the two.
 _FETCH_MAX_BYTES = 50 * 1024 * 1024
 
 _DENIED_PREFIXES = tuple(PurePosixPath(p) for p in _MEDIA_DELIVERY_DENIED_PREFIXES)
@@ -68,7 +68,7 @@ def _active_remote_env():
     from agent.prompt_builder import _REMOTE_TERMINAL_BACKENDS, _plugin_backend_is_remote
     from hermes_agent.gateway.platforms.base import _tenv
     from hermes_agent.gateway.session_context import get_session_env
-    from tools.terminal_tool_lifecycle import get_active_env
+    from hermes_agent.tools.terminal_tool_lifecycle import get_active_env
     backend = _tenv("TERMINAL_ENV", "local").strip().lower()
     if backend not in _REMOTE_TERMINAL_BACKENDS and not _plugin_backend_is_remote(backend):
         return None
@@ -86,7 +86,7 @@ def fetch_remote_media(path: str) -> Optional[str]:
         return None
     from hermes_agent.gateway.platforms.base import (
         DOCUMENT_CACHE_DIR, _log_safe_path, _normalize_media_tag_path, validate_media_delivery_path)
-    from tools.environments.base import FileFetchError
+    from hermes_agent.tools.environments.base import FileFetchError
 
     remote_home = getattr(env, "_remote_home", None)
     candidate = posixpath.normpath(_normalize_media_tag_path(str(path)) or "")

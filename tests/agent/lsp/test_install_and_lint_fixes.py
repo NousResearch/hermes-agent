@@ -53,8 +53,8 @@ def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path, monkeypatch)
 
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    from tools.environments.local import LocalEnvironment
-    from tools.file_operations import ShellFileOperations
+    from hermes_agent.tools.environments.local import LocalEnvironment
+    from hermes_agent.tools.file_operations import ShellFileOperations
 
     ts_file = tmp_path / "bad.ts"
     ts_file.write_text("const x: string = 42;\n")

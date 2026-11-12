@@ -44,7 +44,7 @@ def _deliver_platform_and_mirror(job: dict, content: str) -> tuple[str, str]:
     send = AsyncMock(return_value={"success": True})
     sink = MagicMock(return_value=True)
     with patch("hermes_agent.gateway.config.load_gateway_config", return_value=_telegram_cfg()), \
-         patch("tools.send_message_tool._send_to_platform", new=send), \
+         patch("hermes_agent.tools.send_message_tool._send_to_platform", new=send), \
          patch("hermes_agent.cron.scheduler_delivery._cron_mirror_delivery_enabled", return_value=True), \
          patch("hermes_agent.cron.scheduler_delivery._target_matches_origin", return_value=True), \
          patch("hermes_agent.gateway.mirror.mirror_to_session", new=sink), \
@@ -66,8 +66,8 @@ def _deliver_bot_chat(job: dict, content: str) -> str:
 
     # The canonical lane admits the turn to the target profile's live Bot Chat owner; the
     # admission record is the outward seam (no local CLI child is ever spawned).
-    with patch("tools.bot_live_delivery.find_canonical_live_owner", return_value={"session_id": "bot"}), \
-            patch("tools.bot_live_delivery.deliver_to_live_owner", side_effect=_fake_deliver):
+    with patch("hermes_agent.tools.bot_live_delivery.find_canonical_live_owner", return_value={"session_id": "bot"}), \
+            patch("hermes_agent.tools.bot_live_delivery.deliver_to_live_owner", side_effect=_fake_deliver):
         err = _deliver_to_bot_chat(dict(job, execution_id="r1"), content, "")
     assert err is None, err
     return captured["message"]
@@ -102,7 +102,7 @@ def test_delivery_redaction_is_forced_and_fails_closed(mode, monkeypatch):
     try:
         with ExitStack() as stack:
             stack.enter_context(patch("hermes_agent.gateway.config.load_gateway_config", return_value=_telegram_cfg()))
-            stack.enter_context(patch("tools.send_message_tool._send_to_platform", new=send))
+            stack.enter_context(patch("hermes_agent.tools.send_message_tool._send_to_platform", new=send))
             stack.enter_context(patch("sys.is_finalizing", return_value=False))
             if mode == "redact_secrets_off":
                 monkeypatch.setenv("HERMES_REDACT_SECRETS", "false")

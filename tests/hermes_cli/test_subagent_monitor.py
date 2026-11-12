@@ -6,7 +6,7 @@ from agent.i18n import t
 
 def test_dock_scopes_children_and_fits_short_narrow_terminal(monkeypatch):
     from hermes_cli import cli_subagent_monitor as monitor
-    from tools import delegate_tool_registry as registry
+    from hermes_agent.tools import delegate_tool_registry as registry
     owner = SimpleNamespace(session_id='owner')
     monkeypatch.setattr(registry, '_active_subagents', {})
     for i in range(8):
@@ -37,7 +37,7 @@ def test_dock_scopes_children_and_fits_short_narrow_terminal(monkeypatch):
 
 def test_monitor_controls_recheck_ownership_and_keep_selection(monkeypatch):
     from hermes_cli.cli_subagent_monitor import SubagentMonitor
-    from tools import delegate_tool_registry as registry
+    from hermes_agent.tools import delegate_tool_registry as registry
     monkeypatch.setattr(registry, '_active_subagents', {})
     delivered = []
     child = SimpleNamespace(steer=lambda text: delivered.append(text) or True)

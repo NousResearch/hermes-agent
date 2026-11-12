@@ -169,7 +169,7 @@ def test_a_killed_sleep_does_not_end_the_self_stop(abandoned_screen):
 
 def test_a_screen_in_use_is_kept_and_a_returning_gateway_reattaches(abandoned_screen, monkeypatch):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.bot_desktop import runtime
+    from hermes_agent.tools.bot_desktop import runtime
 
     sd, launcher = abandoned_screen(idle_stop_minutes=0.1)  # 6 s; a human lease lapses after 10 min (the floor over 4 windows)
     log = sd / "launcher.log"

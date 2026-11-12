@@ -12,7 +12,7 @@ import threading
 from typing import Dict, Optional, Tuple
 
 from hermes_constants import get_process_hermes_home, hermes_home_key
-from tools.connectors.operation import ConnectionOperation
+from hermes_agent.tools.connectors.operation import ConnectionOperation
 
 
 logger = logging.getLogger(__name__)

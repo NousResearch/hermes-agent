@@ -20,7 +20,7 @@ import json
 import queue
 import time
 
-from tools.process_registry import ProcessRegistry
+from hermes_agent.tools.process_registry import ProcessRegistry
 
 
 def _make_registry():
@@ -57,7 +57,7 @@ def _delegation_event(session_key="", restored=False, delegation_id="d1"):
 
 def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     """Every durable completion re-enqueued at startup carries restored=True."""
-    import tools.async_delegation as ad
+    import hermes_agent.tools.async_delegation as ad
 
     monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "async_delegations.db")
     record = {

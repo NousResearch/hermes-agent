@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from hermes_cli.kanban_workflow import DEFAULT_STATUSES as VALID_STATUSES
-from toolsets import get_toolset_names
+from hermes_agent.toolsets import get_toolset_names
 from utils import unlink_files_older_than
 
 _log = logging.getLogger(__name__)

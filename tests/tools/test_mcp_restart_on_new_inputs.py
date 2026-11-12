@@ -54,9 +54,9 @@ def test_restart_only_when_resolved_launch_inputs_change(monkeypatch, tmp_path):
     monkeypatch.setenv("DEMO_KEY", "first")
 
     from hermes_cli.config import save_env_value
-    from tools import mcp_tool_discovery as disc
-    from tools import mcp_tool_loop as _loop
-    from tools.mcp_tool_common import _core
+    from hermes_agent.tools import mcp_tool_discovery as disc
+    from hermes_agent.tools import mcp_tool_loop as _loop
+    from hermes_agent.tools.mcp_tool_common import _core
 
     try:
         disc.discover_mcp_tools()
@@ -74,6 +74,6 @@ def test_restart_only_when_resolved_launch_inputs_change(monkeypatch, tmp_path):
         assert _core._servers["envecho"]._resolved_identity != first
         assert os.environ["DEMO_KEY"] == "second"
     finally:
-        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        from hermes_agent.tools.mcp_tool_lifecycle import shutdown_mcp_servers
         shutdown_mcp_servers()
         _loop._stop_mcp_loop()

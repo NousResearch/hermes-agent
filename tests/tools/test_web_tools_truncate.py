@@ -11,8 +11,8 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.web_tools as wt
-from tools import web_tools_truncate
+import hermes_agent.tools.web_tools as wt
+from hermes_agent.tools import web_tools_truncate
 
 
 class TestImageConversion:
@@ -58,12 +58,12 @@ class TestTruncation:
 
 class TestCharLimitConfig:
     def test_default_when_unset(self):
-        with patch("tools.web_tools._load_web_config", return_value={}):
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}):
             assert web_tools_truncate._get_extract_char_limit() == web_tools_truncate.DEFAULT_EXTRACT_CHAR_LIMIT
 
 
     def test_bad_value_falls_back(self):
-        with patch("tools.web_tools._load_web_config", return_value={"extract_char_limit": "nope"}):
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"extract_char_limit": "nope"}):
             assert web_tools_truncate._get_extract_char_limit() == web_tools_truncate.DEFAULT_EXTRACT_CHAR_LIMIT
 
 
@@ -83,9 +83,9 @@ class TestEndToEnd:
                 return [{"url": urls[0], "title": "Big Page", "content": big,
                          "raw_content": big, "metadata": {}}]
 
-        with patch("tools.web_tools._ensure_web_plugins_loaded"), \
-             patch("tools.web_tools._get_extract_backend", return_value="fake"), \
-             patch("tools.web_tools.async_is_safe_url", new=_AsyncTrue()), \
+        with patch("hermes_agent.tools.web_tools._ensure_web_plugins_loaded"), \
+             patch("hermes_agent.tools.web_tools._get_extract_backend", return_value="fake"), \
+             patch("hermes_agent.tools.web_tools.async_is_safe_url", new=_AsyncTrue()), \
              patch("agent.web_search_registry.get_provider", return_value=FakeProvider()):
             result = json.loads(asyncio.new_event_loop().run_until_complete(
                 wt.web_extract_tool(["https://example.com/big"], char_limit=5000)

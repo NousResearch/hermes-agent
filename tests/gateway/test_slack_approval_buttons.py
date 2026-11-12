@@ -172,7 +172,7 @@ class TestSlackApprovalAction:
         mock_client = adapter._team_clients["T1"]
         mock_client.chat_update = AsyncMock()
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1):
+        with patch("hermes_agent.tools.approval.resolve_gateway_approval", return_value=1):
             await adapter._handle_approval_action(ack, body, action)
 
         update_kwargs = mock_client.chat_update.call_args[1]
@@ -199,7 +199,7 @@ class TestSlackApprovalAction:
             "value": "agent:main:slack:group:C1:1111",
         }
 
-        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+        with patch("hermes_agent.tools.approval.resolve_gateway_approval") as mock_resolve:
             await adapter._handle_approval_action(ack, body, action)
 
         ack.assert_called_once()
@@ -258,7 +258,7 @@ class TestSlackSlashConfirmAction:
         mock_client.chat_update = AsyncMock()
         mock_client.chat_postMessage = AsyncMock()
 
-        with patch("tools.slash_confirm.resolve", new=AsyncMock(return_value="ok")):
+        with patch("hermes_agent.tools.slash_confirm.resolve", new=AsyncMock(return_value="ok")):
             await adapter._handle_slash_confirm_action(ack, body, action)
 
         update_kwargs = mock_client.chat_update.call_args[1]

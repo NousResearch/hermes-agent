@@ -1,4 +1,4 @@
-"""Tests for tools/web_result_cache.py — TTL memo for web_search and the
+"""Tests for hermes_agent/tools/web_result_cache.py — TTL memo for web_search and the
 disk-backed extract cache, plus their wiring into web_tools.
 
 The cache sits AFTER safety gates and around the paid vendor call only, so
@@ -13,8 +13,8 @@ import time
 
 import pytest
 
-import tools.web_result_cache as wrc
-from tools.web_result_cache import (
+import hermes_agent.tools.web_result_cache as wrc
+from hermes_agent.tools.web_result_cache import (
     SearchMemo,
     bucket_limit,
     extract_cache_get,
@@ -190,7 +190,7 @@ def test_extract_cache_provider_participates_in_key(_isolated_cache):
 
 
 def test_extract_cache_oversized_page_not_indexed(_isolated_cache):
-    from tools import web_tools_truncate as wt
+    from hermes_agent.tools import web_tools_truncate as wt
     big = "x" * (wt.MAX_STORED_TEXT_CHARS + 1)
     extract_cache_put("https://big.com", big)
     assert extract_cache_get("https://big.com") is None

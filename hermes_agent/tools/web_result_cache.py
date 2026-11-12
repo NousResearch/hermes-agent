@@ -32,7 +32,7 @@ _INDEX_MAX_ENTRIES = 500  # oldest entries evicted past this
 
 def _web_config() -> dict:
     try:
-        from tools.web_tools import _load_web_config
+        from hermes_agent.tools.web_tools import _load_web_config
         return _load_web_config()
     except Exception:
         return {}
@@ -65,7 +65,7 @@ def normalize_query(query: str) -> str:
 
 def _host_slug(url: str) -> str:
     """Filesystem-safe hostname slug for cache filenames (``"page"`` when hostless). Shared with
-    tools.web_tools_truncate."""
+    hermes_agent.tools.web_tools_truncate."""
     host = (urlparse(url).hostname or "page").replace(":", "_")
     return re.sub(r"[^A-Za-z0-9._-]", "-", host)[:60].strip("-") or "page"
 
@@ -235,7 +235,7 @@ def _is_cache_exempt_host(url: str) -> bool:
 def _is_local_dev_url(url: str) -> bool:
     """True for loopback/private/LAN URLs — never cached: they are the user's own fast-changing dev servers.
     Hostname heuristics only, no DNS: this is a freshness decision, not a security boundary (SSRF enforcement
-    lives in tools/url_safety.py, which blocks these by default anyway)."""
+    lives in hermes_agent/tools/url_safety.py, which blocks these by default anyway)."""
     try:
         host = (urlparse(url).hostname or "").strip("[]").lower()
         # Unparseable → don't cache; single-label (no "." / ":") == LAN name, not public DNS.
@@ -315,11 +315,11 @@ def extract_cache_put(
     if not content or not _cacheable(url):
         return False
     try:
-        from tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
+        from hermes_agent.tools.web_tools_truncate import MAX_STORED_TEXT_CHARS
         file_path = _entry_file_path(url, format, provider)
         if len(content) > MAX_STORED_TEXT_CHARS or file_path is None:
             return False
-        from tools.spill_safety import write_text_exclusive
+        from hermes_agent.tools.spill_safety import write_text_exclusive
         write_text_exclusive(file_path, content, private=False, overwrite=True)
         with _index_lock:
             index = _load_index()

@@ -34,7 +34,7 @@ async def expand_references(text, *, cwd, context_length, plugins=True):
 def _inbound_cwd(runner, source):
     from hermes_agent.gateway.session_policy import policy_for_source
     try:
-        from tools.terminal_scope import terminal_env
+        from hermes_agent.tools.terminal_scope import terminal_env
     except ImportError:
         terminal_env = os.environ.get
     # A local session's references resolve in ITS workspace: this runs before the turn binds

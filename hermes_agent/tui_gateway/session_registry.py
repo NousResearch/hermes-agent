@@ -85,7 +85,7 @@ def _bind_build_profile_scopes(profile_home: str | None) -> _TurnScopes | None:
     if profile_home:  # secret/terminal helper failed: keep at least the home + terminal refusal scope
         scopes.home = set_hermes_home_override(profile_home)
         with contextlib.suppress(Exception):
-            from tools.terminal_scope import install_profile_terminal_scope
+            from hermes_agent.tools.terminal_scope import install_profile_terminal_scope
             scopes.terminal = install_profile_terminal_scope(Path(profile_home))
     return scopes
 
@@ -122,7 +122,7 @@ def _wire_session_agent(sid: str, key: str, agent) -> bool:
     display.memory_notifications."""
     notify_registered = False
     with contextlib.suppress(Exception):
-        from tools.approval import load_permanent_allowlist, register_gateway_notify
+        from hermes_agent.tools.approval import load_permanent_allowlist, register_gateway_notify
         register_gateway_notify(key, lambda data: _emit_approval_request(sid, data))
         notify_registered = True
         load_permanent_allowlist()
@@ -204,7 +204,7 @@ def _finish_agent_build(sid: str, key: str, current: dict, *, notify_registered:
         replaced = _sessions.get(sid) is not current
     if replaced and notify_registered:
         with contextlib.suppress(Exception):
-            from tools.approval import unregister_gateway_notify
+            from hermes_agent.tools.approval import unregister_gateway_notify
             unregister_gateway_notify(key)
     # Dedicated profile handle: hand it to the agent that will be torn down, else close it (build
     # failed, or `replaced`: this agent is discarded and _teardown_session never reaches it).

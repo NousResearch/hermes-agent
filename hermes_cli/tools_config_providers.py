@@ -14,8 +14,8 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.config import cfg_get, get_env_value, load_config, save_config, save_env_value
 from hermes_cli.nous_account import format_nous_portal_entitlement_message
 from hermes_cli.nous_subscription import MANAGED_FEATURE_COVERAGE_CATEGORY, NousSubscriptionFeatures
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
-from tools.transcription_common import STT_MODEL_CATALOG, STT_MODEL_CONFIG_KEY
+from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
+from hermes_agent.tools.transcription_common import STT_MODEL_CATALOG, STT_MODEL_CONFIG_KEY
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger("hermes_cli.tools_config")
@@ -360,7 +360,7 @@ def _web_tier_matches(provider: dict, config: dict) -> bool:
 
 def _web_serving_backends(config: dict) -> set:
     """Backend names serving web search / extract as configured: each capability's own
-    ``web.<cap>_backend`` override first, else the shared ``web.backend`` (``tools/web_tools.py``
+    ``web.<cap>_backend`` override first, else the shared ``web.backend`` (``hermes_agent/tools/web_tools.py``
     dispatch order; legacy ``use_gateway: true`` reads as the managed ``nous`` selection).
     Lower-cased and stripped like the dispatchers."""
     raw_web_cfg = config.get("web")
@@ -507,7 +507,7 @@ def _detect_active_provider_index(providers: list, config: dict, *, force_fresh:
 
 def _fal_model_catalog(config: dict):
     """Lazy-load the FAL model catalog."""
-    from tools.image_generation_catalog import FAL_MODELS, DEFAULT_MODEL
+    from hermes_agent.tools.image_generation_catalog import FAL_MODELS, DEFAULT_MODEL
     return FAL_MODELS, DEFAULT_MODEL
 
 
@@ -517,7 +517,7 @@ def _managed_image_catalog(config: dict):
     A free-pool account is funded for FAL only, so its picker never offers a Krea or Portal model it
     would be denied at generation time; a logged-out or paid account sees everything."""
     from hermes_cli.tools_config import get_nous_subscription_features
-    from tools.image_generation_managed import managed_image_catalog
+    from hermes_agent.tools.image_generation_managed import managed_image_catalog
 
     acct = get_nous_subscription_features(config).account_info
     pool_only = bool(acct and acct.logged_in and acct.paid_service_access is not True)

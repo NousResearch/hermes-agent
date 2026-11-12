@@ -490,7 +490,7 @@ def _save_session_history(key: str, messages: list[dict[str, Any]]) -> None:
 def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
     """Create an AIAgent with feishu tools and run the prompt; empty string on failure. *session_key*, if given, loads/saves history for cross-card memory in the same document."""
     from run_agent import AIAgent
-    from tools import feishu_doc_tool, feishu_drive_tool
+    from hermes_agent.tools import feishu_doc_tool, feishu_drive_tool
     logger.info("[Feishu-Comment] _run_comment_agent: injecting lark client into tool thread-locals")
     tool_mods = (feishu_doc_tool, feishu_drive_tool)
     for mod in tool_mods:

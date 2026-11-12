@@ -180,9 +180,9 @@ def _server_timeouts(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict
 
 def _server_costs(manifest: Mapping[str, Any], mcp_servers: Mapping[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Translate ``costs``/``spend_limit``/``cost_unit`` into the native ``tool_costs``/``spend_limit``/``cost_unit``
-    keys (``tools.mcp_tool_costs``). A malformed table disables the package: a budget the author declared must
+    keys (``hermes_agent.tools.mcp_tool_costs``). A malformed table disables the package: a budget the author declared must
     never be dropped while the server still spends."""
-    from tools.mcp_tool_costs import parse_cost_policy
+    from hermes_agent.tools.mcp_tool_costs import parse_cost_policy
     raw_servers = manifest.get("extensions", {}).get(_HERMES_EXTENSION, {}).get("servers", {})
     translated: dict[str, dict[str, Any]] = {}
     for name, raw in (raw_servers.items() if isinstance(raw_servers, dict) else ()):

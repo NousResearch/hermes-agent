@@ -20,7 +20,7 @@ import pytest
 
 from agent.plugin_live_notes import queue_plugin_notice
 from run_agent import AIAgent
-from tools.budget_config import BudgetConfig
+from hermes_agent.tools.budget_config import BudgetConfig
 
 NOTE = "[System note: plugin blender was installed and is live in this chat now.]"
 OLD_NOTE = "[System note: plugin blender (an older install) is live.]"
@@ -38,8 +38,8 @@ def _agent():
     tool = {"type": "function", "function": {"name": "web_search", "description": "search",
                                              "parameters": {"type": "object", "properties": {}}}}
     with (
-        patch("model_tools.get_tool_definitions", return_value=[tool]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[tool]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
         patch("run_agent._hermes_home", home),
         patch("agent.model_metadata.fetch_model_metadata", return_value={}),
@@ -79,7 +79,7 @@ def _run(agent, text, history=None, tool_result=lambda: TOOL_OUTPUT):
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
-        patch("model_tools.handle_function_call", side_effect=lambda *a, **k: tool_result()),
+        patch("hermes_agent.model_tools.handle_function_call", side_effect=lambda *a, **k: tool_result()),
     ):
         return agent.run_conversation(text, conversation_history=history)
 

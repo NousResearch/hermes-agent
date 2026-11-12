@@ -1,9 +1,9 @@
 """``browser_exec``: drive a real browser through the Browser Use CLI engine (browser-harness,
 https://browser-use.com), Hermes' only core browser tool.
 
-The harness speaks CDP to whatever ``tools.browser_session`` resolved for the call: an operator
+The harness speaks CDP to whatever ``hermes_agent.tools.browser_session`` resolved for the call: an operator
 ``BU_CDP_*`` endpoint, a ``/browser connect`` override, a cloud provider's session, or a local browser
-(real profile, Lightpanda, or the packaged Chromium started by ``tools.browser_launcher``).
+(real profile, Lightpanda, or the packaged Chromium started by ``hermes_agent.tools.browser_launcher``).
 """
 
 import contextlib
@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional
 from hermes_cli.process_identity import (
     own_process_groups, register_child, release_process_group_once_empty, spawn_env, spawned_by_this_process)
 from hermes_constants import get_hermes_home, hermes_home_key
-from tools.browser_harness_dirs import (daemon_env, daemon_identity, fit_default_socket_dir, harness_pid_file,
+from hermes_agent.tools.browser_harness_dirs import (daemon_env, daemon_identity, fit_default_socket_dir, harness_pid_file,
                                         namespace_harness_dirs)
 from utils import is_truthy_value
 
@@ -122,7 +122,7 @@ def _lazy_call(module: str, name: str, default: Any, log_prefix: str) -> Any:
 
 
 def _real_profile_consented() -> bool:
-    return _lazy_call("tools.browser_session_cloud", "use_real_profile", False, "real-profile consent lookup failed")
+    return _lazy_call("hermes_agent.tools.browser_session_cloud", "use_real_profile", False, "real-profile consent lookup failed")
 
 
 def _set_cdp_env(env: dict, cdp: str) -> None:
@@ -159,7 +159,7 @@ def _code_url_verdict(code: str) -> _CodeUrlVerdict:
     the hybrid LOCAL sidecar. Each URL's routing predicate is evaluated ONCE and feeds both answers: it
     resolves DNS unmemoised, so a rebinding host evaluated twice could relax the private-address floor and
     still route to the cloud provider."""
-    from tools.browser_url_policy import evaluate_url_safety, hybrid_routes_locally
+    from hermes_agent.tools.browser_url_policy import evaluate_url_safety, hybrid_routes_locally
     local_sidecar = False
     for url in _URL_RE.findall(code or ""):
         routes_local = hybrid_routes_locally(url)
@@ -181,7 +181,7 @@ def _harness_credentials() -> dict:
 
 
 def _base_subprocess_env() -> dict:
-    from tools.browser_session import build_browser_env
+    from hermes_agent.tools.browser_session import build_browser_env
     env = build_browser_env()
     env.update(_harness_credentials())
     # The harness runs on Hermes's own interpreter, but a bundled Desktop install boots that
@@ -217,7 +217,7 @@ def _floor_subprocess_path(path: str) -> str:
 def _read_browser_cfg() -> dict:
     """Return the ``browser:`` config section, or {} on any failure."""
     try:
-        from tools.browser_session_cloud import browser_section
+        from hermes_agent.tools.browser_session_cloud import browser_section
         return browser_section()
     except Exception as e:
         logger.debug("Could not read browser config section: %s", e)
@@ -232,7 +232,7 @@ def _use_gateway(browser_cfg: dict) -> bool:
     if is_truthy_value(browser_cfg.get("use_gateway"), default=False):
         return True
     try:
-        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
+        from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
     except Exception:  # pragma: no cover — helper ships with the package
         return False
     return str(browser_cfg.get("cloud_provider") or "").strip().lower() == NOUS_MANAGED_PROVIDER
@@ -306,9 +306,9 @@ def _find_screenshot(stdout: str, since: float) -> Optional[str]:
 def _native_screenshot_result(result: dict[str, Any], path: str) -> Optional[dict[str, Any]]:
     """Build a multimodal tool result attaching path for vision models"""
     try:
-        from tools.vision_tools import (_EMBED_MAX_DIMENSION,
+        from hermes_agent.tools.vision_tools import (_EMBED_MAX_DIMENSION,
                                         _resize_image_for_vision, _should_use_native_vision_fast_path)
-        from tools.vision_tools_history_budget import resolve_embed_target_bytes
+        from hermes_agent.tools.vision_tools_history_budget import resolve_embed_target_bytes
         if not _should_use_native_vision_fast_path():
             return None
         # History-reuse cap: this data URL bakes into the tool result and is re-sent every later turn —
@@ -353,7 +353,7 @@ def _sidecar_daemon_name(name: str) -> str:
 def _export_real_profile_note(env: dict, key: str) -> None:
     """The session layer decides real profile vs fresh browser once per key; carry its note (if it fell
     back) so the result reports the browser this call actually drives."""
-    from tools.browser_session import real_profile_note
+    from hermes_agent.tools.browser_session import real_profile_note
     note = real_profile_note(key)
     if note:
         env.setdefault(_REAL_PROFILE_FALLBACK_SENTINEL, note)
@@ -375,8 +375,8 @@ def _resolve_local_cdp(env: dict, task_id: Optional[str], session_name: str = ""
     """Local browser for this cache key through the session layer: the consented real profile, Lightpanda
     (``browser.engine: lightpanda``), or the packaged Chromium. Never the harness's own discovery of the
     user's installed Chrome (chrome://inspect toggle + Allow popup per run, blocked on Chrome >=136)."""
-    from tools.browser_lightpanda import using_lightpanda_engine
-    from tools.browser_session import get_session_info
+    from hermes_agent.tools.browser_lightpanda import using_lightpanda_engine
+    from hermes_agent.tools.browser_session import get_session_info
     key = _backend_cache_key(task_id, session_name, sidecar)
     session: dict = {}
 
@@ -415,9 +415,9 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
     sidecar verdict never fires while a CDP override is set."""
     if _has_cdp_env(env):
         return None
-    from tools.browser_session import get_session_info
-    from tools.browser_session_cdp import get_cdp_override
-    from tools.browser_session_cloud import get_cloud_provider
+    from hermes_agent.tools.browser_session import get_session_info
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override
+    from hermes_agent.tools.browser_session_cloud import get_cloud_provider
     override = _quiet(get_cdp_override, "")
     if override:
         _set_cdp_env(env, override)
@@ -440,7 +440,7 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
         env[_PRIVATE_BROWSER_SENTINEL] = "1"  # named BU cloud browsers are exclusive to their daemon
         # Only intent: the harness attaches to a local Chrome already listening instead of autospawning, so
         # the live daemon's own report decides.
-        from tools.browser_use_shot import ACTIVATE_IF_CLOUD
+        from hermes_agent.tools.browser_use_shot import ACTIVATE_IF_CLOUD
         env[_CLOUD_BROWSER_SENTINEL] = ACTIVATE_IF_CLOUD
         return None
 
@@ -468,7 +468,7 @@ def _resolve_backend_cdp(env: dict, task_id: Optional[str], session_name: str = 
             _mark_local_browser(env, session, key)
         return err
     if err is None:
-        from tools.browser_use_shot import ACTIVATE_ALWAYS
+        from hermes_agent.tools.browser_use_shot import ACTIVATE_ALWAYS
         env[_CLOUD_BROWSER_SENTINEL] = ACTIVATE_ALWAYS  # the provider's own session: the harness connects only there
     # A provider browser keyed bu-named-<name> is exclusive to this session — the
     # own-tab preamble would just leak a blank tab into it.
@@ -486,9 +486,9 @@ def _resolve_real_profile_cdp(env: dict, force_local: bool) -> Optional[str]:
     ``_route_backend`` then falls back to the normal backend and reports it, never silently."""
     if not _real_profile_consented() or _has_cdp_env(env):
         return None
-    from tools.browser_session_cdp import get_cdp_override_raw
-    from tools.browser_session_cloud import get_cloud_provider
-    from tools.browser_session_real_profile import real_profile_cdp
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override_raw
+    from hermes_agent.tools.browser_session_cloud import get_cloud_provider
+    from hermes_agent.tools.browser_session_real_profile import real_profile_cdp
     if _quiet(get_cdp_override_raw, ""):
         return None
     # Only auto-upgrade genuinely-local attaches; any cloud path (provider, provider lookup failure, or
@@ -511,8 +511,8 @@ def _attach_vault_supervisor(env: dict, task_id: Optional[str]) -> None:
     if not cdp:
         return
     try:
-        from tools.browser_session_cdp import get_dialog_policy_config, resolve_cdp_override
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY
+        from hermes_agent.tools.browser_session_cdp import get_dialog_policy_config, resolve_cdp_override
+        from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
         policy, timeout_s = get_dialog_policy_config()
         SUPERVISOR_REGISTRY.get_or_start(task_id=task_id or "default", cdp_url=resolve_cdp_override(cdp),
                                          dialog_policy=policy, dialog_timeout_s=timeout_s)
@@ -541,7 +541,7 @@ def _route_backend(env: dict, session: str, task_id: Optional[str], local: bool,
     # layer makes the one real-profile-or-fresh decision and reports it (_resolve_local_cdp).
     if local and not _has_cdp_env(env) and (rp_err or not real_profile):
         if rp_err:
-            from tools.browser_session_real_profile import real_profile_fallback_note
+            from hermes_agent.tools.browser_session_real_profile import real_profile_fallback_note
             env[_REAL_PROFILE_FALLBACK_SENTINEL] = real_profile_fallback_note(rp_err)
         env[_LOCAL_FALLBACK_SENTINEL] = "1"
         force_local_sidecar = True
@@ -617,7 +617,7 @@ _OWN_DURING_CALL_S = 0.5
 # swap (/browser connect|disconnect) leaves later calls in the old browser until these are stopped.
 _driven_daemons: dict[tuple[str, ...], str] = {}  # daemon identity -> home
 _driven_daemons_lock = threading.Lock()
-_live_generation = functools.partial(_lazy_call, "tools.browser_session_cdp", "live_cdp_generation", 0,
+_live_generation = functools.partial(_lazy_call, "hermes_agent.tools.browser_session_cdp", "live_cdp_generation", 0,
                                      "live CDP generation lookup failed")  # this profile's publish count
 # Route cache key -> whether its last browser_exec ran on the hybrid local sidecar.
 _exec_route_is_sidecar: dict[str, bool] = {}
@@ -775,7 +775,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
     from agent.redact import redact_sensitive_text
-    from tools.registry import tool_error, tool_result
+    from hermes_agent.tools.registry import tool_error, tool_result
     if not code or not code.strip():
         return tool_error("No code provided. Pass Python that uses the pre-imported helpers, e.g. new_tab(\"https://example.com\") then print(page_info()).")
 
@@ -818,8 +818,8 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
     if session and not private_browser:
         code = _OWN_TAB_PREAMBLE + code
     # Every backend: capture_screenshot() falls back to jpeg instead of hanging on a png a hidden tab never
-    # renders; only on a cloud browser does it (and new_tab) bring the tab to the front (tools/browser_use_shot.py).
-    from tools.browser_use_shot import ACTIVATE_NEVER, harness_command
+    # renders; only on a cloud browser does it (and new_tab) bring the tab to the front (hermes_agent/tools/browser_use_shot.py).
+    from hermes_agent.tools.browser_use_shot import ACTIVATE_NEVER, harness_command
     cmd = harness_command(cmd, activate=env.pop(_CLOUD_BROWSER_SENTINEL, None) or ACTIVATE_NEVER)
 
     workspace = _workspace_dir(task_id)
@@ -857,7 +857,7 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             owning.cancel(wait=5)  # an in-flight check finishes before the post-call one runs
 
     if bot_desktop_browser:
-        from tools.browser_session import run_fenced
+        from hermes_agent.tools.browser_session import run_fenced
         dispatched = run_fenced({"features": {"local": True}}, dispatch)
     else:
         dispatched = dispatch()
@@ -926,7 +926,7 @@ _TEXT_FIRST = (
 # tool's results: routing is not ``native`` — e.g. an explicit ``auxiliary.vision`` pin — or
 # the route rejects tool-result media), never a verdict on the model's own vision: models
 # quote "your model cannot view images" against themselves and skip user images (#131568).
-# model_tools.get_tool_definitions() appends the vision_analyze pointer after
+# hermes_agent.model_tools.get_tool_definitions() appends the vision_analyze pointer after
 # SCREENSHOTS_DETACHED when the session actually has that tool.
 SCREENSHOTS_DETACHED = " Screenshots are not attached to this tool's results."
 
@@ -960,10 +960,10 @@ _HELPERS_DIGEST = (
 
 def _description_header() -> str:
     """Header tailored to whether screenshots ride back natively in this tool's results."""
-    if _lazy_call("tools.browser_lightpanda", "lightpanda_engine_status", (False, ""),
+    if _lazy_call("hermes_agent.tools.browser_lightpanda", "lightpanda_engine_status", (False, ""),
                   "lightpanda engine status unavailable")[0]:  # no screenshots, whatever the model sees
         return _HEADER_BASE + _HEADER_LIGHTPANDA
-    if _lazy_call("tools.vision_tools", "_should_use_native_vision_fast_path", False, ""):
+    if _lazy_call("hermes_agent.tools.vision_tools", "_should_use_native_vision_fast_path", False, ""):
         return _HEADER_BASE + _HEADER_VISION
     return _HEADER_BASE + _HEADER_TEXT_ONLY
 
@@ -1005,9 +1005,9 @@ BROWSER_EXEC_SCHEMA = {
 
 
 # browser_exec is additionally gated at tool-definition time — sessions whose toolsets
-# lack ``terminal`` never see it (model_tools._compute_tool_definitions). check_fn only
+# lack ``terminal`` never see it (hermes_agent.model_tools._compute_tool_definitions). check_fn only
 # answers "is browser-harness importable"; surface policy lives with the session.
-from tools.registry import registry
+from hermes_agent.tools.registry import registry
 
 
 # The LOCAL browser this context's browser_exec call ran on ("local" Chromium or "lightpanda", from its session),
@@ -1020,7 +1020,7 @@ _exec_local_engine: contextvars.ContextVar[Optional[str]] = contextvars.ContextV
 def _handle_browser_exec(args: dict, **kw):
     """Registry handler; each call counts against the backend that served it (shared metrics, opt-in)."""
     from hermes_cli.observability.shared_metrics_loop import record_browser_call
-    from tools.browser_session_cloud import browser_backend_name
+    from hermes_agent.tools.browser_session_cloud import browser_backend_name
     token = _exec_local_engine.set(None)
     try:
         return record_browser_call(lambda: browser_exec(

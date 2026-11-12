@@ -138,9 +138,9 @@ When the model returns tool calls:
 
 ```text
 for each tool_call in response.tool_calls:
-    1. Resolve handler from tools/registry.py
+    1. Resolve handler from hermes_agent/tools/registry.py
     2. Fire pre_tool_call plugin hook
-    3. Check if dangerous command (tools/approval.py)
+    3. Check if dangerous command (hermes_agent/tools/approval.py)
        - If dangerous: invoke approval_callback, wait for user
     4. Execute handler with args + task_id
     5. Fire post_tool_call plugin hook
@@ -232,7 +232,7 @@ After each turn:
 | `agent/context_compressor.py` | Default engine — lossy summarization algorithm |
 | `agent/prompt_caching.py` | Anthropic prompt caching markers and cache metrics |
 | `agent/auxiliary_client.py` | Auxiliary LLM client for side tasks (vision, summarization) |
-| `model_tools.py` | Tool schema collection, `handle_function_call()` dispatch |
+| `hermes_agent/model_tools.py` | Tool schema collection, `handle_function_call()` dispatch |
 
 ## Related Docs
 

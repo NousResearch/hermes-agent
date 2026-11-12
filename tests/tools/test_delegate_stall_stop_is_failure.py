@@ -9,9 +9,9 @@ import threading
 
 from tests.tools.test_async_delegation import _drain_for, _fast_stale_monitor
 from tests.tools.test_delegate_stale_heartbeat_collect import _Child, _fast_watchdog, _parent
-from tools import async_delegation as ad
-from tools import delegate_tool
-from tools.process_registry_notifications import delegation_wakes_parent
+from hermes_agent.tools import async_delegation as ad
+from hermes_agent.tools import delegate_tool
+from hermes_agent.tools.process_registry_notifications import delegation_wakes_parent
 
 _INTERRUPTED = {"final_response": "Operation interrupted.", "interrupted": True, "api_calls": 3,
                 "messages": [{"role": "assistant", "content": "PARTIAL-WORK"}]}
@@ -70,7 +70,7 @@ def test_unit_that_unwinds_on_the_stall_monitors_stop_carries_its_stall_context(
 
 def test_unit_that_finished_as_the_stall_monitor_stopped_it_is_not_called_stuck():
     """A real result that lands in the grace window stays a success: no wake, no stuck-task line."""
-    from tools.process_registry_notifications import format_process_notification
+    from hermes_agent.tools.process_registry_notifications import format_process_notification
     evt = {"type": "async_delegation", "is_batch": True, "delegation_id": "deleg_x", "goals": ["triage"],
            "stalled_after_quiet_seconds": 600.0, "dispatched_at": 1700000000.0, "completed_at": 1700000060.0,
            "results": [{"task_index": 0, "status": "completed", "summary": "REAL-RESULT"}]}

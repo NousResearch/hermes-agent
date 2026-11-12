@@ -2,8 +2,8 @@
 
 Pluggable-backend interface for terminal execution environments (cloud sandboxes, remote
 runners). Providers register via :meth:`PluginContext.register_terminal_environment_provider`;
-:func:`tools.terminal_tool_backends._create_environment` consults the registry for any ``TERMINAL_ENV``
-/ ``terminal.backend`` value that is not a built-in (built-ins stay in ``tools/environments/``;
+:func:`hermes_agent.tools.terminal_tool_backends._create_environment` consults the registry for any ``TERMINAL_ENV``
+/ ``terminal.backend`` value that is not a built-in (built-ins stay in ``hermes_agent/tools/environments/``;
 third-party sandbox vendors do NOT have to live in core). :meth:`create_environment` returns
 any ``BaseEnvironment`` duck type (``execute()``, ``cleanup()`` …); the factory stamps
 ``_hermes_backend_name`` on the result so file-path resolution can identify plugin backends.

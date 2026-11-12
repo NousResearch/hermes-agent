@@ -82,7 +82,7 @@ class TestParseSchedule:
         Regression for the cron contract bug (2026-08-04): parse_schedule
         returned kind='once' for bare durations, so an agent passing '30m'
         for 'every 30 minutes' silently got a one-shot job that ran once and
-        died. The documented tool contract (tools/cronjob_tools.py) says
+        died. The documented tool contract (hermes_agent/tools/cronjob_tools.py) says
         '30m' (every 30 minutes) — the code now honors it.
         """
         result = parse_schedule("30m")

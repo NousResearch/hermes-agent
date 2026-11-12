@@ -14,7 +14,7 @@ environ IS the profile). The reviewer reads each finding against its ``scope_hin
 
 Usage:
     python scripts/check_profile_scope_patterns.py [--base origin/main] [--head HEAD]
-    python scripts/check_profile_scope_patterns.py --files tools/bot_relay.py ...   # whole files
+    python scripts/check_profile_scope_patterns.py --files hermes_agent/tools/bot_relay.py ...   # whole files
     python scripts/check_profile_scope_patterns.py --base origin/main --json out.json
 """
 from __future__ import annotations

@@ -8,7 +8,7 @@ import pytest
 
 @pytest.mark.platforms("windows")
 def test_local_transport_finds_conventional_bash_without_path(monkeypatch, tmp_path):
-    from tools.environments.local import _find_bash
+    from hermes_agent.tools.environments.local import _find_bash
 
     program_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
     conventional = program_files / "Git/bin/bash.exe"

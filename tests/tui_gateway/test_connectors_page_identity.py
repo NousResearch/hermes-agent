@@ -22,7 +22,7 @@ import hermes_agent.tui_gateway.server as srv
 from hermes_cli import free_tier_offer
 from tests.hermes_cli.anon_portal import install_portal
 from tests.waiting import wait_until
-from tools.connectors import live
+from hermes_agent.tools.connectors import live
 
 ACCOUNT = {"owner": {"type": "account"}}
 CATALOG = {"connectors": [{"slug": "notion", "name": "Notion", "description": "Docs", "category": "Productivity",
@@ -56,7 +56,7 @@ def connector_portal(monkeypatch):
             requests.append((path, "Authorization" in (headers or {})))
             return _Response({"accounts": []} if path.endswith("/accounts") else CATALOG)
 
-    monkeypatch.setattr("tools.connectors.portal.client._default_transport", Transport)
+    monkeypatch.setattr("hermes_agent.tools.connectors.portal.client._default_transport", Transport)
     return requests
 
 
@@ -80,7 +80,7 @@ def gateway(monkeypatch):
         def connections(self, names, **_):
             return {"results": [{"connector": name, "status": "active", "connection_id": "c1"} for name in names]}
 
-    monkeypatch.setattr("tools.connectors.gateway.client.ConnectorClient", Gateway)
+    monkeypatch.setattr("hermes_agent.tools.connectors.gateway.client.ConnectorClient", Gateway)
     return lists
 
 
@@ -107,8 +107,8 @@ def test_opening_the_page_creates_no_identity_and_reads_the_public_catalog(porta
 @pytest.mark.parametrize("entry", ["cli", "agent"])
 def test_explicit_lists_still_create_one_identity_and_list_from_the_gateway(portal, gateway, entry):
     from hermes_cli.connectors_cmd import cmd_connectors
-    from tools.connectors.gateway.config import connectors_available
-    from tools.connectors.tool import manage_connections
+    from hermes_agent.tools.connectors.gateway.config import connectors_available
+    from hermes_agent.tools.connectors.tool import manage_connections
 
     if entry == "cli":
         assert cmd_connectors(Namespace(connectors_action="list")) == 0
@@ -138,8 +138,8 @@ def test_first_connect_creates_one_identity_then_the_page_reads_signed_in(
 
 def test_a_connect_by_link_seen_by_a_status_read_arms_the_connector_offer(portal, gateway, monkeypatch):
     """Messaging and one-shot runs connect by link and check with status; no operation watcher runs."""
-    from tools.connectors.gateway.config import connectors_available
-    from tools.connectors.tool import manage_connections
+    from hermes_agent.tools.connectors.gateway.config import connectors_available
+    from hermes_agent.tools.connectors.tool import manage_connections
 
     monkeypatch.setattr(free_tier_offer, "_clock", lambda: 1_000_000.0)
     gateway.connected = True
@@ -154,7 +154,7 @@ def test_a_connect_by_link_seen_by_a_status_read_arms_the_connector_offer(portal
 def test_the_page_list_arms_the_offer_for_apps_a_guest_connected_on_an_older_hermes(portal, gateway, monkeypatch):
     """The guest exists without the connected-app flag (an older Hermes connected its apps); the
     first page read that lists one connected must still arm the connector offer."""
-    from tools.connectors import ensure_guest_identity
+    from hermes_agent.tools.connectors import ensure_guest_identity
 
     monkeypatch.setattr(free_tier_offer, "_clock", lambda: 1_000_000.0)
     assert ensure_guest_identity() is None
@@ -169,7 +169,7 @@ def test_the_page_list_arms_the_offer_for_apps_a_guest_connected_on_an_older_her
 def test_a_failed_offer_write_is_retried_on_the_next_sighting(portal, gateway, monkeypatch):
     """The flag that ends the sightings is written only once the offer's schedule is, so a failed
     schedule write leaves the next list read to try again."""
-    from tools.connectors import ensure_guest_identity
+    from hermes_agent.tools.connectors import ensure_guest_identity
 
     monkeypatch.setattr(free_tier_offer, "_clock", lambda: 1_000_000.0)
     assert ensure_guest_identity() is None

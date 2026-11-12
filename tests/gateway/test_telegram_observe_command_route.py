@@ -27,7 +27,7 @@ def _reset_contextvars():
 
 
 def test_observed_group_queue_command_wake_returns_to_the_shared_session():
-    from tools.kanban_tools import _resolve_notify_target
+    from hermes_agent.tools.kanban_tools import _resolve_notify_target
 
     adapter = _make_adapter(require_mention=True, allowed_chats=["-100"], group_allowed_chats=["-100"],
                             observe_unmentioned_group_messages=True)

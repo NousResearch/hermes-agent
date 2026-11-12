@@ -13,7 +13,7 @@ Direction from #85922 (@Soju06): read quote state from the raw command (only quo
 """
 import pytest
 
-from tools.approval_detection import detect_dangerous_command, detect_hardline_command
+from hermes_agent.tools.approval_detection import detect_dangerous_command, detect_hardline_command
 
 
 @pytest.mark.parametrize("command", [

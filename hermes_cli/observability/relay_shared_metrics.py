@@ -1458,7 +1458,7 @@ def _with_runtime_toolset(event: dict[str, Any]) -> dict[str, Any]:
     if event.get("toolset") or not tool_name:
         return event
     try:
-        from model_tools import get_toolset_for_tool
+        from hermes_agent.model_tools import get_toolset_for_tool
 
         toolset = get_toolset_for_tool(tool_name)
     except Exception:

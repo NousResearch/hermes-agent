@@ -8,9 +8,9 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List
 
-from tools.skills_tool_setup import SkillReadinessStatus
+from hermes_agent.tools.skills_tool_setup import SkillReadinessStatus
 
-logger = logging.getLogger("tools.skills_tool")
+logger = logging.getLogger("hermes_agent.tools.skills_tool")
 
 MAX_NAME_LENGTH = 64  # Anthropic-recommended progressive-disclosure limits
 MAX_DESCRIPTION_LENGTH = 1024
@@ -44,8 +44,8 @@ def _truncate_description(description: str) -> str:
 
 def _safe_frontmatter(path: Path | None = None, *, content: str | None = None) -> dict[str, Any]:
     """Frontmatter of *path* (or of *content*), ``{}`` on any read/parse failure.
-    Parses via ``tools.skills_tool._parse_frontmatter`` so test patches are honored."""
-    from tools import skills_tool as _st
+    Parses via ``hermes_agent.tools.skills_tool._parse_frontmatter`` so test patches are honored."""
+    from hermes_agent.tools import skills_tool as _st
     with suppress(Exception):
         return _st._parse_frontmatter(_read_skill_text(path) if content is None else content)[0]
     return {}
@@ -72,7 +72,7 @@ def _serve_skill_file(
     decorates traversal/containment errors; ``list_available`` adds the available-files listing
     on not-found (local); ``read_error_prefix`` wraps non-decode read errors (plugin) instead
     of propagating to the caller's handler."""
-    from tools.path_security import has_traversal_component, validate_within_dir
+    from hermes_agent.tools.path_security import has_traversal_component, validate_within_dir
     extra = {"hint": hint} if hint else {}
     if has_traversal_component(file_path):
         return _fail("Path traversal ('..') is not allowed.", **extra)
@@ -104,7 +104,7 @@ def _serve_skill_file(
 
 def _mark_background_review_read(path: Path) -> None:
     try:
-        from tools.skill_manager_guards import mark_background_review_skill_read
+        from hermes_agent.tools.skill_manager_guards import mark_background_review_skill_read
         mark_background_review_skill_read(path)
     except Exception:
         logger.debug("Could not record background-review skill read for %s", path, exc_info=True)
@@ -126,7 +126,7 @@ def _serve_plugin_skill(
     """Read a plugin-provided skill, apply guards, return JSON."""
     from hermes_cli.plugins import _get_disabled_plugins, get_plugin_manager
     from hermes_cli.plugins_content import plugin_skill_owners
-    from tools import skills_tool as _st
+    from hermes_agent.tools import skills_tool as _st
     qualified_name = f"{namespace}:{bare}"
     if disabled := sorted(plugin_skill_owners(get_plugin_manager(), qualified_name) & _get_disabled_plugins()):
         return _fail(f"Plugin '{disabled[0]}' is disabled. Re-enable with: hermes plugins enable {disabled[0]}")
@@ -163,7 +163,7 @@ def _serve_plugin_skill(
 
 
 def _plugin_skill_linked_files(skill_root: Path) -> dict[str, list[str]] | None:
-    from tools.path_security import validate_within_dir
+    from hermes_agent.tools.path_security import validate_within_dir
     linked: dict[str, list[str]] = {}
     for category in _SUPPORT_DIRS:
         files = [

@@ -4,7 +4,7 @@ One ``HERMES_HOME`` can be shared by a container gateway and a host CLI: a recor
 written in another PID namespace (or before a reboot), or one that does not say where it was written, names a
 pid that may be dead HERE while its process lives THERE. It is never judged dead: never reaped, deleted,
 dropped or handed over. Same-namespace state of a process that is gone is still cleaned up
-(``tools/browser_launcher.py``, ``tools/browser_launcher_holders.py``).
+(``hermes_agent/tools/browser_launcher.py``, ``hermes_agent/tools/browser_launcher_holders.py``).
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ import pytest
 
 from tests.tools.browser_launcher_fakes import kill_fake, write_fake_chromium
 from tests.waiting import wait_until
-from tools import browser_launcher as launcher
+from hermes_agent.tools import browser_launcher as launcher
 
 pytestmark = pytest.mark.platforms("linux")
 

@@ -2,7 +2,7 @@
 
 Drives the service through ``snapshot_baseline`` →
 ``get_diagnostics_sync`` against the mock LSP server, exercising the
-delta filter that ``tools/file_operations._check_lint_delta`` relies
+delta filter that ``hermes_agent/tools/file_operations._check_lint_delta`` relies
 on.
 """
 from __future__ import annotations

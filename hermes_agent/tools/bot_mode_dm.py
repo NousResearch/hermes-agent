@@ -6,7 +6,7 @@ target is validated against the live roster, the attribution prefix is applied
 server-side, and the reply arrives later via the background-process completion
 notification (fire-and-forget). Containment: the schema is injected ONLY into a
 bot's canonical "Bot Chat" session on a Bot-Mode-managed install (same gate as
-``tools/bot_mode_probe.py``; never in the registry or any toolset), and dispatch
+``hermes_agent/tools/bot_mode_probe.py``; never in the registry or any toolset), and dispatch
 re-checks that gate so a forged call returns a structured error. Transports:
 local → ``hermes -p <name> chat --in ~ -c "Bot Chat" --create-if-missing -Q
 --query-file <tmp>``; peer → ``hermes peer dm <peer>[/<name>] < <tmp>``; both via
@@ -56,7 +56,7 @@ _LIVE_WAIT_MAX_SECONDS = 30 * 60
 
 # '<peer>/<agent>' — peer names are lowercase (``hermes peer`` normalizes them).
 _PEER_TARGET_RE = re.compile(r"^([a-z0-9][a-z0-9_-]{0,63})/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$")
-# Same shape as ``tools.bot_relay._HANDLE_RE`` (kept local: see import note above).
+# Same shape as ``hermes_agent.tools.bot_relay._HANDLE_RE`` (kept local: see import note above).
 _LOCAL_TARGET_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 # Fan-out bound: one combined runner holds one sub-runner per target.
 FAN_OUT_MAX = 8
@@ -131,7 +131,7 @@ def message_agent_authorized(agent: Any) -> bool:
     try:
         if not getattr(agent, "_bot_mode_protocol", True):
             return False
-        from tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
+        from hermes_agent.tools.bot_mode_probe import BOT_CHAT_TITLE, is_bot_mode_managed
 
         # Managed-install check, NOT section non-emptiness: a SOUL.md carrying the
         # legacy protocol text gets an empty section but must still get the tool.
@@ -180,13 +180,13 @@ def _resolve_local_name(target: str, roster: list[str], root: Path | None = None
     want = target.strip().lower()
     if not want:
         return None
-    from tools.bot_mode_probe import _profile_for_handle
+    from hermes_agent.tools.bot_mode_probe import _profile_for_handle
 
     want = _profile_for_handle(want, roster)
     exact = next((name for name in roster if name.lower() == want), None)
     if exact is not None or root is None:
         return exact
-    from tools.bot_mode_probe import alias_forms, local_alias_map
+    from hermes_agent.tools.bot_mode_probe import alias_forms, local_alias_map
 
     aliases = local_alias_map(root)
     hits = set().union(*(aliases.get(form, set()) for form in alias_forms(want) | {want}))
@@ -194,7 +194,7 @@ def _resolve_local_name(target: str, roster: list[str], root: Path | None = None
 
 
 def _err(message: str, *, roster: list[str] | None = None, peers: list[str] | None = None) -> str:
-    from tools.bot_failure_reasons import classify_agent_error
+    from hermes_agent.tools.bot_failure_reasons import classify_agent_error
 
     payload: dict[str, Any] = {"error": message, "reason": classify_agent_error(message)}
     if roster is not None:
@@ -216,7 +216,7 @@ class Sender:
     teammates: list
     task_id: Optional[str]
     agent: Any
-    # The chain gate's author-envelope fields for this call (``tools/bot_mode_dm_chain.py``).
+    # The chain gate's author-envelope fields for this call (``hermes_agent/tools/bot_mode_dm_chain.py``).
     chain: dict = field(default_factory=dict)
 
     def roster_err(self, msg: str) -> str:
@@ -243,7 +243,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     ``agent`` is the calling AIAgent — used for the Bot Chat gate and sender identity."""
     home = _agent_home(agent)
     try:
-        from tools.bot_mode_probe import (
+        from hermes_agent.tools.bot_mode_probe import (
             BOT_CHAT_TITLE, NO_REPLY_MARKER, _display_name, _handle, _hermes_root, _peers,
             _profile_name as _self_profile_name, _roster, is_bot_mode_managed,
         )
@@ -265,7 +265,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     sender = Sender(home=home, root=root, me=me, roster_homes=roster_homes, peers=peers,
                     teammates=[_handle(n, list(roster_homes)) for n in roster_homes if n != me], task_id=task_id, agent=agent)
     if str(cancel or "").strip():
-        from tools.bot_mode_dm_coordination import cancel_own_delivery
+        from hermes_agent.tools.bot_mode_dm_coordination import cancel_own_delivery
 
         return cancel_own_delivery(str(cancel).strip(), str(target or ""), sender)
 
@@ -276,7 +276,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
         return _err(f"message too long ({len(body)} chars > {MESSAGE_MAX_CHARS}). "
                     "Send the essentials; share large content as a file path instead.")
 
-    from tools.bot_mode_dm_coordination import split_targets
+    from hermes_agent.tools.bot_mode_dm_coordination import split_targets
 
     targets = split_targets(target, sender)
     if not targets:
@@ -286,7 +286,7 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
     reply = _wants_reply(expects_reply)
     # Sender signature: the friendly name when the bot has one (#89720); the @handle stays the routing alias.
     signature = f"Message from 🤖 {_display_name(me, roster_homes.get(me, Path(home)), list(roster_homes))} (@{_handle(me, list(roster_homes))}): "
-    from tools.bot_mode_dm_chain import send_gated
+    from hermes_agent.tools.bot_mode_dm_chain import send_gated
 
     # The runtime's chain rules run before any transport (hop cap, repeated ask, reply to a bot: #137027).
     return send_gated(targets, reply, body, lambda wants: signature + ("" if wants else f"{NO_REPLY_MARKER} ") + body,
@@ -297,8 +297,8 @@ def _dispatch(raw_target: str, content: str, sender: Sender, *, wake: Any) -> st
     """Resolve one target and hand ``content`` to its transport. ``wake`` is how the reply comes
     back: ``"notify"`` (a tracked runner whose completion wakes the sender), ``"none"`` (notify-only:
     nothing waits), or a list collecting the runner commands one fan-out runner joins."""
-    from tools.bot_mode_probe import _handle, _profile_name as _self_profile_name
-    from tools.bot_relay import _hermes_cli
+    from hermes_agent.tools.bot_mode_probe import _handle, _profile_name as _self_profile_name
+    from hermes_agent.tools.bot_relay import _hermes_cli
 
     root, me, roster_homes, peers = sender.root, sender.me, sender.roster_homes, sender.peers
     roster = list(roster_homes)
@@ -371,8 +371,8 @@ def _try_relay_delivery(root: Path, raw_target: str, content: str, me: str, *,
     to drain; a background waiter is spawned immediately so the relayed reply wakes
     the sender through the standard completion-notification path."""
     try:
-        from tools.bot_mode_probe import _handle, _hermes_root, _roster, local_taken_forms
-        from tools.bot_relay import (
+        from hermes_agent.tools.bot_mode_probe import _handle, _hermes_root, _roster, local_taken_forms
+        from hermes_agent.tools.bot_relay import (
             EnvelopeRefusedError, _target_aliases, enqueue_envelope, read_remote_roster, remote_target_forms,
             resolve_remote_target, waiter_command,
         )
@@ -506,7 +506,7 @@ class LiveTargetHeldError(LiveTargetUnavailableError):
 
     @property
     def reason(self) -> str:
-        from tools.bot_failure_reasons import HELD_NOT_SENT
+        from hermes_agent.tools.bot_failure_reasons import HELD_NOT_SENT
         return HELD_NOT_SENT
 
 
@@ -532,13 +532,13 @@ def _settled_no_send(dm_file: str, exc: LiveTargetUnavailableError) -> str:
 def _held_disposition(record: dict | None) -> bool:
     """The owner's terminal not-sent receipt for a delivery refused while another writer held the
     chat (``hermes_agent/gateway/session_bot.py:_not_sent_record``)."""
-    from tools.bot_failure_reasons import HELD_NOT_SENT
+    from hermes_agent.tools.bot_failure_reasons import HELD_NOT_SENT
     return bool(record) and record.get("refused") is True and record.get("reason") == HELD_NOT_SENT
 
 
 def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dict] = None) -> dict | None:
     """Pin intent before admission; retries may inspect, never change transport."""
-    from tools.bot_live_delivery import (PreDialError, deliver_to_live_owner, find_canonical_live_owner,
+    from hermes_agent.tools.bot_live_delivery import (PreDialError, deliver_to_live_owner, find_canonical_live_owner,
                                          read_delivery_result)
     from utils import fsync_directory
 
@@ -574,8 +574,8 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
     record = read_delivery_result(home, intent["delivery_id"])
     if record is None or intent["owner"].get("canonical"):
         from hermes_cli.gateway_client import GatewayRPCError
-        from tools.bot_failure_reasons import HELD_NOT_SENT
-        from tools.bot_live_delivery import settle_held_delivery
+        from hermes_agent.tools.bot_failure_reasons import HELD_NOT_SENT
+        from hermes_agent.tools.bot_live_delivery import settle_held_delivery
 
         identity = dict(delivery_id=intent["delivery_id"], author=intent.get("author"))
         try:
@@ -600,8 +600,8 @@ def _admit_live_dm(profile_home: Path | None, dm_file: str, author: Optional[dic
 
 
 def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | None = None) -> int:
-    from tools.bot_failure_reasons import RUNTIME_OFFLINE
-    from tools.bot_live_delivery import await_delivery, cancel_queued_delivery, owner_holds_delivery
+    from hermes_agent.tools.bot_failure_reasons import RUNTIME_OFFLINE
+    from hermes_agent.tools.bot_live_delivery import await_delivery, cancel_queued_delivery, owner_holds_delivery
 
     deadline = time.monotonic() + _LIVE_WAIT_MAX_SECONDS
     missed, unreachable = 0, False
@@ -648,7 +648,7 @@ def _wait_live_dm(home: str, delivery_id: str, *, dm_file: str | os.PathLike | N
         # plaintext) — the live branch returns before _run_delivery's own unlink.
         _unlink_dm_file(_live_intent_file(dm_file))
         _unlink_dm_file(str(dm_file))
-    from tools.bot_mode_dm_outcome import outcome_line
+    from hermes_agent.tools.bot_mode_dm_outcome import outcome_line
 
     who = f"@{Path(home).name}" if Path(home).parent.name == "profiles" else "Your teammate"
     print(json.dumps({"outcome": outcome_line(who, payload), **payload}))
@@ -672,7 +672,7 @@ def _local_delivery_home(argv: list[str]) -> Path | None:
     cli = (argv[0] if argv else "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
     if len(argv) < 3 or cli not in ("hermes", "hermes.exe") or argv[1] != "-p":
         return None
-    from tools.bot_mode_probe import _hermes_root, _roster
+    from hermes_agent.tools.bot_mode_probe import _hermes_root, _roster
 
     return dict(_roster(_hermes_root(Path(_default_home())))).get(argv[2])
 
@@ -728,7 +728,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         print(json.dumps({"reason": "runtime_unavailable", "error": "No canonical Bot Chat authority; payload retained."}))
         return 1
     try:
-        from tools.bot_relay import delivery_env
+        from hermes_agent.tools.bot_relay import delivery_env
 
         env = delivery_env(author, profile_home if not stdin_file else None)
         # Keep the file open until the transport exits; cleanup occurs
@@ -830,7 +830,7 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
                     completion_chars: int = REPLY_COMPLETION_CHARS) -> str:
     """Launch the cleanup-owning runner and transfer file ownership on ack. ``dm_file``
     is None for relay deliveries (the waiter watches a reply file; envelope artifacts
-    are owned/swept by ``tools/bot_relay.py``), which pass the envelope id as ``delivery_id``
+    are owned/swept by ``hermes_agent/tools/bot_relay.py``), which pass the envelope id as ``delivery_id``
     instead. The ack is ``queued`` + ``delivery_id`` like the live-owner branch: hand-off
     to a background process, never a delivery receipt. A list ``wake`` collects the runner for
     one fan-out process to join (it owns ``dm_file`` from here); ``"none"`` runs it unwatched."""
@@ -840,7 +840,7 @@ def _spawn_delivery(command: str, label: str, *, dm_file: Optional[str] = None, 
         return json.dumps({"status": "queued", "delivery_id": delivery_id, "to": label})
     transferred = False
     try:
-        from tools.terminal_tool import terminal_tool
+        from hermes_agent.tools.terminal_tool import terminal_tool
 
         from hermes_cli._startup_fast import project_root_str
         raw = terminal_tool(command, background=True, notify_on_complete=wake != "none", task_id=task_id,
@@ -910,7 +910,7 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
     completion; mirrors hermes_agent.gateway.wake.persist_delegation_delivery). A sender that already read
     the outcome via process(action='wait'/'log') is not told twice. Returns False (nothing
     armed) when the sender has no session transcript or the process is not tracked here."""
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
 
     db, session_id = getattr(agent, "_session_db", None), getattr(agent, "session_id", None)
     proc = process_registry.get(proc_id)
@@ -918,7 +918,7 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
         return False
 
     def _run() -> None:
-        from tools.process_registry_notifications import (
+        from hermes_agent.tools.process_registry_notifications import (
             format_process_notification, process_completion_display_text,
         )
 
@@ -939,7 +939,7 @@ def _persist_reply_when_done(proc_id: str, agent: Any) -> bool:
 
 
 def _wait_reply_main(reply_path: str, label: str, budget_seconds: str) -> int:
-    """The relay reply waiter (``tools/bot_relay.waiter_command``): block until the sender-side
+    """The relay reply waiter (``hermes_agent/tools/bot_relay.waiter_command``): block until the sender-side
     reply file exists, print it as the completion notification the sender wakes on, exit 1 on a
     delivery error or when the budget runs out. Stdlib only: this runs as a background process
     from any bot turn, and the sender's completion notification is exactly its stdout."""
@@ -974,7 +974,7 @@ def _delivery_main(args: list[str]) -> int:
     if args[:1] == ["--wait-reply"]:
         return _wait_reply_main(*args[1:]) if len(args) == 4 else 2
     if args[:1] == ["--fan-out"]:
-        from tools.bot_mode_dm_coordination import run_fan_out
+        from hermes_agent.tools.bot_mode_dm_coordination import run_fan_out
 
         return run_fan_out(args[1]) if len(args) == 2 else 2
     parsed = _runner_argv(args)
@@ -997,7 +997,7 @@ def _delivery_main(args: list[str]) -> int:
         # Every refusal ships a typed reason on stdout so the completion notification carries it
         # back to the sender (#93091), with the same vocabulary-guarded classification the relay
         # lane applies.
-        from tools.bot_failure_reasons import delivery_failure_reason
+        from hermes_agent.tools.bot_failure_reasons import delivery_failure_reason
 
         print(json.dumps({"error": str(exc), "reason": delivery_failure_reason(exc)}))
         return 1

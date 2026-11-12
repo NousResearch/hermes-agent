@@ -31,7 +31,7 @@ def managed_node(tmp_path, monkeypatch):
     """Hermes's PM-installed node/npm, as PM would report them."""
     store = tmp_path / "tools"
     node, npm = store / "node-26.7.0-linux-x64" / "bin" / "node", store / "npm-12.0.2-linux-x64" / "bin" / "npm"
-    from tools import mcp_tool_node_abi
+    from hermes_agent.tools import mcp_tool_node_abi
     monkeypatch.setattr(mcp_tool_node_abi, "_managed",
                         lambda name: {"node": (node, "26.7.0"), "npm": (npm, "12.0.2")}[name])
     return node, npm
@@ -65,7 +65,7 @@ def test_stdio_server_dying_on_a_node_abi_mismatch_names_the_rebuild_under_herme
 def test_the_remedy_never_points_the_server_at_another_node(managed_node):
     """A module outside an npx cache gets the rebuild alone, still with Hermes's npm under Hermes's node,
     and nothing suggests pinning ``command:`` to the user's Node."""
-    from tools.mcp_tool_node_abi import node_abi_error
+    from hermes_agent.tools.mcp_tool_node_abi import node_abi_error
 
     node, npm = managed_node
     pkg_root = Path("/usr/lib/node_modules/@acme/mcp-server")

@@ -22,10 +22,10 @@ def housekeeping_media_caches() -> None:
     from hermes_agent.gateway.platforms.base import (
         cleanup_audio_cache, cleanup_document_cache, cleanup_image_cache, cleanup_screenshot_cache,
         cleanup_video_cache)
-    from tools.tool_result_storage import cleanup_spillover_cache
-    from tools.environments.local import cleanup_terminal_temp_cache
-    from tools.bot_mode_dm import cleanup_bot_dm_cache
-    from tools.bot_relay import cleanup_bot_relay_artifacts
+    from hermes_agent.tools.tool_result_storage import cleanup_spillover_cache
+    from hermes_agent.tools.environments.local import cleanup_terminal_temp_cache
+    from hermes_agent.tools.bot_mode_dm import cleanup_bot_dm_cache
+    from hermes_agent.tools.bot_relay import cleanup_bot_relay_artifacts
     from agent.provider_media import MEDIA_CACHE_MAX_AGE_HOURS
     from hermes_agent.gateway.run import _housekeeping_chore
 

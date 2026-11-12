@@ -1,5 +1,5 @@
 """Connector refusals both connector handlers send: the legacy one (``methods_connectors``) and the session authority's (``hermes_agent/gateway/session_connections``). Each entry is ``(code, ConnectorErrorReason, message)``."""
-from tools.connectors.run import LINK_STILL_VALID, MIXED_KINDS, NOT_ALLOWED, REFUSED, SETTLED, UNKNOWN_TARGET
+from hermes_agent.tools.connectors.run import LINK_STILL_VALID, MIXED_KINDS, NOT_ALLOWED, REFUSED, SETTLED, UNKNOWN_TARGET
 
 from hermes_agent.tui_gateway.contracts.connectors import ConnectorErrorReason as Reason
 

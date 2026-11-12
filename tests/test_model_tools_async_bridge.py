@@ -47,7 +47,7 @@ async def _create_and_return_transport():
 class TestRunAsyncLoopLifecycle:
     def test_cached_transport_survives_between_calls(self):
         """A transport/future created in call 1 must be valid in call 2."""
-        from model_tools import _run_async
+        from hermes_agent.model_tools import _run_async
 
         loop, fut = _run_async(_create_and_return_transport())
 
@@ -61,7 +61,7 @@ class TestRunAsyncLoopLifecycle:
 
 def test_concurrent_workers_reuse_distinct_loops():
     from concurrent.futures import ThreadPoolExecutor
-    from model_tools import _run_async
+    from hermes_agent.model_tools import _run_async
 
     main = _run_async(_get_current_loop())
     barrier = threading.Barrier(3, timeout=10)
@@ -87,7 +87,7 @@ class TestRunAsyncWithRunningLoop:
     async def test_run_async_from_async_context(self):
         """_run_async should still work when called from inside an
         already-running event loop (gateway / Atropos path)."""
-        from model_tools import _run_async
+        from hermes_agent.model_tools import _run_async
 
         async def _simple():
             return 42
@@ -108,7 +108,7 @@ class TestRunAsyncWithRunningLoop:
         caller returns).
         """
         import concurrent.futures
-        from model_tools import _run_async
+        from hermes_agent.model_tools import _run_async
 
         events = {
             "result_timeout": None,
@@ -183,7 +183,7 @@ class TestRunAsyncWithRunningLoop:
         future is a no-op, so the worker thread kept running the coroutine
         to completion (leaking one thread per tool-timeout).
         """
-        from model_tools import _run_async
+        from hermes_agent.model_tools import _run_async
 
         # Shrink the 300s internal timeout by patching future.result.
         # We do this surgically: let everything else run for real so the
@@ -252,14 +252,14 @@ class TestVisionDispatchLoopSafety:
         import base64
         import io
         from PIL import Image
-        from model_tools import _get_tool_loop
-        from tools.registry import registry
+        from hermes_agent.model_tools import _get_tool_loop
+        from hermes_agent.tools.registry import registry
 
         image = io.BytesIO()
         Image.new("RGB", (8, 8), "blue").save(image, format="PNG")
         args = {"image_url": "data:image/png;base64," + base64.b64encode(image.getvalue()).decode(),
                 "question": "Describe"}
-        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock,
+        with patch("hermes_agent.tools.vision_tools.async_call_llm", new_callable=AsyncMock,
                    return_value=_mock_vision_response()):
             first = json.loads(registry.dispatch("vision_analyze", args))
             loop = _get_tool_loop()

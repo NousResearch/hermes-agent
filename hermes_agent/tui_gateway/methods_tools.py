@@ -230,7 +230,7 @@ def _session_toolsets(session) -> tuple:
 
 
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
-    toolsets = _tools_mod("toolsets")
+    toolsets = _tools_mod("hermes_agent.toolsets")
     session = _sessions.get(params.get("session_id", ""))
     enabled = set(_session_toolsets(session)[0] or [])
     items = []
@@ -262,7 +262,7 @@ def _(rid, params: dict) -> dict:
 # One-expression handlers: name → (fail_code, payload builder(params)).
 _SIMPLE_RPCS = {
     # Session-scoped view of the background process registry (desktop status stack).
-    "process.stop": (5010, lambda params: {"killed": _tools_mod("tools.process_registry").process_registry.kill_all(source="process.stop")}),
+    "process.stop": (5010, lambda params: {"killed": _tools_mod("hermes_agent.tools.process_registry").process_registry.kill_all(source="process.stop")}),
     # Re-read ``~/.hermes/.env`` (CLI ``/reload`` parity); built agents keep their pool, ``/new`` resolves fresh.
     "reload.env": (5015, lambda params: {"updated": int(_tools_mod("hermes_cli.config").reload_env())}),
     "plugins.list": (5032, lambda params: {"plugins": [
@@ -272,7 +272,7 @@ _SIMPLE_RPCS = {
     "toolsets.list": (5032, lambda params: {"toolsets": _toolset_rows(params, with_tools=False)}),
     "agents.list": (5033, lambda params: {"processes": [
         {"session_id": p["session_id"], "command": p["command"][:80], "status": p["status"], "uptime": p["uptime_seconds"]}
-        for p in _tools_mod("tools.process_registry").process_registry.list_sessions()]}),
+        for p in _tools_mod("hermes_agent.tools.process_registry").process_registry.list_sessions()]}),
 }
 for _name, (_code, _build) in _SIMPLE_RPCS.items():
     # Look the builder up at call time: bind_module rebinds the table's lambdas onto server globals.
@@ -288,7 +288,7 @@ def _(rid, params: dict, session) -> dict:
     proc_id = str(params.get("process_id") or "")
     if not proc_id:
         return _err(rid, 4012, "process_id required")
-    registry = _tools_mod("tools.process_registry").process_registry
+    registry = _tools_mod("hermes_agent.tools.process_registry").process_registry
     proc = registry.get(proc_id)
     if proc is None or str(getattr(proc, "session_key", "") or "") != str(session.get("session_key") or ""):
         return _err(rid, 4044, f"no such process: {proc_id}")
@@ -324,7 +324,7 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False,
     with _sessions_lock:
         live = [(sid, sess) for sid, sess in _sessions.items() if sess.get("agent") is not None and (
             want is None or hermes_home_key(sess.get("profile_home") or get_process_hermes_home()) == want)]
-    refresh = _tools_mod("tools.mcp_tool_agent").refresh_agent_mcp_tools
+    refresh = _tools_mod("hermes_agent.tools.mcp_tool_agent").refresh_agent_mcp_tools
     for sid, sess in live:
         agent = sess["agent"]
         try:
@@ -367,7 +367,7 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 5019, f"compute-host reload_mcp failed: {exc}")
         return _ok(rid, {"status": "reloaded", "turn_isolation": True, "host_ack": ack})
     _mcp_agent, _mcp_lifecycle, _mcp_discovery = (
-        _tools_mod("tools.mcp_tool_agent"), _tools_mod("tools.mcp_tool_lifecycle"), _tools_mod("tools.mcp_tool_discovery"))
+        _tools_mod("hermes_agent.tools.mcp_tool_agent"), _tools_mod("hermes_agent.tools.mcp_tool_lifecycle"), _tools_mod("hermes_agent.tools.mcp_tool_discovery"))
     global _mcp_reload_gen, _mcp_reload_loaded_rev
     # Revision the CALLER wants loaded; empty on legacy clients / manual /reload-mcp
     # (generation-only coalescing).
@@ -480,7 +480,7 @@ def _dispatch_quick(rid, params, session, name, arg):
         return None
     if qc.get("type") == "exec":
         # Sanitized env: the TUI server process holds every API key in os.environ.
-        env = _tools_mod("tools.environments.local").build_subprocess_env()
+        env = _tools_mod("hermes_agent.tools.environments.local").build_subprocess_env()
         r = subprocess.run(qc.get("command", ""), shell=True, env=env, **_capture_run_kwargs(30))
         output = _joined_output(r)[:4000]
         output = _tools_mod("agent.redact").redact_sensitive_text(output) if output else output
@@ -686,7 +686,7 @@ def _cmd_init(rid, params, session, name, arg):
     backend from the home directory, so a process-cwd fallback scans and updates the HOME's
     AGENTS.md instead of the workspace attached to the session."""
     from hermes_cli.init_command import build_init_prompt_for_cwd
-    from tools.terminal_tool import get_session_cwd
+    from hermes_agent.tools.terminal_tool import get_session_cwd
 
     skey = session.get("session_key") if session else None
     cwd = None
@@ -951,7 +951,7 @@ def _pending_subcommand_store(session):
             if store is not None:
                 return store
     with contextlib.suppress(Exception):
-        return _tools_mod("tools.memory_tool").load_on_disk_store()
+        return _tools_mod("hermes_agent.tools.memory_tool").load_on_disk_store()
     return None
 
 
@@ -963,7 +963,7 @@ def _write_approval_mode_setter(subsystem: str):
 
 def _run_pending_review(rid, subsystem: str, arg: str, session, *, unknown: str):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
-    from tools import write_approval as wa
+    from hermes_agent.tools import write_approval as wa
     out = handle_pending_subcommand(
         subsystem, (arg or "").split(),
         memory_store=_pending_subcommand_store(session) if subsystem == wa.MEMORY else None,
@@ -988,7 +988,7 @@ def _cmd_skills(rid, params, session, name, arg):
     allowed = getattr(commands.resolve_command("skills"), "desktop_subcommands", None) or ()
     if not sub or sub[0].lower() not in allowed:
         return None
-    from tools import write_approval as wa
+    from hermes_agent.tools import write_approval as wa
     # The gate being off must not strand writes that are already staged (gateway parity): still
     # answer when a pile exists, and point at the toggle when there is nothing to review.
     if (sub[0].lower() not in {"approval", "mode"} and not wa.write_approval_enabled(wa.SKILLS)
@@ -1153,7 +1153,7 @@ def _(rid, params: dict, session) -> dict:
             return {"success": False, "error": reason}
         # A whole-tree restore keeps the user's hand-edits unless ``all`` (main's --all), as on the owner.
         commit = _resolve_checkpoint_hash(mgr, cwd, target)
-        taken = _tools_mod("tools.checkpoint_undo_hint").checkpoint_taken_at(cwd, commit)
+        taken = _tools_mod("hermes_agent.tools.checkpoint_undo_hint").checkpoint_taken_at(cwd, commit)
         result = mgr.restore(cwd, commit, file_path=file_path or None,
                              safe=not file_path and params.get("all") is not True)
         if result.get("success") and not file_path:
@@ -1161,7 +1161,7 @@ def _(rid, params: dict, session) -> dict:
             with session["history_lock"]:
                 history, user_indices = _user_turn_indices(session)
                 # Not a turn /undo kept: only one that made or followed this checkpoint.
-                if _tools_mod("tools.checkpoint_undo_hint").rollback_rewinds_newest_turn(history, user_indices, taken):
+                if _tools_mod("hermes_agent.tools.checkpoint_undo_hint").rollback_rewinds_newest_turn(history, user_indices, taken):
                     try:
                         removed = _rewind_active_session_history(session, len(user_indices) - 1)[2]
                     except Exception as exc:
@@ -1241,7 +1241,7 @@ def _(rid, params: dict) -> dict:
 # ─── Tools / toolsets / agents ───────────────────────────────────────────────
 @_rpc("tools.show", 5034)
 def _(rid, params: dict) -> dict:
-    mt = _tools_mod("model_tools")
+    mt = _tools_mod("hermes_agent.model_tools")
     session = _sessions.get(params.get("session_id", ""))
     enabled, disabled = _session_toolsets(session)
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
@@ -1311,7 +1311,7 @@ def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
 @_scoped_rpc("cron.manage", 5023)
 def _(rid, params: dict) -> dict:
     """cronjob() keys off HERMES_HOME, so ``profile`` reaches a per-profile cron store."""
-    cronjob = _tools_mod("tools.cronjob_tools").cronjob
+    cronjob = _tools_mod("hermes_agent.tools.cronjob_tools").cronjob
     action, jid = params.get("action", "list"), params.get("name", "")
     if action == "list":
         # Paused jobs are excluded by default (reads as deletion in a toggle UI) — forward the flag.
@@ -1367,7 +1367,7 @@ del _name, _fn, _keys
 
 
 def _skills_search(rid, params, query):
-    search, gh = _tools_mod("tools.skills_hub_search"), _tools_mod("tools.skills_hub_github")
+    search, gh = _tools_mod("hermes_agent.tools.skills_hub_search"), _tools_mod("hermes_agent.tools.skills_hub_github")
     raw = search.unified_search(query, search.create_source_router(gh.GitHubAuth()), source_filter="all", limit=20) or []
     return _ok(rid, {"results": [{"name": r.name, "description": r.describe()} for r in raw]})
 
@@ -1388,7 +1388,7 @@ def _skills_install(rid, params, query):
 
     captured = _Capture()
     verdict = _tools_mod("hermes_cli.skills_hub").do_install(query, skip_confirm=True, console=captured)
-    bundled = _tools_mod("tools.skills_sync_bundled_ops").bundled_skill_for_install
+    bundled = _tools_mod("hermes_agent.tools.skills_sync_bundled_ops").bundled_skill_for_install
     installed = verdict is True or (verdict is None and bool(bundled(query)))  # an active built-in is no failure
     if not installed:
         # The tail carries the reason the CLI user would have seen: the scan-block message,
@@ -1488,7 +1488,7 @@ def _(rid, params: dict) -> dict:
     include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
                        or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
     safe = ("name", "transport", "tools", "connected", "disabled", "status", "needs_auth")
-    servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
+    servers = _tools_mod("hermes_agent.tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
     return _ok(rid, {"servers": [
         {**{k: e[k] for k in safe if k in e}, "source": "plugin" if plugins[e["name"]] is not None else "config",
          "plugin": plugins[e["name"]]} for e in servers
@@ -1888,7 +1888,7 @@ def _plugins_settings(rid, params):
         servers = _portable_server_names(Path(str(plugin_dir)), canonical)
         if servers:
             from agent.memory_provider import spawn_context_thread  # keeps this request's profile scope
-            discovery = _tools_mod("tools.mcp_tool_discovery")
+            discovery = _tools_mod("hermes_agent.tools.mcp_tool_discovery")
             spawn_context_thread(discovery.restart_mcp_servers_with_new_inputs, args=(servers,),
                                  name=f"plugin-settings-mcp-{canonical}").start()
     return _ok(rid, {"ok": True, "name": canonical, "written": written, "plugin": row})
@@ -1953,7 +1953,7 @@ def _(rid, params: dict) -> dict:
     if not cmd:
         return _err(rid, 4004, "empty command")
     try:
-        approval = _tools_mod("tools.approval_detection")
+        approval = _tools_mod("hermes_agent.tools.approval_detection")
         is_hardline, hardline_desc = approval.detect_hardline_command(cmd)
         if is_hardline:
             return _err(rid, 4005, f"blocked (hardline): {hardline_desc}. Use the agent for dangerous commands.")
@@ -1974,7 +1974,7 @@ def _(rid, params: dict) -> dict:
 
     # shell=True preserves the user-facing !cmd grammar (pipes, redirects and interpolation).
     # The child must not inherit credentials held by the long-lived gateway process.
-    env = _tools_mod("tools.environments.local").build_subprocess_env()
+    env = _tools_mod("hermes_agent.tools.environments.local").build_subprocess_env()
     return _captured_exec(
         rid, cmd, 30, shell=True, env=env, fail_code=5003,
         timeout_err=(5002, "command timed out (30s)"), on_result=done)

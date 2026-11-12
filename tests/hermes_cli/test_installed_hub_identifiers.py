@@ -9,8 +9,8 @@ import asyncio
 
 from hermes_cli.web_routers.skills import search_skills_hub
 from hermes_cli.web_server_profiles import _installed_hub_identifiers
-from tools.skills_hub import HubLockFile
-from tools.skills_hub_models import SkillMeta
+from hermes_agent.tools.skills_hub import HubLockFile
+from hermes_agent.tools.skills_hub_models import SkillMeta
 
 
 def _lock(*rows):
@@ -74,8 +74,8 @@ def test_hub_search_returns_the_card_id_a_clawhub_hit_is_found_under(monkeypatch
     # which the dashboard derives from the hit's source (web/src/lib/skill-hub-installed.ts).
     hit = SkillMeta(name="Agent Git Oracle", description="", source="clawhub",
                     identifier="agent-git-oracle", trust_level="community")
-    monkeypatch.setattr("tools.skills_hub_search.create_source_router", list)
-    monkeypatch.setattr("tools.skills_hub_search.parallel_search_sources",
+    monkeypatch.setattr("hermes_agent.tools.skills_hub_search.create_source_router", list)
+    monkeypatch.setattr("hermes_agent.tools.skills_hub_search.parallel_search_sources",
                         lambda sources, **kw: ([hit], {"clawhub": 1}, []))
     _lock(("clawhub", "@tmstudio667-commits/agent-git-oracle", "agent-git-oracle"))
 

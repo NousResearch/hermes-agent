@@ -1,6 +1,6 @@
 """Shell-obfuscation bypass coverage for the dangerous-command denylist.
 
-Covers three distinct bypass classes against ``tools/approval.py`` that all
+Covers three distinct bypass classes against ``hermes_agent/tools/approval.py`` that all
 evaded the regex denylist because the string was matched *before* the shell
 performed its own quote/escape removal, parameter expansion, and command
 substitution:
@@ -20,7 +20,7 @@ against the command-name deobfuscation over-reaching into ordinary data.
 
 import pytest
 
-from tools.approval import detect_dangerous_command, detect_hardline_command
+from hermes_agent.tools.approval import detect_dangerous_command, detect_hardline_command
 
 
 # ---------------------------------------------------------------------------

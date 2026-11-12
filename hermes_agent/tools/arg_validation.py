@@ -13,7 +13,7 @@ import json
 import logging
 from typing import Any, Callable, Optional
 
-from tools.registry import ToolEntry, registry, tool_error
+from hermes_agent.tools.registry import ToolEntry, registry, tool_error
 
 logger = logging.getLogger(__name__)
 

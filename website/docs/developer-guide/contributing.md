@@ -127,7 +127,7 @@ Choose the highest (least-footprint) rung that correctly solves the problem:
 3. **Service-gated tool (`check_fn`)** — needs structured params/returns AND only appears when
    a prerequisite is configured (Home Assistant tools, memory-provider tools). This rung gates
    reachability/opt-in process-wide; a capability that varies per SESSION (who is watching) is
-   a named toolset folded in by the toolset resolver, not a `check_fn` — see `tools/AGENTS.md` § "Surface
+   a named toolset folded in by the toolset resolver, not a `check_fn` — see `hermes_agent/tools/AGENTS.md` § "Surface
    capability is a property of the SESSION".
 4. **Plugin** — third-party/niche/user-specific; lives in `~/.hermes/plugins/` or a pip
    package, discovered at runtime.
@@ -372,7 +372,7 @@ Hermes has terminal access. Security matters.
 | Layer                           | Implementation                                                              |
 | ------------------------------- | --------------------------------------------------------------------------- |
 | **Sudo password piping**        | Uses `shlex.quote()` to prevent shell injection                             |
-| **Dangerous command detection** | Regex patterns in `tools/approval.py` with user approval flow               |
+| **Dangerous command detection** | Regex patterns in `hermes_agent/tools/approval.py` with user approval flow               |
 | **Cron prompt injection**       | Scanner blocks instruction-override patterns                                |
 | **Write deny list**             | Protected paths resolved via `os.path.realpath()` to prevent symlink bypass |
 | **Skills guard**                | Security scanner for hub-installed skills                                   |

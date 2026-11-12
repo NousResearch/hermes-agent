@@ -57,11 +57,11 @@ def _fake_tts_call(monkeypatch, audio_bytes=b"\x00" * 32):
         return json.dumps({"success": True, "file_path": output_path})
 
     monkeypatch.setattr(
-        "tools.tts_tool.text_to_speech_tool",
+        "hermes_agent.tools.tts_tool.text_to_speech_tool",
         _fake_text_to_speech_tool,
     )
     monkeypatch.setattr(
-        "tools.tts_text_normalize._strip_markdown_for_tts",
+        "hermes_agent.tools.tts_text_normalize._strip_markdown_for_tts",
         lambda text: text,
     )
 

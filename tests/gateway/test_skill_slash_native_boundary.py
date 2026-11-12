@@ -39,7 +39,7 @@ def _rewrite(event_text: str, tmp_path, monkeypatch, plugin_home):
     import agent.skill_commands as sc
     try:
         monkeypatch.setattr(sc, "_skill_commands_by_key", {})
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
+        with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
             from hermes_agent.gateway.run_inbound import GatewayInboundMixin
 
             def _unknown(self, command, source):
@@ -69,7 +69,7 @@ def test_messaging_stacked_skills_never_load_plugin_skill_bodies(tmp_path, monke
     _make_local_skill(tmp_path, "local-skill", "Local body.")
     _make_plugin_skill(plugin_home, "stack-probe", "guide", "Plugin body.")
 
-    with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
+    with patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
         reply, event = _rewrite("/local-skill /stack-probe:guide do it", tmp_path, monkeypatch, plugin_home)
         assert reply is None  # rewrote the event, did not bounce it as unknown
         assert "Local body." in event.text and "do it" in event.text

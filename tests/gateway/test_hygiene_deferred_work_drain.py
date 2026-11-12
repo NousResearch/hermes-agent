@@ -140,9 +140,9 @@ async def test_stop_interrupts_deferred_worker_before_teardown():
         patch("hermes_agent.gateway.status.remove_pid_file"),
         patch("hermes_agent.gateway.status.write_runtime_status"),
         patch("hermes_agent.cron.scheduler.mark_job_run"),
-        patch("tools.process_registry.process_registry.kill_all", return_value=0),
-        patch("tools.terminal_tool.cleanup_all_environments"),
-        patch("tools.browser_session_lifecycle.cleanup_all_browsers"),
+        patch("hermes_agent.tools.process_registry.process_registry.kill_all", return_value=0),
+        patch("hermes_agent.tools.terminal_tool.cleanup_all_environments"),
+        patch("hermes_agent.tools.browser_session_lifecycle.cleanup_all_browsers"),
     ):
         await runner.stop()
 

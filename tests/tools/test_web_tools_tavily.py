@@ -153,7 +153,7 @@ class TestWebExtractCacheAttribution:
     """Only cache content under the URL reported by the extract provider."""
 
     def test_partial_result_caches_under_its_own_requested_url(self):
-        from tools import web_tools_extract as wte
+        from hermes_agent.tools import web_tools_extract as wte
 
         class _PartialProvider:
             name = "tavily"
@@ -165,7 +165,7 @@ class TestWebExtractCacheAttribution:
                 ]
 
         urls = ["https://example.com/first", "https://example.com/second"]
-        with patch("tools.web_result_cache.extract_cache_put") as cache_put:
+        with patch("hermes_agent.tools.web_result_cache.extract_cache_put") as cache_put:
             asyncio.run(wte._dispatch_extract(_PartialProvider(), urls, None))
 
         cache_put.assert_called_once_with(
@@ -177,7 +177,7 @@ class TestWebExtractCacheAttribution:
         ``metadata.sourceURL``; the cache key must stay the requested URL, never the redirect target.
         The first requested page is omitted, so positional pairing would file the redirected page
         under the wrong requested URL."""
-        from tools import web_tools_extract as wte
+        from hermes_agent.tools import web_tools_extract as wte
 
         class _RedirectProvider:
             name = "keenable"
@@ -187,7 +187,7 @@ class TestWebExtractCacheAttribution:
                          "metadata": {"sourceURL": urls[1]}}]
 
         urls = ["https://example.com/failed", "https://example.com/old"]
-        with patch("tools.web_result_cache.extract_cache_put") as cache_put:
+        with patch("hermes_agent.tools.web_result_cache.extract_cache_put") as cache_put:
             asyncio.run(wte._dispatch_extract(_RedirectProvider(), urls, None))
 
         cache_put.assert_called_once_with(
@@ -207,33 +207,33 @@ class TestTavilyAvailability:
             assert TavilyWebSearchProvider().is_available() is False
 
     def test_is_backend_available_without_key(self):
-        from tools.web_tools import _is_backend_available
-        with patch("tools.web_tools._load_web_config", return_value={}), \
+        from hermes_agent.tools.web_tools import _is_backend_available
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TAVILY_API_KEY", None)
             assert _is_backend_available("tavily") is False
 
     def test_is_backend_available_when_configured_without_key(self):
-        from tools.web_tools import _is_backend_available
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "tavily"}), \
+        from hermes_agent.tools.web_tools import _is_backend_available
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "tavily"}), \
              patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TAVILY_API_KEY", None)
             assert _is_backend_available("tavily") is True
 
     def test_keyless_does_not_preempt_managed_firecrawl(self):
         """No TAVILY_API_KEY + Nous gateway ready → firecrawl, not keyless tavily."""
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=True), \
-             patch("tools.web_tools._ddgs_package_importable", return_value=False):
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
+             patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=True), \
+             patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False):
             os.environ.pop("TAVILY_API_KEY", None)
             assert _get_backend() == "firecrawl"
 
     def test_keyless_does_not_preempt_ddgs(self):
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
-             patch("tools.web_tools._ddgs_package_importable", return_value=True):
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
+             patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=False), \
+             patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=True):
             os.environ.pop("TAVILY_API_KEY", None)
             assert _get_backend() == "ddgs"
 
@@ -242,30 +242,30 @@ class TestTavilyAvailability:
         firecrawl sentinel. (With the tier on — the default — it resolves
         to the Exa/Parallel keyless split; see test_web_keyless_fallback.py.)
         """
-        from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
-             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
-             patch("tools.web_tools._list_registered_web_providers", return_value=[]), \
+        from hermes_agent.tools.web_tools import _get_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={}), \
+             patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=False), \
+             patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False), \
+             patch("hermes_agent.tools.web_tools._list_registered_web_providers", return_value=[]), \
              patch("agent.web_search_registry._keyless_tier_enabled", return_value=False):
             os.environ.pop("TAVILY_API_KEY", None)
             assert _get_backend() == "firecrawl"
 
     def test_explicit_search_backend_tavily_without_key(self):
         """web.search_backend=tavily sticks even with no TAVILY_API_KEY."""
-        from tools.web_tools import _get_search_backend
-        with patch("tools.web_tools._load_web_config",
+        from hermes_agent.tools.web_tools import _get_search_backend
+        with patch("hermes_agent.tools.web_tools._load_web_config",
                    return_value={"backend": "firecrawl", "search_backend": "tavily"}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=True):
+             patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=True):
             os.environ.pop("TAVILY_API_KEY", None)
             assert _get_search_backend() == "tavily"
 
     def test_check_web_api_key_when_tavily_configured_without_key(self):
-        from tools.web_tools import check_web_api_key
-        with patch("tools.web_tools._load_web_config", return_value={"backend": "tavily"}), \
-             patch("tools.web_tools._is_tool_gateway_ready", return_value=False), \
-             patch("tools.web_tools.check_firecrawl_api_key", return_value=False), \
-             patch("tools.web_tools._ddgs_package_importable", return_value=False), \
+        from hermes_agent.tools.web_tools import check_web_api_key
+        with patch("hermes_agent.tools.web_tools._load_web_config", return_value={"backend": "tavily"}), \
+             patch("hermes_agent.tools.web_tools._is_tool_gateway_ready", return_value=False), \
+             patch("hermes_agent.tools.web_tools.check_firecrawl_api_key", return_value=False), \
+             patch("hermes_agent.tools.web_tools._ddgs_package_importable", return_value=False), \
              patch("agent.web_search_registry.get_active_search_provider", return_value=None), \
              patch("agent.web_search_registry.get_active_extract_provider", return_value=None):
             os.environ.pop("TAVILY_API_KEY", None)
@@ -291,11 +291,11 @@ class TestWebSearchTavily:
             "results": [{"title": "Result", "url": "https://r.com", "content": "desc", "score": 0.9}]
         })
 
-        with patch("tools.web_tools._get_backend", return_value="tavily"), \
+        with patch("hermes_agent.tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
              patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response), \
-             patch("tools.interrupt.is_interrupted", return_value=False):
-            from tools.web_tools import web_search_tool
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False):
+            from hermes_agent.tools.web_tools import web_search_tool
             result = json.loads(web_search_tool("test query", limit=3))
             assert result["success"] is True
             assert len(result["data"]["web"]) == 1
@@ -307,11 +307,11 @@ class TestWebSearchTavily:
             "results": [{"title": "Result", "url": "https://r.com", "content": "desc"}]
         })
 
-        with patch("tools.web_tools._get_backend", return_value="tavily"), \
+        with patch("hermes_agent.tools.web_tools._get_backend", return_value="tavily"), \
              patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post, \
-             patch("tools.interrupt.is_interrupted", return_value=False):
+             patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False):
             os.environ.pop("TAVILY_API_KEY", None)
-            from tools.web_tools import web_search_tool
+            from hermes_agent.tools.web_tools import web_search_tool
             result = json.loads(web_search_tool("test query"))
             assert result["success"] is True
             headers = mock_post.call_args.kwargs["headers"]
@@ -344,11 +344,11 @@ class TestWebExtractTavily:
         async def _allow_ssrf(_url: str) -> bool:
             return True
 
-        with patch("tools.web_tools._get_backend", return_value="tavily"), \
+        with patch("hermes_agent.tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
              patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response), \
-             patch("tools.web_tools.async_is_safe_url", _allow_ssrf):
-            from tools.web_tools import web_extract_tool
+             patch("hermes_agent.tools.web_tools.async_is_safe_url", _allow_ssrf):
+            from hermes_agent.tools.web_tools import web_extract_tool
             result = json.loads(asyncio.get_event_loop().run_until_complete(
                 web_extract_tool(["https://example.com"])
             ))

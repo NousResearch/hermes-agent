@@ -1,7 +1,7 @@
 """Regression tests for sudo detection and sudo password handling."""
 
-from tools import terminal_tool
-from tools import terminal_tool_sudo
+from hermes_agent.tools import terminal_tool
+from hermes_agent.tools import terminal_tool_sudo
 
 
 def setup_function():

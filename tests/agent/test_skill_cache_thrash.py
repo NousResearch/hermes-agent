@@ -38,7 +38,7 @@ def test_cache_survives_platform_empty_string_none_flapping(tmp_path):
         return original_scan(*args, **kwargs)
 
     with (
-        patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+        patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path),
         patch.object(sc_mod, "_skill_commands_by_key", {}),
         patch("agent.skill_commands.scan_skill_commands", side_effect=counting_scan),
     ):

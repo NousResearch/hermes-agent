@@ -1,6 +1,6 @@
 """Atomic multi-op batch path for ``skill_manage``. Origin state
 (``skill_manage``/``_find_skill``/``_skill_gate_bypass``) is reached lazily
-through ``tools.skill_manager_tool`` so that module owns it."""
+through ``hermes_agent.tools.skill_manager_tool`` so that module owns it."""
 
 from contextlib import suppress
 import json
@@ -10,7 +10,7 @@ import shutil
 import tempfile
 from pathlib import Path
 
-logger = logging.getLogger("tools.skill_manager_tool")
+logger = logging.getLogger("hermes_agent.tools.skill_manager_tool")
 
 _BATCH_OP_ACTIONS = {"create", "patch", "write_file", "remove_file"}
 _BATCH_MAX_OPS = 20
@@ -85,8 +85,8 @@ def _op_shape_error(action: str, args: dict):
 
 def _validate_batch_ops(operations, default_name, tool_error):
     """Shape checks with no side effects. Returns (names, None) or (None, error_json)."""
-    from tools.skill_manager_guards import _background_review_preflight
-    from tools.skill_manager_tool import _validate_category
+    from hermes_agent.tools.skill_manager_guards import _background_review_preflight
+    from hermes_agent.tools.skill_manager_tool import _validate_category
     def fail(i, msg):
         return None, tool_error(f"operations[{i}]{msg}", success=False)
     names = []
@@ -223,8 +223,8 @@ def _skill_manage_batch(operations, default_name: str | None = None, task_id: st
     only legal as the SOLE op (its recoverable-archive path doesn't compose with
     rollback) and routes to the single-op handler. ``default_name`` is the legacy
     top-level ``name`` fallback (staged replay)."""
-    from tools import skill_manager_tool as _smt
-    from tools.registry import tool_error
+    from hermes_agent.tools import skill_manager_tool as _smt
+    from hermes_agent.tools.registry import tool_error
     if not isinstance(operations, list) or not operations:
         return tool_error("operations must be a non-empty array.", success=False)
     if len(operations) > _BATCH_MAX_OPS:

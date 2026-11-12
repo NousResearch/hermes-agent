@@ -9,12 +9,12 @@ import time
 from contextvars import Context
 from typing import TYPE_CHECKING, Callable, List, Optional
 from utils import is_truthy_value
-from tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, exact_mcp_identifier, mcp_field, _core
-from tools.mcp_tool_schema import _normalize_mcp_input_schema, strip_schema_annotations
-from tools.ansi_strip import strip_tool_metadata_text, strip_unicode_tags, strip_unicode_tags_deep
+from hermes_agent.tools.mcp_tool_common import _MISSING, _exc_str, _safe_numeric, _sanitize_error, exact_mcp_identifier, mcp_field, _core
+from hermes_agent.tools.mcp_tool_schema import _normalize_mcp_input_schema, strip_schema_annotations
+from hermes_agent.tools.ansi_strip import strip_tool_metadata_text, strip_unicode_tags, strip_unicode_tags_deep
 
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 
 def _tool_use_id(block):
@@ -296,7 +296,7 @@ class ElicitationHandler:
         """Sync consent call replaying the agent's contextvars snapshot when the owning task captured one
         (the recv-loop task does NOT inherit them; gateway-platform detection needs them).
         ``Context.run`` runs a context once, so it is copied per elicitation."""
-        from tools.approval_prompt import request_elicitation_consent
+        from hermes_agent.tools.approval_prompt import request_elicitation_consent
 
         consent = functools.partial(request_elicitation_consent, message, description,
                                     timeout_seconds=int(self.timeout), surface=f"mcp-elicitation/{self.server_name}")
@@ -316,7 +316,7 @@ class ElicitationHandler:
         # access) — read both or the user approves without seeing the fields.
         schema = getattr(params, "requestedSchema", None) or getattr(params, "requested_schema", None) or {}
         logger.info("MCP server '%s' elicitation request: %s", self.server_name, _sanitize_error(message)[:200])
-        try:  # lazy import inside avoids import-order coupling with early-bootstrap tools.approval
+        try:  # lazy import inside avoids import-order coupling with early-bootstrap hermes_agent.tools.approval
             invoke_consent = self._consent_thunk(message, _format_elicitation_schema_summary(schema, self.server_name))
         except Exception as exc:  # pragma: no cover -- defensive
             logger.error("MCP server '%s' elicitation: approval system unavailable: %s", self.server_name, exc)

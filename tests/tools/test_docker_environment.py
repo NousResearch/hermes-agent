@@ -7,8 +7,8 @@ import tempfile
 
 import pytest
 
-from tools.environments import docker as docker_env
-from tools.environments.docker_egress import _extra_args_egress_collisions
+from hermes_agent.tools.environments import docker as docker_env
+from hermes_agent.tools.environments.docker_egress import _extra_args_egress_collisions
 
 
 def _mock_subprocess_run(monkeypatch):
@@ -1357,8 +1357,8 @@ def test_cleanup_vm_default_honors_persist_mode(monkeypatch):
     _mock_subprocess_run(monkeypatch)
     _install_fake_thread(monkeypatch)
 
-    from tools import terminal_tool
-    from tools.terminal_tool_lifecycle import cleanup_vm
+    from hermes_agent.tools import terminal_tool
+    from hermes_agent.tools.terminal_tool_lifecycle import cleanup_vm
 
     env = _make_dummy_env(task_id="session-close-test")
     terminal_tool._active_environments["session-close-test"] = env
@@ -1601,15 +1601,15 @@ def test_credential_mount_skipped_when_source_is_directory(monkeypatch, tmp_path
         {"host_path": str(corrupted_dir), "container_path": "/root/.hermes/google_token.json"},
     ]
     monkeypatch.setattr(
-        "tools.credential_files.get_credential_file_mounts",
+        "hermes_agent.tools.credential_files.get_credential_file_mounts",
         lambda: fake_mounts,
     )
     monkeypatch.setattr(
-        "tools.credential_files.get_skills_directory_mount",
+        "hermes_agent.tools.credential_files.get_skills_directory_mount",
         list,
     )
     monkeypatch.setattr(
-        "tools.credential_files.get_cache_directory_mounts",
+        "hermes_agent.tools.credential_files.get_cache_directory_mounts",
         list,
     )
 
@@ -1635,15 +1635,15 @@ def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, cap
         {"host_path": str(missing_path), "container_path": "/root/.hermes/deleted_token.json"},
     ]
     monkeypatch.setattr(
-        "tools.credential_files.get_credential_file_mounts",
+        "hermes_agent.tools.credential_files.get_credential_file_mounts",
         lambda: fake_mounts,
     )
     monkeypatch.setattr(
-        "tools.credential_files.get_skills_directory_mount",
+        "hermes_agent.tools.credential_files.get_skills_directory_mount",
         list,
     )
     monkeypatch.setattr(
-        "tools.credential_files.get_cache_directory_mounts",
+        "hermes_agent.tools.credential_files.get_cache_directory_mounts",
         list,
     )
 
@@ -1894,7 +1894,7 @@ def test_docker_env_warnings_never_echo_values(caplog):
     """Values in docker_env can be secrets; a rejected entry is logged by key and type only (#102308)."""
     import logging
 
-    with caplog.at_level(logging.WARNING, logger="tools.environments.docker"):
+    with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.environments.docker"):
         docker_env._normalize_env_dict({"TOKEN": ["sk-live-value"], "OK": "1"})
     assert "TOKEN" in caplog.text and "sk-live-value" not in caplog.text
 

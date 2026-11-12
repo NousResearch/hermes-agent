@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
 from hermes_agent.tui_gateway import mcp_oauth_sessions as sessions
 
 
@@ -119,7 +119,7 @@ def test_session_operations_require_resolved_owner(tmp_path, monkeypatch, operat
 
 
 def test_cancel_does_not_revoke_an_approved_flow(tmp_path, monkeypatch):
-    from tools.connectors.mcp_oauth import OAuthAttempt
+    from hermes_agent.tools.connectors.mcp_oauth import OAuthAttempt
 
     home = str(tmp_path)
     flow = DashboardOAuthFlow(

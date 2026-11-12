@@ -62,7 +62,7 @@ def test_doctor_restores_global_tool_policy_and_module_state(tmp_path: Path) -> 
     import sys
 
     from hermes_cli.plugin_dev import doctor_plugin
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     target = tmp_path / "cleanup-plugin"
     target.mkdir()

@@ -7,7 +7,7 @@ injection, and the flat-only reorder guard.
 
 import json
 
-from tools.todo_tool import TodoStore, todo_tool
+from hermes_agent.tools.todo_tool import TodoStore, todo_tool
 
 
 def _item(i, status="pending", parent=None, content=None):

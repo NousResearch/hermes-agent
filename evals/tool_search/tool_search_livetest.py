@@ -311,7 +311,7 @@ def _yaml_dump(obj: Any) -> str:
 
 def register_fake_tools() -> int:
     """Register the FAKE_MCP_TOOLS into the live tool registry."""
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     def make_handler(tool_def):
         def _handler(*args, **kwargs):
@@ -350,7 +350,7 @@ def register_fake_tools() -> int:
 def reset_module_state():
     """Drop cached modules so the new HERMES_HOME takes effect."""
     keys = [k for k in sys.modules.keys()
-            if k.startswith(("tools.", "model_tools", "toolsets",
+            if k.startswith(("hermes_agent.tools.", "hermes_agent.model_tools", "hermes_agent.toolsets",
                              "hermes_cli", "agent.", "run_agent"))]
     for k in keys:
         del sys.modules[k]
@@ -369,13 +369,13 @@ def run_one_scenario(scenario: dict[str, Any], enabled: bool, out_dir: Path) -> 
     n_registered = register_fake_tools()
 
     # Capture tool calls via a hook on the registry dispatch path. We use the
-    # registry hook (rather than the model_tools.handle_function_call binding,
+    # registry hook (rather than the hermes_agent.model_tools.handle_function_call binding,
     # which is already cached by tool_executor) because the dispatch call is
     # the one place every underlying tool call lands. Bridge calls are
     # extracted from the message transcript after the run.
     tool_call_log: list[dict[str, Any]] = []
 
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
     original_dispatch = registry.dispatch
 
     def logging_dispatch(name, args, **kw):

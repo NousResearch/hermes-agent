@@ -70,7 +70,7 @@ def _owners(app: dict) -> tuple[tuple[str, str], ...]:
 def check_bot_token(token: str) -> DiscordBotCheck:
     """Read the application behind ``token``. Raises :class:`DiscordAPIError` (401 = bad token)
     or ``OSError`` when Discord is unreachable."""
-    from tools.discord_tool import _FLAGS_GUILD_MEMBERS, _FLAGS_MESSAGE_CONTENT, _discord_request
+    from hermes_agent.tools.discord_tool import _FLAGS_GUILD_MEMBERS, _FLAGS_MESSAGE_CONTENT, _discord_request
     app = _discord_request("GET", "/applications/@me", token.strip(), timeout=10)
     flags = int(app.get("flags") or 0)
     bot = app.get("bot") or {}
@@ -137,7 +137,7 @@ def _prompt_checked_token(prompt) -> tuple[str, Optional[DiscordBotCheck]]:
     or ``("", None)`` when the user gave up."""
     from hermes_cli.cli_output import print_error, print_success, print_warning
     from hermes_cli.config import _check_non_ascii_credential
-    from tools.discord_tool import DiscordAPIError
+    from hermes_agent.tools.discord_tool import DiscordAPIError
     for _attempt in range(3):
         # Same stripping save_env_value applies, done first: a non-ASCII paste can't go in an HTTP header.
         token = _check_non_ascii_credential("DISCORD_BOT_TOKEN", _prompt_discord_bot_token(prompt)).strip()
@@ -166,7 +166,7 @@ def _prompt_checked_token(prompt) -> tuple[str, Optional[DiscordBotCheck]]:
 
 def _ensure_message_content_intent(token: str, check: DiscordBotCheck, prompt) -> DiscordBotCheck:
     from hermes_cli.cli_output import print_info, print_success, print_warning
-    from tools.discord_tool import DiscordAPIError
+    from hermes_agent.tools.discord_tool import DiscordAPIError
     for _attempt in range(5):
         if check.message_content:
             break
@@ -234,7 +234,7 @@ def _prompt_allowlist(check: Optional[DiscordBotCheck], prompt, prompt_yes_no) -
 
 
 def _check_saved_token(token: str) -> Optional[DiscordBotCheck]:
-    from tools.discord_tool import DiscordAPIError
+    from hermes_agent.tools.discord_tool import DiscordAPIError
     try:
         return check_bot_token(token) if token else None
     except (DiscordAPIError, OSError):

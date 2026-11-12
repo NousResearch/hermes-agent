@@ -1,7 +1,7 @@
 """Shared ``OAuthClientProvider`` customizations for Hermes MCP OAuth.
 
-Two code paths build an SDK provider — ``tools.mcp_oauth.build_oauth_auth`` (legacy public
-API) and ``tools.mcp_oauth_manager.MCPOAuthManager`` — and both need the same real-world
+Two code paths build an SDK provider — ``hermes_agent.tools.mcp_oauth.build_oauth_auth`` (legacy public
+API) and ``hermes_agent.tools.mcp_oauth_manager.MCPOAuthManager`` — and both need the same real-world
 fixes and config → constructor-kwargs plumbing. This module holds that core once; the origin
 modules keep their own subclass (logger name, disk-watch hooks) on top of it.
 """
@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
-    from tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
 logger = logging.getLogger(__name__)
 
 # Authorization servers that advertise ``authorization_response_iss_parameter_supported`` and then
@@ -99,7 +99,7 @@ class HermesProviderMixin:
         grants = getattr(info, "grant_types", None) or []
         if (getattr(self, "_hermes_oauth_flow", "browser") == "device"
                 or ("urn:ietf:params:oauth:grant-type:device_code" in grants and "authorization_code" not in grants)):
-            from tools.mcp_oauth import OAuthNonInteractiveError
+            from hermes_agent.tools.mcp_oauth import OAuthNonInteractiveError
             raise OAuthNonInteractiveError(
                 "MCP device authorization requires `hermes mcp login <server> --flow device`; "
                 "background reconnects cannot start a device login")
@@ -201,7 +201,7 @@ class HermesProviderMixin:
     def _prepare_token_request(self, request):
         """Stamp a token/refresh request's User-Agent: the configured ``oauth.user_agent`` when set,
         else the shared ``Hermes-Agent/<version>`` default. These requests are built by hand — the
-        SDK's ``_exchange_token_authorization_code``/``_refresh_token`` and ``tools.mcp_oauth_device``
+        SDK's ``_exchange_token_authorization_code``/``_refresh_token`` and ``hermes_agent.tools.mcp_oauth_device``
         — and travel through ``client.send()``, which never merges the client's default headers, so
         without a stamp the POST leaves with NO ``User-Agent`` at all and a WAF-fronted authorization
         server answers 403 (#115329)."""
@@ -217,7 +217,7 @@ class HermesProviderMixin:
         if not info:
             return
         from mcp.shared.auth import OAuthClientInformationFull
-        from tools.mcp_oauth import HermesTokenStorage
+        from hermes_agent.tools.mcp_oauth import HermesTokenStorage
         data = info.model_dump(mode="json", exclude_none=True)
         if HermesTokenStorage._coerce_secret_auth_method(data):
             self.context.client_info = OAuthClientInformationFull.model_validate(data)
@@ -297,7 +297,7 @@ class HermesProviderMixin:
         The fence is acquired BEFORE the final read of the refresh token and is
         released only after _handle_refresh_response has persisted the
         replacement, so one refresh generation is consumed by exactly one
-        process. See tools.mcp_oauth.acquire_refresh_fence for the interleaving this
+        process. See hermes_agent.tools.mcp_oauth.acquire_refresh_fence for the interleaving this
         closes.
 
         Holding a lock across ``yield`` in the SDK's generator-based auth flow
@@ -355,7 +355,7 @@ class HermesProviderMixin:
         be POSTed. A stale fence from an aborted attempt is replaced rather
         than stacked, so a crashed generator cannot leak ownership.
         """
-        from tools.mcp_oauth import acquire_refresh_fence
+        from hermes_agent.tools.mcp_oauth import acquire_refresh_fence
 
         await self._hermes_release_refresh_fence()
         storage = self.context.storage
@@ -366,7 +366,7 @@ class HermesProviderMixin:
 
     async def _hermes_release_refresh_fence(self) -> None:
         """Release the fence if held. Idempotent and never raises."""
-        from tools.mcp_oauth import release_refresh_fence
+        from hermes_agent.tools.mcp_oauth import release_refresh_fence
 
         fd, self._hermes_fence = self._hermes_fence, None
         if fd is not None:
@@ -411,7 +411,7 @@ class HermesProviderMixin:
         then enforce refresh-token issuer binding."""
         await super()._initialize()
         storage = self.context.storage
-        from tools.mcp_oauth import HermesTokenStorage
+        from hermes_agent.tools.mcp_oauth import HermesTokenStorage
         if isinstance(storage, HermesTokenStorage) and self.context.oauth_metadata is None:
             meta = storage.load_oauth_metadata()
             if meta is not None:
@@ -432,7 +432,7 @@ class HermesProviderMixin:
         tag-stripped, redacted excerpt rides along with the status."""
         from mcp.client.auth.oauth2 import OAuthTokenError
         if not (200 <= response.status_code < 300):
-            from tools.mcp_tool_common import _sanitize_error
+            from hermes_agent.tools.mcp_tool_common import _sanitize_error
             excerpt = " ".join(re.sub(r"<[^>]+>", " ", response.text).split())[:200]
             raise OAuthTokenError(f"Token exchange failed ({response.status_code}): {_sanitize_error(excerpt)}".rstrip(": "))
         from httpx import HTTPError
@@ -576,7 +576,7 @@ def google_offline_access_params(context: Any) -> dict[str, str]:
 def bind_issuer_from_context(context: Any) -> None:
     """Record the discovered issuer so the next ``storage.set_tokens`` (exchange or refresh) carries
     it. No-op when metadata is not discovered yet or storage is not Hermes'."""
-    from tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
     storage = getattr(context, "storage", None)
     issuer = _metadata_issuer(context)
     if isinstance(storage, HermesTokenStorage) and issuer:
@@ -592,7 +592,7 @@ def enforce_refresh_token_issuer(context: Any) -> None:
     access token stays usable; full re-authorization happens at expiry. Token files predating the field
     adopt the current issuer once rather than forcing a re-login. Runs after ``_initialize`` restored
     tokens + metadata, before the SDK's ``can_refresh_token()`` decision."""
-    from tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
     storage = getattr(context, "storage", None)
     tokens = getattr(context, "current_tokens", None)
     if not isinstance(storage, HermesTokenStorage) or tokens is None or not getattr(tokens, "refresh_token", None):
@@ -615,7 +615,7 @@ def prepare_oauth_config(server_name: str, server_url: str, oauth_config: dict |
     """Copy the ``oauth:`` block, apply provider defaults, open its token storage. The copy
     matters: later steps record ``_resolved_port`` / ``_cimd_url`` in the dict, which must
     never leak back into the caller's config."""
-    from tools import mcp_oauth as mo
+    from hermes_agent.tools import mcp_oauth as mo
     cfg = dict(oauth_config or {})
     mo.apply_oauth_provider_defaults(cfg, server_name=server_name, server_url=server_url)
     return cfg, mo.HermesTokenStorage(server_name)
@@ -625,8 +625,8 @@ def build_provider_kwargs(cfg: dict, storage: HermesTokenStorage, *, ssh_proxy_h
     """Resolve the callback port and return the shared provider constructor kwargs. Order
     matters: metadata needs the resolved port, pre-registration needs the metadata.
     ``ssh_proxy_hint`` lets the redirect handler tailor its remote-session hint to a configured
-    proxy ``redirect_uri``. Helpers are looked up on ``tools.mcp_oauth`` so tests can patch them."""
-    from tools import mcp_oauth as mo
+    proxy ``redirect_uri``. Helpers are looked up on ``hermes_agent.tools.mcp_oauth`` so tests can patch them."""
+    from hermes_agent.tools import mcp_oauth as mo
     port = mo._configure_callback_port(cfg, storage)
     client_metadata = mo._build_client_metadata(cfg)
     mo._maybe_preregister_client(storage, cfg, client_metadata)

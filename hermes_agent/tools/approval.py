@@ -7,7 +7,7 @@ behind them. Leaves: ``approval_detection`` (hardline/dangerous patterns), ``app
 (contextvars, config readers), ``approval_floors`` (pre-gate blocks, allowlist match),
 ``approval_prompt`` (CLI prompt, plugin transports, MCP elicitation), ``approval_gateway_wait``
 (blocking gateway round-trip), ``approval_smart`` (guardian LLM), ``approval_human_wait``.
-Leaves read facade-owned state (``_lock``, queues, denial breaker) back through ``tools.approval`` at
+Leaves read facade-owned state (``_lock``, queues, denial breaker) back through ``hermes_agent.tools.approval`` at
 call time; sibling-defined names are imported from their defining module.
 """
 
@@ -21,25 +21,25 @@ from typing import Any, Iterable, Optional
 
 from utils import env_var_enabled, is_truthy_value
 from agent.i18n import t
-from tools import approval_context
-from tools.approval_context import (
+from hermes_agent.tools import approval_context
+from hermes_agent.tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
     _is_gateway_approval_context, _is_interactive_cli, _is_single_query_approval_context,
     _is_unattended_platform_approval_context, _resolve_cli_approval_callback, _should_fall_through_to_cli_approval,
     get_current_session_key,
 )
-from tools.approval_detection import (
+from hermes_agent.tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_content_rule_keys, detect_dangerous_command,
     detect_hardline_command,
 )
-from tools.approval_floors import (
+from hermes_agent.tools.approval_floors import (
     _command_matches_permanent_allowlist, _hardline_block_result, _matching_permanent_allowlist_entry, _match_user_deny_rule, _sudo_stdin_block_result,
     _user_deny_block_result,
 )
-from tools.approval_gateway_wait import _await_gateway_decision
-from tools.approval_provenance import allowlisted_result, preapproved_result
-from tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
-from tools.approval_smart import _smart_verdict
+from hermes_agent.tools.approval_gateway_wait import _await_gateway_decision
+from hermes_agent.tools.approval_provenance import allowlisted_result, preapproved_result
+from hermes_agent.tools.approval_prompt import _present_with_selected_transport, _transport_choice, prompt_dangerous_approval
+from hermes_agent.tools.approval_smart import _smart_verdict
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 # Session keys whose launch YOLO (`hermes chat --yolo` session policy) was already seeded by
-# ``tools.approval_yolo.apply_launch_yolo``: once per boundary, so a later `/yolo` off sticks.
+# ``hermes_agent.tools.approval_yolo.apply_launch_yolo``: once per boundary, so a later `/yolo` off sticks.
 _launch_yolo_applied: set[str] = set()
 _permanent_approved: set = set()
 # Routed multiplex profiles: one permanent allowlist per profile home (see ``_permanent_set``).
@@ -324,7 +324,7 @@ def _release_permission_mode_dependents(session_key: str) -> None:
     sessions never load computer-use; releasing on BOTH edges makes enabling YOLO replace a
     standard backend and disabling it revoke a private unrestricted daemon immediately."""
     try:
-        from tools.computer_use.tool import release_computer_use_session
+        from hermes_agent.tools.computer_use.tool import release_computer_use_session
 
         release_computer_use_session(session_key)
     except Exception:
@@ -606,7 +606,7 @@ _USER_SUMMARY_NOUNS = frozenset({"command", "code", "action"})
 
 
 def _user_summary(outcome: str, noun: str = "command") -> str:
-    from tools.approval_context import _get_approval_timeout, format_approval_window
+    from hermes_agent.tools.approval_context import _get_approval_timeout, format_approval_window
     window = format_approval_window(_get_approval_timeout())
     key = f"approval.summary.{outcome}" if outcome in _USER_SUMMARY_OUTCOMES else "approval.summary.default"
     noun_text = t(f"approval.noun.{noun}") if noun in _USER_SUMMARY_NOUNS else noun

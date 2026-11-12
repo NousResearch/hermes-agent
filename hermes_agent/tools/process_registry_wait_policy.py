@@ -104,8 +104,8 @@ def _caller_receives_completion(session) -> bool:
     suppressed unless handed off or ``delegation.surface_child_process_notifications`` is on). Fails
     closed: an unbound caller cannot prove ownership of a keyed process."""
     from hermes_agent.gateway.session_context import get_session_env
-    from tools.process_registry import ProcessRegistry
-    from tools.process_registry_notifications import should_surface_notification
+    from hermes_agent.tools.process_registry import ProcessRegistry
+    from hermes_agent.tools.process_registry_notifications import should_surface_notification
     caller_key = get_session_env("HERMES_SESSION_KEY", "")
     evt = {"type": "completion", "session_id": session.id, "session_key": session.session_key,
            "task_id": session.task_id, "owner_task_id": session.owner_task_id}
@@ -133,7 +133,7 @@ def _promote(registry, session) -> None:
     CLI, TUI/Desktop and ``hermes chat -q`` drain ``completion_queue``, which the exit path fills
     whenever the flag is set. The messaging gateway delivers only through a per-process watcher, so a
     process started silently also needs the chat routing stamped and a watcher armed."""
-    from tools.terminal_tool_background import _register_completion_watcher, _stamp_gateway_routing
+    from hermes_agent.tools.terminal_tool_background import _register_completion_watcher, _stamp_gateway_routing
     from hermes_agent.gateway.session_context import get_session_env
     if not session.watcher_platform:
         _stamp_gateway_routing(session, get_session_env)
@@ -151,7 +151,7 @@ def apply_wait_poll_policy(action: str, session_id: str, result: dict) -> dict:
     """Post-process one ``process_manage`` session action result (see module docstring)."""
     if not isinstance(result, dict) or not _enabled():
         return result
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     session = process_registry.get(session_id)
     if session is None:
         return result

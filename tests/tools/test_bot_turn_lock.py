@@ -1,4 +1,4 @@
-"""Tests: per-profile bot turn lock (#93091 — tools/bot_relay.py).
+"""Tests: per-profile bot turn lock (#93091 — hermes_agent/tools/bot_relay.py).
 
 Two deliveries into the same target profile must serialize on a
 cross-process flock; the queued one waits a bounded budget and then fails
@@ -23,8 +23,8 @@ import pytest
 
 pytestmark = pytest.mark.platforms("linux")
 
-from tools import bot_mode_dm, bot_relay
-from tools.bot_relay import TurnBusyError, acquire_turn_lock, turn_lock_path
+from hermes_agent.tools import bot_mode_dm, bot_relay
+from hermes_agent.tools.bot_relay import TurnBusyError, acquire_turn_lock, turn_lock_path
 
 
 @pytest.fixture

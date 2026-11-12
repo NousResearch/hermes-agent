@@ -13,10 +13,10 @@ import os
 
 import pytest
 
-from tools import file_operations
-from tools.file_tools import clear_file_ops_cache
-from tools.file_tools_read_tracking import reset_file_dedup
-from tools.registry import registry
+from hermes_agent.tools import file_operations
+from hermes_agent.tools.file_tools import clear_file_ops_cache
+from hermes_agent.tools.file_tools_read_tracking import reset_file_dedup
+from hermes_agent.tools.registry import registry
 
 _BLIND = "Your patch changed this file"
 
@@ -77,7 +77,7 @@ def test_partial_read_cannot_refresh_a_changed_full_baseline(tmp_path):
             clear_file_ops_cache(task)
 
     # A page that hides part of a line never supplies whole-file knowledge.
-    from tools.tool_output_limits import get_max_line_length
+    from hermes_agent.tools.tool_output_limits import get_max_line_length
 
     path = tmp_path / "clamped.txt"
     path.write_text("x" * (get_max_line_length() + 10) + "\nlast\n", encoding="utf-8")

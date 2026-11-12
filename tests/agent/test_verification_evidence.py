@@ -476,7 +476,7 @@ def test_file_tool_stales_evidence_by_session_id_for_absolute_edit(tmp_path, mon
         output="green",
     )
 
-    from tools.file_tools import write_file_tool
+    from hermes_agent.tools.file_tools import write_file_tool
 
     result = json.loads(
         write_file_tool(

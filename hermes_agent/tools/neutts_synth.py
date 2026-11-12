@@ -3,7 +3,7 @@
 
 Called by tts_tool via subprocess so the ~500MB TTS model lives in a process that exits
 after synthesis. Usage:
-    python -m tools.neutts_synth --text "Hello" --out out.wav --ref-audio jo.wav --ref-text jo.txt
+    python -m hermes_agent.tools.neutts_synth --text "Hello" --out out.wav --ref-audio jo.wav --ref-text jo.txt
 Run ``hermes setup tts`` and choose NeuTTS; espeak-ng is also required (apt/brew).
 """
 

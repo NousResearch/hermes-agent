@@ -13,13 +13,13 @@ PARENT = {"PATH": "/usr/bin:/bin", "TERM": "parent-term", "XDG_CONFIG_HOME": "/p
 
 
 def _rendered():
-    from tools.mcp_tool_config import _interpolate_env_vars
+    from hermes_agent.tools.mcp_tool_config import _interpolate_env_vars
     # Load renders once; connect renders again under the owner's scope.
     return _interpolate_env_vars(_interpolate_env_vars({"command": sys.executable, "env": USER_ENV}))
 
 
 def test_unset_whole_ref_counts_as_absent_and_set_values_pass_verbatim():
-    from tools.mcp_tool_config import _build_safe_env
+    from hermes_agent.tools.mcp_tool_config import _build_safe_env
 
     with patch.dict("os.environ", PARENT, clear=True):
         result = _build_safe_env(_rendered()["env"])
@@ -31,7 +31,7 @@ def test_unset_whole_ref_counts_as_absent_and_set_values_pass_verbatim():
     assert result["RESOLVED_LITERAL"] == "${STILL_UNSET}"  # a set value is data, whatever it looks like
 
     # Unset at load, set (even to its own placeholder text) by connect: the re-render passes it.
-    from tools.mcp_tool_config import _interpolate_env_vars
+    from hermes_agent.tools.mcp_tool_config import _interpolate_env_vars
     loaded = _interpolate_env_vars({"FORWARD": "${LATE}"})
     with patch.dict("os.environ", {**PARENT, "LATE": "${LATE}"}, clear=True):
         assert _build_safe_env(_interpolate_env_vars(loaded))["FORWARD"] == "${LATE}"
@@ -39,7 +39,7 @@ def test_unset_whole_ref_counts_as_absent_and_set_values_pass_verbatim():
 
 def test_child_spawned_through_the_sdk_merge_sees_the_documented_env():
     from mcp.client.stdio import get_default_environment
-    from tools.mcp_tool_transport import _stdio_launch
+    from hermes_agent.tools.mcp_tool_transport import _stdio_launch
 
     with patch.dict("os.environ", PARENT, clear=True):
         command, env, _ = _stdio_launch(_rendered())

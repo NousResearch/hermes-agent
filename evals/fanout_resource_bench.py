@@ -2,7 +2,7 @@
 """Fan-out resource benchmark for hermes-agent.
 
 Spawns N in-process child AIAgents via the REAL delegate_task code path
-(tools.delegate_tool.delegate_task) against a local fake OpenAI server, with
+(hermes_agent.tools.delegate_tool.delegate_task) against a local fake OpenAI server, with
 children editing python files across W distinct git worktrees so the LSP
 (pyright) path is exercised for real. Measures, for the host process:
 
@@ -165,7 +165,7 @@ def main() -> None:
     srv = _serve()
     port = srv.server_address[1]
     from run_agent import AIAgent
-    from tools import delegate_tool
+    from hermes_agent.tools import delegate_tool
 
     from hermes_agent.hermes_state import SessionDB
     db_path = os.path.join(home, "state.db")
@@ -220,7 +220,7 @@ def main() -> None:
     try:
         from agent.lsp import shutdown_service
         shutdown_service()
-        from tools.code_kernel import shutdown_all_kernels
+        from hermes_agent.tools.code_kernel import shutdown_all_kernels
         shutdown_all_kernels()
     except Exception:
         pass

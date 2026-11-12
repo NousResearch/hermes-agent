@@ -6,7 +6,7 @@ from pathlib import Path
 import sys
 from unittest.mock import patch
 
-from tools import managed_gateway_auth
+from hermes_agent.tools import managed_gateway_auth
 
 
 MODULE_PATH = Path(__file__).resolve().parents[2] / "tools" / "managed_tool_gateway.py"

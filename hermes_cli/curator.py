@@ -58,7 +58,7 @@ def _print_unmanaged_summary() -> None:
     """Report curation-eligible skills that carry no provenance marker: only background-review
     creations get ``created_by: agent``; older skills and every foreground ``skill_manage(create)``
     are eligible but unmanaged, so no automatic transition touches them."""
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     try:
         unmanaged = skill_usage.unmanaged_report()
     except Exception:
@@ -103,7 +103,7 @@ def _print_curator_config(curator) -> None:
 
 def _cmd_status(args) -> int:
     from agent import curator
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     _print_curator_config(curator)
     if locked := skill_usage.locked_skill_names():
         print(f"\nlocked ({len(locked)}): {', '.join(locked)}  "
@@ -220,7 +220,7 @@ _PIN_MESSAGES = {
 
 
 def _set_pin(args, pinned: bool) -> int:
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     not_agent, not_eligible, unmanaged, done = _PIN_MESSAGES[pinned]
     skill = args.skill
     if not skill_usage.is_agent_created(skill):
@@ -242,10 +242,10 @@ def _cmd_unpin(args) -> int: return _set_pin(args, False)
 
 def _set_lock(args, locked: bool) -> int:
     """``hermes curator lock|unlock``: a user declaration stored beside ``pinned`` in the active
-    profile's skills/.usage.json, enforced by tools/skill_lock on every agent write path. Any skill
+    profile's skills/.usage.json, enforced by hermes_agent/tools/skill_lock on every agent write path. Any skill
     can be locked, but the name must resolve in this profile, so a typo never forges a record."""
-    from tools import skill_usage
-    from tools.skill_manager_tool import _find_skill
+    from hermes_agent.tools import skill_usage
+    from hermes_agent.tools.skill_manager_tool import _find_skill
     verb = "lock" if locked else "unlock"
     existing = _find_skill(args.skill)
     if existing is None:
@@ -272,7 +272,7 @@ def _cmd_unlock(args) -> int: return _set_lock(args, False)
 
 def _cmd_list_unmanaged(args) -> int:
     """Itemize the unmanaged population that `status` summarizes (input for `adopt`)."""
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     rows = skill_usage.unmanaged_report()
     if not rows:
         print("curator: no unmanaged skills — every eligible skill is managed")
@@ -292,7 +292,7 @@ def _cmd_adopt(args) -> int:
     """Hand unmanaged skills to the curator by explicit user declaration: provenance cannot be
     inferred from telemetry (a high patch count proves the agent MAINTAINS a skill, not that it
     AUTHORED it)."""
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     names = list(getattr(args, "skill", None) or [])
     adopt_all = bool(getattr(args, "all_unmanaged", False))
     if adopt_all:
@@ -329,7 +329,7 @@ def _cmd_adopt(args) -> int:
 
 def _as_user(fn, skill: str) -> int:
     """Run a skill mutation with the ledger actor set to ``user``; print and map its result."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
     tok = skill_ledger.set_ledger_actor("user")
     try:
         ok, msg = fn(skill)
@@ -340,13 +340,13 @@ def _as_user(fn, skill: str) -> int:
 
 
 def _cmd_restore(args) -> int:
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     return _as_user(skill_usage.restore_skill, args.skill)
 
 
 def _cmd_archive(args) -> int:
     """Manually archive an agent-created skill. Refuses if pinned."""
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     if skill_usage.get_record(args.skill).get("pinned"):
         print(
             f"curator: '{args.skill}' is pinned — unpin first with "
@@ -366,7 +366,7 @@ def _idle_days(record: dict) -> Optional[int]:
 def _cmd_prune(args) -> int:
     """Bulk-archive curator-managed skills idle for >= N days (pinned exempt, archived skipped)."""
     from agent import curator
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     days = getattr(args, "days", None)
     if days is None:
         days = curator.get_archive_after_days()
@@ -419,7 +419,7 @@ def _cmd_backup(args) -> int:
 
 def _cmd_ledger(args) -> int:
     """List per-mutation audit ledger entries (newest first), or compact the file in place."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
     if getattr(args, "compact", False):
         entries, before, after = skill_ledger.compact_ledger()
         blobs, freed = skill_ledger.gc_blobs()
@@ -456,7 +456,7 @@ def _cmd_purge(args) -> int:
     import shutil
     import time
     from hermes_cli.config import cfg_get, load_config
-    from tools import skill_ledger, skill_usage
+    from hermes_agent.tools import skill_ledger, skill_usage
     ttl_days = getattr(args, "days", None)
     if ttl_days is None:
         ttl_days = int(cfg_get(load_config(), "curator", "archive_ttl_days", default=0) or 0)
@@ -521,7 +521,7 @@ def _report_rollback(ok: bool, msg: str) -> int:
 def _rollback_ledger_entry(args, entry_id: str) -> int:
     """Restore exactly the files touched by one ledger entry (from content-addressed blobs); a
     pre-rollback safety ledger entry is taken first and it fails closed if that capture fails."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
     entry = skill_ledger.get_entry(entry_id)
     if entry is None:
         print(
@@ -592,7 +592,7 @@ def _cmd_rollback(args) -> int:
 
 def _cmd_list_archived(args) -> int:
     """List archived (recoverable) skills."""
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     names = skill_usage.list_archived_skill_names()
     print("\n".join(names) if names else "curator: no archived skills")
     return 0
@@ -607,7 +607,7 @@ _USAGE_SORTS = {
 def _cmd_usage(args) -> int:
     """Usage telemetry for ALL skills on disk (bundled + hub included), with provenance."""
     import json as _json
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     rows = skill_usage.usage_report()
     prov_filter = getattr(args, "provenance", None)
     if prov_filter:

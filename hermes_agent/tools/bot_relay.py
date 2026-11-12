@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Optional
 
-from tools.bot_mode_probe import _default_home, _hermes_root, alias_forms
+from hermes_agent.tools.bot_mode_probe import _default_home, _hermes_root, alias_forms
 from utils import atomic_json_write, unlink_files_older_than
 
 logger = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ class EnvelopeRefusedError(RuntimeError):
 
 
 # Profile names, handles and connection ids share one shape (also the local
-# ``message_agent`` target grammar in ``tools/bot_mode_dm.py``).
+# ``message_agent`` target grammar in ``hermes_agent/tools/bot_mode_dm.py``).
 _HANDLE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
 
@@ -404,7 +404,7 @@ def _settle_pre_upgrade_claim(root: Path | str, path: Path, env_id: str, label: 
     old drain's own re-offer point passes (``REOFFER_AFTER_SECONDS`` after its claim — the claim mtime
     — by which time a live delivery has posted the Desktop's timeout reply) the outcome is settled as
     ``unknown``: the waiter resolves, the envelope is never offered again, and nothing auto-resends."""
-    from tools.bot_failure_reasons import UNKNOWN
+    from hermes_agent.tools.bot_failure_reasons import UNKNOWN
 
     if now - path.stat().st_mtime < REOFFER_AFTER_SECONDS:
         return
@@ -416,7 +416,7 @@ def _settle_pre_upgrade_claim(root: Path | str, path: Path, env_id: str, label: 
 
 def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: str = "", reason: str = "") -> Path:
     """Persist the relayed reply (or delivery error) for the waiter. ``reason`` (typed
-    code, ``tools.bot_failure_reasons``) is classified from ``error`` when omitted.
+    code, ``hermes_agent.tools.bot_failure_reasons``) is classified from ``error`` when omitted.
 
     Idempotent by envelope id — the first settled reply stands, error or not. That is safe because
     a replayed envelope (``_replay_unanswered``) carries the SAME id into the target authority,
@@ -433,7 +433,7 @@ def write_reply(root: Path | str, envelope_id: str, *, reply: str = "", error: s
         return path
     err, code = str(error or ""), str(reason or "")
     if not code and err:
-        from tools.bot_failure_reasons import classify_agent_error
+        from hermes_agent.tools.bot_failure_reasons import classify_agent_error
 
         code = classify_agent_error(err)
     _atomic_write_json(path, {"id": safe, "at": int(time.time()), "reply": str(reply or ""), "error": err, "reason": code})
@@ -462,7 +462,7 @@ def waiter_command(root: Path | str, envelope: dict) -> str:
     via ``terminal_tool(background=True, notify_on_complete=True)`` so its stdout arrives
     as the same completion notification local DMs use.
 
-    A ``tools/bot_mode_dm.py --wait-reply`` entrypoint, like the local delivery runner — not
+    A ``hermes_agent/tools/bot_mode_dm.py --wait-reply`` entrypoint, like the local delivery runner — not
     ``python -c``. The approval gate flags inline interpreter code ("script execution via -e/-c
     flag"), and ``approvals.single_query_mode`` defaults to ``deny`` for the one-shot ``-Q`` turn a
     bot replies from, so the reply waiter was refused exactly when a bot answered a teammate: the
@@ -568,7 +568,7 @@ def delivery_env(author: Optional[dict], profile_home: str | Path | None = None)
     from agent.secret_scope import current_secret_scope, is_multiplex_active
     from agent.turn_author import TURN_AUTHOR_ENV, turn_author_env
     from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home
-    from tools.environments.local import served_profile_child_env
+    from hermes_agent.tools.environments.local import served_profile_child_env
 
     # ``_profile_home`` answers None for the launch profile by design and a relay RPC binds no scope,
     # so under multiplex an empty target means the launch profile, not "unknown" (the fail-closed

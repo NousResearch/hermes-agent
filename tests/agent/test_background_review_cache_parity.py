@@ -356,7 +356,7 @@ def test_review_fork_inherited_tools_survive_compaction_refresh():
     """
     import run_agent
     from agent.background_review import build_cache_parity_fork
-    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     agent = _make_agent_stub(run_agent.AIAgent)
     parent_tools = [
@@ -398,7 +398,7 @@ def test_unrouted_review_fork_inherits_empty_tool_surface():
     """
     import run_agent
     from agent.background_review import build_cache_parity_fork
-    from tools.mcp_tool_agent import refresh_agent_mcp_tools
+    from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
 
     agent = _make_agent_stub(run_agent.AIAgent)
     agent.tools = []

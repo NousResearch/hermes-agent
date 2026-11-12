@@ -16,9 +16,9 @@ import time
 import uuid
 from typing import Any, Dict, Optional
 
-from tools.environments.base import BaseEnvironment
-from tools.interrupt import is_interrupted
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from hermes_agent.tools.environments.base import BaseEnvironment
+from hermes_agent.tools.interrupt import is_interrupted
+from hermes_agent.tools.managed_tool_gateway import resolve_managed_tool_gateway
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class ManagedModalEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd, timeout=timeout)
         # Managed Modal does not sync or mount host credential files.
         try:
-            from tools.credential_files import get_credential_file_mounts
+            from hermes_agent.tools.credential_files import get_credential_file_mounts
         except Exception:
             get_credential_file_mounts = None
         if get_credential_file_mounts is not None and get_credential_file_mounts():
@@ -119,9 +119,9 @@ class ManagedModalEnvironment(BaseEnvironment):
                 self._cancel_exec(exec_id)
                 return _result(f"Managed Modal exec timed out after {timeout}s", 124)
             # Periodic activity touch so the gateway knows we're alive (lazy import:
-            # tests stub tools.environments.base with only BaseEnvironment)
+            # tests stub hermes_agent.tools.environments.base with only BaseEnvironment)
             try:
-                from tools.environments.base import touch_activity_if_due
+                from hermes_agent.tools.environments.base import touch_activity_if_due
                 touch_activity_if_due(_activity_state, "modal command running")
             except Exception:
                 pass

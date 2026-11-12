@@ -1,6 +1,6 @@
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter
-from tools.tts_text_normalize import prepare_spoken_text
+from hermes_agent.tools.tts_text_normalize import prepare_spoken_text
 
 
 class _DummyAdapter(BasePlatformAdapter):

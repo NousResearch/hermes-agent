@@ -18,8 +18,8 @@ import pytest
 import hermes_constants
 from agent.secret_scope import _is_process_home, serves_routed_profile
 from hermes_cli.env_loader import _process_hermes_home
-from tools.environments.local import _is_routed_home
-from tools.mcp_tool_scope import _server_key
+from hermes_agent.tools.environments.local import _is_routed_home
+from hermes_agent.tools.mcp_tool_scope import _server_key
 
 
 def _under(home, fn):

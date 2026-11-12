@@ -1,5 +1,5 @@
 """Verify that terminal command timeouts preserve partial output."""
-from tools.environments.local import LocalEnvironment
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 class TestTimeoutPreservesPartialOutput:
     """When a command times out, any output captured before the deadline

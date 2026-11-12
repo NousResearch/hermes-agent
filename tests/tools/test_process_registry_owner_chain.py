@@ -13,7 +13,7 @@ launcher, never the Linux-side workers.
 import time
 from unittest.mock import patch
 
-from tools.process_registry import ProcessRegistry, ProcessSession
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
 
 
 def _owned_session(sid="proc_own1", container="default", owner="sa-1-abc123",

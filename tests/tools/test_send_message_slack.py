@@ -118,7 +118,7 @@ def test_slack_dm_resolution_error_never_echoes_the_proxy_password(monkeypatch):
     """aiohttp's InvalidURL text is the raw proxy URL; the surfaced tool error must not carry it."""
     import asyncio
 
-    from tools.send_message_senders import _resolve_slack_user_target
+    from hermes_agent.tools.send_message_senders import _resolve_slack_user_target
 
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy",
                 "NO_PROXY", "no_proxy", "SLACK_PROXY"):

@@ -17,7 +17,7 @@ def test_sudo_request_preserves_command_without_leaking_prompt_context(monkeypat
     from hermes_agent.gateway.run import _redact_approval_command
     from agent import redact
     from agent.vault_backends import unlock
-    from tools import project_tools, skills_tool, terminal_tool, terminal_tool_sudo
+    from hermes_agent.tools import project_tools, skills_tool, terminal_tool, terminal_tool_sudo
 
     # Restore the real registrations, including unrelated callbacks wired by the gateway.
     monkeypatch.setattr(terminal_tool, "_callback_tls", threading.local())

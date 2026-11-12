@@ -1,6 +1,6 @@
 """Transport bring-up for MCPServerTask: stdio spawn (OSV preflight, cached-npx swap, child PID
 ledger + death-supervisor registration), Streamable HTTP / SSE connect (preflight, identity header, client certs, OAuth),
-protocol negotiation and initial tool discovery. Split from tools/mcp_tool.py."""
+protocol negotiation and initial tool discovery. Split from hermes_agent/tools/mcp_tool.py."""
 
 import logging
 import asyncio
@@ -12,17 +12,17 @@ from typing import Dict, Optional, Set
 from utils import normalize_proxy_url
 from agent.proxy_bypass import is_loopback_host, should_bypass_proxy
 from agent import runtime_cwd as _runtime_cwd
-from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
-from tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
+from hermes_agent.tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, NonMcpEndpointError, _apply_identity_header, _describe_http_failure, _handshake_answered_with_unsupported_version, _handshake_rejected_as_modern, _is_streamable_http_rejection, _make_http_rejection_recorder, _make_mcp_body_cap_transport, _make_redirect_header_stripper, _resolve_client_cert, _unwrap_exception_group
+from hermes_agent.tools.mcp_tool_lifecycle import _filter_mcp_children, _leader_start_time, _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids, _stdio_starttimes
 from hermes_cli.process_identity import own_process_groups, register_child, release_process_groups
-from tools.mcp_tool_common import _core
-from tools.mcp_tool_node_abi import node_abi_error
-from tools import mcp_tool_config as _config
-from tools import mcp_tool_events as _events
-from tools import mcp_tool_lifecycle as _lifecycle
-from tools import mcp_tool_registration as _registration
+from hermes_agent.tools.mcp_tool_common import _core
+from hermes_agent.tools.mcp_tool_node_abi import node_abi_error
+from hermes_agent.tools import mcp_tool_config as _config
+from hermes_agent.tools import mcp_tool_events as _events
+from hermes_agent.tools import mcp_tool_lifecycle as _lifecycle
+from hermes_agent.tools import mcp_tool_registration as _registration
 
-logger = logging.getLogger("tools.mcp_tool")
+logger = logging.getLogger("hermes_agent.tools.mcp_tool")
 
 _PROBE_INITIALIZE_BODY = (  # JSON-RPC ``initialize`` body for the content-type preflight POST
     '{"jsonrpc":"2.0","id":"_probe","method":"initialize","params":{"protocolVersion":"2025-03-26",'
@@ -98,7 +98,7 @@ def _live_endpoint(server_name: str) -> Optional[tuple[str, dict]]:
     from hermes_platform import declaration
     from hermes_platform.host import facts
     from hermes_platform.resolver.app import AppResolver
-    from tools.mcp_liveness import liveness_for
+    from hermes_agent.tools.mcp_liveness import liveness_for
 
     live = liveness_for(server_name)
     if live.kind != "server_json":
@@ -164,7 +164,7 @@ def _sdk_unavailable_error(server_name: str) -> ImportError:
 
 
 class MCPServerTransportMixin:
-    """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
+    """Methods of :class:`hermes_agent.tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
     __slots__ = ()
 
@@ -534,7 +534,7 @@ class MCPServerTransportMixin:
         if self._auth_type != "oauth":
             return None
         try:
-            from tools.mcp_oauth_manager import get_manager
+            from hermes_agent.tools.mcp_oauth_manager import get_manager
             return get_manager().get_or_build_provider(self.name, url, config.get("oauth"))
         except Exception as exc:
             logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)

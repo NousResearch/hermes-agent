@@ -159,7 +159,7 @@ class TestNoFeishuAllowlist:
         adapter = _make_adapter()
         adapter.set_authorization_check(_gateway_check({"ou_requester"}))
 
-        with patch("tools.approval.resolve_gateway_approval") as resolve:
+        with patch("hermes_agent.tools.approval.resolve_gateway_approval") as resolve:
             await adapter._resolve_approval(1, "once", "Mallory", open_id="ou_bystander", chat_id="oc_group")
 
         resolve.assert_not_called()
@@ -170,7 +170,7 @@ class TestNoFeishuAllowlist:
         adapter = _make_adapter()
         adapter.set_authorization_check(_gateway_check({"u_tenant"}))
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+        with patch("hermes_agent.tools.approval.resolve_gateway_approval", return_value=1) as resolve:
             await adapter._resolve_approval(
                 1, "once", "Alice", open_id="ou_x", chat_id="oc_group", user_id="u_tenant",
             )
@@ -258,7 +258,7 @@ class TestFeishuAllowlistMatchesEveryOperatorId:
     async def test_loop_side_recheck_matches_other_ids(self, click_ids):
         adapter = _make_adapter(allowed={"u_tenant", "on_union"})
 
-        with patch("tools.approval.resolve_gateway_approval", return_value=1) as resolve:
+        with patch("hermes_agent.tools.approval.resolve_gateway_approval", return_value=1) as resolve:
             await adapter._resolve_approval(1, "once", "Alice", open_id="ou_x", chat_id="oc_group", **click_ids)
 
         resolve.assert_called_once_with("sess-1", "once", request_id="req-1")

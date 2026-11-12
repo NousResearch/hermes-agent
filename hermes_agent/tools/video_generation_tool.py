@@ -19,7 +19,7 @@ from agent.video_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     DEFAULT_RESOLUTION,
     error_response)
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ def _handle_video_generate(args: dict[str, Any], **_kw: Any) -> str:
     task_id = _kw.get("task_id")
 
     # Confinement chokepoint (mirrors image_generate): non-local backends hand providers data: URLs.
-    from tools.image_generation_tool import _confine_source_images
+    from hermes_agent.tools.image_generation_tool import _confine_source_images
     image_url, reference_image_urls, confine_error = _confine_source_images(
         image_url, reference_image_urls, task_id)
     if confine_error is not None:
@@ -218,7 +218,7 @@ def _handle_video_generate(args: dict[str, Any], **_kw: Any) -> str:
 
 
 # Dynamic schema — reflects the active backend's actual capabilities so the model usually gets
-# the call right first try. model_tools.get_tool_definitions() keys its cache on config.yaml
+# the call right first try. hermes_agent.model_tools.get_tool_definitions() keys its cache on config.yaml
 # mtime, so the schema rebuilds on provider/model change. Optional params below are advertised
 # only when the provider's capabilities() sets the flag (order = schema property order).
 _CAPABILITY_PARAMS = (
@@ -314,7 +314,7 @@ def _build_dynamic_video_schema() -> dict[str, Any]:
             "image-to-video / reference-to-video pass public image URLs the "
             "same way")
         try:
-            from tools.xai_http import xai_storage_notice_text
+            from hermes_agent.tools.xai_http import xai_storage_notice_text
             notice = xai_storage_notice_text("video_gen")
         except Exception:
             notice = ""

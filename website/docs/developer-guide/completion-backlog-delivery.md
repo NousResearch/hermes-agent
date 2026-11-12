@@ -31,7 +31,7 @@ notifications, in their original order; they are not folded into completion batc
 - **Noninteractive/headless consumers:** this change does not create a new
   autonomous notification loop for an API request, ACP client, or one-shot CLI.
 
-The shared renderer is `tools/process_registry_notifications.py::ProcessNotificationBatch`.
+The shared renderer is `hermes_agent/tools/process_registry_notifications.py::ProcessNotificationBatch`.
 Neither a batch nor its delivery status is persisted into the system prompt.
 Addressed events still require a provable owner; another live session cannot adopt
 them. Delegation delivery continues through its existing durable claim/complete

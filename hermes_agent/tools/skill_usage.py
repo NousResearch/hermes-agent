@@ -612,7 +612,7 @@ def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwa
     """Move *src* to *dest* for *action* ("archive" | "restore") inside a best-effort audit-ledger entry, then apply
     suppression + state side effects; rename falls back to shutil.move across devices."""
     try:
-        from tools import skill_ledger as _ledger
+        from hermes_agent.tools import skill_ledger as _ledger
         _ledger_before = _ledger.capture_before(src, **capture_kwargs)
     except Exception:
         _ledger = _ledger_before = None  # type: ignore[assignment]

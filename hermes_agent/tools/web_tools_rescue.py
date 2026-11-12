@@ -3,12 +3,12 @@
 Stateless by design: a rescue routes THIS call through the free-tier ring (plugins/web/keyless_mcp.py);
 the next web_search/web_extract call attempts the chosen backend again. Callers must never cache a
 rescue-served response, or the one-shot rescue becomes sticky for a whole TTL. Logs under the origin
-(tools.web_tools) logger.
+(hermes_agent.tools.web_tools) logger.
 """
 
 import logging
 
-logger = logging.getLogger("tools.web_tools")
+logger = logging.getLogger("hermes_agent.tools.web_tools")
 
 # Ring vendor -> env var holding its paid key (keyed mode ⇒ eligible for rescue).
 _RING_KEY_VARS = {
@@ -19,7 +19,7 @@ _RING_KEY_VARS = {
 
 def _keyless_rescue_enabled() -> bool:
     """``web.keyless_rescue`` (default on), implicitly off when the keyless tier is disabled."""
-    from tools.web_tools import _load_web_config
+    from hermes_agent.tools.web_tools import _load_web_config
     if not _load_web_config().get("keyless_rescue", True):
         return False
     try:
@@ -51,7 +51,7 @@ def _managed_search_fallback(provider, original_error: str, query: str, limit: i
     """Try managed Firecrawl for this call only; None leaves the original error for keyless rescue.
     Managed Firecrawl is billed, so a caller on free fast search alone never reaches it."""
     from agent.web_search_provider import get_provider_env
-    from tools import web_tools as _wt
+    from hermes_agent.tools import web_tools as _wt
     if (getattr(provider, "name", "") != "perplexity"
             or get_provider_env("PERPLEXITY_API_KEY") or not _wt._managed_web_search() or not _wt._is_tool_gateway_ready()):
         return None

@@ -126,7 +126,7 @@ sys.exit(2)
 @pytest.mark.platforms("posix")  # the fake manager is a shebang script; the env contract is host-agnostic
 def test_session_token_reaches_only_the_manager_call_that_uses_it(tmp_path):
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
-    from tools.environments.local import build_subprocess_env
+    from hermes_agent.tools.environments.local import build_subprocess_env
 
     exe = tmp_path / "bw"
     exe.write_text(_FAKE_BW, encoding="utf-8")

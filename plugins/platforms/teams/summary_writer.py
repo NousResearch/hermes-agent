@@ -122,8 +122,8 @@ class TeamsSummaryWriter:
     def _build_graph_client(self, config: dict[str, Any]) -> Any:
         if self._graph_client is not None:
             return self._graph_client
-        from tools.microsoft_graph_auth import MicrosoftGraphTokenProvider
-        from tools.microsoft_graph_client import MicrosoftGraphClient
+        from hermes_agent.tools.microsoft_graph_auth import MicrosoftGraphTokenProvider
+        from hermes_agent.tools.microsoft_graph_client import MicrosoftGraphClient
         access_token = str(config.get("access_token") or "").strip()
         provider = _StaticAccessTokenProvider(access_token) if access_token else MicrosoftGraphTokenProvider.from_env()
         return MicrosoftGraphClient(provider, transport=self._transport)

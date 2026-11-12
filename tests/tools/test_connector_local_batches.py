@@ -9,10 +9,10 @@ import pytest
 
 @pytest.mark.parametrize("mixed", [False, True])
 def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
-    import model_tools
-    from tools.tool_search import resolve_underlying_call
-    from tools.connectors.gateway import bridge, config
-    from tools.registry import invalidate_check_fn_cache
+    from hermes_agent import model_tools
+    from hermes_agent.tools.tool_search import resolve_underlying_call
+    from hermes_agent.tools.connectors.gateway import bridge, config
+    from hermes_agent.tools.registry import invalidate_check_fn_cache
 
     monkeypatch.setattr(config, "connectors_available", lambda: True)
     monkeypatch.setattr(bridge, "connectors_available", lambda: True)
@@ -37,10 +37,10 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     from agent.tool_executor import _unwrap_tool_search_call
     from agent.agent_runtime_helpers import invoke_tool
     from hermes_agent.hermes_state import SessionDB
-    from tools.connectors import live
-    from tools.connectors.contract import SettleReason
-    from tools.connectors.mcp import apply_answer
-    from tools.todo_tool import TodoStore
+    from hermes_agent.tools.connectors import live
+    from hermes_agent.tools.connectors.contract import SettleReason
+    from hermes_agent.tools.connectors.mcp import apply_answer
+    from hermes_agent.tools.todo_tool import TodoStore
 
     from hermes_agent.gateway.session_context import reset_session_vars, set_session_vars
 
@@ -99,8 +99,8 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
 def test_dispatch_connector_batch_guard_echoes_first_entry(monkeypatch):
     """Direct call: the dispatcher's own local-entry guard (unreachable via tool_call, which
     partitions first) must reject with the echoed retry shape before any entry runs."""
-    import model_tools
-    from tools.connectors.dispatch import dispatch_connector_batch
+    from hermes_agent import model_tools
+    from hermes_agent.tools.connectors.dispatch import dispatch_connector_batch
 
     invoked = []
     monkeypatch.setattr(model_tools, "handle_function_call", lambda *a, **kw: invoked.append(a))

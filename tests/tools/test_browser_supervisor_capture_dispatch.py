@@ -6,8 +6,8 @@ import threading
 import time
 import pytest
 from tests.tools.test_browser_supervisor_capture import _FakeCDP, _wait
-from tools.browser_supervisor import _SupervisorRegistry
-from tools.browser_supervisor_capture import CapturedCDPInvalid
+from hermes_agent.tools.browser_supervisor import _SupervisorRegistry
+from hermes_agent.tools.browser_supervisor_capture import CapturedCDPInvalid
 
 class DelayedCDP(_FakeCDP):
     async def _handle(self, ws):

@@ -70,8 +70,8 @@ def lifecycle(monkeypatch):
             "duration_seconds": 0.01,
         }
 
-    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
-    monkeypatch.setattr("tools.delegate_tool._run_single_child", run)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._build_child_agent", build)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._run_single_child", run)
     return SubagentLifecycleService(lambda: parent)
 
 
@@ -126,9 +126,9 @@ def test_public_lifecycle_runs_host_aggregation(monkeypatch):
     child.session_id = "child-session"
     hook = Mock()
 
-    monkeypatch.setattr("tools.delegate_tool._build_child_agent", lambda **_kwargs: child)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._build_child_agent", lambda **_kwargs: child)
     monkeypatch.setattr(
-        "tools.delegate_tool._run_single_child",
+        "hermes_agent.tools.delegate_tool._run_single_child",
         lambda *_args, **_kwargs: {
             "task_index": 0,
             "status": "completed",
@@ -189,7 +189,7 @@ def test_agent_turn_binds_and_clears_lifecycle_parent(monkeypatch):
 @pytest.fixture
 def steer_lifecycle(monkeypatch):
     from agent.subagent_lifecycle import _REGISTRY
-    from tools.delegate_tool_registry import _register_subagent, _unregister_subagent
+    from hermes_agent.tools.delegate_tool_registry import _register_subagent, _unregister_subagent
 
     child = FakeChild("sa-steer-contract")
     started, finish = threading.Event(), threading.Event()
@@ -204,8 +204,8 @@ def steer_lifecycle(monkeypatch):
         finally:
             _unregister_subagent(child._subagent_id, agent=child)
 
-    monkeypatch.setattr("tools.delegate_tool._build_child_agent", lambda **_kwargs: child)
-    monkeypatch.setattr("tools.delegate_tool._run_single_child", run)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._build_child_agent", lambda **_kwargs: child)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._run_single_child", run)
     yield service, child, started, finish
     finish.set()
     record = _REGISTRY.records.get(child._subagent_id)
@@ -250,7 +250,7 @@ def test_mapping_request_errors_are_explicit(lifecycle, launch_request, message)
 
 @pytest.fixture
 def routing_lifecycle(lifecycle, monkeypatch):
-    from tools.delegate_tool import _build_child_agent
+    from hermes_agent.tools.delegate_tool import _build_child_agent
 
     build = Mock(wraps=_build_child_agent)
     config = Mock(return_value={})
@@ -259,8 +259,8 @@ def routing_lifecycle(lifecycle, monkeypatch):
         "base_url": "https://route.example/v1", "api_key": "fixture-key",
         "api_mode": "chat_completions", "request_overrides": {"temperature": 0.2},
     })
-    monkeypatch.setattr("tools.delegate_tool._build_child_agent", build)
-    monkeypatch.setattr("tools.delegate_tool._load_config", config)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._build_child_agent", build)
+    monkeypatch.setattr("hermes_agent.tools.delegate_tool._load_config", config)
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
     return lifecycle, build, config, resolve
 
@@ -335,7 +335,7 @@ def test_routing_unknown_provider_refuses_before_registration(routing_lifecycle,
 
 
 def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
-    monkeypatch.setattr("toolsets._get_plugin_toolset_names", lambda: {"plugin-tools"})
+    monkeypatch.setattr("hermes_agent.toolsets._get_plugin_toolset_names", lambda: {"plugin-tools"})
     parent = SimpleNamespace(session_id="parent-plugin", enabled_toolsets=["file", "plugin-tools"])
     service = SubagentLifecycleService(lambda: parent)
     handle = service.launch(SubagentLaunchRequest(goal="use the plugin", allowed_toolsets=("plugin-tools",)))
@@ -350,7 +350,7 @@ def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
 def test_provider_is_plugin_facing_only():
     """``provider`` lives on the plugin request; no model-facing delegate_task field can carry a route."""
     import dataclasses
-    from tools.delegate_tool import DELEGATE_TASK_SCHEMA
+    from hermes_agent.tools.delegate_tool import DELEGATE_TASK_SCHEMA
 
     assert "provider" in {field.name for field in dataclasses.fields(SubagentLaunchRequest)}
     props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]

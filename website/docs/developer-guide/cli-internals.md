@@ -186,7 +186,7 @@ Answers: `claimed` records what moved (and refreshes the account token only when
 (`client_not_allowed`, `account_locked`, `invalid_request`). Every other answer, 401 and unknown
 codes included, and every transport failure retries after 1 minute, 10 minutes, 1 hour and 6 hours
 (Retry-After honoured), then the record is Failed. A Claimed record is never reopened, and user copy
-never shows a server code; app slugs show as display names (`tools.tool_labels.app_title`).
+never shows a server code; app slugs show as display names (`hermes_agent.tools.tool_labels.app_title`).
 
 ## Process identity: never infer it from argv substrings
 

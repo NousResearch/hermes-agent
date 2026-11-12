@@ -25,23 +25,23 @@ _IS_WINDOWS = platform.system() == "Windows"
 # (not merely "not Windows") so macOS and other POSIX platforms never touch systemd.
 # See #70716.
 _IS_LINUX = platform.system() == "Linux"
-from tools.environments.local import _append_dropped_path_entries, _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _terminal_env
+from hermes_agent.tools.environments.local import _append_dropped_path_entries, _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env, _terminal_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, NamedTuple, Optional
 
 from hermes_cli.config import get_hermes_home
 
-from tools.process_registry_notifications import (
+from hermes_agent.tools.process_registry_notifications import (
     format_process_notification, heartbeat_output_tail, is_child_process_notification, should_surface_notification)
-from tools.process_registry_checkpoint import ProcessCheckpointMixin
-from tools.process_registry_env_scope import ProcessEnvScopeMixin
-from tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
-from tools.process_registry_ownership import ProcessOwnershipMixin
-from tools.process_registry_termination import ProcessTerminationMixin
-from tools.process_registry_results import load_completed_results, save_completed_result
-from tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
-from tools.process_registry_wsl import _is_wsl_launcher_command
+from hermes_agent.tools.process_registry_checkpoint import ProcessCheckpointMixin
+from hermes_agent.tools.process_registry_env_scope import ProcessEnvScopeMixin
+from hermes_agent.tools.process_registry_output_log import ProcessOutputLogMixin, open_output_log, record_exit_command, worker_output_log
+from hermes_agent.tools.process_registry_ownership import ProcessOwnershipMixin
+from hermes_agent.tools.process_registry_termination import ProcessTerminationMixin
+from hermes_agent.tools.process_registry_results import load_completed_results, save_completed_result
+from hermes_agent.tools.process_registry_env_log import fallback_exit_code, log_delta_command, parse_log_delta_reply
+from hermes_agent.tools.process_registry_wsl import _is_wsl_launcher_command
 
 logger = logging.getLogger(__name__)
 
@@ -524,7 +524,7 @@ def _not_found(session_id: str) -> dict:
 
 def _output_tail(session: "ProcessSession", n: int) -> str:
     """Last *n* chars of the session output with ANSI sequences stripped."""
-    from tools.ansi_strip import strip_ansi
+    from hermes_agent.tools.ansi_strip import strip_ansi
 
     return strip_ansi(session.output_buffer[-n:])
 
@@ -702,7 +702,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # owner replays them explicitly (GatewayRunner._start_recover_previous_run) and the
         # first consumer through restore_completions() (#123265). Importing the module is
         # side-effect free and keeps its import-order contract for later completion writers.
-        import tools.async_delegation
+        import hermes_agent.tools.async_delegation
         # Completions the agent already consumed via wait()/read_log() (output in
         # hand): drain loops AND gateway/tui watchers skip them.
         self._completion_consumed: set = set()
@@ -1185,7 +1185,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         ``persist_on_release``: no agent kill sweeps (#41225); ``restore_login_path``: re-add reset PATH dirs (#56634)."""
         # Bash runs ``A && B &`` as a subshell holding our stdout pipe open while a server B lives;
         # the rewriter makes it ``A && { B & }`` (#68915). Lazy: terminal_tool imports this module.
-        from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
+        from hermes_agent.tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
         safe_command = _append_dropped_path_entries(_rewrite_bg(command), self._spawn_env(env_vars).get("PATH", "") if restore_login_path else "")
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
@@ -1346,7 +1346,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
                 fd = None
             if not (isinstance(fd, int) and fd >= 0):
                 fd = None
-            from tools.environments.fd_wait import open_fd_waiter
+            from hermes_agent.tools.environments.fd_wait import open_fd_waiter
             _waiter = open_fd_waiter(fd) if fd is not None else None
             session._reader_selectable = _waiter is not None
             idle_after_exit = 0
@@ -1476,7 +1476,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         # answers itself (and pywinpty yields str chunks, not bytes).
         responder = None
         if not _IS_WINDOWS:
-            from tools.pty_query_responder import PtyQueryResponder
+            from hermes_agent.tools.pty_query_responder import PtyQueryResponder
             responder = PtyQueryResponder(rows=30, cols=120)
 
         def ingest(text: str) -> None:
@@ -1705,7 +1705,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         deadline = time.monotonic() + max(float(timeout), 0.0)
         interval = max(float(poll_interval), 0.05)
         try:
-            from tools.interrupt import is_interrupted as _is_interrupted
+            from hermes_agent.tools.interrupt import is_interrupted as _is_interrupted
         except Exception:
             _is_interrupted = lambda: False
         interrupted = False
@@ -1791,7 +1791,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
     def restore_completions(self) -> int:
         """Rehydrate durable delegation completions from the LAUNCH profile's ledger, once per
         process. Called by the first consumer that drains the queue (CLI/TUI drain, gateway boot,
-        TUI poller) so a mere ``import model_tools`` never touches state.db (#123265). The replay
+        TUI poller) so a mere ``from hermes_agent import model_tools`` never touches state.db (#123265). The replay
         always runs in the launch scope: the TUI poller / prompt_turn drain call this under the
         session's profile binding, and a once-per-process replay taken under a secondary's scope
         would leave the launch ledger unreplayed for the life of the process. Secondaries are
@@ -1802,7 +1802,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
         token = set_hermes_home_override(None)
         try:
-            from tools.async_delegation import restore_undelivered_completions
+            from hermes_agent.tools.async_delegation import restore_undelivered_completions
             return restore_undelivered_completions(self.completion_queue)
         except Exception as exc:
             logger.warning("Could not restore async delegation completions: %s", exc)
@@ -2004,7 +2004,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def read_log(self, session_id: str, offset: int | None = None, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
-        from tools.ansi_strip import strip_ansi
+        from hermes_agent.tools.ansi_strip import strip_ansi
 
         session = self.get(session_id)
         if session is None:
@@ -2037,7 +2037,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
         mid-turn user message (steer/redirect → ``request_yield``) releases the wait.
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
         with status exited|timeout|interrupted|not_found|error and an output snapshot."""
-        from tools.interrupt import consume_yield as _consume_yield, is_interrupted as _is_interrupted
+        from hermes_agent.tools.interrupt import consume_yield as _consume_yield, is_interrupted as _is_interrupted
 
         try:
             max_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
@@ -2270,7 +2270,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def _stdin_op(self, session_id: str, pty_op, pipe_op, ok: dict) -> dict:
         """``pty_op(pty)`` under PTY mode, else ``pipe_op(stdin)`` on the Popen pipe; *ok* on success."""
-        from tools.process_registry_stdin import already_exited_error, stdin_unavailable_error
+        from hermes_agent.tools.process_registry_stdin import already_exited_error, stdin_unavailable_error
         session = self.get(session_id)
         if session is None:
             return _not_found(session_id)
@@ -2522,7 +2522,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin, ProcessOu
 
     def _prune_if_needed(self):
         """Drop expired, then oldest-over-cap finished sessions (hold _lock); keep pending scope stops and unpublished notices."""
-        from tools.process_registry_awaiting import retained_for_delivery
+        from hermes_agent.tools.process_registry_awaiting import retained_for_delivery
         now = time.time()
         prunable = {sid: s for sid, s in self._finished.items()
                     if not getattr(s, "_scope_stop_pending", False) and not retained_for_delivery(s)}
@@ -2552,7 +2552,7 @@ process_registry = ProcessRegistry()
 
 
 # --- the "process_manage" tool schema + handler -----------------------------------
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 PROCESS_SCHEMA = {
     "name": "process_manage",
@@ -2613,7 +2613,7 @@ def transform_process_output(output: str, *, command: str, returncode: Optional[
     Same helper as the foreground path; callers redact AFTER it, never before, so a replacement
     the plugin returns is still masked. ``returncode`` is None while the process is running and
     ``env_type`` is not recorded per process, so it is passed empty."""
-    from tools.terminal_tool_result import _apply_output_transform_hook
+    from hermes_agent.tools.terminal_tool_result import _apply_output_transform_hook
     return _apply_output_transform_hook(command, output, returncode, task_id or "", "")
 
 
@@ -2649,7 +2649,7 @@ def _list_processes(task_id) -> dict:
     session_key = ""
     with suppress(Exception):
         # See #29177.
-        from tools.approval_context import get_current_session_key
+        from hermes_agent.tools.approval_context import get_current_session_key
         session_key = get_current_session_key(default="") or ""
     return {"processes": [
         _redact_process_result(p)
@@ -2675,8 +2675,8 @@ def _handoff_process(session_id: str, args: dict, task_id: Optional[str]) -> dic
     (child-owned process notices are suppressed and child teardown kills what it owns). Validated against the live spawn
     tree: the caller must be a registered child and must own the process; anything else is an error, never a silent
     no-op, so a PID mentioned in prose can't masquerade as a transfer."""
-    from tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
-    from tools.terminal_tool import _resolve_container_task_id
+    from hermes_agent.tools.delegate_tool_registry import _active_subagents, _active_subagents_lock
+    from hermes_agent.tools.terminal_tool import _resolve_container_task_id
     with _active_subagents_lock:
         record = _active_subagents.get(str(task_id or ""))
     child = record.get("agent") if record else None
@@ -2725,7 +2725,7 @@ def _handle_process(args, **kw):
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         handler, redact = _SESSION_ACTIONS[action]
-        from tools.process_registry_wait_policy import apply_wait_poll_policy
+        from hermes_agent.tools.process_registry_wait_policy import apply_wait_poll_policy
         result = apply_wait_poll_policy(action, session_id, handler(session_id, args))
         return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")

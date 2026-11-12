@@ -13,8 +13,8 @@ import subprocess
 import pytest
 
 from hermes_cli.web_routers import tools as tools_mod
-from tools.environments import docker as docker_mod
-from tools.environments import remote_common
+from hermes_agent.tools.environments import docker as docker_mod
+from hermes_agent.tools.environments import remote_common
 
 
 @pytest.fixture(autouse=True)

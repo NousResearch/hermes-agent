@@ -1,4 +1,4 @@
-"""OpenAI-compatible TTS backends for ``tools.tts_tool``: OpenAI and DeepInfra.
+"""OpenAI-compatible TTS backends for ``hermes_agent.tools.tts_tool``: OpenAI and DeepInfra.
 
 Also owns the managed-gateway (Nous portal ``openai-audio`` proxy) route selection that
 decides where the OpenAI client points. Seams defined on the origin module (``_load_tts_config``,
@@ -13,14 +13,14 @@ import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import urljoin
 
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import (
+from hermes_agent.tools.managed_tool_gateway import resolve_managed_tool_gateway
+from hermes_agent.tools.tool_backend_helpers import (
     NOUS_MANAGED_PROVIDER, managed_nous_tools_enabled, nous_tool_gateway_unavailable_message,
     read_selection, resolve_openai_audio_api_key, selection_error)
-from tools.tts_tool_delivery import _origin, _section
-from tools.tts_tool_providers import _tts_response_format_from_path
+from hermes_agent.tools.tts_tool_delivery import _origin, _section
+from hermes_agent.tools.tts_tool_providers import _tts_response_format_from_path
 
-logger = logging.getLogger("tools.tts_tool")
+logger = logging.getLogger("hermes_agent.tools.tts_tool")
 
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 # Speech models the managed Nous audio gateway serves (it bills a model only when NAS has a priced

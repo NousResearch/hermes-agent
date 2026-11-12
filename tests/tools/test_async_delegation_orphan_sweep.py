@@ -19,10 +19,10 @@ from pathlib import Path
 import pytest
 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
-from tools import async_delegation as ad
+from hermes_agent.tools import async_delegation as ad
 from tests.waiting import wait_until
-from tools.process_registry import process_registry
-from tools.process_registry_awaiting import release, take_ready
+from hermes_agent.tools.process_registry import process_registry
+from hermes_agent.tools.process_registry_awaiting import release, take_ready
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -30,7 +30,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 # state='error'), the completion is persisted, and the process dies before anything delivers it.
 _OWNER = r'''
 import os, time
-from tools import async_delegation as ad
+from hermes_agent.tools import async_delegation as ad
 def child():
     raise RuntimeError("interrupted: waiting for model response")
 r = ad.dispatch_async_delegation(
@@ -167,7 +167,7 @@ def test_live_owner_row_whose_queue_copy_was_lost_is_re_offered_after_a_lease(tm
         held = take_ready(lost_q, 0)  # another session's poller is still routing the copy
         assert ad.sweep_orphaned_completions(q, now=lease) == 0
         release(held)  # ...and dropped it: the copy is gone
-        caplog.set_level(logging.DEBUG, logger="tools.async_delegation")
+        caplog.set_level(logging.DEBUG, logger="hermes_agent.tools.async_delegation")
         assert ad.sweep_orphaned_completions(q, now=lease) == 1
         assert ad.sweep_orphaned_completions(q, now=lease + 60) == 0  # the re-offered copy is queued
         (evt,) = _drain(q)
@@ -314,7 +314,7 @@ def test_offer_dropped_by_a_session_that_cannot_own_it_is_re_offered_to_the_owne
     """Every TUI/Desktop poller drains one process-wide queue. A session that cannot prove it owns an
     async delegation drops its copy while the durable row stays pending, so the offer must not
     suppress the next sweep: the owning session, live later, still gets the row without a restart."""
-    from tools.process_registry_notifications import format_process_notification
+    from hermes_agent.tools.process_registry_notifications import format_process_notification
     from hermes_agent.tui_gateway import server
 
     home = tmp_path / "home"

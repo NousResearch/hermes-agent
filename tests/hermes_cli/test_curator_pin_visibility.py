@@ -59,7 +59,7 @@ def pin_env(tmp_path, monkeypatch):
 
     import hermes_constants
     importlib.reload(hermes_constants)
-    from tools import skill_usage
+    from hermes_agent.tools import skill_usage
     importlib.reload(skill_usage)
     # curator module reads config through its own loader; keep defaults.
     from agent import curator

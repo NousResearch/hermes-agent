@@ -175,7 +175,7 @@ def page(monkeypatch):
     """The CDP boundary: a login form on ORIGIN; records every secret-bearing eval."""
     from types import SimpleNamespace
 
-    from tools import browser_vault_tool
+    from hermes_agent.tools import browser_vault_tool
 
     secret_evals = []
     state = SimpleNamespace(origin=ORIGIN, secret_evals=secret_evals)
@@ -192,8 +192,8 @@ def page(monkeypatch):
 
 
 def _vault(args):
-    from tools.registry import registry
-    import tools.browser_vault_tool  # registers browser_vault
+    from hermes_agent.tools.registry import registry
+    import hermes_agent.tools.browser_vault_tool  # registers browser_vault
 
     return registry.dispatch("browser_vault", args, task_id="isolation")
 
@@ -412,7 +412,7 @@ class Backend(LoginBackend):
 
 
 def test_plugin_otp_is_minted_and_written_inside_the_backends_fill_context(vault_home, page, monkeypatch):
-    from tools import browser_vault_tool
+    from hermes_agent.tools import browser_vault_tool
 
     code = "739251"
     home, _local, load = vault_home
@@ -436,7 +436,7 @@ def test_plugin_otp_is_minted_and_written_inside_the_backends_fill_context(vault
 
 
 def _ctx_backend(vault_home, page, monkeypatch, code="739251"):
-    from tools import browser_vault_tool
+    from hermes_agent.tools import browser_vault_tool
 
     home, _local, load = vault_home
     _write_plugin(home, "ctx_vault", _CONTEXT_BACKEND.format(code=code), "    ctx.register_login_backend(Backend())\n")

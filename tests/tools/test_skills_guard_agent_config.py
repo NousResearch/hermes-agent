@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.skills_guard import scan_skill
+from hermes_agent.tools.skills_guard import scan_skill
 
 def _scan(tmp_path: Path, content: str):
     skill_dir = tmp_path / "skill"

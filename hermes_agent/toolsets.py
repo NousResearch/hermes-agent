@@ -242,9 +242,9 @@ BUILTIN_TOOLSET_NAMES = frozenset(TOOLSETS)
 
 
 def _registry():
-    """Live tool registry, or None when tools.registry can't be imported."""
+    """Live tool registry, or None when hermes_agent.tools.registry can't be imported."""
     try:
-        from tools.registry import registry
+        from hermes_agent.tools.registry import registry
         return registry
     except Exception:
         return None
@@ -460,14 +460,14 @@ def session_disabled_toolsets(
 
 def tool_selection_key(enabled: Optional[list[str]], disabled: Optional[list[str]]) -> tuple:
     """The toolset selection a tools[] snapshot was built from, order-free. Recorded next to the registry
-    generation: the tools[] freeze (``tools.mcp_tool_agent``) holds new tools back only while neither moved."""
+    generation: the tools[] freeze (``hermes_agent.tools.mcp_tool_agent``) holds new tools back only while neither moved."""
     return frozenset(enabled) if enabled is not None else None, frozenset(disabled or ())
 
 
 def agent_tool_drops(agent: Any) -> frozenset:
     """Tool names *agent* never carries, whatever its toolsets resolved to: the side-agent drops and
     the toolsets its session platform does not get. Applied at load, MCP refresh and prefix restore."""
-    from tools.connectors.turn import side_agent_tool_drops
+    from hermes_agent.tools.connectors.turn import side_agent_tool_drops
     return side_agent_tool_drops(agent) | session_platform_tool_drops(getattr(agent, "platform", None))
 
 
@@ -477,7 +477,7 @@ def agent_tool_surface(agent: Any, tools: list[dict[str, Any]]) -> list[dict[str
     variant (``agent.oneshot_footprint.oneshot_tool_schemas``). Applied to FRESH definitions (load, MCP refresh)
     before any merge: a pinned or carried entry keeps the bytes already sent."""
     from agent.oneshot_footprint import agent_is_oneshot, oneshot_tool_schemas
-    from tools.delegate_tool_config import agent_joins_delegation
+    from hermes_agent.tools.delegate_tool_config import agent_joins_delegation
     drops = agent_tool_drops(agent)
     tools = [tool for tool in tools if (tool.get("function") or {}).get("name") not in drops] if drops else list(tools)
     return oneshot_tool_schemas(tools) if agent_is_oneshot(agent) or agent_joins_delegation(agent) else tools

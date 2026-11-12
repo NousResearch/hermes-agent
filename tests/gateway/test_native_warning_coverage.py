@@ -44,7 +44,7 @@ async def test_matrix_download_diagnostic_not_caption_is_suppressed(policy, capt
 
     adapter._client = SimpleNamespace(send_message_event=record)
     adapter._download_external_media_with_cap = AsyncMock(side_effect=RuntimeError("download fixture"))
-    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: True)
+    monkeypatch.setattr("hermes_agent.tools.url_safety.is_safe_url", lambda url: True)
     result = await adapter.send_image("!room", "https://example.invalid/image?token=private", caption, "$reply", {"thread_id": "$thread"})
     if policy:
         assert [f["body"] for f in frames] == ([caption] if caption else [])

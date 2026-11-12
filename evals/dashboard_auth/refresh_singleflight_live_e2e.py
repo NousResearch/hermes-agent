@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 ROOT = sys.argv[1]
 sys.path.insert(0, ROOT)
 os.environ["HERMES_HOME"] = tempfile.mkdtemp(prefix="hermes-e2e-55712-")
-for m in [k for k in sys.modules if k.startswith(("hermes", "tools", "plugins"))]:
+for m in [k for k in sys.modules if k.startswith(("hermes", "hermes_agent.tools", "plugins"))]:
     del sys.modules[m]
 
 import uvicorn

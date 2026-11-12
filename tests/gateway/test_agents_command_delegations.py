@@ -11,8 +11,8 @@ import time
 
 import pytest
 
-from tools import async_delegation as ad
-from tools.process_registry import process_registry
+from hermes_agent.tools import async_delegation as ad
+from hermes_agent.tools.process_registry import process_registry
 
 
 @pytest.fixture(autouse=True)

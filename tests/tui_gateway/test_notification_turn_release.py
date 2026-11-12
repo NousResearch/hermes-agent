@@ -44,7 +44,7 @@ def test_a_lost_delivery_claim_hands_the_turn_back(monkeypatch, claim):
             raise claim
         return claim
 
-    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", _claim)
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.claim_event_delivery", _claim)
     started = _no_turn(monkeypatch)
     session = _claimed_session()
 
@@ -68,10 +68,10 @@ def test_a_completion_batch_that_cannot_be_prepared_hands_the_turn_back(monkeypa
             raise value
         return value
 
-    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", _claim)
-    monkeypatch.setattr("tools.async_delegation.release_event_delivery", lambda evt, c: released.append(c))
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.claim_event_delivery", _claim)
+    monkeypatch.setattr("hermes_agent.tools.async_delegation.release_event_delivery", lambda evt, c: released.append(c))
     if fail_at == "render":
-        monkeypatch.setattr("tools.process_registry_notifications.ProcessNotificationBatch.render",
+        monkeypatch.setattr("hermes_agent.tools.process_registry_notifications.ProcessNotificationBatch.render",
                             lambda self, registry: (_ for _ in ()).throw(ValueError("bad payload")))
     started = _no_turn(monkeypatch)
     session = {"history_lock": threading.RLock(), "running": False, "history": []}
@@ -108,7 +108,7 @@ def test_the_poller_thread_survives_a_dispatch_that_raises(monkeypatch):
     mailbox; an exception out of one event's dispatch used to end the thread for good."""
     events: queue.Queue = queue.Queue()
     events.put({"type": "completion", "session_id": "proc_a"})
-    monkeypatch.setattr("tools.process_registry.process_registry",
+    monkeypatch.setattr("hermes_agent.tools.process_registry.process_registry",
                         SimpleNamespace(completion_queue=events, restore_completions=lambda: 0))
     for name in ("_maybe_fire_tui_loop_tick", "_maybe_fire_tui_heartbeat_tick", "_notif_poll_kanban"):
         monkeypatch.setattr(server, name, lambda *a, **k: None)

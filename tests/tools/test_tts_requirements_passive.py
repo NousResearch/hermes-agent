@@ -9,7 +9,7 @@ exists for; the install itself belongs to synthesis.
 
 import pytest
 
-from tools import tts_tool
+from hermes_agent.tools import tts_tool
 
 
 def _lazy_installs(monkeypatch, allowed: bool) -> None:

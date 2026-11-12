@@ -1,5 +1,5 @@
 """Capture side of the cua-driver backend: window discovery, capture-target selection and capture()/list_windows()/
-list_apps()/focus_app() (mixed into ``CuaDriverBackend``). Logger name stays ``tools.computer_use.cua_backend`` so
+list_apps()/focus_app() (mixed into ``CuaDriverBackend``). Logger name stays ``hermes_agent.tools.computer_use.cua_backend`` so
 log-based tests and operators see one backend logger."""
 
 from __future__ import annotations
@@ -13,15 +13,15 @@ import sys
 from contextlib import contextmanager
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
 
-from tools.computer_use.backend import ActionResult, CaptureResult, UIElement
-from tools.computer_use.cua_backend_input import _BTF_UNSUPPORTED_MSG
-from tools.computer_use.cua_backend_parse import (
+from hermes_agent.tools.computer_use.backend import ActionResult, CaptureResult, UIElement
+from hermes_agent.tools.computer_use.cua_backend_input import _BTF_UNSUPPORTED_MSG
+from hermes_agent.tools.computer_use.cua_backend_parse import (
     _apps_from_windows, _image_dimensions_from_bytes, _image_from_tool_result, _ingest_windows, _is_placeholder_id,
     _is_real_app_window, _parse_elements_from_structured, _parse_elements_from_tree, _parse_xprop_net_active_window,
     _positive_int, _split_tree_text, _windows_from_tool_result, _z_index_uninformative,
 )
 
-logger = logging.getLogger("tools.computer_use.cua_backend")
+logger = logging.getLogger("hermes_agent.tools.computer_use.cua_backend")
 
 # Whole-screen intents: app="screen"/... -> composited `get_desktop_state` (pixels only); app="desktop" -> the OS
 # shell window via list_windows, WITH interactable elements (icons, taskbar).
@@ -226,7 +226,7 @@ class _CaptureMixin:
             windows = self.list_windows()
         if not windows:
             # Diagnose instead of a bare 0x0: the dominant real-world cause on Linux is a locked desktop session.
-            from tools.computer_use import cua_backend as _cb
+            from hermes_agent.tools.computer_use import cua_backend as _cb
             return self._failed_capture(mode, _cb._empty_discovery_reason())
         if not app:
             return windows
@@ -252,7 +252,7 @@ class _CaptureMixin:
         """
         args: dict[str, Any] = {"pid": self._active_pid, "window_id": self._active_window_id,
                                 "session": self._session_id}
-        from tools.computer_use import cua_backend as _cb  # lazy: cua_backend imports this module at import time
+        from hermes_agent.tools.computer_use import cua_backend as _cb  # lazy: cua_backend imports this module at import time
         if capped := _cb._cua_configured_ax_max_elements():
             args["max_elements"] = capped
         return args

@@ -1,6 +1,6 @@
 """Public send_message contract pieces a platform plugin declares on its ``PlatformEntry``.
 
-Plugins import these instead of core-private helpers in ``tools/send_message_*``:
+Plugins import these instead of core-private helpers in ``hermes_agent/tools/send_message_*``:
 
 * ``target_ref_syntax_fn`` parsers — ``(target_ref) -> (chat_id, thread_id) | None | NOT_EXPLICIT``.
   None falls through to core's generic id rules (E.164, numeric, Matrix ``!``/``@``); ``NOT_EXPLICIT``

@@ -5,8 +5,8 @@ vision-capable child as native ``image_url`` content parts on its goal turn; non
 import base64
 from unittest.mock import patch
 
-from tools.delegate_tool import DELEGATE_TASK_SCHEMA, _MAX_TASK_IMAGES, _build_child_goal_message, _normalize_task_images
-from tools.delegate_tool_child_run import _ChildRun
+from hermes_agent.tools.delegate_tool import DELEGATE_TASK_SCHEMA, _MAX_TASK_IMAGES, _build_child_goal_message, _normalize_task_images
+from hermes_agent.tools.delegate_tool_child_run import _ChildRun
 
 _PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABh6FO1AAAAABJRU5ErkJggg=="
@@ -81,7 +81,7 @@ def test_child_run_sends_multimodal_goal_turn(tmp_path):
         _current_task_id = None
 
     run = _ChildRun(_Child(), _Parent(), 0, "Describe it", None, None)
-    with patch("tools.delegate_tool_child_run._create_isolated_worktree", return_value=None), \
+    with patch("hermes_agent.tools.delegate_tool_child_run._create_isolated_worktree", return_value=None), \
             patch("agent.image_routing.decide_image_input_mode", return_value="native"):
         run.seed_workspace()
         result, failure, _ = run.await_child()

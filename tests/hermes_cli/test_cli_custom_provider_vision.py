@@ -101,7 +101,7 @@ def test_real_cli_args_keep_transport_and_capability_identities_separate():
 def test_named_identity_reaches_agent_and_vision_tool_native_gates():
     from agent.auxiliary_client import reset_runtime_main, set_runtime_main
     from run_agent import AIAgent
-    from tools.vision_tools import _should_use_native_vision_fast_path
+    from hermes_agent.tools.vision_tools import _should_use_native_vision_fast_path
 
     _cli, route = _resolve_cli_route()
     runtime = route["runtime"]

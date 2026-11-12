@@ -11,7 +11,7 @@ import asyncio
 import httpx
 import pytest
 
-from tools.mcp_tool import MCPServerTask
+from hermes_agent.tools.mcp_tool import MCPServerTask
 
 
 def _http_400(status=400):
@@ -91,8 +91,8 @@ def test_opaque_sdk_rejection_is_reported_with_the_servers_status_and_body(monke
     warning and the both-transports ConnectionError must still name the HTTP status, the URL that
     was requested and the body the server sent (#114350, #113359). A root that already carries the
     status (httpx ``HTTPStatusError``) is left alone — no duplicated detail."""
-    from tools.mcp_tool_errors import _make_http_rejection_recorder
-    from tools.mcp_tool import sdk_httpx
+    from hermes_agent.tools.mcp_tool_errors import _make_http_rejection_recorder
+    from hermes_agent.tools.mcp_tool import sdk_httpx
 
     httpx2 = sdk_httpx()
     body = '{"jsonrpc":"2.0","error":{"code":-32020,"message":"Unsupported MCP-Protocol-Version"}}'
@@ -122,7 +122,7 @@ def test_opaque_sdk_rejection_is_reported_with_the_servers_status_and_body(monke
             asyncio.run(task._run_http(dict(_CONFIG)))
         return str(info.value)
 
-    with caplog.at_level("WARNING", logger="tools.mcp_tool"):
+    with caplog.at_level("WARNING", logger="hermes_agent.tools.mcp_tool"):
         message = _connect_sees(recorded)
     detail = "Server returned an error response (HTTP 400 from POST http://127.0.0.1:1/mcp: " + body + ")"
     assert detail in message and "SSE: no sse" in message

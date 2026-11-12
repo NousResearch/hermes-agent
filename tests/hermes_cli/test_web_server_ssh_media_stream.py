@@ -317,7 +317,7 @@ def test_a_file_url_with_an_encoded_nul_is_an_invalid_path(client, ssh, monkeypa
 
 
 def test_a_down_ssh_host_is_unavailable_to_the_stream(client, ssh, monkeypatch):
-    from tools.environments.base import EnvironmentConnectionError
+    from hermes_agent.tools.environments.base import EnvironmentConnectionError
 
     class DownHost:
         def __init__(self, **_options):

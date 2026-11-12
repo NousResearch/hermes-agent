@@ -11,8 +11,8 @@ import time
 
 import pytest
 
-import tools.process_registry as pr
-from tools.process_registry import ProcessRegistry
+import hermes_agent.tools.process_registry as pr
+from hermes_agent.tools.process_registry import ProcessRegistry
 
 
 def _drain(q: queue.Queue) -> list:
@@ -87,7 +87,7 @@ def test_a_tick_with_no_new_output_queues_nothing():
 
 
 def test_schema_minimum_heartbeat_is_disabled_for_foreground(monkeypatch):
-    from tools import terminal_tool as tt
+    from hermes_agent.tools import terminal_tool as tt
 
     captured = {}
 
@@ -136,7 +136,7 @@ def test_terminal_dispatch_heartbeat_implies_notify_and_foreground_runs_without_
     """A foreground call carrying an explicit positive heartbeat (the shape models copy from a
     background call) runs once with the heartbeat dropped: refusing it only produced
     identical-call retry loops. Notification intent (`notify=true`) stays refused."""
-    from tools import terminal_tool as tt
+    from hermes_agent.tools import terminal_tool as tt
 
     captured = {}
 
@@ -161,7 +161,7 @@ def test_terminal_dispatch_heartbeat_implies_notify_and_foreground_runs_without_
 
 
 def test_a_cut_tick_carries_its_omitted_count_as_a_field_and_the_marker_is_rendered_once():
-    from tools.process_registry_notifications import (
+    from hermes_agent.tools.process_registry_notifications import (
         HEARTBEAT_OUTPUT_CHARS, format_process_notification, heartbeat_output_tail)
     output, omitted = heartbeat_output_tail("x" * 5 + "y" * HEARTBEAT_OUTPUT_CHARS)
     assert (output, omitted) == ("y" * HEARTBEAT_OUTPUT_CHARS, 5)

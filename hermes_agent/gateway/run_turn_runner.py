@@ -599,7 +599,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         question, stop at the first the user never answers. The stream/typing re-arm waits for the
         last question — between two cards it only opens a bubble the next boundary closes."""
         from hermes_agent.gateway.run_turn_runner_clarify_delivery import UNDELIVERED, UNDELIVERED_DECLINED, UNDELIVERED_NO_SURFACE
-        from tools.clarify_gateway import CANCELLED, SKIPPED
+        from hermes_agent.tools.clarify_gateway import CANCELLED, SKIPPED
         if _finite_viewer_turn():
             # `chat -q` / `-z`: the viewer detaches on the first prompt, so nobody can answer.
             # Answer headless at once, as main's _single_query_clarify_callback did in process.
@@ -639,7 +639,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         Returns ``(response, answered)``; the caller decides what "no answer" means."""
         from hermes_agent.gateway.run_turn_runner_clarify_delivery import (
             UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
-        from tools import clarify_gateway as clarify_mod
+        from hermes_agent.tools import clarify_gateway as clarify_mod
         import uuid
         ctx = self._ctx
         if not ctx._status_adapter:
@@ -1003,8 +1003,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """Run the turn with the per-session gateway approval callback registered: dangerous-command
         approval blocks the agent thread (mirrors CLI input()); the callback bridges sync→async."""
         from hermes_agent.gateway.run import _wrap_current_message_with_observed_context
-        from tools.approval import register_gateway_notify, unregister_gateway_notify
-        from tools.approval_context import reset_current_session_key, set_current_session_key
+        from hermes_agent.tools.approval import register_gateway_notify, unregister_gateway_notify
+        from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
         ctx = self._ctx
         session_key = ctx.session_key or ""
         token = set_current_session_key(session_key)
@@ -1076,7 +1076,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # Cancel pending clarify entries so blocked agent threads don't hang past the end of the
             # run (interrupt, completion, gateway shutdown). Idempotent.
             with suppress(Exception):
-                from tools.clarify_gateway import clear_session
+                from hermes_agent.tools.clarify_gateway import clear_session
                 clear_session(session_key)
             reset_current_session_key(token)
 
@@ -1295,7 +1295,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         from hermes_agent.gateway.session_policy import policy_for_source
         policy = policy_for_source(runner, ctx.source)
         if policy and policy.yolo and ctx.session_key:
-            from tools.approval_yolo import apply_launch_yolo
+            from hermes_agent.tools.approval_yolo import apply_launch_yolo
             apply_launch_yolo(ctx.session_key)
         platform_key = policy.platform if policy else ("cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value)
         combined_ephemeral = self._combined_ephemeral_prompt()

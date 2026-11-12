@@ -83,7 +83,7 @@ def set_current_session_id(session_id: Optional[str]) -> None:
 
 
 def get_current_session_id() -> Optional[str]:
-    """The session bound on this thread (``tools.thread_context`` carries it to tool workers)."""
+    """The session bound on this thread (``hermes_agent.tools.thread_context`` carries it to tool workers)."""
     return getattr(_current_session_tls, "sid", None)
 
 
@@ -247,7 +247,7 @@ def is_unlocked(backend: str) -> bool:
 
 def can_prompt_here() -> bool:
     """False in contexts where no human can answer (cron, webhook, api_server, -q)."""
-    from tools.approval_context import _no_user_can_answer
+    from hermes_agent.tools.approval_context import _no_user_can_answer
     if _no_user_can_answer():
         return False
     return get_unlock_prompt_callback() is not None

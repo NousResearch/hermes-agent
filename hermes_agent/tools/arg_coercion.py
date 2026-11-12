@@ -10,12 +10,12 @@ import json
 import logging
 from typing import Any, Dict
 
-from tools.registry import registry
-from tools.schema_sanitizer import resolve_local_schema_ref
+from hermes_agent.tools.registry import registry
+from hermes_agent.tools.schema_sanitizer import resolve_local_schema_ref
 
 # Logger name kept as "model_tools": these messages were always emitted under
 # that name and log-based tooling filters on it.
-logger = logging.getLogger("model_tools")
+logger = logging.getLogger("hermes_agent.model_tools")
 
 
 def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -32,7 +32,7 @@ def coerce_tool_args(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     # The model saw the SANITIZED schema (provider-illegal property keys were
     # renamed); map those keys back to the registry's wire names first.
     try:
-        from tools.schema_sanitizer import unrename_tool_args
+        from hermes_agent.tools.schema_sanitizer import unrename_tool_args
         args = unrename_tool_args(parameters, args)
     except Exception:  # pragma: no cover — never break dispatch
         pass

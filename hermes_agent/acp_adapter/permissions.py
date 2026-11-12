@@ -120,7 +120,7 @@ def resolve_permission_timeout(timeout: float | None) -> float:
     waiting saw Hermes self-deny under it (#73403)."""
     if timeout is not None:
         return float(timeout)
-    from tools.approval_context import _get_approval_timeout
+    from hermes_agent.tools.approval_context import _get_approval_timeout
 
     return float(_get_approval_timeout())
 
@@ -129,7 +129,7 @@ def make_approval_callback(request_permission_fn: Callable, loop: asyncio.Abstra
                            session_id: str, timeout: float | None = None,
                            send_update: Callable[[object], None] | None = None) -> Callable[..., str]:
     """Return a Hermes approval callback (``command, description, **kw`` as used by
-    ``tools.approval.prompt_dangerous_approval()``) that bridges to the ACP
+    ``hermes_agent.tools.approval.prompt_dangerous_approval()``) that bridges to the ACP
     connection's ``request_permission`` coroutine on ``loop``; auto-denies after ``timeout`` s
     (``None`` → ``approvals.timeout``, read per request)."""
 
@@ -143,7 +143,7 @@ def make_approval_callback(request_permission_fn: Callable, loop: asyncio.Abstra
             send_update=send_update,
         )
         if timed_out:
-            # Distinct from an explicit deny: tools.approval reports "timed out
+            # Distinct from an explicit deny: hermes_agent.tools.approval reports "timed out
             # without user response" instead of a user denial.
             return "timeout"
         if response is None:

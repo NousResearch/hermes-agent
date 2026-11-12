@@ -24,9 +24,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from tools import mcp_tool
-from tools import mcp_tool_handlers as _mcp_handlers
-from tools import mcp_tool_registration as _mcp_registration
+from hermes_agent.tools import mcp_tool
+from hermes_agent.tools import mcp_tool_handlers as _mcp_handlers
+from hermes_agent.tools import mcp_tool_registration as _mcp_registration
 
 
 class _FakeContentBlock:
@@ -65,7 +65,7 @@ def fake_session():
     )
     server = SimpleNamespace(session=session, _rpc_lock=None)
     with patch.dict(mcp_tool._servers, {"srv": server}), \
-         patch("tools.mcp_tool_loop._run_on_mcp_loop",
+         patch("hermes_agent.tools.mcp_tool_loop._run_on_mcp_loop",
                side_effect=_fake_run_on_mcp_loop), \
          patch.dict(mcp_tool._server_error_counts, {}, clear=True):
         yield session
@@ -98,7 +98,7 @@ class TestTrustGateAtCallTime:
         # No readOnlyHint recorded for delete_repo → write-capable.
         handler = _mcp_handlers._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
-            "tools.approval_prompt.request_elicitation_consent",
+            "hermes_agent.tools.approval_prompt.request_elicitation_consent",
             return_value="accept",
         ) as consent:
             raw = handler({"repo": "x"})
@@ -126,7 +126,7 @@ class TestTrustGateAtCallTime:
         }
 
         with patch(
-            "tools.approval_prompt.request_elicitation_consent",
+            "hermes_agent.tools.approval_prompt.request_elicitation_consent",
             return_value="decline",
         ) as consent:
             handler(args)
@@ -147,7 +147,7 @@ class TestTrustGateAtCallTime:
         _set_trust("srv", "untrusted")
         handler = _mcp_handlers._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
-            "tools.approval_prompt.request_elicitation_consent",
+            "hermes_agent.tools.approval_prompt.request_elicitation_consent",
             return_value="decline",
         ):
             raw = handler({"repo": "x"})
@@ -162,7 +162,7 @@ class TestTrustGateAtCallTime:
         _set_read_only("srv", "list_repos", True)
         handler = _mcp_handlers._make_tool_handler("srv", "list_repos", 30.0)
         with patch(
-            "tools.approval_prompt.request_elicitation_consent"
+            "hermes_agent.tools.approval_prompt.request_elicitation_consent"
         ) as consent:
             raw = handler({})
         consent.assert_not_called()
@@ -175,7 +175,7 @@ class TestTrustGateAtCallTime:
         _set_trust("srv", "full")
         handler = _mcp_handlers._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
-            "tools.approval_prompt.request_elicitation_consent"
+            "hermes_agent.tools.approval_prompt.request_elicitation_consent"
         ) as consent:
             raw = handler({"repo": "x"})
         consent.assert_not_called()
@@ -185,7 +185,7 @@ class TestTrustGateAtCallTime:
         """Backward compat: servers with no trust key behave as before."""
         handler = _mcp_handlers._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
-            "tools.approval_prompt.request_elicitation_consent"
+            "hermes_agent.tools.approval_prompt.request_elicitation_consent"
         ) as consent:
             raw = handler({"repo": "x"})
         consent.assert_not_called()
@@ -197,7 +197,7 @@ class TestTrustGateAtCallTime:
         _set_read_only("srv", "write_file", False)
         handler = _mcp_handlers._make_tool_handler("srv", "write_file", 30.0)
         with patch(
-            "tools.approval_prompt.request_elicitation_consent",
+            "hermes_agent.tools.approval_prompt.request_elicitation_consent",
             return_value="decline",
         ) as consent:
             handler({"path": "/etc/passwd"})
@@ -209,7 +209,7 @@ class TestTrustGateAtCallTime:
         _set_trust("srv", "untrusted")
         handler = _mcp_handlers._make_tool_handler("srv", "delete_repo", 30.0)
         with patch(
-            "tools.approval_prompt.request_elicitation_consent",
+            "hermes_agent.tools.approval_prompt.request_elicitation_consent",
             side_effect=RuntimeError("approval backend down"),
         ):
             raw = handler({"repo": "x"})
@@ -223,8 +223,8 @@ class TestTrustGateApprovalRouting:
     def test_api_run_callback_can_resolve_mcp_trust_gate(self, monkeypatch):
         """An API run emits and resolves the exact per-call consent request."""
         from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-        from tools import approval, approval_prompt
-        from tools.approval_context import (
+        from hermes_agent.tools import approval, approval_prompt
+        from hermes_agent.tools.approval_context import (
             reset_current_session_key,
             set_current_session_key,
         )
@@ -271,8 +271,8 @@ class TestTrustGateApprovalRouting:
     ):
         """A registered callback must not widen consent for webhook, cron, or -q workers (#111526)."""
         from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-        from tools import approval, approval_prompt
-        from tools.approval_context import (
+        from hermes_agent.tools import approval, approval_prompt
+        from hermes_agent.tools.approval_context import (
             reset_current_session_key,
             set_current_session_key,
         )
@@ -310,8 +310,8 @@ class TestTrustGateApprovalRouting:
         nobody answers it: consent declines at once instead of waiting the approval timeout (the e2e
         hang after ef1faa4cf8)."""
         from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-        from tools import approval_prompt
-        from tools.terminal_tool import set_approval_callback
+        from hermes_agent.tools import approval_prompt
+        from hermes_agent.tools.terminal_tool import set_approval_callback
 
         if context == "single_query":  # cli_single_query exports the marker into the process env
             monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
@@ -353,7 +353,7 @@ class TestAnnotationCaptureAtDiscovery:
         )
 
     def test_registration_records_hints_and_trust(self):
-        from tools.registry import ToolRegistry
+        from hermes_agent.tools.registry import ToolRegistry
 
         server = mcp_tool.MCPServerTask("srv")
         server.session = MagicMock()
@@ -370,8 +370,8 @@ class TestAnnotationCaptureAtDiscovery:
             "trust": "untrusted",
             "tools": {"resources": False, "prompts": False},
         }
-        with patch("tools.registry.registry", ToolRegistry()), \
-             patch("tools.mcp_tool_registration._track_mcp_tool_server"):
+        with patch("hermes_agent.tools.registry.registry", ToolRegistry()), \
+             patch("hermes_agent.tools.mcp_tool_registration._track_mcp_tool_server"):
             _mcp_registration._register_server_tools("srv", server, config)
 
         assert mcp_tool._server_trust_levels["srv"] == "untrusted"

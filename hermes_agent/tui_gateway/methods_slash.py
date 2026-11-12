@@ -460,7 +460,7 @@ def _mirror_reload_mcp(sid, session, agent, arg) -> None:
 
 
 def _mirror_stop(sid, session, agent, arg) -> None:
-    from tools.process_registry import process_registry
+    from hermes_agent.tools.process_registry import process_registry
     # Deliberate user stop: an explicit source keeps it reaching
     # persist_on_release jobs (#41225).
     process_registry.kill_all(source="slash.stop")

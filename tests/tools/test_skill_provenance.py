@@ -1,4 +1,4 @@
-"""Tests for tools/skill_provenance.py — write-origin ContextVar."""
+"""Tests for hermes_agent/tools/skill_provenance.py — write-origin ContextVar."""
 
 import contextvars
 
@@ -6,7 +6,7 @@ import contextvars
 
 
 def test_empty_origin_falls_back_to_foreground():
-    from tools.skill_provenance import (
+    from hermes_agent.tools.skill_provenance import (
         set_current_write_origin,
         reset_current_write_origin,
         get_current_write_origin,
@@ -21,7 +21,7 @@ def test_empty_origin_falls_back_to_foreground():
 
 def test_context_isolation_between_copies():
     """ContextVar scoping: modifications in one copy do not leak out."""
-    from tools.skill_provenance import (
+    from hermes_agent.tools.skill_provenance import (
         set_current_write_origin,
         get_current_write_origin,
         BACKGROUND_REVIEW,
@@ -44,7 +44,7 @@ def test_context_isolation_between_copies():
 def test_attended_review_is_still_a_background_review():
     """/refine keeps the background_review origin: every curator/skill-ledger/approval guard keyed on
     is_background_review() must still apply; only the unattended-only memory delete gate stands down."""
-    from tools.skill_provenance import (
+    from hermes_agent.tools.skill_provenance import (
         BACKGROUND_REVIEW, is_background_review, is_unattended_review, reset_current_write_origin,
         reset_review_attended, set_current_write_origin, set_review_attended,
     )

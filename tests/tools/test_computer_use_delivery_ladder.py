@@ -25,7 +25,7 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _reset():
-    from tools.computer_use.tool import reset_backend_for_tests
+    from hermes_agent.tools.computer_use.tool import reset_backend_for_tests
     reset_backend_for_tests()
     yield
     reset_backend_for_tests()
@@ -66,7 +66,7 @@ class _FakeSession:
 
 
 def _make_backend(session: _FakeSession):
-    from tools.computer_use.cua_backend import CuaDriverBackend
+    from hermes_agent.tools.computer_use.cua_backend import CuaDriverBackend
     be = CuaDriverBackend.__new__(CuaDriverBackend)
     be._session = session               # type: ignore[attr-defined]
     be._session_id = "test-run"          # type: ignore[attr-defined]
@@ -148,8 +148,8 @@ def test_old_driver_without_structured_content_is_clean():
 
 
 def test_text_response_surfaces_fields_additively():
-    from tools.computer_use.backend import ActionResult
-    from tools.computer_use.tool import _text_response
+    from hermes_agent.tools.computer_use.backend import ActionResult
+    from hermes_agent.tools.computer_use.tool import _text_response
 
     # Full verdict → all fields present.
     r = ActionResult(ok=True, action="click", effect="suspected_noop",
@@ -212,7 +212,7 @@ def test_foreground_refused_on_old_driver():
 
 def test_dispatcher_threads_delivery_mode_to_backend(grant_computer_use_approvals):
     """End-to-end through the tool dispatcher with the noop backend."""
-    from tools.computer_use import tool as cu
+    from hermes_agent.tools.computer_use import tool as cu
     with patch.object(cu, "_new_backend", lambda mode: cu._NoopBackend()):
         cu.reset_backend_for_tests()
         be = cu._get_backend()
@@ -230,9 +230,9 @@ def test_dispatcher_threads_delivery_mode_to_backend(grant_computer_use_approval
 @pytest.fixture
 def _interactive_session(monkeypatch):
     """Interactive CLI presence for the shared gate plus a fresh approval session key; grants made here are
-    wiped from ``tools.approval``'s store afterwards so nothing leaks between tests."""
-    from tools import approval
-    from tools.approval_context import reset_current_session_key, set_current_session_key
+    wiped from ``hermes_agent.tools.approval``'s store afterwards so nothing leaks between tests."""
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_context import reset_current_session_key, set_current_session_key
 
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")
     monkeypatch.setattr(approval, "save_permanent_allowlist", lambda patterns: None)
@@ -249,7 +249,7 @@ def _interactive_session(monkeypatch):
 
 
 def test_background_approval_does_not_authorize_foreground(_interactive_session):
-    from tools.computer_use import tool as cu
+    from hermes_agent.tools.computer_use import tool as cu
 
     seen = []
 
@@ -274,7 +274,7 @@ def test_background_approval_does_not_authorize_foreground(_interactive_session)
 
 
 def test_approval_state_is_session_scoped(_interactive_session):
-    from tools.computer_use import tool as cu
+    from hermes_agent.tools.computer_use import tool as cu
 
     calls = []
 
@@ -297,11 +297,11 @@ def test_approval_state_is_session_scoped(_interactive_session):
 
 
 def test_always_grant_is_per_scope_key_and_visible_to_shared_store(_interactive_session):
-    """One grant store: an "always" answered through computer_use lands in ``tools.approval`` under the same
+    """One grant store: an "always" answered through computer_use lands in ``hermes_agent.tools.approval`` under the same
     ``cua:<action>:<mode>`` key, and — unlike the old blanket unlock — covers only that scope, so the visible
     foreground variant still prompts."""
-    from tools import approval
-    from tools.computer_use import tool as cu
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.computer_use import tool as cu
 
     calls = []
 
@@ -331,7 +331,7 @@ def test_always_grant_is_per_scope_key_and_visible_to_shared_store(_interactive_
 def test_call_tool_restarts_a_dead_session(monkeypatch):
     """call_tool on a session whose lifecycle died (_started False) must
     call start() to rebuild it, not raise 'not started' or hang."""
-    from tools.computer_use.cua_backend_session import _CuaDriverSession
+    from hermes_agent.tools.computer_use.cua_backend_session import _CuaDriverSession
 
     sess = _CuaDriverSession.__new__(_CuaDriverSession)
     sess._started = False           # dead session

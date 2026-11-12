@@ -194,7 +194,7 @@ def _exercise_config_save(tripwire: ProfileTripwire) -> None:
 
 def _exercise_memory_store(tripwire: ProfileTripwire) -> None:
     """MemoryStore.add() persistence path (same class as #92662)."""
-    from tools.memory_tool import MemoryStore
+    from hermes_agent.tools.memory_tool import MemoryStore
 
     store = MemoryStore()
     store.load_from_disk()

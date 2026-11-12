@@ -150,7 +150,7 @@ def _import_child(source: ImportSource, hermes_home: Path, extra_args: tuple[str
     exit code. ``hermes migrate`` passes the user's flags as ``extra_args`` and runs it as a command
     of its own (``from_setup`` False)."""
     from hermes_cli.setup import print_header, print_warning
-    from tools.environments.local import served_profile_child_env
+    from hermes_agent.tools.environments.local import served_profile_child_env
     print_header(f"Importing from {source.label}", gap=True)
     # A home that is not <root>/profiles/<name> is the root: without a selector the child's
     # _apply_profile_override would follow the sticky active_profile into another profile.

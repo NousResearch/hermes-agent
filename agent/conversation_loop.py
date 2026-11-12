@@ -61,7 +61,7 @@ from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
 from agent.turn_tool_round import run_tool_round
 from hermes_logging import set_session_context
-from tools.skill_provenance import set_current_write_origin
+from hermes_agent.tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
@@ -249,7 +249,7 @@ def _is_interpreter_shutdown_error(exc: Exception) -> bool:
         # futures..."), and the buffered ⚠️/❌ retry trace spams the shell after the TUI already exited. End
         # the turn with a single log line: no print, no traceback, no debug dump, no retry. Same class as
         # cron delivery (#55924/#58720) and concurrent tool submission — shared predicate.
-        from tools.interpreter_shutdown import interpreter_shutting_down
+        from hermes_agent.tools.interpreter_shutdown import interpreter_shutting_down
         return interpreter_shutting_down(exc)
     return False
 
@@ -705,7 +705,7 @@ def _bot_chat_prompt_stale(agent, stored_prompt: str | None) -> bool:
     if not stored_prompt:
         return False
     try:
-        from tools.bot_mode_probe import (
+        from hermes_agent.tools.bot_mode_probe import (
             BOT_CHAT_TITLE,
             stored_bot_chat_prompt_needs_upgrade,
             stored_prompt_capability_stale,
@@ -740,7 +740,7 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
     try:
         agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
         if persist_tools:
-            from tools.mcp_tool_agent import persist_agent_tool_names
+            from hermes_agent.tools.mcp_tool_agent import persist_agent_tool_names
             persist_agent_tool_names(agent)
     except Exception as exc:
         logger.warning(failure_message, agent.session_id, exc)
@@ -749,7 +749,7 @@ def _persist_system_prompt(agent, failure_message: str, *, persist_tools: bool =
 def _restore_pinned_tools(agent, session_row) -> list:
     """Pin ``agent.tools`` to the session's persisted array (tools freeze); returns the names
     this surface built BEFORE the pin merged a previous surface's tools back in."""
-    from tools.mcp_tool_agent import agent_tool_names, persist_agent_tool_names, restore_agent_tool_prefix
+    from hermes_agent.tools.mcp_tool_agent import agent_tool_names, persist_agent_tool_names, restore_agent_tool_prefix
     built_for_this_surface = agent_tool_names(agent)
     saved_tools = session_row.get("tool_names") if session_row else None
     try:
@@ -783,7 +783,7 @@ def _refresh_bot_chat_tools(agent) -> None:
     if policy is None and platform not in ("desktop", "tui"):
         return
     try:
-        from tools.mcp_tool_agent import refresh_agent_mcp_tools
+        from hermes_agent.tools.mcp_tool_agent import refresh_agent_mcp_tools
         if policy is not None:
             # Gateway-owned session (managed worker / owner turn): toolsets are frozen in its
             # launch policy, so live config edits never widen or narrow a running session.
@@ -1832,7 +1832,7 @@ def run_conversation(
     from agent.turn_context import export_current_turn_boundary
     from agent.turn_finalizer import settle_held_final
     from agent.voice_turn_route import end_voice_turn_route
-    from tools.vision_tools_history_budget import native_turn_images
+    from hermes_agent.tools.vision_tools_history_budget import native_turn_images
 
     # Steer / redirect / interrupt set this mid-turn; the result reports whether the turn ran untouched.
     agent._turn_user_intervened = False

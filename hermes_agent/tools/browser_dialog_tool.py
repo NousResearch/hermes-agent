@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
-from tools.browser_supervisor import SUPERVISOR_REGISTRY
-from tools.registry import registry
+from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
+from hermes_agent.tools.registry import registry
 
 BROWSER_DIALOG_SCHEMA: dict[str, Any] = {
     "name": "browser_dialog",
@@ -88,7 +88,7 @@ def browser_dialog(
 
 def _browser_dialog_check() -> bool:
     """Gate: same as ``browser_cdp`` so the two tools appear/disappear together."""
-    from tools.browser_cdp_tool import _browser_cdp_check
+    from hermes_agent.tools.browser_cdp_tool import _browser_cdp_check
 
     return _browser_cdp_check()
 

@@ -1,7 +1,7 @@
 """MemoryStore — bounded, file-backed curated memory (MEMORY.md / USER.md).
 Entries are joined by ``ENTRY_DELIMITER``; budgets are in chars (model-independent).
 Module state that tests monkeypatch (``get_memory_dir``, ``fcntl``/``msvcrt``) stays
-in ``tools.memory_tool`` and is read lazily."""
+in ``hermes_agent.tools.memory_tool`` and is read lazily."""
 
 import itertools
 import logging
@@ -14,9 +14,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from utils import atomic_write_text
-from tools.threat_patterns import first_threat_message as _first_threat_message
+from hermes_agent.tools.threat_patterns import first_threat_message as _first_threat_message
 
-logger = logging.getLogger("tools.memory_tool")
+logger = logging.getLogger("hermes_agent.tools.memory_tool")
 
 # Block header prefixes rendered by _render_block; agent/conversation_compression.py
 # matches them to detect a leftover block for an emptied target — keep in lockstep.
@@ -225,7 +225,7 @@ class MemoryStore:
         Threat hits are replaced by a ``[BLOCKED: …]`` placeholder in the SNAPSHOT only;
         live lists keep the raw text so the user can see and remove poisoned entries
         (dropping them silently would hide the attack)."""
-        from tools.threat_patterns import scan_for_threats
+        from hermes_agent.tools.threat_patterns import scan_for_threats
 
         def _sanitize(entry, filename):
             # Strict scope, same as writes; empty / already-blocked entries pass through.
@@ -259,7 +259,7 @@ class MemoryStore:
     def _file_lock(path: Path):
         """Exclusive lock on a separate .lock file so the memory file itself can
         still be atomically replaced."""
-        from tools import memory_tool as _mt  # fcntl/msvcrt live (and are patched) there
+        from hermes_agent.tools import memory_tool as _mt  # fcntl/msvcrt live (and are patched) there
         fcntl, msvcrt = _mt.fcntl, _mt.msvcrt
         lock_path = path.with_suffix(path.suffix + ".lock")
         from hermes_constants import mkdir_under_hermes_home
@@ -299,7 +299,7 @@ class MemoryStore:
 
     @staticmethod
     def _path_for(target: str) -> Path:
-        from tools import memory_tool  # get_memory_dir is monkeypatched there
+        from hermes_agent.tools import memory_tool  # get_memory_dir is monkeypatched there
         return memory_tool.get_memory_dir() / ("USER.md" if target == "user" else "MEMORY.md")
 
     def _entries_for(self, target: str) -> list[str]:
@@ -574,7 +574,7 @@ class MemoryStore:
         return self._batch(target, operations, commit=False)
 
     def _batch(self, target: str, operations: list[dict[str, Any]], *, commit: bool) -> dict[str, Any]:
-        from tools.memory_tool import _memory_target_error
+        from hermes_agent.tools.memory_tool import _memory_target_error
         if target_error := _memory_target_error(self, target, operations):
             return target_error
         if not operations:

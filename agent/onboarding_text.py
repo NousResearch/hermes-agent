@@ -15,7 +15,7 @@ from agent.onboarding_first_tasks import (
     FIXED_ID, MAX_LABEL, MAX_PICKS, OWN_TASK, TASK_BY_ID, eligible_tasks, task_skills,
 )
 from agent.onboarding_flow import Facts, next_beat
-from tools.set_theme_tool import ACCENT_SWATCHES
+from hermes_agent.tools.set_theme_tool import ACCENT_SWATCHES
 
 CHAT_TITLE = "Getting started"
 GREETING = "Hi, I'm Hermes. Let's set things up for you. Then we'll get something cool done."

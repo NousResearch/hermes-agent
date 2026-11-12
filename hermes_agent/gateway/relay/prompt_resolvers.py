@@ -30,7 +30,7 @@ def prompt_refusal(state: dict, actor: dict, option_id: Optional[str] = None) ->
 
 async def resolve_exec_approval(adapter, state, option_id, chat_id, ack_meta) -> None:
     from hermes_agent.gateway.relay import adapter as _relay
-    from tools.approval import resolve_gateway_approval_card
+    from hermes_agent.tools.approval import resolve_gateway_approval_card
 
     choice = option_id if option_id in _relay._EXEC_APPROVAL_LABELS else "deny"
     # The answerer's authority is rechecked against the entry this settles, in the same critical section.
@@ -46,7 +46,7 @@ async def resolve_exec_approval(adapter, state, option_id, chat_id, ack_meta) ->
 
 async def resolve_slash_confirm(adapter, state, option_id, chat_id, ack_meta) -> None:
     from hermes_agent.gateway.relay import adapter as _relay
-    from tools import slash_confirm as slash_confirm_mod
+    from hermes_agent.tools import slash_confirm as slash_confirm_mod
 
     choice = option_id if option_id in _relay._SLASH_CONFIRM_LABELS else "cancel"
     result_text = await slash_confirm_mod.resolve(
@@ -58,7 +58,7 @@ async def resolve_slash_confirm(adapter, state, option_id, chat_id, ack_meta) ->
 
 
 async def resolve_clarify(adapter, state, option_id, chat_id, ack_meta) -> None:
-    from tools.clarify_gateway import mark_awaiting_text, resolve_gateway_clarify
+    from hermes_agent.tools.clarify_gateway import mark_awaiting_text, resolve_gateway_clarify
 
     clarify_id = str(state.get("clarify_id") or "")
     if option_id == "other":

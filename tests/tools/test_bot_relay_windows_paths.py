@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from tools import bot_relay
+from hermes_agent.tools import bot_relay
 
 
 ENV = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}

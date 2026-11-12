@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import tools.terminal_tool as terminal_module
+import hermes_agent.tools.terminal_tool as terminal_module
 
 
 def _plan(timeout: float = 0.05) -> SimpleNamespace:
@@ -76,7 +76,7 @@ def test_completed_pre_execution_guard_verdicts_pass_through(monkeypatch, stubbe
 
 def test_pre_execution_guard_on_the_deadline_worker_sees_the_tool_threads_interrupt(monkeypatch, stubbed_pipeline):
     """/stop keys on the tool thread's tid; the guard chain moved onto a worker must still see it."""
-    from tools.interrupt import is_interrupted, set_interrupt
+    from hermes_agent.tools.interrupt import is_interrupted, set_interrupt
 
     seen: list[bool] = []
     monkeypatch.setattr(terminal_module, "_pre_exec_block", lambda *_a, **_k: seen.append(is_interrupted()))

@@ -184,7 +184,7 @@ def run_probe(repo, receipt):
     import httpx
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from hermes_agent.tui_gateway import mcp_oauth_sessions as sessions
-    from tools.mcp_oauth import HermesTokenStorage
+    from hermes_agent.tools.mcp_oauth import HermesTokenStorage
 
     owner = Path(os.environ["HERMES_HOME"])
     other = owner.parent / "other-profile"
@@ -306,7 +306,7 @@ def main():
         sys.path.insert(0, str(repo))
         logging.disable(logging.CRITICAL)
         from hermes_cli.mcp_config import _get_mcp_servers, _probe_single_server
-        from tools.mcp_oauth import suppress_interactive_oauth
+        from hermes_agent.tools.mcp_oauth import suppress_interactive_oauth
         with suppress_interactive_oauth():
             tools = _probe_single_server("positive", _get_mcp_servers()["positive"])
         return 0 if any(name == "fixture_ping" for name, _ in tools) else 1

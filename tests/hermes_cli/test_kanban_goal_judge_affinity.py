@@ -1,6 +1,6 @@
 """Goal-judge handoff gates: per-task relay-affinity scope + fail-open on transport failure.
 
-Both terminal-handoff gates (``hermes_cli.kanban`` for the CLI, ``tools.kanban_tools`` for
+Both terminal-handoff gates (``hermes_cli.kanban`` for the CLI, ``hermes_agent.tools.kanban_tools`` for
 worker tool calls) run outside any agent turn, so without a bound scope the relay rejects the
 judge call (400 MissingSessionID, #113669). ``judge_goal`` then fails open to ``continue`` with
 ``transport_failed=True``; a gate that reads that as a human "not done" rejects the handoff
@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
 from hermes_cli import kanban as kanban_cli
-from tools import kanban_tools
+from hermes_agent.tools import kanban_tools
 
 _TRANSPORT_FAILED = ("continue", "judge error: BadRequestError", False, None, True)
 _GENUINE_CONTINUE = ("continue", "goal not met yet", False, None, False)

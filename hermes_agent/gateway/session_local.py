@@ -514,7 +514,7 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
         row = authority.db.get_session(stored_id) or {}
     yolo = bool(policy is not None and getattr(policy, 'yolo', False))
     with contextlib.suppress(Exception):
-        from tools.approval import is_session_yolo_enabled
+        from hermes_agent.tools.approval import is_session_yolo_enabled
         yolo = yolo or is_session_yolo_enabled(live.route)
     api_mode = getattr(agent, 'api_mode', None) if agent is not None else None
     if api_mode is None and policy is not None:

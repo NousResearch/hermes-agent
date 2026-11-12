@@ -142,7 +142,7 @@ def _tts_lease_async(lease: str, active: bool) -> None:
     block the toggle's reply). Best-effort."""
     def _run():
         try:
-            from tools.tts_tool_lifecycle import acquire_tts_lease, release_tts_lease
+            from hermes_agent.tools.tts_tool_lifecycle import acquire_tts_lease, release_tts_lease
             (acquire_tts_lease if active else release_tts_lease)(lease)
         except Exception as e:
             logger.debug("voice: tts lease %s active=%s failed: %s", lease, active, e)
@@ -174,8 +174,8 @@ def _tts_stream_begin() -> Optional[queue.Queue]:
     if not _voice_tts_enabled():
         return None
     try:
-        from tools.tts_tool import check_tts_requirements
-        from tools.tts_tool_speaker import stream_tts_to_speaker
+        from hermes_agent.tools.tts_tool import check_tts_requirements
+        from hermes_agent.tools.tts_tool_speaker import stream_tts_to_speaker
         if not check_tts_requirements():
             return None
     except Exception:
@@ -201,13 +201,13 @@ def _tts_stream_stop(user_barge: bool = True) -> None:
         return
     if user_barge and not state["done"].is_set():
         import traceback
-        from tools.tts_streaming import mark_speech_interrupted
+        from hermes_agent.tools.tts_streaming import mark_speech_interrupted
         logger.debug("TTS CUT: _tts_stream_stop(user_barge=True) — new turn or "
                      "interrupt cutting in-flight TTS\n%s", "".join(traceback.format_stack()))
         mark_speech_interrupted()
     state["stop"].set()
     with contextlib.suppress(Exception):
-        from tools.voice_mode import stop_playback
+        from hermes_agent.tools.voice_mode import stop_playback
         stop_playback()
 
 
@@ -251,7 +251,7 @@ def _full_duplex_listener() -> None:
     """Mic live from utterance-submit to turn-complete; a trip transcribes -> ``voice.transcript``."""
     global _fd_listener_active
     try:
-        from tools.voice_mode import (full_duplex_listen, is_audio_output_active,
+        from hermes_agent.tools.voice_mode import (full_duplex_listen, is_audio_output_active,
                                       transcribe_recording)
 
         def _should_stop() -> bool:
@@ -297,8 +297,8 @@ def _fd_trip(phase: str) -> None:
     """Listener tripped: latch the interruption, cut TTS FIRST (so a stale reply can never
     speak), and during generation also interrupt every running turn (the ``agent.interrupt()``
     seam ``session.interrupt`` uses)."""
-    from tools.tts_streaming import mark_speech_interrupted
-    from tools.voice_mode import stop_playback
+    from hermes_agent.tools.tts_streaming import mark_speech_interrupted
+    from hermes_agent.tools.voice_mode import stop_playback
     mark_speech_interrupted()
     if phase == "playback":
         logger.debug("TTS CUT: full-duplex listener tripped during playback")
@@ -327,7 +327,7 @@ def _deliver_fd_transcript(text: str) -> None:
     """Emit the captured interjection; a bare stop phrase also ends the voice chat. The stop
     check must never break delivery (stubbed voice_mode in tests, partial installs)."""
     try:
-        from tools.voice_mode_transcript import is_voice_stop_phrase
+        from hermes_agent.tools.voice_mode_transcript import is_voice_stop_phrase
         is_stop = is_voice_stop_phrase(text)
     except Exception:
         is_stop = False
@@ -407,7 +407,7 @@ def _release_wake_for_transport(transport: Transport) -> bool:
             return False
         _wake_owner_transport, _wake_owner_surface = None, ""
     try:
-        from tools.wake_word import stop_listening
+        from hermes_agent.tools.wake_word import stop_listening
         stop_listening(owner=transport)
     except Exception as e:
         logger.debug("wake stop failed: %s", e)
@@ -429,7 +429,7 @@ def _wake_resume_if_owner(owner: Transport, *, retry_seconds: float = 15.0,
     a voice turn can fail while the device is still being released (browser WebRTC tracks release
     async), so an exception retries in a background thread until it sticks, the lease changes hands,
     or ``retry_seconds`` elapses. ``False`` (lease gone / other owner) is final — never retried."""
-    from tools.wake_word import resume_listening
+    from hermes_agent.tools.wake_word import resume_listening
     try:
         return resume_listening(owner=owner)
     except Exception as e:
@@ -481,7 +481,7 @@ def _frame_fields(frame: dict) -> dict:
 def _wake_probe(cfg: dict, params: dict, surface: str) -> tuple[str, dict]:
     """``(capture_mode, requirements)``; capture stamped so the probe matches what would arm.
     Desktop (gui) prefers client capture (Mac mic → wake.feed PCM); CLI/TUI stay local."""
-    from tools.wake_word import check_wake_word_requirements, resolve_capture_mode
+    from hermes_agent.tools.wake_word import check_wake_word_requirements, resolve_capture_mode
     prefer_client = surface in ("gui", "desktop") or bool(params.get("client_capture"))
     capture_mode = resolve_capture_mode(cfg, prefer_client=prefer_client)
     return capture_mode, check_wake_word_requirements({**cfg, "capture": capture_mode})
@@ -490,7 +490,7 @@ def _wake_probe(cfg: dict, params: dict, surface: str) -> tuple[str, dict]:
 def _wake_detect_handler(transport, sid: str, phrase: str, new_session: bool):
     """On-detect callback: pause, verify ownership, emit ``wake.detected`` on the owner's transport."""
     def _on_detect() -> None:
-        from tools.wake_word import get_last_match, owns_listener, pause_listening
+        from hermes_agent.tools.wake_word import get_last_match, owns_listener, pause_listening
         if not pause_listening(owner=transport) or not owns_listener(transport):
             return
         if _transport_is_dead(transport):
@@ -560,7 +560,7 @@ def _(rid, params: dict) -> dict:
     def refused(reason, **extra):
         return _ok(rid, {"started": False, "reason": reason, **extra})
     try:
-        from tools.wake_word import (
+        from hermes_agent.tools.wake_word import (
             WakeWordInUse, detector_frame_info, load_wake_word_config, owns_listener,
             start_listening, wake_phrase, wake_surface_enabled)
     except Exception as e:
@@ -616,7 +616,7 @@ def _(rid, params: dict) -> dict:
     disabled_persisted = False
     if params.get("persist"):
         try:
-            from tools.wake_word import load_wake_word_config
+            from hermes_agent.tools.wake_word import load_wake_word_config
             currently_enabled = bool(load_wake_word_config().get("enabled"))
         except Exception:
             currently_enabled = True
@@ -628,7 +628,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Release the mic (e.g. while the desktop's browser captures audio)."""
     try:
-        from tools.wake_word import pause_listening
+        from hermes_agent.tools.wake_word import pause_listening
         paused = pause_listening(owner=_caller_transport())
         logger.info("wake.pause: detector paused=%s", paused)
     except Exception as e:
@@ -648,7 +648,7 @@ def _(rid, params: dict) -> dict:
 @method("wake.status")
 def _(rid, params: dict) -> dict:
     try:
-        from tools.wake_word import (
+        from hermes_agent.tools.wake_word import (
             audio_is_silent, detector_frame_info, get_input_device_status, is_listening,
             load_wake_word_config, owns_listener, silent_audio_hint)
         cfg = load_wake_word_config()
@@ -703,7 +703,7 @@ def _(rid, params: dict) -> dict:
     if params.get("sample_rate") is not None and int(params["sample_rate"]) not in (0, 16000):
         return _err(rid, 4001, "wake.feed only accepts 16 kHz PCM")
     try:
-        from tools.wake_word import feed_audio
+        from hermes_agent.tools.wake_word import feed_audio
         ok = feed_audio(owner=_caller_transport(), pcm_int16=pcm)
     except Exception as e:
         logger.debug("wake.feed failed: %s", e)
@@ -716,7 +716,7 @@ def _voice_toggle_status(rid, params: dict) -> dict:
     # working; record_key lets the TUI bind and display the shortcut.
     payload = _voice_status_payload()
     try:
-        from tools.voice_mode import check_voice_requirements
+        from hermes_agent.tools.voice_mode import check_voice_requirements
         reqs = check_voice_requirements()
         payload.update({k: bool(reqs.get(k)) for k in ("available", "audio_available", "stt_available")},
                        details=reqs.get("details") or "")
@@ -733,7 +733,7 @@ def _voice_toggle_mode(rid, params: dict) -> dict:
     if enabled:
         # Spoken-stop hint for the client; sourced from voice.stop_phrases, empty when disabled.
         with contextlib.suppress(Exception):
-            from tools.voice_mode_transcript import voice_stop_hint
+            from hermes_agent.tools.voice_mode_transcript import voice_stop_hint
             stop_hint = voice_stop_hint()
         # Speech output already on → warm the engine now, not on the first reply.
         if _voice_tts_enabled():
@@ -855,7 +855,7 @@ def _(rid, params: dict) -> dict:
         max_rec = _voice_cfg_number(voice_cfg.get("max_recording_seconds"), 120.0)
         # Hand the mic to STT if the wake detector holds it; a terminal capture event resumes it.
         with contextlib.suppress(Exception):
-            from tools.wake_word import pause_listening
+            from hermes_agent.tools.wake_word import pause_listening
             wake_paused = pause_listening(owner=transport)
         if wake_paused:
             with _voice_sid_lock:

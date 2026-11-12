@@ -26,7 +26,7 @@ def _scope():
 
 def _cwd_mount_enabled() -> bool:
     """The terminal's own predicate, so the file panel agrees with what the container mounted."""
-    from tools.terminal_tool_config import _tenv_bool
+    from hermes_agent.tools.terminal_tool_config import _tenv_bool
 
     return _tenv_bool("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false")
 
@@ -44,8 +44,8 @@ def _docker_sandbox_dir_candidates(session_key: str = "", workspace_key: str = "
     """
     tenv, _persistent = _scope()
     try:
-        from tools.environments.path_utils import sanitize_task_id_for_path
-        from tools.terminal_tool_config import home_profile_name, profile_container_key
+        from hermes_agent.tools.environments.path_utils import sanitize_task_id_for_path
+        from hermes_agent.tools.terminal_tool_config import home_profile_name, profile_container_key
         base = profile_container_key(home_profile_name())
     except Exception:  # health: allow BLE001 -- path translation fails closed; a miss is a 404, not a 500
         return ["default"]
@@ -76,7 +76,7 @@ def _docker_persistent_sandbox_roots(
     if not persistent():
         return []
     try:
-        from tools.environments.base import get_sandbox_dir
+        from hermes_agent.tools.environments.base import get_sandbox_dir
         base = get_sandbox_dir() / "docker"
         return [cand for name in _docker_sandbox_dir_candidates(session_key, workspace_key)
                 if (cand := (base / name / leaf).resolve(strict=False)).is_dir()]
@@ -103,7 +103,7 @@ def _session_mounted_workspace(workspace_key: str, workspace_cwd: str) -> list[P
     mount is that cwd, never the profile's ``terminal.cwd``. A cwd whose digest
     is not ``workspace_key`` names some other container's mount: no root.
     """
-    from tools.terminal_tool import workspace_key_for
+    from hermes_agent.tools.terminal_tool import workspace_key_for
 
     cwd = (workspace_cwd or "").strip()
     if not cwd or "\0" in cwd or not os.path.isabs(os.path.expanduser(cwd)):
@@ -176,8 +176,8 @@ async def hand_back_unreadable_media(paths: list[str]) -> None:
 
 
 def _hand_back_files(paths: list[str]) -> None:
-    from tools.environments.docker import find_docker
-    from tools.environments.docker_ownership import hand_back_media_file
+    from hermes_agent.tools.environments.docker import find_docker
+    from hermes_agent.tools.environments.docker_ownership import hand_back_media_file
     docker_exe = find_docker()
     for path in paths if docker_exe else []:
         if hand_back_media_file(docker_exe, path):

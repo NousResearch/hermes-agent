@@ -25,8 +25,8 @@ from agent.tool_dispatch_helpers import (
     _should_parallelize_tool_batch,
 )
 from agent.prompt_builder import STEER_MARKER_OPEN
-from tools.budget_config import BudgetConfig
-from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
+from hermes_agent.tools.budget_config import BudgetConfig
+from hermes_agent.tools.tool_result_storage import PERSISTED_OUTPUT_TAG
 
 
 def _assert_budget_replaced(content: str) -> None:
@@ -381,10 +381,10 @@ def _make_tool_defs(*names: str) -> list:
 def agent():
     with (
         patch(
-            "model_tools.get_tool_definitions",
+            "hermes_agent.model_tools.get_tool_definitions",
             return_value=_make_tool_defs("web_search", "terminal"),
         ),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         a = AIAgent(
@@ -425,7 +425,7 @@ class TestSegmentedDispatchIntegration:
                 events.append(("end", name, kwargs["tool_call_id"]))
             return json.dumps({"ok": name})
 
-        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         # One result per call, in emission order.
@@ -458,7 +458,7 @@ class TestSegmentedDispatchIntegration:
                 executed.append(kwargs["tool_call_id"])
             return json.dumps({"ok": True})
 
-        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         assert [m["tool_call_id"] for m in messages] == ["s1", "s2", "t1", "s3", "s4"]
@@ -493,7 +493,7 @@ class TestSegmentedDispatchIntegration:
                 agent._interrupt_requested = True
             return json.dumps({"ok": True})
 
-        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         # Every call still gets exactly one result, in order.
@@ -518,7 +518,7 @@ class TestSegmentedDispatchIntegration:
             return json.dumps({"ok": True})
 
         agent.steer("focus on the tests")
-        with patch("model_tools.handle_function_call", side_effect=fake_handle):
+        with patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_handle):
             agent._execute_tool_calls(msg, messages, "task-1")
 
         contents = [m["content"] for m in messages]
@@ -588,7 +588,7 @@ class TestSegmentedDispatchIntegration:
             return "small"
 
         with (
-            patch("model_tools.handle_function_call", side_effect=fake_handle),
+            patch("hermes_agent.model_tools.handle_function_call", side_effect=fake_handle),
             patch("agent.tool_executor._budget_for_agent", return_value=budget),
         ):
             agent._execute_tool_calls(msg, messages, "task-1")

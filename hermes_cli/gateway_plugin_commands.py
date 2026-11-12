@@ -128,7 +128,7 @@ def skill_notes(cli):
     if notice is not None:
         return [notice] if notice else []
     from agent.skill_commands import skill_command_collision_note
-    from tools.skills_tool import find_all_skills
+    from hermes_agent.tools.skills_tool import find_all_skills
     return list(filter(None, (skill_command_collision_note(s["name"]) for s in find_all_skills())))
 
 

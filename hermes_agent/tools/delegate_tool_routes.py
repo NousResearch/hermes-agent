@@ -21,7 +21,7 @@ from agent.delegation_provider import (
     RESERVED_TASK_PARAMETERS, ROUTE_KEYS, DelegationProvider, DelegationRouteError,
 )
 
-logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+logger = logging.getLogger("hermes_agent.tools.delegate_tool")  # log-record parity with the origin module
 
 _PARAM_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
@@ -130,7 +130,7 @@ def delegated_profile_scope(home: Any) -> Iterator[None]:
     )
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
+    from hermes_agent.tools.terminal_scope import install_profile_terminal_scope, reset_terminal_scope
     from hermes_agent.tui_gateway.launch_profile_policy import owner_secret_scope
 
     routed = hermes_home_key(home) != hermes_home_key(get_routing_process_hermes_home())
@@ -193,7 +193,7 @@ def _profile_route(home: Path) -> TaskRoute:
     from hermes_cli.config import load_config_readonly
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_constants import resolve_reasoning_config
-    from tools.delegate_tool_config import ResolvedReasoning, _credential_bundle, _require_pinned_command
+    from hermes_agent.tools.delegate_tool_config import ResolvedReasoning, _credential_bundle, _require_pinned_command
     _refuse_under_worker_snapshot(home)
     with delegated_profile_scope(home):
         cfg = load_config_readonly() or {}
@@ -233,10 +233,10 @@ def _with_inherited_fallback(route: dict[str, Any], config: Mapping[str, Any]) -
 def _resolve_route(route: dict[str, Any], parent_agent: Any, backend: str) -> TaskRoute:
     if route.get("profile"):
         return replace(_profile_route(_profile_home(route["profile"])), backend=backend)
-    from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
+    from hermes_agent.tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
     creds = _resolve_delegation_credentials(route, parent_agent)
     if route.get("service_tier") not in (None, ""):
-        from tools.delegate_tool_tuning import task_service_tier
+        from hermes_agent.tools.delegate_tool_tuning import task_service_tier
         creds = {**creds, **task_service_tier(str(route["service_tier"]), creds, parent_agent)}
     return TaskRoute(creds, route, route.get("reasoning_effort"), None, None, backend)
 
@@ -335,5 +335,5 @@ def resolve_task_routes(task_list: list[dict[str, Any]], config: Mapping[str, An
 def route_for_config(routing_cfg: dict[str, Any], parent_agent: Any) -> TaskRoute:
     """The route an internal caller's explicit config block describes (``/review`` ->
     ``auxiliary.review``); bypasses the provider, as those callers own their route."""
-    from tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
+    from hermes_agent.tools.delegate_tool import _resolve_delegation_credentials  # the facade is the patch seam
     return TaskRoute(_resolve_delegation_credentials(routing_cfg, parent_agent), routing_cfg)

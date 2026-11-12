@@ -51,7 +51,7 @@ def _assert_path_preserved(env):
     """Original PATH entries survive sanitization; the hermes console-script
     dir may be prepended (see _sanitize_subprocess_env, issue #92998) so we
     assert the contract, not byte equality."""
-    from tools.environments.local import _resolve_hermes_bin_dir
+    from hermes_agent.tools.environments.local import _resolve_hermes_bin_dir
 
     path_val = env.get("PATH", "")
     assert path_val.endswith("/usr/bin:/bin"), path_val
@@ -80,8 +80,8 @@ def test_resolve_mcp_invocation_sanitizes_env(monkeypatch):
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
 
-    from tools.computer_use import cua_backend
-    from tools.computer_use import cua_backend_driver
+    from hermes_agent.tools.computer_use import cua_backend
+    from hermes_agent.tools.computer_use import cua_backend_driver
 
     captured = {}
     _patch_windows_hide_flags(monkeypatch, cua_backend)
@@ -101,8 +101,8 @@ def test_runtime_contract_check_sanitizes_env(monkeypatch):
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
 
-    from tools.computer_use import cua_backend
-    from tools.computer_use import cua_backend_driver
+    from hermes_agent.tools.computer_use import cua_backend
+    from hermes_agent.tools.computer_use import cua_backend_driver
 
     captured = {}
     _patch_windows_hide_flags(monkeypatch, cua_backend)
@@ -120,7 +120,7 @@ def test_cli_fallback_sanitizes_env_and_hides_console_on_windows(monkeypatch):
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
 
-    from tools.computer_use import cua_backend, cua_backend_driver, cua_backend_session
+    from hermes_agent.tools.computer_use import cua_backend, cua_backend_driver, cua_backend_session
 
     captured = {}
     _patch_windows_hide_flags(monkeypatch, cua_backend_session)
@@ -148,7 +148,7 @@ def test_permissions_run_sanitizes_env(monkeypatch):
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
 
-    from tools.computer_use import permissions
+    from hermes_agent.tools.computer_use import permissions
 
     captured = {}
     monkeypatch.setattr(
@@ -166,7 +166,7 @@ def test_doctor_spawn_sanitizes_env_and_hides_console_on_windows(monkeypatch):
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.delenv("HERMES_CUA_TELEMETRY", raising=False)
 
-    from tools.computer_use import doctor
+    from hermes_agent.tools.computer_use import doctor
 
     captured = {}
     _patch_windows_hide_flags(monkeypatch, doctor)

@@ -164,7 +164,7 @@ def test_vision_analyze_normalization_narrows_for_managed(hermes_home, monkeypat
     pytest.importorskip("PIL")
     from PIL import Image
 
-    import tools.vision_tools as vt
+    import hermes_agent.tools.vision_tools as vt
 
     webp_path = tmp_path / "img.webp"
     Image.new("RGB", (32, 32), (255, 0, 0)).save(webp_path, format="WEBP")

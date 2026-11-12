@@ -119,7 +119,7 @@ async def test_two_bots_same_chat_have_distinct_lanes_and_stop_cannot_cross(rig)
     assert not guard_a.is_set()  # the command path replaced A's guard; the run was cancelled, not flagged
 
     # Clarify: pending prompts on both lanes; the plain-text answer on A resolves A only.
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
     clarify_gateway.register("c-a", key_a, "Which?", ["x", "y"])
     clarify_gateway.register("c-b", key_b, "Which?", ["x", "y"])
     clarify_gateway.mark_awaiting_text("c-a")

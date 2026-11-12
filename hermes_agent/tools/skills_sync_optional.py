@@ -1,5 +1,5 @@
 """Official optional-skill provenance: hub-lock backfill and restore. Profile-scoped paths and
-patchable helpers resolve through ``_ss()`` at call time so ``tools.skills_sync`` patches work."""
+patchable helpers resolve through ``_ss()`` at call time so ``hermes_agent.tools.skills_sync`` patches work."""
 
 import json
 import logging
@@ -11,19 +11,19 @@ from typing import Dict, Iterator, List, Optional, Set, Tuple
 from agent.skill_utils import is_excluded_skill_path
 from utils import atomic_write_text
 
-logger = logging.getLogger("tools.skills_sync")
+logger = logging.getLogger("hermes_agent.tools.skills_sync")
 
 
 def _ss():
-    """Live ``tools.skills_sync`` module (imported lazily: it imports helpers from this module)."""
-    from tools import skills_sync
+    """Live ``hermes_agent.tools.skills_sync`` module (imported lazily: it imports helpers from this module)."""
+    from hermes_agent.tools import skills_sync
     return skills_sync
 
 
 def _content_hash(directory: Path) -> str:
     """Hub-lock hash style; provenance metadata only, so fall back to local MD5 sans guard deps."""
     try:
-        from tools.skills_guard import content_hash
+        from hermes_agent.tools.skills_guard import content_hash
         return content_hash(directory)
     except Exception:
         return _ss().dir_hash(directory)

@@ -144,7 +144,7 @@ def current_origin() -> str:
     """``foreground`` or ``background_review`` — reuses the skill-provenance ContextVar
     the background review fork sets; foreground turns leave it at the default."""
     with suppress(Exception):
-        from tools.skill_provenance import get_current_write_origin
+        from hermes_agent.tools.skill_provenance import get_current_write_origin
         return get_current_write_origin()
     return "foreground"
 
@@ -218,7 +218,7 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "", inline_detail: st
 
 def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
     """Prompt inline for a memory write: True approved, False denied, None → stage. Uses the per-thread
-    CLI approval callback (``tools.terminal_tool.set_approval_callback``) directly, not
+    CLI approval callback (``hermes_agent.tools.terminal_tool.set_approval_callback``) directly, not
     ``prompt_dangerous_approval``: that wrapper falls back to ``input()`` (deadlock-prone under
     prompt_toolkit; silent deny in gateway sessions) and turns callback errors into a deny, whereas
     here a missing channel or failed prompt must stage instead.
@@ -226,11 +226,11 @@ def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
     ``hermes chat -q`` (and so every kanban worker), cron and unattended platforms can register a callback too,
     but nobody answers it: stage at once instead of waiting the approval timeout. See #15216.
     """
-    from tools.approval_context import _no_user_can_answer
+    from hermes_agent.tools.approval_context import _no_user_can_answer
     if _no_user_can_answer():
         return None
     try:
-        from tools.terminal_tool import _get_approval_callback
+        from hermes_agent.tools.terminal_tool import _get_approval_callback
     except Exception:
         return None
     callback = _get_approval_callback()
@@ -238,7 +238,7 @@ def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
         return None
     header = summary.strip() or "Save to memory?"
     try:
-        from tools.approval_prompt import callback_accepts
+        from hermes_agent.tools.approval_prompt import callback_accepts
         extra = {"title": "Save to memory?"} if callback_accepts(callback, "title") else {}
         choice = callback(detail.strip() or header, f"Save to memory: {header}", allow_permanent=False, **extra)
     except Exception as e:
@@ -278,7 +278,7 @@ def _frontmatter_description(content: str) -> str:
 def _find_skill_path(name: str) -> Optional[Path]:
     """Directory of an installed skill, or None if unknown / lookup unavailable."""
     try:
-        from tools.skill_manager_tool import _find_skill
+        from hermes_agent.tools.skill_manager_tool import _find_skill
     except Exception:
         return None
     # Only the import is guarded (as on main); a lookup failure propagates.
@@ -357,7 +357,7 @@ def _fold_patch(base: str, old_string: str, new_string: str, replace_all: Any = 
     ``(content, 0, None, error)`` contract. Local import: keeps write_approval importable
     without the tool chain (fuzzy_match is core-adjacent but guarded for safety anyway).
     """
-    from tools.fuzzy_match import fuzzy_find_and_replace
+    from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace
     folded, match_count, _strategy, error = fuzzy_find_and_replace(
         base, old_string, str(new_string), bool(replace_all))
     if error or match_count == 0:

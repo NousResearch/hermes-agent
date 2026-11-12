@@ -264,7 +264,7 @@ def test_named_profile_reroute_defers_limit_to_final_process(monkeypatch, tmp_pa
     from hermes_cli import main as cli_main
     import hermes_cli.profiles
     import hermes_constants
-    from tools.environments import local as local_environment
+    from hermes_agent.tools.environments import local as local_environment
 
     calls: list[str] = []
     exec_call: dict[str, object] = {}

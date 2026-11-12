@@ -22,7 +22,7 @@ def _no_host_browser_use_cli():
     "not installed"; tests that exercise the CLI path monkeypatch ``bu_cli._find_cli`` themselves.
     """
     try:
-        import tools.browser_use_cli as bu_cli
+        import hermes_agent.tools.browser_use_cli as bu_cli
     except Exception:
         yield
         return
@@ -39,7 +39,7 @@ def _no_chromium_download():
     """A test that reaches the launcher without a fake binary must never start PM's ~170 MB Chromium
     download; the one-shot auto-install is pinned to "declined"."""
     try:
-        import tools.browser_launcher as launcher
+        import hermes_agent.tools.browser_launcher as launcher
     except Exception:
         yield
         return
@@ -53,7 +53,7 @@ def _no_shared_temp_socket_dirs():
     in the shared temp root (sun_path budget). Unit tests never claim one there: fake CLIs would
     leave latch files behind. The dir keeps its long path; tests of the claim restore the real one."""
     try:
-        import tools.browser_harness_dirs as harness_dirs
+        import hermes_agent.tools.browser_harness_dirs as harness_dirs
     except Exception:
         yield
         return
@@ -71,7 +71,7 @@ def _no_host_bot_desktop_autostart():
     tests that exercise the desktop path monkeypatch ``runtime`` themselves.
     """
     try:
-        from tools.bot_desktop import runtime as bd_runtime
+        from hermes_agent.tools.bot_desktop import runtime as bd_runtime
     except Exception:
         yield
         return
@@ -83,7 +83,7 @@ def _no_host_bot_desktop_autostart():
 def _materialize_mcp_sdk_symbols():
     """Materialize the lazily-imported MCP SDK before each tools test.
 
-    ``tools/mcp_tool.py`` defers the ~260ms ``mcp`` SDK import until first
+    ``hermes_agent/tools/mcp_tool.py`` defers the ~260ms ``mcp`` SDK import until first
     real use (CLI startup perf). Tests in this directory patch SDK symbols
     (``ClientSession``, ``stdio_client``, ``_MCP_HTTP_AVAILABLE``, ...) on
     the module and expect the pre-lazy eager-import world: symbols bound,
@@ -92,7 +92,7 @@ def _materialize_mcp_sdk_symbols():
     can never clobber a patched flag mid-test (it no-ops once attempted).
     """
     try:
-        from tools import mcp_tool
+        from hermes_agent.tools import mcp_tool
         mcp_tool._ensure_mcp_sdk()
     except Exception:
         pass
@@ -103,12 +103,12 @@ def _materialize_mcp_sdk_symbols():
 def _clear_web_result_cache():
     """Reset the web_search TTL memo between tests.
 
-    The memo is module-global state in tools/web_result_cache.py; without
+    The memo is module-global state in hermes_agent/tools/web_result_cache.py; without
     this, a test that exercised web_search_tool leaves a cached response
     that a later test with the same query would receive instead of its own
     mocked provider result.
     """
-    from tools.web_result_cache import search_memo
+    from hermes_agent.tools.web_result_cache import search_memo
     search_memo.clear()
     yield
     search_memo.clear()
@@ -155,9 +155,9 @@ def grant_computer_use_approvals(monkeypatch):
     computer_use fails CLOSED when nobody can answer (no interactive user, no
     gateway), so dispatch tests that only care about routing must present an
     interactive CLI with a granting callback. "once" persists nothing, so no
-    grant leaks into ``tools.approval``'s session/permanent stores.
+    grant leaks into ``hermes_agent.tools.approval``'s session/permanent stores.
     """
-    from tools.computer_use import tool as cu_tool
+    from hermes_agent.tools.computer_use import tool as cu_tool
 
     monkeypatch.setenv("HERMES_INTERACTIVE", "1")
     cu_tool.set_approval_callback(lambda command, description, **kw: "once")
@@ -187,5 +187,5 @@ def disable_lazy_stt_install():
     Opt in at module scope with
     ``pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")``.
     """
-    with patch("tools.transcription_tools._try_lazy_install_stt", return_value=False):
+    with patch("hermes_agent.tools.transcription_tools._try_lazy_install_stt", return_value=False):
         yield

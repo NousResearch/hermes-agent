@@ -5,8 +5,8 @@ set_value path, which bypasses synthetic-event filtering."""
 
 from __future__ import annotations
 
-from tools.computer_use.backend import ActionResult
-from tools.computer_use.tool import _classify_action_result
+from hermes_agent.tools.computer_use.backend import ActionResult
+from hermes_agent.tools.computer_use.tool import _classify_action_result
 
 
 def _result(delivered):

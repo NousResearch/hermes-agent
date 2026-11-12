@@ -427,7 +427,7 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
     # the turn stays in the peer's own transcript, the sending agent never
     # sees NO_REPLY/[SILENT] as a real reply. Same rule as the gateway's live
     # Bot Chat completion, the Desktop bot_relay.deliver RPC and the one-shot
-    # local `hermes chat -Q` transport (tools/bot_mode_dm.py) — this is the
+    # local `hermes chat -Q` transport (hermes_agent/tools/bot_mode_dm.py) — this is the
     # 4th Bot Mode delivery door and was missing the same check.
     from hermes_agent.gateway.response_filters import is_intentional_silence_response, strip_trailing_silence_marker
     reply = "" if is_intentional_silence_response(reply) else strip_trailing_silence_marker(reply)

@@ -60,8 +60,8 @@ def _make_fallback_agent(fallback_model):
     """Full-constructor agent for the fallback path, mirroring
     tests/agent/test_fallback_exhaustion_cooldown.py."""
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(

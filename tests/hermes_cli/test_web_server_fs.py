@@ -697,7 +697,7 @@ def test_a_down_ssh_host_is_unavailable_on_workspace_file_routes(client, monkeyp
     image route and download already give, and the log names the refusal. Once the host answers,
     the next request dials again, and a folder that is not there or a file the SSH user cannot read
     keeps its own answer instead of that 503."""
-    from tools.environments.base import EnvironmentConnectionError
+    from hermes_agent.tools.environments.base import EnvironmentConnectionError
 
     class SshHost:
         """The SSH machine: refuses the dial while ``down``; once up, it has no /srv/missing and
@@ -972,7 +972,7 @@ def test_fs_reads_translate_after_binding_profile_terminal_scope(client, tmp_pat
     target = tmp_path / "isolated report.txt"
     target.write_text("isolated output", encoding="utf-8")
 
-    from tools.terminal_scope import get_terminal_scope
+    from hermes_agent.tools.terminal_scope import get_terminal_scope
 
     def translate(path, session_key="", workspace_key="", *, quiet=False, workspace_cwd=""):
         if path == Path("/workspace/isolated report.txt") and get_terminal_scope() is not None:
@@ -982,7 +982,7 @@ def test_fs_reads_translate_after_binding_profile_terminal_scope(client, tmp_pat
     monkeypatch.setattr(
         "hermes_agent.gateway.platforms.base._translate_docker_container_media_path", translate,
     )
-    monkeypatch.setattr("tools.terminal_scope.build_profile_terminal_scope", _no_scope_builder)
+    monkeypatch.setattr("hermes_agent.tools.terminal_scope.build_profile_terminal_scope", _no_scope_builder)
     monkeypatch.setenv("TERMINAL_ENV", "docker")
 
     response = client.get("/api/fs/read-text", params={"path": "/workspace/isolated report.txt"})
@@ -1039,8 +1039,8 @@ def test_fs_download_maps_root_home_to_persistent_sandbox(client, monkeypatch, t
 
 
 def _workspace_sandbox(sandbox: Path, cwd: Path) -> Path:
-    from tools.environments.path_utils import sanitize_task_id_for_path
-    from tools.terminal_tool import workspace_key_for
+    from hermes_agent.tools.environments.path_utils import sanitize_task_id_for_path
+    from hermes_agent.tools.terminal_tool import workspace_key_for
 
     name = sanitize_task_id_for_path(f"default:ws:{workspace_key_for(str(cwd))}")
     workspace = sandbox / "docker" / name / "workspace"
@@ -1060,7 +1060,7 @@ def test_fs_download_maps_workspace_container_to_its_sandbox(client, monkeypatch
     ``sandboxes/docker/default_ws_<digest>-<hash>/workspace``, not the shared
     ``default`` sandbox. The download must serve that session's file, and must
     not scan every other workspace for the same relative path."""
-    from tools.terminal_tool import register_task_env_overrides, workspace_key_for
+    from hermes_agent.tools.terminal_tool import register_task_env_overrides, workspace_key_for
 
     project = tmp_path / "project"
     project.mkdir()
@@ -1273,7 +1273,7 @@ def test_fs_download_profile_uses_that_profiles_sandbox(client, monkeypatch, tmp
     monkeypatch.delenv("TERMINAL_SANDBOX_DIR", raising=False)
     monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
     monkeypatch.setenv("TERMINAL_ENV", "docker")
-    from tools.environments.path_utils import sanitize_task_id_for_path
+    from hermes_agent.tools.environments.path_utils import sanitize_task_id_for_path
 
     (default_home / "sandboxes/docker/default/home").mkdir(parents=True)
     (default_home / "sandboxes/docker/default/home/f.txt").write_bytes(b"DEFAULT")

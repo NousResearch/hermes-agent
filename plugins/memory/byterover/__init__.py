@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider, spawn_context_thread
-from tools.registry import tool_error
+from hermes_agent.tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +84,7 @@ def _brv_child_env(brv_path: str) -> dict[str, str]:
     the process env IS this profile's own and is passed through unchanged."""
     from agent.secret_scope import UnscopedSecretError, get_secret, is_multiplex_active
     from hermes_constants import get_hermes_home_override
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from hermes_agent.tools.environments.local import build_subprocess_env, strip_launch_profile_env
 
     env = build_subprocess_env(scrub_secrets=False)
     if is_multiplex_active():

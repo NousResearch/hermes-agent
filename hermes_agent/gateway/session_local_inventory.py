@@ -33,7 +33,7 @@ def _start_update_prefetch():
 
 def _grouped(tools):
     """``{toolset: [tool names]}`` exactly as main's ``_session_info`` grouped ``agent.tools``."""
-    from model_tools import get_toolset_for_tool
+    from hermes_agent.model_tools import get_toolset_for_tool
     grouped: dict[str, list[str]] = {}
     for tool in tools or []:
         name = tool["function"]["name"]
@@ -44,9 +44,9 @@ def _grouped(tools):
 def _policy_tools(policy, config):
     """The tool list the session's next agent build loads (``agent/agent_init.py`` tool snapshot):
     the policy's toolsets minus the configured, platform-gated and one-shot disabled ones."""
-    import model_tools
+    from hermes_agent import model_tools
     from agent.skill_utils import parse_config_string_list
-    from toolsets import session_disabled_toolsets, session_platform_tool_drops
+    from hermes_agent.toolsets import session_disabled_toolsets, session_platform_tool_drops
     enabled = list(policy.current_toolsets(config))
     disabled = session_disabled_toolsets(
         parse_config_string_list((config.get("agent") or {}).get("disabled_toolsets")) or None, policy.platform,
@@ -79,9 +79,9 @@ def _cli_startup_notices(enabled):
     with contextlib.suppress(Exception):
         from hermes_cli.tool_availability_notices import (
             current_terminal_backend, filter_to_enabled_toolsets, tool_availability_warning_lines)
-        from model_tools import check_tool_availability
-        from tools.terminal_tool import terminal_backend_unavailable_reason
-        from toolsets import resolve_toolset
+        from hermes_agent.model_tools import check_tool_availability
+        from hermes_agent.tools.terminal_tool import terminal_backend_unavailable_reason
+        from hermes_agent.toolsets import resolve_toolset
         _, unavailable = check_tool_availability()
         unavailable = filter_to_enabled_toolsets(unavailable, enabled or [], resolve_toolset)
         notices["tool_availability_warnings"] = tool_availability_warning_lines(
@@ -108,8 +108,8 @@ def _cli_skills():
     ``HERMES_KANBAN_BOARD`` before HermesCLI starts, so ``environments: [kanban]`` skills are offered.
     The owner never sets that env; the kanban relevance is scoped to this scan (a ContextVar) and the
     catalog cache entry it would poison is restored, so other surfaces keep their own view."""
-    from tools import skills_tool
-    from tools.kanban_toolset_context import scoped_kanban_toolset_selection
+    from hermes_agent.tools import skills_tool
+    from hermes_agent.tools.kanban_toolset_context import scoped_kanban_toolset_selection
     key = ("filtered", False)
     saved = skills_tool._SKILLS_CACHE.pop(key, None)
     try:
@@ -173,7 +173,7 @@ def session_inventory(authority, policy, agent, cwd):
                 from hermes_cli.banner import get_available_skills
                 info["skills"] = get_available_skills()
         with contextlib.suppress(Exception):
-            from tools.mcp_tool_discovery import get_mcp_status
+            from hermes_agent.tools.mcp_tool_discovery import get_mcp_status
             info["mcp_servers"] = get_mcp_status()
     with contextlib.suppress(Exception):
         from hermes_cli import __release_date__

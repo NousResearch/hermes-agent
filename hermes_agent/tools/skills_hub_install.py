@@ -2,7 +2,7 @@
 target safety (symlink/junction, category-bucket and nested-skill checks),
 lock-file-backed uninstall, bundle hashing and upstream update checks.
 
-Split out of ``tools/skills_hub.py``; hub state (paths, ``HubLockFile``, audit log)
+Split out of ``hermes_agent/tools/skills_hub.py``; hub state (paths, ``HubLockFile``, audit log)
 is still read from there at call time.
 """
 
@@ -14,18 +14,18 @@ import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from agent.skill_utils import is_excluded_skill_path
-from tools.skills_guard import ScanResult, content_hash
-from tools.skills_hub_github import GitHubAuth
-from tools.skills_hub_models import (
+from hermes_agent.tools.skills_guard import ScanResult, content_hash
+from hermes_agent.tools.skills_hub_github import GitHubAuth
+from hermes_agent.tools.skills_hub_models import (
     SkillBundle, SkillSource, _normalize_lock_install_path, _validate_bundle_rel_path,
     _validate_install_parent_path, _validate_skill_name,
 )
 
 if TYPE_CHECKING:  # origin class; runtime use is via the lazy origin import
-    from tools.skills_hub import HubLockFile
+    from hermes_agent.tools.skills_hub import HubLockFile
 
 # Log-record parity with the origin module.
-logger = logging.getLogger("tools.skills_hub")
+logger = logging.getLogger("hermes_agent.tools.skills_hub")
 
 
 def _is_path_redirect(path: Path) -> bool:
@@ -43,7 +43,7 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     ``resolved == SKILLS_DIR`` — an empty/``"."`` install_path resolves to the
     skills root and ``rmtree`` there would wipe every installed skill.
     """
-    from tools.skills_hub import _skills_dir
+    from hermes_agent.tools.skills_hub import _skills_dir
     normalized = _normalize_lock_install_path(install_path, skill_name)
     target = skills_dir = _skills_dir()
     skills_root = skills_dir.resolve()
@@ -59,7 +59,7 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
 
 def quarantine_bundle(bundle: SkillBundle) -> Path:
     """Write a skill bundle to the quarantine directory for scanning."""
-    from tools.skills_hub import _quarantine_dir, ensure_hub_dirs
+    from hermes_agent.tools.skills_hub import _quarantine_dir, ensure_hub_dirs
     ensure_hub_dirs()
     skill_name = _validate_skill_name(bundle.name)
     # Validate every path before touching disk so a bad member aborts cleanly.
@@ -108,7 +108,7 @@ def _check_install_target(install_dir: Path) -> None:
       be silently wiped; a dir that directly contains SKILL.md is an existing
       install and stays overwritable (hub installs are lock-guarded in do_install).
     """
-    from tools.skills_hub import _skills_dir
+    from hermes_agent.tools.skills_hub import _skills_dir
     # Refuse to nest a skill inside an existing skill directory. Installing with ``--category
     # <name-of-an-existing-skill>`` would create a hybrid skill-plus-category directory; a later update or
     # uninstall of the outer skill would then rmtree the inner one — the sibling case of the category-bucket
@@ -145,7 +145,7 @@ def install_from_quarantine(
     scan_provenance: Optional[dict[str, Any]] = None,
 ) -> Path:
     """Move a scanned skill from quarantine into the skills directory."""
-    from tools.skills_hub import HubLockFile, _quarantine_dir, _skills_dir, append_audit_log
+    from hermes_agent.tools.skills_hub import HubLockFile, _quarantine_dir, _skills_dir, append_audit_log
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
@@ -195,7 +195,7 @@ def install_from_quarantine(
     append_audit_log("INSTALL", safe_skill_name, bundle.source, bundle.trust_level, scan_result.verdict,
                      installed_hash)
     try:
-        from tools.skill_usage import record_installed
+        from hermes_agent.tools.skill_usage import record_installed
         record_installed(safe_skill_name)
     except Exception:
         logger.debug("Unable to record skill install lifecycle for %s", safe_skill_name, exc_info=True)
@@ -204,7 +204,7 @@ def install_from_quarantine(
 
 def uninstall_skill(skill_name: str) -> tuple[bool, str]:
     """Remove a hub-installed skill. Refuses to remove builtins."""
-    from tools.skills_hub import HubLockFile, append_audit_log
+    from hermes_agent.tools.skills_hub import HubLockFile, append_audit_log
     lock = HubLockFile()
     entry = lock.get_installed(skill_name)
     if not entry:
@@ -227,7 +227,7 @@ def uninstall_skill(skill_name: str) -> tuple[bool, str]:
 def bundle_content_hash(bundle: SkillBundle) -> str:
     """Deterministic hash of an in-memory bundle.
 
-    MUST stay symmetric with ``tools.skills_guard.content_hash`` (same skill
+    MUST stay symmetric with ``hermes_agent.tools.skills_guard.content_hash`` (same skill
     from disk), which keys files by POSIX relative path. Windows bundle keys
     carry backslashes, which changed both bytes and sort order and made every
     skill report ``update_available`` forever — normalize before hashing. The
@@ -272,8 +272,8 @@ def check_for_skill_updates(
     satisfy the fetch and silently reassign provenance (names are not
     namespaced across registries), so a missing adapter reports "unavailable".
     """
-    from tools.skills_hub import HubLockFile
-    from tools.skills_hub_search import create_source_router
+    from hermes_agent.tools.skills_hub import HubLockFile
+    from hermes_agent.tools.skills_hub_search import create_source_router
     lock = lock or HubLockFile()
     installed = lock.list_installed()
     if name:

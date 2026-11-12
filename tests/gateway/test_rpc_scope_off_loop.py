@@ -21,7 +21,7 @@ def _authority(home, multiplex=True):
 def _bound():
     from agent.secret_scope import current_secret_scope, current_secret_scope_home
     from hermes_constants import get_hermes_home_override
-    from tools.terminal_scope import get_terminal_scope
+    from hermes_agent.tools.terminal_scope import get_terminal_scope
     secrets = current_secret_scope()
     terminal = get_terminal_scope()
     return {"home": get_hermes_home_override(),
@@ -43,7 +43,7 @@ def profile(tmp_path):
 @pytest.mark.asyncio
 async def test_async_owner_scope_binds_what_owner_scope_binds_with_the_reads_off_the_loop(profile, monkeypatch):
     from hermes_agent.gateway import session_authorities
-    from tools import terminal_scope
+    from hermes_agent.tools import terminal_scope
 
     authority = _authority(profile)
     with session_authorities.owner_scope(authority):

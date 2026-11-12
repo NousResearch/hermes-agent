@@ -10,7 +10,7 @@ traffic is unlimited.
 import httpx
 import pytest
 
-from tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, _make_mcp_body_cap_transport
+from hermes_agent.tools.mcp_tool_errors import _MCP_HTTP_MAX_BODY_BYTES, _make_mcp_body_cap_transport
 
 LIMIT = 1024  # small cap for tests
 

@@ -2,9 +2,9 @@
 
 from unittest.mock import patch
 
-import tools.image_generation_managed as managed
+import hermes_agent.tools.image_generation_managed as managed
 from plugins.image_gen.krea import KREA_MODEL_IDS
-from tools.image_generation_catalog import DEFAULT_MODEL, FAL_MODELS
+from hermes_agent.tools.image_generation_catalog import DEFAULT_MODEL, FAL_MODELS
 
 
 def test_every_fal_and_krea_model_resolves_to_its_own_gateway_and_the_rest_to_portal():

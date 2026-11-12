@@ -159,7 +159,7 @@ def test_named_profile_cannot_delete_data_served_by_the_default_multiplexer(layo
 
 
 def test_data_removal_respects_the_checkpoint_store_owner(layout):
-    from tools.checkpoint_pruning import store_lock
+    from hermes_agent.tools.checkpoint_pruning import store_lock
 
     home, _, data = layout
     with store_lock(home / "checkpoints"):

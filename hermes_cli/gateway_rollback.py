@@ -24,7 +24,7 @@ def _checkpoint_rows(result):
 
 
 def rollback(cli, connection, command):
-    from tools.checkpoint_manager import format_checkpoint_list
+    from hermes_agent.tools.checkpoint_manager import format_checkpoint_list
     words = command.split()[1:]
     args = [a for a in words if a.lower() not in ("--all", "--force")]
     restore_all = len(args) != len(words)

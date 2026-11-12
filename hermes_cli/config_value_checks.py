@@ -58,7 +58,7 @@ def _validate_web_backends(config: dict[str, Any], issues: list[ConfigIssue]) ->
     if not isinstance(web_cfg, dict):
         return
     try:
-        from tools.tool_backend_helpers import removed_backend_note
+        from hermes_agent.tools.tool_backend_helpers import removed_backend_note
     except Exception:
         return
     seen: set = set()

@@ -6,7 +6,7 @@ every file still parses but importing them together raises ``ImportError``.
 
 Reference incident: a Windows user reported
 ``ImportError: cannot import name 'TODO_INJECTION_HEADER' from
-'tools.todo_tool'`` on every startup after an update. ``agent/`` carried the
+'hermes_agent.tools.todo_tool'`` on every startup after an update. ``agent/`` carried the
 new ``context_compressor.py`` (which imports that name at module level) while
 ``tools/`` still held the pre-update ``todo_tool.py``. The ZIP-update path
 replaces top-level entries one at a time in ``os.listdir`` order, so an

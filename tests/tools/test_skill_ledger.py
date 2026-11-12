@@ -1,4 +1,4 @@
-"""Tests for tools/skill_ledger.py — per-mutation audit ledger + rollback.
+"""Tests for hermes_agent/tools/skill_ledger.py — per-mutation audit ledger + rollback.
 
 Covers tracker #79686 P3: ledger entries on patch/edit/delete/archive, blob
 dedupe, single-entry rollback (incl. fail-closed safety capture), actor
@@ -32,7 +32,7 @@ Original body.
 def ledger_env(tmp_path, monkeypatch):
     """Isolated HERMES_HOME + skills dir for skill_manage and the ledger."""
     from agent import skill_utils
-    from tools import skill_ledger, skill_manager_tool, skill_usage
+    from hermes_agent.tools import skill_ledger, skill_manager_tool, skill_usage
 
     home = tmp_path / "home"
     skills_dir = home / "skills"
@@ -46,7 +46,7 @@ def ledger_env(tmp_path, monkeypatch):
 
 
 def _create(name="my-skill", content=VALID_SKILL_CONTENT):
-    from tools.skill_manager_tool import skill_manage
+    from hermes_agent.tools.skill_manager_tool import skill_manage
 
     return json.loads(skill_manage(action="create", name=name, content=content))
 
@@ -59,14 +59,14 @@ def _create(name="my-skill", content=VALID_SKILL_CONTENT):
 def test_background_review_patch_ledgers_and_rolls_back(ledger_env, monkeypatch):
     """A curator-pass patch lands in the ledger tagged 'curator', and a
     single-entry rollback restores the exact pre-patch content."""
-    from tools import skill_ledger
-    from tools.skill_manager_tool import skill_manage
-    from tools.skill_provenance import (
+    from hermes_agent.tools import skill_ledger
+    from hermes_agent.tools.skill_manager_tool import skill_manage
+    from hermes_agent.tools.skill_provenance import (
         BACKGROUND_REVIEW,
         reset_current_write_origin,
         set_current_write_origin,
     )
-    from tools.skill_manager_guards import mark_background_review_skill_read
+    from hermes_agent.tools.skill_manager_guards import mark_background_review_skill_read
 
     token = set_current_write_origin(BACKGROUND_REVIEW)
     try:
@@ -105,8 +105,8 @@ def test_background_review_patch_ledgers_and_rolls_back(ledger_env, monkeypatch)
 def test_foreground_patch_is_ledgered_as_agent(ledger_env):
     """Foreground skill_manage patches are ledgered too (all-actor design —
     unlike #50261's autonomous-only history) and tagged 'agent'."""
-    from tools import skill_ledger
-    from tools.skill_manager_tool import skill_manage
+    from hermes_agent.tools import skill_ledger
+    from hermes_agent.tools.skill_manager_tool import skill_manage
 
     assert _create()["success"] is True
     patched = json.loads(
@@ -127,7 +127,7 @@ def test_foreground_patch_is_ledgered_as_agent(ledger_env):
 def test_rollback_refuses_paths_outside_hermes_home(ledger_env):
     """A hand-edited ledger entry pointing outside HERMES_HOME must not
     become a write-anywhere primitive."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     entry_id = skill_ledger.append_entry(
         "patch",
@@ -142,7 +142,7 @@ def test_rollback_refuses_paths_outside_hermes_home(ledger_env):
 
 
 def test_missing_blob_aborts_rollback_before_any_change(ledger_env):
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     assert _create()["success"] is True
     skill_md = ledger_env["skills"] / "my-skill" / "SKILL.md"
@@ -165,8 +165,8 @@ def test_missing_blob_aborts_rollback_before_any_change(ledger_env):
 
 
 def test_ledger_entry_on_edit_and_delete(ledger_env):
-    from tools import skill_ledger
-    from tools.skill_manager_tool import skill_manage
+    from hermes_agent.tools import skill_ledger
+    from hermes_agent.tools.skill_manager_tool import skill_manage
 
     assert _create()["success"] is True
     edited = json.loads(
@@ -197,8 +197,8 @@ def test_ledger_entry_on_edit_and_delete(ledger_env):
 def test_deleted_skill_recoverable_from_ledger(ledger_env):
     """A foreground hard delete stays a hard delete — but the ledger entry
     can restore the skill's files from blobs."""
-    from tools import skill_ledger
-    from tools.skill_manager_tool import skill_manage
+    from hermes_agent.tools import skill_ledger
+    from hermes_agent.tools.skill_manager_tool import skill_manage
 
     assert _create()["success"] is True
     skill_md = ledger_env["skills"] / "my-skill" / "SKILL.md"
@@ -214,7 +214,7 @@ def test_deleted_skill_recoverable_from_ledger(ledger_env):
 
 
 def test_archive_lands_in_ledger_with_curator_actor(ledger_env, monkeypatch):
-    from tools import skill_ledger, skill_usage
+    from hermes_agent.tools import skill_ledger, skill_usage
 
     assert _create()["success"] is True
     # Curator auto-transition path tags the actor explicitly.
@@ -239,7 +239,7 @@ def test_archive_lands_in_ledger_with_curator_actor(ledger_env, monkeypatch):
 
 
 def test_blob_dedupe_same_content_one_blob(ledger_env):
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     d = ledger_env["skills"] / "dedupe-src"
     d.mkdir()
@@ -258,7 +258,7 @@ def test_snapshot_paths_skips_transient_dirs(ledger_env):
     """Transient local artifacts (venv, node_modules, caches, .git) never reach
     the manifest or the blob store — sweeping them in grows the blob dir
     unboundedly on real installs (#107539)."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     d = ledger_env["skills"] / "has-venv"
     d.mkdir()
@@ -281,7 +281,7 @@ def test_snapshot_paths_skips_transient_dirs(ledger_env):
 def test_snapshot_paths_keeps_file_named_like_transient_dir(ledger_env):
     """The filter drops files *inside* transient dirs; a plain file whose own
     name collides with one (e.g. a ``venv`` bootstrap script) is skill content."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     d = ledger_env["skills"] / "edge"
     d.mkdir()
@@ -297,8 +297,8 @@ def test_snapshot_paths_keeps_file_named_like_transient_dir(ledger_env):
 def test_rollback_fails_closed_when_safety_capture_fails(ledger_env, monkeypatch):
     """If the pre-rollback safety ledger entry can't be written, the rollback
     must abort with nothing changed (consistent with #63366)."""
-    from tools import skill_ledger
-    from tools.skill_manager_tool import skill_manage
+    from hermes_agent.tools import skill_ledger
+    from hermes_agent.tools.skill_manager_tool import skill_manage
 
     assert _create()["success"] is True
     skill_md = ledger_env["skills"] / "my-skill" / "SKILL.md"
@@ -322,8 +322,8 @@ def test_rollback_fails_closed_when_safety_capture_fails(ledger_env, monkeypatch
 
 
 def test_rollback_removes_files_created_by_the_mutation(ledger_env):
-    from tools import skill_ledger
-    from tools.skill_manager_tool import skill_manage
+    from hermes_agent.tools import skill_ledger
+    from hermes_agent.tools.skill_manager_tool import skill_manage
 
     assert _create()["success"] is True
     wrote = json.loads(
@@ -345,8 +345,8 @@ def test_rollback_removes_files_created_by_the_mutation(ledger_env):
 
 
 def test_config_gate_off_no_ledger_writes(ledger_env, monkeypatch):
-    from tools import skill_ledger
-    from tools.skill_manager_tool import skill_manage
+    from hermes_agent.tools import skill_ledger
+    from hermes_agent.tools.skill_manager_tool import skill_manage
 
     import hermes_cli.config as _cfg
 
@@ -369,8 +369,8 @@ def test_config_gate_off_no_ledger_writes(ledger_env, monkeypatch):
 
 
 def test_ledger_failure_never_blocks_the_mutation(ledger_env, monkeypatch):
-    from tools import skill_ledger
-    from tools.skill_manager_tool import skill_manage
+    from hermes_agent.tools import skill_ledger
+    from hermes_agent.tools.skill_manager_tool import skill_manage
 
     def _boom(*a, **k):
         raise OSError("disk full")
@@ -390,7 +390,7 @@ def test_ledger_failure_never_blocks_the_mutation(ledger_env, monkeypatch):
 
 
 def test_list_entries_filtering_and_limit(ledger_env):
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     for i in range(5):
         skill_ledger.append_entry("patch", f"skill-{i % 2}", before=[], after=[])
@@ -401,7 +401,7 @@ def test_list_entries_filtering_and_limit(ledger_env):
 
 
 def test_user_actor_override(ledger_env):
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     tok = skill_ledger.set_ledger_actor("user")
     try:
@@ -439,8 +439,8 @@ def test_delete_after_rehome_ledgers_full_package_from_backup(ledger_env):
     """The incident shape (#96962): consolidation re-homes references/ out of
     the tree, then deletes. The delete entry must still capture the support
     file from the newest curator backup, and rollback must restore both."""
-    from tools import skill_ledger
-    from tools.skill_manager_tool import skill_manage
+    from hermes_agent.tools import skill_ledger
+    from hermes_agent.tools.skill_manager_tool import skill_manage
 
     assert _create()["success"] is True
     extra = ledger_env["skills"] / "my-skill" / "references" / "extra.md"
@@ -490,7 +490,7 @@ def test_delete_after_rehome_ledgers_full_package_from_backup(ledger_env):
 def test_rollback_historical_hollow_entry_restores_full_package(ledger_env):
     """Entries recorded BEFORE this fix (files: 1) still restore the whole
     package: rollback-time fill from the newest curator backup."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     skill_dir = ledger_env["skills"] / "my-skill"
     skill_dir.mkdir()
@@ -528,8 +528,8 @@ def test_rollback_historical_hollow_entry_restores_full_package(ledger_env):
 def test_delete_rollback_without_backup_still_works(ledger_env):
     """No curator backup present: the fill degrades to the old behavior and
     must not break the plain delete -> rollback round trip."""
-    from tools import skill_ledger
-    from tools.skill_manager_tool import skill_manage
+    from hermes_agent.tools import skill_ledger
+    from hermes_agent.tools.skill_manager_tool import skill_manage
 
     assert _create()["success"] is True
     skill_md = ledger_env["skills"] / "my-skill" / "SKILL.md"
@@ -550,7 +550,7 @@ def test_delete_rollback_without_backup_still_works(ledger_env):
 def test_backup_fill_does_not_clobber_disk_hash(ledger_env):
     """Disk state wins: a live SKILL.md that differs from the backup copy is
     captured with the LIVE hash; the backup only fills missing paths."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     skill_dir = ledger_env["skills"] / "my-skill"
     skill_dir.mkdir()
@@ -580,7 +580,7 @@ def test_backup_fill_ignores_tar_path_traversal(ledger_env):
     ..) are never filled. Both assertions matter — the positive one keeps
     this test honest (a silently inert fill would pass a negatives-only
     check), the negative one pins the traversal defense."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     skill_dir = ledger_env["skills"] / "my-skill"
     skill_dir.mkdir()
@@ -620,7 +620,7 @@ def test_auto_compact_triggers_at_threshold(ledger_env, monkeypatch):
     order survive, and nothing is trimmed when dedup alone reaches the cap."""
     import json
 
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     import hermes_cli.config as _cfg
 
@@ -657,7 +657,7 @@ def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
     not immediately re-trigger the sweep). The newest entry survives, and lines
     in the retained tail are never parsed or rewritten: a malformed last line
     survives verbatim."""
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     import hermes_cli.config as _cfg
 
@@ -718,7 +718,7 @@ def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
     lock correctly blocks B, until a generous bound expires — green never depends on timing)."""
     import threading
 
-    from tools import skill_ledger
+    from hermes_agent.tools import skill_ledger
 
     import hermes_cli.config as _cfg
 

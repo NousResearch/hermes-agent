@@ -23,12 +23,12 @@ import shutil
 
 import pytest
 
-from tools.file_operations import ShellFileOperations
-from tools.file_operations_search import (
+from hermes_agent.tools.file_operations import ShellFileOperations
+from hermes_agent.tools.file_operations_search import (
     _extract_unreadable_paths,
     _is_permission_only_error,
 )
-from tools.environments.local import LocalEnvironment
+from hermes_agent.tools.environments.local import LocalEnvironment
 
 
 # --- unit coverage for the helpers ----------------------------------------------

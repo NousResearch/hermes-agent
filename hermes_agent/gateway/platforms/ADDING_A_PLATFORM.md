@@ -131,9 +131,9 @@ If your platform supports interactive button/menu messages, implement these for 
 
 | Method | Purpose |
 |--------|---------|
-| `send_clarify(chat_id, question, choices, clarify_id, session_key, ...)` | Render the `clarify` tool's multi-choice question as tappable buttons. Pair with inbound dispatch that routes button taps to `tools.clarify_gateway.resolve_gateway_clarify`. |
-| `_send_exec_approval_prompt(prompt: ExecApprovalPrompt)` | Render a dangerous-command approval as native buttons. `send_exec_approval` is a base template method: it builds the shared text (`_format_exec_approval`, tune via the `_EA_*` class attrs) and the choice set (`prompt.actions` = `(label, choice, style)` rows, choices `once`/`session`/`always`/`deny`) — you only map those rows to widgets. Inbound dispatch routes to `tools.approval.resolve_gateway_approval_card` with the card's request id (`prompt.request_id`), so a press answers the request that card showed. |
-| `send_slash_confirm(chat_id, title, message, session_key, confirm_id, ...)` | Render slash-command confirmations (e.g. `/reload-mcp`) as Once/Always/Cancel buttons. Inbound dispatch routes to `tools.slash_confirm.resolve`. |
+| `send_clarify(chat_id, question, choices, clarify_id, session_key, ...)` | Render the `clarify` tool's multi-choice question as tappable buttons. Pair with inbound dispatch that routes button taps to `hermes_agent.tools.clarify_gateway.resolve_gateway_clarify`. |
+| `_send_exec_approval_prompt(prompt: ExecApprovalPrompt)` | Render a dangerous-command approval as native buttons. `send_exec_approval` is a base template method: it builds the shared text (`_format_exec_approval`, tune via the `_EA_*` class attrs) and the choice set (`prompt.actions` = `(label, choice, style)` rows, choices `once`/`session`/`always`/`deny`) — you only map those rows to widgets. Inbound dispatch routes to `hermes_agent.tools.approval.resolve_gateway_approval_card` with the card's request id (`prompt.request_id`), so a press answers the request that card showed. |
+| `send_slash_confirm(chat_id, title, message, session_key, confirm_id, ...)` | Render slash-command confirmations (e.g. `/reload-mcp`) as Once/Always/Cancel buttons. Inbound dispatch routes to `hermes_agent.tools.slash_confirm.resolve`. |
 | `send_model_picker(...)` | Interactive `/model` picker. Used by Telegram, Discord, and Slack (Socket Mode). |
 | `send_choice_picker(...)` | Flat single-level picker for finite-choice commands (`/reasoning`, `/fast`). Implemented by Telegram (inline keyboard), Discord (select menu), Matrix (reactions), and Feishu (interactive card buttons). Platforms without it fall back to the text status card automatically. |
 
@@ -272,7 +272,7 @@ inappropriate formatting (e.g., markdown on platforms that don't render it).
 
 ---
 
-## 7. Toolset (`toolsets.py`)
+## 7. Toolset (`hermes_agent/toolsets.py`)
 
 Add a named toolset for your platform:
 
@@ -309,7 +309,7 @@ Without this, `cronjob(action="create", deliver="your_platform", ...)` silently 
 
 ---
 
-## 9. Send Message Tool (`tools/send_message_tool.py`)
+## 9. Send Message Tool (`hermes_agent/tools/send_message_tool.py`)
 
 Add to `platform_map` in `send_message_tool()`:
 
@@ -335,7 +335,7 @@ Update the tool schema `target` description to include your platform example.
 
 ---
 
-## 10. Cronjob Tool Schema (`tools/cronjob_tools.py`)
+## 10. Cronjob Tool Schema (`hermes_agent/tools/cronjob_tools.py`)
 
 Update the `deliver` parameter description and docstring to mention your
 platform as a delivery option.
@@ -439,7 +439,7 @@ After implementing everything, verify with:
 python -m pytest tests/ -q
 
 # Grep for your platform name to find any missed integration points
-grep -r "telegram\|discord\|whatsapp\|slack" gateway/ tools/ agent/ cron/ hermes_cli/ toolsets.py \
+grep -r "telegram\|discord\|whatsapp\|slack" gateway/ tools/ agent/ cron/ hermes_cli/ hermes_agent/toolsets.py \
   --include="*.py" -l | sort -u
 # Check each file in the output — if it mentions other platforms but not yours, you missed it
 ```

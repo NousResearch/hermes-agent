@@ -11,8 +11,8 @@ import pytest
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.run_turn_runner import TurnRunner
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
-from tools import approval
-from tools.approval_gateway_wait import _ApprovalEntry
+from hermes_agent.tools import approval
+from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
 SESSION = "agent:main:x:dm:chat"
 TAIL = "&& rm -rf ~ # TAIL_MARKER"

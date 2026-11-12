@@ -18,8 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.environments.local import LocalEnvironment
-from tools.file_operations import ShellFileOperations
+from hermes_agent.tools.environments.local import LocalEnvironment
+from hermes_agent.tools.file_operations import ShellFileOperations
 
 # ── Shared noise detection ───────────────────────────────────────────────
 # Known shell noise patterns that should never appear in command output.
@@ -102,8 +102,8 @@ class TestLocalEnvironmentExecute:
 @pytest.mark.parametrize("secret_source", [True, False])
 def test_quoted_yaml_reads_preserve_source_policy(ops, env, tmp_path, monkeypatch, secret_source):
     """Real file and terminal output mask secret config while preserving code examples."""
-    from tools import file_tools
-    from tools.terminal_tool_result import finalize_foreground_result
+    from hermes_agent.tools import file_tools
+    from hermes_agent.tools.terminal_tool_result import finalize_foreground_result
 
     home = tmp_path / "profile"
     home.mkdir()
@@ -196,7 +196,7 @@ class TestPatchReplace:
     FUNC = "def total(x):\n    y = x + 1\n    return y\n"
 
     def test_similarity_match_gets_boundary_note(self, ops, tmp_path):
-        from tools.fuzzy_match import fuzzy_find_and_replace
+        from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace
         old = "def total(x):\n    y = x + 2\n    return y"
         assert fuzzy_find_and_replace(self.FUNC, old, "pass", False)[2] == "block_anchor"
         path = tmp_path / "anchor.txt"
@@ -206,7 +206,7 @@ class TestPatchReplace:
         assert result.note and "block_anchor" in result.note
 
     def test_line_trimmed_match_gets_no_note(self, ops, tmp_path):
-        from tools.fuzzy_match import fuzzy_find_and_replace
+        from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace
         old = "y = x + 1\nreturn y"  # model dropped the base indentation
         assert fuzzy_find_and_replace(self.FUNC, old, "pass", False)[2] == "line_trimmed"
         path = tmp_path / "trimmed.txt"
@@ -226,7 +226,7 @@ class TestPatchV4A:
         return "\n".join(["*** Begin Patch", f"*** Update File: {path}", "@@ @@", *hunk_lines, "*** End Patch"])
 
     def test_similarity_match_gets_boundary_note_naming_the_file(self, ops, tmp_path):
-        from tools.fuzzy_match import fuzzy_find_and_replace
+        from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace
         old = "def total(x):\n    y = x + 2\n    return y"
         assert fuzzy_find_and_replace(self.FUNC, old, "pass", False)[2] == "block_anchor"
         path = tmp_path / "anchor.py"
@@ -237,7 +237,7 @@ class TestPatchV4A:
         assert result.note and "block_anchor" in result.note and str(path) in result.note
 
     def test_line_trimmed_match_gets_no_note(self, ops, tmp_path):
-        from tools.fuzzy_match import fuzzy_find_and_replace
+        from hermes_agent.tools.fuzzy_match import fuzzy_find_and_replace
         assert fuzzy_find_and_replace(self.FUNC, "y = x + 1\nreturn y", "pass", False)[2] == "line_trimmed"
         path = tmp_path / "trimmed.py"
         path.write_text(self.FUNC)

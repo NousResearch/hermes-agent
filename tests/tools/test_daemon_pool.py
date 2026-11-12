@@ -1,4 +1,4 @@
-"""Tests for tools.daemon_pool.DaemonThreadPoolExecutor.
+"""Tests for hermes_agent.tools.daemon_pool.DaemonThreadPoolExecutor.
 
 The daemon pool exists so abandoned workers (interrupted/timed-out tool
 batches, wedged memory-provider syncs) can never block interpreter exit:
@@ -14,8 +14,8 @@ import time
 
 from concurrent.futures.thread import _threads_queues
 
-from tools import daemon_pool
-from tools.daemon_pool import DaemonThreadPoolExecutor
+from hermes_agent.tools import daemon_pool
+from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor
 
 
 def test_initializer_runs_on_each_worker_before_tasks():
@@ -66,7 +66,7 @@ def test_wedged_worker_does_not_block_interpreter_exit():
     """
     script = (
         f"import sys; sys.path.insert(0, {str(_repo_root())!r})\n"
-        "from tools.daemon_pool import DaemonThreadPoolExecutor\n"
+        "from hermes_agent.tools.daemon_pool import DaemonThreadPoolExecutor\n"
         "import time\n"
         "pool = DaemonThreadPoolExecutor(max_workers=1)\n"
         "pool.submit(time.sleep, 120)\n"

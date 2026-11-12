@@ -632,7 +632,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if resp.status_code >= 400:
             raise RuntimeError(f"Interaction ACK failed [{resp.status_code}]: {resp.text[:200]}")
 
-    # Button decision → ``choice`` for tools.approval.resolve_gateway_approval. The
+    # Button decision → ``choice`` for hermes_agent.tools.approval.resolve_gateway_approval. The
     # 3-button layout folds "session" into "always"; ``/approve session`` still works.
     _APPROVAL_BUTTON_TO_CHOICE = {"allow-once": "once", "allow-always": "always", "deny": "deny"}
 
@@ -681,7 +681,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _default_interaction_dispatch(self, event: InteractionEvent) -> None:
         """Default interaction callback: ``approve:<session_key>:<decision>`` →
-        tools.approval.resolve_gateway_approval; ``update_prompt:<answer>`` →
+        hermes_agent.tools.approval.resolve_gateway_approval; ``update_prompt:<answer>`` →
         ``~/.hermes/.update_response``; anything else is ignored at DEBUG."""
         button_data = event.button_data
         if not button_data:
@@ -700,7 +700,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
                     self._log_tag, session_key, event.operator_openid)
                 return
             try:
-                from tools.approval import resolve_gateway_approval_card  # lazy: keep adapter light
+                from hermes_agent.tools.approval import resolve_gateway_approval_card  # lazy: keep adapter light
                 count = resolve_gateway_approval_card(  # refuses approve on Deny-only and a refused clicker
                     session_key, choice, approval_button_request_id(button_data),
                     actor_id=event.operator_openid, extra=self.config.extra)
@@ -975,7 +975,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _download_and_cache(self, url: str, content_type: str, original_name: str = "") -> Optional[str]:
         """Download a URL and cache it locally (``original_name`` falls back to the URL basename)."""
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
 
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL: {url[:80]}")
@@ -1029,7 +1029,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             download_url = f"https:{voice_wav_url}" if voice_wav_url.startswith("//") else voice_wav_url
             logger.debug("[%s] STT: using voice_wav_url (pre-converted WAV)", self._log_tag)
 
-        from tools.url_safety import is_safe_url
+        from hermes_agent.tools.url_safety import is_safe_url
         if not is_safe_url(download_url):
             logger.warning("[QQ] STT blocked unsafe URL: %s", download_url[:80])
             return None
@@ -1205,7 +1205,7 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         vars; None when unconfigured (QQ's built-in ASR still works). ``timeout`` (seconds,
         default 60) follows the shared STT client default so a self-hosted model's cold start
         is not cut off at 30s (#112939)."""
-        from tools.transcription_common import DEFAULT_STT_TIMEOUT, _config_number  # lazy: keep adapter light
+        from hermes_agent.tools.transcription_common import DEFAULT_STT_TIMEOUT, _config_number  # lazy: keep adapter light
         stt_cfg = (self.config.extra or {}).get("stt")
         if isinstance(stt_cfg, dict) and stt_cfg.get("enabled") is not False:
             base_url = stt_cfg.get("baseUrl") or stt_cfg.get("base_url", "")

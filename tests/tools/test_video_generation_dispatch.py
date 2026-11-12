@@ -64,7 +64,7 @@ class _RaisingProvider(VideoGenProvider):
 
 class TestUnifiedDispatch:
     def _run(self, args: dict[str, Any], *, configured: Optional[str] = None) -> dict[str, Any]:
-        from tools import video_generation_tool
+        from hermes_agent.tools import video_generation_tool
         import hermes_cli.plugins as plugins_module
 
         saved = video_generation_tool._read_configured_video_provider

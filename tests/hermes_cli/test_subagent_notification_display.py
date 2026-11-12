@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from cli import HermesCLI
-from tools.process_registry_notifications import format_process_notification
+from hermes_agent.tools.process_registry_notifications import format_process_notification
 from hermes_agent.tui_gateway import server
 
 
@@ -24,9 +24,9 @@ def test_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, 
         cli.session_id = event["session_key"]
         cli._pending_input = queue.Queue()
         registry = SimpleNamespace(drain_notifications=lambda **kw: [(event, payload)], completion_queue=queue.Queue())
-        monkeypatch.setattr("tools.process_registry.process_registry", registry)
-        monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
-        monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
+        monkeypatch.setattr("hermes_agent.tools.process_registry.process_registry", registry)
+        monkeypatch.setattr("hermes_agent.tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
+        monkeypatch.setattr("hermes_agent.tools.async_delegation.complete_event_delivery", lambda *a: None)
         cli._drain_process_notifications("cli-idle")
         cli._pending_resume_sessions = []
         cli._typed_voice_stop = lambda text: False
@@ -81,7 +81,7 @@ def test_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, 
         assert server._async_delegation_display_metadata(event)["display_text"] == expected
         assert event == original
 
-    from tools.process_registry_notifications import async_delegation_display_text
+    from hermes_agent.tools.process_registry_notifications import async_delegation_display_text
     grouped = {"group": "Review", "goals": ["First", "Second"],
                "results": [{"task_index": 0, "status": "completed"}, {"task_index": 1, "status": "failed"}]}
     assert async_delegation_display_text(grouped) == "Subagent Tasks Finished with Issues: Review (2 tasks)"

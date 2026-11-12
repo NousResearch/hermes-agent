@@ -14,7 +14,7 @@ import os
 import sys
 from pathlib import Path
 import pytest
-from tools import approval_context
+from hermes_agent.tools import approval_context
 
 # Ensure repo root is importable
 _repo_root = Path(__file__).resolve().parent.parent.parent
@@ -22,8 +22,8 @@ if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
 try:
-    import tools.terminal_tool
-    _tt_mod = sys.modules["tools.terminal_tool"]
+    import hermes_agent.tools.terminal_tool
+    _tt_mod = sys.modules["hermes_agent.tools.terminal_tool"]
 except ImportError:
     pytest.skip("hermes-agent tools not importable (missing deps)", allow_module_level=True)
 
@@ -38,7 +38,7 @@ class TestToolResolution:
 
     def test_terminal_tool_present(self):
         """The terminal tool must be present (not silently dropped)."""
-        from model_tools import get_tool_definitions
+        from hermes_agent.model_tools import get_tool_definitions
         tools = get_tool_definitions(
             enabled_toolsets=["terminal", "file"],
             quiet_mode=True,
@@ -128,7 +128,7 @@ class TestCwdHandling:
     @pytest.mark.platforms("linux")
     def test_docker_default_cwd_maps_current_directory_when_enabled(self, monkeypatch):
         """Docker should use /workspace when cwd mounting is explicitly enabled."""
-        monkeypatch.setattr("tools.terminal_tool.os.getcwd", lambda: "/home/user/project")
+        monkeypatch.setattr("hermes_agent.tools.terminal_tool.os.getcwd", lambda: "/home/user/project")
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
@@ -152,8 +152,8 @@ class TestCwdHandling:
             captured.update(kwargs)
             return sentinel
 
-        from tools.terminal_tool_backends import _create_environment
-        monkeypatch.setattr("tools.terminal_tool_backends._DockerEnvironment", _fake_docker_environment)
+        from hermes_agent.tools.terminal_tool_backends import _create_environment
+        monkeypatch.setattr("hermes_agent.tools.terminal_tool_backends._DockerEnvironment", _fake_docker_environment)
 
         env = _create_environment(
             env_type="docker",
@@ -230,7 +230,7 @@ class TestHostPrefixList:
         """The host-shape predicate is platform-independent data: every drive letter, either slash,
         is a host path (#60962). On POSIX ``D:\\proj`` is also non-absolute so the container guard
         already rejected it; on a Windows host it IS absolute and only this predicate catches it."""
-        from tools.terminal_tool_config import _is_host_cwd
+        from hermes_agent.tools.terminal_tool_config import _is_host_cwd
         for host_path in ("C:\\Users\\me", "D:\\proj", "e:/work", "Z:\\"):
             assert _is_host_cwd(host_path) is True, host_path
         for not_host in ("/workspace", "/srv/app", "relative/dir", "C", "C:"):
@@ -273,7 +273,7 @@ class TestDockerHostBindApproval:
 
     def test_should_skip_container_guards(self):
         """Docker skips only when isolated; other sandboxes always skip."""
-        import tools.approval as A
+        import hermes_agent.tools.approval as A
         assert A._should_skip_container_guards("docker", has_host_access=False) is True
         assert A._should_skip_container_guards("docker", has_host_access=True) is False
         assert A._should_skip_container_guards("modal", has_host_access=True) is True
@@ -284,7 +284,7 @@ class TestDockerHostBindApproval:
         """A registry that raises during the provider lookup must fail soft to guards-on,
         not propagate out of the approval predicate."""
         from agent import terminal_env_registry as R
-        import tools.approval as A
+        import hermes_agent.tools.approval as A
 
         def boom(*_a, **_k):
             raise RuntimeError("registry down")
@@ -296,7 +296,7 @@ class TestDockerHostBindApproval:
         """Plugin classification uses its registered provider, not built-in names only."""
         from agent import terminal_env_registry
         from agent.terminal_env_provider import TerminalEnvironmentProvider
-        import tools.approval as A
+        import hermes_agent.tools.approval as A
 
         class DisposablePlugin(TerminalEnvironmentProvider):
             name = "approval_disposable_plugin"
@@ -333,7 +333,7 @@ class TestDockerHostBindApproval:
 
     def test_isolated_docker_keeps_fast_path(self, monkeypatch):
         """Isolated Docker still bypasses dangerous-command approval."""
-        import tools.approval as A
+        import hermes_agent.tools.approval as A
         self._isolate_approval_state(monkeypatch)
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         res = A.check_all_command_guards("rm -rf /workspace", "docker",
@@ -344,9 +344,9 @@ class TestDockerHostBindApproval:
     def _isolate_approval_state(monkeypatch):
         """Clear approval state that leaks in from the real user config.
 
-        ``tools.approval`` loads ``command_allowlist`` into module-level
+        ``hermes_agent.tools.approval`` loads ``command_allowlist`` into module-level
         ``_permanent_approved`` at import time. This file imports
-        ``tools.terminal_tool`` at module level (collection time — BEFORE the
+        ``hermes_agent.tools.terminal_tool`` at module level (collection time — BEFORE the
         hermetic HERMES_HOME fixture runs), so on a dev machine whose real
         config permanently allowlists e.g. "delete in root path" the guard
         under test silently approves and the assertions flip. CI never has
@@ -359,7 +359,7 @@ class TestDockerHostBindApproval:
         HERMES_YOLO_MODE=1) freezes True and every guard auto-approves.
         Reset it explicitly so the tests exercise the guard, not the bypass.
         """
-        import tools.approval as A
+        import hermes_agent.tools.approval as A
         monkeypatch.setattr(A, "_permanent_approved", set())
         monkeypatch.setattr(A, "_session_approved", {})
         monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
@@ -367,7 +367,7 @@ class TestDockerHostBindApproval:
 
     def test_host_bound_docker_requires_approval(self, monkeypatch):
         """Host-bound Docker dangerous command escalates instead of bypassing."""
-        import tools.approval as A
+        import hermes_agent.tools.approval as A
         self._isolate_approval_state(monkeypatch)
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         res = A.check_all_command_guards("rm -rf /workspace", "docker",
@@ -378,7 +378,7 @@ class TestDockerHostBindApproval:
 
     def test_execute_code_isolated_docker_keeps_fast_path(self, monkeypatch):
         """Isolated Docker execute_code still bypasses the guard."""
-        import tools.approval as A
+        import hermes_agent.tools.approval as A
         self._isolate_approval_state(monkeypatch)
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         res = A.check_execute_code_guard("import os", "docker",
@@ -387,7 +387,7 @@ class TestDockerHostBindApproval:
 
     def test_execute_code_host_bound_docker_requires_approval(self, monkeypatch):
         """Host-bound Docker execute_code does not get the container fast-path."""
-        import tools.approval as A
+        import hermes_agent.tools.approval as A
         self._isolate_approval_state(monkeypatch)
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         res = A.check_execute_code_guard(
@@ -398,7 +398,7 @@ class TestDockerHostBindApproval:
 
     def test_execute_code_vercel_sandbox_always_skips(self, monkeypatch):
         """vercel_sandbox has no host-bind concept and stays always-skipped."""
-        import tools.approval as A
+        import hermes_agent.tools.approval as A
         monkeypatch.setenv("HERMES_EXEC_ASK", "1")
         res = A.check_execute_code_guard("import os", "vercel_sandbox",
                                          has_host_access=True)

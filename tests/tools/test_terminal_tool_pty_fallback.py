@@ -1,8 +1,8 @@
 import json
 from types import SimpleNamespace
 
-import tools.terminal_tool as terminal_tool_module
-from tools import process_registry as process_registry_module
+import hermes_agent.tools.terminal_tool as terminal_tool_module
+from hermes_agent.tools import process_registry as process_registry_module
 
 
 def _base_config(tmp_path):

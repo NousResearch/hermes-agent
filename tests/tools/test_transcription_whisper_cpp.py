@@ -13,7 +13,7 @@ import pytest
 def test_models_download_once_per_profile_and_reject_bad_bytes(tmp_path, monkeypatch):
     from pm.downloader import HashError
     from pm import downloader
-    from tools import transcription_whisper_cpp as cpp
+    from hermes_agent.tools import transcription_whisper_cpp as cpp
 
     served = tmp_path / "served"
     served.mkdir()
@@ -62,9 +62,9 @@ def test_models_download_once_per_profile_and_reject_bad_bytes(tmp_path, monkeyp
 
 
 def test_local_resolution_is_passive_and_command_override_wins(tmp_path, monkeypatch):
-    from tools import transcription_local as local
-    from tools import transcription_tools as stt
-    from tools import transcription_whisper_cpp as cpp
+    from hermes_agent.tools import transcription_local as local
+    from hermes_agent.tools import transcription_tools as stt
+    from hermes_agent.tools import transcription_whisper_cpp as cpp
     import pm
     from pm.packages import WhisperCppCpu
     from pm.store import ALL_TARGETS
@@ -102,7 +102,7 @@ def test_local_resolution_is_passive_and_command_override_wins(tmp_path, monkeyp
 def test_an_install_from_an_earlier_pin_stays_the_local_command(tmp_path, monkeypatch):
     """A lock change (the VC++ runtime joining the win32-arm64 pin) leaves the installed whisper.cpp
     outdated, not gone: like the engines' boot lookup, STT keeps it until a deliberate re-stage."""
-    from tools import transcription_whisper_cpp as cpp
+    from hermes_agent.tools import transcription_whisper_cpp as cpp
     import pm
 
     binary = tmp_path / "whisper-cli.exe"

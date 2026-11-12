@@ -13,7 +13,7 @@ from hermes_agent.acp_adapter.edit_approval import (
     set_edit_approval_requester,
     should_auto_approve_edit,
 )
-from model_tools import handle_function_call
+from hermes_agent.model_tools import handle_function_call
 
 
 def teardown_function() -> None:

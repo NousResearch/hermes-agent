@@ -984,7 +984,7 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         try:
-            from tools.send_message_tool import _error as _e
+            from hermes_agent.tools.send_message_tool import _error as _e
             return _e(f"Email send failed: {e}")
         except Exception:
             return send_error(f"Email send failed: {e}")

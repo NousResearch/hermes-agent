@@ -15,9 +15,9 @@ import hermes_cli.skills_hub as cli_hub
 
 def _scan_gate_env(monkeypatch, tmp_path, *, verdict="dangerous", installed=None):
     """Wire ``do_install`` down to the real scan-policy decision for a community skill."""
-    import tools.skills_guard as guard
-    import tools.skills_hub as hub
-    import tools.skills_hub_install as hub_install
+    import hermes_agent.tools.skills_guard as guard
+    import hermes_agent.tools.skills_hub as hub
+    import hermes_agent.tools.skills_hub_install as hub_install
 
     bundle = type("Bundle", (), {
         "name": "risky-skill", "files": {"SKILL.md": "---\nname: risky-skill\n---\n"},

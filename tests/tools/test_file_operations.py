@@ -1,4 +1,4 @@
-"""Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
+"""Tests for hermes_agent/tools/file_operations.py — deny list, result dataclasses, helpers."""
 
 import base64
 import os
@@ -9,10 +9,10 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from tests.tools.file_ops_fakes import READ_SENTINEL_RE, compound_read_output
-from tools.environments.local import _find_bash, LocalEnvironment
+from hermes_agent.tools.environments.local import _find_bash, LocalEnvironment
 from agent.file_safety import is_write_denied as _is_write_denied
-from tools.file_operations_common import SearchMatch
-from tools.file_operations import (
+from hermes_agent.tools.file_operations_common import SearchMatch
+from hermes_agent.tools.file_operations import (
     ReadResult,
     SearchResult,
     ShellFileOperations,

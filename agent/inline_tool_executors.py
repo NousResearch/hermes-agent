@@ -15,9 +15,9 @@ from importlib import import_module
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from agent.prompt_cache_scope import conversation_id
-from tools.arg_coercion import coerce_tool_args
-from tools.arg_validation import call_with_arg_checks
-from tools.registry import registry
+from hermes_agent.tools.arg_coercion import coerce_tool_args
+from hermes_agent.tools.arg_validation import call_with_arg_checks
+from hermes_agent.tools.registry import registry
 
 
 def tool_hook_ids(agent, effective_task_id: str, tool_call_id: Optional[str]) -> dict[str, str]:
@@ -48,7 +48,7 @@ def emit_terminal_post_tool_call(
 ) -> None:
     """Emit the one terminal ``post_tool_call`` hook for a tool_call_id (best-effort)."""
     try:
-        from model_tools import _emit_post_tool_call_hook
+        from hermes_agent.model_tools import _emit_post_tool_call_hook
         _emit_post_tool_call_hook(
             function_name=function_name,
             function_args=function_args,
@@ -80,7 +80,7 @@ def apply_transform_tool_result(
     reach it, so the agent paths call the same helper (after the terminal
     ``post_tool_call``) to keep the hook's "every tool" contract. Fail-open."""
     try:
-        from model_tools import _CallIds, _apply_transform_tool_result_hook
+        from hermes_agent.model_tools import _CallIds, _apply_transform_tool_result_hook
         return _apply_transform_tool_result_hook(
             function_name, function_args, result, duration_ms,
             _CallIds(**tool_hook_ids(agent, effective_task_id, tool_call_id)),
@@ -131,7 +131,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
 
         return json.dumps({"success": False, "error": format_session_db_unavailable()})
     return _call_tool(
-        "tools.session_search_tool", "session_search", args,
+        "hermes_agent.tools.session_search_tool", "session_search", args,
         (
             ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit"),
             ("session_id", "session_id"), ("around_message_id", "around_message_id"),
@@ -145,7 +145,7 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
     result = _call_tool(
-        "tools.memory_tool", "memory_tool", args,
+        "hermes_agent.tools.memory_tool", "memory_tool", args,
         (
             ("action", "action"), ("target", "target"), ("content", "content"),
             ("old_text", "old_text"), ("new_text", "new_text"), ("operations", "operations"),
@@ -167,7 +167,7 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 
 _read_preview = _callback_tool(
-    "tools.read_preview_tool", "read_preview_tool", "read_preview_callback",
+    "hermes_agent.tools.read_preview_tool", "read_preview_tool", "read_preview_callback",
     ("start", "start"), ("count", "count"),
 )
 
@@ -177,7 +177,7 @@ def _desktop_preview(agent, args: dict, ctx: InlineToolContext) -> Any:
     # registry handler like any other tool.
     if (args.get("action") or "").strip() == "read":
         return _read_preview(agent, args, ctx)
-    from tools.preview_tool import _handle_preview
+    from hermes_agent.tools.preview_tool import _handle_preview
 
     return _handle_preview(args)
 
@@ -195,8 +195,8 @@ def _preview_is_default_vault_target(agent, task_id: str) -> bool:
     if not preview:
         return False
     from agent.browser_page_registry import backend_for_task
-    from tools.browser_session import session_for_task
-    from tools.browser_supervisor import SUPERVISOR_REGISTRY
+    from hermes_agent.tools.browser_session import session_for_task
+    from hermes_agent.tools.browser_supervisor import SUPERVISOR_REGISTRY
 
     # A plugin backend (e.g. Camofox) holding the task's live page owns the fill: browser_vault's own
     # backend selection already picks it, so an omitted target must NOT be forced to preview over it.
@@ -207,8 +207,8 @@ def _preview_is_default_vault_target(agent, task_id: str) -> bool:
 
 def _browser_vault(agent, args: dict, ctx: InlineToolContext) -> Any:
     # The preview transport is the agent's GUI callback, which registry dispatch never forwards.
-    import tools.browser_vault_tool  # registers the real handler
-    from tools.registry import registry
+    import hermes_agent.tools.browser_vault_tool  # registers the real handler
+    from hermes_agent.tools.registry import registry
 
     task_id = ctx.effective_task_id or "default"
     if "target" not in args and (args.get("action") in ("fill", "save_login", "enter_code")
@@ -220,8 +220,8 @@ def _browser_vault(agent, args: dict, ctx: InlineToolContext) -> Any:
 
 def _manage_connections(agent, args: dict, ctx: InlineToolContext) -> Any:
     # The GUI callback lives on the agent; registry dispatch never forwards it.
-    from tools.connectors import manage_connections
-    from tools.connectors.gateway import config as gateway_config
+    from hermes_agent.tools.connectors import manage_connections
+    from hermes_agent.tools.connectors.gateway import config as gateway_config
 
     result = manage_connections(
         args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
@@ -257,7 +257,7 @@ def _scope_in_connected_mcp_servers(agent, result: Any) -> None:
 
 def _manage_catalog(agent, args: dict, ctx: InlineToolContext) -> Any:
     # The card callback lives on the agent; only a desktop chat draws catalog rows.
-    from tools.connectors.catalog_tool import manage_catalog
+    from hermes_agent.tools.connectors.catalog_tool import manage_catalog
 
     return manage_catalog(
         args, session_id=getattr(agent, "session_id", None), tool_call_id=ctx.tool_call_id,
@@ -271,7 +271,7 @@ def _setup_beat(agent, args: dict, ctx: InlineToolContext) -> Any:
     # past ends the turn as a new message does: setup_beat runs inline (never parallel), so its result is
     # kept and the loop stops before the next model call.
     from agent.interrupt_control import _REASON_NEW_MESSAGE
-    from tools.setup_beat_tool import setup_beat_tool
+    from hermes_agent.tools.setup_beat_tool import setup_beat_tool
 
     return setup_beat_tool(
         args, db=getattr(agent, "_session_db", None), session_id=getattr(agent, "session_id", None) or "",
@@ -292,13 +292,13 @@ def _setup_mcp_shim(agent, args: dict, ctx: InlineToolContext) -> Any:
 # Order is the historical if/elif order of ``execute_tool_calls_sequential``.
 _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     "todo_list": _tool(
-        "tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
+        "hermes_agent.tools.todo_tool", "todo_tool", ("todos", "todos"), ("merge", "merge", False),
         store=lambda agent, ctx: agent._todo_store,
     ),
     # Bot Mode teammate DM is injected, not registered: only a canonical Bot
     # Chat session carries the schema, and the tool re-gates on the title.
     "message_agent": _tool(
-        "tools.bot_mode_dm", "message_agent_tool", ("target", "target", ""), ("message", "message", ""),
+        "hermes_agent.tools.bot_mode_dm", "message_agent_tool", ("target", "target", ""), ("message", "message", ""),
         ("expects_reply", "expects_reply", True), ("cancel", "cancel", ""),
         ("constraints", "constraints", ""), ("expecting", "expecting", ""),
         task_id=lambda agent, ctx: ctx.effective_task_id, agent=lambda agent, ctx: agent,
@@ -306,35 +306,35 @@ _RAW_INLINE_TOOL_EXECUTORS: dict[str, InlineToolExecutor] = {
     "session_search": _session_search,
     "memory": _memory,
     "clarify": _tool(
-        "tools.clarify_tool", "clarify_tool", ("questions", "questions"),
+        "hermes_agent.tools.clarify_tool", "clarify_tool", ("questions", "questions"),
         callback=lambda agent, ctx: agent.clarify_callback,
     ),
     "read_terminal": _callback_tool(
-        "tools.read_terminal_tool", "read_terminal_tool", "read_terminal_callback",
+        "hermes_agent.tools.read_terminal_tool", "read_terminal_tool", "read_terminal_callback",
         ("start_line", "start_line"), ("count", "count"),
     ),
     "desktop_preview": _desktop_preview,
     "browser_vault": _browser_vault,
     "drive_preview": _callback_tool(
-        "tools.drive_preview_tool", "drive_preview_tool", "drive_preview_callback",
+        "hermes_agent.tools.drive_preview_tool", "drive_preview_tool", "drive_preview_callback",
         ("action", "action", ""), ("ref", "ref"), ("selector", "selector"), ("text", "text"),
         ("key", "key"), ("submit", "submit"), ("amount", "amount"), ("to", "to"), ("limit", "max"),
     ),
     "annotate_preview": _callback_tool(
-        "tools.annotate_preview_tool", "annotate_preview_tool", "drive_preview_callback",
+        "hermes_agent.tools.annotate_preview_tool", "annotate_preview_tool", "drive_preview_callback",
         ("action", "action", "add"), ("ref", "ref"), ("selector", "selector"), ("label", "label"),
     ),
     "read_window_below": _callback_tool(
-        "tools.read_window_tool", "read_window_below_tool", "read_window_below_callback",
+        "hermes_agent.tools.read_window_tool", "read_window_below_tool", "read_window_below_callback",
     ),
     "gui_tour": _callback_tool(
-        "tools.tour_tool", "tour_tool", "tour_callback",
+        "hermes_agent.tools.tour_tool", "tour_tool", "tour_callback",
         ("action", "action", ""), ("surface", "surface"), ("selector", "selector"), ("title", "title"),
         ("text", "text"), ("side", "side"), ("steps", "steps"), ("step_index", "step_index"),
         ("preset", "preset"),
     ),
     "set_theme": _callback_tool(
-        "tools.set_theme_tool", "set_theme_tool", "theme_callback",
+        "hermes_agent.tools.set_theme_tool", "set_theme_tool", "theme_callback",
         ("accent", "accent"), ("mode", "mode"), ("layout", "layout"), ("picker", "picker"),
     ),
     "setup_beat": _setup_beat,

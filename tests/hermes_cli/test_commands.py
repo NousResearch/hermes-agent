@@ -589,7 +589,7 @@ class TestGatewaySkillCollector:
         }
         with (
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_dir),
             patch("agent.skill_utils.get_external_skills_dirs", return_value=[]),
         ):
             entries, hidden = _collect_gateway_skill_entries(
@@ -617,7 +617,7 @@ class TestGatewaySkillCollector:
         }
         with (
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", skills_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", skills_dir),
             patch("hermes_cli.plugins.get_plugin_commands", return_value={"plug": {"description": "p"}}),
         ):
             entries, hidden = _collect_gateway_skill_entries(
@@ -681,7 +681,7 @@ class TestTelegramMenuCommands:
 
         with (
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch(
                 "agent.skill_utils.get_external_skills_dirs",
                 return_value=[external_dir],
@@ -722,7 +722,7 @@ class TestTelegramMenuCommands:
         }
         with (
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             (tmp_path / "skills").mkdir(exist_ok=True)
             menu, _ = telegram_menu_commands(max_commands=100)
@@ -755,7 +755,7 @@ class TestTelegramMenuCommands:
         }
         with (
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             (tmp_path / "skills").mkdir(exist_ok=True)
             menu, _ = telegram_menu_commands(max_commands=100)
@@ -803,7 +803,7 @@ class TestTelegramMenuCommands:
             patch("hermes_cli.commands_platforms.telegram_bot_commands", return_value=fake_core),
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
             patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
-            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
         ):
             menu, hidden = telegram_menu_commands(max_commands=len(fake_core))
@@ -843,7 +843,7 @@ class TestTelegramMenuCommands:
         with (
             patch("hermes_cli.commands_platforms.telegram_bot_commands", return_value=fake_core),
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
         ):
             menu, hidden = telegram_menu_commands(max_commands=2)
@@ -879,7 +879,7 @@ class TestTelegramMenuCommands:
         with (
             patch("hermes_cli.commands_platforms.telegram_bot_commands", return_value=fake_core),
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
         ):
             menu, hidden = telegram_menu_commands(max_commands=1)
@@ -907,7 +907,7 @@ class TestTelegramMenuCommands:
         with (
             patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
             patch("agent.skill_commands.get_skill_commands", return_value={}),
-            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
             patch("hermes_cli.commands_platforms._telegram_command_menu_config", return_value=menu_cfg),
         ):
             menu, hidden = telegram_menu_commands(max_commands=1)
@@ -932,7 +932,7 @@ class TestTelegramMenuCommands:
         with (
             patch("hermes_cli.plugins.get_plugin_commands", return_value=fake_plugins),
             patch("agent.skill_commands.get_skill_commands", return_value={}),
-            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_dir),
         ):
             menu, _hidden = telegram_menu_commands(max_commands=100)
 
@@ -1005,7 +1005,7 @@ class TestDiscordSkillCommandsByCategory:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
         ):
             categories, _uncategorized, hidden = discord_skill_commands_by_category(
                 reserved_names=set(),
@@ -1062,7 +1062,7 @@ class TestDiscordSkillCommandsByCategory:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with (
             patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
-            patch("tools.skills_tool.SKILLS_DIR", local_skills_dir),
+            patch("hermes_agent.tools.skills_tool.SKILLS_DIR", local_skills_dir),
             patch(
                 "agent.skill_utils.get_external_skills_dirs",
                 return_value=[external_dir],

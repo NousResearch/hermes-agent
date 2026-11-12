@@ -89,7 +89,7 @@ def test_tool_worker_threads_inherit_the_code_prompt():
     """browser_vault runs on a tool worker when calls run in parallel; the callbacks must reach it."""
     from agent.vault_backends import unlock
     from hermes_agent.gateway.session_vault_prompt import vault_prompt_scope
-    from tools.thread_context import propagate_context_to_thread
+    from hermes_agent.tools.thread_context import propagate_context_to_thread
     events, _ = _events()
     seen = {}
     with vault_prompt_scope(_turn(events), SimpleNamespace()):
@@ -172,7 +172,7 @@ def test_no_attached_viewer_returns_at_once():
 def _enter_code_with_a_fake_page():
     """browser_vault_enter_code against a page with one code field; returns (tool result, filled JS)."""
     from unittest.mock import patch
-    from tools import browser_vault_tool
+    from hermes_agent.tools import browser_vault_tool
     controls = [{'index': 0, 'type': 'text', 'name': 'otp', 'label': 'Security code', 'autocomplete': 'one-time-code'}]
     seen = {}
 
@@ -237,7 +237,7 @@ def test_a_manager_unlocked_on_a_tool_worker_is_released_with_its_session():
     with the callbacks, or closing the chat leaves the manager unlocked until its idle timeout."""
     from agent.vault_backends import unlock
     from hermes_agent.gateway.session_vault_prompt import release_unlocks, vault_prompt_scope
-    from tools.thread_context import propagate_context_to_thread
+    from hermes_agent.tools.thread_context import propagate_context_to_thread
     events, _ = _events()
     try:
         with vault_prompt_scope(_turn(events, session_id='s1'), SimpleNamespace()):
@@ -259,7 +259,7 @@ def test_deleting_a_chat_locks_the_managers_it_unlocked(monkeypatch):
     from hermes_agent.gateway import session_local_mcp, session_policy, session_worker_construct
     from hermes_agent.gateway.session_mutations import retire_live_sessions
     from hermes_agent.gateway.session_vault_prompt import vault_prompt_scope
-    from tools import async_delegation
+    from hermes_agent.tools import async_delegation
     for module, name in ((session_policy, 'release_launch_secrets'), (session_policy, 'release_session_workspaces'),
                          (session_local_mcp, 'release_editor_mcp'),
                          (session_worker_construct, 'release_session_prefill'), (async_delegation, 'allow_for_session')):

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.mcp_tool import (
+from hermes_agent.tools.mcp_tool import (
     _MCP_LOG_LEVEL_MAP,
     MCPServerTask,
 )
@@ -36,7 +36,7 @@ class TestLoggingCallback:
     async def test_routes_to_hermes_logger_with_server_tag(self, caplog):
         server = MCPServerTask("log_srv")
         callback = server._make_logging_callback()
-        with caplog.at_level(logging.INFO, logger="tools.mcp_tool"):
+        with caplog.at_level(logging.INFO, logger="hermes_agent.tools.mcp_tool"):
             await callback(_params(level="info", data="server started"))
         assert any(
             "log_srv" in rec.getMessage() and "server started" in rec.getMessage()
@@ -47,7 +47,7 @@ class TestLoggingCallback:
     async def test_includes_sub_logger_name(self, caplog):
         server = MCPServerTask("log_srv")
         callback = server._make_logging_callback()
-        with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.tools.mcp_tool"):
             await callback(_params(level="warning", data="rate limited",
                                    logger_name="http"))
         assert any(
@@ -78,7 +78,7 @@ class TestSDKSupportGate:
         # False and never observe the real support state.
         import inspect
         from mcp import ClientSession
-        from tools import mcp_tool
+        from hermes_agent.tools import mcp_tool
         mcp_tool._ensure_mcp_sdk()
         expected = "logging_callback" in inspect.signature(ClientSession).parameters
         assert mcp_tool._MCP_LOGGING_CALLBACK_SUPPORTED == expected

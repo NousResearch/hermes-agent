@@ -1,4 +1,4 @@
-"""Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
+"""Tests for hermes_agent/model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
 from unittest.mock import patch
@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 
-from model_tools import (
+from hermes_agent.model_tools import (
     handle_function_call,
     _AGENT_LOOP_TOOLS,
 )
@@ -36,7 +36,7 @@ class TestHandleFunctionCall:
         ``duration_ms`` to its PostToolUse hook inputs.
         """
         with (
-            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_agent.model_tools.registry.dispatch", return_value='{"ok":true}'),
             patch("hermes_cli.plugins.has_hook", return_value=True),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
@@ -60,7 +60,7 @@ class TestHandleFunctionCall:
     def test_terminal_nonzero_exit_is_reported_as_error(self):
         result = json.dumps({"output": "", "exit_code": 1, "error": None})
         with (
-            patch("model_tools.registry.dispatch", return_value=result),
+            patch("hermes_agent.model_tools.registry.dispatch", return_value=result),
             patch("hermes_cli.plugins.has_hook", return_value=True),
             patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
@@ -108,7 +108,7 @@ class TestHandleFunctionCall:
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
         monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
-        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+        monkeypatch.setattr("hermes_agent.model_tools.registry.dispatch", fake_dispatch)
 
         result = json.loads(
             handle_function_call(
@@ -141,7 +141,7 @@ class TestHandleFunctionCall:
             lambda name, **kwargs: hook_calls.append((name, kwargs)) or [],
         )
         monkeypatch.setattr(
-            "model_tools.registry.dispatch",
+            "hermes_agent.model_tools.registry.dispatch",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
         )
 
@@ -177,7 +177,7 @@ class TestHandleFunctionCall:
             lambda *_args, **_kwargs: json.dumps({"error": "Edit approval denied"}),
         )
         monkeypatch.setattr(
-            "model_tools.registry.dispatch",
+            "hermes_agent.model_tools.registry.dispatch",
             lambda *_args, **_kwargs: (_ for _ in ()).throw(
                 AssertionError("denied edit must not dispatch")
             ),
@@ -231,7 +231,7 @@ class TestPreToolCallBlocking:
 
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
         monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
-        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+        monkeypatch.setattr("hermes_agent.model_tools.registry.dispatch", fake_dispatch)
 
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
         assert result == {"error": "Blocked by policy"}
@@ -251,9 +251,9 @@ class TestPreToolCallBlocking:
             return []
 
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
-        monkeypatch.setattr("model_tools.registry.dispatch",
+        monkeypatch.setattr("hermes_agent.model_tools.registry.dispatch",
                             lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not run")))
-        monkeypatch.setattr("tools.file_tools_read_tracking.notify_other_tool_call",
+        monkeypatch.setattr("hermes_agent.tools.file_tools_read_tracking.notify_other_tool_call",
                             lambda task_id: notifications.append(task_id))
 
         result = json.loads(handle_function_call("web_search", {"q": "test"}, task_id="t1"))
@@ -272,7 +272,7 @@ class TestPreToolCallBlocking:
             return []
 
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
-        monkeypatch.setattr("model_tools.registry.dispatch",
+        monkeypatch.setattr("hermes_agent.model_tools.registry.dispatch",
                             lambda *a, **kw: json.dumps({"ok": True}))
 
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
@@ -301,7 +301,7 @@ class TestPreToolCallBlocking:
         )
         monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
         monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
-        monkeypatch.setattr("model_tools.registry.dispatch", dispatch)
+        monkeypatch.setattr("hermes_agent.model_tools.registry.dispatch", dispatch)
 
         handle_function_call(
             "read_file",
@@ -341,19 +341,19 @@ class TestCoerceNumberInfNan:
     float('nan') are not JSON-compliant under strict serialization."""
 
     def test_inf_returns_original_string(self):
-        from tools.arg_coercion import _coerce_number
+        from hermes_agent.tools.arg_coercion import _coerce_number
         assert _coerce_number("inf") == "inf"
 
 
     def test_nan_returns_original_string(self):
-        from tools.arg_coercion import _coerce_number
+        from hermes_agent.tools.arg_coercion import _coerce_number
         assert _coerce_number("nan") == "nan"
 
 
 
     def test_normal_numbers_still_coerce(self):
         """Guard against over-correction — real numbers still coerce."""
-        from tools.arg_coercion import _coerce_number
+        from hermes_agent.tools.arg_coercion import _coerce_number
         assert _coerce_number("42") == 42
         assert _coerce_number("3.14") == 3.14
         assert _coerce_number("1e3") == 1000
@@ -364,7 +364,7 @@ class TestDisabledToolsetsPlatformBundle:
 
     def test_disabling_platform_bundle_preserves_core_tools(self):
         """Disabling hermes-feishu should not strip core tools from hermes-telegram."""
-        from model_tools import get_tool_definitions
+        from hermes_agent.model_tools import get_tool_definitions
 
         tools_telegram = get_tool_definitions(
             enabled_toolsets=["hermes-telegram"],
@@ -386,7 +386,7 @@ class TestDisabledToolsetsPlatformBundle:
 
     def test_disabling_platform_bundle_removes_own_tools(self):
         """Disabling hermes-discord should remove discord-specific tools."""
-        from model_tools import get_tool_definitions
+        from hermes_agent.model_tools import get_tool_definitions
 
         tools = get_tool_definitions(
             enabled_toolsets=["hermes-discord"],
@@ -407,7 +407,7 @@ class TestDisabledToolsetsPlatformBundle:
         Asserted at the toolset-resolution layer, not get_tool_definitions:
         web_search's check_fn (Tavily key) filters it from the final schema in
         CI, so membership is the correct layer to pin the fix."""
-        from toolsets import resolve_toolset
+        from hermes_agent.toolsets import resolve_toolset
 
         browser_tools = set(resolve_toolset("browser"))
         assert "web_search" not in browser_tools, (
@@ -423,7 +423,7 @@ class TestDisabledToolsetsPlatformBundle:
 
     def test_bundle_non_core_tools_unknown_falls_back(self):
         """An unknown/garbage bundle name falls back to full resolution (best effort)."""
-        from toolsets import bundle_non_core_tools
+        from hermes_agent.toolsets import bundle_non_core_tools
         # A non-existent bundle resolves to an empty set (no tools), not a crash.
         assert bundle_non_core_tools("hermes-does-not-exist") == set()
 
@@ -435,7 +435,7 @@ class TestDisabledToolsetsPostureToolset:
     while atomic toolsets stay fully removable."""
 
     def test_disabling_coding_preserves_core_but_atomic_disables_still_remove(self):
-        from model_tools import get_tool_definitions
+        from hermes_agent.model_tools import get_tool_definitions
 
         # web_search is check_fn-gated (needs an API key); probe only the core
         # tools actually present in baseline so gating cannot mask the fix.
@@ -489,23 +489,23 @@ class TestBridgeDispatch:
 
 
     def test_tool_call_bad_args_error(self):
-        with patch("model_tools.get_tool_definitions", return_value=[]):
+        with patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]):
             result = json.loads(handle_function_call("tool_call", {}))
         assert result.get("error")
 
     def test_tool_call_rejects_out_of_scope_and_unwraps_in_scope(self):
-        import tools.tool_search as ts
-        with patch("model_tools.get_tool_definitions", return_value=[]), \
+        import hermes_agent.tools.tool_search as ts
+        with patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]), \
              patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
              patch.object(ts, "scoped_deferrable_names", return_value=frozenset()):
             result = json.loads(handle_function_call("tool_call", {"name": "mcp_x"}))
         assert result.get("error")
 
-        with patch("model_tools.get_tool_definitions", return_value=[]), \
+        with patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]), \
              patch.object(ts, "resolve_underlying_call", return_value=("mcp_x", {"a": 1}, None)), \
              patch.object(ts, "scoped_deferrable_names", return_value=frozenset({"mcp_x"})), \
              patch.object(ts, "validate_deferred_call_args", return_value=None), \
-             patch("model_tools.registry.dispatch", return_value='{"ok": true}') as disp:
+             patch("hermes_agent.model_tools.registry.dispatch", return_value='{"ok": true}') as disp:
             out = handle_function_call("tool_call", {"name": "mcp_x"}, task_id="t")
         assert json.loads(out) == {"ok": True}
         assert disp.call_args.args[0] == "mcp_x" and disp.call_args.args[1] == {"a": 1}
@@ -527,9 +527,9 @@ class TestBrowserRetrievalHints:
 
     def test_silent_without_web_tools(self):
         # Real static schemas + rewriters: the rewritten browser descriptions must not mention absent web tools.
-        from model_tools import _apply_dynamic_schemas
-        from tools.browser_cdp_tool import BROWSER_CDP_SCHEMA
-        from tools.browser_use_cli import BROWSER_EXEC_SCHEMA
+        from hermes_agent.model_tools import _apply_dynamic_schemas
+        from hermes_agent.tools.browser_cdp_tool import BROWSER_CDP_SCHEMA
+        from hermes_agent.tools.browser_use_cli import BROWSER_EXEC_SCHEMA
 
         defs = [{"type": "function", "function": BROWSER_EXEC_SCHEMA}, {"type": "function", "function": BROWSER_CDP_SCHEMA}]
         rendered = " ".join(d["function"]["description"] for d in _apply_dynamic_schemas(defs + self._defs("terminal")))
@@ -542,12 +542,12 @@ def test_browser_exec_points_at_vision_analyze_only_when_the_session_has_it(monk
     """An auxiliary vision route exists (check_vision_requirements is True) but the session may not
     expose vision_analyze: the browser_exec description names it only when it is in the tool list,
     and never under the native header, where screenshots already arrive in the result."""
-    from model_tools import _apply_dynamic_schemas
-    from tools import browser_use_cli as bu_cli
+    from hermes_agent.model_tools import _apply_dynamic_schemas
+    from hermes_agent.tools import browser_use_cli as bu_cli
 
-    monkeypatch.setattr("tools.vision_tools._should_use_native_vision_fast_path", lambda: native)
-    monkeypatch.setattr("tools.vision_tools.check_vision_requirements", lambda: True)
-    monkeypatch.setattr("tools.browser_lightpanda.lightpanda_engine_status", lambda: (False, ""))
+    monkeypatch.setattr("hermes_agent.tools.vision_tools._should_use_native_vision_fast_path", lambda: native)
+    monkeypatch.setattr("hermes_agent.tools.vision_tools.check_vision_requirements", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.browser_lightpanda.lightpanda_engine_status", lambda: (False, ""))
     exec_def = {"type": "function", "function": {"name": "browser_exec", **bu_cli._dynamic_schema_overrides()}}
     for names in (("terminal",), ("terminal", "vision_analyze")):
         others = [{"type": "function", "function": {"name": n, "description": n}} for n in names]
@@ -562,7 +562,7 @@ def test_tool_defs_cache_key_sees_config_replacement_with_pinned_mtime(tmp_path)
     import os
     import shutil
 
-    from model_tools import _tool_defs_cache_key
+    from hermes_agent.model_tools import _tool_defs_cache_key
     from tests.waiting import wait_for_ctime_tick
 
     cfg = tmp_path / "config.yaml"

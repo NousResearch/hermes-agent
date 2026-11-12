@@ -238,7 +238,7 @@ class GatewaySlashCommandsMixin(
         from hermes_agent.gateway.run import _checkpoint_agent_kwargs, _load_gateway_config
         from hermes_agent.gateway.session_authorities import active_authority
         from hermes_agent.gateway.session_policy import policy_for_source
-        from tools.checkpoint_manager import CheckpointManager
+        from hermes_agent.tools.checkpoint_manager import CheckpointManager
         policy = policy_for_source(self, source) if source is not None else None
         cp = _checkpoint_agent_kwargs(policy.config(active_authority(self), secrets=False) if policy
                                       else _load_gateway_config())
@@ -298,7 +298,7 @@ class GatewaySlashCommandsMixin(
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
     def _terminal_cwd(self) -> str:
-        from tools.terminal_scope import terminal_env
+        from hermes_agent.tools.terminal_scope import terminal_env
         return terminal_env("TERMINAL_CWD", str(Path.home()))
 
     @staticmethod
@@ -480,7 +480,7 @@ class GatewaySlashCommandsMixin(
 
         # No running agent anywhere for this scope. Background delegations the session dispatched in an
         # earlier turn still count as "active": stop them; each returns as an interrupted completion.
-        from tools.async_delegation import interrupt_for_session
+        from hermes_agent.tools.async_delegation import interrupt_for_session
         if interrupt_for_session(session_key=session_key, reason="stop_command",
                                  parent_session_id=str(getattr(session_entry, "session_id", "") or "")):
             return EphemeralReply(t("gateway.stop.stopped"))
@@ -738,7 +738,7 @@ class GatewaySlashCommandsMixin(
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
-        from tools.checkpoint_manager import format_checkpoint_list
+        from hermes_agent.tools.checkpoint_manager import format_checkpoint_list
         mgr = self._checkpoint_manager(event.source)
         if mgr is None:
             return t("gateway.rollback.not_enabled")
@@ -760,7 +760,7 @@ class GatewaySlashCommandsMixin(
             return t("gateway.rollback.none_found", cwd=cwd)
 
         # Restore by number or hash (a short hash can be all digits)
-        from tools.checkpoint_refs import resolve_checkpoint_ref
+        from hermes_agent.tools.checkpoint_refs import resolve_checkpoint_ref
         try:
             target_hash = resolve_checkpoint_ref(checkpoints, arg)
         except ValueError:
@@ -794,7 +794,7 @@ class GatewaySlashCommandsMixin(
                 return reason
             result = await asyncio.to_thread(mgr.session_diff, cwd)
         else:
-            from tools.working_diff import collect_working_diff
+            from hermes_agent.tools.working_diff import collect_working_diff
             result = await asyncio.to_thread(collect_working_diff, cwd, mode)
         if not result.get("success"):
             return t("gateway.diff.failed", error=result.get("error") or t("gateway.diff.err_default"))
@@ -910,8 +910,8 @@ class GatewaySlashCommandsMixin(
         """Handle /memory — review pending memory writes + toggle the approval gate. Entries are small
         enough to review inline, so the full flow works on every platform."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
-        from tools import write_approval as wa
-        from tools.memory_tool import load_on_disk_store
+        from hermes_agent.tools import write_approval as wa
+        from hermes_agent.tools.memory_tool import load_on_disk_store
         # Apply approved writes against a fresh on-disk store (the gateway has no long-lived agent;
         # the store persists to the same MEMORY/USER.md and honors the configured char limits).
         out = handle_pending_subcommand(
@@ -924,7 +924,7 @@ class GatewaySlashCommandsMixin(
         by ``skills.write_approval`` but still answers when staged writes exist after the gate is off
         (never stranded). ``diff`` is truncated for chat."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
-        from tools import write_approval as wa
+        from hermes_agent.tools import write_approval as wa
         args = event.get_command_args().strip().split()
         sub = args[0].lower() if args else ""
         gate_off = not wa.write_approval_enabled(wa.SKILLS) and sub not in {"approval", "mode"}
@@ -960,7 +960,7 @@ class GatewaySlashCommandsMixin(
     async def _handle_yolo_command(self, event: MessageEvent) -> str | EphemeralReply:
         """Handle /yolo — toggle dangerous command approval bypass for this session only. The flag is
         persisted on the routing entry so it survives a gateway restart."""
-        from tools.approval_yolo import toggle_session_yolo
+        from hermes_agent.tools.approval_yolo import toggle_session_yolo
         session_key = self._session_key_for_source(event.source)
         persisted, persist = False, None
         if (store := self.session_store) is not None:
@@ -1202,7 +1202,7 @@ class GatewaySlashCommandsMixin(
         ``/deny`` for the chat's slash policy: the bare-word "always" lands here without dispatch's
         gate), else ``(session_key, reply, [])``.
         A pending-approvals entry with no blocked thread is a stale prompt: drop it and say so."""
-        from tools.approval import has_blocking_approval
+        from hermes_agent.tools.approval import has_blocking_approval
         session_key = self._session_key_for_source(event.source)
         if has_blocking_approval(session_key):
             from hermes_agent.gateway.approval_actor import answerable_request_ids, refusal_text
@@ -1218,9 +1218,9 @@ class GatewaySlashCommandsMixin(
         return session_key, t(none_key), []
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /approve — unblock waiting agent thread(s). They block inside tools/approval.py;
+        """Handle /approve — unblock waiting agent thread(s). They block inside hermes_agent/tools/approval.py;
         signalling the event resumes them so the command executes inline (same flow as the CLI)."""
-        from tools.approval import resolve_gateway_approval
+        from hermes_agent.tools.approval import resolve_gateway_approval
         # Args: "all", "all session", "all always", "session", "always" ("always" beats "session").
         args = event.get_command_args().strip().lower().split()
         session_key, stale, request_ids = self._blocking_approval_or_stale(
@@ -1244,7 +1244,7 @@ class GatewaySlashCommandsMixin(
         ``/deny <reason>`` (or ``/deny all <reason>``) attaches a one-line reason that is relayed back to
         the agent so it can adapt instead of only hearing "denied". Ported from qwibitai/nanoclaw#2832.
         """
-        from tools.approval import resolve_gateway_approval
+        from hermes_agent.tools.approval import resolve_gateway_approval
         # A leading "all" denies every pending command; the rest (or the whole arg string without
         # "all") is the optional deny reason relayed to the agent, capped to a sane one-liner.
         raw_args = event.get_command_args().strip()

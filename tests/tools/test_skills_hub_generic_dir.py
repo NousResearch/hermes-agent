@@ -2,10 +2,10 @@
 
 from unittest.mock import MagicMock, patch
 
-from tools.skills_hub_github import GitHubAuth, GitHubSource
-from tools.skills_hub_models import SkillBundle
-from tools.skills_hub_official import HermesIndexSource
-from tools.skills_hub_skillssh import SkillsShSource
+from hermes_agent.tools.skills_hub_github import GitHubAuth, GitHubSource
+from hermes_agent.tools.skills_hub_models import SkillBundle
+from hermes_agent.tools.skills_hub_official import HermesIndexSource
+from hermes_agent.tools.skills_hub_skillssh import SkillsShSource
 
 ROW = {"name": "weread-skills", "description": "WeChat Reading skills", "source": "skills.sh",
        "identifier": "skills-sh/tencent/wechatreading/weread-skills",
@@ -24,7 +24,7 @@ def _index_source(row, github, monkeypatch):
     return src
 
 
-@patch("tools.skills_hub.httpx.get")
+@patch("hermes_agent.tools.skills_hub.httpx.get")
 def test_finds_single_generic_skills_directory_when_slug_is_stale(mock_get):
     """A lone ``skills/SKILL.md`` answers for a stale slug; a lone NAMED skill (``skills/bar``) never does."""
     auth = MagicMock(spec=GitHubAuth)

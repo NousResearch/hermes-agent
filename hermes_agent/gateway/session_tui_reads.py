@@ -184,7 +184,7 @@ def _stored_breakdown(row, conversation, usage) -> dict:
     """``stored_context_breakdown`` over the session row's frozen system prompt and tools[] pin, beside its
     stored usage. Tools are measured as the next agent restores them (``pinned_tool_defs``)."""
     from agent.context_breakdown import stored_context_breakdown
-    from tools.mcp_tool_agent import pinned_tool_defs
+    from hermes_agent.tools.mcp_tool_agent import pinned_tool_defs
     breakdown = {'categories': [], 'estimated_total': 0}
     # No prompt until an agent first built one: nothing to measure yet, the contract's pre-build shape.
     if prompt := row.get('system_prompt'):

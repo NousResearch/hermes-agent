@@ -25,7 +25,7 @@ def pending_human_input() -> Optional[int]:
     global _input_probe_failure_logged
     try:
         from hermes_agent.tui_gateway import server_requests
-        from tools.approval import pending_gateway_approval_count
+        from hermes_agent.tools.approval import pending_gateway_approval_count
 
         return server_requests.open_request_count() + pending_gateway_approval_count()
     except Exception:

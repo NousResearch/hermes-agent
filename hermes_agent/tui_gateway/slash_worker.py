@@ -138,7 +138,7 @@ def _run(cli: "HermesCLI", command: str) -> str:
             cli_mod._cprint = old
     # Desktop chat bubbles render plain text, not ANSI. A command that emits Rich color (e.g. /journey
     # under the gateway's inherited COLORTERM) would leak raw escapes; strip at this single choke point.
-    from tools.ansi_strip import strip_ansi
+    from hermes_agent.tools.ansi_strip import strip_ansi
     output = strip_ansi(buf.getvalue().rstrip())
     cli._harvested_seed, cli._pending_agent_seed = getattr(cli, "_pending_agent_seed", None) or "", None
     return output

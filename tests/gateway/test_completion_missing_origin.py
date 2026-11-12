@@ -21,7 +21,7 @@ async def test_completion_uses_logical_owner_after_route_restore(tmp_path, monke
     from plugins.platforms.discord.adapter import DiscordAdapter
     from plugins.platforms.telegram.adapter import TelegramAdapter
     from tests.gateway.test_completion_admission import pending
-    from tools import async_delegation as delegation
+    from hermes_agent.tools import async_delegation as delegation
 
     # Admit through the real adapter and SQLite FIFO, stopping before a model turn.
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
@@ -85,7 +85,7 @@ async def test_local_null_origin_never_acknowledges_the_wrong_owner(tmp_path, mo
     from tests.gateway.test_completion_admission import pending
     from tests.gateway.test_session_end_delegations import _local
     from tests.gateway.test_unviewed_completion_notes import _compress
-    from tools import async_delegation as delegation
+    from hermes_agent.tools import async_delegation as delegation
 
     runner, authority, ref, _ = await _local(tmp_path, monkeypatch)
     store = runner.session_store

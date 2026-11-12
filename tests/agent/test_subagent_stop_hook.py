@@ -1,6 +1,6 @@
 """Tests for the subagent_stop hook event.
 
-Covers wire-up from tools.delegate_tool.delegate_task:
+Covers wire-up from hermes_agent.tools.delegate_tool.delegate_task:
   * fires once per child in both single-task and batch modes
   * is dispatched from the parent thread (no child-pool re-entrancy)
     and callback bodies stay on that caller thread
@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.delegate_tool import _summarize_tool_arguments, delegate_task
+from hermes_agent.tools.delegate_tool import _summarize_tool_arguments, delegate_task
 from hermes_cli import plugins
 
 
@@ -67,7 +67,7 @@ def _stub_child_builder(monkeypatch):
         return child
 
     monkeypatch.setattr(
-        "tools.delegate_tool._build_child_agent", _fake_build_child,
+        "hermes_agent.tools.delegate_tool._build_child_agent", _fake_build_child,
     )
 
 
@@ -90,7 +90,7 @@ class TestSingleTask:
     def test_fires_once(self):
         captured = _register_capturing_hook()
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
             mock_run.return_value = {
                 "task_index": 0,
                 "status": "completed",
@@ -120,7 +120,7 @@ class TestSingleTask:
                 dispatch_threads.append(threading.current_thread())
             return real_invoke(hook_name, **kwargs)
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run, \
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run, \
              patch("hermes_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
             mock_run.return_value = {
                 "task_index": 0, "status": "completed",
@@ -136,7 +136,7 @@ class TestSingleTask:
     def test_payload_includes_parent_session_id(self):
         captured = _register_capturing_hook()
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
             mock_run.return_value = {
                 "task_index": 0, "status": "completed",
                 "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
@@ -157,7 +157,7 @@ class TestBatchMode:
     def test_fires_per_child(self):
         captured = _register_capturing_hook()
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
             mock_run.side_effect = [
                 {"task_index": 0, "status": "completed",
                  "summary": "A", "api_calls": 1, "duration_seconds": 1.0,
@@ -194,7 +194,7 @@ class TestBatchMode:
                 dispatch_threads.append(threading.current_thread())
             return real_invoke(hook_name, **kwargs)
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run, \
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run, \
              patch("hermes_cli.plugins.invoke_hook", side_effect=_tracking_invoke):
             mock_run.side_effect = [
                 {"task_index": 0, "status": "completed",
@@ -223,7 +223,7 @@ class TestPayloadShape:
     def test_includes_redacted_tool_call_history(self):
         captured = _register_capturing_hook()
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
             mock_run.return_value = {
                 "task_index": 0,
                 "status": "completed",
@@ -271,7 +271,7 @@ class TestPayloadShape:
         result dict is serialised to JSON."""
         _register_capturing_hook()
 
-        with patch("tools.delegate_tool._run_single_child") as mock_run:
+        with patch("hermes_agent.tools.delegate_tool._run_single_child") as mock_run:
             mock_run.return_value = {
                 "task_index": 0, "status": "completed",
                 "summary": "x", "api_calls": 1, "duration_seconds": 0.1,

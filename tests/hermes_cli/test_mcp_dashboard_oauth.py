@@ -64,7 +64,7 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
     from starlette.testclient import TestClient
 
     from hermes_cli import web_server
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
     flow = DashboardOAuthFlow(
         flow_id="flow-gated",
@@ -91,7 +91,7 @@ def test_hosted_callback_bypasses_gated_cookie_auth(monkeypatch):
 
 def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, monkeypatch):
     from hermes_cli import web_server
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
     profile_home = tmp_path / "profiles" / "work"
     profile_home.mkdir(parents=True)
@@ -122,7 +122,7 @@ def test_hosted_auth_allows_same_server_name_in_different_profiles(tmp_path, mon
 
 def test_flow_status_does_not_expose_authorization_code():
     from hermes_cli import web_server
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
     flow = DashboardOAuthFlow(
         flow_id="flow-status",
@@ -147,7 +147,7 @@ def test_flow_status_does_not_expose_authorization_code():
 def test_cancel_marks_the_flow_terminal_for_a_retrying_worker():
     """DELETE /flows/{id} is a user cancellation: the worker's next attempt must not re-mint the
     flow behind the dashboard's back (it would reopen a URL the user just dismissed)."""
-    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+    from hermes_agent.tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
     flow = DashboardOAuthFlow(
         flow_id="flow-cancel-retry",

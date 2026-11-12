@@ -173,7 +173,7 @@ def _toggle_target(arg: str, current: bool):
 
 def _cron_api(**kwargs) -> dict:
     """Call the cronjob model tool and decode its JSON reply."""
-    from tools.cronjob_tools import cronjob as cronjob_tool
+    from hermes_agent.tools.cronjob_tools import cronjob as cronjob_tool
     return json.loads(cronjob_tool(**kwargs))
 
 
@@ -233,16 +233,16 @@ def _refresh_tui_before_print(cli) -> None:
 def _print_lightpanda_engine_status() -> None:
     """``/browser status`` line(s) about ``browser.engine: lightpanda`` — silent unless set;
     says whether it is in use or which higher-precedence setting shadows it."""
-    if not _probe("tools.browser_lightpanda", "using_lightpanda_engine", False):
+    if not _probe("hermes_agent.tools.browser_lightpanda", "using_lightpanda_engine", False):
         return
-    used, reason = _probe("tools.browser_lightpanda", "lightpanda_engine_status", (None, None))
+    used, reason = _probe("hermes_agent.tools.browser_lightpanda", "lightpanda_engine_status", (None, None))
     if reason is None:
         return
     if not used:
         return print(f"   {_t('browser.engine_not_in_use', reason=reason)}")
     print(f"   {_t('browser.engine_lightpanda', reason=reason)}")
     try:
-        from tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
+        from hermes_agent.tools.browser_lightpanda import LIGHTPANDA_INSTALL_HINT, find_lightpanda_binary
         lightpanda_bin = find_lightpanda_binary()
     except Exception:
         return
@@ -290,7 +290,7 @@ def _browser_connect(cli, cdp_url: str) -> None:
         return
     cdp_url, port = normalized
     # Clear any existing browser sessions so the next tool call uses the new backend
-    _probe("tools.browser_session_lifecycle", "cleanup_all_browsers", None)
+    _probe("hermes_agent.tools.browser_session_lifecycle", "cleanup_all_browsers", None)
     print()
     # Already serving CDP? For the default-local URL probe both loopbacks: a squatter
     # on 127.0.0.1:<port> (e.g. an IDE debugger) can push the browser to bind [::1] only.
@@ -309,7 +309,7 @@ def _browser_connect(cli, cdp_url: str) -> None:
         return _say_block(_t("browser.not_connected"))
     os.environ["BROWSER_CDP_URL"] = found
     # Eagerly start the CDP supervisor so pending_dialogs + frame_tree show up in the next snapshot.
-    _probe("tools.browser_session_cdp", "ensure_cdp_supervisor", None, "default")
+    _probe("hermes_agent.tools.browser_session_cdp", "ensure_cdp_supervisor", None, "default")
     _say_block(_t("browser.connected"), f"   {_t('browser.endpoint', url=found)}")
     # Tell the model the CDP browser was made available on purpose.
     if hasattr(cli, '_pending_input'):
@@ -330,8 +330,8 @@ def _browser_disconnect(cli) -> None:
         return _say_block(_t("browser.already_default"))
     os.environ.pop("BROWSER_CDP_URL", None)
     with suppress(Exception):
-        from tools.browser_session_lifecycle import cleanup_all_browsers
-        from tools.browser_session_cdp import stop_cdp_supervisor
+        from hermes_agent.tools.browser_session_lifecycle import cleanup_all_browsers
+        from hermes_agent.tools.browser_session_cdp import stop_cdp_supervisor
         stop_cdp_supervisor("default")
         cleanup_all_browsers()
     _say_block(_t("browser.disconnected"), f"   {_t('browser.reverted')}")
@@ -369,12 +369,12 @@ def _browser_status() -> None:
         except Exception:
             print(f"   {_t('browser.status_unreachable')}")
     else:
-        provider = _probe("tools.browser_session_cloud", "get_cloud_provider", None)
+        provider = _probe("hermes_agent.tools.browser_session_cloud", "get_cloud_provider", None)
         if provider is not None:
             print(_t("browser.status_cloud", provider=provider.display_name))
             _print_lightpanda_engine_status()
         else:
-            engine = _probe("tools.browser_session_cloud", "get_browser_engine", "auto")
+            engine = _probe("hermes_agent.tools.browser_session_cloud", "get_browser_engine", "auto")
             _pr(*_local_engine_lines(engine))
             if engine == "lightpanda":
                 _print_lightpanda_engine_status()
@@ -406,7 +406,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_rollback_command(self, command: str):
         """Handle /rollback [diff] <N> [<file>|--all] — list, diff, or restore checkpoints.
         A restore also undoes the last chat turn; ``--all`` overwrites user hand-edits too."""
-        from tools.checkpoint_manager import format_checkpoint_list
+        from hermes_agent.tools.checkpoint_manager import format_checkpoint_list
         from hermes_cli.gateway_side import connection_for
         if (connection := connection_for(self)) is not None:
             # Checkpoints are taken by the gateway's tools: list/diff/restore are the owner's.
@@ -505,7 +505,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         if mode == "session":
             return self._print_session_diff(cwd, stat_only)
-        from tools.working_diff import collect_working_diff
+        from hermes_agent.tools.working_diff import collect_working_diff
         result = collect_working_diff(cwd, mode=mode, paths=paths or None)
         if not result.get("success"):
             return print(f"  {result.get('error') or _t('shared.could_not_generate_diff')}")
@@ -929,7 +929,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         from hermes_agent.gateway.slash_commands_branch_thread import parse_branch_args
         _, branch_name = parse_branch_args(_command_arg(cmd_original))
         now = datetime.now()
-        from tools.approval_yolo import transfer_session_yolo, with_session_yolo
+        from hermes_agent.tools.approval_yolo import transfer_session_yolo, with_session_yolo
         # Create the child BEFORE ending the parent: a failed create_session or gateway branch (or its /yolo
         # carry) must leave the session the user is still on open, not ended "branched" with no branch (#11030).
         # The stable ``_branched_from`` marker keeps the branch visible in /resume + /sessions even after the
@@ -1261,7 +1261,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         review_words = {"pending", "approve", "apply", "reject", "deny", "drop", "diff", "approval", "mode"}
         if args and args[0].lower() in review_words:
             from hermes_cli.write_approval_commands import handle_pending_subcommand
-            from tools import write_approval as wa
+            from hermes_agent.tools import write_approval as wa
             out = handle_pending_subcommand(
                 wa.SKILLS, args, set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
             )
@@ -1273,7 +1273,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
-        from tools import write_approval as wa
+        from hermes_agent.tools import write_approval as wa
         args = cmd.strip().split()[1:]
         store = getattr(self.agent, "_memory_store", None) if getattr(self, "agent", None) else None
         if store is None:
@@ -1283,7 +1283,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
             # (hermes_agent/gateway/slash_commands.py): it persists to the same MEMORY/USER.md and creates MEMORY.md on
             # the first approved write. Without this the shared handler returns "memory store unavailable".
             # See #46783.
-            from tools.memory_tool import load_on_disk_store
+            from hermes_agent.tools.memory_tool import load_on_disk_store
             store = load_on_disk_store()
         out = handle_pending_subcommand(
             wa.MEMORY, args, memory_store=store,
@@ -2157,7 +2157,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
 
     def _persist_wake_word_enabled(self, enabled: bool):
         """Save ``wake_word.enabled`` so the /wake toggle sticks for future sessions."""
-        persisted = _probe("tools.wake_word", "load_wake_word_config", None)
+        persisted = _probe("hermes_agent.tools.wake_word", "load_wake_word_config", None)
         if isinstance(persisted, dict) and bool(persisted.get("enabled")) == enabled:
             return  # already persisted — don't rewrite config or re-announce
         if _save("wake_word.enabled", enabled):

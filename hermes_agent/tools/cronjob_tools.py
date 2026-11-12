@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # Heartbeat cadence keeping the caller's inactivity watchdog at bay while a manual
 # `cronjob(action="run")` executes in-process (comfortably below HERMES_AGENT_TIMEOUT).
-# Mirrors the 10s cadence of tools/environments/base.py::touch_activity_if_due (delegate_task's heartbeat
+# Mirrors the 10s cadence of hermes_agent/tools/environments/base.py::touch_activity_if_due (delegate_task's heartbeat
 # uses 30s) — comfortably below the 1800s default HERMES_AGENT_TIMEOUT. See #76502.
 _CRON_RUN_HEARTBEAT_INTERVAL = 10.0
 # Hard ceiling: with HERMES_CRON_TIMEOUT=0 a truly hung run would otherwise mask the
@@ -42,8 +42,8 @@ from hermes_agent.cron.jobs import (
     resume_job,
     trigger_job,
     update_job)
-from tools.cronjob_prompt_scan import _scan_cron_prompt
-from tools.cronjob_job_args import (
+from hermes_agent.tools.cronjob_prompt_scan import _scan_cron_prompt
+from hermes_agent.tools.cronjob_job_args import (
     _apply_continuity,
     _canonical_skills,
     _clean_str_list,
@@ -61,7 +61,7 @@ from tools.cronjob_job_args import (
     _validate_context_from_refs,
     _validate_cron_base_url,
     _validate_cron_script_path)
-from tools.registry import registry, tool_error
+from hermes_agent.tools.registry import registry, tool_error
 
 
 def _dumps(payload: dict[str, Any]) -> str:
@@ -283,7 +283,7 @@ def _run_heartbeat(job_name: str):
         # job runs, so the watchdog sees a working tool instead of a silent one — mirrors the delegate_task
         # heartbeat pattern. Best-effort: if no activity callback is registered (direct Python callers,
         # tests), behavior is unchanged.
-        from tools.environments.base import get_activity_callback
+        from hermes_agent.tools.environments.base import get_activity_callback
         # Capture on THIS thread: the callback is thread-local (installed by the tool
         # executor), so a freshly spawned thread cannot read it.
         activity_cb = get_activity_callback()
@@ -490,7 +490,7 @@ def _background_session_key(session_id: Optional[str]) -> str:
     """Routing key for a detached completion, captured on THIS thread (contextvars don't
     cross the pool). Empty string = no durable consumer."""
     try:
-        from tools.approval_context import get_current_session_key
+        from hermes_agent.tools.approval_context import get_current_session_key
         session_key = get_current_session_key(default="")
     except Exception:
         session_key = ""
@@ -610,7 +610,7 @@ def _try_dispatch_background_run(
         pass
 
     try:
-        from tools.async_delegation import _current_origin_session_id, dispatch_async_delegation
+        from hermes_agent.tools.async_delegation import _current_origin_session_id, dispatch_async_delegation
         origin_session_id = _current_origin_session_id()
     except Exception as e:
         logger.warning(
@@ -620,7 +620,7 @@ def _try_dispatch_background_run(
         return result
 
     try:
-        from tools.delegate_tool import _get_max_async_children
+        from hermes_agent.tools.delegate_tool import _get_max_async_children
         max_async = _get_max_async_children()
     except Exception:
         max_async = 3

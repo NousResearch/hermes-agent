@@ -249,7 +249,7 @@ def _consume_typed_stop_phrase(text, sid=None, *, emit: bool = True) -> bool:
         # server-side choke point every TUI submit passes through: this sidecar handler and the shared
         # owner's canonical prompt.submit. (The desktop's voice conversation is renderer-owned and never
         # flips the backend flag, so it handles its own typed stop client-side.)
-        from tools.voice_mode_transcript import is_voice_stop_phrase
+        from hermes_agent.tools.voice_mode_transcript import is_voice_stop_phrase
         if not is_voice_stop_phrase(text):
             return False
     except Exception:  # an unreadable voice config never swallows the message: it reaches the agent
@@ -836,12 +836,12 @@ def _(rid, params: dict) -> dict:
         return stopped
     if params.get("interrupted"):
         # Client-side barge-in: latch so this turn's model message carries the note.
-        from tools.tts_streaming import mark_speech_interrupted
+        from hermes_agent.tools.tts_streaming import mark_speech_interrupted
         mark_speech_interrupted()
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    from tools.bot_relay import DeliveryAuthor
+    from hermes_agent.tools.bot_relay import DeliveryAuthor
 
     # Only the relay handler can build a DeliveryAuthor. A dict here is a client claiming a sender.
     raw_author = params.get("_turn_author")
@@ -1242,7 +1242,7 @@ def _(rid, params: dict) -> dict:
 
     def body():
         from run_agent import AIAgent
-        from tools.terminal_tool import register_task_env_overrides
+        from hermes_agent.tools.terminal_tool import register_task_env_overrides
         if preview_cwd:
             register_task_env_overrides(task_id, {"cwd": preview_cwd})
         history_note = (
@@ -1262,7 +1262,7 @@ def _(rid, params: dict) -> dict:
 
     def cleanup():
         with contextlib.suppress(Exception):
-            from tools.terminal_tool import clear_task_env_overrides
+            from hermes_agent.tools.terminal_tool import clear_task_env_overrides
             clear_task_env_overrides(task_id)
 
     # Pin the validated preview cwd, else the parent workspace — never an invalid path.
@@ -1508,9 +1508,9 @@ _PREVIEW_RESTART_HISTORY_NOTE = (
 # ── approvals ───────────────────────────────────────────────────────────────
 
 def _approval_reply(rid, result_key, call):
-    """``_ok({result_key: call(tools.approval)})``, 5004 on any failure."""
+    """``_ok({result_key: call(hermes_agent.tools.approval)})``, 5004 on any failure."""
     try:
-        from tools import approval
+        from hermes_agent.tools import approval
         return _ok(rid, {result_key: call(approval)})
     except Exception as e:
         return _err(rid, 5004, str(e))
@@ -1526,7 +1526,7 @@ def _approval_respond_session_fallback(params: dict):
     request_id = str(params.get("request_id") or "")
     if request_id:
         try:
-            from tools.approval import list_gateway_approvals
+            from hermes_agent.tools.approval import list_gateway_approvals
             with _sessions_lock:
                 live = list(_sessions.items())
             for sid, session in live:

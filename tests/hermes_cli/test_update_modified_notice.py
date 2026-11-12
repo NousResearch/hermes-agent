@@ -1,6 +1,6 @@
 """Skill sync keeps user edits and tells the updater's user how to inspect them."""
 
-from tools import skills_sync
+from hermes_agent.tools import skills_sync
 from hermes_cli.update_cmd_maint import _print_bundled_skills_sync_report
 
 

@@ -8,7 +8,7 @@ import pytest
 def test_policy_selects_surface_and_isolates_cwd(tmp_path):
     from hermes_agent.gateway.session_policy import build_policy, policy_scope
     from agent.runtime_cwd import resolve_agent_cwd
-    from tools.terminal_scope import terminal_env
+    from hermes_agent.tools.terminal_scope import terminal_env
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
 
     cfg = {'platform_toolsets': {'cli': ['terminal']}}

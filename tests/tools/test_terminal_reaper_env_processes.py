@@ -13,10 +13,10 @@ import time
 
 import pytest
 
-import tools.process_registry as process_registry_module
-from tools import terminal_tool as tt
-from tools.process_registry import ProcessRegistry, ProcessSession
-from tools.terminal_tool_lifecycle import _cleanup_inactive_envs, _evict_environment_for_task, cleanup_vm
+import hermes_agent.tools.process_registry as process_registry_module
+from hermes_agent.tools import terminal_tool as tt
+from hermes_agent.tools.process_registry import ProcessRegistry, ProcessSession
+from hermes_agent.tools.terminal_tool_lifecycle import _cleanup_inactive_envs, _evict_environment_for_task, cleanup_vm
 
 RAW_ID = "20261014_014945_b75b1f"
 ENV_KEY = f"session:{RAW_ID}"
@@ -170,8 +170,8 @@ class _ReconnectingEnv(_SandboxEnv):
 
 
 def test_ssh_backend_declares_that_cleanup_leaves_its_processes_running():
-    from tools.environments.base import BaseEnvironment
-    from tools.environments.ssh import SSHEnvironment
+    from hermes_agent.tools.environments.base import BaseEnvironment
+    from hermes_agent.tools.environments.ssh import SSHEnvironment
 
     assert BaseEnvironment.cleanup_stops_processes is True
     assert SSHEnvironment.cleanup_stops_processes is False

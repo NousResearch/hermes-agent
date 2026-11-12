@@ -9,7 +9,7 @@ way to recover the bytes.
 
 Living outside the swept dirs means ``cache/generated`` needs its own
 credential-files mount/sync entry: Docker/SSH/Modal backends only reach paths
-that map through ``tools.credential_files``, and an unmapped path also drops
+that map through ``hermes_agent.tools.credential_files``, and an unmapped path also drops
 ``agent_visible_image`` from the provider result.
 
 RED on main: every test here fails — the writers target the swept caches and
@@ -69,7 +69,7 @@ def test_old_generated_media_is_not_swept(tmp_path, monkeypatch, save, sweeper):
 def test_generated_dir_is_mounted_from_the_writers_location(tmp_path, monkeypatch):
     """Out-of-sweep is only half the job: remote backends must still see the file."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    from tools.credential_files import get_cache_directory_mounts
+    from hermes_agent.tools.credential_files import get_cache_directory_mounts
 
     path = save_b64_image(base64.b64encode(PNG_1PX).decode(), prefix="red_test")
     mounts = {m["container_path"]: m["host_path"] for m in get_cache_directory_mounts()}

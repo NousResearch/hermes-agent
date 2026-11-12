@@ -53,7 +53,7 @@ class FeishuChoiceCardsMixin:
         if not self._client:
             return SendResult(success=False, error="Not connected")
         from plugins.platforms.feishu.adapter import _card_button
-        from tools.clarify_gateway import get_pending, mark_awaiting_text
+        from hermes_agent.tools.clarify_gateway import get_pending, mark_awaiting_text
 
         lines = [t("gateway.clarify.option_line", index=i, choice=c) for i, c in enumerate(choices, start=1)]
         body = f"{question}\n\n" + "\n".join(lines)
@@ -107,7 +107,7 @@ class FeishuChoiceCardsMixin:
         # SessionSource.user_id is the tenant user_id when the app can see it, else the open_id.
         if requester := clarify_refusal(clarify_id, user_id or open_id, extra=self.config.extra):
             return self._card_toast(refusal_text(requester))  # only the clicker sees it; card unchanged
-        from tools import clarify_gateway
+        from hermes_agent.tools import clarify_gateway
 
         entry = clarify_gateway.get_pending(clarify_id)
         token = str(action_value.get("hermes_clarify_action") or "")

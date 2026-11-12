@@ -661,7 +661,7 @@ async def test_plugin_rewrite_of_a_voice_note_reply_is_the_clarify_answer(hook_r
 
     from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
     from hermes_agent.gateway.run import GatewayRunner
-    from tools import clarify_gateway
+    from hermes_agent.tools import clarify_gateway
 
     adapter = _make_adapter()
     cached = SimpleNamespace(path="cache/audio/voice.ogg", media_type="audio/ogg", kind="audio", display_name="voice.ogg")

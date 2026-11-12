@@ -104,7 +104,7 @@ def _cli_worktree(project, tmp_path, monkeypatch):
 
 
 def _subagent_worktree(project, tmp_path, monkeypatch):
-    from tools.subagent_worktree import finalize_subagent_worktree
+    from hermes_agent.tools.subagent_worktree import finalize_subagent_worktree
     wt = _linked_worktree(project, tmp_path)
     info = {"path": str(wt), "branch": "wt/t1", "repo_root": str(project),
             "base_commit": _git("rev-parse", "HEAD", cwd=project)}

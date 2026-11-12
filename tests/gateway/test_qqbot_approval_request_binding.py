@@ -1,6 +1,6 @@
 """A QQBot approval card resolves the request it was rendered for, not the session's oldest (#124974).
 
-Drives the real ``tools.approval`` queue through ``send_exec_approval``'s keyboard and the adapter's
+Drives the real ``hermes_agent.tools.approval`` queue through ``send_exec_approval``'s keyboard and the adapter's
 ``_default_interaction_dispatch``; nothing on the approval side is faked.
 """
 
@@ -19,10 +19,10 @@ def _adapter():
 
 def _queue(n):
     """``n`` pending exec approvals in SESSION, each on its own waiting thread; returns their entries."""
-    from tools import approval
+    from hermes_agent.tools import approval
     entries = []
     for i in range(n):
-        from tools.approval_gateway_wait import _ApprovalEntry
+        from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
         entry = _ApprovalEntry({"command": f"cmd-{i}", "description": "d"})
         with approval._lock:
             approval._gateway_queues.setdefault(SESSION, []).append(entry)
@@ -51,7 +51,7 @@ async def _sent_card(adapter, request_id):
 
 @pytest.mark.asyncio
 async def test_tap_on_the_newest_card_resolves_the_newest_request():
-    from tools import approval
+    from hermes_agent.tools import approval
     old, new = _queue(2)
     try:
         adapter = _adapter()
@@ -69,7 +69,7 @@ async def test_tap_on_the_newest_card_resolves_the_newest_request():
 
 @pytest.mark.asyncio
 async def test_card_of_a_settled_request_resolves_nothing():
-    from tools import approval
+    from hermes_agent.tools import approval
     (pending,) = _queue(1)
     try:
         stale = build_approval_keyboard(SESSION, request_id="0" * 32).content.rows[0].buttons[0].action.data

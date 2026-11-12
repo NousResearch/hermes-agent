@@ -368,7 +368,7 @@ async def _set_command_setting(connection, ref, params):
             raise RuntimeStoreError('invalid_params')
 
         def flip():
-            from tools.approval_context import _get_approval_mode
+            from hermes_agent.tools.approval_context import _get_approval_mode
             from hermes_agent.gateway.run import _profile_runtime_scope
             with _profile_runtime_scope(Path(connection.authority.profile_id)):
                 enable = (_get_approval_mode() != 'off') if on is None else on

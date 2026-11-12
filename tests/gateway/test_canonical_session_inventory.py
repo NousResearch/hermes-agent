@@ -127,7 +127,7 @@ async def test_cli_surface_counts_kanban_skills_like_main_cli_without_leaking(tm
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_controls import AuthorityConnection
     from hermes_cli import banner
-    from tools.skills_tool import find_all_skills
+    from hermes_agent.tools.skills_tool import find_all_skills
 
     home = tmp_path / 'home'
     for name, extra in (('arxiv', ''), ('sdlc-review', 'environments:\n  - kanban\n')):

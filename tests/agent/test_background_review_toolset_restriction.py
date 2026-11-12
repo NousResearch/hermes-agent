@@ -154,12 +154,12 @@ def test_read_file_registers_background_review_read_mark(tmp_path):
     read SKILL.md via read_file and still get "content has not been loaded
     in this review turn" on the follow-up skill_manage patch (#61521).
     """
-    from tools.file_tools import read_file_tool
-    from tools.skill_manager_guards import (
+    from hermes_agent.tools.file_tools import read_file_tool
+    from hermes_agent.tools.skill_manager_guards import (
         _background_review_has_read,
         _reset_background_review_read_marks,
     )
-    from tools.skill_provenance import (
+    from hermes_agent.tools.skill_provenance import (
         BACKGROUND_REVIEW,
         reset_current_write_origin,
         set_current_write_origin,
@@ -189,8 +189,8 @@ def test_read_file_registers_background_review_read_mark(tmp_path):
 
 def test_read_file_outside_review_does_not_mark(tmp_path):
     """Foreground reads must not populate the review-fork read set."""
-    from tools.file_tools import read_file_tool
-    from tools.skill_manager_guards import (
+    from hermes_agent.tools.file_tools import read_file_tool
+    from hermes_agent.tools.skill_manager_guards import (
         _background_review_has_read,
         _reset_background_review_read_marks,
     )

@@ -83,7 +83,7 @@ def test_diff_session_reports_a_session_without_checkpoints(gateway_cli, capsys)
 def test_diff_of_the_working_tree_stays_a_local_git_read(gateway_cli, monkeypatch):
     cli, conn = gateway_cli()
     seen = []
-    monkeypatch.setattr("tools.working_diff.collect_working_diff",
+    monkeypatch.setattr("hermes_agent.tools.working_diff.collect_working_diff",
                         lambda cwd, mode, paths=None: seen.append(mode) or {"success": True, "empty": True})
     cli.process_command("/diff staged")
     assert seen == ["staged"] and conn.calls == [_observed("diff", "staged")]

@@ -23,7 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from tests.gateway.restart_test_helpers import make_restart_runner
-from tools import browser_session_lifecycle as bt_lifecycle
+from hermes_agent.tools import browser_session_lifecycle as bt_lifecycle
 
 
 @pytest.fixture(autouse=True)
@@ -78,9 +78,9 @@ class TestKillToolSubprocessesMarksCronInterrupted:
     @pytest.mark.asyncio
     async def test_in_flight_cron_job_marked_interrupted_on_forced_kill(self, monkeypatch):
         import hermes_agent.cron.scheduler as sched
-        import tools.process_registry as _pr
-        import tools.terminal_tool as _tt
-        from tools import terminal_tool_lifecycle
+        import hermes_agent.tools.process_registry as _pr
+        import hermes_agent.tools.terminal_tool as _tt
+        from hermes_agent.tools import terminal_tool_lifecycle
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the timeout path

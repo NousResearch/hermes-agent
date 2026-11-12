@@ -19,7 +19,7 @@ def relay(tmp_path, monkeypatch):
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_cli.profiles import get_profile_dir
     from hermes_constants import get_hermes_home
-    from tools import approval
+    from hermes_agent.tools import approval
 
     (get_hermes_home() / "config.yaml").write_text("approvals:\n  approvers: []\n")
     secondary = get_profile_dir("satellite")
@@ -46,8 +46,8 @@ def relay(tmp_path, monkeypatch):
 
 def _pending(adapter, platform, key):
     from hermes_agent.gateway.session_context import clear_session_vars, set_session_vars
-    from tools import approval
-    from tools.approval_gateway_wait import _ApprovalEntry
+    from hermes_agent.tools import approval
+    from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
     tokens = set_session_vars(user_id="alice", user_name="Alice", session_key=key, platform=platform, chat_type="group")
     try:

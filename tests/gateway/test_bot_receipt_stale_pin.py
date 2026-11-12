@@ -19,7 +19,7 @@ HOUR = 3600
 
 def _pin(bot, key=KEY, **extra):
     """The pin ``_admit`` writes before it admits, as an older build left it after a refusal."""
-    from tools.bot_live_delivery import _locked, _write
+    from hermes_agent.tools.bot_live_delivery import _locked, _write
     with _locked(bot.home) as root:
         path = root / f'{key}.json'
         _write(path, dict(extra, delivery_id=key, profile_home=str(bot.home.resolve()), session_id=bot.chat,
@@ -70,7 +70,7 @@ async def test_a_pin_inside_the_grace_window_is_left_alone(bot, caplog):
 @pytest.mark.asyncio
 async def test_an_old_pin_whose_admission_committed_stays_and_still_warns(bot, monkeypatch, caplog):
     from hermes_agent.gateway.session_bot import deliver, recover_bot_deliveries
-    from tools.bot_live_delivery import read_delivery_result
+    from hermes_agent.tools.bot_live_delivery import read_delivery_result
     real = type(bot.authority).admit_automation
     async def committed_then_refused(self, *args):
         await real(self, *args)
@@ -93,7 +93,7 @@ OTHER = 'e' * 32
 
 
 def _legacy(bot, key, sequence, message):
-    from tools.bot_live_delivery import _locked, _write
+    from hermes_agent.tools.bot_live_delivery import _locked, _write
     ticket = dict(id=key, delivery_id=key, status='queued', created_at=sequence, sequence=sequence, message=message,
                   owner=dict(profile_home=str(bot.home.resolve()), session_id=bot.chat, lease_id='departed',
                              live_session_id='old-native'))
@@ -109,7 +109,7 @@ async def test_a_legacy_migration_pin_left_by_a_transient_refusal_is_requeued_an
     copy of a never-run message: a later owner scan past the grace window restores the queued
     ticket (never deletes it), and ``_migrate`` admits it once, ahead of the ticket queued after it."""
     from hermes_agent.gateway.session_bot import recover_bot_deliveries
-    from tools.bot_live_delivery import _locked, _read
+    from hermes_agent.tools.bot_live_delivery import _locked, _read
     path = _legacy(bot, KEY, 1, 'never-run text')
     _legacy(bot, OTHER, 2, 'later')
     refusing = _refuse(monkeypatch, 'runtime_draining')

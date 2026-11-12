@@ -15,7 +15,7 @@ import socket
 import urllib.parse
 from typing import Callable, Optional
 
-from tools.url_safety import (
+from hermes_agent.tools.url_safety import (
     _BLOCKED_HOSTNAMES,
     _authority_ambiguity,
     _is_always_blocked_ip,
@@ -26,7 +26,7 @@ from tools.url_safety import (
     is_safe_url,
     normalize_url_for_request,
 )
-from tools.website_policy import check_website_access
+from hermes_agent.tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +95,8 @@ def hybrid_routes_locally(url: str) -> bool:
     """True when ``url`` belongs on the hybrid LOCAL sidecar instead of the cloud provider: a provider
     configured, ``browser.auto_local_for_private_urls`` on, a private URL, and no CDP override (it owns
     the whole session)."""
-    from tools.browser_session_cdp import get_cdp_override_raw
-    from tools.browser_session_cloud import auto_local_for_private_urls, get_cloud_provider
+    from hermes_agent.tools.browser_session_cdp import get_cdp_override_raw
+    from hermes_agent.tools.browser_session_cloud import auto_local_for_private_urls, get_cloud_provider
     return (
         not get_cdp_override_raw()
         and get_cloud_provider() is not None
@@ -120,7 +120,7 @@ def _url_policy_error(url: str, *, auto_local: bool = False) -> Optional[dict]:
     Credential-NAMED query params (``?token=``, ``?signature=``) are deliberately not a floor: magic links,
     OAuth callbacks and signed CDN assets are how the agent signs in, and a cloud browser already sees every
     cookie of the session. Hermes' own secrets in a URL are caught by ``_secret_url_error``."""
-    from tools.browser_session_cloud import allow_private_urls, is_local_backend
+    from hermes_agent.tools.browser_session_cloud import allow_private_urls, is_local_backend
     if is_always_blocked_url(url):  # unconditional: IMDS via any browser exfiltrates host credentials (#16234)
         return _err("Blocked: URL targets a cloud metadata endpoint")
     if not is_local_backend() and not auto_local and not allow_private_urls() and not is_safe_url(url):
@@ -146,7 +146,7 @@ def eval_ssrf_guard_active() -> bool:
     """True when page-driven private-network access must be guarded: a non-local backend (cloud browser,
     off-host CDP, or a containerized terminal whose host browser reaches networks it can't) without
     ``browser.allow_private_urls``."""
-    from tools.browser_session_cloud import allow_private_urls, is_local_backend
+    from hermes_agent.tools.browser_session_cloud import allow_private_urls, is_local_backend
     return not is_local_backend() and not allow_private_urls()
 
 

@@ -14,7 +14,7 @@ import json
 
 import pytest
 
-from tools import bot_failure_reasons as bfr
+from hermes_agent.tools import bot_failure_reasons as bfr
 
 
 # ── policy function ──────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ def test_relay_deliver_refuses_with_typed_reason_and_never_spawns(home, monkeypa
 
 
 def test_run_delivery_never_retries_a_local_turn(monkeypatch, tmp_path, capsys):
-    from tools import bot_mode_dm
+    from hermes_agent.tools import bot_mode_dm
 
     dm = tmp_path / "dm.txt"
     dm.write_text("hello")
@@ -130,7 +130,7 @@ def test_delivery_main_reports_every_failure_as_typed_json(tmp_path, monkeypatch
     """The local lane's runner stdout IS the sender's completion notification. A failure other
     than target_busy used to reach the sender as stderr prose with no reason, so it could not
     tell an auth failure from a transient one; it now rides the same vocabulary as the relay."""
-    from tools import bot_mode_dm
+    from hermes_agent.tools import bot_mode_dm
 
     dm = tmp_path / "dm.txt"
     dm.write_text("hi", encoding="utf-8")

@@ -6,7 +6,7 @@ design; the old error blamed a "non-local backend or stdin closed", so agents re
 import pytest
 
 from tests.waiting import wait_until
-from tools.process_registry import ProcessRegistry
+from hermes_agent.tools.process_registry import ProcessRegistry
 
 
 @pytest.fixture()
@@ -32,7 +32,7 @@ def test_pipe_mode_write_says_to_relaunch_with_pty(registry, tmp_path):
 
 @pytest.mark.platforms("posix")
 def test_no_pty_advice_where_a_pty_cannot_be_had(registry, monkeypatch, tmp_path):
-    import tools.process_registry_stdin as stdin_mod
+    import hermes_agent.tools.process_registry_stdin as stdin_mod
 
     session = _spawn_reader(registry, tmp_path)
     monkeypatch.setattr(stdin_mod, "_pty_available", lambda: False)
@@ -46,7 +46,7 @@ def test_no_pty_advice_where_a_pty_cannot_be_had(registry, monkeypatch, tmp_path
 def test_non_local_session_keeps_the_backend_explanation():
     from types import SimpleNamespace
 
-    from tools.process_registry_stdin import stdin_unavailable_error
+    from hermes_agent.tools.process_registry_stdin import stdin_unavailable_error
 
     error = stdin_unavailable_error(SimpleNamespace(process=None, output_log=""))
     assert "non-local terminal backend" in error and "pty=true" not in error
@@ -66,7 +66,7 @@ def test_a_reader_that_hit_eof_says_why_it_already_exited(registry, tmp_path):
 def test_a_failed_pty_request_is_not_told_to_retry_pty(registry, monkeypatch, tmp_path):
     """PTY library installed but the spawn fails: spawn_local falls back to a pipe, and the error
     names that failure instead of telling the agent to repeat the pty=true that just failed."""
-    import tools.process_registry_stdin as stdin_mod
+    import hermes_agent.tools.process_registry_stdin as stdin_mod
 
     monkeypatch.setattr(stdin_mod, "_pty_available", lambda: True)
 

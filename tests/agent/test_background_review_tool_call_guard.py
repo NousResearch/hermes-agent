@@ -59,7 +59,7 @@ def _run(agent, task_cfg=None):
     with (
         patch("hermes_cli.config.load_config", return_value={}),
         patch("run_agent.AIAgent") as mock_aiagent,
-        patch("tools.terminal_tool.set_approval_callback"),
+        patch("hermes_agent.tools.terminal_tool.set_approval_callback"),
     ):
         bg._run_review_in_thread(
             agent, [{"role": "user", "content": "hi"}], "review please", task_cfg

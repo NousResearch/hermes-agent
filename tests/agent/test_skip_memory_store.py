@@ -26,8 +26,8 @@ class _FakeOpenAI:
 def _make_agent(
     monkeypatch, enabled_toolsets=None, disabled_toolsets=None, skip_memory=True
 ):
-    monkeypatch.setattr("model_tools.get_tool_definitions", lambda **kw: [])
-    monkeypatch.setattr("model_tools.check_toolset_requirements", dict)
+    monkeypatch.setattr("hermes_agent.model_tools.get_tool_definitions", lambda **kw: [])
+    monkeypatch.setattr("hermes_agent.model_tools.check_toolset_requirements", dict)
     monkeypatch.setattr("agent.process_bootstrap.OpenAI", _FakeOpenAI)
     return AIAgent(
         api_key="test-key",
@@ -72,7 +72,7 @@ def test_skip_memory_memory_tool_handler_works_and_provider_skipped(
 
     # Dispatch through the same entry point the tool executor uses
     # (agent/tool_executor.py wires store=agent._memory_store).
-    from tools.memory_tool import memory_tool
+    from hermes_agent.tools.memory_tool import memory_tool
 
     raw = memory_tool(
         action="add",

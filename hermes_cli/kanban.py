@@ -880,7 +880,7 @@ def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str):
 
 def _goal_gate_error(conn, tid: str, evidence: str, handoff: str, blocked_hint: str,
                      continue_hint: str) -> Optional[str]:
-    """Goal-mode judge gate shared by ``complete`` / ``request-review`` (mirrors tools/kanban_tools.py);
+    """Goal-mode judge gate shared by ``complete`` / ``request-review`` (mirrors hermes_agent/tools/kanban_tools.py);
     applied to every terminal handoff so request-review can't bypass it. Returns the error line, or
     None to allow."""
     verdict, rejection = _goal_mode_handoff_rejection(kb.get_task(conn, tid), evidence)

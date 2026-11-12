@@ -26,8 +26,8 @@ def loop_agent():
     """AIAgent with a mocked OpenAI client (mirrors test_dropped_tool_call_recovery)."""
     from run_agent import AIAgent
     with (
-        patch("model_tools.get_tool_definitions", return_value=[]),
-        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
+        patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),
         patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
@@ -54,7 +54,7 @@ def _run(agent, stages):
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
-        patch("model_tools.handle_function_call", return_value="ok"),
+        patch("hermes_agent.model_tools.handle_function_call", return_value="ok"),
     ):
         return agent.run_conversation("build the workbook")
 

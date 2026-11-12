@@ -1284,7 +1284,7 @@ class PhotonAdapter(BasePlatformAdapter):
         text-capture mode like the base fallback."""
         if not choices:  # open-ended: base plain-text behaviour is right
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata)
-        from tools.clarify_gateway import mark_awaiting_text
+        from hermes_agent.tools.clarify_gateway import mark_awaiting_text
         mark_awaiting_text(clarify_id)
         result = await self._sidecar_send_poll(chat_id, question, list(choices))
         if not result.success:

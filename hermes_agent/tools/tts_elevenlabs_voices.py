@@ -15,7 +15,7 @@ from typing import Any, Optional
 
 import httpx
 
-from tools.registry import tool_error
+from hermes_agent.tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 

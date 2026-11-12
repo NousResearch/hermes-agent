@@ -20,12 +20,12 @@ import zipfile
 from pathlib import PurePosixPath
 from unittest import mock
 
-from tools.read_extract import (
+from hermes_agent.tools.read_extract import (
     ExtractionError,
     extract_document_text,
     is_extractable_document,
 )
-from tools.file_tools import read_file_tool
+from hermes_agent.tools.file_tools import read_file_tool
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ class TestIsExtractable(unittest.TestCase):
     def test_anydoc_extensions_track_availability(self):
         """PDF (and the other anydoc formats) are extractable exactly when
         the optional `anydoc` converter is importable."""
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
 
         available = read_extract._anydoc() is not None
         self.assertEqual(is_extractable_document("a.pdf"), available)
@@ -94,7 +94,7 @@ class TestAnydocExtraction(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
 
         cls.mod = read_extract._anydoc()
         if cls.mod is None:
@@ -142,7 +142,7 @@ class TestAnydocSizeCap(unittest.TestCase):
     Uses a fake binding so it runs regardless of local install state."""
 
     def setUp(self):
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
 
         self.rex = read_extract
         self._saved_module = read_extract._anydoc_module
@@ -171,7 +171,7 @@ class TestAnydocSizeCap(unittest.TestCase):
         return p
 
     def test_oversized_file_rejected_before_conversion(self):
-        from tools.read_extract import _extract_anydoc
+        from hermes_agent.tools.read_extract import _extract_anydoc
 
         self.rex.MAX_ANYDOC_BYTES = 10
         p = self._write("big.pdf", 11)
@@ -181,7 +181,7 @@ class TestAnydocSizeCap(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_file_at_limit_converts(self):
-        from tools.read_extract import _extract_anydoc
+        from hermes_agent.tools.read_extract import _extract_anydoc
 
         self.rex.MAX_ANYDOC_BYTES = 10
         p = self._write("ok.pdf", 10)
@@ -189,7 +189,7 @@ class TestAnydocSizeCap(unittest.TestCase):
         self.assertEqual(self.calls, [p])
 
     def test_missing_file_raises_extraction_error(self):
-        from tools.read_extract import _extract_anydoc
+        from hermes_agent.tools.read_extract import _extract_anydoc
 
         with self.assertRaises(ExtractionError):
             _extract_anydoc(os.path.join(self.tmp, "gone.pdf"))
@@ -201,13 +201,13 @@ class TestAnydocAbsent(unittest.TestCase):
     by forcing the cached module handle to None."""
 
     def setUp(self):
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
 
         self._saved = read_extract._anydoc_module
         read_extract._anydoc_module = None
 
     def tearDown(self):
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
 
         read_extract._anydoc_module = self._saved
 
@@ -216,7 +216,7 @@ class TestAnydocAbsent(unittest.TestCase):
         self.assertFalse(is_extractable_document("a.rtf"))
 
     def test_extract_raises_unsupported_without_anydoc(self):
-        from tools.read_extract import _extract_anydoc
+        from hermes_agent.tools.read_extract import _extract_anydoc
 
         with self.assertRaises(ExtractionError):
             _extract_anydoc("/tmp/whatever.pdf")
@@ -228,7 +228,7 @@ class TestAnydocInitLifecycle(unittest.TestCase):
     for the rest of the process, and concurrent first use must not race."""
 
     def setUp(self):
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
 
         self.rex = read_extract
         self._saved_module = read_extract._anydoc_module
@@ -418,7 +418,7 @@ class TestNotebookExtraction(unittest.TestCase):
         self.assertIn("[interactive widget — omitted]", text)
 
     def test_oversized_outputs_truncated(self):
-        from tools.read_extract import _MAX_OUTPUT_CHARS
+        from hermes_agent.tools.read_extract import _MAX_OUTPUT_CHARS
         p = os.path.join(self.tmp, "nb_big.ipynb")
         _write_notebook(p, [
             {"cell_type": "markdown", "source": "# intro"},
@@ -433,7 +433,7 @@ class TestNotebookExtraction(unittest.TestCase):
         self.assertLess(len(text), _MAX_OUTPUT_CHARS + 2000)
 
     def test_oversized_outputs_truncated_v3_jq_hint(self):
-        from tools.read_extract import _MAX_OUTPUT_CHARS
+        from hermes_agent.tools.read_extract import _MAX_OUTPUT_CHARS
         p = os.path.join(self.tmp, "nb_v3_big.ipynb")
         nb = {"worksheets": [{"cells": [
             {"cell_type": "markdown", "source": "# intro"},
@@ -599,7 +599,7 @@ class TestReadFileToolIntegration(unittest.TestCase):
         self.assertIn("docx", res["error"].lower())
 
     def test_oversized_anydoc_read_surfaces_size_error(self):
-        import tools.read_extract as rex
+        import hermes_agent.tools.read_extract as rex
 
         saved_cap = rex.MAX_ANYDOC_BYTES
         saved_module = rex._anydoc_module
@@ -626,7 +626,7 @@ class TestReadFileToolIntegration(unittest.TestCase):
     def test_unavailable_converter_falls_back_to_raw_read(self):
         import time
 
-        import tools.read_extract as rex
+        import hermes_agent.tools.read_extract as rex
 
         saved_module = rex._anydoc_module
         saved_failed_at = rex._anydoc_failed_at
@@ -656,8 +656,8 @@ class TestReadFileToolIntegration(unittest.TestCase):
         self.assertIn("Report body", res["content"])
 
     def test_backend_only_anydoc_path_uses_transferred_bytes(self):
-        from tools import file_tools, read_extract
-        from tools.file_operations import ReadResult
+        from hermes_agent.tools import file_tools, read_extract
+        from hermes_agent.tools.file_operations import ReadResult
 
         payload = br"{\rtf1\ansi Remote body\par}"
 
@@ -713,7 +713,7 @@ class TestPdfCoverageNote(unittest.TestCase):
     def _note_with_counts(self, counts):
         """Drive _pdf_coverage_note with synthetic per-page texts whose
         stripped lengths equal ``counts``."""
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
         texts = None if counts is None else ["x" * n for n in counts]
         with mock.patch.object(read_extract, "_pdf_page_texts",
                                return_value=texts):
@@ -730,7 +730,7 @@ class TestPdfCoverageNote(unittest.TestCase):
     def test_gap_labels_carry_preceding_section_text(self):
         """Each gap is labeled with the last text page before it (usually
         a section divider), so the agent can pick which gaps to read."""
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
         texts = (
             ["Section One: Bylaws of the Corporation"] + [""] * 5
             + ["Section Two: Budget details here"] + [""] * 4
@@ -750,7 +750,7 @@ class TestPdfCoverageNote(unittest.TestCase):
     def test_gap_map_caps_pathological_alternation(self):
         """Hundreds of alternating text/scan pages must not balloon the
         warning — gaps beyond the cap collapse to one summary line."""
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
         texts = []
         for i in range(60):  # 60 gaps of 1 page each
             texts.extend([f"Divider page number {i} with enough text", ""])
@@ -788,12 +788,12 @@ class TestPdfCoverageNote(unittest.TestCase):
         self.assertEqual(self._note_with_counts([0]), "")  # single page
 
     def test_page_texts_missing_pdftotext(self):
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
         with mock.patch.object(read_extract.shutil, "which", return_value=None):
             self.assertIsNone(read_extract._pdf_page_texts("/x/doc.pdf"))
 
     def test_page_texts_parses_formfeeds(self):
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
         fake = mock.Mock(returncode=0, stdout=b"alpha beta\fgamma\f\f")
         with mock.patch.object(read_extract.shutil, "which",
                                return_value="/usr/bin/pdftotext"), \
@@ -807,7 +807,7 @@ class TestPdfCoverageNote(unittest.TestCase):
     def test_extract_anydoc_prepends_note_for_pdf(self):
         """The warning leads the extracted text for .pdf inputs (a trailing
         footer would land on a page the model may never fetch)."""
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
         fake_mod = mock.Mock()
         fake_mod.to_markdown.return_value = "# Title\n\nBody"
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fh:
@@ -825,7 +825,7 @@ class TestPdfCoverageNote(unittest.TestCase):
         self.assertIn("# Title", text)
 
     def test_extract_anydoc_no_note_for_non_pdf(self):
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
         fake_mod = mock.Mock()
         fake_mod.to_markdown.return_value = "converted"
         with tempfile.NamedTemporaryFile(suffix=".rtf", delete=False) as fh:
@@ -845,7 +845,7 @@ class TestPdfCoverageNote(unittest.TestCase):
         """Backend-transferred PDF bytes get the same warning, and the
         recovery command names the backend-visible path, not the host
         temp file the scan ran against."""
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
         fake_mod = mock.Mock()
         fake_mod.to_markdown_bytes.return_value = "# Title\n\nBody"
         seen = {}
@@ -870,7 +870,7 @@ class TestPdfCoverageNote(unittest.TestCase):
         self.assertFalse(os.path.exists(seen["scan_path"]))
 
     def test_bytes_path_no_note_for_non_pdf(self):
-        from tools import read_extract
+        from hermes_agent.tools import read_extract
         fake_mod = mock.Mock()
         fake_mod.to_markdown_bytes.return_value = "converted"
         with mock.patch.object(read_extract, "_anydoc",

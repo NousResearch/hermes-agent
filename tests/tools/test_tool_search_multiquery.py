@@ -28,7 +28,7 @@ def _td(name, desc, props=None, required=None):
 
 
 def _register(name, toolset, desc="Deferred capability.", props=None, required=None):
-    from tools.registry import registry
+    from hermes_agent.tools.registry import registry
 
     registry.register(
         name=name,
@@ -64,14 +64,14 @@ def issue_defs():
 
 class TestStemming:
     def test_tokenize_stems_index_and_query_identically(self):
-        from tools.tool_search_catalog import _tokenize
+        from hermes_agent.tools.tool_search_catalog import _tokenize
         # Same stem on both sides is the whole contract.
         assert _tokenize("issues") == _tokenize("issue")
         assert _tokenize("creating messages") == _tokenize("create message")
 
     def test_plural_query_finds_singular_tool_name(self, issue_defs):
         """The measured miss on the old tokenizer: 'issues' skipped create_issue."""
-        from tools.tool_search import build_catalog, search_catalog
+        from hermes_agent.tools.tool_search import build_catalog, search_catalog
 
         catalog = build_catalog(issue_defs)
         names = [h.name for h in search_catalog(catalog, "issues", limit=5)]
@@ -83,7 +83,7 @@ class TestStemming:
         common tokens it shares. In this catalog 'issue' and 'linear' are each in two tools
         and 'slack' in one, so 'slack' gates: the two linear tools share two of the three
         query tokens and still do not come back."""
-        from tools.tool_search import build_catalog, search_catalog
+        from hermes_agent.tools.tool_search import build_catalog, search_catalog
 
         catalog = build_catalog(issue_defs)
         names = [h.name for h in search_catalog(catalog, "linear issue slack", limit=5)]
@@ -92,20 +92,20 @@ class TestStemming:
     def test_token_no_document_carries_admits_nothing(self, issue_defs):
         """'send gmail email' against a catalog with no gmail tool returns nothing rather
         than five tools that merely share 'message' or 'email'."""
-        from tools.tool_search import build_catalog, search_catalog
+        from hermes_agent.tools.tool_search import build_catalog, search_catalog
 
         catalog = build_catalog(issue_defs)
         assert search_catalog(catalog, "post gmail message", limit=5) == []
 
 
     def test_parallel_tokenize_search_and_dispatch_are_deterministic(self, issue_defs):
-        from tools.tool_search import (
+        from hermes_agent.tools.tool_search import (
             ToolSearchConfig,
             build_catalog,
             dispatch_tool_search,
             search_catalog,
         )
-        from tools.tool_search_catalog import _stem, _tokenize
+        from hermes_agent.tools.tool_search_catalog import _stem, _tokenize
 
         corpus = (
             "issues",
@@ -172,7 +172,7 @@ class TestStemming:
         concurrently on the underlying per-thread instances. A shared
         stemmer's mutable parse state produces wrong stems or raises here.
         """
-        from tools.tool_search_catalog import _stem
+        from hermes_agent.tools.tool_search_catalog import _stem
 
         words = ["issues", "creating", "meetings", "categories", "searching"]
 
@@ -202,7 +202,7 @@ class TestStemming:
 
 class TestCatalogRanking:
     def test_exact_name_beats_shorter_siblings(self):
-        from tools.tool_search import build_catalog, search_catalog
+        from hermes_agent.tools.tool_search import build_catalog, search_catalog
 
         exact = _td(
             "github_create_issue",
@@ -218,7 +218,7 @@ class TestCatalogRanking:
         assert search_catalog(catalog, "github_create_issue", limit=1) == [catalog[0]]
 
     def test_exact_short_name_beats_prefixed_names(self):
-        from tools.tool_search import build_catalog, search_catalog
+        from hermes_agent.tools.tool_search import build_catalog, search_catalog
 
         catalog = build_catalog([
             _td("list", "List one item."),
@@ -229,8 +229,8 @@ class TestCatalogRanking:
         assert search_catalog(catalog, "list", limit=1) == [catalog[0]]
 
     def test_precomputed_corpus_stats_preserve_results(self, issue_defs):
-        from tools.tool_search import build_catalog, search_catalog
-        from tools.tool_search_catalog import _corpus_stats
+        from hermes_agent.tools.tool_search import build_catalog, search_catalog
+        from hermes_agent.tools.tool_search_catalog import _corpus_stats
 
         catalog = build_catalog(issue_defs)
         expected = search_catalog(catalog, "create issues", limit=3)
@@ -251,7 +251,7 @@ class TestCatalogRanking:
 
 class TestMultiQuerySearch:
     def test_grouped_names_plus_shared_tool_map(self, issue_defs):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_search
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_search
 
         result = json.loads(dispatch_tool_search(
             {"queries": ["create linear issue", "post slack message"]},
@@ -281,7 +281,7 @@ class TestMultiQuerySearch:
         assert "hint" not in result
 
     def test_limit_applies_per_query(self, issue_defs):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_search
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_search
 
         result = json.loads(dispatch_tool_search(
             {"queries": ["issues", "message"], "limit": 1},
@@ -292,7 +292,7 @@ class TestMultiQuerySearch:
             assert len(group["matches"]) <= 1
 
     def test_required_names_are_bounded(self):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_search
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_search
 
         required = [f"field_{index}_" + ("x" * 5000) for index in range(200)]
         name = "mq_bounded_required_fields"
@@ -312,7 +312,7 @@ class TestMultiQuerySearch:
         {"function": {"parameters": ["not", "an", "object"]}},
     ])
     def test_shared_record_handles_non_object_schema_fields(self, schema):
-        from tools.tool_search import CatalogEntry, _shared_tool_record
+        from hermes_agent.tools.tool_search import CatalogEntry, _shared_tool_record
 
         entry = CatalogEntry(
             name="mq_malformed_schema",
@@ -325,7 +325,7 @@ class TestMultiQuerySearch:
         assert _shared_tool_record(entry)["required"] == []
 
     def test_partial_miss_adds_fallback_to_empty_group(self, issue_defs):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_search
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_search
 
         result = json.loads(dispatch_tool_search(
             {"queries": ["issues", "zzzz nonsense qqqq"]},
@@ -343,7 +343,7 @@ class TestMultiQuerySearch:
         assert "hint" not in result
 
     def test_bare_string_query_coerced_to_single_query(self, issue_defs):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_search
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_search
 
         result = json.loads(dispatch_tool_search(
             {"queries": "post slack message"},
@@ -353,7 +353,7 @@ class TestMultiQuerySearch:
         assert result["queries"] == ["post slack message"]
 
     def test_max_query_cap_respected(self, issue_defs, monkeypatch):
-        from tools import tool_search
+        from hermes_agent.tools import tool_search
 
         monkeypatch.setattr(tool_search, "_MAX_QUERIES_PER_CALL", 2)
         cfg = tool_search.ToolSearchConfig.from_raw({})
@@ -372,7 +372,7 @@ class TestMultiQuerySearch:
 
 class TestBatchedDescribe:
     def test_map_response_with_not_found(self, issue_defs):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_describe
 
         # Deferrable in the global registry, but NOT in this session's defs —
         # the stale/out-of-scope case that lands in not_found.
@@ -396,7 +396,7 @@ class TestBatchedDescribe:
         assert "errors" not in result
 
     def test_real_schemas_and_unknown_name_are_classified_independently(self):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_describe
 
         tool_defs = [
             _register("mcp__linear__get_issue", "mcp-linear"),
@@ -422,8 +422,8 @@ class TestBatchedDescribe:
         assert "errors" not in result
 
     def test_unregistered_core_name_is_not_found(self, issue_defs, monkeypatch):
-        from tools import registry as registry_module
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+        from hermes_agent.tools import registry as registry_module
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_describe
 
         # The intent: a name that is NOT registered lands in not_found, even
         # when it looks like a core tool. Whether "terminal" is registered in
@@ -447,7 +447,7 @@ class TestBatchedDescribe:
         assert "errors" not in result
 
     def test_registered_direct_surface_name_keeps_exact_error(self):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_describe
 
         name = "mq_desktop_direct_action"
         tool_def = _register(name, "desktop_ui")
@@ -461,8 +461,8 @@ class TestBatchedDescribe:
         assert name not in result.get("not_found", [])
 
     def test_registry_lookup_failure_is_not_found(self, monkeypatch):
-        from tools.registry import registry
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+        from hermes_agent.tools.registry import registry
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_describe
 
         def fail_lookup(name):
             raise RuntimeError("registry unavailable")
@@ -478,7 +478,7 @@ class TestBatchedDescribe:
         assert "errors" not in result
 
     def test_duplicates_deduped_silently(self, issue_defs):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_describe
 
         result = json.loads(dispatch_tool_describe(
             {"names": ["mq_linear_create_issue", "mq_linear_create_issue"]},
@@ -489,7 +489,7 @@ class TestBatchedDescribe:
         assert "not_found" not in result
 
     def test_empty_and_overcap_names_error(self, issue_defs, monkeypatch):
-        from tools import tool_search
+        from hermes_agent.tools import tool_search
 
         monkeypatch.setattr(tool_search, "_MAX_DESCRIBE_NAMES_PER_CALL", 2)
         cfg = tool_search.ToolSearchConfig.from_raw({})
@@ -503,7 +503,7 @@ class TestBatchedDescribe:
         assert "error" in parsed
 
     def test_bare_string_name_coerced(self, issue_defs):
-        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+        from hermes_agent.tools.tool_search import ToolSearchConfig, dispatch_tool_describe
 
         result = json.loads(dispatch_tool_describe(
             {"names": "mq_linear_create_issue"},
@@ -521,13 +521,13 @@ class TestBatchedDescribe:
 class TestConfigAndSchema:
     def test_limit_default_within_cap(self):
         from hermes_cli.config_defaults import DEFAULT_CONFIG
-        from tools.tool_search import ToolSearchConfig
+        from hermes_agent.tools.tool_search import ToolSearchConfig
 
         cfg = ToolSearchConfig.from_raw(DEFAULT_CONFIG["tools"]["tool_search"])
         assert 1 <= cfg.search_default_limit <= cfg.max_search_limit <= 50
 
     def test_bridge_schema_declares_array_inputs(self):
-        from tools.tool_search import bridge_tool_schemas
+        from hermes_agent.tools.tool_search import bridge_tool_schemas
 
         schemas = {s["function"]["name"]: s["function"] for s in bridge_tool_schemas(3)}
         search_params = schemas["tool_search"]["parameters"]

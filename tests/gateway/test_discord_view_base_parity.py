@@ -94,7 +94,7 @@ async def test_answered_view_is_released(monkeypatch, tmp_path, name, call):
     """An answer stops the view: its timeout can't later stamp "expired" over the answer, and
     a long ``discord_prompt_timeout`` doesn't keep answered views registered (exec cards:
     test_discord_approval_lifecycle)."""
-    from tools import slash_confirm
+    from hermes_agent.tools import slash_confirm
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(slash_confirm, "resolve", AsyncMock(return_value=None))

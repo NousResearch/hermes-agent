@@ -1,4 +1,4 @@
-"""Tests for tools.transcription_tools — three-provider STT pipeline.
+"""Tests for hermes_agent.tools.transcription_tools — three-provider STT pipeline.
 
 Covers the full provider matrix (local, groq, openai), fallback chains,
 model auto-correction, config loading, validation edge cases, and
@@ -65,7 +65,7 @@ def sample_silk(tmp_path):
 @pytest.fixture
 def oversized_wav(tmp_path):
     """Create a sparse WAV-shaped file just above the remote upload cap."""
-    from tools.transcription_common import MAX_FILE_SIZE
+    from hermes_agent.tools.transcription_common import MAX_FILE_SIZE
 
     wav_path = tmp_path / "oversized.wav"
     with wav_path.open("wb") as audio_file:
@@ -98,9 +98,9 @@ class TestGetProviderGroq:
 
     def test_groq_when_key_set(self, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
-            from tools.transcription_tools import _get_provider
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
+             patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", False):
+            from hermes_agent.tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "groq"}) == "groq"
 
 
@@ -110,7 +110,7 @@ class TestProcessErrorDetail:
 
     @staticmethod
     def _detail(*, stderr=None, stdout=None):
-        from tools.transcription_common import _process_error_detail
+        from hermes_agent.tools.transcription_common import _process_error_detail
 
         error = subprocess.CalledProcessError(
             1,
@@ -140,12 +140,12 @@ class TestGetProviderFallbackPriority:
 
     def test_auto_detect_prefers_local(self):
         """Auto-detect prefers local over any cloud provider."""
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True):
-            from tools.transcription_tools import _get_provider
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", True):
+            from hermes_agent.tools.transcription_tools import _get_provider
             assert _get_provider({}) == "local"
 
     def test_unknown_provider_passed_through(self):
-        from tools.transcription_tools import _get_provider
+        from hermes_agent.tools.transcription_tools import _get_provider
         assert _get_provider({"provider": "custom-endpoint"}) == "custom-endpoint"
 
 # ============================================================================
@@ -162,12 +162,12 @@ class TestExplicitProviderRespected:
         selection) is treated as never-configured: autodetect runs instead of
         hard-pinning to a missing local backend."""
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._has_local_command", return_value=False), \
-             patch("tools.transcription_tools._try_lazy_install_stt", return_value=False), \
-             patch("tools.tool_backend_helpers.read_selection", return_value=None), \
-             patch("tools.transcription_tools._HAS_OPENAI", True):
-            from tools.transcription_tools import _get_provider
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("hermes_agent.tools.transcription_tools._has_local_command", return_value=False), \
+             patch("hermes_agent.tools.transcription_tools._try_lazy_install_stt", return_value=False), \
+             patch("hermes_agent.tools.tool_backend_helpers.read_selection", return_value=None), \
+             patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True):
+            from hermes_agent.tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "groq"
 
     def test_explicit_local_uses_local_command_fallback(self, monkeypatch):
@@ -176,8 +176,8 @@ class TestExplicitProviderRespected:
             "HERMES_LOCAL_STT_COMMAND",
             "whisper {input_path} --output_dir {output_dir} --language {language}",
         )
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
-            from tools.transcription_tools import _get_provider
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", False):
+            from hermes_agent.tools.transcription_tools import _get_provider
             result = _get_provider({"provider": "local"})
             assert result == "local_command"
 
@@ -185,10 +185,10 @@ class TestExplicitProviderRespected:
     def test_auto_detect_prefers_groq_over_openai(self, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._has_local_command", return_value=False), \
-             patch("tools.transcription_tools._HAS_OPENAI", True):
-            from tools.transcription_tools import _get_provider
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("hermes_agent.tools.transcription_tools._has_local_command", return_value=False), \
+             patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True):
+            from hermes_agent.tools.transcription_tools import _get_provider
             result = _get_provider({})
             assert result == "groq"
 
@@ -200,15 +200,15 @@ class TestExplicitProviderRespected:
 class TestTranscribeGroq:
     def test_no_key(self, monkeypatch):
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
-        from tools.transcription_tools import _transcribe_groq
+        from hermes_agent.tools.transcription_tools import _transcribe_groq
         result = _transcribe_groq("/tmp/test.ogg", "whisper-large-v3-turbo")
         assert result["success"] is False
         assert "GROQ_API_KEY" in result["error"]
 
     def test_openai_package_not_installed(self, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
-        with patch("tools.transcription_tools._HAS_OPENAI", False):
-            from tools.transcription_tools import _transcribe_groq
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", False):
+            from hermes_agent.tools.transcription_tools import _transcribe_groq
             result = _transcribe_groq("/tmp/test.ogg", "whisper-large-v3-turbo")
         assert result["success"] is False
         assert "openai package" in result["error"]
@@ -230,9 +230,9 @@ class TestOpenAIClientConfig:
         mock_client = MagicMock()
         mock_client.audio.transcriptions.create.return_value = "hi"
 
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client) as openai_client:
-            from tools.transcription_tools import _transcribe_groq
+            from hermes_agent.tools.transcription_tools import _transcribe_groq
             result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
 
         assert result["success"] is True
@@ -248,13 +248,13 @@ class TestOpenAIClientConfig:
         mock_client = MagicMock()
         mock_client.audio.transcriptions.create.return_value = "hi"
 
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client), \
              patch(
-                 "tools.transcription_tools._load_stt_config",
+                 "hermes_agent.tools.transcription_tools._load_stt_config",
                  return_value={"groq": None},
              ):
-            from tools.transcription_tools import _transcribe_groq
+            from hermes_agent.tools.transcription_tools import _transcribe_groq
             result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
 
         assert result["success"] is True
@@ -296,9 +296,9 @@ class TestTranscribeLocalCommand:
             captured["env"] = kwargs["env"]
             return Proc()
 
-        monkeypatch.setattr("tools.tts_command_provider.spawn_owned", fake_popen)
+        monkeypatch.setattr("hermes_agent.tools.tts_command_provider.spawn_owned", fake_popen)
 
-        from tools.transcription_command import _run_command_stt
+        from hermes_agent.tools.transcription_command import _run_command_stt
 
         result = _run_command_stt("echo hi", timeout=1)
 
@@ -342,14 +342,14 @@ class TestTranscribeLocalCommand:
                 returncode = 0
             return R()
 
-        monkeypatch.setattr("tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir)
-        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
+        monkeypatch.setattr("hermes_agent.tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("hermes_agent.tools.transcription_audio.subprocess.run", fake_run)
         monkeypatch.setattr(
-            "tools.transcription_local._prepare_local_audio",
+            "hermes_agent.tools.transcription_local._prepare_local_audio",
             lambda *a, **k: (str(sample_wav), None),
         )
 
-        from tools.transcription_tools import _transcribe_local_command
+        from hermes_agent.tools.transcription_tools import _transcribe_local_command
 
         result = _transcribe_local_command(str(sample_wav), "base")
         assert result["success"] is True
@@ -384,11 +384,11 @@ class TestTranscribeLocalCommand:
             (out_dir / "test.txt").write_text("hello from local command\n", encoding="utf-8")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-        monkeypatch.setattr("tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir)
-        monkeypatch.setattr("tools.transcription_audio._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg")
-        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
+        monkeypatch.setattr("hermes_agent.tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("hermes_agent.tools.transcription_audio._find_ffmpeg_binary", lambda: "/opt/homebrew/bin/ffmpeg")
+        monkeypatch.setattr("hermes_agent.tools.transcription_audio.subprocess.run", fake_run)
 
-        from tools.transcription_tools import _transcribe_local_command
+        from hermes_agent.tools.transcription_tools import _transcribe_local_command
 
         result = _transcribe_local_command(sample_ogg, "base")
 
@@ -410,7 +410,7 @@ class TestLocalModelLoading:
         cached_model = object()
 
         with patch("faster_whisper.WhisperModel", return_value=cached_model) as model_cls:
-            from tools.transcription_local import _create_whisper_model
+            from hermes_agent.tools.transcription_local import _create_whisper_model
 
             assert _create_whisper_model("base", device="cpu", compute_type="int8") is cached_model
 
@@ -420,7 +420,7 @@ class TestLocalModelLoading:
 
     @pytest.mark.parametrize("download_error", [None, "Got: ConnectTimeout: [Errno 110] Connection timed out"])
     def test_cache_miss_falls_back_with_actionable_download_failure(self, download_error):
-        from tools.transcription_local import _create_whisper_model, _hub_cache_miss_error
+        from hermes_agent.tools.transcription_local import _create_whisper_model, _hub_cache_miss_error
 
         LocalEntryNotFoundError = _hub_cache_miss_error()
         if download_error:
@@ -449,7 +449,7 @@ class TestLocalModelLoading:
         # An interrupted first download leaves refs/main + a snapshot without model.bin;
         # snapshot_download(local_files_only=True) returns that folder and ctranslate2
         # raises RuntimeError, so the online path must still run.
-        from tools.transcription_local import _create_whisper_model
+        from hermes_agent.tools.transcription_local import _create_whisper_model
 
         downloaded_model = object()
         side_effect = [RuntimeError("Unable to open file 'model.bin' in model '/cache/snap'"), downloaded_model]
@@ -479,11 +479,11 @@ class TestTranscribeLocalExtended:
         mock_model.transcribe.return_value = ([mock_segment], mock_info)
         mock_whisper_cls = MagicMock(return_value=mock_model)
 
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", True), \
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
-             patch("tools.transcription_tools._local_model", None), \
-             patch("tools.transcription_tools._local_model_name", None):
-            from tools.transcription_tools import _transcribe_local
+             patch("hermes_agent.tools.transcription_tools._local_model", None), \
+             patch("hermes_agent.tools.transcription_tools._local_model_name", None):
+            from hermes_agent.tools.transcription_tools import _transcribe_local
             _transcribe_local(str(audio), "base")
             _transcribe_local(str(audio), "base")
 
@@ -515,12 +515,12 @@ class TestTranscribeLocalExtended:
             }
         }
 
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", True), \
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
-             patch("tools.transcription_tools._local_model", None), \
-             patch("tools.transcription_tools._local_model_name", None), \
-             patch("tools.transcription_tools._load_stt_config", return_value=fake_config):
-            from tools.transcription_tools import _transcribe_local
+             patch("hermes_agent.tools.transcription_tools._local_model", None), \
+             patch("hermes_agent.tools.transcription_tools._local_model_name", None), \
+             patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=fake_config):
+            from hermes_agent.tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
@@ -536,11 +536,11 @@ class TestTranscribeLocalExtended:
 
         mock_whisper_cls = MagicMock(side_effect=RuntimeError("CUDA out of memory"))
 
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", True), \
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
-             patch("tools.transcription_tools._local_model", None), \
-             patch("tools.transcription_tools._local_model_name", None):
-            from tools.transcription_tools import _transcribe_local
+             patch("hermes_agent.tools.transcription_tools._local_model", None), \
+             patch("hermes_agent.tools.transcription_tools._local_model_name", None):
+            from hermes_agent.tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "base")
 
         # Single call — no CPU retry, because OOM isn't a missing-lib symptom.
@@ -572,11 +572,11 @@ class TestTranscribeLocalExtended:
         cpu_model.transcribe.return_value = ([cpu_segment], info)
         mock_whisper_cls = MagicMock(side_effect=[cuda_model, cpu_model])
 
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", True), \
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
-             patch("tools.transcription_tools._local_model", None), \
-             patch("tools.transcription_tools._local_model_name", None):
-            from tools.transcription_tools import _transcribe_local
+             patch("hermes_agent.tools.transcription_tools._local_model", None), \
+             patch("hermes_agent.tools.transcription_tools._local_model_name", None):
+            from hermes_agent.tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True, result.get("error")
@@ -594,11 +594,11 @@ class TestTranscribeLocalExtended:
         cuda_model.transcribe.return_value = (self._lazy_failure("CUDA out of memory"), MagicMock())
         mock_whisper_cls = MagicMock(return_value=cuda_model)
 
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", True), \
              patch("faster_whisper.WhisperModel", mock_whisper_cls), \
-             patch("tools.transcription_tools._local_model", None), \
-             patch("tools.transcription_tools._local_model_name", None):
-            from tools.transcription_tools import _transcribe_local
+             patch("hermes_agent.tools.transcription_tools._local_model", None), \
+             patch("hermes_agent.tools.transcription_tools._local_model_name", None):
+            from hermes_agent.tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is False
@@ -617,9 +617,9 @@ class TestModelAutoCorrection:
         mock_client = MagicMock()
         mock_client.audio.transcriptions.create.return_value = "hello world"
 
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client):
-            from tools.transcription_tools import _transcribe_groq, DEFAULT_GROQ_STT_MODEL
+            from hermes_agent.tools.transcription_tools import _transcribe_groq, DEFAULT_GROQ_STT_MODEL
             _transcribe_groq(sample_wav, "whisper-1")
 
         call_kwargs = mock_client.audio.transcriptions.create.call_args
@@ -633,9 +633,9 @@ class TestModelAutoCorrection:
         mock_client = MagicMock()
         mock_client.audio.transcriptions.create.return_value = "test"
 
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client):
-            from tools.transcription_tools import _transcribe_groq
+            from hermes_agent.tools.transcription_tools import _transcribe_groq
             _transcribe_groq(sample_wav, "my-custom-model")
 
         call_kwargs = mock_client.audio.transcriptions.create.call_args
@@ -648,7 +648,7 @@ class TestModelAutoCorrection:
 
 class TestValidateAudioFileEdgeCases:
     def test_directory_is_not_a_file(self, tmp_path):
-        from tools.transcription_tools import _validate_audio_file
+        from hermes_agent.tools.transcription_tools import _validate_audio_file
         # tmp_path itself is a directory with an .ogg-ish name? No.
         # Create a directory with a valid audio extension
         d = tmp_path / "audio.ogg"
@@ -669,7 +669,7 @@ class TestValidateAudioFileEdgeCases:
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"symlink creation unavailable: {exc}")
 
-        from tools.transcription_tools import _validate_audio_file
+        from hermes_agent.tools.transcription_tools import _validate_audio_file
         result = _validate_audio_file(str(link))
         assert result is not None
         assert "symbolic link" in result["error"]
@@ -682,11 +682,11 @@ class TestValidateAudioFileEdgeCases:
 
 class TestTranscribeAudioDispatch:
     def test_oversized_local_file_reaches_dispatcher(self, oversized_wav):
-        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "local"}), \
-             patch("tools.transcription_tools._get_provider", return_value="local"), \
-             patch("tools.transcription_tools._transcribe_local",
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value={"provider": "local"}), \
+             patch("hermes_agent.tools.transcription_tools._get_provider", return_value="local"), \
+             patch("hermes_agent.tools.transcription_tools._transcribe_local",
                    return_value={"success": True, "transcript": "hi"}) as mock_local:
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             result = transcribe_audio(oversized_wav)
 
         assert result["success"] is True
@@ -694,9 +694,9 @@ class TestTranscribeAudioDispatch:
 
 
     def test_no_provider_returns_error(self, sample_ogg):
-        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
-             patch("tools.transcription_tools._get_provider", return_value="none"):
-            from tools.transcription_tools import transcribe_audio
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("hermes_agent.tools.transcription_tools._get_provider", return_value="none"):
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             result = transcribe_audio(sample_ogg)
 
         assert result["success"] is False
@@ -717,9 +717,9 @@ class TestTranscribeAudioDispatch:
             pytest.skip(f"symlink creation unavailable: {exc}")
 
         with patch(
-            "tools.transcription_tools._prepare_audio_for_transcription", create=True
+            "hermes_agent.tools.transcription_tools._prepare_audio_for_transcription", create=True
         ) as mock_prepare:
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             result = transcribe_audio(str(link))
 
         assert result["success"] is False
@@ -729,11 +729,11 @@ class TestTranscribeAudioDispatch:
 
     def test_config_local_model_used(self, sample_ogg):
         config = {"local": {"model": "small"}}
-        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
-             patch("tools.transcription_tools._get_provider", return_value="local"), \
-             patch("tools.transcription_tools._transcribe_local",
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("hermes_agent.tools.transcription_tools._get_provider", return_value="local"), \
+             patch("hermes_agent.tools.transcription_tools._transcribe_local",
                    return_value={"success": True, "transcript": "hi"}) as mock_local:
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             transcribe_audio(sample_ogg, model=None)
 
         assert mock_local.call_args[0][1] == "small"
@@ -764,7 +764,7 @@ class TestTranscribeMistral:
         mock_result.text = "hello from mistral"
         mock_mistral_module.audio.transcriptions.complete.return_value = mock_result
 
-        from tools.transcription_tools import _transcribe_mistral
+        from hermes_agent.tools.transcription_tools import _transcribe_mistral
         result = _transcribe_mistral(sample_ogg, "voxtral-mini-latest")
 
         assert result["success"] is True
@@ -777,7 +777,7 @@ class TestTranscribeMistral:
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
         mock_mistral_module.audio.transcriptions.complete.side_effect = RuntimeError("secret-key-leaked")
 
-        from tools.transcription_tools import _transcribe_mistral
+        from hermes_agent.tools.transcription_tools import _transcribe_mistral
         result = _transcribe_mistral(sample_ogg, "voxtral-mini-latest")
 
         assert result["success"] is False
@@ -794,8 +794,8 @@ class TestGetProviderMistral:
     def test_mistral_explicit_no_sdk_returns_none(self, monkeypatch):
         """Explicit mistral with key but no SDK returns none."""
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        with patch("tools.transcription_tools._HAS_MISTRAL", False):
-            from tools.transcription_tools import _get_provider
+        with patch("hermes_agent.tools.transcription_tools._HAS_MISTRAL", False):
+            from hermes_agent.tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "mistral"}) == "none"
 
     def test_auto_detect_mistral_after_openai(self, monkeypatch):
@@ -804,11 +804,11 @@ class TestGetProviderMistral:
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._has_local_command", return_value=False), \
-             patch("tools.transcription_tools._HAS_OPENAI", False), \
-             patch("tools.transcription_tools._HAS_MISTRAL", True):
-            from tools.transcription_tools import _get_provider
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("hermes_agent.tools.transcription_tools._has_local_command", return_value=False), \
+             patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", False), \
+             patch("hermes_agent.tools.transcription_tools._HAS_MISTRAL", True):
+            from hermes_agent.tools.transcription_tools import _get_provider
             assert _get_provider({}) == "mistral"
 
 # ============================================================================
@@ -818,11 +818,11 @@ class TestGetProviderMistral:
 class TestTranscribeAudioMistralDispatch:
     def test_config_mistral_model_used(self, sample_ogg):
         config = {"provider": "mistral", "mistral": {"model": "voxtral-mini-2602"}}
-        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
-             patch("tools.transcription_tools._get_provider", return_value="mistral"), \
-             patch("tools.transcription_tools._transcribe_mistral",
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("hermes_agent.tools.transcription_tools._get_provider", return_value="mistral"), \
+             patch("hermes_agent.tools.transcription_tools._transcribe_mistral",
                    return_value={"success": True, "transcript": "hi"}) as mock_mistral:
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             transcribe_audio(sample_ogg, model=None)
 
         assert mock_mistral.call_args[0][1] == "voxtral-mini-2602"
@@ -834,10 +834,10 @@ class TestTranscribeAudioMistralDispatch:
 
 @pytest.fixture
 def mock_xai_http_module():
-    """Inject a fake tools.xai_http module for testing."""
+    """Inject a fake hermes_agent.tools.xai_http module for testing."""
     fake_module = MagicMock()
     fake_module.hermes_xai_user_agent = MagicMock(return_value="hermes-xai/test")
-    with patch.dict("sys.modules", {"tools.xai_http": fake_module}):
+    with patch.dict("sys.modules", {"hermes_agent.tools.xai_http": fake_module}):
         yield fake_module
 
 
@@ -853,9 +853,9 @@ class TestTranscribeXAI:
             "duration": 3.2,
         }
 
-        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value={}), \
              patch("requests.post", return_value=mock_response):
-            from tools.transcription_tools import _transcribe_xai
+            from hermes_agent.tools.transcription_tools import _transcribe_xai
             result = _transcribe_xai(sample_ogg, "grok-stt")
 
         assert result["success"] is True
@@ -894,10 +894,10 @@ class TestTranscribeXAI:
         }
 
         stt_config = {"provider": "xai"}
-        with patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
-             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("hermes_agent.tools.transcription_tools._get_provider", return_value="xai"), \
              patch("requests.post", side_effect=[rejected, accepted]) as mock_post:
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             result = transcribe_audio(sample_ogg)
 
         assert result == {
@@ -928,9 +928,9 @@ class TestTranscribeXAI:
         mock_response.status_code = 200
         mock_response.json.return_value = {"text": "test", "language": "fr", "duration": 1.0}
 
-        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value={}), \
              patch("requests.post", return_value=mock_response) as mock_post:
-            from tools.transcription_tools import _transcribe_xai
+            from hermes_agent.tools.transcription_tools import _transcribe_xai
             _transcribe_xai(sample_ogg, "grok-stt")
 
         call_kwargs = mock_post.call_args
@@ -948,9 +948,9 @@ class TestTranscribeXAI:
         mock_response.status_code = 200
         mock_response.json.return_value = {"text": "test", "language": "en", "duration": 1.0}
 
-        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value={}), \
              patch("requests.post", return_value=mock_response) as mock_post:
-            from tools.transcription_tools import _transcribe_xai
+            from hermes_agent.tools.transcription_tools import _transcribe_xai
             _transcribe_xai(sample_ogg, "")
 
         data = mock_post.call_args.kwargs["data"]
@@ -975,10 +975,10 @@ class TestTranscribeXAI:
         mock_response.json.return_value = {"text": "test", "language": "en", "duration": 1.0}
 
         with patch(
-            "tools.transcription_tools._load_stt_config",
+            "hermes_agent.tools.transcription_tools._load_stt_config",
             return_value={"xai": {"base_url": "https://attacker.example/config"}},
         ), patch("requests.post", return_value=mock_response) as mock_post:
-            from tools.transcription_tools import _transcribe_xai
+            from hermes_agent.tools.transcription_tools import _transcribe_xai
 
             result = _transcribe_xai(sample_ogg, "grok-stt")
 
@@ -1002,11 +1002,11 @@ class TestGetProviderXAI:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
         monkeypatch.setenv("XAI_API_KEY", "xai-test")
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._has_local_command", return_value=False), \
-             patch("tools.transcription_tools._HAS_OPENAI", False), \
-             patch("tools.transcription_tools._HAS_MISTRAL", False):
-            from tools.transcription_tools import _get_provider
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("hermes_agent.tools.transcription_tools._has_local_command", return_value=False), \
+             patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", False), \
+             patch("hermes_agent.tools.transcription_tools._HAS_MISTRAL", False):
+            from hermes_agent.tools.transcription_tools import _get_provider
             assert _get_provider({}) == "xai"
 
 # ============================================================================
@@ -1016,33 +1016,33 @@ class TestGetProviderXAI:
 class TestTranscribeAudioXAIDispatch:
     def test_model_default_is_voice_transcribe_2(self, sample_ogg, monkeypatch):
         monkeypatch.delenv("STT_XAI_MODEL", raising=False)
-        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "xai"}), \
-             patch("tools.transcription_tools._get_provider", return_value="xai"), \
-             patch("tools.transcription_tools._transcribe_xai",
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value={"provider": "xai"}), \
+             patch("hermes_agent.tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("hermes_agent.tools.transcription_tools._transcribe_xai",
                    return_value={"success": True, "transcript": "hi"}) as mock_xai:
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             transcribe_audio(sample_ogg, model=None)
 
         assert mock_xai.call_args[0][1] == "grok-voice-transcribe-2.0"
 
     def test_config_model_overrides_default(self, sample_ogg):
         config = {"provider": "xai", "xai": {"model": "grok-voice-transcribe-1.0"}}
-        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
-             patch("tools.transcription_tools._get_provider", return_value="xai"), \
-             patch("tools.transcription_tools._transcribe_xai",
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("hermes_agent.tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("hermes_agent.tools.transcription_tools._transcribe_xai",
                    return_value={"success": True, "transcript": "hi"}) as mock_xai:
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             transcribe_audio(sample_ogg, model=None)
 
         assert mock_xai.call_args[0][1] == "grok-voice-transcribe-1.0"
 
     def test_legacy_grok_stt_alias_uses_current_default(self, sample_ogg):
         config = {"provider": "xai", "xai": {"model": "grok-stt"}}
-        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
-             patch("tools.transcription_tools._get_provider", return_value="xai"), \
-             patch("tools.transcription_tools._transcribe_xai",
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("hermes_agent.tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("hermes_agent.tools.transcription_tools._transcribe_xai",
                    return_value={"success": True, "transcript": "hi"}) as mock_xai:
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             transcribe_audio(sample_ogg, model=None)
 
         assert mock_xai.call_args[0][1] == "grok-voice-transcribe-2.0"
@@ -1066,9 +1066,9 @@ class TestTranscribeElevenLabs:
                 "diarize": True,
             }
         }
-        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=config), \
              patch("requests.post", return_value=mock_response) as mock_post:
-            from tools.transcription_tools import _transcribe_elevenlabs
+            from hermes_agent.tools.transcription_tools import _transcribe_elevenlabs
             result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
 
         assert result["success"] is True
@@ -1096,11 +1096,11 @@ class TestGetProviderElevenLabs:
         monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test")
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._has_local_command", return_value=False), \
-             patch("tools.transcription_tools._HAS_OPENAI", False), \
-             patch("tools.transcription_tools._HAS_MISTRAL", False):
-            from tools.transcription_tools import _get_provider
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("hermes_agent.tools.transcription_tools._has_local_command", return_value=False), \
+             patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", False), \
+             patch("hermes_agent.tools.transcription_tools._HAS_MISTRAL", False):
+            from hermes_agent.tools.transcription_tools import _get_provider
             assert _get_provider({}) == "elevenlabs"
 
 # ============================================================================
@@ -1110,11 +1110,11 @@ class TestGetProviderElevenLabs:
 class TestTranscribeAudioElevenLabsDispatch:
     def test_config_elevenlabs_model_used(self, sample_ogg):
         config = {"provider": "elevenlabs", "elevenlabs": {"model_id": "scribe_v1"}}
-        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
-             patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
-             patch("tools.transcription_tools._transcribe_elevenlabs",
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("hermes_agent.tools.transcription_tools._get_provider", return_value="elevenlabs"), \
+             patch("hermes_agent.tools.transcription_tools._transcribe_elevenlabs",
                    return_value={"success": True, "transcript": "hi"}) as mock_elevenlabs:
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             transcribe_audio(sample_ogg, model=None)
 
         assert mock_elevenlabs.call_args[0][1] == "scribe_v1"
@@ -1125,7 +1125,7 @@ class TestTranscribeAudioElevenLabsDispatch:
 
 class TestExtractTranscriptText:
     def test_strips_qwen3_asr_language_envelope(self):
-        from tools.transcription_cloud import _extract_transcript_text
+        from hermes_agent.tools.transcription_cloud import _extract_transcript_text
 
         result = _extract_transcript_text(
             "language zh\n<audio_language>zh</audio_language>\n<asr_text>你好，世界",
@@ -1134,7 +1134,7 @@ class TestExtractTranscriptText:
         assert result == "你好，世界"
 
     def test_keeps_non_envelope_marker_literal(self):
-        from tools.transcription_cloud import _extract_transcript_text
+        from hermes_agent.tools.transcription_cloud import _extract_transcript_text
 
         result = _extract_transcript_text(
             "The user literally said <asr_text> while reading markup.",
@@ -1144,8 +1144,8 @@ class TestExtractTranscriptText:
 
     def test_structured_error_object_raises_instead_of_repr(self):
         """#78098: a provider error object must not be stringified into its repr."""
-        from tools.transcription_common import STTResponseError
-        from tools.transcription_cloud import _extract_transcript_text
+        from hermes_agent.tools.transcription_common import STTResponseError
+        from hermes_agent.tools.transcription_cloud import _extract_transcript_text
 
         transcription = types.SimpleNamespace(
             text=None, logprobs=None, usage=None, error="Transcription failed",
@@ -1157,16 +1157,16 @@ class TestExtractTranscriptText:
         assert "text=None" not in str(excinfo.value)
 
     def test_structured_error_body_raises_instead_of_repr(self):
-        from tools.transcription_common import STTResponseError
-        from tools.transcription_cloud import _extract_transcript_text
+        from hermes_agent.tools.transcription_common import STTResponseError
+        from hermes_agent.tools.transcription_cloud import _extract_transcript_text
 
         with pytest.raises(STTResponseError, match="Transcription failed"):
             _extract_transcript_text({"text": None, "error": "Transcription failed"})
 
     def test_structured_response_without_text_or_error_raises(self):
         """Neither text nor a provider error: still an error, never ``str(obj)``."""
-        from tools.transcription_common import STTResponseError
-        from tools.transcription_cloud import _extract_transcript_text
+        from hermes_agent.tools.transcription_common import STTResponseError
+        from hermes_agent.tools.transcription_cloud import _extract_transcript_text
 
         with pytest.raises(STTResponseError, match="no text"):
             _extract_transcript_text(types.SimpleNamespace(text=None, error=None))
@@ -1174,7 +1174,7 @@ class TestExtractTranscriptText:
             _extract_transcript_text({"text": None})
 
     def test_text_bearing_responses_still_normalize(self):
-        from tools.transcription_cloud import _extract_transcript_text
+        from hermes_agent.tools.transcription_cloud import _extract_transcript_text
 
         assert _extract_transcript_text(types.SimpleNamespace(text=" hello ")) == "hello"
         assert _extract_transcript_text({"text": " hello "}) == "hello"
@@ -1197,9 +1197,9 @@ class TestStructuredTranscriptionErrors:
         mock_client = MagicMock()
         mock_client.audio.transcriptions.create.return_value = self._error_object()
 
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client):
-            from tools.transcription_tools import _transcribe_openai
+            from hermes_agent.tools.transcription_tools import _transcribe_openai
             result = _transcribe_openai(sample_wav, "gpt-4o-transcribe", api_key="sk-test")
 
         assert result["success"] is False
@@ -1213,9 +1213,9 @@ class TestStructuredTranscriptionErrors:
             text="hello world", logprobs=None, usage=None, error=None,
         )
 
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client):
-            from tools.transcription_tools import _transcribe_openai
+            from hermes_agent.tools.transcription_tools import _transcribe_openai
             result = _transcribe_openai(sample_wav, "gpt-4o-transcribe", api_key="sk-test")
 
         assert result["success"] is True
@@ -1226,9 +1226,9 @@ class TestStructuredTranscriptionErrors:
         mock_client = MagicMock()
         mock_client.audio.transcriptions.create.return_value = self._error_object()
 
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client):
-            from tools.transcription_tools import _transcribe_groq
+            from hermes_agent.tools.transcription_tools import _transcribe_groq
             result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
 
         assert result["success"] is False
@@ -1244,7 +1244,7 @@ class TestStructuredTranscriptionErrors:
         mock_result.error = "Transcription failed"
         mock_mistral_module.audio.transcriptions.complete.return_value = mock_result
 
-        from tools.transcription_tools import _transcribe_mistral
+        from hermes_agent.tools.transcription_tools import _transcribe_mistral
         result = _transcribe_mistral(sample_ogg, "voxtral-mini-latest")
 
         assert result["success"] is False
@@ -1258,9 +1258,9 @@ class TestStructuredTranscriptionErrors:
         mock_response.status_code = 200
         mock_response.json.return_value = {"text": None, "error": "Transcription failed"}
 
-        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value={}), \
              patch("requests.post", return_value=mock_response):
-            from tools.transcription_tools import _transcribe_elevenlabs
+            from hermes_agent.tools.transcription_tools import _transcribe_elevenlabs
             result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
 
         assert result["success"] is False
@@ -1276,10 +1276,10 @@ class TestShellSafety:
         import shlex
         monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
         monkeypatch.setattr(
-            "tools.transcription_local._find_whisper_binary",
+            "hermes_agent.tools.transcription_local._find_whisper_binary",
             lambda: "/usr/bin/whisper",
         )
-        from tools.transcription_local import _get_local_command_template
+        from hermes_agent.tools.transcription_local import _get_local_command_template
         template = _get_local_command_template()
         assert template is not None
         cmd = template.format(
@@ -1295,7 +1295,7 @@ class TestShellSafety:
     def test_env_var_template_metacharacters_are_literal_argv(
         self, monkeypatch, sample_wav, tmp_path
     ):
-        from tools.transcription_tools import (
+        from hermes_agent.tools.transcription_tools import (
             LOCAL_STT_COMMAND_ENV,
             _transcribe_local_command,
         )
@@ -1329,9 +1329,9 @@ class TestShellSafety:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
         monkeypatch.setattr(
-            "tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir
+            "hermes_agent.tools.transcription_local.tempfile.TemporaryDirectory", fake_tempdir
         )
-        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
+        monkeypatch.setattr("hermes_agent.tools.transcription_audio.subprocess.run", fake_run)
 
         result = _transcribe_local_command(sample_wav, "base")
 
@@ -1362,7 +1362,7 @@ class TestShellSafety:
     def test_local_command_normalizes_language_or_uses_default(
         self, monkeypatch, sample_wav, tmp_path, language, expected
     ):
-        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV, _transcribe_local_command
+        from hermes_agent.tools.transcription_tools import LOCAL_STT_COMMAND_ENV, _transcribe_local_command
 
         output_dir = tmp_path / "transcript-output"
         output_dir.mkdir()
@@ -1386,11 +1386,11 @@ class TestShellSafety:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
         monkeypatch.setattr(
-            "tools.transcription_local.tempfile.TemporaryDirectory", lambda prefix=None: _TempDir()
+            "hermes_agent.tools.transcription_local.tempfile.TemporaryDirectory", lambda prefix=None: _TempDir()
         )
-        monkeypatch.setattr("tools.transcription_audio.subprocess.run", fake_run)
+        monkeypatch.setattr("hermes_agent.tools.transcription_audio.subprocess.run", fake_run)
         monkeypatch.setattr(
-            "tools.transcription_tools._resolve_stt_language", lambda provider: language
+            "hermes_agent.tools.transcription_tools._resolve_stt_language", lambda provider: language
         )
 
         result = _transcribe_local_command(sample_wav, "base")
@@ -1405,7 +1405,7 @@ class TestLocalModelLock:
 
     def test_concurrent_transcribe_loads_model_once(self, tmp_path):
         import threading
-        from tools.transcription_tools import _transcribe_local
+        from hermes_agent.tools.transcription_tools import _transcribe_local
 
         audio = tmp_path / "test.ogg"
         audio.write_bytes(b"fake")
@@ -1429,11 +1429,11 @@ class TestLocalModelLock:
             model.transcribe.return_value = ([seg], info)
             return model
 
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools._load_stt_config", return_value={}), \
-             patch("tools.transcription_tools._load_local_whisper_model", side_effect=slow_load), \
-             patch("tools.transcription_tools._local_model", None), \
-             patch("tools.transcription_tools._local_model_name", None):
+        with patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("hermes_agent.tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("hermes_agent.tools.transcription_tools._load_local_whisper_model", side_effect=slow_load), \
+             patch("hermes_agent.tools.transcription_tools._local_model", None), \
+             patch("hermes_agent.tools.transcription_tools._local_model_name", None):
             threads = [
                 threading.Thread(target=_transcribe_local, args=(str(audio), "base"))
                 for _ in range(4)
@@ -1450,9 +1450,9 @@ class TestLocalBaseUrlNoApiKey:
     """#25193 — empty api_key with a local base_url should not raise."""
 
     def test_local_base_url_returns_placeholder_key(self):
-        from tools.transcription_tools import _resolve_openai_audio_client_config
+        from hermes_agent.tools.transcription_tools import _resolve_openai_audio_client_config
         with patch(
-            "tools.transcription_tools._load_stt_config",
+            "hermes_agent.tools.transcription_tools._load_stt_config",
             return_value={"openai": {"base_url": "http://localhost:8504/v1"}},
         ):
             api_key, base_url = _resolve_openai_audio_client_config()
@@ -1461,7 +1461,7 @@ class TestLocalBaseUrlNoApiKey:
 
 
     def test_is_local_or_private_url(self):
-        from tools.transcription_cloud import _is_local_or_private_url
+        from hermes_agent.tools.transcription_cloud import _is_local_or_private_url
         assert _is_local_or_private_url("http://localhost:8504/v1")
         assert _is_local_or_private_url("http://127.0.0.1:9000")
         assert _is_local_or_private_url("http://10.0.0.5/v1")
@@ -1492,12 +1492,12 @@ class TestCafConversion:
             return MagicMock(returncode=0)
 
         monkeypatch.setattr(
-            "tools.transcription_audio._find_ffmpeg_binary",
+            "hermes_agent.tools.transcription_audio._find_ffmpeg_binary",
             lambda: "/usr/bin/ffmpeg",
         )
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        from tools.transcription_tools import _convert_caf_to_wav
+        from hermes_agent.tools.transcription_tools import _convert_caf_to_wav
         result = _convert_caf_to_wav(str(caf_path), str(work_dir))
         assert result == wav_path
         assert Path(result).exists()
@@ -1508,14 +1508,14 @@ class TestCafConversion:
         caf_path = tmp_path / "voice.caf"
         caf_path.write_bytes(b"caff\x00" * 20)
 
-        with patch("tools.transcription_tools._load_stt_config",
+        with patch("hermes_agent.tools.transcription_tools._load_stt_config",
                    return_value={"provider": "local"}), \
-             patch("tools.transcription_tools._get_provider",
+             patch("hermes_agent.tools.transcription_tools._get_provider",
                    return_value="local"), \
-             patch("tools.transcription_tools._convert_caf_to_wav") as mock_convert, \
-             patch("tools.transcription_tools._transcribe_local",
+             patch("hermes_agent.tools.transcription_tools._convert_caf_to_wav") as mock_convert, \
+             patch("hermes_agent.tools.transcription_tools._transcribe_local",
                    return_value={"success": True, "transcript": "hi"}):
-            from tools.transcription_tools import transcribe_audio
+            from hermes_agent.tools.transcription_tools import transcribe_audio
             result = transcribe_audio(str(caf_path))
 
         assert result["success"] is True
@@ -1528,8 +1528,8 @@ class TestCafConversion:
         """Cloud CAF conversion must not clobber a sibling ``<stem>.wav`` nor
         leave its converted output behind, whether the provider succeeds or
         raises."""
-        from tools import transcription_audio as audio
-        from tools import transcription_tools as stt
+        from hermes_agent.tools import transcription_audio as audio
+        from hermes_agent.tools import transcription_tools as stt
 
         source = tmp_path / "voice.caf"
         source.write_bytes(b"caff fixture")
@@ -1574,7 +1574,7 @@ class TestTranscribeCredentialReadGuard:
         plaintext is never shipped to an external STT provider — mirroring the
         read guard added to image-gen (587be5b5b) and xAI video-gen
         (104232979)."""
-        from tools.transcription_tools import transcribe_audio
+        from hermes_agent.tools.transcription_tools import transcribe_audio
         from agent.file_safety import get_read_block_error
 
         env_file = tmp_path / ".env"
@@ -1595,7 +1595,7 @@ class TestTranscribeCredentialReadGuard:
 @pytest.mark.parametrize("progress", [True, False])
 def test_command_stt_idle_timeout_preserves_transcription_contract(tmp_path, progress):
     import shlex
-    from tools.transcription_command import _transcribe_command_stt
+    from hermes_agent.tools.transcription_command import _transcribe_command_stt
 
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"fixture audio")
@@ -1641,11 +1641,11 @@ class TestExplicitOpenaiSelectionError:
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setattr(
-            "tools.tool_backend_helpers.resolve_openai_audio_api_key",
+            "hermes_agent.tools.tool_backend_helpers.resolve_openai_audio_api_key",
             lambda: None,
         )
         monkeypatch.setattr(
-            "tools.managed_tool_gateway.resolve_managed_tool_gateway",
+            "hermes_agent.tools.managed_tool_gateway.resolve_managed_tool_gateway",
             lambda vendor: None,
         )
 
@@ -1656,18 +1656,18 @@ class TestExplicitOpenaiSelectionError:
         hint."""
         self._no_openai_credentials(monkeypatch)
         monkeypatch.setattr(
-            "tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True
+            "hermes_agent.tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True
         )
         monkeypatch.setattr(
-            "tools.transcription_tools._load_stt_config", dict
+            "hermes_agent.tools.transcription_tools._load_stt_config", dict
         )
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
+             patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch(
-                 "tools.tool_backend_helpers.nous_tool_gateway_unavailable_message",
+                 "hermes_agent.tools.tool_backend_helpers.nous_tool_gateway_unavailable_message",
                  lambda what: f"managed route down for {what}; run `hermes tools`",
              ):
-            from tools.transcription_tools import _dispatch_stt_provider
+            from hermes_agent.tools.transcription_tools import _dispatch_stt_provider
 
             result = _dispatch_stt_provider(
                 "/tmp/nonexistent.wav", "none", {"provider": "openai"}
@@ -1684,18 +1684,18 @@ class TestExplicitOpenaiSelectionError:
         without an explicit provider choice."""
         self._no_openai_credentials(monkeypatch)
         monkeypatch.setattr(
-            "tools.transcription_tools._load_stt_config", dict
+            "hermes_agent.tools.transcription_tools._load_stt_config", dict
         )
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
+             patch("hermes_agent.tools.transcription_tools._HAS_FASTER_WHISPER", False), \
              patch(
-                 "tools.transcription_tools._has_local_command", return_value=False
+                 "hermes_agent.tools.transcription_tools._has_local_command", return_value=False
              ), \
              patch(
-                 "tools.transcription_tools._try_lazy_install_stt",
+                 "hermes_agent.tools.transcription_tools._try_lazy_install_stt",
                  return_value=False,
              ):
-            from tools.transcription_tools import _dispatch_stt_provider
+            from hermes_agent.tools.transcription_tools import _dispatch_stt_provider
 
             result = _dispatch_stt_provider("/tmp/x.wav", "none", {})
 
@@ -1734,13 +1734,13 @@ class TestTranscribeOpenaiFiveXxRetry:
             "retried transcript",                          # retry after transcode
         ]
 
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client), \
              patch(
-                 "tools.transcription_cloud._transcode_audio_for_stt",
+                 "hermes_agent.tools.transcription_cloud._transcode_audio_for_stt",
                  return_value=(str(converted), None),
              ):
-            from tools.transcription_tools import _transcribe_openai
+            from hermes_agent.tools.transcription_tools import _transcribe_openai
             result = _transcribe_openai(
                 sample_wav, "gpt-4o-transcribe", api_key="sk-test"
             )
@@ -1755,11 +1755,11 @@ class TestTranscribeOpenaiFiveXxRetry:
         mock_client = MagicMock()
         mock_client.audio.transcriptions.create.side_effect = self._status_error(503, "503 system_error")
 
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+        with patch("hermes_agent.tools.transcription_tools._HAS_OPENAI", True), \
              patch("openai.OpenAI", return_value=mock_client), \
-             patch("tools.transcription_cloud._transcode_audio_for_stt",
+             patch("hermes_agent.tools.transcription_cloud._transcode_audio_for_stt",
                    return_value=(None, "ffmpeg not found")):
-            from tools.transcription_tools import _transcribe_openai
+            from hermes_agent.tools.transcription_tools import _transcribe_openai
             result = _transcribe_openai(sample_wav, "whisper-1", api_key="sk-test")
 
         assert result["success"] is False

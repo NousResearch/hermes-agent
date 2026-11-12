@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from tools import clarify_gateway as clarify_mod
+from hermes_agent.tools import clarify_gateway as clarify_mod
 
 
 @pytest.fixture

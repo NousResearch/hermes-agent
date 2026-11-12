@@ -49,7 +49,7 @@ def _dead_pid() -> int:
 # ---- tool unavailable ----
 
 def test_only_a_disabled_shipped_builtin_is_reported(monkeypatch):
-    monkeypatch.setattr("tools.skill_provenance.is_background_review", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.skill_provenance.is_background_review", lambda: False)
     route = {"model": "m", "provider": "openrouter"}
     agent = SimpleNamespace(_delegate_depth=0)
     fields = signals.tool_unavailable_fields(agent, "browser_exec", "unknown_tool", route)
@@ -59,12 +59,12 @@ def test_only_a_disabled_shipped_builtin_is_reported(monkeypatch):
     assert signals.tool_unavailable_fields(agent, "mcp_github_search", "unknown_tool", route) is None
     assert signals.tool_unavailable_fields(agent, "browser_exec", "invalid_json", route) is None
     assert signals.tool_unavailable_fields(SimpleNamespace(_delegate_depth=1), "memory", "unknown_tool", route) is None
-    monkeypatch.setattr("tools.skill_provenance.is_background_review", lambda: True)
+    monkeypatch.setattr("hermes_agent.tools.skill_provenance.is_background_review", lambda: True)
     assert signals.tool_unavailable_fields(agent, "memory", "unknown_tool", route) is None
 
 
 def test_deferred_builtins_and_cron_narrowing_are_not_unavailable(monkeypatch):
-    monkeypatch.setattr("tools.skill_provenance.is_background_review", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.skill_provenance.is_background_review", lambda: False)
     route = {"model": "m", "provider": "openrouter"}
     agent = SimpleNamespace(_delegate_depth=0, enabled_toolsets=None, disabled_toolsets=None)
     # Enabled but behind tool_search (reachable via tool_call): not "disabled in this session".
@@ -80,7 +80,7 @@ def test_deferred_builtins_and_cron_narrowing_are_not_unavailable(monkeypatch):
 def test_turn_validation_reports_disabled_builtin_once_and_unknown_names_never(marks, monkeypatch):
     from hermes_cli.observability.shared_metrics_model import record_tool_call_quality
 
-    monkeypatch.setattr("tools.skill_provenance.is_background_review", lambda: False)
+    monkeypatch.setattr("hermes_agent.tools.skill_provenance.is_background_review", lambda: False)
     agent = SimpleNamespace(provider="openrouter", model="anthropic/claude-sonnet-4", valid_tool_names={"memory"},
                             tools=[], _delegate_depth=0)
     calls = [SimpleNamespace(function=SimpleNamespace(name=n, arguments="{}"))

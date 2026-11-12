@@ -1,24 +1,24 @@
 name: antigravity-acp-provider
 title: Hermes Antigravity ACP
 repo: https://github.com/rhgo1749/hermes-antigravity-acp
-sha: d406a0b1ccc999bd956cdbfceedd150bb15d9e5f
+sha: c940d290ccc9a665f2fe9b27cbd36eefc70ca859
 subdir: hermes-plugin/antigravity-acp
-version: "0.7.9"
+version: "0.7.10"
 description: >-
   Independent Hermes provider for Google's official Antigravity ACP server.
   Disclosure: runs the Google server as a child process; authentication and
-  third-party network access occur through that runtime. Supported native file
-  edits and commands are automatically approved after plugin checks and may
-  bypass Hermes terminal approval; workspace checks are not an OS sandbox.
-  This behavior may conflict with catalog rule 12. Google restricts use of
-  personal Antigravity OAuth by third-party clients; account and authentication
-  eligibility must be checked against Google's current terms. Not affiliated
-  with or endorsed by Google.
+  third-party network access occur through that runtime. The provider never
+  auto-approves native execution: native run_command is disabled at session
+  launch and native file-mutation or command permission frames are rejected,
+  so shell and file work goes through Hermes' own approval-gated terminal and
+  file tools. Google restricts use of personal Antigravity OAuth by
+  third-party clients; account and authentication eligibility must be checked
+  against Google's current terms. Not affiliated with or endorsed by Google.
 maintainer: rhgo1749
 tier: community
 category: models
 requires_hermes: ">=0.21.6"
-docs_url: https://github.com/rhgo1749/hermes-antigravity-acp/blob/d406a0b1ccc999bd956cdbfceedd150bb15d9e5f/docs/hermes-compatibility.md
+docs_url: https://github.com/rhgo1749/hermes-antigravity-acp/blob/c940d290ccc9a665f2fe9b27cbd36eefc70ca859/docs/hermes-compatibility.md
 capabilities:
   provides_tools: []
   provides_hooks: []

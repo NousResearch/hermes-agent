@@ -163,5 +163,62 @@ class TestParseSystemdDuration:
         assert sf.parse_systemd_duration_to_us("3min") == 180 * 1_000_000
 
 # ---------------------------------------------------------------------------
+# _systemd_timeout_stop_us
+# ---------------------------------------------------------------------------
+
+class TestSystemdTimeoutStopUs:
+    """Regression for the root-linger false positive: a reachable ``--user`` systemd manager
+    (``loginctl enable-linger``) answers ``TimeoutStopUSec`` for ANY unit name, including ones
+    it has never heard of, by synthesizing generic ``Default*`` properties. That looked like a
+    real hit (returncode 0, a TimeoutStopUSec= line) and made every root-run *system* gateway
+    unit report the manager's global default (e.g. 90s) instead of its real TimeoutStopSec,
+    firing a bogus "Stale systemd unit" / drain-timeout mismatch warning on every start."""
+
+    @staticmethod
+    def _fake_run(user_props, system_props):
+        """Build a subprocess.run stand-in keyed on whether ``--user`` is in the argv."""
+        def _run(cmd, **_kwargs):
+            props = user_props if "--user" in cmd else system_props
+            stdout = "".join(f"{k}={v}\n" for k, v in props.items())
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout=stdout, stderr="")
+        return _run
+
+    def test_not_found_user_default_is_rejected_falls_through_to_system(self, monkeypatch):
+        """``--user`` returns the manager's synthesized default for a not-found unit; must be
+        ignored in favour of the real system-level value, not trusted as-is."""
+        monkeypatch.setattr(
+            sf.subprocess, "run",
+            self._fake_run(
+                user_props={"LoadState": "not-found", "TimeoutStopUSec": "1min 30s"},
+                system_props={"LoadState": "loaded", "TimeoutStopUSec": "3min 30s"},
+            ),
+        )
+        assert sf._systemd_timeout_stop_us("hermes-gateway-tony-lean.service") == 210 * 1_000_000
+
+    def test_real_user_unit_still_honoured(self, monkeypatch):
+        """A genuine ``--user`` unit (LoadState=loaded) is still accepted on the first attempt —
+        the fix must not force system-only lookups and break actual user-unit installs."""
+        monkeypatch.setattr(
+            sf.subprocess, "run",
+            self._fake_run(
+                user_props={"LoadState": "loaded", "TimeoutStopUSec": "45s"},
+                system_props={"LoadState": "not-found", "TimeoutStopUSec": "1min 30s"},
+            ),
+        )
+        assert sf._systemd_timeout_stop_us("some-user-unit.service") == 45 * 1_000_000
+
+    def test_not_found_everywhere_returns_none(self, monkeypatch):
+        """Unresolvable in either instance (unit genuinely doesn't exist) yields None, not a
+        synthesized default passed off as real data."""
+        monkeypatch.setattr(
+            sf.subprocess, "run",
+            self._fake_run(
+                user_props={"LoadState": "not-found", "TimeoutStopUSec": "1min 30s"},
+                system_props={"LoadState": "not-found", "TimeoutStopUSec": "1min 30s"},
+            ),
+        )
+        assert sf._systemd_timeout_stop_us("totally-made-up-unit-xyz123.service") is None
+
+# ---------------------------------------------------------------------------
 # check_systemd_timing_alignment
 # ---------------------------------------------------------------------------

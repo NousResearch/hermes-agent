@@ -3549,9 +3549,9 @@ class _StreamingCall(StreamingWaitMonitor):
         ``result["error"]`` set (unless our own interrupt force-closed the
         socket). Runs inside the ``except`` so ``logger.exception`` works."""
         import httpx as _httpx
-        # Our own interrupt force-close: no retry/fallback/"reconnecting" (the
-        # poll loop raises InterruptedError).
-        if self._request_cancelled["value"]:
+        # STOP may abort the socket before the monitor sets request cancellation;
+        # either signal owns the error (run() raises InterruptedError).
+        if self._request_cancelled["value"] or self.agent._interrupt_requested:
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
             return False
         e = self._as_lifetime_error(e)  # a cap kill: transient, and its copy names the setting

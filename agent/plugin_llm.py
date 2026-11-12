@@ -16,7 +16,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Union
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Sequence, Union
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +83,18 @@ class PluginLlmStructuredResult:
     usage: PluginLlmUsage = field(default_factory=PluginLlmUsage)
     parsed: Optional[Any] = None
     content_type: str = "text"
+    audit: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class PluginLlmEmbeddingResult:
+    """Ordered finite vectors from Hermes's selected embedding model."""
+
+    vectors: list[list[float]]
+    provider: str
+    model: str
+    dimensions: int
+    usage: PluginLlmUsage = field(default_factory=PluginLlmUsage)
     audit: dict[str, Any] = field(default_factory=dict)
 
 
@@ -483,6 +495,30 @@ class PluginLlm:
         self._sync_caller = sync_caller
         self._async_caller = async_caller
 
+    def embed(
+        self, inputs: Sequence[str], *, input_type: Literal["query", "document"] = "document",
+        provider: Optional[str] = None, model: Optional[str] = None, dimensions: Optional[int] = None,
+        timeout: Optional[float] = None, profile: Optional[str] = None, purpose: Optional[str] = None,
+    ) -> PluginLlmEmbeddingResult:
+        """Embed text through Hermes-owned routing and authentication.
+
+        Overrides use the same trust policy as completions. Query/document semantics
+        belong to the selected embedding model, never the main chat model.
+        """
+        from agent.plugin_llm_embeddings import embedding_call
+        return embedding_call(self, inputs, input_type=input_type, provider=provider, model=model,
+                              dimensions=dimensions, timeout=timeout, profile=profile, purpose=purpose)
+
+    async def aembed(
+        self, inputs: Sequence[str], *, input_type: Literal["query", "document"] = "document",
+        provider: Optional[str] = None, model: Optional[str] = None, dimensions: Optional[int] = None,
+        timeout: Optional[float] = None, profile: Optional[str] = None, purpose: Optional[str] = None,
+    ) -> PluginLlmEmbeddingResult:
+        """Async sibling of :meth:`embed`; cancellation propagates to the transport."""
+        from agent.plugin_llm_embeddings import async_embedding_call
+        return await async_embedding_call(self, inputs, input_type=input_type, provider=provider, model=model,
+                                         dimensions=dimensions, timeout=timeout, profile=profile, purpose=purpose)
+
     def complete(
         self, messages: list[dict[str, Any]], *, provider: Optional[str] = None, model: Optional[str] = None,
         temperature: Optional[float] = None, max_tokens: Optional[int] = None,
@@ -630,6 +666,7 @@ def make_plugin_llm_for_test(*, plugin_id: str, policy: _TrustPolicy, sync_calle
 __all__ = [
     "PluginLlm",
     "PluginLlmCompleteResult",
+    "PluginLlmEmbeddingResult",
     "PluginLlmImageInput",
     "PluginLlmInput",
     "PluginLlmStructuredResult",

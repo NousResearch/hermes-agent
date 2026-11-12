@@ -6012,6 +6012,9 @@ def _resolve_task_provider_model(
     but a first-class provider + base_url keeps the provider identity so its auth/transport
     shaping still applies. api_mode is "chat_completions", "codex_responses", or None (auto).
     """
+    if task == "embedding":
+        from agent.embedding_client import EmbeddingError
+        raise EmbeddingError("embedding_unsupported")
     cfg_provider = cfg_model = cfg_base_url = cfg_api_key = resolved_api_mode = None
     if task:
         task_config = _get_auxiliary_task_config(task)

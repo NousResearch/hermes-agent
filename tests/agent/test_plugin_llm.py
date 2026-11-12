@@ -17,6 +17,7 @@ import pytest
 
 from agent.plugin_llm import (
     PluginLlmCompleteResult,
+    PluginLlmEmbeddingResult,
     PluginLlmImageInput,
     PluginLlmStructuredResult,
     PluginLlmTextInput,
@@ -29,6 +30,121 @@ from agent.plugin_llm import (
     _TrustPolicy,
     make_plugin_llm_for_test,
 )
+
+
+class TestEmbeddings:
+    """Embedding requests obey the facade trust and vector contracts."""
+
+    @staticmethod
+    def _response(vectors, *, indices=None):
+        return SimpleNamespace(
+            data=[SimpleNamespace(index=i, embedding=v) for i, v in zip(
+                range(len(vectors)) if indices is None else indices, vectors)],
+            usage=SimpleNamespace(prompt_tokens=7, total_tokens=7), model="resolved-embedding",
+            _hermes_input_type_handling="shared")
+
+    def test_order_identity_usage_and_no_input_egress(self, monkeypatch, caplog):
+        import agent.embedding_client as transport
+        seen = []
+        response = self._response([[3, 4], [1, 2]], indices=[1, 0])
+        monkeypatch.setattr(transport, "call_embeddings", lambda **kw: (
+            seen.append(kw) or "custom:fixture", "resolved-embedding", response))
+        llm = make_plugin_llm_for_test(plugin_id="vectors", policy=_TrustPolicy(plugin_id="vectors"))
+        with caplog.at_level("INFO"):
+            result = llm.embed(["private first", "private second"], input_type="query", dimensions=2)
+        assert isinstance(result, PluginLlmEmbeddingResult)
+        assert result.vectors == [[1.0, 2.0], [3.0, 4.0]]
+        assert (result.provider, result.model, result.dimensions) == ("custom:fixture", "resolved-embedding", 2)
+        assert result.usage.input_tokens == result.usage.total_tokens == 7
+        assert result.audit["input_type"] == seen[0]["input_type"] == "query"
+        assert "private" not in repr(result) + caplog.text
+        assert "api_key" not in repr(result)
+
+    @pytest.mark.parametrize("field,value", [("provider", "openai"), ("model", "some-model"), ("profile", "other")])
+    def test_overrides_fail_before_transport(self, monkeypatch, field, value):
+        import agent.embedding_client as transport
+        monkeypatch.setattr(transport, "call_embeddings", lambda **kw: pytest.fail("denied request dispatched"))
+        llm = make_plugin_llm_for_test(plugin_id="vectors", policy=_TrustPolicy(plugin_id="vectors"))
+        with pytest.raises(PluginLlmTrustError):
+            llm.embed(["synthetic"], **{field: value})
+
+    def test_allowlists_apply_to_embeddings(self, monkeypatch):
+        import agent.embedding_client as transport
+        monkeypatch.setattr(transport, "call_embeddings", lambda **kw: (
+            kw["provider"], kw["model"], self._response([[1, 2]])))
+        policy = _trusted_policy(allowed_providers=frozenset({"openai"}), allow_any_provider=False,
+                                 allowed_models=frozenset({"text-embedding-3-small"}), allow_any_model=False)
+        llm = make_plugin_llm_for_test(plugin_id="vectors", policy=policy)
+        assert llm.embed(["synthetic"], provider="openai", model="text-embedding-3-small").dimensions == 2
+        with pytest.raises(PluginLlmTrustError):
+            llm.embed(["synthetic"], provider="openrouter")
+        with pytest.raises(PluginLlmTrustError):
+            llm.embed(["synthetic"], model="denied-model")
+
+    @pytest.mark.parametrize("inputs,kw", [
+        ([], {}), ([""], {}), ("text", {}), ([3], {}), (["x"] * 129, {}),
+        (["x" * (1024 * 1024 + 1)], {}), (["x"], {"input_type": "other"}),
+        (["x"], {"dimensions": True}), (["x"], {"dimensions": 0}),
+        (["x"], {"dimensions": 65537}), (["x"], {"timeout": float("nan")}),
+        (["x"], {"timeout": 0}), (["x"], {"timeout": 301}),
+    ])
+    def test_request_bounds(self, inputs, kw):
+        llm = make_plugin_llm_for_test(plugin_id="vectors", policy=_TrustPolicy(plugin_id="vectors"))
+        with pytest.raises(ValueError):
+            llm.embed(inputs, **kw)
+
+    @pytest.mark.parametrize("vectors,indices,dimensions", [
+        ([], [], None), ([[1]], [1], None), ([[1], [2]], [0, 0], None),
+        ([[1], [2, 3]], [0, 1], None), ([[float("nan")]], [0], None),
+        ([[float("inf")]], [0], None), ([[True]], [0], None),
+        ([["1"]], [0], None), ([[]], [0], None), ([[1, 2]], [0], 3),
+    ])
+    def test_invalid_vectors(self, monkeypatch, vectors, indices, dimensions):
+        import agent.embedding_client as transport
+        monkeypatch.setattr(transport, "call_embeddings", lambda **kw: (
+            "openai", "embedding", self._response(vectors, indices=indices)))
+        llm = make_plugin_llm_for_test(plugin_id="vectors", policy=_TrustPolicy(plugin_id="vectors"))
+        with pytest.raises(transport.EmbeddingError) as exc:
+            llm.embed(["synthetic"] * max(1, len(vectors)), dimensions=dimensions)
+        assert exc.value.code == "embedding_invalid_response"
+
+    def test_async_and_cancellation(self, monkeypatch):
+        import agent.embedding_client as transport
+        seen = []
+
+        async def call(**kw):
+            seen.append(kw)
+            return "openai", "embedding", self._response([[1, 2]])
+
+        monkeypatch.setattr(transport, "async_call_embeddings", call)
+        llm = make_plugin_llm_for_test(plugin_id="vectors", policy=_TrustPolicy(plugin_id="vectors"))
+        result = asyncio.run(llm.aembed(["synthetic"]))
+        assert result.vectors == [[1, 2]]
+        assert seen[0]["input_type"] == "document"
+
+        async def cancelled(**kw):
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(transport, "async_call_embeddings", cancelled)
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(llm.aembed(["synthetic"]))
+
+    @pytest.mark.parametrize("handling", [None, "unknown", {"unexpected": "metadata"}, "x" * 4096])
+    def test_audit_rejects_unknown_semantics(self, monkeypatch, handling):
+        import agent.embedding_client as transport
+        response = self._response([[1, 2]])
+        response._hermes_input_type_handling = handling
+        monkeypatch.setattr(transport, "call_embeddings", lambda **kw: ("openai", "embedding", response))
+        llm = make_plugin_llm_for_test(plugin_id="vectors", policy=_TrustPolicy(plugin_id="vectors"))
+        with pytest.raises(transport.EmbeddingError):
+            llm.embed(["synthetic"])
+
+    def test_embedding_slot_cannot_be_used_as_a_chat_route(self):
+        from agent.auxiliary_client import get_text_auxiliary_client
+        from agent.embedding_client import EmbeddingError
+        with pytest.raises(EmbeddingError) as exc:
+            get_text_auxiliary_client("embedding")
+        assert exc.value.code == "embedding_unsupported"
 
 # ---------------------------------------------------------------------------
 # Helpers

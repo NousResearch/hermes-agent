@@ -1,7 +1,7 @@
 name: jobby
 repo: https://github.com/desaianm/jobby-hermes
 sha: 3b8c62670c138078e85c839f08f24a6a81213254
-description: Source-backed international job discovery and PDF/DOCX application drafts inside Hermes; no autonomous submission.
+description: "Source-backed international job discovery and PDF/DOCX application drafts inside Hermes; no autonomous submission. Disclosure — confirmed searches send your approved resume-derived search terms, country and location to Indeed and LinkedIn through the JobSpy scraper library; importing reads the absolute PDF path you (or the agent) give it on the backend machine and stores your resume facts, postings and generated documents in this profile's plugin data folder; the plugin never fills or submits applications."
 maintainer: desaianm
 tier: community
 category: desktop

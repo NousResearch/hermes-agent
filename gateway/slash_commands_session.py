@@ -46,6 +46,26 @@ def _sattr(obj, name: str) -> str:
     return str(getattr(obj, name, "") or "")
 
 
+def _telegram_private_chat_owner(platform, chat_type, chat_id, user_id) -> tuple:
+    """``(chat_id, user_id)`` of a Telegram private chat with both ids known, else ``()``."""
+    platform = getattr(platform, "value", platform)
+    if str(platform or "") != Platform.TELEGRAM.value or str(chat_type or "").lower() != "dm":
+        return ()
+    chat_id, user_id = str(chat_id or ""), str(user_id or "")
+    return (chat_id, user_id) if chat_id and user_id else ()
+
+
+def _private_topic_lanes_of_one_chat(current, origin) -> bool:
+    """Whether two sources are topic lanes of ONE Telegram private chat (maintainer ruling on
+    #57821): the same person's own DM, so /resume may cross its topics. Groups, forums, other
+    platforms' threads and chats with an unknown owner keep strict thread scoping."""
+    mine = _telegram_private_chat_owner(current.platform, _sattr(current, "chat_type"),
+                                        _sattr(current, "chat_id"), _sattr(current, "user_id"))
+    theirs = _telegram_private_chat_owner(origin.platform, _sattr(origin, "chat_type"),
+                                          _sattr(origin, "chat_id"), _sattr(origin, "user_id"))
+    return bool(mine) and mine == theirs
+
+
 def _manual_compression_reply_lines(summary: dict, compressor, focus_topic) -> list[str]:
     """Manual /compress confirmation lines, surfacing summariser/aux-model failures.
     ``_last_compress_aborted`` = no usable summary, messages unchanged.  Provider exception text is
@@ -367,6 +387,10 @@ class GatewaySessionCommandsMixin:
             return False
         if origin.platform != current.platform or origin.chat_id != current.chat_id:
             return False
+        # Topic lanes of one Telegram private chat are the same person's own DM: /resume may move
+        # a conversation between them (#57821). Every other thread is a different session.
+        if _private_topic_lanes_of_one_chat(current, origin):
+            return True
         # thread_id is part of every session key: threads of one chat are DIFFERENT sessions.
         if _sattr(current, "thread_id") != _sattr(origin, "thread_id"):
             return False
@@ -439,6 +463,11 @@ class GatewaySessionCommandsMixin:
         if not caller_uid:
             return False
         row_thread = str(row.get("thread_id") or "")
+        caller_dm = _telegram_private_chat_owner(source.platform, _sattr(source, "chat_type"),
+                                                 _sattr(source, "chat_id"), caller_uid)
+        if caller_dm and caller_dm == _telegram_private_chat_owner(
+                row_src, row.get("chat_type"), row.get("chat_id"), row.get("user_id")):
+            return True  # another topic lane of the caller's own Telegram DM (#57821)
         if not (row_src and caller_src and str(row_src) == str(caller_src)
                 and row_thread == _sattr(source, "thread_id")):
             return False  # blank/legacy source cannot prove the platform; other thread = other session

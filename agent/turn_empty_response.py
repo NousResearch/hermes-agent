@@ -141,11 +141,13 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
             agent._empty_content_retries, agent.model,
             agent.provider,
         )
-        agent._emit_diagnostic_status(
+        # The gateway's final reply explains this turn's empty result, so a chat drops this copy.
+        from gateway.warning_notifications import TerminalFailureText
+        agent._emit_diagnostic_status(TerminalFailureText(
             "❌ Model returned no content after all retries"
             + (" and fallback attempts." if agent._fallback_chain else
                ". No fallback providers configured.")
-        )
+        ))
         return "(empty)"
 
     logger.warning(
@@ -153,9 +155,10 @@ def _terminal_empty(agent: Any, assistant_message: Any, finish_reason: str, mess
         "(model=%s provider=%s)",
         agent._empty_content_retries, agent.model, agent.provider,
     )
-    agent._emit_diagnostic_status(
+    from gateway.warning_notifications import TerminalFailureText
+    agent._emit_diagnostic_status(TerminalFailureText(
         "⚠️ Model produced reasoning but no visible response after all retries. Returning empty."
-    )
+    ))
     return "(empty)"
 
 

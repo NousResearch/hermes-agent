@@ -37,7 +37,7 @@ from agent.conversation_compression import (
     COMPRESSION_REFUSED_WOULD_GROW_WARNING, COMPRESSION_RETRY_MESSAGES_STATUS_TEMPLATE, COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE, IDLE_COMPACTION_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE, PREFLIGHT_COMPRESSION_STATUS_TEMPLATE)
-from gateway.run_status_filter import _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
+from gateway.run_status_filter import EMPTY_LADDER_STATUS_PATTERN, _status_template_to_regex, hidden_outside_dm, is_terminal_failure_status
 from agent.conversation_compression_archive import MERGED_DURABLE_ROWS, RETIRED_DURABLE_ROWS, UNNAMED_DURABLE_ROWS
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
@@ -100,7 +100,7 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|context\s+reduced\s+to\s+[\d,]+\s+tokens\s+\(was\s+[\d,]+\),\s+retrying"
     r"|session\s+compressed\s+\d+\s+times"
     r"|rate\s+limited\.\s+waiting\s+\d"
-    r"|retrying\s+in\s+\d"
+    rf"|retrying(?:\s+\(\d+/\d+\))?\s+in\s+\d|{EMPTY_LADDER_STATUS_PATTERN}"  # + counted '(1/3) in 6s'
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
     r"|stream\s+(?:drop|drop\s+mid\s+tool-call).+retry\s+\d"
     r"|stale\s+connections\s+from\s+a\s+previous\s+provider\s+issue"

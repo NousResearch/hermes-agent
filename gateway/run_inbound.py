@@ -731,27 +731,30 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             with suppress(RuntimeStoreError):
                 await authority.interrupt(actor, ref, handle.execution_generation)
 
-    def _hm_busy_telegram_grace_queue(
-        self, event: MessageEvent, source: SessionSource, _quick_key: str, effective_busy_input_mode: str
-    ) -> bool:
-        """Queue a Telegram text follow-up that lands within the post-start grace window.
-
-        Invalid or empty ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS`` falls back to 3.0
-        via ``_float_env`` — a config typo must not crash the inbound handler.
-        """
+    def _hm_in_telegram_grace(self, event: MessageEvent, source: SessionSource, _quick_key: str) -> bool:
+        """A Telegram text follow-up inside the post-start grace window (it waits, never interrupts).
+        Invalid or empty ``HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS`` falls back to 3.0 via ``_float_env``."""
         from gateway.run import _float_env
         _grace = _float_env("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", 3.0)
         _grace_state = self._peek_session_state(_quick_key)
         _started_at = _grace_state.turn.started_ts if _grace_state else 0
-        if not (
-            source.platform == Platform.TELEGRAM and event.message_type == MessageType.TEXT
-            and _grace > 0 and _started_at and (time.time() - _started_at) <= _grace
-        ):
+        # Send time (batching can admit 1.5s later); an edit keeps its message's ``date``, so use ``edit_date``.
+        _raw = getattr(event, "raw_message", None)
+        _sent = (_edit if isinstance(_edit := getattr(_raw, "edit_date", None), type(event.timestamp)) else event.timestamp) if _raw else None
+        _arrived = _sent.timestamp() if hasattr(_sent, "timestamp") else time.time()
+        if not (source.platform == Platform.TELEGRAM and event.message_type == MessageType.TEXT
+                and _grace > 0 and _started_at and -1 <= (_arrived - _started_at) <= _grace):
             return False
-        logger.debug(
-            "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
-            time.time() - _started_at, _quick_key,
-        )
+        logger.debug("Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
+                     _arrived - _started_at, _quick_key)
+        return True
+
+    def _hm_busy_telegram_grace_queue(
+        self, event: MessageEvent, source: SessionSource, _quick_key: str, effective_busy_input_mode: str
+    ) -> bool:
+        """Stage a grace-window Telegram follow-up (``_hm_in_telegram_grace``) as the next turn."""
+        if not self._hm_in_telegram_grace(event, source, _quick_key):
+            return False
         if effective_busy_input_mode != "queue":
             self._hm_merge_pending_for_source(source, _quick_key, event, merge_text=True)
         else:
@@ -819,6 +822,10 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         from gateway.run import _AGENT_PENDING_SENTINEL
         superseded = self._clarify_takeover(event, _quick_key)
         mode = "interrupt" if superseded else self._effective_busy_input_mode(source)
+        if (mode == "interrupt" and not superseded and not getattr(event, "internal", False)
+                and not event.get_command() and self._hm_text_only(event)
+                and self._hm_in_telegram_grace(event, source, _quick_key)):
+            return False  # leave the just-started turn running; the caller admits this follow-up
         state = self._peek_session_state(_quick_key)
         running_agent = state.turn.agent if state else None
         adapter = self._delivery_adapter_for(source)

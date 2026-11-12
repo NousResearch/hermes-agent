@@ -1,13 +1,13 @@
 name: triage
 repo: https://github.com/Saderius/hermes-triage
-sha: 913a61d62b0795926531ecdfbf8980a1e9c0b9c9
-description: "Keeps the list of every skill out of your context. Triage suggests skills above the composer as you type and as the chat goes on, ranked locally with no model call; a skill loads only when you pick it or clearly ask for it."
+sha: abb38200d755354accf21444627f9f44d4d58182
+description: "Keeps the list of every skill out of your context. Triage suggests skills in the composer as you type and as the chat goes on, ranked locally with no model call; a skill loads only when you pick it or clearly ask for it."
 maintainer: Saderius
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/Saderius/hermes-triage#readme
-version: "0.1.2"
+version: "0.1.3"
 platforms: []
 title: Triage
 known_issues:

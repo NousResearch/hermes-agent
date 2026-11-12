@@ -642,6 +642,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         self._approval_request_ids: dict[int, str] = {}  # message_id → tools.approval request id
         self._slash_confirm_state: dict[str, str] = {}  # confirm_id → session_key
         self._clarify_state: dict[str, ClarifyPrompt] = {}  # clarify_id → prompt bound to its sent message
+        self._clarify_multi: dict[str, set[int]] = {}  # clarify_id → checked indices (multi-select only)
         # "important" (default): only final responses, approvals and slash confirmations notify;
         # "all": every message notifies (display.platforms.telegram.notifications).
         self._notifications_mode: str = "important"
@@ -3986,10 +3987,21 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             if choices:
                 # Full option text in the body (mobile truncates button labels); buttons keep numeric labels.
                 text += "\n\n" + "\n".join(f"{i + 1}. {_html.escape(str(c))}" for i, c in enumerate(choices))
-                # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
-                rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
-                rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
-                keyboard = InlineKeyboardMarkup(rows)
+                multi = False
+                try:
+                    from tools.clarify_gateway import get_pending
+                    entry = get_pending(clarify_id)
+                    multi = bool(entry and entry.multi_select)
+                except Exception:
+                    multi = False
+                if multi:
+                    text += f"\n\n<i>{_html.escape(t('platform.telegram.prompt.multi_hint'))}</i>"
+                    keyboard = self._clarify_multi_keyboard(clarify_id, list(choices), set())
+                else:
+                    # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>" short.
+                    rows = [[InlineKeyboardButton(str(idx + 1), callback_data=f"cl:{clarify_id}:{idx}")] for idx in range(len(choices))]
+                    rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
+                    keyboard = InlineKeyboardMarkup(rows)
             return text, keyboard, lambda msg: self._clarify_state.__setitem__(clarify_id, ClarifyPrompt.from_sent(session_key, msg))
         return await self._send_prompt(
             "send_clarify", chat_id, metadata, build, parse_mode=ParseMode.HTML, thread_id=self._metadata_thread_id(metadata))
@@ -4527,6 +4539,35 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         except Exception as exc:
             logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
 
+    @staticmethod
+    def _clarify_multi_keyboard(clarify_id: str, choices: list, selected: set[int]):
+        """One toggle row per choice, then Other and Send. Checked rows keep their index so the
+        callback stays inside Telegram's 64-byte data cap."""
+        rows = [[InlineKeyboardButton(f"{'☑' if idx in selected else '☐'} {idx + 1}",
+                                      callback_data=f"cl:{clarify_id}:t{idx}")] for idx in range(len(choices))]
+        rows.append([InlineKeyboardButton(t("platform.telegram.prompt.other"), callback_data=f"cl:{clarify_id}:other")])
+        rows.append([InlineKeyboardButton(t("platform.telegram.prompt.send"), callback_data=f"cl:{clarify_id}:go")])
+        return InlineKeyboardMarkup(rows)
+
+    async def _resolve_clarify_choice(self, query, clarify_id: str, prompt, resolved_text: str, user_display: str) -> None:
+        """Resolve the pending entry with one string and replace the prompt body with the answer."""
+        self._clarify_state.pop(clarify_id, None)
+        self._clarify_multi.pop(clarify_id, None)
+        try:
+            from tools.clarify_gateway import resolve_gateway_clarify
+            resolved = resolve_gateway_clarify(clarify_id, resolved_text)
+        except Exception as exc:
+            logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
+            resolved = False
+        if resolved:
+            await answer_callback(query, f"✓ {resolved_text[:60]}")
+            await self._edit_html_quiet(
+                query, f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}")
+            log_resolved(query, clarify_id, prompt, resolved_text, user_display)
+        else:
+            await self._notify_clarify_expired(query, user_display)
+            logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
+
     async def _handle_clarify_callback(self, query, data: str, cb: dict[str, Any]) -> None:
         """``cl:<clarify_id>:<idx|other>`` — resolve a clarify prompt or flip to text capture."""
         parts = data.split(":", 2)
@@ -4542,7 +4583,42 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if requester := clarify_refusal(clarify_id, getattr(query.from_user, "id", ""), extra=self.config.extra):
             return await answer_callback(query, refusal_text(requester)[:_TOAST_LIMIT], show_alert=True)
         user_display = getattr(query.from_user, "first_name", None) or t("platform.telegram.user_fallback")
+        if choice_token.startswith("t") and choice_token[1:].isdigit():
+            idx = int(choice_token[1:])
+            entry = None
+            try:
+                from tools.clarify_gateway import get_pending
+                entry = get_pending(clarify_id)
+            except Exception:
+                entry = None
+            if entry is None or not entry.multi_select or not entry.choices or not (0 <= idx < len(entry.choices)):
+                await answer_callback(query, _toast("platform.telegram.prompt.invalid_choice"))
+                return
+            selected = self._clarify_multi.setdefault(clarify_id, set())
+            selected.symmetric_difference_update({idx})
+            await query.edit_message_reply_markup(
+                reply_markup=self._clarify_multi_keyboard(clarify_id, entry.choices, selected))
+            await answer_callback(query, _toast("platform.telegram.prompt.selected_count", count=len(selected)))
+            return
+        if choice_token == "go":
+            entry = None
+            try:
+                from tools.clarify_gateway import get_pending
+                entry = get_pending(clarify_id)
+            except Exception:
+                entry = None
+            if entry is None or not entry.multi_select or not entry.choices:
+                await answer_callback(query, _toast("platform.telegram.prompt.invalid_choice"))
+                return
+            selected = self._clarify_multi.get(clarify_id, set())
+            labels = [str(entry.choices[i]).strip() for i in sorted(selected) if 0 <= i < len(entry.choices)]
+            if not labels:
+                await answer_callback(query, _toast("platform.telegram.prompt.select_one"))
+                return
+            await self._resolve_clarify_choice(query, clarify_id, prompt, ", ".join(labels), user_display)
+            return
         if choice_token == "other":
+            self._clarify_multi.pop(clarify_id, None)
             # Flip to text-capture (the next message resolves it); keep _clarify_state until then.
             flipped = False
             try:
@@ -4578,22 +4654,7 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
         if resolved_text is None:
             # Race (timeout / session reset): echo the index so the agent sees an intentional response.
             resolved_text = f"choice {idx + 1}"
-        self._clarify_state.pop(clarify_id, None)
-        try:
-            from tools.clarify_gateway import resolve_gateway_clarify
-            resolved = resolve_gateway_clarify(clarify_id, resolved_text)
-        except Exception as exc:
-            logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
-            resolved = False
-        if resolved:
-            await answer_callback(query, f"✓ {resolved_text[:60]}")
-            await self._edit_html_quiet(
-                query, f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}")
-            log_resolved(query, clarify_id, prompt, resolved_text, user_display)
-        else:
-            # Entry evicted / gateway restarted between ask and tap.
-            await self._notify_clarify_expired(query, user_display)
-            logger.warning("Telegram clarify button: resolve_gateway_clarify returned False (id=%s)", clarify_id)
+        await self._resolve_clarify_choice(query, clarify_id, prompt, resolved_text, user_display)
 
     async def _handle_update_prompt_callback(self, query, data: str, cb: dict[str, Any]) -> None:
         """``update_prompt:<y|n>`` — forward the answer to the update process."""

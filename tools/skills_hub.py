@@ -139,7 +139,10 @@ def _hop_headers(headers: Optional[dict[str, str]], origin_url: str,
 def _unresolvable(url: str) -> bool:
     from tools import url_safety
 
-    host = urlsplit(url).hostname
+    try:
+        host = urlsplit(url).hostname
+    except ValueError:
+        return False  # malformed: an ordinary refusal, not a transient DNS failure
     if not host:
         return False
     try:
@@ -188,7 +191,10 @@ def _skills_hub_http_get(url: str, *, timeout: float = _DEFAULT_HTTP_TIMEOUT,
             location = resp.headers.get("location") if resp.status_code in _REDIRECT_STATUS_CODES else None
             if not location:
                 return resp
-            current_url = urljoin(current_url, location)
+            try:
+                current_url = urljoin(current_url, location)
+            except ValueError as exc:  # e.g. Location: http://[ — refuse, never escape as ValueError
+                raise SkillsHubFetchBlocked(f"malformed redirect target from {current_url}") from exc
             params = None
     logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
     raise httpx.TooManyRedirects(f"more than {_MAX_SKILL_FETCH_REDIRECTS} redirects from {url}")

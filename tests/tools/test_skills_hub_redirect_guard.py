@@ -148,3 +148,24 @@ def test_redirect_chain_reuses_one_client(transport, monkeypatch):
 
     assert hub._skills_hub_http_get("https://hub.example/a").text == "ok"
     assert (len(seen), len(made)) == (3, 1)
+
+
+def test_malformed_catalog_file_url_is_refused(transport):
+    """A malformed rawUrl is refused like any unsafe URL, not raised as ValueError."""
+    from tools.skills_hub_clawhub import ClawHubSource
+
+    _routes, seen = transport
+    files = ClawHubSource()._extract_files({"files": [{"path": "SKILL.md", "rawUrl": "http://["}]})
+    assert (files, seen) == ({}, [])
+
+
+def test_malformed_redirect_location_is_refused(transport, monkeypatch):
+    routes, seen = transport
+    monkeypatch.setattr(hub, "is_safe_url", lambda _url: True)
+    monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
+    routes["https://hub.example/a"] = httpx.Response(302, headers={"location": "http://["})
+
+    with pytest.raises(hub.SkillsHubFetchBlocked):
+        hub._skills_hub_http_get("https://hub.example/a")
+    assert _get_text("https://hub.example/a") is None
+    assert len(seen) == 2

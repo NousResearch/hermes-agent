@@ -72,7 +72,7 @@ def discover_attach_url(session_id: str, *, registry_home: str | Path | None = N
     # responder checks this instead of a lease_id parameter so the secret is never transmitted.
     client_proof = hmac.new(
         str(owner["lease_id"]).encode("utf-8"),
-        f"hermes-session-attach-request:{session_id}:{nonce}".encode("utf-8"),
+        f"hermes-session-attach-request:{session_id}:{nonce}".encode(),
         hashlib.sha256,
     ).hexdigest()
     query = urlencode({"session_id": session_id, "nonce": nonce,
@@ -101,7 +101,7 @@ def discover_attach_url(session_id: str, *, registry_home: str | Path | None = N
     # written owner-only (see _write_entries).
     expected_proof = hmac.new(
         str(owner["lease_id"]).encode("utf-8"),
-        f"hermes-session-attach:{session_id}:{nonce}".encode("utf-8"),
+        f"hermes-session-attach:{session_id}:{nonce}".encode(),
         hashlib.sha256,
     ).hexdigest()
     if (not isinstance(reply, dict)

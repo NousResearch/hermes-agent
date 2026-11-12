@@ -18,8 +18,8 @@ Real processes throughout:
 Scenarios (the listener answering the advertised port):
 
 * ``impersonator`` echoes every query parameter it was sent plus its OWN ``websocket_url`` carrying a
-  canary token (a rogue process that took over the port). KNOWN: the handshake only compares the reply
-  with what the client just sent, so the echo is accepted (#120604).
+  canary token (a rogue process that took over the port). It cannot produce ``attach_proof``, the
+  lease-keyed HMAC over the client's nonce, so it is refused (#120604).
 * ``foreign_owner`` replies with a lease id that is not the registry's (another runtime answering on
   the port). Must be refused today and under any fix.
 * control ``test_genuine_owner_is_attached``: the lease holder itself serves the endpoint and answers with
@@ -27,10 +27,8 @@ Scenarios (the listener answering the advertised port):
 
 Why the owner side is a test process: no shipped Hermes runtime advertises ``shared_runtime_url`` or
 serves ``/api/session-attach`` yet (``hermes serve`` and the dashboard do not register one), so the
-closest real owner is a process holding the real lease that answers from its own lease knowledge. It
-speaks both the current dialect (``lease_id`` in the reply) and the proof dialect of the candidate fix
-(``attach_proof`` = HMAC-SHA256 keyed by the lease over the client's nonce), so the control holds on main
-and under that fix.
+closest real owner is a process holding the real lease that answers from its own lease knowledge with
+``attach_proof`` = HMAC-SHA256 keyed by the lease over the client's nonce.
 """
 
 from __future__ import annotations
@@ -63,11 +61,7 @@ pytestmark = [
     pytest.mark.skipif(shutil.which("node") is None, reason="the TUI hand-off needs node on PATH"),
 ]
 
-KNOWN: dict[str, tuple[str, str]] = {
-    "impersonator": (r"^impersonator: TUI was attached to the rogue listener's socket: "
-                     r"ws://127\.0\.0\.1:\d+/api/ws\?token=stolen-ws-token-",
-                     "#120604 attach handshake accepts an echoing loopback listener"),
-}
+KNOWN: dict[str, tuple[str, str]] = {}
 SCENARIOS = ["impersonator", "foreign_owner"]
 
 # The lease holder: creates the session, takes the real lease advertising ``argv[2]`` (or its own

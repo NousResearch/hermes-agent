@@ -264,7 +264,8 @@ def send(broker: dict, body_text: str, to: str | None = None,
         except _SMTP_PERMANENT:
             raise  # auth / recipient refused: retrying won't help
         except (smtplib.SMTPException, OSError) as exc:
-            if attempts > max_retries:
+            # A certificate that failed verification will fail the same way on a retry.
+            if attempts > max_retries or isinstance(exc, ssl.SSLCertVerificationError):
                 raise RuntimeError(f"SMTP send failed after {attempts} attempts: {exc}") from exc
             _sleep(min(2 ** (attempts - 1), 30))  # 1s, 2s, 4s... capped
     return {"to": recipient, "subject": subject, "message_id": msg["Message-ID"],

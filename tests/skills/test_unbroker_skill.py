@@ -716,6 +716,29 @@ def test_email_send_accepts_already_tls_connection():
     assert out["attempts"] == 1 and _ImplicitTLSSMTP.sent
 
 
+class _BadCertSMTP(_StripSMTP):
+    """STARTTLS is offered but the server's certificate fails verification."""
+
+    def starttls(self, context=None):
+        raise _ssl.SSLCertVerificationError(1, "certificate verify failed: self-signed certificate")
+
+
+def test_email_send_does_not_retry_certificate_failure():
+    _StripSMTP.constructed, _StripSMTP.logins = 0, []
+    sleeps = []
+    env = {"EMAIL_ADDRESS": "agent@gmail.com", "EMAIL_PASSWORD": "hunter2"}
+    broker = {"id": "x", "optout": {"email": "privacy@x.example"}}
+    try:
+        emailer.send(broker, "Subject: s\n\nb", env=env, _smtp_factory=_BadCertSMTP,
+                     _sleep=sleeps.append)
+    except RuntimeError as exc:
+        assert "certificate verify failed" in str(exc)
+    else:
+        raise AssertionError("send must fail when the certificate does not verify")
+    assert _StripSMTP.logins == []
+    assert _StripSMTP.constructed == 1 and sleeps == []  # permanent: no reconnect, no backoff
+
+
 class _FakeSMTPSSL:
     """Stand-in for smtplib.SMTP_SSL: implicit TLS from construction, no STARTTLS."""
     sent: list = []

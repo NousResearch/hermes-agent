@@ -3736,6 +3736,13 @@ def specify_triage_task(
     """Update title/body/assignee (when given) and move ``triage -> todo`` in one
     txn; False when not in triage. Lands in ``todo`` (not ``ready``) so parent
     gating still applies; the audit comment is written only when a field changed.
+
+    A specify that leaves a card with unblock-loop memory
+    (``block_recurrences > 0``) clears ``block_kind``/``block_recurrences``:
+    this transition is the human re-arm path — the auto-decomposer excludes
+    loop-limited cards (``kanban_decompose.list_triage_ids``) — so a reset
+    here means a person deliberately re-scoped the card and it earns a fresh
+    ``BLOCK_RECURRENCE_LIMIT`` budget rather than an instant re-escalation.
     """
     if title is not None and not title.strip():
         raise ValueError("title cannot be blank")
@@ -3769,6 +3776,11 @@ def specify_triage_task(
         )
         if cur.rowcount != 1:
             return False
+        loop_reset = conn.execute(
+            "UPDATE tasks SET block_kind = NULL, block_recurrences = 0 "
+            "WHERE id = ? AND block_recurrences > 0",
+            (task_id,),
+        ).rowcount
         if changed_fields and author and author.strip():
             # Not add_comment (own txn + 'commented' event); 'specified' below records it.
             _insert_comment(
@@ -3776,9 +3788,14 @@ def specify_triage_task(
                 "Specified — updated " + ", ".join(changed_fields) + " and promoted to todo.",
                 int(time.time()),
             )
+        specified_payload: dict[str, Any] = {}
+        if changed_fields:
+            specified_payload["changed_fields"] = changed_fields
+        if loop_reset:
+            specified_payload["loop_counter_reset"] = True
         _append_event(
             conn, task_id, "specified",
-            {"changed_fields": changed_fields} if changed_fields else None,
+            specified_payload or None,
         )
     # Own IMMEDIATE txn (outside the one above): a parent-free specified task
     # flips to 'ready' now instead of idling until the next tick.

@@ -267,7 +267,11 @@ class _KanbanDispatcher:
                 # and spawned subprocess that names no board would resolve this one instead.
                 with scoped_current_board(slug):
                     try:
-                        triage_ids = _decomp.list_triage_ids()
+                        # Loop-escalated cards sit in triage BY the unblock-loop
+                        # breaker — pulling them back out here is the t_f0ad4213
+                        # storm itself, so automation must leave them for a
+                        # human (see list_triage_ids docstring).
+                        triage_ids = _decomp.list_triage_ids(exclude_loop_limited=True)
                     except Exception as exc:
                         logger.debug("kanban auto-decompose: list_triage_ids failed on board %s (%s)", slug, exc)
                         triage_ids = []

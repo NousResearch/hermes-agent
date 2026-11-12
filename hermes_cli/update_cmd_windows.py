@@ -930,12 +930,14 @@ def _gateway_drain_timeout(socket_acks: list[dict]) -> float:
     return drain_timeout
 
 
-def _pause_windows_gateways_for_update() -> dict | None:
+def _pause_windows_gateways_for_update(*, gateway_mode: bool = False) -> dict | None:
     """Stop running Windows gateways before mutating the checkout or venv.
 
     Scheduled/startup gateways run via pythonw.exe, invisible to the hermes.exe instance guard, yet keep files
     locked during ``git``/``uv``. Stop only PIDs the gateway discovery code identifies. The paused set is on
-    disk (``update_pause_record``) before the first stop, with any set a killed earlier update orphaned."""
+    disk (``update_pause_record``) before the first stop, with any set a killed earlier update orphaned.
+
+    Refuses (exit 2) before touching anything when a nominated gateway is an ancestor of this updater: force-stopping that tree would kill the update mid-flight. Gateway delivery stays exempt."""
     from hermes_cli.update_cmd import _m
     if not _m()._is_windows():
         return None
@@ -946,6 +948,8 @@ def _pause_windows_gateways_for_update() -> dict | None:
     with _abort_on_error("Could not read the gateways an earlier update paused"):
         adopted, claims = pause_record.adopt_orphans()
     profile_processes, service_gateways, service_gateway_pids, running_pids = _discover_windows_gateways()
+    if _refuse_gateway_ancestor_tree_kill(list(running_pids), gateway_mode=gateway_mode):
+        raise SystemExit(2)
     if not running_pids:
         return _cold_start_pause_token(adopted, claims)
     unmapped_pids = [pid for pid in running_pids if pid not in profile_processes and pid not in service_gateway_pids]

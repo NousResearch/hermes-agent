@@ -71,7 +71,7 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         hermes_main, "_run_pre_update_backup", lambda *a, **k: None
     )
     monkeypatch.setattr(
-        hermes_main, "_pause_windows_gateways_for_update", lambda: None
+        hermes_main, "_pause_windows_gateways_for_update", lambda *_, **__: None
     )
     monkeypatch.setattr(
         hermes_main, "_resume_windows_gateways_after_update", lambda *a, **k: None

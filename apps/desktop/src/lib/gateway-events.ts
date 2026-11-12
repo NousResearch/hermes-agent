@@ -95,7 +95,9 @@ export interface GatewayEventSessionRoute {
 
 /** Which session (if any) to re-pull `approval.pending` for after `eventType`.
  *
- *  `gateway.ready` and `session.info` are the two rehydration points. An
+ *  `gateway.ready` proves only the socket is open; its cached runtime may have
+ *  been reaped while disconnected. Resume restores pending approvals, and a
+ *  subsequent `session.info` can safely refresh them. An
  *  UNSCOPED `session.info` (the approvals-loop / broadcast fan-out, no
  *  `session_id` on the frame) reaches here attributed to the active session by
  *  the routing fallback; when `isGone(activeSessionId)` — the gateway already
@@ -104,15 +106,12 @@ export interface GatewayEventSessionRoute {
  *  session explicitly is the runtime speaking for itself and is never gone. */
 export function approvalReplaySessionId(
   eventType: string | undefined,
-  activeSessionId: null | string,
   routedSessionId: null | string,
   options?: { explicit?: boolean; isGone?: (sessionId: string) => boolean }
 ): null | string {
   let target: null | string = null
 
-  if (eventType === 'gateway.ready') {
-    target = activeSessionId
-  } else if (eventType === 'session.info') {
+  if (eventType === 'session.info') {
     target = routedSessionId
   }
 

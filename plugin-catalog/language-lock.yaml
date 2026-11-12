@@ -1,7 +1,7 @@
 name: language-lock
 title: Language Lock
 repo: https://github.com/salch-cred/language-lock
-sha: 3ee5f23f55f8e364417e8602eb461aaad15ce3bb
+sha: 6984ae80f21535c97a14a069f3222e038ac32a7a
 description: >-
   Your agent answers in your language, and stays there (hermes-agent#130117).
   Learns your language from your recent messages or a setting, detects each
@@ -15,7 +15,7 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/salch-cred/language-lock
-version: "0.1.0"
+version: "0.1.1"
 
 capabilities:
   provides_tools: []

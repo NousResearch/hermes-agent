@@ -21,6 +21,7 @@ from hermes_cli.termination_guard import unwind_on_termination
 logger = logging.getLogger(__name__)
 _PREFIX = ".hermes-backup-stage-"
 _NAME = re.compile(r"\.hermes-backup-stage-[0-9a-f]{32}\Z")
+_LEGACY_NAME = re.compile(r"(?:tmp.+\.db|\..+\.zip\.\d+-\d+\.partial)\Z")
 _LEASE = "owner.lock"
 _PAYLOADS = frozenset(
     {
@@ -97,7 +98,7 @@ def _remove_payload(stage: Path) -> bool:
 def _remove_shell(stage: Path) -> None:
     # The lease must be closed before unlink on Windows. Reapers open it without
     # O_CREAT and never reuse a directory, so no new writer can enter this gap.
-    (stage / _LEASE).unlink()
+    (stage / _LEASE).unlink(missing_ok=True)
     stage.rmdir()
 
 
@@ -119,8 +120,23 @@ def _reclaim_one(stage: Path) -> None:
 
 def reclaim_backup_staging(directory: Path) -> None:
     """Reclaim only inactive, marked siblings. Never recurse into user directories."""
+    try:
+        if not _plain_path(directory, directory=True):
+            return
+    except OSError:
+        return
     for stage in directory.glob(f"{_PREFIX}*"):
         _reclaim_one(stage)
+
+
+def warn_legacy_backup_file(path: Path) -> None:
+    """Identify possible pre-protocol residue without inferring ownership."""
+    if _LEGACY_NAME.fullmatch(path.name):
+        logger.warning(
+            "Possible leftover from an interrupted backup: %s. "
+            "Inspect this file before removing it; its name cannot prove ownership.",
+            path,
+        )
 
 
 def prune_backup_staging(directory: Path, names: list[str]) -> list[str]:
@@ -147,19 +163,33 @@ def staged_backup_file(directory: Path, name: str) -> Generator[Path]:
     reclaim_backup_staging(directory)
     with unwind_on_termination():
         stage = directory / f"{_PREFIX}{uuid.uuid4().hex}"
-        stage.mkdir(mode=0o700)
-        remove_shell = False
+        remove_shell = True
         try:
+            try:
+                stage.mkdir(mode=0o700)
+            except OSError:
+                remove_shell = False  # Creation failed, so this path is not ours.
+                raise
             with (stage / _LEASE).open("x+b") as lease:
                 try:
                     lease.write(b" ")
                     lease.flush()
-                    _lock(lease)
-                    lease.seek(1)
-                    lease.write(_marker(stage))
-                    lease.flush()
+                    try:
+                        _lock(lease)
+                    except OSError as exc:
+                        logger.warning(
+                            "Could not lock backup staging %s: %s. "
+                            "Continuing without a recovery marker.",
+                            stage,
+                            exc,
+                        )
+                    else:
+                        lease.seek(1)
+                        lease.write(_marker(stage))
+                        lease.flush()
                     yield stage / name
                 finally:
+                    remove_shell = False
                     try:
                         remove_shell = _remove_payload(stage)
                     except OSError as exc:

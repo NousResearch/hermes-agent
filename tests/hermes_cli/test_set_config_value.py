@@ -1173,3 +1173,14 @@ class TestAuxiliaryProviderSwitchClearsStaleRoute:
                           "api_mode": "codex_responses"}
         out = capsys.readouterr().out
         assert "Cleared" not in out
+
+    def test_switch_drops_old_endpoints_key(self, _isolated_hermes_home, capsys):
+        # An aux api_key/key_env is passed to whatever provider the block names, so once the
+        # route is gone the old endpoint's key would be sent to the new provider.
+        self._seed(_isolated_hermes_home, {"vision": {
+            "provider": "openai-api", "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-openai-old", "key_env": "OLD_KEY"}})
+        set_config_value("auxiliary.vision.provider", "anthropic")
+        vision = yaml.safe_load(_read_config(_isolated_hermes_home))["auxiliary"]["vision"]
+        assert vision == {"provider": "anthropic"}
+        assert "auxiliary.vision.api_key" in capsys.readouterr().out

@@ -75,6 +75,10 @@ _PROJECT_ID_RE = re.compile(
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
 
 
+class BitwardenConfigError(RuntimeError):
+    """A configured value failed validation before bws ran; nothing was sent."""
+
+
 def validate_project_id(project_id: str) -> str:
     """Return ``project_id`` stripped, or raise ``ValueError``. The value goes into the
     ``bws`` argv, so a non-UUID is rejected before the spawn rather than handed to the CLI."""
@@ -302,7 +306,7 @@ def fetch_bitwarden_secrets(
         project_id = validate_project_id(project_id)
         server_url = validate_server_url(server_url)
     except ValueError as exc:
-        raise RuntimeError(str(exc)) from exc
+        raise BitwardenConfigError(str(exc)) from exc
 
     cache_key = (_token_fingerprint(access_token), project_id, server_url)
 
@@ -488,6 +492,8 @@ class BitwardenSource(SecretSource):
                 encrypted_cache_enabled=bool(encrypted_cfg.get("enabled", False)),
                 encrypted_cache_max_stale_seconds=coerce_float(encrypted_cfg.get("max_stale_seconds", 0), 0.0),
             )
+        except BitwardenConfigError as exc:  # refused before any spawn: not a token or network failure
+            return result.fail(str(exc), ErrorKind.NOT_CONFIGURED)
         except RuntimeError as exc:
             result.fail(str(exc), _classify_bws_error(str(exc)))
             if result.error_kind == ErrorKind.AUTH_FAILED:  # say what the raw OAuth reject means first

@@ -436,6 +436,8 @@ def test_validate_server_url_accepts(url):
         ("http://vault.example.com", "plaintext http"),
         ("http://10.0.0.5:8080", "plaintext http"),
         ("https://user:pw@vault.example.com", "must not embed credentials"),
+        ("https://vault.....com@attacker.example", "must not embed credentials"),
+        ("https://:pw@vault.example.com", "must not embed credentials"),
         ("ftp://vault.example.com", "must be an https:// URL"),
         ("file:///etc/passwd", "must be an https:// URL"),
         ("vault.example.com", "must be an https:// URL"),
@@ -484,6 +486,22 @@ def test_fetch_rejects_plaintext_server_url(monkeypatch, tmp_path):
             use_cache=False,
             server_url="http://attacker.example",
         )
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [{"server_url": "http://vault.example.com"}, {"server_url": "ftp://dns.example.com"}, {"project_id": "proj-1"}],
+)
+def test_source_reports_refused_config_as_not_configured(monkeypatch, tmp_path, cfg):
+    """A refused value never reaches bws: report it as config, not a rejected token or a network failure."""
+    monkeypatch.setattr(bw, "get_source_environment", lambda: {"BWS_ACCESS_TOKEN": "0.t"})
+    monkeypatch.setattr(bw, "find_bws", lambda **_kw: tmp_path / "bws")
+    monkeypatch.setattr(subprocess, "run", mock.Mock(side_effect=AssertionError("bws must not run")))
+
+    result = bw.BitwardenSource().fetch({"enabled": True, "project_id": PROJECT_ID, **cfg}, tmp_path)
+
+    assert result.error_kind is bw.ErrorKind.NOT_CONFIGURED
+    assert "rejected the machine-account access token" not in result.error
 
 
 def test_fetch_rejects_non_uuid_project_id(monkeypatch, tmp_path):

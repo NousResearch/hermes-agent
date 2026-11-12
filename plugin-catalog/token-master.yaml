@@ -4,21 +4,7 @@ sha: 626d5c8ede5afd7a1059daf009539e886cc5fd76
 subdir: plugin
 title: Token Master
 version: "0.1.0"
-description: >-
-  Token spend analytics for Hermes Desktop: one stacked daily chart of token consumption across
-  every Hermes profile, provider and account on the machine (7D/30D/90D/1Y, stacked by token
-  class, provider, profile or source), per-provider / per-profile / per-model / per-task
-  breakdowns, and an Accounts and limits card that marks each credential as subscription (quota),
-  pay-per-token API spend or free and shows the live allowance windows Hermes can fetch. It reads
-  the token accounting Hermes already records — every profile's state.db opened read-only, plus
-  DeepSeek Harness session files — and adds no collection of its own. Disclosure: `Refresh limits`
-  goes through Hermes' read-only fetch_account_usage(provider, read_only=True) to the provider's
-  usage endpoint (no token is refreshed, rotated or stored); the optional `Sync now` button runs
-  ssh into a host you added and streams the bundled read-only collector into that host's python3,
-  installing and writing nothing there, and the Remote machines card runs `tailscale status
-  --json` to offer online peers (discovery only — adding a host is still a click); state lives in
-  plugin-data/token-master/ only; no telemetry, no background process. The README's Disclosure
-  section lists every read, write, network call and shell command.
+description: "Token spend analytics for Hermes Desktop: one stacked daily chart of token consumption across every Hermes profile, provider and account on the machine (7D/30D/90D/1Y, stacked by token class, provider, profile or source), per-provider / per-profile / per-model / per-task breakdowns, and an Accounts and limits card that marks each credential as subscription (quota), pay-per-token API spend or free and shows the live allowance windows Hermes can fetch. It reads the token accounting Hermes already records — every profile's state.db opened read-only, plus DeepSeek Harness session files — and adds no collection of its own. Disclosure — reads every Hermes profile's state.db token accounting read-only, DeepSeek Harness session files under ~/.dsh, and the labels, ids and status of Hermes credential-pool entries (no token values); `Refresh limits` goes through Hermes' read-only fetch_account_usage(provider, read_only=True) to the provider's usage endpoint (no token is refreshed, rotated or stored); the optional `Sync now` button runs ssh with your own SSH setup into a host you added and streams the bundled read-only collector into that host's python3, installing and writing nothing there, and the Remote machines card runs `tailscale status --json` to offer online peers (discovery only — adding a host is still a click); state lives in plugin-data/token-master/ on the root Hermes home only; no telemetry, no background process."
 maintainer: karmsheel
 tier: community
 category: desktop

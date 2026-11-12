@@ -534,6 +534,21 @@ class TestThreadContext(unittest.TestCase):
             self.assertIn("Date", send_call)
 
 
+    def test_synthetic_viewer_admission_id_does_not_replace_email_reply_anchor(self):
+        """A native viewer's admission UUID is not an RFC email Message-ID."""
+        adapter = self._make_adapter()
+        adapter._thread_context["user@test.com"] = {
+            "subject": "Project question", "message_id": "<original@test.com>"}
+        with patch("smtplib.SMTP") as mock_smtp:
+            adapter._send_email("user@test.com", "answer", "4ea087231ab94bab8a2e688d9ae88535")
+            generated = mock_smtp.return_value.send_message.call_args.args[0]
+            self.assertEqual(generated["In-Reply-To"], "<original@test.com>")
+            self.assertEqual(generated["References"], "<original@test.com>")
+            adapter._send_email("user@test.com", "answer", "<latest@test.com>")
+            explicit = mock_smtp.return_value.send_message.call_args.args[0]
+            self.assertEqual(explicit["In-Reply-To"], "<latest@test.com>")
+            self.assertEqual(explicit["References"], "<latest@test.com>")
+
 class TestSendMethods(unittest.TestCase):
     """Test email send methods."""
 

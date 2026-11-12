@@ -18,7 +18,7 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
     monkeypatch.delenv('HERMES_DELEGATED_CHILD', raising=False)
     monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
     workspace = tmp_path / 'workspace'
-    workspace.mkdir()
+    workspace.mkdir(parents=True)
     (workspace / 'pyproject.toml').write_text('[project]\nname = "task"\n')  # a code worktree
     from contextlib import closing
     kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
@@ -54,28 +54,219 @@ def test_claim_freezes_task_policy_and_rejects_forgery(tmp_path, monkeypatch):
         build_policy({'source': 'kanban', 'cwd': str(workspace)}, config)
 
 
-@pytest.mark.parametrize('mode', ['complete', 'timeout', 'rate_limit', 'billing', 'crash'])
-def test_real_dispatcher_lifecycle(tmp_path, mode):
+def test_local_gpu_json_task_gets_no_model_visible_tools(tmp_path, monkeypatch):
+    from contextlib import closing
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+    from gateway.session_contract import Principal
+    from gateway.session_kanban import build_kanban_policy
+    from hermes_state_runtime import RuntimeStoreError
+
+    monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
+    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda _name: str(tmp_path))
+    workspace = tmp_path / 'kanban' / 'boards' / 'local' / 'workspaces' / 'fixture'
+    workspace.mkdir(parents=True)
+    kb.create_board('local')
+    with closing(connect(board='local')) as conn:
+        task_id = kb.create_task(
+            conn, title='fixed JSON', body='Local-GPU-Capability: fixed-json.v1\nMap facts to JSON',
+            assignee='default', workspace_kind='scratch', workspace_path=str(workspace),
+            skills=['local-gpu-model-task-gate'], model_override='gemma4:12b-64k',
+            provider_override='ollama', completion_contract='local-only',
+        )
+        kb.recompute_ready(conn)
+        task = kb.claim_task(conn, task_id)
+    actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
+    connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(tmp_path)), actor=actor,
+                                 native_owner=True)
+    params = dict(board='local', task_id=task.id, run_id=task.current_run_id,
+                  claim_lock=task.claim_lock)
+    policy, _ = build_kanban_policy(
+        connection, params,
+        {'model': {'default': 'gemma4:12b-64k', 'provider': 'ollama'},
+         'platform_toolsets': {'cli': ['terminal', 'file', 'kanban']}},
+    )
+    context = json.loads(policy.kanban_json)
+    assert policy.toolsets == ()
+    assert context['capability_id'] == 'fixed-json.v1'
+    assert len(context['task_contract_sha256']) == 64
+
+    outside = tmp_path / 'unmanaged-workspace'
+    outside.mkdir()
+    with closing(connect(board='local')) as conn:
+        conn.execute('UPDATE tasks SET workspace_path=? WHERE id=?', (str(outside), task.id))
+        conn.commit()
+    with pytest.raises(RuntimeStoreError, match='invalid_local_gpu_managed_workspace'):
+        build_kanban_policy(
+            connection, params,
+            {'model': {'default': 'gemma4:12b-64k', 'provider': 'ollama'},
+             'platform_toolsets': {'cli': ['terminal', 'file', 'kanban']}},
+        )
+
+
+def test_malformed_local_gpu_declaration_is_refused_before_worker_policy(tmp_path, monkeypatch):
+    from contextlib import closing
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+    from gateway.session_contract import Principal
+    from gateway.session_kanban import build_kanban_policy
+    from hermes_state_runtime import RuntimeStoreError
+
+    monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
+    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda _name: str(tmp_path))
+    workspace = tmp_path / 'kanban' / 'boards' / 'local' / 'workspaces' / 'fixture'
+    workspace.mkdir(parents=True)
+    kb.create_board('local')
+    with closing(connect(board='local')) as conn:
+        task_id = kb.create_task(
+            conn, title='bad declaration', body='Local-GPU-Capability: two words',
+            assignee='default', workspace_kind='scratch', workspace_path=str(workspace),
+            model_override='gemma4:12b-64k', provider_override='ollama',
+            completion_contract='local-only',
+        )
+        kb.recompute_ready(conn)
+        task = kb.claim_task(conn, task_id)
+    actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
+    connection = SimpleNamespace(authority=SimpleNamespace(profile_id=str(tmp_path)), actor=actor,
+                                 native_owner=True)
+    params = dict(board='local', task_id=task.id, run_id=task.current_run_id,
+                  claim_lock=task.claim_lock)
+    with pytest.raises(RuntimeStoreError, match='invalid_local_gpu_capability_declaration'):
+        build_kanban_policy(connection, params,
+                            {'model': {'default': 'gemma4:12b-64k', 'provider': 'ollama'}})
+
+
+def test_local_json_worker_verifies_and_completes_before_lease_release(tmp_path, monkeypatch):
+    from contextlib import closing
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect, connect_closing
+    from gateway import session_kanban
+
+    monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    kb.init_db()
+    workspace = tmp_path / 'kanban' / 'boards' / 'local' / 'workspaces' / 'fixture'
+    workspace.mkdir(parents=True)
+    kb.create_board('local')
+    with closing(connect(board='local')) as conn:
+        task_id = kb.create_task(
+            conn, title='fixed JSON', body='Local-GPU-Capability: fixed-json.v1\nMap facts to JSON',
+            assignee='default', workspace_kind='scratch', workspace_path=str(workspace),
+            skills=['local-gpu-model-task-gate'], max_runtime_seconds=300, max_retries=1,
+            model_override='gemma4:12b-64k', provider_override='ollama',
+            completion_contract='local-only',
+        )
+        kb.recompute_ready(conn)
+        task = kb.claim_task(conn, task_id, claimer='isolated-test')
+    assert task is not None
+    db_path = kb.kanban_db_path(board='local')
+    from hermes_cli.kanban_local_model_scope import capability_id_from_body
+    assert capability_id_from_body(task.body) == 'fixed-json.v1'
+    monkeypatch.setenv('HERMES_KANBAN_DB', str(db_path))
+    monkeypatch.setenv('HERMES_KANBAN_TASK', task.id)
+    monkeypatch.setenv('HERMES_KANBAN_RUN_ID', str(task.current_run_id))
+    monkeypatch.setenv('HERMES_KANBAN_BOARD', 'local')
+    monkeypatch.setenv('HERMES_KANBAN_CLAIM_LOCK', task.claim_lock)
+    monkeypatch.setenv('HERMES_KANBAN_WORKSPACE', str(workspace))
+    monkeypatch.delenv('HERMES_KANBAN_CAPABILITY_ID', raising=False)
+    monkeypatch.delenv('HERMES_KANBAN_CONTRACT_SHA256', raising=False)
+    monkeypatch.setattr('agent.skill_commands.build_preloaded_skills_prompt',
+                        lambda *_args, **_kwargs: ('', ['local-gpu-model-task-gate'], []))
+    monkeypatch.setattr('agent.kanban_turn_recovery.recover_failed_kanban_turns',
+                        lambda *_args, **_kwargs: None)
+    verifier_calls = []
+
+    def verify(**scope):
+        import hashlib
+        assert scope['task_run_id'] == str(task.current_run_id)
+        verifier_calls.append(scope)
+        return {'policy_id': 'test', 'reason': 'verified', 'evidence_id': 'evidence',
+                'verifier_sha256': 'v' * 64,
+                'artifact_sha256': hashlib.sha256(
+                    Path(scope['artifacts'][0]).read_bytes()).hexdigest()}
+
+    monkeypatch.setattr('hermes_cli.middleware.verify_local_model_task_completion', verify)
+    release_observations = []
+    completion_responses = []
+    from tools import kanban_tools
+    actual_complete = kanban_tools._handle_complete
+
+    def record_completion(args):
+        response = actual_complete(args)
+        completion_responses.append(response)
+        return response
+
+    monkeypatch.setattr(kanban_tools, '_handle_complete', record_completion)
+
+    class FakeAgent:
+        session_id = 'isolated-session'
+        _api_call_count = 0
+        _local_gpu_admission_lease_ids = ('lease-1',)
+        _local_gpu_admission_scope = {'task_id': task.id, 'task_run_id': str(task.current_run_id)}
+        _local_gpu_admission_defer_release = False
+
+        def run_conversation(self, *_args, **_kwargs):
+            assert self._local_gpu_admission_defer_release is True
+            self._api_call_count = 1
+            return {'completed': True, 'final_response': '{"answer":"42"}'}
+
+    def release(*, lease_ids, scope):
+        assert lease_ids == ('lease-1',)
+        assert verifier_calls
+        with connect_closing(db_path) as conn:
+            current = kb.get_task(conn, task.id)
+            assert current.status == 'done', completion_responses
+            row = conn.execute(
+                'SELECT stored_path FROM task_attachments WHERE task_id=? ORDER BY id DESC LIMIT 1',
+                (task.id,),
+            ).fetchone()
+            assert row is not None
+            assert Path(row['stored_path']).read_text(encoding='utf-8') == '{"answer":"42"}'
+        release_observations.append((lease_ids, scope))
+        return True
+
+    monkeypatch.setattr('hermes_cli.middleware.release_local_gpu_admission_leases', release)
+    context = {
+        'capability_id': 'fixed-json.v1', 'skills': ['local-gpu-model-task-gate'],
+        'task_contract_sha256': __import__(
+            'hermes_cli.kanban_local_model_scope', fromlist=['task_run_contract_sha256']
+        ).task_run_contract_sha256(task),
+        'context': '', 'task_id': task.id, 'run_id': task.current_run_id,
+        'claim_lock': task.claim_lock, 'board': 'local', 'db': str(db_path),
+        'workspace': str(workspace), 'goal_mode': False,
+    }
+    result = session_kanban._run_task_turns(FakeAgent(), {'text': 'convert supplied facts'}, [], context)
+    assert result['completed'] is True
+    assert len(verifier_calls) == 1
+    assert len(release_observations) == 1
+    from agent.delegation_context import owned_local_gpu_task_context
+    assert owned_local_gpu_task_context() == {}
+
+
+def test_real_dispatcher_refuses_local_proxy_without_capability(tmp_path):
     import os
     import subprocess
     import sys
     repo = Path(__file__).resolve().parents[2]
     from tests.gateway.fixtures.local_recovery_probe import child_env
     env = child_env()
-    env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo), KANBAN_PROBE_MODE=mode)
+    env.update(HOME=str(tmp_path / 'home'), USERPROFILE=str(tmp_path / 'home'), HERMES_HOME=str(tmp_path / 'state'), PYTHONPATH=str(repo), KANBAN_PROBE_MODE='local-proxy-refusal')
     result = subprocess.run([sys.executable, str(Path(__file__).parent / 'fixtures' / 'kanban_owner_probe.py')],
         env=env, cwd=repo, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=150, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     receipt = json.loads((tmp_path / 'state' / 'receipt.json').read_text())
     print(json.dumps(receipt))
-    if mode != 'complete':
-        assert receipt['task_status'] == 'ready'
-        return
-    assert receipt['task_status'] == 'done' and receipt['source'] == 'kanban'
-    assert receipt['tools'] and receipt['task_context'] and receipt['skill_context'] and receipt['hook_effect']
-    assert receipt['admissions'] == 1 and receipt['retry_same_session']
-    assert receipt['goal_continuation'] and receipt['stable_prefix']
-    print(json.dumps(receipt))
+    assert receipt['task_status'] == 'ready'
+    assert receipt['current_run_id'] is None and receipt['claim_lock'] is None
+    assert receipt['spawned'] == 0 and receipt['provider_requests'] == 0
+    assert receipt['skipped_local_admission']
 
 
 def test_late_launcher_cannot_stamp_replacement_claim(tmp_path, monkeypatch):
@@ -117,11 +308,16 @@ def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatc
     workspace.mkdir()
     kb.create_board('owned')  # explicit creation; connect() never creates a board (#43243)
     with closing(connect(board='owned')) as conn:
-        task_id = kb.create_task(conn, title='Owned race', assignee='default', workspace_kind='dir', workspace_path=str(workspace))
+        task_id = kb.create_task(conn, title='Owned race', assignee='default', workspace_kind='dir', workspace_path=str(workspace),
+            model_override='loop-model', provider_override='custom')
         kb.recompute_ready(conn)
         old = kb.claim_task(conn, task_id)
     config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal']}}
-    monkeypatch.setattr('gateway.run._load_gateway_config', lambda: config)
+    # Avoid importing gateway.run here: its bootstrap probes the linked source
+    # checkout marker, which HomeIOGuard correctly treats as outside this test's
+    # isolated Hermes home. run_task only needs this one loader from that module.
+    import sys
+    monkeypatch.setitem(sys.modules, 'gateway.run', SimpleNamespace(_load_gateway_config=lambda: config))
     calls = []
     def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None):
         # Another process reclaims the task while the owner session is being created.

@@ -10,6 +10,7 @@ TRANSIENT_PROVIDER_REASONS = frozenset({
 # These failures need an operator change; the dispatcher parks the task immediately.
 TERMINAL_PROVIDER_REASONS = frozenset({
     "auth", "auth_permanent", "model_not_found", "ssl_cert_verification", "upstream_blocked",
+    "local_admission_blocked",
 })
 
 

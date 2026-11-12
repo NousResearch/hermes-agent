@@ -188,6 +188,9 @@ class TurnFacadeMixin:
                 finish_task_run(**task_context, error=exc)
             raise
         finally:
+            from agent.local_gpu_turn_lifecycle import release_turn_local_gpu_admission
+
+            release_turn_local_gpu_admission(self)
             try:
                 if relay_turn is not None:
                     relay_runtime.SESSION_COORDINATOR.end_turn(relay_turn, outcome=relay_outcome)

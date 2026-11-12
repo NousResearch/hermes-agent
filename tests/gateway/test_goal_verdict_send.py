@@ -132,6 +132,9 @@ async def test_goal_verdict_continue_enqueues_continuation(hermes_home):
         await runner._post_turn_goal_continuation(
             session_entry=session_entry,
             source=src,
+            goal_generation=1,
+            goal_revision=1,
+            goal_present=True,
             final_response="here's a partial edit",
         )
         await _drain_until(lambda: adapter.sends and adapter._pending_messages)
@@ -160,6 +163,9 @@ async def test_goal_verdict_budget_exhausted_sends_pause(hermes_home):
         await runner._post_turn_goal_continuation(
             session_entry=session_entry,
             source=src,
+            goal_generation=1,
+            goal_revision=2,
+            goal_present=True,
             final_response="still partial",
         )
         await _drain_until(lambda: adapter.sends)

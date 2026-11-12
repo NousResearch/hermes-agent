@@ -1430,6 +1430,56 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
         start_reply_clock(source, internal=is_internal)
         self._persist_active_agents()
         _run_generation = self._begin_session_run_generation(_quick_key)
+        # Bind goal identity/revision to this admitted turn BEFORE execution:
+        # a goal replaced while the agent generates must not cause this turn
+        # to be judged against the new goal.
+        _turn_goal_generation = None
+        _turn_goal_revision = None
+        _turn_goal_present = False
+        try:
+            # Resolve the admitted session through the async facade (await it),
+            # without creating a session or touching the activity clock.  Use
+            # the routing key's peeked session when available; otherwise use
+            # the facade's get-or-create with touch_activity=False.
+            _admitted_session_id = ""
+            _identity_failed = False
+            try:
+                _peeked = await self.async_session_store.peek_session_id(_quick_key)
+                if isinstance(_peeked, str) and _peeked:
+                    _admitted_session_id = _peeked
+            except Exception:
+                _identity_failed = True
+            if not _admitted_session_id and not _identity_failed:
+                try:
+                    _admitted_entry = await self.async_session_store.get_or_create_session(source, touch_activity=False)
+                    _sid = getattr(_admitted_entry, "session_id", None)
+                    if isinstance(_sid, str) and _sid:
+                        _admitted_session_id = _sid
+                    else:
+                        _identity_failed = True
+                except Exception:
+                    _identity_failed = True
+            if _admitted_session_id and not _identity_failed:
+                from hermes_cli.goals import GoalManager as _GM
+                def _read_goal_state():
+                    _mgr = _GM(session_id=_admitted_session_id)
+                    return getattr(_mgr, "state", None)
+                _st = await asyncio.to_thread(_read_goal_state)
+                if _st is not None and _st.status != "cleared":
+                    _turn_goal_generation = int(getattr(_st, "goal_generation", 0) or 0)
+                    _turn_goal_revision = int(getattr(_st, "goal_revision", 0) or 0)
+                    _turn_goal_present = True  # legacy 0/0 goals count as present
+                else:
+                    # Verified absence: present=False, identity 0/0.
+                    _turn_goal_generation = 0
+                    _turn_goal_revision = 0
+                    _turn_goal_present = False
+            elif _identity_failed:
+                _turn_goal_generation = None
+                _turn_goal_revision = None
+        except Exception:
+            _turn_goal_generation = None
+            _turn_goal_revision = None
 
         try:
             # Fail-open plugin consume inside the claimed slot (#129958); once per message.
@@ -1452,6 +1502,8 @@ class GatewayInboundMixin(GatewayInboundHooksMixin, GatewayInboundTranscriptionM
             try:
                 await self._run_post_turn_hooks(
                     agent_result=_agent_result, source=source, is_internal=is_internal, event=event,
+                    goal_generation=_turn_goal_generation, goal_revision=_turn_goal_revision,
+                    goal_present=_turn_goal_present,
                 )
             except Exception as _goal_exc:
                 logger.debug("post-turn hook failed: %s", _goal_exc)

@@ -304,24 +304,41 @@ class GatewayBusySessionMixin:
             return None
 
     @staticmethod
-    def _is_goal_continuation_event(event_or_text: Any) -> bool:
-        """True for synthetic /goal continuation turns (so pause/clear can spare real /queue items)."""
-        text = getattr(event_or_text, "text", event_or_text) or ""
-        return str(text).startswith("[Continuing toward your standing goal]\nGoal:")
+    def _is_goal_continuation_event(event_or_text: Any, goal: str | None = None) -> bool:
+        """True for PROVABLY synthetic /goal turns (so pause/clear/replace can
+        spare real /queue items and never delete user messages).
 
-    def _clear_goal_pending_continuations(self, session_key: str, adapter: Any) -> int:
+        Ownership proof, in order: ``metadata.goal_synthetic`` tag (gateway
+        enqueue path), GoalKickoff/GoalContinuation type (CLI queue), then
+        legacy untagged continuation template. Bare text equality with the
+        goal is NEVER sufficient — a user message identical to the goal is
+        real user work.
+        """
+        meta = getattr(event_or_text, "metadata", None)
+        if isinstance(meta, dict) and meta.get("goal_synthetic") is True:
+            return True
+        from hermes_cli.goals import is_synthetic_goal_prompt
+        if is_synthetic_goal_prompt(event_or_text):
+            return True
+        text = getattr(event_or_text, "text", event_or_text) or ""
+        text = str(text)
+        if text.startswith("[Continuing toward your standing goal]\nGoal:"):
+            return True
+        return False
+
+    def _clear_goal_pending_continuations(self, session_key: str, adapter: Any, goal: str | None = None) -> int:
         """Remove queued synthetic /goal continuations for one session; real /queue items are kept."""
         removed = 0
         pending_slot = getattr(adapter, "_pending_messages", None) if adapter is not None else None
         if isinstance(pending_slot, dict):
             pending_event = pending_slot.get(session_key)
-            if self._is_goal_continuation_event(pending_event):
+            if self._is_goal_continuation_event(pending_event, goal):
                 pending_slot.pop(session_key, None)
                 removed += 1
 
         overflow = self._overflow_queue(session_key)
         if overflow:
-            kept = [e for e in overflow if not self._is_goal_continuation_event(e)]
+            kept = [e for e in overflow if not self._is_goal_continuation_event(e, goal)]
             removed += len(overflow) - len(kept)
             self._peek_session_state(session_key).conversation.queued_events = kept
         return removed

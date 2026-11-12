@@ -883,12 +883,19 @@ class CLILoopsMixin:
         except Exception:
             _bg_procs = None
         decision = mgr.evaluate_after_turn(
-            last_response, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg)
+            last_response, user_initiated=True, background_processes=_bg_procs, active_delegations=_active_deleg,
+            expected_generation=getattr(self, "_goal_turn_generation", None))
+        if decision.get("status") == "obsolete":
+            return
         _print_decision_message(decision)
         if decision.get("should_continue"):
             prompt = decision.get("continuation_prompt")
             if prompt:
                 try:
-                    self._pending_input.put(prompt)
+                    from hermes_cli.goals import GoalContinuation
+                    st = getattr(mgr, "state", None)
+                    gen = int(getattr(st, "goal_generation", 0) or 0) if st is not None else 0
+                    goal_text = st.goal if st is not None else ""
+                    self._pending_input.put(GoalContinuation(prompt, goal_generation=gen, goal_text=goal_text))
                 except Exception as exc:
                     logging.debug("goal continuation enqueue failed: %s", exc)

@@ -390,22 +390,25 @@ async function ridesPrimaryBackend(connectionId: null | string, profile: string)
       `Timed out resolving the backend route for "${key}"`
     )
 
-    const flags =
-      conn && typeof conn === 'object' ? (conn as { sharedPrimary?: boolean; sharedRemote?: boolean }) : null
-
-    return flags?.sharedRemote === true || flags?.sharedPrimary === true
-  } catch {
+    return conn?.sharedRemote === true || conn?.sharedPrimary === true
+  } catch (error) {
     // Probe failed on a remote (or not-yet-classified) primary: a secondary at
     // this already-attached source is the #96493 ghost WebSocket (accept/close,
     // messages=1), so prefer the primary until a later probe can prove
-    // isolation (`sharedRemote: false`). A LOCAL primary must NOT get that
-    // fallback: when main routes the profile to a pooled child (isolated
-    // backend), the primary would still ACCEPT a `profile`-tagged
-    // session.create (profile_home multiplexing) and mint the session under
-    // its own pid, but the exact-owner route names the pool backend — after a
-    // renderer reload or a pool respawn the resume dials that backend and is
-    // refused SESSION_NOT_OWNED by a pid of the same Desktop (#101416).
-    return $primaryGatewayRoute.get().mode !== 'local'
+    // isolation (`sharedRemote: false`). A LOCAL primary gets neither
+    // fallback. Riding it is wrong when main pools the profile (isolated
+    // backend): the primary would ACCEPT a `profile`-tagged session.create and
+    // mint it under its own pid, while the exact-owner route names the pool
+    // backend that later refuses it SESSION_NOT_OWNED (#101416). Dialing a
+    // secondary is wrong too: every other local profile rides the host
+    // gateway, the lookup fails mostly while that gateway boots, and the dial
+    // repeats the same lookup and then opens a second socket to it (#120005).
+    // The failure is the caller's.
+    if ($primaryGatewayRoute.get().mode === 'local') {
+      throw error
+    }
+
+    return true
   }
 }
 
@@ -680,9 +683,10 @@ async function openSecondary(entry: Secondary): Promise<void> {
     //
     // Two bring-ups with different legitimate worst cases: a registry route is a
     // backend coming up on ANOTHER machine (ssh connect + probes + remote spawn +
-    // ready sentinel), which is the SOURCE_SWITCH_DIAL budget, while a local
-    // profile's pooled child spawns on this machine (measured ~9 s; the
-    // reconnect-class budget is not the binding constraint there).
+    // ready sentinel), which is the SOURCE_SWITCH_DIAL budget. A legacy entry
+    // only exists for a pooled route (isolated app, per-profile remote override):
+    // no child is spawned — main runs `gateway ensure` against the host gateway
+    // or checks the remote — so it takes the reconnect-class budget.
     const conn =
       entry.connectionId && desktop.getConnectionFor
         ? await withTimeout(
@@ -806,7 +810,7 @@ function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'
   entry.stalledDials = 0
 }
 
-function recordDialFailure(entry: Secondary, error?: unknown): void {
+function recordDialFailure(entry: Pick<Secondary, 'connectionId' | 'scope'>, error?: unknown): void {
   // Auth rejection has its own ledger (reauthFailures) that already fails background callers fast.
   if (error !== undefined && isGatewayReauthRequired(error)) {
     return
@@ -1031,7 +1035,7 @@ async function gatewayForProfile(
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
   }
 
-  // sharedPrimaryRoute is itself a dial into main (it can start the profile's spawn), so a
+  // sharedPrimaryRoute is itself a dial into main (it joins the primary's boot), so a
   // cooling-down scope has to be held back before it, not just before openSecondary.
   const existing = g.secondaries.get(key)
 
@@ -1039,7 +1043,14 @@ async function gatewayForProfile(
     throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
   }
 
-  if (notePrimaryRider(primaryIdentity(), key, await sharedPrimaryRoute(key))) {
+  // A failed route lookup is this scope's failed dial: it opens the same cooldown a refused
+  // secondary would, so a background poller cannot re-probe a booting gateway every tick.
+  const rides = await sharedPrimaryRoute(key).catch((error: unknown) => {
+    recordDialFailure({ connectionId: null, scope: key }, error)
+    throw error
+  })
+
+  if (notePrimaryRider(primaryIdentity(), key, rides)) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
   }
 
@@ -1798,11 +1809,12 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     return
   }
 
-  // Global-remote share (routing case 3): one remote host serves every
-  // profile through the PRIMARY socket, scoped per request. Activate the
-  // primary instead of dialing a doomed duplicate socket at the same
-  // descriptor — $activeGatewayProfile still moves to `key`, so request
-  // scoping and profile-aware surfaces behave identically.
+  // Shared-primary route: a global remote (routing case 3) or, on a local
+  // install, the one multiplexing host gateway (case 6) serves every profile
+  // through the PRIMARY socket, scoped per request. Activate the primary
+  // instead of dialing a duplicate socket at the same process —
+  // $activeGatewayProfile still moves to `key`. A failed route lookup rejects
+  // here and fails the switch; it is never retried as a secondary dial.
   if (await sharedPrimaryRoute(key)) {
     applyActive(g.primaryProfile, activationEpoch)
 
@@ -2043,24 +2055,6 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
     clearTimer(entry)
     void reconnectSecondary(entry)
   }
-}
-
-// How many non-primary backends currently hold an open socket. Hover-intent
-// prewarming consults this before spawning: a speculative spawn that pushes
-// the pool past its cap causes the Electron main to LRU-evict a warm backend
-// — often one the user is about to click — turning the prewarm into churn
-// (the #91545 evict/respawn cascade). The active gateway's backend is
-// primary-routed and never counts toward the pool cap.
-export function openSecondaryCount(): number {
-  let count = 0
-
-  for (const entry of g.secondaries.values()) {
-    if (isOpen(entry.gateway)) {
-      count += 1
-    }
-  }
-
-  return count
 }
 
 // Tear a secondary down: stop its reconnect loop, detach listeners, close the

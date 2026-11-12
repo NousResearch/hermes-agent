@@ -499,17 +499,17 @@ export const $gatewaySwapTarget = atom<string | null>(null)
 export const $hydrationSyncProfile = atom<string | null>(null)
 
 // ── Hover-intent backend pre-warm ───────────────────────────────────────────
-// A cold switch to a profile whose gateway descriptor isn't cached pays the
-// `hermes gateway ensure` round-trip plus the socket connect before the sidebar
-// can repopulate. The pointer entering a profile square in the rail signals the
-// switch a few hundred ms before the click lands, so we run the same dial +
-// connect chain then (openGatewayForProfile — without activating).
-// `ensureBackend` in the Electron main is idempotent (a cached profile returns
-// its existing connectionPromise), so the real switch joins the in-flight work
-// instead of duplicating it — and a pre-warm for an already-open profile is a
-// no-op. Throttled per profile so drive-by hovers can't spam dial attempts;
-// failures stay silent here and surface on the real switch, which owns
-// retry/error UX.
+// The pointer entering a profile square in the rail signals the switch a few
+// hundred ms before the click lands, so we run the click's route resolution
+// then (openGatewayForProfile — without activating). For a local profile that
+// is only main's route lookup, answered with the shared primary descriptor: no
+// `gateway ensure`, no process, no socket. A pooled route (isolated app,
+// per-profile remote override) or a registry source also gets its socket
+// dialed. Main coalesces concurrent dials per scope (BackendDialClaims), so the
+// real switch joins in-flight work instead of duplicating it, and a pre-warm
+// for an already-open profile is a no-op. Throttled per profile so drive-by
+// hovers can't spam dial attempts; failures stay silent here and surface on the
+// real switch, which owns retry/error UX.
 const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()

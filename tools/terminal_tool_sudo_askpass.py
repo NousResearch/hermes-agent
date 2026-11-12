@@ -31,8 +31,11 @@ SUDO_ASKPASS_PREFIX = 'SUDO_ASKPASS="$__hermes_sudo_dir/a" '
 SUDO_ASKPASS_SUFFIX = " -A"
 
 # bash 3.2 syntax only. ``\command`` / ``\builtin`` keep aliases and functions from the session
-# snapshot from shadowing the commands the prologue relies on. A temp path holding a character
-# that is special inside double quotes (the helper embeds it in one) counts as a setup failure.
+# snapshot from shadowing the commands the prologue relies on; ``exec`` is written ``\exec``
+# (alias-proof) because bash 3.2's ``command exec`` keeps saved copies of the redirected fds
+# open, so the detached watchdog would hold the command's output pipe. A temp path holding a
+# character that is special inside double quotes (the helper embeds it in one) counts as a
+# setup failure.
 _PROLOGUE_HEAD = "__hermes_sudo_pw=; IFS= \\builtin read -r __hermes_sudo_pw || \\builtin :\n"
 _PROLOGUE_TEMPLATE = (
     _PROLOGUE_HEAD
@@ -41,10 +44,10 @@ _PROLOGUE_TEMPLATE = (
     'case $__hermes_sudo_dir in *[\\"\\\\\\$\\`]*) \\command rm -rf -- "$__hermes_sudo_dir" 2>/dev/null;'
     " __hermes_sudo_dir= ;; esac\n"
     'if \\builtin test -n "$__hermes_sudo_dir" && \\command mkfifo "$__hermes_sudo_dir/p" "$__hermes_sudo_dir/l"'
-    ' 2>/dev/null && \\command exec 19<>"$__hermes_sudo_dir/l"; then\n'
+    ' 2>/dev/null && \\exec 19<>"$__hermes_sudo_dir/l"; then\n'
     "  \\builtin printf '#!/bin/sh\\nexec /bin/cat -- \"%s\" 2>/dev/null\\n' \"$__hermes_sudo_dir/p\""
     ' > "$__hermes_sudo_dir/a" && \\command chmod 700 "$__hermes_sudo_dir/a"\n'
-    '( ( \\command exec 8<"$__hermes_sudo_dir/l" 19>&- </dev/null >/dev/null 2>&1\n'
+    '( ( \\exec 8<"$__hermes_sudo_dir/l" 19>&- </dev/null >/dev/null 2>&1\n'
     "    \\builtin trap '' HUP PIPE\n"
     "    __hermes_sudo_n=@COUNT@\n"
     "    { __hermes_sudo_i=0\n"
@@ -59,9 +62,9 @@ _PROLOGUE_TEMPLATE = (
     "    \\builtin unset __hermes_sudo_pw\n"
     "    \\builtin read -r -t @TIMEOUT@ __hermes_sudo_x <&8\n"
     '\\builtin kill "$__hermes_sudo_w" 2>/dev/null\n'
-    '\\command exec 7<>"$__hermes_sudo_dir/p" 2>/dev/null\n'
+    '\\exec 7<>"$__hermes_sudo_dir/p" 2>/dev/null\n'
     '\\command rm -rf "$__hermes_sudo_dir"\n'
-    "\\command exec 7>&-\n"
+    "\\exec 7>&-\n"
     "  ) & )\n"
     "fi\n"
     "\\builtin unset __hermes_sudo_pw\n"

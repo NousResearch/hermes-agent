@@ -38,6 +38,7 @@ capabilities:
     - pilot_send
     - pilot_snapshot
     - pilot_cleanup
-  provides_hooks: []
+  provides_hooks:
+    - pre_tool_call
   provides_middleware: []
   requires_env: []

@@ -1,15 +1,15 @@
 name: hermes-gauge
 repo: https://github.com/SidelightAi/hermes-gauge
-sha: d0a7e5b86e6f30ca114cf44925549d1467e1ebbc
+sha: 38bb1937b2ea9cf48816ed65015bb7efc69ad24c
 description: "Context gauge — a live ring/dash showing how full your agent's context window is, per session and topic, with a desktop plugin and tools (gauge_check, gauge_report, gauge_set_window, gauge_render, gauge_action). Runs fully local: no API key, no telemetry."
 maintainer: SidelightAi
 tier: community
 category: desktop
 docs_url: https://github.com/SidelightAi/hermes-gauge
-version: "0.6.1"
-image: https://raw.githubusercontent.com/SidelightAi/hermes-gauge/d0a7e5b86e6f30ca114cf44925549d1467e1ebbc/assets/banner.png
+version: "0.6.2"
+image: https://raw.githubusercontent.com/SidelightAi/hermes-gauge/38bb1937b2ea9cf48816ed65015bb7efc69ad24c/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/SidelightAi/hermes-gauge/d0a7e5b86e6f30ca114cf44925549d1467e1ebbc/assets/dashboard-demo.png
+  - https://raw.githubusercontent.com/SidelightAi/hermes-gauge/38bb1937b2ea9cf48816ed65015bb7efc69ad24c/assets/dashboard-demo.png
 platforms: []
 capabilities:
   provides_tools: [gauge_check, gauge_report, gauge_set_window, gauge_render, gauge_action]

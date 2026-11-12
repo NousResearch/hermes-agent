@@ -216,10 +216,13 @@ async def test_a_route_that_cannot_authenticate_does_not_block_switching_away(ho
 
 
 @pytest.mark.asyncio
-async def test_a_stopped_local_runtime_does_not_block_switching_away(home, endpoints):
+async def test_a_stopped_local_runtime_does_not_block_switching_away(home, endpoints, monkeypatch):
     """#146253: a session whose route is a managed local model with the server off raised ValueError
     out of ``session.mutate`` — only AuthError was caught — so the client got ``internal error`` and
     could never leave the dead local route, not even by picking a remote provider."""
+    # A llama-server the developer runs on its default port would be detected and resolve this route.
+    monkeypatch.setattr('hermes_cli.local_runtime.endpoint.resolve_llamacpp_endpoint',
+                        lambda *args, **kwargs: None)
     (_, url), _ = endpoints
     (home / 'config.yaml').write_text(json.dumps({
         'model': {'provider': 'llamacpp', 'default': 'original'},

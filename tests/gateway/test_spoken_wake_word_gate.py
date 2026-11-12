@@ -626,9 +626,12 @@ async def test_a_threaded_reply_stop_never_waits_on_an_earlier_voice_check(tmp_p
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("other", [{"mimeType": "application/pdf"}, {"mimeType": "image/png"}])
-async def test_a_bluebubbles_memo_beside_a_file_sends_only_its_audio_to_stt_and_the_turn(tmp_path, monkeypatch, other):
-    """A group envelope with a voice memo and a PDF or photo: only the memo enters gate STT, and the
-    admitted turn still transcribes it (the file beside it never demotes it to an audio attachment)."""
+@pytest.mark.parametrize("memo", [{"mimeType": "audio/ogg"},
+                                  {"mimeType": "application/octet-stream", "uti": "com.apple.coreaudio-format.caf"}])
+async def test_a_bluebubbles_memo_beside_a_file_sends_only_its_audio_to_stt_and_the_turn(tmp_path, monkeypatch, other, memo):
+    """A group envelope with a voice memo (an audio MIME, or a CAF memo sent as octet-stream) and a PDF
+    or photo: only the memo enters gate STT, and the admitted turn still transcribes it (the file
+    beside it never demotes it to an audio attachment)."""
     import asyncio
     import json
     from gateway.run_inbound import GatewayInboundMixin
@@ -645,7 +648,7 @@ async def test_a_bluebubbles_memo_beside_a_file_sends_only_its_audio_to_stt_and_
     body = json.dumps({"type": "new-message", "data": {
         "guid": "m1", "text": "", "handle": {"address": "+15555550100"}, "isFromMe": False, "isGroup": True,
         "chats": [{"guid": "iMessage;+;group-chat"}],
-        "attachments": [{"guid": "a1", "mimeType": "audio/ogg"}, {"guid": "d1", **other}]}}).encode()
+        "attachments": [{"guid": "a1", **memo}, {"guid": "d1", **other}]}}).encode()
     request = SimpleNamespace(query={"password": "secret"}, headers={}, read=AsyncMock(return_value=body))
     transcribe, calls = _stt("hermes, look at this")
     with patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):

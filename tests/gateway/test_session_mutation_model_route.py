@@ -216,6 +216,35 @@ async def test_a_route_that_cannot_authenticate_does_not_block_switching_away(ho
 
 
 @pytest.mark.asyncio
+async def test_a_stopped_local_runtime_does_not_block_switching_away(home, endpoints):
+    """#146253: a session whose route is a managed local model with the server off raised ValueError
+    out of ``session.mutate`` — only AuthError was caught — so the client got ``internal error`` and
+    could never leave the dead local route, not even by picking a remote provider."""
+    (_, url), _ = endpoints
+    (home / 'config.yaml').write_text(json.dumps({
+        'model': {'provider': 'llamacpp', 'default': 'original'},
+        'providers': {'loopback': {'name': 'loopback', 'base_url': url, 'api_key': 'key-loopback'}},
+    }), encoding='utf-8')
+    store, runner, authority, owner = _owner(home)
+    _bind_resolver(runner)
+    try:
+        live = await _create(owner, authority, home, 'bare')
+        sid = next(sid for sid, value in authority.sessions.items() if value is live)
+        with pytest.raises(ValueError, match='local model server'):
+            runner._resolve_session_agent_runtime(source=live.source, session_key=live.route,
+                                                  fallback=False)
+
+        response = await _pick(owner, authority, sid, {'model': 'picked', 'provider': 'loopback'})
+
+        assert 'result' in response, response
+        model, base_url, key = _route(runner, live)
+        assert (model, base_url, key) == ('picked', url, 'key-loopback')
+    finally:
+        await owner.close()
+        store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
 async def test_a_following_pick_keeps_the_current_endpoints_key_env(home, endpoints):
     """The profile names its key by ``key_env`` and moved from A to B before the pick. The pick lands
     on B, so B's own key keeps authenticating the next turn: the pointer must not be dropped as a

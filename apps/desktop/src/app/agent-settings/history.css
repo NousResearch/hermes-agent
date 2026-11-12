@@ -497,7 +497,7 @@
   inset-inline-start: auto;
   width: min(460px, calc(100vw - 32px));
   max-width: none;
-  max-height: calc(100vh - var(--titlebar-height));
+  max-height: calc(100dvh - var(--titlebar-height));
   transform: none;
   border-radius: 0;
   border-width: 0 0 0 1px;

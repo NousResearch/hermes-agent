@@ -374,10 +374,13 @@
   }
 }
 
-@media (max-width: 800px) {
+/* Below wide (breakpoints.ts: max-width 1023.98px) the agents list is a sheet, not a column: the page
+   keeps its stage frame whether the sheet is open or not. */
+@media (max-width: 1023.98px) {
   [data-page-surface] .management-panel.agent-management,
   [data-page-surface] .management-panel.agent-management:has(> .page-sidebar-panel) {
-    padding: 16px 24px 0;
+    max-width: calc(var(--page-panel-inset) + var(--page-form-max-width) + var(--page-panel-inset));
+    padding: 1rem var(--page-panel-inset) 0;
   }
 
   .agent-management-header {

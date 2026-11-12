@@ -7,10 +7,33 @@ export const TOUCH_TITLEBAR_HEIGHT = 44
 /** The redesign's band: Figma's 60px header (906:19463). Electron seats its
  *  native controls in the same band (electron/window-chrome.ts). */
 export const PORTAL_TITLEBAR_HEIGHT = 60
+/** The redesign's compact band in the browser (a compact window: menu, title, new session; a short
+ *  one, where height is the transcript's). A coarse pointer takes the touch band instead. */
+export const PORTAL_COMPACT_TITLEBAR_HEIGHT = 48
 
-/** The window's titlebar band height for a shell. */
-export function titlebarBandHeight({ portal, touch }: { portal: boolean; touch: boolean }): number {
-  return portal ? PORTAL_TITLEBAR_HEIGHT : touch ? TOUCH_TITLEBAR_HEIGHT : TITLEBAR_HEIGHT
+export interface TitlebarBandInput {
+  portal: boolean
+  /** A coarse pointer on the browser host (`$touchPointer`): native Desktop never reports one. */
+  touch: boolean
+  /** The window is in the compact width class, or short (app/redesign/breakpoints.ts). */
+  compact?: boolean
+  /** The browser-hosted Desktop. Native windows keep the 60px band at every width, because Electron
+   *  seats the traffic lights and caption buttons in it from the shell choice alone. */
+  browserHost?: boolean
+}
+
+/** The window's titlebar band height: classic 34 (touch 44); the redesign 60, and on a compact browser
+ *  window 48 (touch 44) so the band does not eat a phone's height. */
+export function titlebarBandHeight({ portal, touch, compact = false, browserHost = false }: TitlebarBandInput): number {
+  if (!portal) {
+    return touch ? TOUCH_TITLEBAR_HEIGHT : TITLEBAR_HEIGHT
+  }
+
+  if (compact && browserHost) {
+    return touch ? TOUCH_TITLEBAR_HEIGHT : PORTAL_COMPACT_TITLEBAR_HEIGHT
+  }
+
+  return PORTAL_TITLEBAR_HEIGHT
 }
 
 /** Permanent native drag target beside a top-edge tab strip. */
@@ -144,15 +167,19 @@ export const PORTAL_BAND_LEAD_PLAIN = PORTAL_RAIL_WIDTH + 20
 
 /** Where the redesign band's left control cluster starts, in window px. Every left-cluster control
  *  (page Back, sidebar toggle, …) starts here via `--portal-band-start`; nothing positions itself
- *  per page. A connection not yet reported falls back by platform, as titlebarControlsPosition does. */
+ *  per page. A connection not yet reported falls back by platform, as titlebarControlsPosition does.
+ *  A compact window has no rail column, so the cluster moves in by the rail's width. */
 export function portalBandLeadingInset(
   windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined,
   isFullscreen = false,
-  isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform)
+  isMac = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform),
+  compact = false
 ): number {
+  const rail = compact ? PORTAL_RAIL_WIDTH : 0
+
   if (isFullscreen || windowButtonPosition === null) {
-    return PORTAL_BAND_LEAD_PLAIN
+    return PORTAL_BAND_LEAD_PLAIN - rail
   }
 
-  return windowButtonPosition || isMac ? PORTAL_BAND_LEAD_MAC : PORTAL_BAND_LEAD_PLAIN
+  return (windowButtonPosition || isMac ? PORTAL_BAND_LEAD_MAC : PORTAL_BAND_LEAD_PLAIN) - rail
 }

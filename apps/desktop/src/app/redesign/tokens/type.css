@@ -42,6 +42,9 @@
   --portal-type-caption-size: 0.625rem;
   /* UPPERCASE DEFAULT / RUNNING / EMPTY chips (1036:7318). */
   --portal-type-chip-size: 0.5625rem;
+  /* The smallest text a field may use on a coarse pointer in the browser: iOS Safari zooms into any
+     focused field under 16px (px, not rem: the zoom rule reads CSS pixels). */
+  --portal-type-field-touch-min: 16px;
 
   /* Tracking per role: display titles tighten, small UI opens up, captions and chips open most. */
   --portal-tracking-display: -0.01em;

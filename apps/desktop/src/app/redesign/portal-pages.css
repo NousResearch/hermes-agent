@@ -4,9 +4,12 @@
 
 /* List pages without a panel (Webhooks, Spawn tree) take the catalog column at the stage inset,
    left-anchored like Capabilities and Library rather than centred in the stage. Agents and
-   Schedules lay out their own panel frame. */
+   Schedules lay out their own panel frame. The margin comes out of the column's width, never on top
+   of it, so a narrow stage never scrolls sideways. */
 :root[data-shell='portal'] [data-page-surface] .management-panel:not(.agent-management, .cron-page) {
-  margin-inline: max(0px, calc(var(--page-stage-inset) - var(--page-content-inset))) 0;
+  --management-panel-lead: max(0px, calc(var(--page-stage-inset) - var(--page-content-inset)));
+  width: calc(100% - var(--management-panel-lead));
+  margin-inline: var(--management-panel-lead) 0;
 }
 
 /* ── Page heading (856:3405): H1, 6px to its description, 36px to the first section ── */
@@ -83,8 +86,8 @@
 
 /* ── List panel (Agents 895:8991, Schedules) ──
    A list→detail destination's list rides the panel at the stage's leading edge; the page (its
-   management panel, full width and positioned) starts its stage past it. Below 800px the panel folds
-   away and the page shows its list. */
+   management panel, full width and positioned) starts its stage past it. Below wide the panel is a
+   sheet (below) and a page that needs its list on screen shows it in the stage. */
 
 .page-sidebar-panel {
   position: absolute;
@@ -205,7 +208,7 @@
   align-items: center;
 }
 
-@media (hover: none) {
+@media (hover: none), (pointer: coarse) {
   .page-sidebar-item-menu button {
     opacity: 1;
   }
@@ -236,9 +239,51 @@
   margin-bottom: 1.25rem;
 }
 
-@media (max-width: 800px) {
-  .page-sidebar-panel {
-    display: none;
+/* ── Page panels as sheets: below wide (breakpoints.ts: max-width 1023.98px) ──
+   A page's panel (Agents, Schedules, an agent's settings menu, the Settings column) leaves the page
+   frame and opens from the band's menu as a sheet past the rail, the chat sidebar's kind
+   (portal-shell.css): opaque, from the band down, scrolling on its own. */
+@media (max-width: 1023.98px) {
+  :root[data-shell='portal'] [data-page-surface] :is(.page-sidebar-panel, [data-tour='overlay-nav']) {
+    position: fixed;
+    z-index: var(--portal-layer-sheet);
+    inset-block: 0;
+    inset-inline-start: var(--portal-rail-width);
+    width: var(--portal-sheet-panel-width);
+    padding-top: calc(var(--titlebar-band-height) + 1.4375rem);
+    padding-bottom: 1.5rem;
+    border-start-start-radius: 0;
+    background: var(--portal-sidebar-background);
+    box-shadow: var(--portal-shadow-floating);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* The Settings column is classic's split layout: under the sheet it shows only while open (its
+     narrow utility would hide it), and the page keeps one column with the section menu leading it. */
+  :root[data-shell='portal'][data-portal-sheet='page'] [data-page-surface] [data-tour='overlay-nav'] {
+    display: flex;
+  }
+
+  :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-split'] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-nav-bar'] {
+    display: flex;
+  }
+
+  :root[data-shell='portal'] [data-page-surface] [data-slot='overlay-split'] > [data-slot='overlay-main'] {
+    grid-row: 2;
+    grid-column: 1 / -1;
+  }
+}
+
+/* A sheet's rows take the touch target on a coarse pointer. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .page-sidebar-row {
+    min-height: var(--portal-touch-target);
   }
 }
 
@@ -358,9 +403,16 @@
    The band carries chrome only, so the classic floating pill becomes a band plate (the session
    pill's recipe: 30px, r3, 2% ink, 13px tertiary label with its key hints) at the stage's leading
    edge, where the session pill sits on the chat. Type-to-search and ⌘K are unchanged. */
+@media (min-width: 1024px) {
+  /* Wide (breakpoints.ts): the pill rides the stage's leading edge past the page column; below wide
+     there is no column, and it sits in the band's own flow. */
+  :root[data-shell='portal'] [data-slot='page-toolbar'] [data-slot='settings-search-pill'] {
+    position: absolute;
+    inset-inline-start: var(--page-nav-width);
+  }
+}
+
 :root[data-shell='portal'] [data-slot='page-toolbar'] [data-slot='settings-search-pill'] {
-  position: absolute;
-  inset-inline-start: var(--page-nav-width);
   height: var(--portal-chrome-button-size);
   gap: 0.5rem;
   padding-inline: 0.625rem;

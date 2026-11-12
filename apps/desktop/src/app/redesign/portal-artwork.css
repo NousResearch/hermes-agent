@@ -1,10 +1,14 @@
 /* The wing (Figma `Background` › Group 1, 906:19398). Geometry: a 1208.7px square at
    (34.6, -182.3) in the 1280×880 frame — horizontally centered, its center at 48% of the window
    height, scaled with the window width. The SVG carries Figma's full-strength stack (blue .8 +
-   color-dodge fringes); a veil of the surface's own color laid over the art sets its strength. */
+   color-dodge fringes); a veil of the surface's own color laid over the art sets its strength.
+   The center never rises above a quarter of the wing's own size: in a window more than twice as
+   wide as it is tall (a landscape phone with its keyboard up) the body of the wing would otherwise
+   sit behind the title band, where nothing veils it. */
 :root[data-shell='portal'] {
   --portal-wing-size: 94.43vw;
-  --portal-wing-position: calc(50vw - var(--portal-wing-size) / 2) calc(48vh - var(--portal-wing-size) / 2);
+  --portal-wing-position: calc(50vw - var(--portal-wing-size) / 2)
+    calc(max(48vh, var(--portal-wing-size) / 4) - var(--portal-wing-size) / 2);
   /* Light draws the wing as blue .05 (491:46161): a trace on the bare canvas, fainter still through
      the sidebar's white lift. */
   --portal-wing-opacity: 0.0625;

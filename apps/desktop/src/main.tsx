@@ -32,6 +32,8 @@ import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router'
 
 import App from './app'
+import { installPortalBrowserChrome } from './app/redesign/browser-chrome'
+import { installShellSheetAttribute } from './app/shell/shell-sheet'
 import { installTitlebarBandProperty } from './app/shell/use-touch-titlebar'
 import { RootErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
@@ -61,6 +63,10 @@ startUiPreferencesSync(window.hermesDesktop?.uiPreferences)
 installShellAttribute()
 // Body-portalled surfaces clear the band through this root property, in every window.
 installTitlebarBandProperty()
+// The redesign's sheets below wide: CSS lifts the rail into a compact sheet and stands the band down.
+installShellSheetAttribute()
+// The redesign's browser chrome: the theme colour and the safe-area viewport follow the shell.
+installPortalBrowserChrome()
 
 // The perf probe ships in dev, and in a production build ONLY when explicitly
 // opted in (VITE_PERF_PROBE=1) — this lets the perf harness measure a real,

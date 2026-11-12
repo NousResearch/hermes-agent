@@ -7,6 +7,8 @@ import { $shellChoice } from '@/store/shell-variant'
 
 import {
   MACOS_TAHOE_DARWIN_MAJOR,
+  PORTAL_COMPACT_TITLEBAR_HEIGHT,
+  PORTAL_RAIL_WIDTH,
   PORTAL_TITLEBAR_HEIGHT,
   portalBandLeadingInset,
   TITLEBAR_CONTROL_OFFSET_X,
@@ -85,6 +87,21 @@ describe('titlebarBandHeight', () => {
     expect(titlebarBandHeight({ portal: false, touch: true })).toBe(TOUCH_TITLEBAR_HEIGHT)
   })
 
+  it('shrinks the redesign band only on a compact browser window (48, touch 44); native keeps 60', () => {
+    const band = (portal: boolean, touch: boolean, compact: boolean, browserHost: boolean) =>
+      titlebarBandHeight({ portal, touch, compact, browserHost })
+
+    expect(band(true, false, true, true)).toBe(PORTAL_COMPACT_TITLEBAR_HEIGHT)
+    expect(band(true, true, true, true)).toBe(TOUCH_TITLEBAR_HEIGHT)
+    // Electron seats the traffic lights and caption buttons in the 60px band from the shell alone.
+    expect(band(true, false, true, false)).toBe(PORTAL_TITLEBAR_HEIGHT)
+    // Medium and wide windows keep Figma's header; touch only grows its buttons.
+    expect(band(true, true, false, true)).toBe(PORTAL_TITLEBAR_HEIGHT)
+    // Classic is untouched by width.
+    expect(band(false, false, true, true)).toBe(TITLEBAR_HEIGHT)
+    expect(band(false, true, true, true)).toBe(TOUCH_TITLEBAR_HEIGHT)
+  })
+
   it('follows a live shell flip in the window band', () => {
     const { result } = renderHook(() => useTitlebarHeight())
 
@@ -126,6 +143,11 @@ describe('portalBandLeadingInset', () => {
   it('aligns with the content inset in macOS fullscreen', () => {
     expect(portalBandLeadingInset({ x: 23, y: 23 }, true, true)).toBe(80)
     expect(portalBandLeadingInset(null, true, true)).toBe(80)
+  })
+
+  it('moves in by the rail on a compact window, where the rail has no column', () => {
+    expect(portalBandLeadingInset(null, false, false, true)).toBe(80 - PORTAL_RAIL_WIDTH)
+    expect(portalBandLeadingInset({ x: 23, y: 23 }, false, true, true)).toBe(130 - PORTAL_RAIL_WIDTH)
   })
 
   it('publishes the live start on the root for the band clusters and page toolbars', () => {

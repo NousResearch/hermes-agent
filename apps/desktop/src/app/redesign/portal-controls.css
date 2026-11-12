@@ -437,3 +437,64 @@
   input {
   font-size: var(--portal-type-body-size);
 }
+
+/* ── Touch (DESIGN.md › Responsive) ───────────────────────────────────────────
+   A coarse pointer on the browser host, at any width: every control takes the 44px target. Buttons,
+   select triggers and tabs grow to it; switches and checkboxes keep their visual and extend their hit
+   area past it (an inset ::after), so a row's layout holds. Native Desktop keeps its pointer rhythm. */
+@media (hover: none), (pointer: coarse) {
+  /* The id step: the page and dialog scales above are built from long attribute chains, and the
+     touch target must win over all of them, in the app and in body-portalled dialogs alike. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is(#root, body > :not(#root))
+    :is(
+      :is(button, a)[data-size][data-variant]:not([data-variant='link'], [data-variant='grip']),
+      [data-slot='select-trigger'],
+      [role='tab']
+    ) {
+    min-height: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is(button, a)[data-size^='icon'][data-variant]:not([data-variant='grip']) {
+    min-width: var(--portal-touch-target);
+  }
+
+  /* Pages carry many bespoke buttons (tabs, segments, filters, table titles, header plates): on touch
+     every button in a page, a workspace page or the conversation header is at least the target tall. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    #root
+    :is([data-page-surface], [data-zone-page], [data-slot='portal-conversation-header'])
+    button:not([data-slot='switch'], [data-slot='checkbox']) {
+    min-height: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] [data-slot='portal-conversation-header'] button {
+    min-width: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] :is([data-slot='switch'], [data-slot='checkbox']) {
+    position: relative;
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is([data-slot='switch'], [data-slot='checkbox'])::after {
+    content: '';
+    position: absolute;
+    inset: min(0px, calc((100% - var(--portal-touch-target)) / 2));
+  }
+
+  /* iOS Safari zooms into any focused field under 16px and stays zoomed. styles.css floors classic's
+     fields; the redesign's own field sizes (13–14px) out-specify that floor, so it is re-asserted here
+     above them: the id step outranks any class-built field rule, in the app and in body-portalled
+     dialogs alike. */
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is(#root, body > :not(#root))
+    :is(input, textarea, select) {
+    font-size: max(var(--portal-type-field-touch-min), 1em);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] #root [data-slot='composer-rich-input'] {
+    font-size: max(var(--portal-type-field-touch-min), var(--conversation-text-font-size));
+  }
+}

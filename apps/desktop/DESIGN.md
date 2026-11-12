@@ -432,6 +432,42 @@ tie `styles.css`'s own `:root.dark` rules on specificity and must come later).
    pressed are the next ink steps, focus is one 2px brand-ink ring, disabled is
    40% opacity — the same rule for every component.
 
+### Responsive (compact, medium, wide)
+
+One renderer serves the desktop window and phones (the browser host), so the language has three
+width classes and two breakpoints, defined once in `src/app/redesign/breakpoints.ts` (`$widthClass`,
+`widthClassFor`) and documented as `--portal-breakpoint-medium` / `--portal-breakpoint-wide` in
+`tokens/space.css`. A custom property cannot feed a media query, so every redesign query repeats the
+literal (`max-width: 639.98px` compact, `max-width: 1023.98px` below wide) with a comment naming the
+class. Classic's sidebar dock point is the medium breakpoint; classic is otherwise untouched.
+
+- **Wide (≥ 1024)**: the desktop layout above, pixel for pixel.
+- **Medium (640–1023)**: the rail stays; the chat sidebar and page panels leave the layout and open
+  as **sheets** from the band's sidebar button over a full-width stage; page columns start at the
+  panel inset.
+- **Compact (< 640)**: no rail column (`--portal-rail-reserve: 0`). The band is the menu, the title
+  and "+" (no Back/Forward: the browser has them), 48px in the browser (44px on touch; native windows
+  keep 60, where Electron seats its controls). The menu opens the desktop's left side as one sheet:
+  the rail beside the chat sidebar or the page's panel, or the rail alone on a page without one.
+  Page insets collapse to 16px; the developer rail has no compact form.
+- **Sheets** (`app/shell/shell-sheet.ts`): full height past the rail, `--portal-sheet-width`
+  (`min(20rem, 100vw − 3.5rem)`), opaque, over `--portal-surface-scrim`. A tap on the scrim, Esc, or
+  any pick (navigation) closes one; focus moves into it and returns to the menu. Sheets sit under
+  menus and popovers (`--portal-layer-sheet*`), so a row's menu opens over its sheet.
+- **Short (max-height 30rem, `SHORT_QUERY`)**: a landscape phone or a raised keyboard puts the
+  composer on one row (attach, editor, send), hides the model row until there is room, drops the
+  hero art, and takes the browser's compact band (48, touch 44).
+- **Touch** (`(hover: none), (pointer: coarse)` on the browser host, any width): chrome buttons,
+  rows, menu items, tabs and page buttons take `--portal-touch-target` (44px); switches and
+  checkboxes keep their visual and extend their hit area; text fields never go under
+  `--portal-type-field-touch-min` (16px, iOS zoom); hover-only affordances are shown.
+- **Floating surfaces** stay inside the window (Radix's available size less a 16px gutter); on
+  compact a dialog is the whole window with its footer on the floor, and toasts span the window above
+  the composer.
+- **Browser chrome** (`app/redesign/browser-chrome.ts`): `theme-color` follows the canvas;
+  `viewport-fit=cover` lays the page under the notch, and on a device that reports a safe area the
+  app root is inset by it as a whole (body-portalled dialogs read `--portal-safe-*`).
+
 ### Tokens
 
 `raw.css` holds the only colour literals (primitives: brand, status, danger, the
@@ -582,6 +618,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--portal-type-micro-size` | `0.6875rem` | ″ | Nav counts, tags, keycaps, the "You" label (1036:7434). |
 | `--portal-type-caption-size` | `0.625rem` | ″ | UPPERCASE group labels, table headers, stat labels, menu labels (1036:7408). |
 | `--portal-type-chip-size` | `0.5625rem` | ″ | UPPERCASE DEFAULT / RUNNING / EMPTY chips (1036:7318). |
+| `--portal-type-field-touch-min` | `16px` | ″ | The smallest text a field may use on a coarse pointer in the browser: iOS Safari zooms into any focused field under 16px (px, not rem: the zoom rule reads CSS pixels). |
 | `--portal-tracking-display` | `-0.01em` | ″ | Tracking per role: display titles tighten, small UI opens up, captions and chips open most. |
 | `--portal-tracking-ui` | `0.01em` | ″ |  |
 | `--portal-tracking-chip` | `0.04em` | ″ |  |
@@ -593,14 +630,27 @@ The tables below are generated from the CSS; do not edit them by hand.
 | Token | Dark | Light | Note |
 |---|---|---|---|
 | `--portal-rail-width` | `3.75rem` | ″ | The global rail and the developer rail (1036:7202). |
+| `--portal-rail-reserve` | `0px` | ″ | What the rail takes from the layout: its width, none on compact, where it rides the sheet. |
+| `--portal-breakpoint-medium` | `640px` | ″ | The responsive model (app/redesign/breakpoints.ts, DESIGN.md › Responsive): compact below the medium breakpoint, medium below the wide one, wide from there. A custom property cannot feed a media query, so every redesign query repeats the literal (max-width: 639.98px / 1023.98px) with a comment naming the class; these two document it. |
+| `--portal-breakpoint-wide` | `1024px` | ″ |  |
+| `--portal-sheet-width` | `min(20rem, 100vw - 3.5rem)` | ″ | Below wide the chat sidebar and page panels are sheets over the stage: the panel's width, leaving a 56px strip of scrim to tap. |
+| `--portal-sheet-panel-width` | `calc(var(--portal-sheet-width) - var(--portal-rail-width) + var(--portal-rail-reserve))` | ″ | The sheet's panel past the rail: the whole sheet on medium (the rail stays in the layout), the sheet less the rail on compact (the rail rides the sheet). |
+| `--portal-touch-target` | `2.75rem` | ″ | The smallest hit area on a coarse pointer (WCAG 2.5.5); a control's visual may stay smaller. |
+| `--portal-space-compact` | `0.75rem` | ″ | A phone's tighter rhythm (compact and short windows): the composer's padding and gaps, its dock's floor, and on touch its control rows, whose 44px targets overlap the padding. |
+| `--portal-space-tight` | `0.5rem` | ″ |  |
+| `--portal-composer-row-touch` | `1.75rem` | ″ |  |
+| `--portal-safe-top` | `env(safe-area-inset-top, 0px)` | ″ | The browser's safe area (notch, home indicator) once the page is laid out under it (viewport-fit=cover, app/redesign/browser-chrome.ts); zero on every other host. The app root is inset by it as a whole (portal-shell.css), so only body-portalled surfaces (dialogs) read these. |
+| `--portal-safe-bottom` | `env(safe-area-inset-bottom, 0px)` | ″ |  |
+| `--portal-safe-start` | `env(safe-area-inset-left, 0px)` | ″ |  |
+| `--portal-safe-end` | `env(safe-area-inset-right, 0px)` | ″ |  |
 | `--portal-panel-width` | `var(--portal-sidebar-width, var(--sessions-pane-width))` | ″ | ONE sidebar column for every rail destination: page panels (Agents, Schedules, Settings) take the chat sidebar's width — the user's sash width once they size it (published by the pane tree as --portal-sidebar-width), else its default — so switching destinations never moves the panel edge, its divider or the stage's content edge. |
-| `--portal-frame-inset` | `1.25rem` | ″ | The page-frame contract: where a page's content column starts, from the stage edge it shares with the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider, one value for Agents, Settings and Schedules alike), and from the stage's own edge on a page with no panel (919:9281: x 90 in the stage). Left insets, never centring, at every window width, so switching pages never moves the column sideways. |
-| `--portal-stage-inset` | `5.625rem` | ″ |  |
+| `--portal-frame-inset` | `1rem` | ″ | The page-frame contract: where a page's content column starts, from the stage edge it shares with the page's sidebar panel (the freshest frames, 1036:7189 / 895:*: 20px after the divider, one value for Agents, Settings and Schedules alike), and from the stage's own edge on a page with no panel (919:9281: x 90 in the stage). Left insets, never centring, at every window width, so switching pages never moves the column sideways. |
+| `--portal-stage-inset` | `1rem` | ″ |  |
 | `--portal-column-form` | `52.5rem` | ″ | The column's one max width per page kind: forms and details (1036:7189 General: 840), catalogs and tables (919:9281: 980), and the conversation shared by the transcript and the docked composer. |
 | `--portal-column-catalog` | `61.25rem` | ″ |  |
 | `--portal-column-conversation` | `40rem` | ″ |  |
 | `--portal-column-landing` | `30rem` | ″ | The landing's composer before the first message (906). |
-| `--page-content-inset` | `1.5rem` | ″ | Full-width pages without a panel pad their catalog column by this much on each side. |
+| `--page-content-inset` | `1rem` | ″ | Full-width pages without a panel pad their catalog column by this much on each side. |
 | `--page-content-max-width` | `calc(var(--portal-column-catalog) + 2 * var(--page-content-inset))` | ″ |  |
 | `--portal-page-end-space` | `2rem` | ″ | The space a page scroller keeps below its last row, under its bottom fade. |
 | `--portal-row-chrome` | `1.875rem` | ″ | Row heights: 30 chrome buttons (906:19469), 40 panel list rows (1038:7408). |
@@ -650,6 +700,9 @@ The tables below are generated from the CSS; do not edit them by hand.
 |---|---|---|---|
 | `--portal-layer-dock` | `5` | ″ | The docked composer's own top layer (its spectrum edge over the card). |
 | `--portal-layer-stage-overlay` | `20` | ″ | What floats over the transcript inside the stage (the conversation header row). |
+| `--portal-layer-sheet-scrim` | `44` | ″ | Sheets below wide (the chat sidebar, a page panel) and their scrim: over the stage and the band, under menus and popovers (z-50), so a row's menu opens over its sheet. The rail joins a compact sheet from outside the page layer (route pages are z-50), so it alone sits just over it. |
+| `--portal-layer-sheet` | `45` | ″ |  |
+| `--portal-layer-sheet-rail` | `51` | ″ |  |
 
 #### Bridge (`bridge.css`): portal roles under the names shared components read
 
@@ -679,7 +732,7 @@ The tables below are generated from the CSS; do not edit them by hand.
 | `--ui-editor-surface-background` | `var(--portal-surface-stage)` | ″ |  |
 | `--radius-scalar` | `0.6` | ″ | Tailwind rounded-* in shared components: the redesign's squarer scale. |
 | `--terminal-panel-min-width` | `min(22rem, 40vw)` | ″ |  |
-| `--global-nav-width` | `var(--portal-rail-width)` | ″ |  |
+| `--global-nav-width` | `var(--portal-rail-reserve)` | ″ |  |
 | `--page-nav-row-height` | `var(--portal-row-panel)` | ″ |  |
 | `--composer-width` | `var(--portal-column-conversation)` | ″ |  |
 | `--dialog-body-padding` | `1.5rem` | ″ |  |

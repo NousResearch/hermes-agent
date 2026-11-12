@@ -28,7 +28,7 @@
   /* Tailwind rounded-* in shared components: the redesign's squarer scale. */
   --radius-scalar: 0.6;
   --terminal-panel-min-width: min(22rem, 40vw);
-  --global-nav-width: var(--portal-rail-width);
+  --global-nav-width: var(--portal-rail-reserve);
   --page-nav-row-height: var(--portal-row-panel);
   --composer-width: var(--portal-column-conversation);
   --dialog-body-padding: 1.5rem;

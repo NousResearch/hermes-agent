@@ -1,8 +1,15 @@
 import { computed } from 'nanostores'
 
+import {
+  $shortViewport,
+  $widthClass,
+  COMPACT_QUERY as COMPACT_BAND_QUERY,
+  SHORT_QUERY
+} from '@/app/redesign/breakpoints'
 import { portalBandLeadingInset, titlebarBandHeight } from '@/app/shell/titlebar'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { hostHas } from '@/lib/host-capabilities'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { $touchPointer, TOUCH_POINTER_QUERY } from '@/lib/touch-interaction'
 import { $connection } from '@/store/session'
 import { $portalShell, usePortalShell } from '@/store/shell-variant'
@@ -14,29 +21,40 @@ export function useTouchTitlebar(): boolean {
   return hostHas('touchSizedControls') && touch
 }
 
-/** This window's titlebar band (see titlebarBandHeight). */
+/** This window's titlebar band (see titlebarBandHeight): touch sizing, and on a compact browser
+ *  window the redesign's shorter band. */
 export function useTitlebarHeight(): number {
   const portal = usePortalShell()
   const touch = useTouchTitlebar()
+  const narrow = useMediaQuery(COMPACT_BAND_QUERY)
+  const short = useMediaQuery(SHORT_QUERY)
 
-  return titlebarBandHeight({ portal, touch })
+  return titlebarBandHeight({ portal, touch, compact: narrow || short, browserHost: isBrowserHostedDesktop() })
 }
 
-/** The band outside React (geometry read at event time). */
+/** The band outside React (geometry read at event time). Classic's readers here have always used its
+ *  compact band, touch or not; only the redesign's band follows touch and width. */
 export function titlebarHeightNow(): number {
-  return titlebarBandHeight({ portal: $portalShell.get(), touch: false })
+  return $portalShell.get() ? $titlebarBandHeight.get() : titlebarBandHeight({ portal: false, touch: false })
 }
 
 /** This window's band including touch sizing (`$touchPointer` is already browser-host only, the
- *  same host `touchSizedControls` names), for the root custom property below. */
-export const $titlebarBandHeight = computed([$portalShell, $touchPointer], (portal, touch) =>
-  titlebarBandHeight({ portal, touch })
+ *  same host `touchSizedControls` names) and the compact class, for the root custom property below. */
+export const $titlebarBandHeight = computed(
+  [$portalShell, $touchPointer, $widthClass, $shortViewport],
+  (portal, touch, width, short) =>
+    titlebarBandHeight({ portal, touch, compact: width === 'compact' || short, browserHost: isBrowserHostedDesktop() })
 )
 
 /** Where the redesigned band's leading cluster starts (portalBandLeadingInset), from the live
  *  window chrome facts: the titlebar clusters and every page's Back read it. */
-export const $portalBandStart = computed($connection, connection =>
-  portalBandLeadingInset(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
+export const $portalBandStart = computed([$connection, $widthClass, $portalShell], (connection, width, portal) =>
+  portalBandLeadingInset(
+    connection?.windowButtonPosition,
+    Boolean(connection?.isFullscreen),
+    undefined,
+    portal && width === 'compact'
+  )
 )
 
 /** Publishes the band on <html> as `--titlebar-band-height` and the redesign's leading cluster

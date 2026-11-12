@@ -4,11 +4,11 @@ import { type ComponentProps, type CSSProperties, type MouseEvent, type ReactNod
 import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
+import { $widthClass } from '@/app/redesign/breakpoints'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
-import { $narrowViewport } from '@/components/pane-shell/tree/store'
-import { resetLayoutTree } from '@/components/pane-shell/tree/store'
+import { $narrowViewport, resetLayoutTree } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
@@ -57,6 +57,8 @@ import {
   useTrackHistoryPosition
 } from './history-position'
 import { PortalSessionTab } from './portal-session-tab'
+import { $openSheet, toggleShellSheet } from './shell-sheet'
+import { ShellSheetScrim } from './shell-sheet-view'
 import {
   TITLEBAR_CHROME_CHANGED_EVENT,
   TITLEBAR_ICON_BADGE_SCALE,
@@ -203,33 +205,68 @@ function useSidebarEdges(): { left: SidebarEdge; right: SidebarEdge } {
   }
 }
 
-/** The redesigned sidebar carries its own collapse button (Figma 906:19685), so the band offers
- *  only the way back while it is hidden; pages have no sidebar to bring back. A narrow window
- *  keeps it: there the sidebar is an overlay this button reveals. ⌘B works in every state. */
+/** The redesigned sidebar carries its own collapse button (Figma 906:19685), so a wide band offers
+ *  only the way back while it is hidden; pages have no sidebar to bring back. Below wide the button is
+ *  the band's menu: it opens the chat sidebar as a sheet, and on a compact page (no rail) the rail as
+ *  one; a medium page keeps its rail and needs none. ⌘B works in every state. */
 function useBandSidebarToolHidden(portal: boolean, sidebarOpen: boolean): boolean {
   const workspacePage = useStore($workspaceIsPage)
   const narrow = useStore($narrowViewport)
+  const compact = useStore($widthClass) === 'compact'
 
-  return portal && !narrow && (sidebarOpen || workspacePage)
+  if (!portal) {
+    return false
+  }
+
+  return narrow ? workspacePage && !compact : sidebarOpen || workspacePage
+}
+
+/** The band's sidebar button: the docked toggle, below wide the menu that opens the chat sidebar
+ *  as a sheet, and on a compact page (no chat sidebar, no rail) the menu that opens the rail. */
+function useBandMenuTool(
+  portal: boolean,
+  leftEdge: SidebarEdge
+): Pick<TitlebarTool, 'expanded' | 'hidden' | 'icon' | 'onSelect'> {
+  const hidden = useBandSidebarToolHidden(portal, leftEdge.open)
+  const compact = useStore($widthClass) === 'compact' && portal
+  const workspacePage = useStore($workspaceIsPage)
+  const openSheet = useStore($openSheet)
+  const navSheet = compact && workspacePage
+
+  return {
+    expanded: navSheet ? openSheet === 'nav' : leftEdge.expanded,
+    hidden,
+    icon: <TitlebarIcon name={compact ? 'menu' : 'layout-sidebar-left'} />,
+    onSelect: () => {
+      triggerHaptic('tap')
+
+      if (navSheet) {
+        toggleShellSheet('nav')
+      } else {
+        leftEdge.toggle()
+      }
+    }
+  }
 }
 
 /** The redesigned band leads with Back and Forward on every screen (Figma 906:19467, 856:2713):
  *  the window's own router history. A workspace page (Capabilities, Library, …) reached with nothing
  *  behind it (a deep link, a fresh window) still has a way back: the chat the Chats destination
- *  would open. */
+ *  would open. A compact window drops them: the browser carries its own, and the band needs the room. */
 function usePortalHistoryTools(portal: boolean): TitlebarTool[] {
   const { t } = useI18n()
   const navigate = useNavigate()
   const position = useStore($historyPosition)
   const workspacePage = useStore($workspaceIsPage)
   const sessionId = useStore($focusedStoredSessionId)
+  const compact = useStore($widthClass) === 'compact'
   const back = canGoBack(position)
   const fallback = workspacePage && !back ? (sessionId ? sessionRoute(sessionId) : NEW_CHAT_ROUTE) : null
 
   return [
     {
       disabled: !back && !fallback,
-      hidden: !portal,
+      hidden: !portal || compact,
       icon: <TitlebarIcon name="arrow-left" />,
       id: 'history-back',
       label: t.common.back,
@@ -237,7 +274,7 @@ function usePortalHistoryTools(portal: boolean): TitlebarTool[] {
     },
     {
       disabled: !canGoForward(position),
-      hidden: !portal,
+      hidden: !portal || compact,
       icon: <TitlebarIcon name="arrow-right" />,
       id: 'history-forward',
       label: t.preview.web.goForward,
@@ -275,6 +312,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const unreadCount = useStore($unreadSessionCount)
   const appActionsSide = useStore($titlebarAppActionsSide)
   const interfaceMode = useStore($interfaceMode)
+  const widthClass = useStore($widthClass)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
   // One filter for every cluster: a tool's own `hidden`, then the mode's tier.
@@ -297,29 +335,25 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const { left: leftEdge, right: rightEdge } = useSidebarEdges()
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
-  const sidebarToolHidden = useBandSidebarToolHidden(portal, leftEdge.open)
   const historyTools = usePortalHistoryTools(portal)
+  const compact = portal && widthClass === 'compact'
   useTrackHistoryPosition()
   useMouseHistoryButtons(portal)
 
   const sidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS.sidebar,
+    ...useBandMenuTool(portal, leftEdge),
     actionId: 'view.toggleSidebar',
     badge: panesFlipped ? undefined : unreadBadge,
-    icon: <TitlebarIcon name="layout-sidebar-left" />,
     id: 'sidebar',
-    hidden: sidebarToolHidden,
-    expanded: leftEdge.expanded,
-    label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
-    onSelect: () => {
-      triggerHaptic('tap')
-      leftEdge.toggle()
-    }
+    label: `${leftLabel}${panesFlipped ? '' : unreadHint}`
   }
 
   const flipTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS['flip-panes'],
     actionId: 'view.flipPanes',
+    // A compact window has one column: nothing to swap.
+    hidden: compact,
     icon: <TitlebarIcon name="arrow-swap" />,
     id: 'flip-panes',
     label: t.titlebar.swapSidebarSides,
@@ -361,7 +395,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     },
     {
       ...TITLEBAR_FIXED_TOOLS.layout,
-      hidden: portal && interfaceMode === 'simple',
+      hidden: portal && (interfaceMode === 'simple' || compact),
       className: 'group/tool',
       // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see
       // LayoutGlyph) — the mod-click telegraphs itself before it happens.
@@ -473,6 +507,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         <Slot area="titleBar.center" />
       </div>
 
+      {portal && <ShellSheetScrim />}
       {portal && (
         <div
           className={cn(titlebarToolClusterClass, 'portal-session-tab-cluster top-(--titlebar-controls-top)')}

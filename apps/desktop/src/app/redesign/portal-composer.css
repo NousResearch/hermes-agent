@@ -216,14 +216,56 @@
   }
 }
 
-@media (max-height: 34rem) {
+/* Compact (breakpoints.ts: max-width 639.98px): a tighter card. On touch, there and on a short window,
+   the rows stay short and the 44px controls overlap the padding (their hit area exceeds the visual),
+   so a phone keeps the room. */
+@media (max-width: 639.98px) {
   :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-surface'] {
-    --composer-surface-pad-y: 0.75rem;
-    --portal-composer-gap: 0.5rem;
+    --composer-surface-pad-x: var(--portal-space-compact);
+    --composer-surface-pad-y: var(--portal-space-compact);
+    --portal-composer-gap: var(--portal-space-compact);
+  }
+
+  /* The card takes its content's height, not Figma's 146px desktop card. */
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-fade'] {
+    min-height: 0;
+  }
+}
+
+@media (max-width: 639.98px) and (hover: none),
+  (max-width: 639.98px) and (pointer: coarse),
+  (max-height: 30rem) and (hover: none),
+  (max-height: 30rem) and (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] [data-redesigned-composer] {
+    --portal-composer-row: var(--portal-composer-row-touch);
+  }
+}
+
+/* Short (landscape phone, or a software keyboard up: max-height 30rem): one row, the attach menu, the
+   editor and the send controls side by side; the model row steps aside until there is room again. */
+@media (max-height: 30rem) {
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-surface'] {
+    --composer-surface-pad-y: var(--portal-space-tight);
+    --portal-composer-gap: var(--portal-space-tight);
+  }
+
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-model-row'] {
+    display: none;
+  }
+
+  :root[data-shell='portal'] [data-redesigned-composer] .composer-input-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto;
+    grid-template-areas: 'menu input controls';
+    align-items: center;
   }
 
   :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-rich-input'] {
     min-height: 1lh;
+  }
+
+  :root[data-shell='portal'] [data-redesigned-composer] [data-slot='composer-fade'] {
+    min-height: 0;
   }
 }
 

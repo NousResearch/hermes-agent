@@ -61,6 +61,7 @@ export function OverlaySplitLayout({ children, className }: OverlaySplitLayoutPr
         'grid h-full min-h-0 flex-1 grid-cols-[var(--page-nav-width,13rem)_minmax(0,1fr)] overflow-hidden bg-transparent max-[47.5rem]:grid-cols-1 max-[47.5rem]:grid-rows-[auto_minmax(0,1fr)]',
         className
       )}
+      data-slot="overlay-split"
     >
       {children}
     </div>
@@ -334,6 +335,7 @@ export function OverlayNav({ footer, groups, related, title }: OverlayNavProps) 
           'pointer-events-none relative z-20 h-[calc(var(--titlebar-height)+0.1875rem)] items-center justify-between gap-2 pl-3 pr-[calc(var(--titlebar-tools-right,0.75rem)+2.25rem)]',
           BAR_HIDDEN
         )}
+        data-slot="overlay-nav-bar"
       >
         <div className="pointer-events-auto min-w-0 [-webkit-app-region:no-drag]">
           <TabDropdown

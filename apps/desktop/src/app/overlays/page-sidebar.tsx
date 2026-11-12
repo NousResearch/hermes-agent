@@ -10,24 +10,43 @@ import { ArrowBarToLeft as IconArrowBarToLeft } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $sidebarOpen, toggleSidebarOpen } from '@/store/layout'
 
-/** A page's sidebar panel follows the chat sidebar's open state: one ⌘B, one collapse button, and
- *  switching between Chats, Agents and Settings never re-opens a panel the user folded away. */
+import { $widthClass, BELOW_WIDE_QUERY } from '../redesign/breakpoints'
+import { $shellSheet, toggleShellSheet } from '../shell/shell-sheet'
+
+/** A page's sidebar panel follows the chat sidebar's open state on a wide window: one ⌘B, one
+ *  collapse button, and switching between Chats, Agents and Settings never re-opens a panel the user
+ *  folded away. Below wide it is a sheet the band's menu opens (app/shell/shell-sheet.ts), and the
+ *  docked preference is left alone for when the window widens again. */
 export function usePageSidebarOpen() {
   // Mounting a page that owns a panel tells the band (PageToolbar) to offer "show sidebar" while
-  // the panel is folded away, as the chat band does.
+  // the panel is folded away, as the chat band does, and below wide to open it as a sheet.
   useEffect(() => {
     $pagePanels.set($pagePanels.get() + 1)
 
     return () => $pagePanels.set($pagePanels.get() - 1)
   }, [])
 
-  return useStore($sidebarOpen)
+  const docked = useStore($sidebarOpen)
+  const wide = useStore($widthClass) === 'wide'
+  const sheet = useStore($shellSheet) === 'page'
+
+  return wide ? docked : sheet
+}
+
+/** The panel's own collapse button and the band's menu: fold the docked panel, or close its sheet. */
+export function togglePageSidebar(): void {
+  if ($widthClass.get() === 'wide') {
+    toggleSidebarOpen()
+  } else {
+    toggleShellSheet('page')
+  }
 }
 
 const $pagePanels = atom(0)
 
-/** Below this the list panel folds away (portal-pages.css) and a destination shows its list itself. */
-export const PAGE_SIDEBAR_NARROW = '(max-width: 800px)'
+/** Below wide the list panel is a sheet (portal-pages.css), and a destination that needs its list on
+ *  screen (the Agents landing, Schedules) shows it in the stage itself. */
+export const PAGE_SIDEBAR_NARROW = BELOW_WIDE_QUERY
 
 /** A page with a sidebar panel is showing. */
 export const $pageHasSidebar = computed($pagePanels, count => count > 0)
@@ -44,7 +63,7 @@ export function PageSidebarHead({ title }: { title: string }) {
         <Button
           aria-label={t.titlebar.hideSidebar}
           className="page-sidebar-collapse"
-          onClick={toggleSidebarOpen}
+          onClick={togglePageSidebar}
           size="icon"
           variant="ghost"
         >

@@ -265,6 +265,18 @@
   }
 }
 
+/* A phone's narrowest sheet (a 320px window leaves the panel 204px): the wordmark steps down a display
+   size rather than run under the collapse button. Narrower than any docked sidebar. */
+:root[data-shell='portal'] .portal-sidebar {
+  container: portal-sidebar / inline-size;
+}
+
+@container portal-sidebar (max-width: 13.5rem) {
+  .portal-sidebar-wordmark {
+    font-size: var(--portal-type-display-lg-size);
+  }
+}
+
 .portal-sidebar .portal-new-session-picker {
   gap: 0.25rem;
   padding-inline: 0.625rem 0.5rem;
@@ -702,7 +714,7 @@ button.portal-section-title:hover {
   opacity: 0;
 }
 
-@media (hover: none) {
+@media (hover: none), (pointer: coarse) {
   .portal-sidebar .portal-row-action {
     opacity: 1;
   }
@@ -957,7 +969,7 @@ button.portal-section-title:hover {
   transform: rotate(90deg);
 }
 
-@media (hover: none) {
+@media (hover: none), (pointer: coarse) {
   .portal-sidebar :is(.portal-agent-collapse, .portal-agent-menu-trigger) {
     opacity: 1;
   }
@@ -1032,7 +1044,7 @@ button.portal-section-title:hover {
   order: 1;
 }
 
-@media (hover: none) {
+@media (hover: none), (pointer: coarse) {
   .portal-agent-sessions .portal-session-item[data-actions] .portal-session-row {
     padding-inline-end: 2rem;
   }
@@ -1289,7 +1301,7 @@ button.portal-section-title:hover {
   opacity: 0;
 }
 
-@media (hover: none) {
+@media (hover: none), (pointer: coarse) {
   .portal-hidden-row[data-attention] .portal-hidden-show {
     position: static;
     opacity: 1;
@@ -1333,5 +1345,50 @@ button.portal-section-title:hover {
 
   .portal-sidebar-badge img {
     height: 2rem;
+  }
+}
+
+/* ── Touch (DESIGN.md › Responsive) ──────────────────────────────────────────────────────────────
+   A coarse pointer on the browser host: every row and its actions take the 44px target. Rows grow;
+   the end actions (already shown, above) become 44px squares at the row's end; section headings
+   and the agent disclosure grow to the target too. Native Desktop keeps Figma's density. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-sidebar {
+    --portal-sidebar-row: var(--portal-touch-target);
+    --portal-sidebar-pin-row: var(--portal-touch-target);
+    --portal-sidebar-machine-row: var(--portal-touch-target);
+    --portal-sidebar-chat-row: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] .portal-sidebar .portal-row-action {
+    inset-inline-end: 0;
+    width: var(--portal-touch-target);
+    height: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    .portal-sidebar
+    .portal-session-item[data-actions]
+    .portal-session-row {
+    padding-inline-end: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    .portal-sidebar
+    :is(.portal-agent-collapse, .portal-agent-menu-trigger, .portal-section-action, .portal-sidebar-collapse) {
+    width: var(--portal-touch-target);
+    min-width: var(--portal-touch-target);
+    height: var(--portal-touch-target);
+  }
+
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    .portal-sidebar
+    :is(
+      .portal-section-title,
+      .portal-new-session > button,
+      [data-slot='gateway-heading'],
+      [data-slot='agent-heading']
+    ) {
+    min-height: var(--portal-touch-target);
   }
 }

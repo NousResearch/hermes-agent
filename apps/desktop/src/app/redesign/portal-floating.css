@@ -42,7 +42,7 @@
    never runs past the window. */
 :root[data-shell='portal'] [data-slot='select-content'] {
   min-width: var(--radix-select-trigger-width);
-  max-height: min(calc(8 * 2rem + 10px), var(--radix-select-content-available-height, 100vh));
+  max-height: min(calc(8 * 2rem + 10px), var(--radix-select-content-available-height, 100dvh));
 }
 
 :root[data-shell='portal'] [data-slot='select-content'] > [data-radix-select-viewport] {
@@ -209,4 +209,84 @@
 :root[data-shell='portal'] .hermes-toast-controls {
   border: 1px solid var(--portal-floating-stroke);
   border-radius: var(--portal-menu-radius);
+}
+
+/* ── Touch and small windows (DESIGN.md › Responsive) ───────────────────────── */
+
+/* A coarse pointer on the browser host: menu rows take the 44px target. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal']
+    :is(
+      [data-slot='dropdown-menu-item'],
+      [data-slot='dropdown-menu-checkbox-item'],
+      [data-slot='dropdown-menu-radio-item'],
+      [data-slot='dropdown-menu-sub-trigger'],
+      [data-slot='context-menu-item'],
+      [data-slot='select-item'],
+      [data-slot='command-item']
+    ) {
+    min-height: var(--portal-touch-target);
+  }
+}
+
+/* Every floating surface stays inside the window: no wider or taller than the room Radix measured
+   on its side, less a 16px gutter, and scrolling inside when its content is taller. */
+:root[data-shell='portal'] :is([data-slot='dropdown-menu-content'], [data-slot='dropdown-menu-sub-content']) {
+  max-width: calc(var(--radix-dropdown-menu-content-available-width, 100vw) - 1rem);
+}
+
+:root[data-shell='portal'] :is([data-slot='context-menu-content'], [data-slot='context-menu-sub-content']) {
+  max-width: calc(var(--radix-context-menu-content-available-width, 100vw) - 1rem);
+}
+
+:root[data-shell='portal'] [data-slot='popover-content'] {
+  max-width: calc(var(--radix-popover-content-available-width, 100vw) - 1rem);
+  max-height: calc(var(--radix-popover-content-available-height, 100dvh) - 1rem);
+  overflow-y: auto;
+}
+
+/* Compact (breakpoints.ts: max-width 639.98px): a dialog is the whole window, its actions pinned to
+   the bottom edge (the sticky footer above) clear of the home indicator; a focused field scrolls
+   into the body's view, above the keyboard where the browser resizes for it. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] [data-slot='dialog-content'] {
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    height: 100dvh;
+    max-height: none;
+    translate: none;
+    transform: none;
+    border-width: 0;
+    border-radius: 0;
+    padding-top: var(--portal-safe-top);
+    padding-bottom: var(--portal-safe-bottom);
+  }
+
+  /* The body fills the window and lays its blocks in a column, so the footer rests on the floor even
+     when the form is short. */
+  :root[data-shell='portal'] [data-slot='dialog-content'] > div:not([class~='p-0']):has(> [data-slot='dialog-footer']) {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+  }
+
+  :root[data-shell='portal'] [data-slot='dialog-content'] > div:not([class~='p-0']) > * {
+    min-width: 0;
+  }
+
+  :root[data-shell='portal'] [data-slot='dialog-content'] > div:not([class~='p-0']) > [data-slot='dialog-footer'] {
+    margin-top: auto;
+  }
+
+  :root[data-shell='portal'] [data-slot='dialog-content'] :is(input, textarea, select, [contenteditable='true']) {
+    scroll-margin-block: 1.5rem 6rem;
+  }
+
+  /* Toasts span the window above the docked composer (or the floor), under the band. */
+  :root[data-shell='portal'] .hermes-toast-region {
+    right: calc(0.75rem + var(--portal-safe-end));
+    left: calc(0.75rem + var(--portal-safe-start));
+    width: auto;
+  }
 }

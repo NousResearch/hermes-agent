@@ -9,6 +9,7 @@ import { usePortalShell } from '@/store/shell-variant'
 
 import { SimplifiedGlobalNav } from '../chat/sidebar/simplified-global-nav'
 import { appViewForPath, isOverlayView } from '../routes'
+import { ShellSheetController } from '../shell/shell-sheet-view'
 import { useTitlebarHeight } from '../shell/use-touch-titlebar'
 
 type Props = ComponentProps<typeof SimplifiedGlobalNav>
@@ -52,6 +53,7 @@ function NavigationWithChatSidebar(props: Props) {
   return (
     <div className="flex shrink-0" style={{ '--titlebar-height': `${titlebarHeight}px` } as CSSProperties}>
       <SimplifiedGlobalNav {...props} />
+      <ShellSheetController />
     </div>
   )
 }

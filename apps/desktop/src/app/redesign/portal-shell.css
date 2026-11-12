@@ -25,7 +25,7 @@
   position: absolute;
   inset-inline: 0;
   top: var(--zone-band-height, 100%);
-  height: 100vh;
+  height: 100dvh;
   border-inline-start: 1px solid var(--portal-panel-divider);
   background-color: var(--ui-editor-surface-background);
   pointer-events: none;
@@ -429,8 +429,8 @@
 
 .hermes-toast-region {
   /* Inside the stage, never across a seam: a narrow window's stage is narrower than a toast. */
-  right: calc(var(--workspace-right, 0px) + 1rem);
-  bottom: 1rem;
+  right: calc(var(--workspace-right, 0px) + 1rem + var(--portal-safe-end));
+  bottom: calc(1rem + var(--portal-safe-bottom));
   width: min(24rem, calc(100vw - var(--workspace-left, 0px) - var(--workspace-right, 0px) - 2rem));
 }
 
@@ -483,4 +483,97 @@
 
 :root[data-shell='portal'] [data-slot='find-bar'] input {
   border-radius: var(--portal-radius-control);
+}
+
+/* ── Sheets below wide (DESIGN.md › Responsive) ───────────────────────────────────────────────────
+   Below wide the chat sidebar (the pane tree's narrow overlay) and a page's panel slide over a
+   full-width stage instead of squeezing it: a full-height panel past the rail, under the band's
+   height of canvas, over a scrim that a tap, Esc or a pick dismisses (app/shell/shell-sheet.ts). On
+   compact the rail has no column, so it rides the sheet: the sheet is the desktop's left side. */
+:root[data-shell='portal'] [data-narrow-overlay] {
+  position: fixed;
+  z-index: var(--portal-layer-sheet);
+  border-color: var(--portal-panel-divider);
+  box-shadow: var(--portal-shadow-floating);
+  overscroll-behavior: contain;
+}
+
+:root[data-shell='portal'] [data-narrow-overlay-side='left'] {
+  inset-inline-start: var(--portal-rail-width);
+}
+
+:root[data-shell='portal'] :is([data-narrow-overlay-backdrop], .portal-sheet-scrim) {
+  position: fixed;
+  z-index: var(--portal-layer-sheet-scrim);
+  inset: 0;
+  background-color: var(--portal-surface-scrim);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  :root[data-shell='portal'] :is([data-narrow-overlay-backdrop], .portal-sheet-scrim) {
+    animation: portal-scrim-in var(--portal-motion-slow) var(--portal-ease) both;
+  }
+
+  :root[data-shell='portal'] [data-narrow-overlay-side='left'] {
+    animation: portal-sheet-in var(--portal-motion-slow) var(--portal-ease) both;
+  }
+}
+
+@keyframes portal-scrim-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes portal-sheet-in {
+  from {
+    translate: -1.5rem 0;
+    opacity: 0;
+  }
+}
+
+/* The band stands down under a sheet: its controls would otherwise float over the scrim. */
+:root[data-shell='portal'][data-portal-sheet] :is([data-titlebar-cluster], .portal-session-tab-cluster) {
+  visibility: hidden;
+}
+
+/* Compact (breakpoints.ts: max-width 639.98px): no rail column. The global rail joins the chat
+   sidebar's or a page's sheet (or opens alone on a page with none) at the window's edge, on the
+   canvas, from the band down; the developer rail has no compact form. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] :is([data-slot='global-nav'], [data-slot='developer-rail']) {
+    display: none;
+  }
+
+  :root[data-shell='portal']:is([data-portal-sheet='sessions'], [data-portal-sheet='page'], [data-portal-sheet='nav'])
+    [data-slot='global-nav'] {
+    position: fixed;
+    z-index: var(--portal-layer-sheet-rail);
+    inset-block: 0;
+    inset-inline-start: 0;
+    display: flex;
+    width: var(--portal-rail-width);
+    margin-top: 0;
+    padding-top: calc(var(--titlebar-height) + 1.0625rem);
+    padding-bottom: 1.25rem;
+    background-color: var(--portal-surface-canvas);
+    overscroll-behavior: contain;
+  }
+}
+
+/* ── Safe areas (browser host, viewport-fit=cover: app/redesign/browser-chrome.ts) ──────────────
+   On a phone with a notch or a home indicator the whole app root is inset by the safe area, and is
+   the containing block of everything fixed inside it (band clusters, route pages, sheets), so no
+   surface needs its own inset; the canvas paints the areas around it. Only where a device reports
+   one: every other window lays out exactly as before. */
+html[data-hermes-desktop-host='browser'][data-shell='portal'][data-portal-safe-area] body {
+  background-color: var(--portal-surface-canvas);
+}
+
+html[data-hermes-desktop-host='browser'][data-shell='portal'][data-portal-safe-area]
+  #root:not([data-browser-viewport]) {
+  position: fixed;
+  inset: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px)
+    env(safe-area-inset-left, 0px);
+  contain: layout;
 }

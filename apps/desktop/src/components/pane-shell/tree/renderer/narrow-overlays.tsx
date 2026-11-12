@@ -7,7 +7,7 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type MouseEventHandler, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, type MouseEventHandler, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useTitlebarHeight } from '@/app/shell/use-touch-titlebar'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
@@ -17,9 +17,11 @@ import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { hostHas } from '@/lib/host-capabilities'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
 import { $paneStates } from '@/store/panes'
+import { usePortalShell } from '@/store/shell-variant'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
 import { useWindowControlsOverlap } from '../../geometry'
@@ -50,8 +52,63 @@ export function narrowOverlayWidth(ctx: TrackContext, tree: LayoutNode | null, r
   return track ?? paneChrome(revealed).width ?? '18rem'
 }
 
+interface OverlayStyleInput {
+  overlayWidth: string | null
+  portal: boolean
+  side: 'left' | 'right'
+  titlebarHeight: number
+  wcOverlap: { height: number; y: number } | null
+}
+
+/** Match the pane's docked width (sessions ~237px, files its rail width) instead of a fat fixed
+ *  20rem — capped for tiny screens. The top inset keeps the tab strip below the band on the browser
+ *  host and in the redesign, else below the native window controls (macOS traffic lights); the
+ *  spacer the overlay draws keeps that band draggable, mirroring TreeGroup's reservation. The
+ *  redesign's left overlay is a sheet sized by its token (portal-shell.css places it past the rail). */
+export function overlayStyle({
+  overlayWidth,
+  portal,
+  side,
+  titlebarHeight,
+  wcOverlap
+}: OverlayStyleInput): CSSProperties {
+  const underBand = portal || hostHas('narrowOverlayChrome')
+  const paddingTop = underBand ? titlebarHeight : wcOverlap ? wcOverlap.y + wcOverlap.height : undefined
+
+  if (portal && side === 'left') {
+    return { paddingTop, width: 'var(--portal-sheet-panel-width)' }
+  }
+
+  // Global/developer rails take space outside this overlay's layout root.
+  return { maxWidth: '100%', paddingTop, width: `min(${overlayWidth ?? '18rem'}, 85vw)` }
+}
+
+/** A touch screen has no hover to leave the overlay by, so the browser host closes it on a tap
+ *  outside; the redesign's sheet does on every host. Native classic lets that click reach the app
+ *  and keeps the overlay until Escape, the toggle or hover-out. */
+const dismissesOnTapOutside = (portal: boolean) => portal || hostHas('tapOutsideDismiss')
+
+/** A touch screen synthesizes mouse enters on every tap, so in the redesign, where the band's menu
+ *  opens the sheet, a tap near the edge would re-open a sheet the user just closed. */
+const revealsOnHover = (portal: boolean, touch: boolean) => !(portal && touch)
+
+/** Hover-intent strips on each edge that has a collapsed pane. */
+function EdgeStrips({ onEnter, sides }: { onEnter: (side: string) => void; sides: readonly string[] }) {
+  return sides.map(side => (
+    <div
+      className={cn('absolute inset-y-0 z-30 w-1.5', side === 'left' ? 'left-0' : 'right-0')}
+      key={side}
+      onMouseEnter={() => onEnter(side)}
+    />
+  ))
+}
+
 export function NarrowOverlays() {
   const titlebarHeight = useTitlebarHeight()
+  // The redesign draws a revealed pane as a sheet on every host (app/shell/shell-sheet.ts): a visible
+  // scrim that a tap dismisses, the panel starting under the band, sized by its sheet token.
+  const portal = usePortalShell()
+  const touchPointer = useStore($touchPointer)
   const narrow = useStore($narrowViewport)
   const solo = useStore($chatOnboardingSolo)
   const tree = useStore($layoutTree)
@@ -221,7 +278,11 @@ export function NarrowOverlays() {
     return shown.length > 0 ? shown : [revealed]
   })()
 
-  const tabKeyboardProps = usePaneTabKeyboard(zonePanes.map(pane => pane.id), revealed?.id ?? '', overlayRef)
+  const tabKeyboardProps = usePaneTabKeyboard(
+    zonePanes.map(pane => pane.id),
+    revealed?.id ?? '',
+    overlayRef
+  )
 
   if (!narrow || solo || collapsibles.length === 0) {
     return null
@@ -229,10 +290,7 @@ export function NarrowOverlays() {
 
   return (
     <>
-      {/* A touch screen has no hover to leave the overlay by, so the browser
-          host closes it on a tap outside. Native Desktop lets that click reach
-          the app and keeps the overlay until Escape, the toggle or hover-out. */}
-      {revealed && hostHas('tapOutsideDismiss') && (
+      {revealed && dismissesOnTapOutside(portal) && (
         <div
           aria-hidden="true"
           className="absolute inset-0 z-30"
@@ -268,20 +326,18 @@ export function NarrowOverlays() {
           }}
         />
       )}
-      {/* Hover-intent strips on each edge that has a collapsed pane. */}
-      {sides.map(side => (
-        <div
-          className={cn('absolute inset-y-0 z-30 w-1.5', side === 'left' ? 'left-0' : 'right-0')}
-          key={side}
-          onMouseEnter={() => {
+      {revealsOnHover(portal, touchPointer) && (
+        <EdgeStrips
+          onEnter={side => {
             const first = collapsibles.find(p => sideOf(p) === side)
 
             if (first) {
               setReveal(current => (current?.pinned ? current : { id: first.id, pinned: false }))
             }
           }}
+          sides={sides}
         />
-      ))}
+      )}
 
       {revealed && (
         <div
@@ -296,23 +352,16 @@ export function NarrowOverlays() {
           // through text. Contract: `[data-glass-opaque]` in styles.css.
           data-glass-opaque=""
           data-narrow-overlay={revealed.id}
+          data-narrow-overlay-side={sideOf(revealed)}
           onMouseLeave={onMouseLeave}
           ref={overlayRef}
-          // Match the pane's docked width (sessions ~237px, files its rail
-          // width) instead of a fat fixed 20rem — capped for tiny screens.
-          // paddingTop keeps the tab strip below the native window controls
-          // (macOS traffic lights); the spacer above keeps that band
-          // draggable, mirroring TreeGroup's reservation.
-          style={{
-            paddingTop: hostHas('narrowOverlayChrome')
-              ? titlebarHeight
-              : wcOverlap
-                ? wcOverlap.y + wcOverlap.height
-                : undefined,
-            width: `min(${overlayWidth}, 85vw)`,
-            // Global/developer rails take space outside this overlay's layout root.
-            maxWidth: '100%'
-          }}
+          style={overlayStyle({
+            overlayWidth,
+            portal,
+            side: sideOf(revealed),
+            titlebarHeight,
+            wcOverlap
+          })}
         >
           {wcOverlap && (
             <div

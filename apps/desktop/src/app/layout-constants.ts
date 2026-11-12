@@ -1,3 +1,5 @@
+import { BREAKPOINT_MEDIUM_PX, COMPACT_QUERY } from './redesign/breakpoints'
+
 // Responsive horizontal gutter for primary content bodies (settings right side,
 // skills, artifacts, command center / sessions). Ratio-based so it scales with
 // the window, but clamped so it never collapses on narrow widths or runs away
@@ -27,6 +29,7 @@ export const PAGE_MAX_W = 'max-w-[75rem]'
 // paying for itself around here — while still leaving an overlay band down to the
 // window's own 400px minimum. Expressed as a dock floor rather than a collapse
 // ceiling so half-screen splits stay docked on common laptop widths (1280 → 640).
-export const SIDEBAR_DOCK_MIN_WIDTH_PX = 640
-// `max-width` is inclusive: shave a hair so an exactly-640px window docks.
-export const SIDEBAR_COLLAPSE_MEDIA_QUERY = `(max-width: ${SIDEBAR_DOCK_MIN_WIDTH_PX - 0.02}px)`
+// It is the redesign's medium breakpoint (app/redesign/breakpoints.ts): one literal for both shells.
+export const SIDEBAR_DOCK_MIN_WIDTH_PX = BREAKPOINT_MEDIUM_PX
+// `max-width` is inclusive: an exactly-640px window docks.
+export const SIDEBAR_COLLAPSE_MEDIA_QUERY = COMPACT_QUERY

@@ -107,6 +107,13 @@
   pointer-events: none;
 }
 
+/* Short (max-height 30rem: a landscape phone, a software keyboard) has no room for decoration. */
+@media (max-height: 30rem) {
+  :root[data-shell='portal'] .chat-stage-art {
+    display: none;
+  }
+}
+
 /* Landing → conversation: the photo settles to its trace on the slow step, never delaying the
    transcript (it is decoration under it). */
 @media (prefers-reduced-motion: no-preference) {
@@ -186,4 +193,13 @@
 :root[data-shell='portal'] [data-slot='portal-conversation-header'] button:hover:not(:disabled) {
   background-color: var(--portal-raw-ink-5);
   color: var(--ui-text-primary);
+}
+
+/* Compact and short windows (breakpoints.ts: max-width 639.98px; max-height 30rem) dock the composer
+   closer to the floor: a phone's height is the transcript's. */
+@media (max-width: 639.98px), (max-height: 30rem) {
+  :root[data-shell='portal'] [data-slot='composer-dock'][data-redesigned-composer]:not([data-popped-out]) {
+    --portal-composer-dock-floor: var(--portal-space-compact);
+    --portal-composer-dock-fade: var(--portal-space-tight);
+  }
 }

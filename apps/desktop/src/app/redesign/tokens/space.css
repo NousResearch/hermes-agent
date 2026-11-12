@@ -4,6 +4,35 @@
 :root[data-shell='portal'] {
   /* The global rail and the developer rail (1036:7202). */
   --portal-rail-width: 3.75rem;
+  /* What the rail takes from the layout: its width, none on compact, where it rides the sheet. */
+  --portal-rail-reserve: var(--portal-rail-width);
+
+  /* The responsive model (app/redesign/breakpoints.ts, DESIGN.md › Responsive): compact below the
+     medium breakpoint, medium below the wide one, wide from there. A custom property cannot feed a
+     media query, so every redesign query repeats the literal (max-width: 639.98px / 1023.98px) with a
+     comment naming the class; these two document it. */
+  --portal-breakpoint-medium: 640px;
+  --portal-breakpoint-wide: 1024px;
+  /* Below wide the chat sidebar and page panels are sheets over the stage: the panel's width, leaving
+     a 56px strip of scrim to tap. */
+  --portal-sheet-width: min(20rem, 100vw - 3.5rem);
+  /* The sheet's panel past the rail: the whole sheet on medium (the rail stays in the layout), the
+     sheet less the rail on compact (the rail rides the sheet). */
+  --portal-sheet-panel-width: calc(var(--portal-sheet-width) - var(--portal-rail-width) + var(--portal-rail-reserve));
+  /* The smallest hit area on a coarse pointer (WCAG 2.5.5); a control's visual may stay smaller. */
+  --portal-touch-target: 2.75rem;
+  /* A phone's tighter rhythm (compact and short windows): the composer's padding and gaps, its dock's
+     floor, and on touch its control rows, whose 44px targets overlap the padding. */
+  --portal-space-compact: 0.75rem;
+  --portal-space-tight: 0.5rem;
+  --portal-composer-row-touch: 1.75rem;
+  /* The browser's safe area (notch, home indicator) once the page is laid out under it
+     (viewport-fit=cover, app/redesign/browser-chrome.ts); zero on every other host. The app root is
+     inset by it as a whole (portal-shell.css), so only body-portalled surfaces (dialogs) read these. */
+  --portal-safe-top: env(safe-area-inset-top, 0px);
+  --portal-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --portal-safe-start: env(safe-area-inset-left, 0px);
+  --portal-safe-end: env(safe-area-inset-right, 0px);
   /* ONE sidebar column for every rail destination: page panels (Agents, Schedules, Settings) take the
      chat sidebar's width — the user's sash width once they size it (published by the pane tree as
      --portal-sidebar-width), else its default — so switching destinations never moves the panel edge,
@@ -39,4 +68,32 @@
   --page-form-max-width: var(--portal-column-form);
   --page-catalog-max-width: var(--portal-column-catalog);
   --portal-chrome-button-size: var(--portal-row-chrome);
+}
+
+/* Medium (breakpoints.ts: max-width 1023.98px): one column beside no panel, so a page's column starts
+   at the panel inset rather than Figma's 90px stage inset. */
+@media (max-width: 1023.98px) {
+  :root[data-shell='portal'] {
+    --portal-stage-inset: var(--portal-frame-inset);
+  }
+}
+
+/* Compact (breakpoints.ts: max-width 639.98px): no rail column, and every page inset is one 16px
+   gutter. */
+@media (max-width: 639.98px) {
+  :root[data-shell='portal'] {
+    --portal-rail-reserve: 0px;
+    --portal-frame-inset: 1rem;
+    --portal-stage-inset: 1rem;
+    --page-content-inset: 1rem;
+  }
+}
+
+/* A coarse pointer on the browser host: chrome buttons (band, rails, pane headers) and panel rows take
+   the touch target. Native Desktop keeps its pointer rhythm on any pointer, as classic does. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'][data-shell='portal'] {
+    --portal-row-chrome: var(--portal-touch-target);
+    --portal-row-panel: var(--portal-touch-target);
+  }
 }

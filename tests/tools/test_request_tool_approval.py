@@ -87,8 +87,11 @@ class TestRequestToolApproval:
         assert res["approved"] is False
         assert "denied" in res["message"].lower()
         assert res["pattern_key"].startswith("plugin_rule:")
+        # The explainer hook runs between the two observer hooks: once a human is about to be
+        # asked, the prompt is enriched before it is shown, and post reports the decision after.
         assert [name for name, _ in events] == [
             "pre_approval_request",
+            "approval_explanation",
             "post_approval_response",
         ]
         assert all(event["turn_id"] == "turn-1" for _, event in events)

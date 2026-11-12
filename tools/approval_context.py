@@ -51,26 +51,32 @@ def _is_interactive_cli() -> bool:
     return is_truthy_value(ctx_val) if ctx_val is not None else env_var_enabled("HERMES_INTERACTIVE")
 
 
-def _fire_approval_hook(hook_name: str, **kwargs) -> None:
-    """Invoke a plugin lifecycle hook (pre_approval_request / post_approval_response).
+def _call_approval_hook(hook_name: str, **kwargs) -> list:
+    """Invoke an approval lifecycle hook and return its results.
 
-    Lazy-imports the plugin manager (approval.py is imported long before plugins
-    are discovered). Never raises: approval flow is safety-critical, plugin
-    observability is not.
+    Lazy-imports the plugin manager (approval.py is imported long before plugins are discovered).
+    Never raises: approval flow is safety-critical, plugin output is not. Observer hooks ignore the
+    return; ``approval_explanation`` is a transform hook and reads it.
     """
     try:
         from hermes_cli.lifecycle import invoke_hook
     except Exception:
-        return  # plugin system unavailable (bare tool-only imports, minimal tests)
+        return []  # plugin system unavailable (bare tool-only imports, minimal tests)
     try:
         kwargs.setdefault("turn_id", _approval_turn_id.get())
         kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
         if _approval_session_id.get():
             kwargs.setdefault("session_id", _approval_session_id.get())
-        invoke_hook(hook_name, **kwargs)
+        return invoke_hook(hook_name, **kwargs) or []
     except Exception as exc:
         # invoke_hook() swallows per-callback errors; this is the dispatch layer itself failing.
         logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
+        return []
+
+
+def _fire_approval_hook(hook_name: str, **kwargs) -> None:
+    """Fire an observer hook (pre_approval_request / post_approval_response): results discarded."""
+    _call_approval_hook(hook_name, **kwargs)
 
 
 def gateway_approval_surface() -> str:

@@ -173,13 +173,13 @@ def _static_explanation(*labels: str) -> str | None:
 def _hook_explanation(command: str, description: str, pattern_key: str, session_key: str) -> str | None:
     """A plugin's ``approval_explanation`` return, first non-empty string wins. Never raises."""
     try:
-        from hermes_cli.lifecycle import invoke_hook
-    except Exception:
-        logger.debug("approval_explanation hook unavailable: no plugin dispatcher here", exc_info=True)
-        return None
-    try:
-        results = invoke_hook("approval_explanation", command=command, description=description,
-                              pattern_key=pattern_key, session_key=session_key)
+        from tools import approval_context as _ctx
+
+        # Same dispatch helper the observer hooks use, so a plugin sees the same turn_id /
+        # tool_call_id / session_id context here as in pre_approval_request.
+        results = _ctx._call_approval_hook("approval_explanation", command=command,
+                                           description=description, pattern_key=pattern_key,
+                                           session_key=session_key)
     except Exception:
         logger.debug("approval_explanation hook dispatch failed", exc_info=True)
         return None

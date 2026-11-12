@@ -973,9 +973,16 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             return result
     pending_body = pending_body() if pending_body else None
     allow_permanent = not smart_denied
-    # A human is about to be asked (smart APPROVE/DENY returned above), so explain the command in
-    # plain English once and hand the line to every surface below.
-    explanation = _explanation_for(command, description, pattern_key, session_key)
+    # A human is about to be asked (smart APPROVE/DENY returned above), so the command gets one
+    # plain-English line — but computed at the prompt, not here: a plugin's pre_approval_request
+    # must see the request before the approval_explanation hook runs, and a surface that ends up
+    # not prompting must not pay for it.
+    _explained: list[str | None] = []
+
+    def explain() -> str | None:
+        if not _explained:
+            _explained.append(_explanation_for(command, description, pattern_key, session_key))
+        return _explained[0]
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -1000,7 +1007,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
             session_key=session_key, allow_session=not smart_denied, allow_permanent=allow_permanent,
             surface=approval_context.gateway_approval_surface() if (is_gateway or is_ask) else "cli",
-            explanation=explanation,
+            explanation=explain(),
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
         if denied is not None:
@@ -1027,7 +1034,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 "pattern_keys": pattern_keys, "description": display_description,
                 "allow_permanent": not smart_denied,
                 "allow_session": not smart_denied,
-                "explanation": explanation or "",
+                "explanation": explain() or "",
             }
             if smart_denied:
                 data["smart_denied"] = True
@@ -1078,7 +1085,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     approval_context._fire_approval_hook("pre_approval_request", **hook_kwargs)
     choice = prompt_dangerous_approval(prompt_command, prompt_description, allow_permanent=allow_permanent,
                                        smart_denied=smart_denied, approval_callback=approval_callback,
-                                       explanation=explanation)
+                                       explanation=explain())
     approval_context._fire_approval_hook("post_approval_response", **hook_kwargs, choice=choice)
     if choice == "timeout":
         return deny(spec.cli_timeout, "timeout")

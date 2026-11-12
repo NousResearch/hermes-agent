@@ -23,8 +23,11 @@ _DROPPED_MARKER_RE = {False: _RAW_INDICATOR_RE, True: re.compile(r"\s*" + _MDV2_
 
 
 class CappedChunks(list):
-    """``cap_split_chunks`` output that the cap cut; ``dropped`` is the reply text it dropped."""
+    """``cap_split_chunks`` output that the cap cut: ``dropped`` counts the reply text it dropped,
+    ``cut`` holds the dropped chunks and ``notice`` the notice it ends with (``None`` when hidden)."""
     dropped = 0
+    cut: tuple = ()
+    notice: Any = None
 
 
 def split_budget(adapter: Any, metadata: Any) -> int:
@@ -42,29 +45,33 @@ def capped_raw(chunks: Any, raw: Any) -> Any:
     return {**(raw if isinstance(raw, dict) else {}), "split_capped": True, "dropped_chars": chunks.dropped}
 
 
-def cap_split_chunks(adapter: Any, chunks: list[str], *, formatted: bool, metadata: Any = None) -> list[str]:
+def cap_split_chunks(adapter: Any, chunks: list[str], *, formatted: bool, metadata: Any = None,
+                     numbered: bool = True) -> list[str]:
     """Keep the first ``cap - 1`` chunks plus the truncation notice (when warnings are shown),
     renumbering the ``(N/M)`` markers to the capped count; ``cap`` is :func:`split_budget`.
     ``formatted`` chunks are MarkdownV2 already, so the notice is formatted the same way and escapes
-    are not counted as dropped characters; raw chunks get their formatting at send time."""
+    are not counted as dropped characters; raw chunks get their formatting at send time.
+    ``numbered=False`` chunks (rich parts) carry no markers, so none are renumbered or discounted."""
     cap = split_budget(adapter, metadata)
     if len(chunks) <= cap:
         return chunks
     marker = _MDV2_INDICATOR_RE if formatted else _RAW_INDICATOR_RE
     kept, dropped = chunks[: cap - 1], chunks[cap - 1:]
-    dropped_text = (_DROPPED_MARKER_RE[formatted].sub("", chunk) for chunk in dropped)
+    dropped_text = (_DROPPED_MARKER_RE[formatted].sub("", chunk) if numbered else chunk for chunk in dropped)
     if formatted:
         dropped_text = (_MDV2_ESCAPE_RE.sub(r"\1", chunk) for chunk in dropped_text)
     dropped_chars = sum(len(chunk) for chunk in dropped_text)
     notice = adapter._split_cap_notice(dropped_chars)
     tail = [adapter.format_message(notice) if formatted else notice] if notice else []
     total = len(kept) + len(tail)
-    if formatted:
+    if not numbered:
+        out = CappedChunks(kept)
+    elif formatted:
         out = CappedChunks(marker.sub(lambda m: f"\\({m.group(1)}/{total}\\)", chunk) for chunk in kept)
     else:
         out = CappedChunks(marker.sub(lambda m: f" ({m.group(1)}/{total})", chunk) for chunk in kept)
     out += tail
-    out.dropped = dropped_chars
+    out.dropped, out.cut, out.notice = dropped_chars, tuple(dropped), tail[0] if tail else None
     return out
 
 

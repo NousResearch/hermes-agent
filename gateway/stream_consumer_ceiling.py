@@ -169,6 +169,17 @@ class StreamCeilingMixin:
             await self._ceiling_send_notice()
         return True
 
+    def _ceiling_capped_seal(self, split_at: int) -> bool:
+        """After a normal seal: the adapter capped it at the reply's budget (its own notice is last),
+        so that head was the reply's last text and the tail must not become a new live preview.
+        Happens when the consumer counted the head as one rich-sized message but the adapter split
+        it as MarkdownV2 (a head without rich constructs)."""
+        if not getattr(self, "_ceiling_hit", False):
+            return False
+        shown = len(self._stream_ledger) - len(self._accumulated) + split_at
+        self._ceiling_cut(shown - max(0, self._ceiling_adapter_dropped))
+        return True
+
     async def _ceiling_split_first_send(self, tick: Any, chunks: list[str]) -> Optional[bool]:
         """``_split_first_send`` when its chunks would pass the ceiling: send the heads that fit
         (renumbered), then the notice. None when they fit (the normal split runs)."""

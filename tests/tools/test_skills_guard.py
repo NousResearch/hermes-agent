@@ -1164,11 +1164,12 @@ class TestBundleIgnoreFilesNotHonored:
         assert any(fi.file == "payload.sh" for fi in result.findings)
         assert should_allow_install(result)[0] is False
 
-    def test_ignored_paths_still_count_in_structure(self, tmp_path):
+    @pytest.mark.parametrize("ignore_name", [".skillignore", ".clawhubignore"])
+    def test_ignored_paths_still_count_in_structure(self, tmp_path, ignore_name):
         skill_dir = tmp_path / "skill"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("# Skill\n", encoding="utf-8")
-        (skill_dir / ".skillignore").write_text("junk/\n", encoding="utf-8")
+        (skill_dir / ignore_name).write_text("junk/\n", encoding="utf-8")
         junk = skill_dir / "junk"
         junk.mkdir()
         for i in range(MAX_FILE_COUNT + 10):

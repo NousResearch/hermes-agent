@@ -191,7 +191,12 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         return None
     entry = entry_for_model(model_id)
     companions = _companions(entry)
-    is_mtp = _runs_mtp(entry, companions) if entry is not None else model_id in mtp_capable
+    # A staged file the catalog has never seen answers the MTP question from its own tensor table:
+    # an MTP head ships as ``blk.<N>.nextn.*`` blocks (llama.cpp then wants --spec-type draft-mtp).
+    # Without this, a drop-in MTP GGUF runs at plain decode speed while the same weights downloaded
+    # through the catalog get the draft — measured at 22.6 vs. 30.8 tok/s on one Radeon 780M.
+    is_mtp = (_runs_mtp(entry, companions) if entry is not None
+              else model_id in mtp_capable or header.has_mtp_head)
 
     fixed_overhead = RUNTIME_OVERHEAD_BYTES + companions.nbytes
     requested = load_window_overrides().get(model_id) if requested_window is None else requested_window
@@ -224,9 +229,10 @@ def preset_for_model(gguf: Path, budget: HardwareBudget,
         # The price above leaves these tensors on disk; llama.cpp's own default loads them on
         # integrated GPUs.
         keys["lazy-mode"] = "on"
-    if entry is not None and is_mtp:
+    if is_mtp:
         # Integrated-MTP targets sample on the backend, and so does the draft (pairing validated
-        # against the vendor's published llama.cpp recipes).
+        # against the vendor's published llama.cpp recipes). Applies to a detected head on a staged
+        # file too: it is the same engine path.
         keys["backend-sampling"] = "on"
         keys["spec-draft-backend-sampling"] = "on"
 

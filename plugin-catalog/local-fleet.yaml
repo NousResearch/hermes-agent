@@ -2,18 +2,7 @@ name: local-fleet
 repo: https://github.com/humedini/local-fleet
 sha: 94cd17d2477f9d1a6f39aeee153be1d25c5b57e2
 title: Local Fleet
-description: 'Your local inference fleet, operated from Hermes Desktop: routing across your own boxes (DGX Spark /
-  GB10, Ollama, vLLM, LiteLLM, clusters behind one endpoint). Probes each box, makes the least busy healthy one the
-  primary model, falls back to smaller models on smaller boxes, then to your cloud model, and switches back when a box
-  recovers. Why-this-box inspector, flight recorder, outage rehearsal, drift detection, readiness, savings with its
-  working, doctor. Optional: subagents across boxes (delegation backend fleet), side tasks on the fleet
-  (auxiliary.<task>), keep the routed model loaded, private inference (primary, fallback chain, side tasks and
-  subagents held to your boxes, failing rather than using cloud; not air-gapping). Writes model.*, fallback_providers,
-  and on request delegation.backend and auxiliary.<task>; private on removes non-local fallback entries and puts them
-  back on off; hermes fleet restore puts the primary back. Network: HTTP only to the boxes you register. Observer hooks
-  record per-call endpoint, model, tokens and duration (never content) in its data dir. Never moves a primary that
-  holds an inline API key and never copies a key into its data. Read-only tools plus a model pull from the Ollama
-  library that Hermes asks you to approve; no remote command execution.'
+description: "Your local inference fleet, operated from Hermes Desktop: routing across your own boxes (DGX Spark / GB10, Ollama, vLLM, LiteLLM, clusters behind one endpoint). Probes each box, makes the least busy healthy one the primary model, falls back to smaller models on smaller boxes, then to your cloud model, and switches back when a box recovers. Why-this-box inspector, flight recorder, outage rehearsal, drift detection, readiness, savings with its working, doctor. Optional: subagents across boxes (delegation backend fleet), side tasks on the fleet (auxiliary.<task>), keep the routed model loaded, private inference (primary, fallback chain, side tasks and subagents held to your boxes, failing rather than using cloud; not air-gapping). Writes model.*, fallback_providers, and on request delegation.backend and auxiliary.<task>; private on removes non-local fallback entries and puts them back on off; hermes fleet restore puts the primary back. Network: HTTP only to the boxes you register. Observer hooks record per-call endpoint, model, tokens and duration (never content) in its data dir. Never moves a primary that holds an inline API key and never copies a key into its data. Read-only tools plus a model pull from the Ollama library that Hermes asks you to approve; no remote command execution. Disclosure — Once you opt in, Local Fleet rewrites `model.*` and `fallback_providers` in your config.yaml (and, on request, `delegation.backend` and `auxiliary.<task>`) to route Hermes to your own inference boxes; it sends HTTP only to the boxes you register, records per-call endpoint, model, tokens and duration (never content) in its data dir, and asks for approval before every model pull."
 maintainer: humedini
 tier: community
 category: models

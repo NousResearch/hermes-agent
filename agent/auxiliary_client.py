@@ -4936,12 +4936,12 @@ def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
             # host base_url names is never intended. Explicit api_key or the placeholder only.
             custom_key = _normalize_api_key(req.explicit_api_key) or "no-key-required"
         else:
-            custom_key = (
-                _normalize_api_key(req.explicit_api_key)
-                or _scoped_key_env("OPENAI_API_KEY")
-                or _read_main_api_key_if_same_origin(custom_base)
-                or "no-key-required"  # local servers don't need auth
-            )
+            from hermes_cli.runtime_provider import openai_env_key_authoritative_for  # SECURITY #91308: gated as main
+            paired = any(openai_env_key_authoritative_for(u, _scoped_key_env("OPENAI_BASE_URL"))  # requested URL too:
+                         for u in (req.explicit_base_url, custom_base))  # _to_openai_base_url rewrites its path
+            custom_key = (_normalize_api_key(req.explicit_api_key) or _read_main_api_key_if_same_origin(custom_base)
+                          or (_scoped_key_env("OPENAI_API_KEY") if paired else "")
+                          or "no-key-required")  # local servers don't need auth
         if not custom_base:
             logger.warning("resolve_provider_client: explicit custom endpoint requested but base_url is empty")
             return None, None

@@ -1960,17 +1960,18 @@ slash:
 cli:
   backtrack:
     title: "↺ Transcription — choisir un prompt à modifier"
-    keys_hint: "Parcours de la transcription · ↑↓/jk défiler · ←→/hl prompts · ↵ modifier · f bifurquer · esc retour"
+    keys_hint: "Parcours de la transcription · ↑↓/jk défiler · ←→/hl prompts · ↵ modifier · d couper · f bifurquer · esc retour"
     prime_hint: "esc à nouveau pour modifier le message précédent"
     no_previous: "Aucun message précédent à modifier."
     editing_hint: "↺ Modification du prompt {number} — Enter rembobine ici et envoie · Esc Esc annule"
     edit_cancelled: "↺ Rembobinage annulé ; rien n'a été supprimé."
     rewound: "↺ Rembobiné au prompt {number} ({count} message(s) archivé(s)) ; envoi de la modification."
     forked: "⑂ Bifurcation avant le prompt {number} ; la session d'origine {parent} est inchangée. Modifiez le prompt ci-dessous et appuyez sur Enter pour l'envoyer."
+    cut_done: "✂ Coupé avant le prompt {number} ({count} message(s) archivé(s), non supprimé(s)). Le prompt est de retour dans la zone de saisie ; rien n'a été envoyé."
     nothing: "(._.) Aucun prompt précédent vers lequel rembobiner."
     target_changed: "(x_x) La session a changé depuis que vous avez choisi le prompt {number} ; rien n'a été supprimé. Votre modification est de retour dans la zone de saisie."
     invalid: "(._.) Aucun prompt {value} — choisissez entre 1 et {total}."
-    usage: "Utilisation : /rewind [N | fork N]"
+    usage: "Utilisation : /rewind [N | cut N | fork N]"
     rewind_failed: "(x_x) Échec du rembobinage ; l'historique n'a pas été modifié : {error}"
   modern:
     thought_for: "Réflexion pendant {seconds}s"

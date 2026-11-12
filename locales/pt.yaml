@@ -1708,17 +1708,18 @@ slash:
 cli:
   backtrack:
     title: "↺ Transcrição — escolha um prompt para editar"
-    keys_hint: "Navegando na transcrição · ↑↓/jk rolar · ←→/hl prompts · ↵ editar · f bifurcar · esc voltar"
+    keys_hint: "Navegando na transcrição · ↑↓/jk rolar · ←→/hl prompts · ↵ editar · d cortar · f bifurcar · esc voltar"
     prime_hint: "esc de novo para editar a mensagem anterior"
     no_previous: "Nenhuma mensagem anterior para editar."
     editing_hint: "↺ Editando o prompt {number} — Enter retrocede até aqui e envia · Esc Esc cancela"
     edit_cancelled: "↺ Retrocesso cancelado; nada foi removido."
     rewound: "↺ Retrocedido ao prompt {number} ({count} mensagem(ns) arquivada(s)); enviando a edição."
     forked: "⑂ Bifurcado antes do prompt {number}; a sessão original {parent} não foi alterada. Edite o prompt abaixo e pressione Enter para enviar."
+    cut_done: "✂ Cortado até antes do prompt {number} ({count} mensagem(ns) arquivada(s), não excluída(s)). O prompt voltou ao editor; nada foi enviado."
     nothing: "(._.) Não há prompts anteriores para retroceder."
     target_changed: "(x_x) A sessão mudou desde que você escolheu o prompt {number}; nada foi removido. Sua edição voltou para o editor."
     invalid: "(._.) Não existe o prompt {value} — escolha de 1 a {total}."
-    usage: "Uso: /rewind [N | fork N]"
+    usage: "Uso: /rewind [N | cut N | fork N]"
     rewind_failed: "(x_x) Falha ao retroceder; o histórico não foi alterado: {error}"
   modern:
     thought_for: "Pensou por {seconds}s"

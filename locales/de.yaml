@@ -1708,17 +1708,18 @@ slash:
 cli:
   backtrack:
     title: "↺ Verlauf — einen Prompt zum Bearbeiten wählen"
-    keys_hint: "Verlauf durchsuchen · ↑↓/jk scrollen · ←→/hl Prompts · ↵ bearbeiten · f abzweigen · esc zurück"
+    keys_hint: "Verlauf durchsuchen · ↑↓/jk scrollen · ←→/hl Prompts · ↵ bearbeiten · d kürzen · f abzweigen · esc zurück"
     prime_hint: "esc erneut, um die vorige Nachricht zu bearbeiten"
     no_previous: "Keine vorige Nachricht zum Bearbeiten."
     editing_hint: "↺ Prompt {number} wird bearbeitet — Enter spult hierher zurück und sendet · Esc Esc bricht ab"
     edit_cancelled: "↺ Zurückspulen abgebrochen; nichts wurde entfernt."
     rewound: "↺ Zu Prompt {number} zurückgespult ({count} Nachricht(en) archiviert); Bearbeitung wird gesendet."
     forked: "⑂ Vor Prompt {number} abgezweigt; die ursprüngliche Sitzung {parent} bleibt unverändert. Bearbeite den Prompt unten und drücke Enter zum Senden."
+    cut_done: "✂ Bis vor Prompt {number} gekürzt ({count} Nachricht(en) archiviert, nicht gelöscht). Der Prompt steht wieder im Eingabefeld; nichts wurde gesendet."
     nothing: "(._.) Keine früheren Prompts zum Zurückspulen."
     target_changed: "(x_x) Die Sitzung hat sich geändert, seit du Prompt {number} gewählt hast; nichts wurde entfernt. Deine Bearbeitung ist wieder im Eingabefeld."
     invalid: "(._.) Kein Prompt {value} — wähle 1 bis {total}."
-    usage: "Verwendung: /rewind [N | fork N]"
+    usage: "Verwendung: /rewind [N | cut N | fork N]"
     rewind_failed: "(x_x) Zurückspulen fehlgeschlagen; Verlauf wurde nicht geändert: {error}"
   modern:
     thought_for: "Nachgedacht für {seconds}s"

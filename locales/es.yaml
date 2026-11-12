@@ -1708,17 +1708,18 @@ slash:
 cli:
   backtrack:
     title: "↺ Transcripción — elige un prompt para editar"
-    keys_hint: "Explorando la transcripción · ↑↓/jk desplazar · ←→/hl prompts · ↵ editar · f bifurcar · esc volver"
+    keys_hint: "Explorando la transcripción · ↑↓/jk desplazar · ←→/hl prompts · ↵ editar · d recortar · f bifurcar · esc volver"
     prime_hint: "esc otra vez para editar el mensaje anterior"
     no_previous: "No hay ningún mensaje anterior que editar."
     editing_hint: "↺ Editando el prompt {number} — Enter rebobina hasta aquí y envía · Esc Esc cancela"
     edit_cancelled: "↺ Rebobinado cancelado; no se eliminó nada."
     rewound: "↺ Rebobinado al prompt {number} ({count} mensaje(s) archivado(s)); enviando la edición."
     forked: "⑂ Bifurcado antes del prompt {number}; la sesión original {parent} no ha cambiado. Edita el prompt abajo y pulsa Enter para enviarlo."
+    cut_done: "✂ Recortado hasta antes del prompt {number} ({count} mensaje(s) archivado(s), no eliminado(s)). El prompt vuelve al editor; no se envió nada."
     nothing: "(._.) No hay prompts anteriores a los que rebobinar."
     target_changed: "(x_x) La sesión cambió desde que elegiste el prompt {number}; no se eliminó nada. Tu edición ha vuelto al editor."
     invalid: "(._.) No existe el prompt {value} — elige de 1 a {total}."
-    usage: "Uso: /rewind [N | fork N]"
+    usage: "Uso: /rewind [N | cut N | fork N]"
     rewind_failed: "(x_x) Falló el rebobinado; el historial no se modificó: {error}"
   modern:
     thought_for: "Pensó durante {seconds}s"

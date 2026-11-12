@@ -1708,17 +1708,18 @@ slash:
 cli:
   backtrack:
     title: "↺ Transkripsie — kies 'n opdrag om te wysig"
-    keys_hint: "Blaai deur transkripsie · ↑↓/jk rol · ←→/hl opdragte · ↵ wysig · f vurk · esc terug"
+    keys_hint: "Blaai deur transkripsie · ↑↓/jk rol · ←→/hl opdragte · ↵ wysig · d sny · f vurk · esc terug"
     prime_hint: "esc weer om die vorige boodskap te wysig"
     no_previous: "Geen vorige boodskap om te wysig nie."
     editing_hint: "↺ Wysig opdrag {number} — Enter spoel hierheen terug en stuur · Esc Esc kanselleer"
     edit_cancelled: "↺ Terugspoel gekanselleer; niks is verwyder nie."
     rewound: "↺ Teruggespoel na opdrag {number} ({count} boodskap(pe) geargiveer); stuur die wysiging."
     forked: "⑂ Gevurk voor opdrag {number}; die oorspronklike sessie {parent} is onveranderd. Wysig die opdrag hieronder en druk Enter om te stuur."
+    cut_done: "✂ Teruggesny tot voor opdrag {number} ({count} boodskap(pe) geargiveer, nie geskrap nie). Die opdrag is terug in die invoerveld; niks is gestuur nie."
     nothing: "(._.) Geen vroeëre opdragte om na terug te spoel nie."
     target_changed: "(x_x) Die sessie het verander sedert jy opdrag {number} gekies het; niks is verwyder nie. Jou wysiging is terug in die opsteller."
     invalid: "(._.) Geen opdrag {value} nie — kies 1 tot {total}."
-    usage: "Gebruik: /rewind [N | fork N]"
+    usage: "Gebruik: /rewind [N | cut N | fork N]"
     rewind_failed: "(x_x) Terugspoel het misluk; geskiedenis is nie verander nie: {error}"
   modern:
     thought_for: "Het {seconds}s gedink"

@@ -1708,17 +1708,18 @@ slash:
 cli:
   backtrack:
     title: "↺ トランスクリプト — 編集するプロンプトを選択"
-    keys_hint: "トランスクリプトを閲覧中 · ↑↓/jk スクロール · ←→/hl プロンプト · ↵ 編集 · f 分岐 · esc 戻る"
+    keys_hint: "トランスクリプトを閲覧中 · ↑↓/jk スクロール · ←→/hl プロンプト · ↵ 編集 · d カット · f 分岐 · esc 戻る"
     prime_hint: "もう一度 esc で前のメッセージを編集"
     no_previous: "編集できる前のメッセージはありません。"
     editing_hint: "↺ プロンプト {number} を編集中 — Enter でここまで巻き戻して送信 · Esc Esc でキャンセル"
     edit_cancelled: "↺ 巻き戻しをキャンセルしました。何も削除されていません。"
     rewound: "↺ プロンプト {number} まで巻き戻しました({count} 件のメッセージをアーカイブ)。編集内容を送信します。"
     forked: "⑂ プロンプト {number} の手前で分岐しました。元のセッション {parent} は変更されていません。下のプロンプトを編集し、Enter で送信してください。"
+    cut_done: "✂ プロンプト {number} の手前まで戻しました({count} 件のメッセージをアーカイブ、削除はしていません)。プロンプトは入力欄に戻っています。何も送信されていません。"
     nothing: "(._.) 巻き戻せる以前のプロンプトがありません。"
     target_changed: "(x_x) プロンプト {number} を選択した後にセッションが変更されました。何も削除されていません。編集内容は入力欄に戻されました。"
     invalid: "(._.) プロンプト {value} はありません — 1 から {total} の間で選択してください。"
-    usage: "使い方: /rewind [N | fork N]"
+    usage: "使い方: /rewind [N | cut N | fork N]"
     rewind_failed: "(x_x) 巻き戻しに失敗しました。履歴は変更されていません: {error}"
   modern:
     thought_for: "{seconds}秒考えました"

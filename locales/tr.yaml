@@ -1708,17 +1708,18 @@ slash:
 cli:
   backtrack:
     title: "↺ Döküm — düzenlemek için bir istem seç"
-    keys_hint: "Döküme göz atılıyor · ↑↓/jk kaydır · ←→/hl istemler · ↵ düzenle · f çatalla · esc geri"
+    keys_hint: "Döküme göz atılıyor · ↑↓/jk kaydır · ←→/hl istemler · ↵ düzenle · d kes · f çatalla · esc geri"
     prime_hint: "önceki mesajı düzenlemek için tekrar esc"
     no_previous: "Düzenlenecek önceki mesaj yok."
     editing_hint: "↺ İstem {number} düzenleniyor — Enter buraya geri sarar ve gönderir · Esc Esc iptal eder"
     edit_cancelled: "↺ Geri sarma iptal edildi; hiçbir şey kaldırılmadı."
     rewound: "↺ İstem {number}'e geri sarıldı ({count} mesaj arşivlendi); düzenleme gönderiliyor."
     forked: "⑂ İstem {number} öncesinden çatallandı; özgün oturum {parent} değişmedi. Aşağıdaki istemi düzenleyin ve göndermek için Enter'a basın."
+    cut_done: "✂ İstem {number} öncesine kadar kesildi ({count} ileti arşivlendi, silinmedi). İstem yeniden giriş alanında; hiçbir şey gönderilmedi."
     nothing: "(._.) Geri sarılacak önceki istem yok."
     target_changed: "(x_x) İstem {number}'i seçtiğinizden beri oturum değişti; hiçbir şey kaldırılmadı. Düzenlemeniz yazma alanına geri kondu."
     invalid: "(._.) İstem {value} yok — 1 ile {total} arasında seçin."
-    usage: "Kullanım: /rewind [N | fork N]"
+    usage: "Kullanım: /rewind [N | cut N | fork N]"
     rewind_failed: "(x_x) Geri sarma başarısız; geçmiş değiştirilmedi: {error}"
   modern:
     thought_for: "{seconds} sn düşündü"

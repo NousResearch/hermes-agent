@@ -1725,17 +1725,18 @@ slash:
 cli:
   backtrack:
     title: "↺ Átirat — válassz egy szerkesztendő promptot"
-    keys_hint: "Átirat böngészése · ↑↓/jk görgetés · ←→/hl promptok · ↵ szerkesztés · f elágazás · esc vissza"
+    keys_hint: "Átirat böngészése · ↑↓/jk görgetés · ←→/hl promptok · ↵ szerkesztés · d vágás · f elágazás · esc vissza"
     prime_hint: "nyomd meg újra az esc-et az előző üzenet szerkesztéséhez"
     no_previous: "Nincs szerkeszthető előző üzenet."
     editing_hint: "↺ A(z) {number}. prompt szerkesztése — az Enter idáig teker vissza és elküldi · Esc Esc megszakítja"
     edit_cancelled: "↺ Visszatekerés megszakítva; semmi sem lett eltávolítva."
     rewound: "↺ Visszatekerve a(z) {number}. promptig ({count} üzenet archiválva); a szerkesztés elküldése."
     forked: "⑂ Elágazás a(z) {number}. prompt előtt; az eredeti {parent} munkamenet változatlan. Szerkeszd az alábbi promptot, és nyomj Entert a küldéshez."
+    cut_done: "✂ Visszavágva a(z) {number}. prompt elé ({count} üzenet archiválva, nem törölve). A prompt visszakerült a beviteli mezőbe; semmi sem lett elküldve."
     nothing: "(._.) Nincs korábbi prompt, amelyhez vissza lehetne tekerni."
     target_changed: "(x_x) A munkamenet megváltozott, mióta a(z) {number}. promptot választottad; semmi sem lett eltávolítva. A szerkesztésed visszakerült a szövegmezőbe."
     invalid: "(._.) Nincs {value}. prompt — válassz 1 és {total} között."
-    usage: "Használat: /rewind [N | fork N]"
+    usage: "Használat: /rewind [N | cut N | fork N]"
     rewind_failed: "(x_x) A visszatekerés sikertelen; az előzmények nem változtak: {error}"
   modern:
     thought_for: "{seconds} mp-ig gondolkodott"

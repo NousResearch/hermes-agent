@@ -1708,17 +1708,18 @@ slash:
 cli:
   backtrack:
     title: "↺ Tras-scríbhinn — roghnaigh leid le cur in eagar"
-    keys_hint: "Ag brabhsáil na tras-scríbhinne · ↑↓/jk scrollaigh · ←→/hl leideanna · ↵ cuir in eagar · f gabhlaigh · esc siar"
+    keys_hint: "Ag brabhsáil na tras-scríbhinne · ↑↓/jk scrollaigh · ←→/hl leideanna · ↵ cuir in eagar · d gearr · f gabhlaigh · esc siar"
     prime_hint: "esc arís chun an teachtaireacht roimhe seo a chur in eagar"
     no_previous: "Níl aon teachtaireacht roimhe seo le cur in eagar."
     editing_hint: "↺ Leid {number} á cur in eagar — athchasann Enter go dtí seo agus seolann · cealaíonn Esc Esc"
     edit_cancelled: "↺ Athchasadh cealaithe; níor baineadh aon rud."
     rewound: "↺ Athchasta go leid {number} ({count} teachtaireacht curtha i gcartlann); an t-eagarthóireacht á seoladh."
     forked: "⑂ Gabhlaithe roimh leid {number}; níor athraíodh an seisiún bunaidh {parent}. Cuir an leid thíos in eagar agus brúigh Enter chun é a sheoladh."
+    cut_done: "✂ Gearrtha siar go dtí roimh leid {number} ({count} teachtaireacht curtha i gcartlann, níor scriosadh). Tá an leid ar ais sa bhosca ionchuir; níor seoladh aon rud."
     nothing: "(._.) Níl aon leideanna níos luaithe le hathchasadh chucu."
     target_changed: "(x_x) D'athraigh an seisiún ó roghnaigh tú leid {number}; níor baineadh aon rud. Tá d'eagarthóireacht ar ais sa chumadóir."
     invalid: "(._.) Níl leid {value} ann — roghnaigh 1 go {total}."
-    usage: "Úsáid: /rewind [N | fork N]"
+    usage: "Úsáid: /rewind [N | cut N | fork N]"
     rewind_failed: "(x_x) Theip ar an athchasadh; níor athraíodh an stair: {error}"
   modern:
     thought_for: "Smaoinigh ar feadh {seconds}s"

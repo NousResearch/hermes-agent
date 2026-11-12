@@ -1,3 +1,5 @@
+import '@/store/chat-max-width'
+
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'

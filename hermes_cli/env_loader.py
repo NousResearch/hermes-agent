@@ -478,6 +478,21 @@ def _load_dotenv_with_fallback(
     _sanitize_loaded_credentials()  # httpx encodes headers as ASCII
 
 
+def bridge_config_scalars(cfg: dict, target) -> None:
+    """Copy top-level ``config.yaml`` scalars into ``target`` (env or scope mapping) where unset.
+
+    Launch-only keys are refused like a ``.env`` entry: config.yaml is user-writable, so a
+    ``HERMES_MANAGED_DIR:`` line there must not repoint the managed scope (#135200, #144685)."""
+    for name, value in cfg.items():
+        if not isinstance(value, (str, int, float, bool)) or name in target:
+            continue
+        if is_launch_only_env_key(name):
+            logger.warning("config.yaml: ignoring launch-only key %s — only the launch "
+                           "environment may set it", name)
+            continue
+        target[name] = str(value)
+
+
 def _dotenv_assignments(path: Path) -> list:
     """``(name, raw value)`` pairs of one dotenv file as the loader will see it once
     ``_sanitize_env_file_if_needed`` has run: :func:`_parse_dotenv_file` plus the sanitizer's UTF-16

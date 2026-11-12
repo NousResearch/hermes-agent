@@ -18,7 +18,7 @@ import {
   Tip,
   useI18n
 } from '@hermes/plugin-sdk'
-import { type ComponentProps, type FormEvent, type ReactNode, useSyncExternalStore } from 'react'
+import { type ComponentProps, type FormEvent, type ReactNode, useLayoutEffect, useReducer, useSyncExternalStore } from 'react'
 
 import type { GroupReasonMessages } from './group-reason-locales'
 import { groupReasonText } from './group-reason-text'
@@ -58,16 +58,21 @@ export interface RoomStatusLabels extends GroupReasonMessages {
 type ShownStatus = Exclude<MemberStatus, BusyMember> | ReturnType<typeof busyAt>
 type ShownKind = ShownStatus['kind']
 
-// One 1 s clock for every busy chip, typing row and details row. React rechecks the seconds snapshot before
-// committing, so views that render across a second boundary cannot commit different clock readings.
-const clock = { listeners: new Set<() => void>(), timer: undefined as ReturnType<typeof setInterval> | undefined }
-const clockSeconds = () => Math.floor(Date.now() / 1000)
+// Every view reads one published snapshot, including during unrelated renders between timer ticks.
+const clock = { now: Date.now() / 1000, listeners: new Set<() => void>(), timer: undefined as ReturnType<typeof setInterval> | undefined }
+const clockSeconds = () => clock.now
+
+const publishClock = () => {
+  const now = Date.now() / 1000
+
+  if (now === clock.now) {return}
+  clock.now = now
+  clock.listeners.forEach(notify => notify())
+}
 
 const subscribeClock = (listener: () => void) => {
   clock.listeners.add(listener)
-  clock.timer ??= setInterval(() => { clock.listeners.forEach(notify => notify()) }, 1000)
-  // A newly busy view can read a newer second before the interval fires; bring existing views with it.
-  clock.listeners.forEach(notify => notify())
+  clock.timer ??= setInterval(publishClock, 1000)
 
   return () => {
     clock.listeners.delete(listener)
@@ -78,12 +83,22 @@ const subscribeClock = (listener: () => void) => {
 
 const noClock = () => () => undefined
 
-/** Whole seconds since the epoch: fresh on the first busy render, then consistent across subscribers. */
+/** Fractional epoch seconds, published once per tick and refreshed before a newly busy view paints. */
 function useClockSeconds(live: boolean): number {
-  return useSyncExternalStore(live ? subscribeClock : noClock, clockSeconds)
+  const now = useSyncExternalStore(live ? subscribeClock : noClock, clockSeconds)
+  const [, redraw] = useReducer((value: number) => value + 1, 0)
+
+  useLayoutEffect(() => {
+    if (!live) {return}
+    publishClock()
+    // useSyncExternalStore subscribes passively; the joining leaf must also reread before paint.
+    redraw()
+  }, [live])
+
+  return now
 }
 
-/** `status` as its chip shows it now. A chip that just turned busy reads the time fresh, never a stale one. */
+/** `status` on the shared clock. A newly busy leaf refreshes the snapshot before its first paint. */
 export function useShownStatus(status: MemberStatus): ShownStatus {
   const busy = isBusyStatus(status)
   const now = useClockSeconds(busy)

@@ -60,6 +60,8 @@ Membership — the section's id **and name** — is stored in each Bot's profile
 
 Hit **New Agent** in the roster. The quick path is three fields — **Name**, **Title**, **Description** — and the Bot exists in seconds, introducing itself as the first message of its new Bot Chat.
 
+Creation warnings stay visible after the dialog closes and the Bot Chat opens, with the profile and machine identified. Dismiss them individually or with **Clear all**. If model setup is still needed, the **Configure model** action remains available too. The dashboard likewise keeps creation warnings in a dismissible result card rather than a short-lived success toast.
+
 An **Advanced** disclosure opens the full capabilities surface:
 
 - **Clone from an existing profile** — start from another Bot's config, skills, SOUL, and memory, or pick **Fresh profile** for a clean start.

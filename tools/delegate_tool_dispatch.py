@@ -54,6 +54,9 @@ class _Batch:
     # Result entries of tasks their backend refused (no child): joined into a sync result, listed in a background
     # call's dispatch payload. Units carved for async dispatch never carry them.
     refused: list = field(default_factory=list)
+    # The delegation.auto_resume scheduler's continue: refused instead of run inline when it cannot detach (its
+    # caller is not a turn, so a joined result would never reach the parent).
+    detached_only: bool = False
 
     def owner_kwargs(self) -> dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -474,7 +477,7 @@ def _dispatch_background(batch: _Batch) -> str:
         batch.origin_wake_sid, batch.origin_session_history_delivery,
         oneshot_session=getattr(batch.parent_agent, "_oneshot_session", None) is True,  # agent_is_oneshot's pin
     )
-    if wake_sid is None:
+    if wake_sid is None:  # (a detached-only continue checked this before building its child)
         logger.info("delegate_task: async delivery unsupported on this session runtime; running the batch synchronously instead.")
         return _run_sync_with_note(batch, "no_async")
 
@@ -506,6 +509,8 @@ def _dispatch_background(batch: _Batch) -> str:
             dispatched.append((unit, dispatch["delegation_id"]))
             continue
         _restore_parent_cancellation(unit)
+        if not dispatched and batch.detached_only:
+            return _refuse_detached_only(batch, f"the background pool is at capacity ({dispatch.get('error', 'rejected')})")
         if not dispatched:
             logger.info(
                 "delegate_task: async pool at capacity (%s); running the whole batch synchronously instead.",
@@ -521,6 +526,14 @@ def _dispatch_background(batch: _Batch) -> str:
         payload["inline_results"] = inline_results
     return json.dumps(payload, ensure_ascii=False)
 
+def _refuse_detached_only(batch: _Batch, why: str) -> str:
+    """A detached-only batch that cannot detach: nothing ran, its children are released."""
+    from tools.registry import tool_error
+    for _, _, child in batch.children:
+        _release_unstarted_child(batch, child)
+    return tool_error(f"Not continued: {why}.")
+
+
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
     from tools.delegate_tool import session_joins_delegation
@@ -528,6 +541,6 @@ def _run_batch(batch: _Batch, background: bool) -> str:
     begin_delegation_run(
         batch.task_list, subagents=len(batch.children), depth=getattr(batch.parent_agent, "_delegate_depth", 0) + 1,
     )
-    if background and not session_joins_delegation(batch.parent_agent):
+    if batch.detached_only or (background and not session_joins_delegation(batch.parent_agent)):
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)

@@ -1,7 +1,7 @@
 name: house-style
 repo: https://github.com/Sahil-SS9/house-style
-sha: 2920179bd79b6a2476d68df85b2de04dd2dc4842
-version: "0.3.0"
+sha: c6dea6f1e3d0e0ac7305bfc40bbd857e5ceca4b5
+version: "0.3.1"
 description: >-
   Learns a project's house style from how you correct the agent's edits. Every
   write_file and patch records the block it introduced (including every hunk of a
@@ -22,8 +22,8 @@ description: >-
   files, secret-like names (.env, *.pem, id_rsa*, credentials*) and .git internals;
   stores redacted before/after pairs (repository-relative path, hash, up to 200 lines
   per block, up to 400 rows and 512 KB per repository) in plugin-data/house-style; writes
-  one marked section of the project context file and only after /house-style learn
-  confirm; calls your configured model once per /house-style learn and nothing else; on a
+  one marked section of the project context file, only after /house-style learn
+  confirm, and never through a symlinked context file; calls your configured model once per /house-style learn and nothing else; on a
   remote backend asks that task's terminal tool for `pwd` once per task; no telemetry, no
   subprocesses, no network beyond that model call. Needs ctx.redact_text()
   (NousResearch/hermes-agent#150220); on a build without it the plugin records nothing and

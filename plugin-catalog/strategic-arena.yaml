@@ -1,6 +1,6 @@
 name: strategic-arena
 repo: https://github.com/trillionverselabs-boop/strategic-arena
-sha: 65d341c624f992c8e5636a9ba156dc8bd39f91d5
+sha: 83563c423608aaa8ca51ad0f65fc0fc9c1bdaa10
 title: Strategic Arena
 description: >-
   Understand the landscape before you invest: give it a link and get the room that
@@ -9,12 +9,12 @@ description: >-
 maintainer: LeMultiFox
 tier: community
 category: tools
-version: "0.6.3"
+version: "0.6.4"
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/trillionverselabs-boop/strategic-arena/blob/main/docs/POSITIONING.md
-image: https://raw.githubusercontent.com/trillionverselabs-boop/strategic-arena/65d341c624f992c8e5636a9ba156dc8bd39f91d5/assets/marketplace.png
+image: https://raw.githubusercontent.com/trillionverselabs-boop/strategic-arena/83563c423608aaa8ca51ad0f65fc0fc9c1bdaa10/assets/marketplace.png
 screenshots:
-  - https://raw.githubusercontent.com/trillionverselabs-boop/strategic-arena/65d341c624f992c8e5636a9ba156dc8bd39f91d5/assets/how-it-works.png
+  - https://raw.githubusercontent.com/trillionverselabs-boop/strategic-arena/83563c423608aaa8ca51ad0f65fc0fc9c1bdaa10/assets/how-it-works.png
 readme: true
 platforms: []
 capabilities:
@@ -30,7 +30,7 @@ capabilities:
   provides_middleware: []
   requires_env: []
 known_issues:
-  - "A run uses the model the Hermes session is already on. There is no model picker by design."
-  - "A 24h review is ~$0.02 on a cheap paid model; a free model is fine but rate-limited, so the same run can take 15-30 minutes."
+  - "A run uses the model your Hermes default model setting is on; there is no model picker by design."
+  - "Free models are supported but rate-limited: a large input (a research paper, a long technical post) can run several times slower and may be interrupted. A paid model is recommended for those. If a run fails on a rate limit, change the model in the app and run it again."
   - "The desktop UI loads from the machine running the app, so a UI change needs Install from Git with the Desktop target on that machine."
   - "PDFs outside arXiv need a text layer; a link that cannot be read is reported as SKIPPED in the run's provenance, never silently dropped."

@@ -25,6 +25,18 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         help="Provider to configure directly (e.g. honcho), skipping the picker")
     memory_sub.add_parser("status", help="Show current memory provider config")
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
+    _show_parser = memory_sub.add_parser(
+        "show", help="Print the built-in memory entries (MEMORY.md / USER.md)")
+    _show_parser.add_argument(
+        "--target", choices=["memory", "user"], default=None,
+        help="Show only one store (default: both)")
+    _forget_parser = memory_sub.add_parser(
+        "forget", help="Remove one entry by an unambiguous substring of its text")
+    _forget_parser.add_argument(
+        "entry", help="Substring identifying the entry to remove")
+    _forget_parser.add_argument(
+        "--target", choices=["memory", "user"], default="memory",
+        help="Which store to remove from (default: memory)")
     _reset_parser = memory_sub.add_parser(
         "reset", help="Erase all built-in memory (MEMORY.md and USER.md)")
     add_yes_flag(_reset_parser)

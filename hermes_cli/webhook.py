@@ -279,7 +279,9 @@ def _cmd_subscribe(args):
     if route.get("script"):
         print(f"  Script: {route['script']}")
     print("\n  Configure your service to POST to the URL above.")
-    print("  Use the secret for HMAC-SHA256 signature validation.")
+    print("  Use the secret for HMAC-SHA256 signature validation when supported.")
+    print("  If your service only supports fixed auth tokens, send:")
+    print("    Authorization header with the Bearer scheme and this secret.")
     print("  The gateway must be running to receive events (hermes gateway run).\n")
 
 

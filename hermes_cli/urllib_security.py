@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import logging
 import ssl
 import urllib.parse
 import urllib.request
+import zlib
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -125,6 +127,44 @@ def _secure_opener_from_installed_policy(original_url: str, *, ssl_context=None)
     return secured
 
 
+def decode_response_body(resp: Any, body: bytes) -> bytes:
+    """Return *body* with its transport compression undone.
+
+    ``urllib`` never transparently decompresses a response, so a provider whose
+    profile asks for gzip (Kimi/Moonshot does, to sidestep httpx's brotli SSE
+    decode bug) hands back compressed bytes that ``json.loads`` cannot read.
+    The catalog probe swallowed that ``UnicodeDecodeError``, which silently
+    degraded the model picker to a provider's stale static list instead of its
+    live catalog.
+
+    Decoding follows the response's ``Content-Encoding`` when it advertises
+    one, and falls back to sniffing the gzip magic bytes so a server that
+    compresses without advertising it is still handled. ``br`` is deliberately
+    not decoded: httpx's brotlicffi backend has a streaming decode bug on
+    Moonshot's brotli SSE responses (#28043, #48428, #59556).
+    """
+    if not body:
+        return body
+    try:
+        encoding = (resp.headers.get("Content-Encoding") or "").strip().lower()
+    except Exception:
+        encoding = ""
+    if "gzip" in encoding or body[:2] == b"\x1f\x8b":
+        try:
+            return gzip.decompress(body)
+        except (OSError, EOFError, zlib.error):
+            if body[:2] == b"\x1f\x8b":
+                # Real gzip bytes we cannot decode: let the caller see the error.
+                raise
+            # The header claimed gzip but the body is not gzip — fall through.
+    if "deflate" in encoding:
+        try:
+            return zlib.decompress(body)
+        except zlib.error:
+            return zlib.decompress(body, -zlib.MAX_WBITS)
+    return body
+
+
 def open_credentialed_url(
     request: urllib.request.Request,
     *,
@@ -155,4 +195,9 @@ def open_credentialed_url(
     return opener.open(request, timeout=timeout)
 
 
-__all__ = ["SafeCredentialRedirectHandler", "open_credentialed_url", "url_origin"]
+__all__ = [
+    "SafeCredentialRedirectHandler",
+    "decode_response_body",
+    "open_credentialed_url",
+    "url_origin",
+]

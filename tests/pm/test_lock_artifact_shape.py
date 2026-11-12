@@ -35,6 +35,17 @@ def test_non_string_pin_rows_fail_closed(tmp_path):
         Lockfile(path).artifacts("faketool", "any")
 
 
+@pytest.mark.parametrize("url", [
+    "https://example.com/a.zip",
+    "docker://example.com/tool@sha256:" + GOOD,
+])
+def test_missing_sha256_on_installable_pin_fails_at_lock(tmp_path, url):
+    path = tmp_path / "lock.json"
+    _write_pin(path, {"url": url})
+    with pytest.raises(ValueError, match="malformed artifact pin"):
+        Lockfile(path).artifacts("faketool", "any")
+
+
 def test_well_formed_pin_still_reads_back(tmp_path):
     lock = _lock_with_pin(tmp_path, GOOD)
     assert lock.artifacts("faketool", "any") == [

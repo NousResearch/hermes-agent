@@ -99,13 +99,13 @@ class Lockfile:
             return []
         entries = list(found) if isinstance(found, list) else [found]
         for artifact in entries:
-            # The sha256 becomes a `fetch-` path component in the store, so a
-            # pin row off the 64-hex shape fails closed instead of traversing
-            # out of the store root during fetch or cleanup (#138359). A row
-            # with no sha256 at all is a registry-digest pin (termux-docker's
-            # docker:// url) that never reaches the store.
+            # Only termux-docker's docker:// registry digest has no archive
+            # bytes. Other rows must have a sha256 before install reads it
+            # as a store-cache key (#138359).
             if (not isinstance(artifact, dict) or not isinstance(artifact.get("url"), str)
                     or not artifact["url"]
+                    or ("sha256" not in artifact
+                        and not (name == "termux-docker" and artifact["url"].startswith("docker://")))
                     or ("sha256" in artifact and (not isinstance(artifact["sha256"], str)
                                                   or not re.fullmatch(r"[a-f0-9]{64}", artifact["sha256"])))):
                 raise ValueError(f"malformed artifact pin for {name}/{target}: {artifact!r}")

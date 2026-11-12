@@ -82,6 +82,37 @@ def test_show_defaults_to_env_task_id(worker_env):
     assert "runs" in d
 
 
+def test_show_skips_worker_context_the_dispatcher_already_put_in_the_prompt(worker_env, monkeypatch):
+    """The card sits in the worker's first message; a second copy in kanban_show is the same text
+    twice in context for the rest of the run."""
+    from tools import kanban_tools as kt
+    monkeypatch.setenv("HERMES_KANBAN_CARD_IN_PROMPT", "1")
+    d = json.loads(kt._handle_show({}))
+    assert d["task"]["id"] == worker_env
+    assert "worker_context" not in d
+    assert "first message" in d["worker_context_omitted"]
+    # The explicit own-task id is the same thing as the default.
+    assert "worker_context" not in json.loads(kt._handle_show({"task_id": worker_env}))
+    # Asking for it brings the card back.
+    d = json.loads(kt._handle_show({"include_worker_context": True}))
+    assert "worker_context" in d and "worker_context_omitted" not in d
+
+
+def test_show_keeps_worker_context_for_other_tasks_and_workers_without_the_card(worker_env, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+    conn = kbc.connect()
+    try:
+        other = kb.create_task(conn, title="someone else's card", assignee="test-worker")
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_CARD_IN_PROMPT", "1")
+    assert "worker_context" in json.loads(kt._handle_show({"task_id": other}))  # not in this prompt
+    monkeypatch.delenv("HERMES_KANBAN_CARD_IN_PROMPT")
+    assert "worker_context" in json.loads(kt._handle_show({}))  # legacy spawn: nothing was injected
+
+
 def test_show_bare_call_outside_worker_returns_orientation_not_error(monkeypatch, worker_env):
     """#91431: chat profiles with the kanban toolset call kanban_show bare to orient
     themselves; with no dispatcher task in scope there is nothing to show, so the

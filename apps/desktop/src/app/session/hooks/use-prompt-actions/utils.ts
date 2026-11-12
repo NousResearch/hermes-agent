@@ -832,6 +832,13 @@ export interface SubmitTextOptions {
    *  `auxiliary.voice_chat` (the session model when that slot is on auto). */
   voiceTurn?: boolean
   fromQueue?: boolean
+  /** Set only by the composer's own idle Enter / Send path: this send is the
+   *  user's typed draft. Composer middleware reads it as `origin.kind ===
+   *  'typed'`; the submit engine ignores it. A send path that does not set it
+   *  (queue drains, voice, steer fallbacks, external submit requests) is never
+   *  treated as typed, so a new path cannot opt into middleware review by
+   *  accident. */
+  typedDraft?: boolean
   /** Called once with the EXACT session identity the backend accepted the
    *  prompt into — the live runtime id after any stale-runtime recovery, plus
    *  the durable stored id when the caller knows it. A caller that must prove

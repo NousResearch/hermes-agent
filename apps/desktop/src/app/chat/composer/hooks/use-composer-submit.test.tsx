@@ -598,7 +598,8 @@ describe('useComposerSubmit busy-turn routing', () => {
       expect(onSubmit).toHaveBeenCalledWith('ordinary question', {
         submission_id: expect.any(String),
         attachments: [],
-        composerScope: 'stored-session'
+        composerScope: 'stored-session',
+        typedDraft: true
       })
     )
     expect(onSteer).not.toHaveBeenCalled()
@@ -633,7 +634,8 @@ describe('useComposerSubmit busy-turn routing', () => {
       expect(onSubmit).toHaveBeenCalledWith('look at @terminal:`zsh:23-58`', {
         submission_id: expect.any(String),
         attachments: [],
-        composerScope: 'stored-session'
+        composerScope: 'stored-session',
+        typedDraft: true
       })
     )
     expect(onSteer).not.toHaveBeenCalled()

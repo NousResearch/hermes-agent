@@ -354,7 +354,8 @@ it('restores text and attachments by the loaded draft owner, not an uncommitted 
   expect(onSubmit).toHaveBeenCalledWith(expect.stringContaining('draft B'), {
     submission_id: expect.any(String),
     attachments: [attachmentB],
-    composerScope: 'stored-B'
+    composerScope: 'stored-B',
+    typedDraft: true
   })
   act(() => navigate('A'))
 
@@ -392,7 +393,8 @@ it('restores text and attachments by the loaded draft owner, not an uncommitted 
   expect(onSubmit).toHaveBeenLastCalledWith(expect.stringContaining('draft B'), {
     submission_id: expect.any(String),
     attachments: [attachmentB],
-    composerScope: 'stored-B'
+    composerScope: 'stored-B',
+    typedDraft: true
   })
   expect(editorText()).toBe('draft B')
   expect(mainComposerScope.$attachments.get()).toEqual([attachmentB])

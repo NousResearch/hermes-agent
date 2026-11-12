@@ -53,7 +53,6 @@ import {
   implicitSlashAcceptIndex,
   liveComposerDraft,
   type QueueEditState,
-  shouldDisableComposerInput,
   slashArgStage
 } from './composer-utils'
 import { ContextMenu } from './context-menu'
@@ -69,6 +68,7 @@ import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
 import { useComposerEscCancel } from './hooks/use-composer-esc-cancel'
+import { useComposerInputDisabled } from './hooks/use-composer-input-disabled'
 import { useComposerMetrics } from './hooks/use-composer-metrics'
 import { useComposerPlaceholder } from './hooks/use-composer-placeholder'
 import { useComposerPopout } from './hooks/use-composer-popout'
@@ -284,7 +284,7 @@ export function ChatBar({
   const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
   const reconnecting = gatewayState !== 'open'
-  const inputDisabled = shouldDisableComposerInput(disabled, gatewayState)
+  const inputDisabled = useComposerInputDisabled(disabled, gatewayState, scope.target)
 
   // The draft engine — detached source of truth (DOM + draftRef + edge
   // selectors); typing never re-renders the chrome. ChatBar owns `queueEditRef`

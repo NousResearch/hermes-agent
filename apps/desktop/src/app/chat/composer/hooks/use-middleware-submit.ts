@@ -1,8 +1,11 @@
 import { useCallback, useRef } from 'react'
 
+import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 
-import { runComposerMiddleware } from '../contrib'
+import { type ComposerSendOrigin, runComposerMiddleware } from '../contrib'
+import type { ComposerTarget } from '../focus'
+import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
 
 interface VoiceStopHandle {
@@ -10,7 +13,27 @@ interface VoiceStopHandle {
   end: () => void
 }
 
+/** Classify a send for middleware from the options its caller set. Order
+ *  matters: a hidden or voice send that also drains a queue is still hidden /
+ *  voice. Only the composer's own Enter path sets `typedDraft`. */
+export function composerSendOrigin(target: ComposerTarget, options?: SubmitTextOptions): ComposerSendOrigin {
+  const kind: ComposerSendOrigin['kind'] =
+    options?.displayKind === 'hidden'
+      ? 'hidden'
+      : options?.voiceTurn || options?.surface === 'voice-live'
+        ? 'voice'
+        : options?.fromQueue
+          ? 'queued'
+          : options?.typedDraft
+            ? 'typed'
+            : 'other'
+
+  return { kind, target, ...(options && 'composerScope' in options ? { composerScope: options.composerScope } : {}) }
+}
+
 export function useMiddlewareSubmit(onSubmitProp: ChatBarProps['onSubmit']) {
+  const { target } = useComposerScope()
+
   // Typed stop phrase during an active voice conversation ends it — same
   // semantics as SAYING "stop" (voice-stop-word.ts) or clicking the pill's
   // end control. The caller populates it after useComposerVoice (the submit
@@ -37,7 +60,11 @@ export function useMiddlewareSubmit(onSubmitProp: ChatBarProps['onSubmit']) {
         return true
       }
 
-      const draft = await runComposerMiddleware({ text: value, attachments: options?.attachments })
+      const draft = await runComposerMiddleware({
+        text: value,
+        attachments: options?.attachments,
+        origin: composerSendOrigin(target, options)
+      })
 
       if (!draft) {
         return false
@@ -45,7 +72,7 @@ export function useMiddlewareSubmit(onSubmitProp: ChatBarProps['onSubmit']) {
 
       return onSubmitProp(draft.text, { ...options, attachments: draft.attachments })
     },
-    [onSubmitProp]
+    [onSubmitProp, target]
   )
 
   return { onSubmit, voiceStopRef }

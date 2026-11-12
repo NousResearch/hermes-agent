@@ -543,7 +543,10 @@ export function useComposerSubmit({
       // Keep blob: previews alive for the optimistic bubble; revoke when that
       // consumer is discarded/replaced (not here — clear would race the clone).
       scope.attachments.clear({ retainPreviewUrls: true })
-      dispatchSubmit(text, submittedAttachments, undefined, retry && { submission_id: retry.id })
+      dispatchSubmit(text, submittedAttachments, undefined, {
+        typedDraft: true,
+        ...(retry ? { submission_id: retry.id } : {})
+      })
     }
 
     refocusAfterSend(editorHadFocus)

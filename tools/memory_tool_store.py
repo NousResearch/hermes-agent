@@ -189,7 +189,12 @@ class MemoryStore:
                  memory_enabled: bool = True, user_profile_enabled: bool = True):
         self.memory_entries: list[str] = []
         self.user_entries: list[str] = []
-        self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
+        # Config values reach here as whatever the config file held: an int in YAML, but a
+        # string when the value is quoted or came from a ${VAR} expansion (see
+        # hermes_cli.config._expand_env_vars, which rewrites string values in place). A string
+        # limit then breaks every comparison against a char count (#53834), so coerce here —
+        # once, at the boundary — rather than at each of the call sites that build a store.
+        self.memory_char_limit, self.user_char_limit = int(memory_char_limit), int(user_char_limit)
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
         self._system_prompt_snapshot: dict[str, str] = {"memory": "", "user": ""}
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()

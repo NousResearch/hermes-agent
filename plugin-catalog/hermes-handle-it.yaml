@@ -1,16 +1,18 @@
 name: hermes-handle-it
 repo: https://github.com/casualsav/hermes-handle-it
-sha: 4d6f0cce639c8f8c69919bf3678cfe8d752f410d
+sha: 023619ee8204b0b1b838fefe06172d7fcee7a6f5
 description: "Handle It: your agent sits in the customer support chat so you don't have to. Hermes holds a company's live customer-support
   chat for you in its own browser, negotiates toward your goal for as long as it takes, and asks
   you before it agrees to an offer, pays, cancels or shares a detail you did not allow. Ends with
   the outcome and a saved transcript. Disclosure: opens the support pages you name in a local
-  Chromium (Playwright) with its own profile under $HERMES_HOME/hermes-handle-it, types messages
-  into them on your behalf, reads a password from Hermes's vault only for a login handle it is given
-  and types it only on that login's own origin, and saves transcripts and screenshots there. For phone calls: talks to bland.ai's API
-  with your own key (BLAND_API_KEY), places phone calls to the numbers you name, bland.ai records
-  the call when you ask, and call costs are yours, billed by bland.ai. No other network calls,
-  no telemetry, no stored credentials."
+  Chromium (Playwright) with its own profile under $HERMES_HOME/hermes-handle-it, or in Hermes's own
+  browser when browser.cdp_url is set, public addresses only (every page, redirect hop and frame is
+  resolved; private, loopback, link-local and cloud metadata addresses are refused), types messages
+  into them on your behalf, and saves transcripts and screenshots there. Never reads passwords or
+  Hermes's vault: a sign-in is made by Hermes itself. For phone calls: talks to bland.ai's API with
+  your own key (BLAND_API_KEY, read through Hermes's profile-scoped secrets), places a phone call to
+  a number you name only after you approve it, bland.ai records the call when you ask, and call
+  costs are yours, billed by bland.ai. No other network calls, no telemetry, no stored credentials."
 maintainer: casualsav
 tier: community
 category: automation
@@ -32,4 +34,5 @@ capabilities:
     - pre_tool_call
     - on_session_finalize
   provides_middleware: []
-  requires_env: []
+  requires_env:
+    - BLAND_API_KEY

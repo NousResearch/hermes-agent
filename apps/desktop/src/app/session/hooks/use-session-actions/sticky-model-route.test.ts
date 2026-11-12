@@ -207,6 +207,44 @@ describe('a pick queued for the next turn', () => {
     expect(await launched()).toBe(launches)
   })
 
+  // Picks a, b, c start in that order and answer as listed; an older late reply never overrides a newer answer.
+  it.each([
+    { answers: 'b a', refused: 'b' },
+    { answers: 'b c a', refused: 'b', fails: 'c' },
+    { answers: 'b a c', refused: 'b', fails: 'c' }
+  ])('whose replies cross ($answers, $fails fails)', async ({ answers, refused, fails }) => {
+    const order = answers.split(' ')
+    const replies = Object.fromEntries(order.toSorted().map(model => [model, deferred<unknown>()]))
+    const picks = Object.fromEntries(order.toSorted().map(model => [model, pick(replies[model].promise, model)]))
+
+    for (const model of order) {
+      if (model === fails) {
+        replies[model].reject(new Error('refused'))
+      } else {
+        replies[model].resolve({ deferred: true })
+      }
+
+      await picks[model]
+    }
+
+    verdict({ status: 'refused', target_model: refused })
+    expect(await launched()).toBeUndefined()
+  })
+
+  it('that settles after another owner answers on a session with the same id, and is refused', async () => {
+    const reply = deferred<unknown>()
+    const switching = pick(reply.promise)
+    switchToOwnerB()
+    await pick({}, 'other')
+    backToA()
+    // A failing pick back on this owner rolls back to its own pick still in flight, not the other owner's.
+    await pick(Promise.reject(new Error('refused')), 'c')
+    reply.resolve({ deferred: true })
+    await switching
+    refuse()
+    expect(await launched()).toBeUndefined()
+  })
+
   it('that settles after an owner switch is recorded for its own owner, and released there when refused', async () => {
     const reply = deferred<unknown>()
     const switching = pick(reply.promise)

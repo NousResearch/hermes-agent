@@ -122,8 +122,12 @@ def test_a_late_record_write_never_recreates_a_removed_profile_and_stays_owner_o
         assert stat.S_IMODE(live.stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize("child", ["crashed", "stopped-by-shutdown"])
 @pytest.mark.parametrize("independent", [True, False], ids=["independent-units", "one-unit"])
-def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_them(independent):
+def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_them(independent, child):
+    """A crash leaves the children's records running; a gateway restart (SIGTERM) lets each child record its
+    resumable stop while the owner exits before the unit's row turns terminal. Either way the recovered notice
+    names every child the parent can continue."""
     from hermes_constants import get_hermes_home
     from tools import async_delegation as ad
     from tools.delegate_tool import delegate_task
@@ -136,11 +140,14 @@ def test_boot_recovery_names_the_continuable_children_on_the_row_that_reports_th
         assert len(units) == (2 if independent else 1), out
         _completions(units)
     with sqlite3.connect(parent._session_db.db_path) as conn:  # health: allow HX015 -- temp-home store
-        # The owner died before either ledger row or child record turned terminal.
+        # The owner died before either ledger row turned terminal.
         conn.execute("UPDATE async_delegations SET state='running', owner_pid=?, owner_started_at=NULL, "
                      "result_json=NULL", (_DEAD_PID,))
-        conn.execute("UPDATE resumable_subagents SET state='running', owner_pid=?, owner_started_at=NULL",
-                     (_DEAD_PID,))
+        if child == "crashed":
+            conn.execute("UPDATE resumable_subagents SET state='running', owner_pid=?, owner_started_at=NULL",
+                         (_DEAD_PID,))
+        else:
+            conn.execute("UPDATE resumable_subagents SET state='resumable', stop_cause='gateway_shutdown'")
 
     assert ad.recover_abandoned_delegations() == len(units)
 

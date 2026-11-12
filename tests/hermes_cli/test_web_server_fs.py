@@ -730,16 +730,25 @@ def test_fs_write_text_refuses_sensitive_files_through_symlinks(client, tmp_path
 
 
 @pytest.mark.require_symlinks
-def test_fs_write_text_refuses_a_credential_name_mid_link_chain(client, tmp_path):
+def test_fs_write_text_refuses_a_credential_name_mid_link_chain(client, tmp_path, monkeypatch):
     store = tmp_path / "settings-store"
     store.write_text("model: safe\n")
     (tmp_path / "config.yaml").symlink_to(store)
     alias = tmp_path / "notes.md"
     alias.symlink_to(tmp_path / "config.yaml")
+    monkeypatch.chdir(tmp_path)  # a relative path resolves against the process cwd
 
-    for target in (str(alias), alias.as_uri()):
+    for target in (str(alias), alias.as_uri(), "notes.md"):
         response = client.post("/api/fs/write-text", json={"path": target, "content": "EVIL=1"})
         assert response.status_code == 403, repr(target)
+
+    async def detail(session_id, profile=None):  # ... or, with a session, against its cwd
+        return {"id": session_id, "cwd": str(tmp_path)}
+
+    monkeypatch.setattr("hermes_cli.web_routers.sessions.get_session_detail", detail)
+    monkeypatch.chdir(tmp_path.parent)
+    response = client.post("/api/fs/write-text", json={"path": "notes.md", "content": "EVIL=1", "session_id": "s"})
+    assert response.status_code == 403
     assert store.read_text() == "model: safe\n"
 
 

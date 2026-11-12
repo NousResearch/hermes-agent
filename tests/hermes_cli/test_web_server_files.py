@@ -1064,8 +1064,10 @@ def test_managed_writes_refuse_a_credential_dir_behind_a_symlinked_parent(forced
     alias = root / "alias2.txt"
     alias.symlink_to("d/srv.json")
 
-    for target in (alias, "alias2.txt"):
+    for target in (alias, "alias2.txt", root / "d" / "srv.json", "d/srv.json"):
         assert _refused_writes(client, target) == (403, 403), repr(target)
+        deleted = client.request("DELETE", "/api/files", json={"path": str(target), "recursive": False})
+        assert deleted.status_code == 403, repr(target)
     assert store.read_text() == "TOKEN=1\n"
 
 

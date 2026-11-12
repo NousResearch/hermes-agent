@@ -122,11 +122,11 @@ _LINK_CHAIN_MAX_HOPS = 40  # the kernel's symlink loop limit
 
 
 def _link_chain(start: Path) -> Optional[list[Path]]:
-    """Every path a leaf symlink chain passes through after *start*, or None past the hop bound.
+    """Every path a leaf symlink chain passes through from *start*, or None past the hop bound.
 
-    Each hop is listed raw and with its parent canonicalized: ``d/srv.json`` with ``d -> mcp-tokens``
-    only names the credential dir once ``d`` is resolved."""
-    hops, current = [], start
+    *start* is listed with its parent canonicalized, each later hop raw and canonicalized: ``d/srv.json``
+    with ``d -> mcp-tokens`` only names the credential dir once ``d`` is resolved."""
+    hops, current = [Path(os.path.realpath(start.parent), start.name)], start
     for _ in range(_LINK_CHAIN_MAX_HOPS):
         try:
             current = Path(os.path.dirname(current), os.readlink(current))
@@ -152,7 +152,7 @@ def _refuse_sensitive_write(target: Path, requested: str, root: Optional[Path] =
     # the name sent nor the final target, so walk the chain from where the client's path lands.
     anchor = Path(requested).expanduser()
     if not anchor.is_absolute():
-        anchor = root / anchor if root is not None else None
+        anchor = root.expanduser() / anchor if root is not None else None
     hops = _link_chain(anchor) if anchor is not None else []
     if hops is None or any(_is_sensitive_path(p) for p in (Path(requested), target, Path(os.path.realpath(target)), *hops)):
         raise HTTPException(status_code=403, detail="Writing sensitive files is not allowed")
@@ -1153,7 +1153,9 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     target = await _fs_download_path(
         payload.path, profile, payload.session_id, session=session, decode_fallback=False, own_sandbox_only=True,
     )
-    _refuse_sensitive_write(target, payload.path)
+    # A relative path resolved against the session's cwd (else the process's), so walk its chain from there.
+    cwd = (session or {}).get("cwd") or "" if payload.session_id is not None else os.getcwd()
+    _refuse_sensitive_write(target, payload.path, Path(cwd))
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
 

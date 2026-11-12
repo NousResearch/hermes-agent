@@ -58,6 +58,10 @@ const SHOWN_DIFFERENCES = 40
 
 /** @param {string} prepared @param {string} packaged */
 export function assertPackagedPayload(prepared, packaged) {
+  // electron-builder only warns when an extraResources source is missing, then packs without it.
+  if (!fs.existsSync(packaged)) {
+    throw new Error(`packaged payload ${packaged} is missing; the build maps ${prepared} there`)
+  }
   const differences = payloadDifferences(prepared, packaged)
   if (differences.length === 0) return
   const hidden = differences.length - SHOWN_DIFFERENCES

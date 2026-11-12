@@ -74,7 +74,7 @@ export default async function afterPack(context) {
     ? path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
     : path.join(context.appOutDir, 'resources')
   const payload = path.join(resources, 'agent-payload')
-  const prepared = fs.existsSync(payload) ? preparedPayloadSource(context.packager) : null
+  const prepared = preparedPayloadSource(context.packager)
   // Check the copy before relocation, framework repairs and signing change it on purpose.
   if (prepared) {
     assertPackagedPayload(prepared, payload)

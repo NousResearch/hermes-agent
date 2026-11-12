@@ -7,9 +7,13 @@ clear denial for models that respect tool errors plus a visible audit trail.
 
 from __future__ import annotations
 
+import ipaddress
 import os
-from pathlib import Path
+import re
+import socket
 from contextlib import suppress
+from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -68,6 +72,7 @@ def _resolve_target(path: str) -> Optional[Path]:
     """``Path(expanduser(path)).resolve()``, or None when resolution fails (a hosted agent's path:
     its lexical form, see ``sandbox_lexical_path``)."""
     from tools.environments.sandbox_scope import sandbox_lexical_path
+    path = local_drive_spelling(path)
     if (lexical := sandbox_lexical_path(path)) is not None:
         return Path(lexical)
     with suppress(OSError, RuntimeError):
@@ -167,6 +172,46 @@ def is_nt_namespace_path(path: str) -> bool:
         if upper.startswith("UNC\\") or upper.startswith("GLOBALROOT\\"):
             return True
     return False
+
+
+# Other spellings of a LOCAL path that Windows opens like the plain one: the
+# extended-length drive form ``\\?\C:\...`` (allowed above) and the
+# administrative share of the local machine (``\\localhost\C$\...``,
+# ``\\127.0.0.1\C$\...``, ``\\<this computer>\C$\...``). The name-based denies
+# below compare resolved strings, which keep these prefixes, so each guard
+# rewrites them to the drive spelling first (#154282).
+_ADMIN_SHARE = re.compile(r"^\\\\(?P<host>[^\\]+)\\(?P<drive>[A-Za-z])\$(?P<rest>\\.*)?$")
+_LOOPBACK_SHARE_HOSTS = frozenset({"localhost", "[::1]", "0--1.ipv6-literal.net"})
+
+
+@lru_cache(maxsize=1)
+def _this_computer_name() -> str:
+    with suppress(OSError):
+        return socket.gethostname().split(".", 1)[0].lower()
+    return ""
+
+
+def _is_loopback_share_host(host: str) -> bool:
+    host = host.rstrip(".").lower()
+    if host in _LOOPBACK_SHARE_HOSTS:
+        return True
+    with suppress(ValueError):
+        return ipaddress.ip_address(host).is_loopback
+    return bool(host) and host.split(".", 1)[0] == _this_computer_name()
+
+
+def local_drive_spelling(path: str) -> str:
+    """On Windows, the plain ``C:\\...`` spelling of ``path`` when it names a local file through
+    ``\\\\?\\C:\\...`` or a loopback administrative share; otherwise (and off Windows) ``path``."""
+    if os.name != "nt":
+        return path
+    s = str(path).replace("/", "\\")
+    if s.startswith("\\\\?\\") and len(s) >= 6 and s[5] == ":" and s[4].isalpha():
+        return s[4:]
+    share = _ADMIN_SHARE.match(s)
+    if share and _is_loopback_share_host(share["host"]):
+        return f"{share['drive']}:{share['rest'] or os.sep}"
+    return path
 
 
 def get_nt_namespace_error(path: str, *, verb: str = "Access") -> Optional[str]:
@@ -270,6 +315,7 @@ def _classify_write_denial(path: str, *, entry: bool = False) -> Optional[str]:
     # prefixes defeat string-prefix denylist comparison after normalization.
     if is_nt_namespace_path(path):
         return "nt_namespace"
+    path = local_drive_spelling(path)
     homes, resolved = _homes_and_resolved(path)
 
     # The runtime's own interpreter/venv is never agent-writable (an overwrite
@@ -339,7 +385,7 @@ def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = Fals
 def is_write_approval_required(path: str) -> bool:
     """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
     prompt, callers without a channel treat it as a block (fail closed)."""
-    homes, resolved = _homes_and_resolved(path)
+    homes, resolved = _homes_and_resolved(local_drive_spelling(path))
     return any(resolved in build_write_approval_paths(home) for home in homes)
 
 
@@ -402,8 +448,9 @@ def get_read_block_error(path: str) -> Optional[str]:
     if nt_error:
         return nt_error
     from tools.environments.sandbox_scope import sandbox_lexical_path
-    lexical = sandbox_lexical_path(path)
-    resolved = Path(lexical) if lexical is not None else Path(path).expanduser().resolve()
+    local = local_drive_spelling(path)
+    lexical = sandbox_lexical_path(local)
+    resolved = Path(lexical) if lexical is not None else Path(local).expanduser().resolve()
     hermes_dirs = _hermes_dirs()
     reason = None
     if any(_is_under(resolved, hd / "skills" / ".hub") for hd in hermes_dirs):

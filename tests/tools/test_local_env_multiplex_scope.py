@@ -8,6 +8,7 @@ same name won. The builder now overlays the bound secret scope first — the sam
 semantics as ``build_subprocess_env(strip_launch_profile=True)``."""
 
 from tools.environments.local import _make_run_env
+from tools.process_registry import ProcessRegistry
 
 # A Hermes-managed provider credential name, built at runtime so no credential-shaped
 # literal sits in the source: the test only needs the NAME to be blocklisted.
@@ -56,3 +57,20 @@ def test_managed_policy_keys_beat_the_routed_scope(monkeypatch):
     _multiplex(monkeypatch, {"ORG_POLICY_FLAG": "routed-user-value"})
     env = _make_run_env({})
     assert env["ORG_POLICY_FLAG"] == "policy-value"
+
+
+def test_background_commands_get_the_same_routed_base(monkeypatch, tmp_path):
+    """``terminal(background=True)`` spawns through ProcessRegistry, not ``_make_run_env``: it must
+    drop the launch profile's ``.env`` residue and see the served profile's own values too."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    monkeypatch.setenv("MYAPP_AGENT_ID", "from-p1")
+    monkeypatch.setenv("LAUNCH_DOTENV_NAME", "launch-residue")
+    monkeypatch.setattr("hermes_cli.env_loader.launch_dotenv_keys", lambda: ["LAUNCH_DOTENV_NAME"])
+    _multiplex(monkeypatch, {"MYAPP_AGENT_ID": "from-p2"})
+    token = set_hermes_home_override(str(tmp_path / "profiles" / "p2"))
+    try:
+        env = ProcessRegistry._spawn_env({})
+    finally:
+        reset_hermes_home_override(token)
+    assert env["MYAPP_AGENT_ID"] == "from-p2"
+    assert "LAUNCH_DOTENV_NAME" not in env

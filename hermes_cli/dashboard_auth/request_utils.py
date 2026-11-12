@@ -99,13 +99,14 @@ def is_safe_next_path(path: str) -> bool:
     themselves, and every ``/api`` path.
 
     Browsers parse ``/\\evil`` as ``//evil`` (WHATWG URL collapses ``\\`` to ``/`` in
-    special-scheme URLs) and strip tab/newline before parsing, so a string-prefix check alone
-    cannot decide origin; anything a valid same-origin path would carry percent-encoded is
-    rejected here fail-closed instead.
+    special-scheme URLs) and strip tab/CR/LF anywhere before parsing (``/\t/evil`` is
+    ``//evil``), so a string-prefix check alone cannot decide origin: any backslash or control
+    character is rejected fail-closed. A space never moves the authority, so it stays allowed
+    (deep links carry decoded ``%20`` queries).
     """
-    if not path.startswith("/") or path.startswith(("//", "/\\")):
+    if not path.startswith("/") or path.startswith("//"):
         return False
-    if "\\" in path or any(ord(ch) <= 0x20 for ch in path):
+    if "\\" in path or any(ord(ch) < 0x20 or ch == "\x7f" for ch in path):
         return False
     if any(path == p or path.startswith(p) for p in _NEXT_DENY_PREFIXES):
         return False

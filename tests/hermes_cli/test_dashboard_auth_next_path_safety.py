@@ -10,7 +10,8 @@ re-creates the same state from the URL-safe form ``?next=/%5Cevil.example``.
 
 The matrix mirrors the bypass classes from the report: raw ``//``, backslash forms
 (literal, %-encoded, repeated), control characters WHATWG parsing strips (tab/newline),
-and a leading space, plus the previously-rejected and legitimately-accepted controls.
+plus the previously-rejected and legitimately-accepted controls. A space never moves the
+authority (the parser percent-encodes it in the path), so decoded ``%20`` deep links survive.
 """
 
 from __future__ import annotations
@@ -34,9 +35,10 @@ UNSAFE_NEXT_PATHS = [
     "//evil.example",  # protocol-relative
     "/\\evil.example",  # backslash form: WHATWG collapses \ to /
     "\\\\evil.example",  # double backslash
-    "/\\t/x",  # tab is stripped before URL parsing -> //x
-    "/\\n/x",  # newline is stripped before URL parsing -> //x
-    "/ /x",  # leading space
+    "/\t/x",  # tab is stripped before URL parsing -> //x
+    "/\n/x",  # newline is stripped before URL parsing -> //x
+    "/\r/x",  # carriage return is stripped before URL parsing -> //x
+    "/\t\\x",  # tab + backslash
     "https://evil.example",  # absolute URL
     "evil.example",  # not root-relative
     "/sessions\\x",  # backslash anywhere, not only at the prefix
@@ -52,7 +54,9 @@ class TestIsSafeNextPath:
     def test_rejects_off_origin_and_auth_flow_forms(self, path: str):
         assert is_safe_next_path(path) is False
 
-    @pytest.mark.parametrize("path", ["/", "/sessions", "/sessions?tab=all"])
+    @pytest.mark.parametrize(
+        "path", ["/", "/sessions", "/sessions?tab=all", "/sessions?q=a b", "/ /x"]
+    )
     def test_accepts_same_origin_paths(self, path: str):
         assert is_safe_next_path(path) is True
 
@@ -70,6 +74,9 @@ class TestValidatePostLoginTarget:
             "%2f%2fevil.example",  # encoded protocol-relative
             "%5C%5Cevil.example",  # encoded double backslash
             "/%09/x",  # encoded tab
+            "/%0A/x",  # encoded newline
+            "/%0d/x",  # encoded carriage return
+            "/%5C%09evil.example",  # encoded backslash + tab
         ],
     )
     def test_encoded_bypass_forms_are_rejected(self, raw: str):

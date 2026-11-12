@@ -253,7 +253,7 @@ def test_gc_refuses_incomplete_launcher_scan_on_low_level_io_error(
     assert (store / "python-orphan").is_dir()
 
 
-@pytest.mark.parametrize("reader", ["python_bytes", "owner_text", "checkout_text"])
+@pytest.mark.parametrize("reader", ["python_bytes", "owner_text_cmd", "owner_text_exe", "checkout_text"])
 @pytest.mark.parametrize("location", ["local", "legacy"])
 def test_gc_aborts_when_parser_read_fails_after_preflight(
     launcher_gc_env, monkeypatch, reader, location
@@ -264,9 +264,17 @@ def test_gc_aborts_when_parser_read_fails_after_preflight(
     _entry(store, "python-current", python)
     out = root / (".hermes/bin" if location == "local" else "bin")
     out.mkdir(parents=True)
-    if reader == "checkout_text":
+    # mint_launcher's form is platform-dependent (shell script here, zip-appended
+    # .exe on Windows), and the read_text index depends on that form: non-.exe
+    # files get a preflight text read, so _owns_launcher's read is #2, while an
+    # .exe skips it and _owns_launcher's read is #1. Pin each text-reader case
+    # to one writer form so the index holds on every platform.
+    if reader in ("owner_text_cmd", "checkout_text"):
         launcher = out / "hermes.cmd"
         _write_cmd(launcher, old_python, root)
+    elif reader == "owner_text_exe":
+        launcher = out / "hermes.exe"
+        _write_exe(launcher, old_python, root)
     else:
         launcher = _launchers.mint_launcher("hermes", root, out, old_python, None)
         assert launcher is not None
@@ -288,7 +296,7 @@ def test_gc_aborts_when_parser_read_fails_after_preflight(
     else:
         original = Path.read_text
         calls = 0
-        fail_at = 3 if reader == "checkout_text" else 2
+        fail_at = {"owner_text_exe": 1, "owner_text_cmd": 2, "checkout_text": 3}[reader]
 
         def fail_parser_read(self, *args, **kwargs):
             nonlocal calls

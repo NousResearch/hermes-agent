@@ -40,7 +40,7 @@ it('translates every shipped stock body at the same personality and rotation pos
 
   const { container, rerender } = render(<Fixture />)
 
-  for (const locale of ['zh', 'zh-hant', 'ja', 'fr', 'de', 'es'] as const) {
+  for (const locale of ['zh', 'zh-hant', 'ja', 'fr', 'de', 'es', 'ru'] as const) {
     await act(() => i18n.setLocale(locale))
     const indices = new Map<string, number>()
 
@@ -82,7 +82,7 @@ it('localizes the custom-personality fallback without translating its user-suppl
     'My Custom Voice'
   )
 
-  for (const locale of ['fr', 'de', 'es'] as const) {
+  for (const locale of ['fr', 'de', 'es', 'ru'] as const) {
     await act(() => i18n.setLocale(locale))
     const body = container.querySelector('[data-slot="aui_intro"] > div > p:last-child')!.textContent
     expect(body).not.toBe(english)

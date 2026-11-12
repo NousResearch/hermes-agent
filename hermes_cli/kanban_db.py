@@ -2947,7 +2947,7 @@ def _persist_scratch_completion_artifacts(
         artifact = str(item).strip() if isinstance(item, str) else ""
         if not artifact:
             continue
-        src = Path(artifact).expanduser()
+        src = _host_artifact_path(artifact, workspace_root)
         try:
             resolved_src = src.resolve()
         except OSError:
@@ -4211,7 +4211,7 @@ from hermes_cli.kanban_db_connect import (
     write_txn,
 )
 from hermes_cli.kanban_db_workspace import (
-    _cleanup_workspace,
+    _cleanup_workspace, _host_artifact_path,
     _is_managed_scratch_path,
     _managed_scratch_path_info,
     _scratch_workspace,

@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram import telegram_flood_window as fw
-from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS, TelegramAdapter
-from plugins.platforms.telegram.telegram_media_flood import _MAX_WINDOW_WAITS
+from hermes_agent.plugins.platforms.telegram import telegram_flood_window as fw
+from hermes_agent.plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS, TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.telegram_media_flood import _MAX_WINDOW_WAITS
 
 _real_sleep = asyncio.sleep
 

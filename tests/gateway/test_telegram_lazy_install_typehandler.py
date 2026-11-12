@@ -1,6 +1,6 @@
 """Regression test for the Telegram lazy-install rebind path (#85272).
 
-When ``plugins.platforms.telegram.adapter`` is imported before
+When ``hermes_agent.plugins.platforms.telegram.adapter`` is imported before
 python-telegram-bot is available, the top-level ``except ImportError`` block
 binds every SDK symbol to a placeholder. ``check_telegram_requirements()`` then
 lazy-installs the package and re-imports, rebinding those module globals.
@@ -23,7 +23,7 @@ import pytest
 
 # Symbols the fallback block binds to a placeholder, paired with the fake the
 # rebind is expected to install. Keep in sync with the `except ImportError`
-# block in plugins/platforms/telegram/adapter.py.
+# block in hermes_agent/plugins/platforms/telegram/adapter.py.
 PLACEHOLDER = Any
 
 
@@ -103,7 +103,7 @@ def fake_telegram_sdk(monkeypatch):
 
 def test_lazy_install_rebinds_every_placeholder(monkeypatch, fake_telegram_sdk):
     """Every symbol the fallback stubbed must be rebound by the lazy install."""
-    from plugins.platforms.telegram import adapter
+    from hermes_agent.plugins.platforms.telegram import adapter
 
     import pm
 

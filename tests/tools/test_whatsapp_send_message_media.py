@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from plugins.platforms.whatsapp.adapter import _bridge_media_type, _standalone_send
+from hermes_agent.plugins.platforms.whatsapp.adapter import _bridge_media_type, _standalone_send
 from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 

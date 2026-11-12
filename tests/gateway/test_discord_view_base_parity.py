@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from plugins.platforms.discord.adapter import (
+from hermes_agent.plugins.platforms.discord.adapter import (
     ChoicePickerView,
     ClarifyChoiceView,
     ExecApprovalView,

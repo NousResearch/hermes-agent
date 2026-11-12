@@ -1,7 +1,7 @@
 # Providers & Model Aliases
 
 Set via `hermes model` (picker) or `hermes setup`. 35+ provider profiles ship as
-plugins under `plugins/model-providers/`; user plugins of the same name override.
+plugins under `hermes_agent/plugins/model-providers/`; user plugins of the same name override.
 Full docs: https://hermes-agent.nousresearch.com/docs/integrations/providers
 
 ### Providers

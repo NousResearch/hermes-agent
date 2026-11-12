@@ -24,7 +24,7 @@ def _leaks(text: str) -> list[str]:
 
 
 def _mattermost(monkeypatch, proxy):
-    from plugins.platforms.mattermost import adapter as mm
+    from hermes_agent.plugins.platforms.mattermost import adapter as mm
 
     monkeypatch.setenv("MATTERMOST_PROXY", proxy)
     cfg = SimpleNamespace(token="tok", extra={"url": "http://127.0.0.1:9"}, api_key=None)
@@ -32,7 +32,7 @@ def _mattermost(monkeypatch, proxy):
 
 
 def _sms(monkeypatch, proxy):
-    from plugins.platforms.sms import adapter as sms
+    from hermes_agent.plugins.platforms.sms import adapter as sms
 
     secrets = {"TWILIO_ACCOUNT_SID": "AC1", "TWILIO_PHONE_NUMBER": "+15550000000", "TWILIO_AUTH_TOKEN": "t"}
     monkeypatch.setattr(sms, "_get_scoped_secret", lambda key, default="": secrets.get(key, default))
@@ -40,13 +40,13 @@ def _sms(monkeypatch, proxy):
 
 
 def _slack(monkeypatch, proxy):
-    from plugins.platforms.slack import adapter as slack
+    from hermes_agent.plugins.platforms.slack import adapter as slack
 
     return slack._standalone_send(SimpleNamespace(token="xoxb-fake", extra={}), "C123", "hi")
 
 
 def _discord(monkeypatch, proxy):
-    from plugins.platforms.discord import adapter as dc
+    from hermes_agent.plugins.platforms.discord import adapter as dc
 
     monkeypatch.setenv("DISCORD_PROXY", proxy)
     return dc._standalone_send(SimpleNamespace(token="bot-token"), "123", "hi", thread_id="456")

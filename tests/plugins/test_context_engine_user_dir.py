@@ -34,7 +34,7 @@ def test_user_installed_engine_is_selected_by_name(tmp_path: Path, monkeypatch, 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     from hermes_agent.agent.agent_init import _select_context_engine
-    from plugins.context_engine import discover_context_engines, load_context_engine
+    from hermes_agent.plugins.context_engine import discover_context_engines, load_context_engine
 
     assert load_context_engine("notes") is None
     assert "ctx_demo" in {name for name, _, _ in discover_context_engines()}

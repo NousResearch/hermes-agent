@@ -24,7 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugins.platforms.a2a import protocol, security, tools
+from hermes_agent.plugins.platforms.a2a import protocol, security, tools
 
 
 def _free_port() -> int:
@@ -56,7 +56,7 @@ class TestConnectionGateScope:
         os.environ carries the launch value, then A again. The tools gate follows the same scope."""
         import hermes_agent.agent.secret_scope as ss
         from hermes_agent import hermes_constants
-        from plugins.platforms import a2a
+        from hermes_agent.plugins.platforms import a2a
 
         monkeypatch.setenv("A2A_PORT", "9902")  # the launch profile's value, bridged into os.environ
         home_a = self._home(tmp_path, "s6probe-a", "A2A_PORT=9911\n")
@@ -79,7 +79,7 @@ class TestConnectionGateScope:
 
     def test_standalone_profile_reads_its_own_environ(self, monkeypatch):
         """T1 (no multiplex): os.environ IS the profile — A2A_PORT there enables; ``extra.enabled`` always wins."""
-        from plugins.platforms import a2a
+        from hermes_agent.plugins.platforms import a2a
 
         monkeypatch.delenv("A2A_PORT", raising=False)
         assert a2a.is_connected(SimpleNamespace(extra={})) is False
@@ -633,7 +633,7 @@ class TestRegistryDispatchConvention:
 # --------------------------------------------------------------------------
 
 def _bare_adapter():
-    from plugins.platforms.a2a.adapter import A2AAdapter
+    from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
     from hermes_agent.gateway.config import PlatformConfig
     return A2AAdapter(PlatformConfig(enabled=True))
 
@@ -900,7 +900,7 @@ def _make_live_adapter(monkeypatch, reply_fn=None):
     ``reply_fn(event) -> Optional[str]`` returns the agent's reply (None =
     never reply). Returns (adapter, base_url).
     """
-    from plugins.platforms.a2a.adapter import A2AAdapter
+    from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
     from hermes_agent.gateway.config import PlatformConfig
 
     port = _free_port()
@@ -1468,7 +1468,7 @@ class TestPushNotificationEndToEnd:
 
 class TestMultiAgentRouting:
     def test_path_routed_agent_card_uses_prefix_and_canonical_path(self, monkeypatch):
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
@@ -1493,7 +1493,7 @@ class TestMultiAgentRouting:
         assert {s["name"] for s in card["skills"]} == {"research", "web"}
 
     def test_tenant_routing_selects_agent_without_path_prefix(self):
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
@@ -1505,7 +1505,7 @@ class TestMultiAgentRouting:
         assert route["agent"]["slug"] == "dev"
 
     def test_tenant_mismatch_is_rejected(self):
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
@@ -1517,7 +1517,7 @@ class TestMultiAgentRouting:
     def test_forwarded_retry_of_the_same_message_reuses_its_admission_id(self, monkeypatch):
         """A peer that resends after a timeout repeats its messageId; the forwarded input id must
         repeat with it so the owner answers from the accepted work instead of queueing a second turn."""
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
@@ -1549,7 +1549,7 @@ class TestMultiAgentRouting:
     def test_forwarded_retry_without_a_context_reopens_the_same_context(self):
         """A first send is retried with the same messageId and no contextId, because the peer never
         received one. It must land in the same context and admission as the first attempt."""
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
@@ -1584,7 +1584,7 @@ class TestMultiAgentRouting:
     def test_forwarded_retries_do_not_spend_the_turn_budget(self, monkeypatch):
         """The owner answers a resend from the accepted admission, so the anti-loop counter and the
         conversation log see the message once. Distinct messages in the context still count."""
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         monkeypatch.setenv("A2A_MAX_PINGPONG_TURNS", "2")
@@ -1615,7 +1615,7 @@ class TestMultiAgentRouting:
         assert len(seen) == 5
 
     def test_forwarded_profile_task_completes_in_task_store(self, monkeypatch):
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
@@ -1743,7 +1743,7 @@ class TestV1SpecRegressionFixes:
         assert posted["body"]["params"]["tenant"] == "dev-team"
 
     def test_cross_tenant_task_access_is_hidden(self):
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
@@ -1763,7 +1763,7 @@ class TestV1SpecRegressionFixes:
         assert list_resp["result"]["tasks"] == []
 
     def test_push_config_is_tenant_scoped(self):
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
@@ -1814,7 +1814,7 @@ class TestV1SpecRegressionFixes:
         asyncio.run(run())
 
     def test_reserved_paths_and_duplicate_tenants_are_ignored(self):
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
@@ -1829,7 +1829,7 @@ class TestV1SpecRegressionFixes:
         assert "two" not in adapter._agents
 
     def test_forward_to_profile_uses_receipted_owner_not_local_writer(self, monkeypatch, tmp_path):
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
         from hermes_agent.gateway import session_a2a
 
@@ -1839,7 +1839,7 @@ class TestV1SpecRegressionFixes:
             return {'status': 'terminal', 'outcome': 'completed',
                     'result': {'final_response': 'owner reply'}}
         monkeypatch.setattr(session_a2a, 'forward_to_owner', owner)
-        monkeypatch.setattr('plugins.platforms.a2a.adapter._profile_home', lambda profile: str(tmp_path))
+        monkeypatch.setattr('hermes_agent.plugins.platforms.a2a.adapter._profile_home', lambda profile: str(tmp_path))
         adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
             'agents': {'dev': {'profile': 'dev', 'tenant': 'team', 'timeout': 5}}
         }))
@@ -1923,7 +1923,7 @@ class TestMultiplexConstructionScope:
         """The secondary profile's own config is authoritative; keys absent
         from it fall to the module defaults, never to the default profile's
         bridged A2A_* env values."""
-        from plugins.platforms.a2a.adapter import A2AAdapter, _DEFAULT_PORT
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter, _DEFAULT_PORT
         from hermes_agent.gateway.config import PlatformConfig
 
         multiplex_scope()
@@ -1944,7 +1944,7 @@ class TestMultiplexConstructionScope:
         """Multiplex ON but no scope (the DEFAULT profile constructs
         unscoped): env is its own bridge output and still wins."""
         from hermes_agent.agent.secret_scope import set_multiplex_active
-        from plugins.platforms.a2a.adapter import A2AAdapter
+        from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
         from hermes_agent.gateway.config import PlatformConfig
 
         set_multiplex_active(True)

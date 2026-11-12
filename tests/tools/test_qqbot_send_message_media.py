@@ -7,15 +7,15 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from hermes_agent.gateway.config import Platform
-from plugins.platforms.qqbot.constants import (
+from hermes_agent.plugins.platforms.qqbot.constants import (
     MEDIA_TYPE_FILE,
     MEDIA_TYPE_IMAGE,
     MEDIA_TYPE_VIDEO,
     MEDIA_TYPE_VOICE,
     MSG_TYPE_MEDIA,
 )
-from plugins.platforms.qqbot.send import _qqbot_media_file_type
-from plugins.platforms.qqbot.send import send_qqbot as _send_qqbot
+from hermes_agent.plugins.platforms.qqbot.send import _qqbot_media_file_type
+from hermes_agent.plugins.platforms.qqbot.send import send_qqbot as _send_qqbot
 from hermes_agent.tools.send_message_tool import _send_to_platform
 
 
@@ -173,7 +173,7 @@ class TestSendQqbotMedia:
         )
 
         with patch.dict("sys.modules", {"httpx": _HttpxMod()}), patch(
-            "plugins.platforms.qqbot.send._qqbot_deliver_one_media",
+            "hermes_agent.plugins.platforms.qqbot.send._qqbot_deliver_one_media",
             new=deliver,
         ):
             result = asyncio.run(
@@ -197,7 +197,7 @@ class TestSendQqbotMedia:
         assert str(img) in _args
 
     def test_deliver_one_media_falls_back_c2c_to_group(self, tmp_path):
-        from plugins.platforms.qqbot.send import _qqbot_deliver_one_media
+        from hermes_agent.plugins.platforms.qqbot.send import _qqbot_deliver_one_media
 
         img = tmp_path / "a.png"
         img.write_bytes(b"x")
@@ -218,10 +218,10 @@ class TestSendQqbotMedia:
             return {"id": "mid-2"}
 
         with patch(
-            "plugins.platforms.qqbot.send._qqbot_upload_local_file",
+            "hermes_agent.plugins.platforms.qqbot.send._qqbot_upload_local_file",
             new=AsyncMock(side_effect=_fake_upload_local),
         ), patch(
-            "plugins.platforms.qqbot.send._qqbot_send_media_message",
+            "hermes_agent.plugins.platforms.qqbot.send._qqbot_send_media_message",
             new=AsyncMock(side_effect=_fake_send_media),
         ):
             result = asyncio.run(
@@ -289,7 +289,7 @@ class TestQqbotMediaFailureFallsBackToText:
             return SimpleNamespace(status_code=200, json=lambda: {"id": "text-mid"})
 
         with patch.dict("sys.modules", {"httpx": _token_client(_post)}), patch(
-            "plugins.platforms.qqbot.send._qqbot_deliver_one_media", new=AsyncMock(side_effect=_deliver)
+            "hermes_agent.plugins.platforms.qqbot.send._qqbot_deliver_one_media", new=AsyncMock(side_effect=_deliver)
         ):
             result = asyncio.run(
                 _send_qqbot(
@@ -317,7 +317,7 @@ class TestQqbotMediaFailureFallsBackToText:
             return SimpleNamespace(status_code=200, json=lambda: {"id": "mid"})
 
         with patch.dict("sys.modules", {"httpx": _token_client(_post)}), patch(
-            "plugins.platforms.qqbot.send._qqbot_deliver_one_media",
+            "hermes_agent.plugins.platforms.qqbot.send._qqbot_deliver_one_media",
             new=AsyncMock(return_value={"error": "QQBot media send failed: too large"}),
         ):
             result = asyncio.run(
@@ -339,7 +339,7 @@ class TestQqbotMediaFailureFallsBackToText:
 
 class TestQqbotSendMediaMessageBody:
     def test_body_uses_msg_type_media(self):
-        from plugins.platforms.qqbot.send import _qqbot_send_media_message
+        from hermes_agent.plugins.platforms.qqbot.send import _qqbot_send_media_message
 
         captured = {}
 
@@ -350,7 +350,7 @@ class TestQqbotSendMediaMessageBody:
             return {"id": "x"}
 
         with patch(
-            "plugins.platforms.qqbot.send._qqbot_api_json",
+            "hermes_agent.plugins.platforms.qqbot.send._qqbot_api_json",
             new=AsyncMock(side_effect=_fake_api),
         ):
             asyncio.run(

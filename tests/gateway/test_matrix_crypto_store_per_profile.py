@@ -1,7 +1,7 @@
 """Matrix crypto store must be pinned per profile at connect(), not at import.
 
 Under ``gateway.multiplex_profiles`` one process imports
-``plugins.platforms.matrix.adapter`` once; the old module-level
+``hermes_agent.plugins.platforms.matrix.adapter`` once; the old module-level
 ``_STORE_DIR``/``_CRYPTO_DB_PATH`` resolved against the root HERMES_HOME at
 import time, so every profile's adapter opened the SAME crypto.db and inbound
 E2EE failed with "no session found" (#89168). ``connect()`` calls
@@ -12,7 +12,7 @@ test needs no mautrix install.
 """
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from plugins.platforms.matrix import adapter as matrix_adapter
+from hermes_agent.plugins.platforms.matrix import adapter as matrix_adapter
 
 
 def _make_adapter() -> matrix_adapter.MatrixAdapter:

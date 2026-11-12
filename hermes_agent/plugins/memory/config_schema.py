@@ -94,7 +94,7 @@ _SCHEMA_FAILURES_LOGGED: set[str] = set()
 def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
     """``CONFIG_SCHEMA`` of provider ``name``; None (no panel) without a ``config_schema.py``.
     Cached by resolved file path, not name: user plugins are per-profile."""
-    from plugins.memory import find_provider_dir
+    from hermes_agent.plugins.memory import find_provider_dir
 
     provider_dir = find_provider_dir(name)
     path = provider_dir / "config_schema.py" if provider_dir else None
@@ -106,7 +106,7 @@ def get_provider_config_schema(name: str) -> ProviderConfigSchema | None:
         return _SCHEMA_CACHE[key]
 
     try:
-        from plugins.memory import _is_bundled
+        from hermes_agent.plugins.memory import _is_bundled
         from hermes_agent.hermes_cli.plugin_isolation import user_plugin_host
         host = None if _is_bundled(provider_dir) else user_plugin_host()
         if host is not None:  # plugins.isolation: host — a user schema file is user code too

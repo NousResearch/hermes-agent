@@ -25,8 +25,8 @@ if _repo not in sys.path:
 # Minimal Telegram mock so TelegramAdapter can be imported (mirrors
 # test_telegram_approval_buttons.py)
 # ---------------------------------------------------------------------------
-from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt as _ClarifyPrompt
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.telegram_clarify_binding import ClarifyPrompt as _ClarifyPrompt
 from hermes_agent.gateway.config import PlatformConfig
 
 

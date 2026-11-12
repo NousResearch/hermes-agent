@@ -32,9 +32,9 @@ class TestMemoryPluginCliDiscovery:
             "    subparser.add_argument('--other')\n"
         )
 
-        import plugins.memory as pm
+        import hermes_agent.plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
-        mod_key = "plugins.memory.testplugin.cli"
+        mod_key = "hermes_agent.plugins.memory.testplugin.cli"
         sys.modules.pop(mod_key, None)
 
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
@@ -62,7 +62,7 @@ class TestMemoryPluginCliDiscovery:
             "def register_cli(subparser):\n    pass\n"
         )
 
-        import plugins.memory as pm
+        import hermes_agent.plugins.memory as pm
         original_dir = pm._MEMORY_PLUGINS_DIR
         monkeypatch.setattr(pm, "_MEMORY_PLUGINS_DIR", tmp_path)
         monkeypatch.setattr(pm, "_get_active_memory_provider", lambda: None)

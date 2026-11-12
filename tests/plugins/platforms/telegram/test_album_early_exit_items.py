@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_documents import _make_document, _make_file_obj, _make_message
 from tests.waiting import async_wait_until
 

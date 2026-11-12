@@ -1,6 +1,6 @@
 """Discord stand-in: REST API v10 + Gateway websocket (https://discord.com/developers/docs).
 
-The real ``plugins/platforms/discord`` adapter reaches it through discord.py itself: the child
+The real ``hermes_agent/plugins/platforms/discord`` adapter reaches it through discord.py itself: the child
 gateway gets ``tests/fakes/platforms/discord_shim`` on ``PYTHONPATH`` whose ``sitecustomize``
 repoints ``Route.BASE`` at ``{base}/api/v10`` and ``DiscordWebSocket.DEFAULT_GATEWAY`` at
 ``ws://{host}/gw``. Every request then crosses discord.py's real HTTP client, rate-limit handling,

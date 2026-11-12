@@ -15,9 +15,9 @@ import pytest
 
 from hermes_agent.utils import fast_safe_load
 
-from plugins.config_backends import remote as remote_pkg
-from plugins.config_backends.remote import backend as backend_mod
-from plugins.config_backends.remote import credentials as cred_mod
+from hermes_agent.plugins.config_backends import remote as remote_pkg
+from hermes_agent.plugins.config_backends.remote import backend as backend_mod
+from hermes_agent.plugins.config_backends.remote import credentials as cred_mod
 from hermes_agent.hermes_cli.config_backend import (
     ConfigBackendUnavailable, ConfigLockedError, ConfigValueError, get_config_backend, write_config_key)
 
@@ -377,7 +377,7 @@ def test_poll_interval_is_a_constant_no_env_tunes(monkeypatch):
 
 def test_backend_edits_paths_with_the_diff_helpers():
     # teknium1 P2-3: one _set_path/_pop_path pair (diff.py's), not a second copy in backend.py.
-    from plugins.config_backends.remote import diff as diff_mod
+    from hermes_agent.plugins.config_backends.remote import diff as diff_mod
     assert backend_mod._set_path is diff_mod._set_path
     assert backend_mod._pop_path is diff_mod._pop_path
     doc = {"a": {"b": 1}}
@@ -543,7 +543,7 @@ def _hold_gets(monkeypatch):
     ``release`` is set; every later request passes straight through."""
     import threading
 
-    from plugins.config_backends.remote import client
+    from hermes_agent.plugins.config_backends.remote import client
     fetched, release = threading.Event(), threading.Event()
     original = client.request
 
@@ -870,7 +870,7 @@ def test_dashboard_save_refused_by_plane_value_check_is_a_400(plane):
     (400, "config_request_invalid", None), (500, "internal", None)])
 def test_plane_refusals_map_to_http(status, error, expected):
     from hermes_agent.hermes_cli.web_routers._common import config_refusal_http
-    from plugins.config_backends.remote import client
+    from hermes_agent.plugins.config_backends.remote import client
     exc = backend_mod.RemoteBackend._write_error(
         client.Response(status=status, body={"error": error, "message": "refused", "path": "a.b"},
                         etag=None, retry_after=None))
@@ -912,7 +912,7 @@ def test_plane_group_lock_refusal_maps_to_locked_error_and_403():
     """A server-side config_key_locked from a group lock carries lockedByGroupId (portal-groups
     §6.6); the agent still maps it to ConfigLockedError(path, "group") and the dashboard's 403."""
     from hermes_agent.hermes_cli.web_routers._common import config_refusal_http
-    from plugins.config_backends.remote import client
+    from hermes_agent.plugins.config_backends.remote import client
     exc = backend_mod.RemoteBackend._write_error(client.Response(
         status=403, body={"error": "config_key_locked", "path": "terminal.backend", "lockedBy": "group",
                           "lockedByGroupId": "g-sec", "message": "terminal.backend is locked by group g-sec"},
@@ -973,7 +973,7 @@ def test_cas_retry_of_a_document_write_replays_only_its_own_edit(plane, monkeypa
     """F1: another writer commits between our read and our PATCH. The 409 retry re-applies OUR
     edit to the re-read doc; it must not turn the other writer's changes into edits of ours."""
     from hermes_agent.hermes_cli.config import set_config_value
-    from plugins.config_backends.remote import client
+    from hermes_agent.plugins.config_backends.remote import client
     plane.profile("default").update(values={"display": {"personality": "concise", "compact": False}}, version=1)
     real_request = client.request
     raced = []
@@ -1323,7 +1323,7 @@ def test_rpc_refused_by_the_config_backend_still_gets_its_one_answer(plane, monk
 def _absent_section_race(plane, monkeypatch):
     """Another writer adds ``terminal.persistent`` to a profile with no ``terminal`` section
     between our read and our first PATCH (so that PATCH gets a 409)."""
-    from plugins.config_backends.remote import client
+    from hermes_agent.plugins.config_backends.remote import client
     plane.profile("default").update(values={"display": {"personality": "concise"}}, version=1)
     get_config_backend().read_user_doc(plane.home)
     real_request = client.request

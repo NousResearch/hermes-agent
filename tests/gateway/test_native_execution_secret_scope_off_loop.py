@@ -16,7 +16,7 @@ CHAT = '15551234567@s.whatsapp.net'
 @pytest.mark.asyncio
 async def test_native_execution_and_settled_delivery_hydrate_secrets_off_loop(tmp_path, monkeypatch):
     from hermes_agent.hermes_cli import env_loader
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     hydrations = []
     real_hydrate = env_loader.hydrate_profile_secret_sources

@@ -39,7 +39,7 @@ def test_cron_fire_profile_lookup_off_loop(monkeypatch, loop_probe):
 
     monkeypatch.setattr(_web_server_cron, "_find_cron_job_profile", fake_find)
 
-    import plugins.cron_providers.chronos.verify as chv
+    import hermes_agent.plugins.cron_providers.chronos.verify as chv
     monkeypatch.setattr(chv, "get_fire_verifier", lambda: (lambda **kw: {"sub": "t"}))
 
     client = TestClient(web_server.app)

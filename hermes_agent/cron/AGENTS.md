@@ -135,8 +135,8 @@ zero outside a kanban task (footprint ladder rung 3).
   key alone.
 - **Dispatcher:** long-lived loop (default 60s) that reclaims stale claims, promotes ready tasks,
   atomically claims, and spawns assigned profiles. Runs **inside the gateway** by default
-  (`kanban.dispatch_in_gateway: true`). Standalone: `plugins/kanban/systemd/hermes-kanban-dispatcher.service`.
-- **Plugin assets:** `plugins/kanban/dashboard/` (web UI) + systemd unit. `kanban_db.connect` is its
+  (`kanban.dispatch_in_gateway: true`). Standalone: `hermes_agent/plugins/kanban/systemd/hermes-kanban-dispatcher.service`.
+- **Plugin assets:** `hermes_agent/plugins/kanban/dashboard/` (web UI) + systemd unit. `kanban_db.connect` is its
   own connection helper — do not alias it to `projects_db.connect` (a path-proximity generator did).
 
 Isolation: **board** is the hard boundary — workers get `HERMES_KANBAN_BOARD` pinned in their env and

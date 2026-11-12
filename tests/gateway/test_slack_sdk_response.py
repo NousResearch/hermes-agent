@@ -59,11 +59,11 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod
+import hermes_agent.plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import (
+from hermes_agent.plugins.platforms.slack.adapter import (
     SlackAdapter,
     _slack_response_payload,
     _standalone_send,

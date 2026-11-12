@@ -267,9 +267,9 @@ hermes -z "Generate an image of a corgi in a spacesuit"
 
 ## 参考实现
 
-- **`plugins/image_gen/openai/__init__.py`** — gpt-image-2 以低/中/高三个档位作为三个虚拟模型 ID，共享同一 API 模型并使用不同的 `quality` 参数。适合参考单一后端下的分层模型设计 + config.yaml 优先级链。
-- **`plugins/image_gen/xai/__init__.py`** — 通过 xAI 的 Grok Imagine。不同的响应结构（URL 输出，目录更简单）。
-- **`plugins/image_gen/openai-codex/__init__.py`** — Codex 风格的 Responses API 变体，复用 OpenAI SDK 并使用不同的路由基础 URL。
+- **`hermes_agent/plugins/image_gen/openai/__init__.py`** — gpt-image-2 以低/中/高三个档位作为三个虚拟模型 ID，共享同一 API 模型并使用不同的 `quality` 参数。适合参考单一后端下的分层模型设计 + config.yaml 优先级链。
+- **`hermes_agent/plugins/image_gen/xai/__init__.py`** — 通过 xAI 的 Grok Imagine。不同的响应结构（URL 输出，目录更简单）。
+- **`hermes_agent/plugins/image_gen/openai-codex/__init__.py`** — Codex 风格的 Responses API 变体，复用 OpenAI SDK 并使用不同的路由基础 URL。
 
 ## 通过 pip 分发
 

@@ -18,7 +18,7 @@ The active provider is `delegation.backend` in `config.yaml`; a provider's own s
 `delegation.backends.<backend name>`. The `default` strategy is today's behaviour: every child follows
 the `delegation` section (`delegation.provider`, `delegation.model`, `delegation.base_url`, ...), or
 inherits the parent's route when those are empty. It is itself a plugin, the bundled
-`plugins/delegation/default/` (`kind: backend`, always loaded), registered through the same
+`hermes_agent/plugins/delegation/default/` (`kind: backend`, always loaded), registered through the same
 `ctx.register_delegation_provider()` seam as yours; it is also the smallest complete example.
 A configured backend that is not installed or reports unavailable **fails closed**: `delegate_task`
 returns a tool error naming the backend and the fix, no child starts, and its schema parameters are

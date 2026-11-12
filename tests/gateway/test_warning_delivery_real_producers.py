@@ -21,7 +21,7 @@ def policy(request, monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_signal_pacing_producer_keeps_actual_image_delivery(policy, monkeypatch, tmp_path):
-    import plugins.platforms.signal.adapter as module
+    import hermes_agent.plugins.platforms.signal.adapter as module
     adapter = module.SignalAdapter(PlatformConfig())
     scheduler = SimpleNamespace(state=dict, estimate_wait=lambda n: 120,
         acquire=AsyncMock(), report_rpc_duration=AsyncMock())
@@ -46,7 +46,7 @@ async def test_signal_pacing_producer_keeps_actual_image_delivery(policy, monkey
 @pytest.mark.asyncio
 @pytest.mark.parametrize("caption", [None, "Warning: requested caption"])
 async def test_slack_actual_upload_failure_keeps_caption_and_source_log(policy, tmp_path, caption, caplog):
-    from plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
     adapter = SlackAdapter(PlatformConfig())
     client = SimpleNamespace(files_upload_v2=AsyncMock(side_effect=RuntimeError("upload rejected")))
     adapter._app = SimpleNamespace(client=client)
@@ -75,7 +75,7 @@ async def test_slack_actual_upload_failure_keeps_caption_and_source_log(policy, 
 async def test_discord_admin_alert_uses_owner_and_logical_destination(tmp_path, monkeypatch, setting):
     from pathlib import Path
     from hermes_agent.gateway.config import Platform
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     from hermes_agent.hermes_constants import get_hermes_home
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     root = tmp_path / ".hermes"

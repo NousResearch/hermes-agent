@@ -29,7 +29,7 @@ def _isolate_home(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_protocol_encode_decode_roundtrip():
-    from plugins.google_meet.node import protocol
+    from hermes_agent.plugins.google_meet.node import protocol
 
     msg = protocol.make_request("ping", "tok", {"x": 1}, req_id="abc")
     raw = protocol.encode(msg)
@@ -46,7 +46,7 @@ def test_protocol_encode_decode_roundtrip():
 # ---------------------------------------------------------------------------
 
 def test_registry_add_get_roundtrip_persists(tmp_path):
-    from plugins.google_meet.node.registry import NodeRegistry
+    from hermes_agent.plugins.google_meet.node.registry import NodeRegistry
 
     p = tmp_path / "nodes.json"
     r = NodeRegistry(path=p)
@@ -67,7 +67,7 @@ def test_registry_add_get_roundtrip_persists(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_server_ensure_token_generates_and_persists(tmp_path):
-    from plugins.google_meet.node.server import NodeServer
+    from hermes_agent.plugins.google_meet.node.server import NodeServer
 
     p = tmp_path / "tok.json"
     s1 = NodeServer(token_path=p)
@@ -129,8 +129,8 @@ def _install_fake_ws(monkeypatch, reply_builder):
 
 
 def test_client_rpc_sends_correct_envelope_and_parses_response(monkeypatch):
-    from plugins.google_meet.node.client import NodeClient
-    from plugins.google_meet.node import protocol
+    from hermes_agent.plugins.google_meet.node.client import NodeClient
+    from hermes_agent.plugins.google_meet.node import protocol
 
     def reply(raw_out):
         req = protocol.decode(raw_out)
@@ -155,7 +155,7 @@ def test_client_rpc_sends_correct_envelope_and_parses_response(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _build_parser():
-    from plugins.google_meet.node.cli import register_cli
+    from hermes_agent.plugins.google_meet.node.cli import register_cli
 
     parser = argparse.ArgumentParser(prog="meet-node-test")
     register_cli(parser)
@@ -163,7 +163,7 @@ def _build_parser():
 
 
 def test_cli_approve_list_remove(capsys):
-    from plugins.google_meet.node.registry import NodeRegistry
+    from hermes_agent.plugins.google_meet.node.registry import NodeRegistry
 
     p = _build_parser()
 

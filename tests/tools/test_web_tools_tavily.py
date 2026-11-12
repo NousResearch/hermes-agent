@@ -36,8 +36,8 @@ class TestTavilyRequest:
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TAVILY_API_KEY", None)
-            with patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post:
-                from plugins.web.tavily.provider import _tavily_request
+            with patch("hermes_agent.plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post:
+                from hermes_agent.plugins.web.tavily.provider import _tavily_request
                 _tavily_request("search", {"query": "test"})
 
                 mock_post.assert_called_once()
@@ -55,8 +55,8 @@ class TestTavilyRequest:
         mock_response = _ok_response()
 
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test-key"}):
-            with patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post:
-                from plugins.web.tavily.provider import _tavily_request
+            with patch("hermes_agent.plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post:
+                from hermes_agent.plugins.web.tavily.provider import _tavily_request
                 _tavily_request("search", {"query": "hello"})
 
                 mock_post.assert_called_once()
@@ -80,8 +80,8 @@ class TestTavilyRequest:
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TAVILY_API_KEY", None)
-            with patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response):
-                from plugins.web.tavily.provider import _tavily_request
+            with patch("hermes_agent.plugins.web.tavily.provider.httpx.post", return_value=mock_response):
+                from hermes_agent.plugins.web.tavily.provider import _tavily_request
                 with pytest.raises(ValueError, match="Rate limit hit"):
                     _tavily_request("search", {"query": "test"})
 
@@ -92,7 +92,7 @@ class TestNormalizeTavilySearchResults:
     """Test search result normalization."""
 
     def test_basic_normalization(self):
-        from plugins.web.tavily.provider import _normalize_tavily_search_results
+        from hermes_agent.plugins.web.tavily.provider import _normalize_tavily_search_results
         raw = {
             "results": [
                 {"title": "Python Docs", "url": "https://docs.python.org", "content": "Official docs", "score": 0.9},
@@ -111,7 +111,7 @@ class TestNormalizeTavilySearchResults:
 
 
     def test_missing_fields(self):
-        from plugins.web.tavily.provider import _normalize_tavily_search_results
+        from hermes_agent.plugins.web.tavily.provider import _normalize_tavily_search_results
         result = _normalize_tavily_search_results({"results": [{}]})
         web = result["data"]["web"]
         assert web[0]["title"] == ""
@@ -125,7 +125,7 @@ class TestNormalizeTavilyDocuments:
     """Test extract document normalization."""
 
     def test_basic_document(self):
-        from plugins.web.tavily.provider import _normalize_tavily_documents
+        from hermes_agent.plugins.web.tavily.provider import _normalize_tavily_documents
         raw = {
             "results": [{
                 "url": "https://example.com",
@@ -143,7 +143,7 @@ class TestNormalizeTavilyDocuments:
 
 
     def test_missing_result_url_is_not_attributed_to_requested_url(self):
-        from plugins.web.tavily.provider import _normalize_tavily_documents
+        from hermes_agent.plugins.web.tavily.provider import _normalize_tavily_documents
         raw = {"results": [{"content": "data"}]}
         docs = _normalize_tavily_documents(raw)
         assert docs[0]["url"] == ""
@@ -201,7 +201,7 @@ class TestTavilyAvailability:
     """Keyed Tavily stays in the paid band; keyless only when selected."""
 
     def test_is_available_without_key(self):
-        from plugins.web.tavily.provider import TavilyWebSearchProvider
+        from hermes_agent.plugins.web.tavily.provider import TavilyWebSearchProvider
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("TAVILY_API_KEY", None)
             assert TavilyWebSearchProvider().is_available() is False
@@ -293,7 +293,7 @@ class TestWebSearchTavily:
 
         with patch("hermes_agent.tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
-             patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response), \
+             patch("hermes_agent.plugins.web.tavily.provider.httpx.post", return_value=mock_response), \
              patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False):
             from hermes_agent.tools.web_tools import web_search_tool
             result = json.loads(web_search_tool("test query", limit=3))
@@ -308,7 +308,7 @@ class TestWebSearchTavily:
         })
 
         with patch("hermes_agent.tools.web_tools._get_backend", return_value="tavily"), \
-             patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post, \
+             patch("hermes_agent.plugins.web.tavily.provider.httpx.post", return_value=mock_response) as mock_post, \
              patch("hermes_agent.tools.interrupt.is_interrupted", return_value=False):
             os.environ.pop("TAVILY_API_KEY", None)
             from hermes_agent.tools.web_tools import web_search_tool
@@ -346,7 +346,7 @@ class TestWebExtractTavily:
 
         with patch("hermes_agent.tools.web_tools._get_backend", return_value="tavily"), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
-             patch("plugins.web.tavily.provider.httpx.post", return_value=mock_response), \
+             patch("hermes_agent.plugins.web.tavily.provider.httpx.post", return_value=mock_response), \
              patch("hermes_agent.tools.web_tools.async_is_safe_url", _allow_ssrf):
             from hermes_agent.tools.web_tools import web_extract_tool
             result = json.loads(asyncio.get_event_loop().run_until_complete(

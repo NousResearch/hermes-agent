@@ -9,12 +9,12 @@ bot), NodeRegistry (approved nodes: name → url+token), protocol (envelope help
 
 from __future__ import annotations
 
-from plugins.google_meet.node import protocol
-from plugins.google_meet.node.client import NodeClient
-from plugins.google_meet.node.protocol import (
+from hermes_agent.plugins.google_meet.node import protocol
+from hermes_agent.plugins.google_meet.node.client import NodeClient
+from hermes_agent.plugins.google_meet.node.protocol import (
     VALID_REQUEST_TYPES, decode, encode, make_error, make_request, make_response, validate_request)
-from plugins.google_meet.node.registry import NodeRegistry
-from plugins.google_meet.node.server import NodeServer
+from hermes_agent.plugins.google_meet.node.registry import NodeRegistry
+from hermes_agent.plugins.google_meet.node.server import NodeServer
 
 __all__ = [
     "VALID_REQUEST_TYPES",

@@ -21,7 +21,7 @@ CHAT = '15551234567@s.whatsapp.net'
 async def test_cancelled_native_capture_releases_unadmitted_bytes(tmp_path, monkeypatch, pause_after_publish):
     import hermes_agent.gateway.session_envelope as envelope
     import hermes_agent.gateway.session_ingress_media as media
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={'session_path': str(tmp_path / 'wa')}))
@@ -71,7 +71,7 @@ async def test_cancelled_native_capture_releases_unadmitted_bytes(tmp_path, monk
 @pytest.mark.asyncio
 async def test_native_capture_error_releases_published_bytes(tmp_path, monkeypatch):
     import hermes_agent.gateway.session_ingress_media as media
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={'session_path': str(tmp_path / 'wa')}))
@@ -101,7 +101,7 @@ async def test_native_capture_error_releases_published_bytes(tmp_path, monkeypat
 async def test_native_media_capture_runs_off_loop_and_commits_owned_bytes(tmp_path, monkeypatch):
     import hermes_agent.gateway.session_envelope as envelope
     import hermes_agent.gateway.session_ingress_media as media
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     loop_thread, captured = threading.current_thread(), []
@@ -138,7 +138,7 @@ async def test_native_admission_does_not_rehash_captured_media_on_the_loop(tmp_p
     """After the off-loop capture, admission derives the route's source without re-verifying the
     captured bytes on the owner loop (B1-07 remainder); execution still verifies them."""
     import hashlib
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     loop_thread, on_loop = threading.current_thread(), []

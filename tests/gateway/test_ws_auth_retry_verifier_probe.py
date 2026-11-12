@@ -31,7 +31,7 @@ import pytest
 # skip cleanly instead of crashing collection.
 aiohttp = pytest.importorskip("aiohttp")
 
-from plugins.platforms.mattermost.adapter import MattermostAdapter
+from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
 
 def _make_adapter(closing: bool = False) -> MattermostAdapter:
     adapter = MattermostAdapter.__new__(MattermostAdapter)

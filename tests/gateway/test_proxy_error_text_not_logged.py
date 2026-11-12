@@ -79,7 +79,7 @@ def test_proxy_mode_turn_error(monkeypatch, caplog, proxy, password):
 
 
 def _telegram_adapter(monkeypatch, proxy):
-    from plugins.platforms.telegram import adapter as tg
+    from hermes_agent.plugins.platforms.telegram import adapter as tg
 
     monkeypatch.setenv("TELEGRAM_PROXY", proxy)
     monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "true")
@@ -121,7 +121,7 @@ def test_standalone_telegram_sender_proxy_fallback(monkeypatch, caplog, proxy, p
 
     import telegram
     import telegram.request
-    from plugins.platforms.telegram import standalone as send_message_senders  # 150996 moved _telegram_bot here
+    from hermes_agent.plugins.platforms.telegram import standalone as send_message_senders  # 150996 moved _telegram_bot here
 
     monkeypatch.setenv("TELEGRAM_PROXY", proxy)
     monkeypatch.setattr(sys.modules["telegram"], "Bot", lambda **kw: MagicMock())
@@ -134,7 +134,7 @@ def test_standalone_telegram_sender_proxy_fallback(monkeypatch, caplog, proxy, p
 
 @pytest.mark.parametrize("proxy, password", CASES)
 def test_discord_connect_error(monkeypatch, caplog, proxy, password):
-    from plugins.platforms.discord import adapter as discord_adapter
+    from hermes_agent.plugins.platforms.discord import adapter as discord_adapter
 
     if not discord_adapter.DISCORD_AVAILABLE:
         pytest.skip("discord.py not installed")
@@ -155,7 +155,7 @@ def test_discord_connect_error(monkeypatch, caplog, proxy, password):
 @pytest.mark.parametrize("proxy, password", CASES)
 @pytest.mark.parametrize("site", ["whoami", "login", "initial_sync", "sync_loop"])
 def test_matrix_error(monkeypatch, caplog, proxy, password, site):
-    from plugins.platforms.matrix import adapter as matrix_adapter
+    from hermes_agent.plugins.platforms.matrix import adapter as matrix_adapter
 
     monkeypatch.setenv("MATRIX_PROXY", proxy)
     adapter = matrix_adapter.MatrixAdapter(PlatformConfig(
@@ -190,7 +190,7 @@ def test_matrix_error(monkeypatch, caplog, proxy, password, site):
 
 @pytest.mark.parametrize("proxy, password", [c for c in CASES if c.values[0].startswith("http://")])
 def test_slack_connect_error(monkeypatch, caplog, proxy, password):
-    from plugins.platforms.slack import adapter as slack_adapter
+    from hermes_agent.plugins.platforms.slack import adapter as slack_adapter
 
     for name in ("NO_PROXY", "no_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(name, raising=False)
@@ -213,7 +213,7 @@ def test_slack_connect_error(monkeypatch, caplog, proxy, password):
     "HTTP://proxy:3128", "http://Proxy.Corp:3128", "http://[2001:DB8::1]:3128", "http://proxy:03128/"])
 def test_error_through_a_secret_free_proxy_keeps_its_text(monkeypatch, caplog, proxy):
     """No proxy, or one whose URL is all shown: no secret involved, the user keeps the detail."""
-    from plugins.platforms.matrix import adapter as matrix_adapter
+    from hermes_agent.plugins.platforms.matrix import adapter as matrix_adapter
 
     adapter = matrix_adapter.MatrixAdapter(PlatformConfig(
         enabled=True, token="", extra={"homeserver": "https://matrix.example.org"}))

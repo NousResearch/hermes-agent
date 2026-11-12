@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter():
@@ -83,7 +83,7 @@ def _keyboard_buttons(keyboard):
 @pytest.fixture
 def plain_keyboards(monkeypatch):
     """Inspectable stand-ins for PTB's keyboard types (the module mock records nothing)."""
-    import plugins.platforms.telegram.adapter as tg
+    import hermes_agent.plugins.platforms.telegram.adapter as tg
 
     monkeypatch.setattr(tg, "InlineKeyboardButton",
                         lambda text, callback_data=None, **_: SimpleNamespace(text=text, callback_data=callback_data))
@@ -182,7 +182,7 @@ async def _model_labels_for(provider: dict) -> list[str]:
 async def test_model_buttons_still_over_budget_keep_head_and_tail_with_plan_word(plain_keyboards):
     """Ids still too long after the shared namespace goes lose their MIDDLE, so the family head and the
     distinguishing tail stay visible next to the ``Large`` plan word; a short catalog keeps full names."""
-    from plugins.platforms.telegram.telegram_picker_labels import MODEL_LABEL_BUDGET
+    from hermes_agent.plugins.platforms.telegram.telegram_picker_labels import MODEL_LABEL_BUDGET
 
     ns = "ri.language-model-service..language-model."
     ids = [ns + "claude-4-5-sonnet-extended-thinking-20250929", ns + "claude-4-5-opus-extended-thinking-20251101"]
@@ -261,7 +261,7 @@ async def test_group_model_picker_switch_follows_callback_allowlist(monkeypatch,
 async def test_long_model_ids_differing_mid_name_render_distinct_labels(plain_keyboards):
     """Head/tail shortening dropped the middle, so ids that differ only there (``3-1`` vs ``3-2``,
     or a variant word) rendered identical buttons that select different models."""
-    from plugins.platforms.telegram.telegram_picker_labels import MODEL_LABEL_BUDGET
+    from hermes_agent.plugins.platforms.telegram.telegram_picker_labels import MODEL_LABEL_BUDGET
 
     tail = "-70b-instruct-awq-quantized-production-20261101"
     ids = [f"custom-llama-3-{v}{tail}" for v in (1, 2)] + [f"custom-llama-3-1-70b-{w}-awq-quantized-production-20261101"

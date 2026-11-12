@@ -11,7 +11,7 @@ import pytest
 
 from hermes_agent.agent import secret_scope
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.weixin.adapter import WeixinAdapter, _wx_secret
+from hermes_agent.plugins.platforms.weixin.adapter import WeixinAdapter, _wx_secret
 
 
 @pytest.fixture()

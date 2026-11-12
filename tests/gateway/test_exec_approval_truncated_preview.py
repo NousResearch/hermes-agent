@@ -85,11 +85,11 @@ async def test_backticks_inside_a_short_command_cannot_close_the_card_fence(adap
 
     adapter = _Chat()
     if adapter_factory == "discord":
-        from plugins.platforms.discord.adapter import DiscordAdapter
+        from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
         adapter = DiscordAdapter.__new__(DiscordAdapter)
         adapter._approval_mention_content = lambda: ""
     elif adapter_factory == "slack":
-        from plugins.platforms.slack.adapter import SlackAdapter
+        from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
         adapter = SlackAdapter.__new__(SlackAdapter)
     command = "echo '```' ||spoiler|| [x](https://e.x) ````` done"
     text, truncated = render_exec_approval(adapter, command, "flagged", False, True)
@@ -107,7 +107,7 @@ def test_a_long_backtick_run_the_preview_drops_cannot_push_the_card_past_the_cap
     import re
 
     from hermes_agent.gateway.platforms.base_exec_approval import render_exec_approval
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     adapter = DiscordAdapter.__new__(DiscordAdapter)
     adapter._approval_mention_content = lambda: ""
@@ -127,7 +127,7 @@ def test_slack_fence_sits_on_its_own_line_so_the_commands_backticks_never_merge_
     import re
 
     from hermes_agent.gateway.platforms.base_exec_approval import render_exec_approval
-    from plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
     adapter = SlackAdapter.__new__(SlackAdapter)
     text, _ = render_exec_approval(adapter, command, "flagged", False, False)

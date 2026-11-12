@@ -30,7 +30,7 @@ def _assert_host_logged_without_secret(caplog):
 
 
 def test_telegram_request_builder_logs_proxy_without_credentials(monkeypatch, caplog):
-    from plugins.platforms.telegram import adapter as tg
+    from hermes_agent.plugins.platforms.telegram import adapter as tg
 
     monkeypatch.setenv("TELEGRAM_PROXY", PROXY)
     monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "true")
@@ -44,7 +44,7 @@ def test_telegram_request_builder_logs_proxy_without_credentials(monkeypatch, ca
 
 
 def test_matrix_adapter_logs_proxy_without_credentials(monkeypatch, caplog):
-    from plugins.platforms.matrix import adapter as matrix_adapter
+    from hermes_agent.plugins.platforms.matrix import adapter as matrix_adapter
 
     monkeypatch.setenv("MATRIX_PROXY", PROXY)
     with caplog.at_level(logging.INFO):
@@ -56,7 +56,7 @@ def test_matrix_adapter_logs_proxy_without_credentials(monkeypatch, caplog):
 
 
 def test_discord_connect_logs_proxy_without_credentials(monkeypatch, caplog):
-    from plugins.platforms.discord import adapter as discord_adapter
+    from hermes_agent.plugins.platforms.discord import adapter as discord_adapter
 
     if not discord_adapter.DISCORD_AVAILABLE:
         pytest.skip("discord.py not installed")
@@ -85,7 +85,7 @@ def test_standalone_telegram_sender_logs_proxy_without_credentials(monkeypatch, 
     import telegram
     import telegram.request
     from hermes_agent.gateway.platforms import base as gw_base
-    from plugins.platforms.telegram import standalone as send_message_senders  # 150996 moved _telegram_bot here
+    from hermes_agent.plugins.platforms.telegram import standalone as send_message_senders  # 150996 moved _telegram_bot here
 
     monkeypatch.setattr(gw_base, "resolve_proxy_url", lambda *a, **k: PROXY)
     seen: list = []
@@ -124,7 +124,7 @@ def test_shared_socks_connector_warning_logs_proxy_without_credentials(monkeypat
 def test_matrix_socks_session_warning_logs_proxy_without_credentials(monkeypatch, caplog):
     import sys
 
-    from plugins.platforms.matrix import adapter as matrix_adapter
+    from hermes_agent.plugins.platforms.matrix import adapter as matrix_adapter
 
     monkeypatch.setitem(sys.modules, "aiohttp_socks", None)
     monkeypatch.setitem(sys.modules, "aiohttp", types.SimpleNamespace(ClientSession=lambda **kw: kw))
@@ -140,7 +140,7 @@ def test_matrix_socks_session_warning_logs_proxy_without_credentials(monkeypatch
 ])
 def test_malformed_proxy_url_never_echoes_credentials(monkeypatch, caplog, proxy):
     """A mistyped proxy URL reaches the connect log before anything validates it."""
-    from plugins.platforms.matrix import adapter as matrix_adapter
+    from hermes_agent.plugins.platforms.matrix import adapter as matrix_adapter
 
     monkeypatch.setenv("MATRIX_PROXY", proxy)
     with caplog.at_level(logging.INFO):
@@ -197,8 +197,8 @@ def test_proxy_secret_never_logged_in_any_shape(monkeypatch, caplog, shape):
     import telegram
     import telegram.request
     from hermes_agent.gateway.platforms import base as gw_base
-    from plugins.platforms.matrix import adapter as matrix_adapter
-    from plugins.platforms.telegram import standalone as send_message_senders  # 150996 moved _telegram_bot here
+    from hermes_agent.plugins.platforms.matrix import adapter as matrix_adapter
+    from hermes_agent.plugins.platforms.telegram import standalone as send_message_senders  # 150996 moved _telegram_bot here
 
     proxy = shape.format(T=TOKEN)
     monkeypatch.setenv("MATRIX_PROXY", proxy)
@@ -307,7 +307,7 @@ def test_telegram_connect_error_never_echoes_proxy_password(monkeypatch, caplog)
     """httpx rejects ``http://bob:<pw>#x@host`` with ``Invalid port: '<pw>'``; that text feeds the
     connect-failure log and the fatal-error status."""
     import httpx
-    from plugins.platforms.telegram import adapter as tg
+    from hermes_agent.plugins.platforms.telegram import adapter as tg
 
     monkeypatch.setenv("TELEGRAM_PROXY", f"http://bob:{TOKEN}#x@127.0.0.1:3128")
     monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "true")

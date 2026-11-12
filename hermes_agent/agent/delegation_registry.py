@@ -4,7 +4,7 @@ Populated by plugins via :meth:`PluginContext.register_delegation_provider`; ``d
 asks :func:`get_active_provider` which strategy turns each task into a child run. Selection is
 ``delegation.backend`` in config.yaml, ``default`` when unset. The default strategy (today's
 behaviour: every child follows the ``delegation`` section, else the parent's route) is itself a
-plugin, the bundled ``plugins/delegation/default``, registered through the same seam as any other.
+plugin, the bundled ``hermes_agent/plugins/delegation/default``, registered through the same seam as any other.
 ``hermes_agent/agent/delegation_backends.py`` saves it (``/delegation``); a session routes on the backend its tools were built from. A configured backend that is
 not registered or reports unavailable fails closed: ``delegate_task`` returns a tool error naming the
 backend and the fix, and never quietly runs the children on another route. Its schema parameters are
@@ -63,7 +63,7 @@ def _load_bundled(name: str) -> Optional[DelegationProvider]:
     core tool and must not depend on the sweep. ``plugins.disabled`` wins on every call, so a later
     disable takes effect without a restart."""
     from hermes_agent.hermes_cli.plugins import get_bundled_plugins_dir
-    from plugins import plugin_loader
+    from hermes_agent.plugins import plugin_loader
     if not _BUNDLED_NAME_RE.match(name) or _bundled_disabled(name):  # the name comes from config.yaml: never a path
         return None
     if name in _first_use:

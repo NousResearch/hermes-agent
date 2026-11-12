@@ -18,7 +18,7 @@ from typing import Any, Callable, Optional
 
 from hermes_agent.hermes_cli.dashboard_auth import (
     InvalidCodeError, LoginStart, ProviderError, Session, TokenPrincipal, listener_client)
-from plugins.dashboard_auth._shared import (
+from hermes_agent.plugins.dashboard_auth._shared import (
     DEFAULT_TOKEN_LEEWAY_SECONDS,
     JwtOAuthProvider,
     SkipRegistration,

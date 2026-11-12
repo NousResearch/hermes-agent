@@ -1,4 +1,4 @@
-"""Tests for the Kanban dashboard plugin backend (plugins/kanban/dashboard/plugin_api.py).
+"""Tests for the Kanban dashboard plugin backend (hermes_agent/plugins/kanban/dashboard/plugin_api.py).
 
 The plugin mounts as /api/plugins/kanban/ inside the dashboard's FastAPI app,
 but here we attach its router to a bare FastAPI instance so we can test the
@@ -29,7 +29,7 @@ from hermes_agent.hermes_cli import kanban_db_connect as kbc
 # ---------------------------------------------------------------------------
 
 def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+    """Dynamically load hermes_agent/plugins/kanban/dashboard/plugin_api.py and return its router."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"

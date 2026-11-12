@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 import requests
 
 from hermes_agent.agent.secret_scope import get_secret
-from plugins.browser._common import CloudBrowserProvider
+from hermes_agent.plugins.browser._common import CloudBrowserProvider
 
 logger = logging.getLogger(__name__)
 

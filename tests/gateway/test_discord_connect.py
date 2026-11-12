@@ -68,8 +68,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import plugins.platforms.discord.adapter as discord_platform
-from plugins.platforms.discord.adapter import DiscordAdapter
+import hermes_agent.plugins.platforms.discord.adapter as discord_platform
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 @pytest.fixture(autouse=True)
@@ -951,7 +951,7 @@ async def test_opus_probe_runs_off_the_loop_once_per_process(monkeypatch):
     """Without libopus, find_library forks ldconfig/gcc/ld and finds nothing. connect() must run
     the probe in a worker thread, and only once per process rather than on every reconnect."""
     import threading
-    from plugins.platforms.discord import adapter_opus
+    from hermes_agent.plugins.platforms.discord import adapter_opus
 
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
     monkeypatch.setattr("hermes_agent.gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))

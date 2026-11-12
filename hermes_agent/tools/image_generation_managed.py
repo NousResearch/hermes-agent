@@ -4,8 +4,8 @@ Three gateways sit behind the single stored selection ``image_gen.provider: nous
 ``image_gen.model`` decides which one serves a request:
 
 * ``fal``    — the FAL managed gateway, every id in the in-tree ``FAL_MODELS`` catalog;
-* ``krea``   — the Krea managed gateway, the ``plugins/image_gen/krea`` model ids;
-* ``portal`` — Nous Portal chat-completions image models (``plugins/image_gen/openrouter``'s
+* ``krea``   — the Krea managed gateway, the ``hermes_agent/plugins/image_gen/krea`` model ids;
+* ``portal`` — Nous Portal chat-completions image models (``hermes_agent/plugins/image_gen/openrouter``'s
   ``nous`` provider), anything else.
 
 Before this module the second and third gateways each had their own picker row that also
@@ -39,7 +39,7 @@ _FAL_KREA_PREFIX = "fal-ai/krea/"
 
 def managed_backend_for_model(model_id: Optional[str]) -> str:
     """Gateway that serves ``model_id`` under the managed selection (unset → FAL default)."""
-    from plugins.image_gen.krea import KREA_MODEL_IDS
+    from hermes_agent.plugins.image_gen.krea import KREA_MODEL_IDS
     from hermes_agent.tools.image_generation_catalog import FAL_MODELS
 
     candidate = model_id.strip() if isinstance(model_id, str) else ""

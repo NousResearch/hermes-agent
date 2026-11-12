@@ -4,7 +4,7 @@ import bisect
 import re
 
 from hermes_agent.gateway.platforms.helpers import convert_table_to_bullets as _wrap_markdown_tables
-from plugins.platforms.telegram.rich_code_regions import map_outside_code
+from hermes_agent.plugins.platforms.telegram.rich_code_regions import map_outside_code
 
 # Stands in for the ** of a line-start **> expandable-quote opener while emphasis is resolved.
 _EXPANDABLE_QUOTE = "\x00EQ\x00"

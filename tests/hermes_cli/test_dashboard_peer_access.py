@@ -24,7 +24,7 @@ from starlette.testclient import TestClient
 import hermes_agent.hermes_cli.config as _cfg_mod
 import hermes_agent.hermes_cli.web_server_cron as _web_server_cron
 from hermes_agent.hermes_cli import web_server
-import plugins.dashboard_auth.session_token as session_token_plugin
+import hermes_agent.plugins.dashboard_auth.session_token as session_token_plugin
 from hermes_agent.hermes_cli.dashboard_auth import ProviderError, TokenPrincipal, clear_providers, register_provider
 from hermes_agent.hermes_cli.profiles import get_profile_dir
 from hermes_agent.hermes_cli.web_routers import peer as peer_routes

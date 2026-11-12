@@ -6,9 +6,9 @@ from datetime import datetime, timedelta, timezone, UTC
 from os import getenv
 from typing import Any
 
-from plugins.teams_pipeline.models import GraphSubscription, _parse_datetime
-from plugins.teams_pipeline.models import _serialize_datetime as _iso_z
-from plugins.teams_pipeline.store import TeamsPipelineStore
+from hermes_agent.plugins.teams_pipeline.models import GraphSubscription, _parse_datetime
+from hermes_agent.plugins.teams_pipeline.models import _serialize_datetime as _iso_z
+from hermes_agent.plugins.teams_pipeline.store import TeamsPipelineStore
 from hermes_agent.tools.microsoft_graph_auth import MicrosoftGraphTokenProvider
 from hermes_agent.tools.microsoft_graph_client import MicrosoftGraphClient
 

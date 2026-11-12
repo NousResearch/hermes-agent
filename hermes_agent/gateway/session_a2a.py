@@ -119,7 +119,7 @@ async def forward(connection, params):
         # titled row never proves it belongs to this exact conversation. Never adopt or retitle
         # it (that would hand one peer another's history), and never refuse every peer whose
         # slug collides: start this identity's own canonical session and leave the old row be.
-        from plugins.platforms.a2a.adapter import _safe_context_slug
+        from hermes_agent.plugins.platforms.a2a.adapter import _safe_context_slug
         title = f'a2a-{params["agent"]}-{_safe_context_slug(params["context_id"])}'
         legacy = authority.db.get_session_by_title(title)
         if legacy is not None:

@@ -17,7 +17,7 @@ from urllib.parse import unquote, urlparse
 from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.platforms.base import SendResult, cache_document_from_bytes_async, cache_image_from_bytes_async
 
-logger = logging.getLogger("plugins.platforms.wecom.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.wecom.adapter")
 
 APP_CMD_SEND = "aibot_send_msg"
 APP_CMD_UPLOAD_MEDIA_INIT = "aibot_upload_media_init"
@@ -181,7 +181,7 @@ class WeComMediaMixin:
     async def _download_remote_bytes(self, url: str, max_bytes: int) -> tuple[bytes, dict[str, str]]:
         from hermes_agent.gateway.platforms.base import ssrf_redirect_guard
         from hermes_agent.tools.url_safety import create_ssrf_safe_async_client, is_safe_url
-        from plugins.platforms.wecom import adapter as _adapter_mod
+        from hermes_agent.plugins.platforms.wecom import adapter as _adapter_mod
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
         if not _adapter_mod.HTTPX_AVAILABLE:

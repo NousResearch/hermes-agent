@@ -15,7 +15,7 @@ from hermes_agent.gateway.config import PlatformConfig
 from tests.gateway.conftest import _ensure_telegram_mock
 
 _ensure_telegram_mock()
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 CHAT, USER = 111, 42
 

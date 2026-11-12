@@ -21,7 +21,7 @@ from types import SimpleNamespace
 from typing import Callable, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
 from hermes_agent.hermes_cli.config import cfg_get
-from plugins import plugin_loader as _loader
+from hermes_agent.plugins import plugin_loader as _loader
 
 if TYPE_CHECKING:
     from hermes_agent.agent.memory_provider import MemoryProvider
@@ -103,7 +103,7 @@ def _is_bundled(provider_dir: Path) -> bool:
 
 
 def _module_name(provider_dir: Path, name: str) -> str:
-    """``plugins.memory.<name>`` for bundled providers, else under the synthetic user namespace."""
+    """``hermes_agent.plugins.memory.<name>`` for bundled providers, else under the synthetic user namespace."""
     if _is_bundled(provider_dir):
         return f"{__package__}.{name}"
     # Separate package trees, including relative imports, across homes/sources.
@@ -282,7 +282,7 @@ def import_memory_provider_module(name: Optional[str] = None) -> bool:
 
 def _load_package(provider_dir: Path, name: str):
     """Import the provider package at *provider_dir* under the module name the loader owns
-    (``plugins.memory.<name>`` bundled, synthetic user namespace otherwise); None on failure."""
+    (``hermes_agent.plugins.memory.<name>`` bundled, synthetic user namespace otherwise); None on failure."""
     return _loader.load_plugin_module(
         _module_name(provider_dir, name), provider_dir,
         parents=(__package__.rpartition(".")[0], __package__),
@@ -295,7 +295,7 @@ def import_provider_module(name: str, submodule: Optional[str] = None):
     """The package (or ``<package>.<submodule>``) of whichever copy of provider *name* is installed.
 
     Host-side code (dashboard host-block storage, OAuth routes, doctor, profile clone) used to
-    ``import plugins.memory.<name>.<submodule>``, which only exists for the bundled copy; a
+    ``import hermes_agent.plugins.memory.<name>.<submodule>``, which only exists for the bundled copy; a
     catalog install under ``$HERMES_HOME/plugins/`` loads under the synthetic user namespace,
     so those surfaces 500'd/404'd the moment the bundled copy left core. Resolving through
     ``find_provider_dir`` makes bundled and user-dir copies behave identically. Raises

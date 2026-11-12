@@ -16,15 +16,15 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 
 ## What may live in this tree (policy)
 
-- **No new in-tree memory providers (May 2026).** `plugins/memory/` is closed (byterover,
+- **No new in-tree memory providers (May 2026).** `hermes_agent/plugins/memory/` is closed (byterover,
   retaindb stay until their Oct 15 2026 removal). hindsight (Sep 2026), honcho, supermemory,
   mem0, openviking and holographic (Oct 2026) moved to the plugin catalog — `plugin-catalog/<name>.yaml`, auto-installed by
   `hermes_agent/hermes_cli/memory_provider_migration.py` for homes still configured for them. Core keeps no
   provider-specific code for them: a provider owns its profile setup through
   `MemoryProvider.on_profile_created` / `on_profile_renamed` and its dashboard config file through
   `storage=STORAGE_PROVIDER` + `read_config_fields` / `write_config_fields`. Host-side code that
-  still needs a provider module resolves it through `plugins.memory.import_provider_module`,
-  never a `plugins.memory.<name>` import. New
+  still needs a provider module resolves it through `hermes_agent.plugins.memory.import_provider_module`,
+  never a `hermes_agent.plugins.memory.<name>` import. New
   backends ship as standalone repos implementing the same `MemoryProvider` ABC, discovered through
   the same path, integrated via `hermes memory setup` / `post_setup()`.
 - **Other features that leave core** (Home Assistant platform + toolset, Oct 2026 →
@@ -86,9 +86,9 @@ bare names resolve through the catalog or error.
 | Kind | Where | Discovery | Notes |
 |---|---|---|---|
 | General | `plugins/<name>/`, `~/.hermes/plugins/`, `./.hermes/plugins/`, pip entry points | `PluginManager` (`hermes_agent/hermes_cli/plugins.py`), later-wins | `register(ctx)` registers hooks (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`), tools (`ctx.register_tool`), CLI subcommands (`ctx.register_cli_command` — argparse tree wired into `hermes` at startup, no `main.py` change), language packs (`provides_locales` in the manifest auto-registers `locales/<lang>[.tui|.desktop].yaml` via `ctx.register_locale_dir`; manifest-only packs need no `__init__.py`; `hermes_agent/hermes_cli/plugin_validate_locales.py` validates them) |
-| Memory provider | `plugins/memory/<name>/` | `plugins/memory/__init__.py`: bundled → `$HERMES_HOME/plugins/` → `./.hermes/plugins/` (opt-in `HERMES_ENABLE_PROJECT_PLUGINS`) → `hermes_agent.memory_providers` entry points; **bundled-first** | Activated by name via `memory.provider`, so a dropped-in dir must not shadow a shipped one (reverse of general later-wins). Enumerates without importing. Implements `MemoryProvider` ABC (`hermes_agent/agent/memory_provider.py`), orchestrated by `hermes_agent/agent/memory_manager.py`: `sync_turn`, `prefetch`, `shutdown`, optional `post_setup`. `cli.py` with `register_cli(subparser)` is wired by `discover_plugin_cli_commands()` — only for the ACTIVE provider, so `hermes --help` stays clean |
+| Memory provider | `plugins/memory/<name>/` | `hermes_agent/plugins/memory/__init__.py`: bundled → `$HERMES_HOME/plugins/` → `./.hermes/plugins/` (opt-in `HERMES_ENABLE_PROJECT_PLUGINS`) → `hermes_agent.memory_providers` entry points; **bundled-first** | Activated by name via `memory.provider`, so a dropped-in dir must not shadow a shipped one (reverse of general later-wins). Enumerates without importing. Implements `MemoryProvider` ABC (`hermes_agent/agent/memory_provider.py`), orchestrated by `hermes_agent/agent/memory_manager.py`: `sync_turn`, `prefetch`, `shutdown`, optional `post_setup`. `cli.py` with `register_cli(subparser)` is wired by `discover_plugin_cli_commands()` — only for the ACTIVE provider, so `hermes --help` stays clean |
 | Model provider | `plugins/model-providers/<name>/` | `hermes_agent/providers/__init__.py._discover_providers()`, **lazy**, on first `get_provider_profile()`/`list_providers()`; bundled → `$HERMES_HOME/plugins/model-providers/` → legacy `providers/<name>.py` | `__init__.py` calls `providers.register_provider(ProviderProfile(...))` at load; **last-writer-wins** so a user plugin overrides a bundled profile. `PluginManager` records `kind: model-provider` manifests but does NOT import them (would double-instantiate); manifests without `kind:` are auto-coerced by source heuristic (`register_provider` + `ProviderProfile`) |
-| Context engine / image-gen / delegation / others | `plugins/context_engine/`, `plugins/image_gen/`, `plugins/delegation/`, ... | ABC + orchestrator + per-plugin directory | Plug into `hermes_agent/agent/context_engine.py`, `hermes_agent/agent/image_gen_provider.py`, `hermes_agent/agent/delegation_provider.py` (`plugins/delegation/default` IS today's delegation routing) |
+| Context engine / image-gen / delegation / others | `hermes_agent/plugins/context_engine/`, `hermes_agent/plugins/image_gen/`, `hermes_agent/plugins/delegation/`, ... | ABC + orchestrator + per-plugin directory | Plug into `hermes_agent/agent/context_engine.py`, `hermes_agent/agent/image_gen_provider.py`, `hermes_agent/agent/delegation_provider.py` (`hermes_agent/plugins/delegation/default` IS today's delegation routing) |
 | Platform adapters | `plugins/platforms/<name>/adapter.py` | gateway | Token-lock and scoped-secret rules in `hermes_agent/gateway/AGENTS.md` (`irc`, `feishu` are canonical) |
 
 **Discovery timing pitfall:** `discover_plugins()` runs only as a side effect of importing
@@ -127,7 +127,7 @@ Invariants:
   (`plugins_loader`), memory / context engine / cron providers (`load_instance`), model-provider
   profiles (`plugin_host_profiles.py`: credential-free extraction cached by file fingerprint, because
   discovery runs while `hermes_agent.hermes_cli.config`/`auth` import; overrides run by name in the host), dashboard
-  APIs (ASGI bridge). `plugins/plugin_loader.load_plugin_module` refuses any other synthetic-namespace
+  APIs (ASGI bridge). `hermes_agent/plugins/plugin_loader.load_plugin_module` refuses any other synthetic-namespace
   import. A new user-code loader MUST do the same.
 - **What cannot cross is one table:** `plugin_isolation.HOST_UNSUPPORTED_CTX_METHODS` (live gateway /
   adapter objects). The runtime refusal and the static audit (`plugin_isolation_audit.py`, shown by

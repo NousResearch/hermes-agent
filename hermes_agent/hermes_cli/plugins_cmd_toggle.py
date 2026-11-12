@@ -23,7 +23,7 @@ def _pc():
 def _discover_memory_providers() -> list[tuple[str, str]]:
     """``[(name, description), ...]`` for available memory providers."""
     try:
-        from plugins.memory import discover_memory_providers
+        from hermes_agent.plugins.memory import discover_memory_providers
         return [(name, desc) for name, desc, _avail in discover_memory_providers()]
     except Exception:
         return []
@@ -34,7 +34,7 @@ def _discover_context_engines() -> list[tuple[str, str]]:
     one (``ctx.register_context_engine``); repo-shipped descriptions win on a name collision."""
     engines: dict[str, str] = {}
     try:
-        from plugins.context_engine import discover_context_engines
+        from hermes_agent.plugins.context_engine import discover_context_engines
         for name, desc, _avail in discover_context_engines():
             engines.setdefault(name, desc)
     except Exception:

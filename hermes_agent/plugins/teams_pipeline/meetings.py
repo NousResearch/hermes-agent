@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Awaitable
 from urllib.parse import quote, unquote
 
-from plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef
+from hermes_agent.plugins.teams_pipeline.models import MeetingArtifact, TeamsMeetingRef
 from hermes_agent.tools.microsoft_graph_client import MicrosoftGraphAPIError, MicrosoftGraphClient
 
 # Graph uses both slash keys (users/{id}/...) and quoted keys (users('{id}')/...),

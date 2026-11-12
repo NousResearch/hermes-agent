@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from plugins.platforms.telegram import standalone as senders
+from hermes_agent.plugins.platforms.telegram import standalone as senders
 
 
 class BadRequest(Exception):

@@ -573,7 +573,7 @@ def test_url_install_of_a_memory_provider_dir_gets_the_provider_hint(world, tmp_
     --enable must leave the provider loadable: a plugins.disabled entry would make the loader refuse it,
     and a reinstall must repair the old state that listed the provider in plugins.enabled instead."""
     from hermes_agent.hermes_cli.config import load_config, save_config
-    from plugins.memory import _explicitly_disabled, find_provider_dir
+    from hermes_agent.plugins.memory import _explicitly_disabled, find_provider_dir
 
     repo = tmp_path / "mem-repo"
     repo.mkdir()

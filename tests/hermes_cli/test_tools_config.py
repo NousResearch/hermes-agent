@@ -732,7 +732,7 @@ def test_exactly_one_image_row_is_active_for_a_managed_selection(monkeypatch):
 def test_gui_model_catalog_for_the_managed_row_spans_every_managed_gateway(monkeypatch):
     from hermes_agent.hermes_cli import tools_config
     from hermes_agent.hermes_cli.web_routers.tools import _resolve_toolset_model_plugin, _toolset_model_catalog
-    from plugins.image_gen.krea import KREA_MODEL_IDS
+    from hermes_agent.plugins.image_gen.krea import KREA_MODEL_IDS
     from hermes_agent.tools.image_generation_catalog import FAL_MODELS
 
     paid = NousPortalAccountInfo(logged_in=True, source="jwt", fresh=False, paid_service_access=True)

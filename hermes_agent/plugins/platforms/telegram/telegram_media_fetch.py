@@ -13,7 +13,7 @@ import asyncio
 import logging
 from typing import Any
 
-logger = logging.getLogger("plugins.platforms.telegram.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.telegram.adapter")
 
 # Backoff (seconds) before each further attempt of one inbound file fetch.
 FETCH_RETRY_DELAYS = (2.0, 5.0)
@@ -34,7 +34,7 @@ def replied_voice_typed_text(event: Any) -> str | None:
 def is_retryable_fetch_error(exc: Exception) -> bool:
     """A transport failure (PTB ``NetworkError``/``TimedOut`` or a bare httpx/OS error) other than a
     Bot API refusal or a pool timeout (the local pool is exhausted; an immediate replay stalls too)."""
-    from plugins.platforms.telegram.adapter import TelegramAdapter as tg
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter as tg
     if tg._is_bad_request_error(exc) or tg._looks_like_auth_error(exc) or tg._looks_like_pool_timeout(exc):
         return False
     return tg._looks_like_network_error(exc) or type(exc).__name__ in {
@@ -44,7 +44,7 @@ def is_retryable_fetch_error(exc: Exception) -> bool:
 async def fetch_telegram_file(source: Any, what: str) -> tuple[Any, bytes]:
     """``(file_obj, bytes)`` for one attachment. ``get_file()`` and the download retry as one unit:
     a half-read download is not resumable."""
-    from plugins.platforms.telegram.adapter import _redact_telegram_error_text
+    from hermes_agent.plugins.platforms.telegram.adapter import _redact_telegram_error_text
     delays = list(FETCH_RETRY_DELAYS)
     attempt = 0
     while True:

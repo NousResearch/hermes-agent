@@ -3,7 +3,7 @@ import asyncio
 
 import pytest
 
-from plugins.platforms.signal.signal_rate_limit import (
+from hermes_agent.plugins.platforms.signal.signal_rate_limit import (
     SignalAttachmentScheduler,
     _reset_scheduler,
 )
@@ -26,10 +26,10 @@ def _patch_sleep_and_time(monkeypatch, capture: list):
         offset += seconds
 
     monkeypatch.setattr(
-        "plugins.platforms.signal.signal_rate_limit.asyncio.sleep", _fake_sleep
+        "hermes_agent.plugins.platforms.signal.signal_rate_limit.asyncio.sleep", _fake_sleep
     )
     monkeypatch.setattr(
-        "plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: offset
+        "hermes_agent.plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: offset
     )
 
 class TestEstimateWait:
@@ -40,7 +40,7 @@ class TestEstimateWait:
         s.tokens = 0.0
         frozen = s.last_refill
         monkeypatch.setattr(
-            "plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: frozen
+            "hermes_agent.plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: frozen
         )
         # 32 tokens at 0.25 tokens/sec = 128s
         assert s.estimate_wait(32) == pytest.approx(32 / s.refill_rate)
@@ -93,7 +93,7 @@ class TestRefillClamping:
         s.tokens = 0.0
         # Pretend a year passed.
         monkeypatch.setattr(
-            "plugins.platforms.signal.signal_rate_limit.time.monotonic",
+            "hermes_agent.plugins.platforms.signal.signal_rate_limit.time.monotonic",
             lambda: s.last_refill + 365 * 24 * 3600,
         )
         s._refill()

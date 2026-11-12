@@ -16,7 +16,7 @@ from typing import List, Any, Optional
 # Per-vendor client cache slots; plugins read/write these via hermes_agent.tools.web_tools (tests reset them to None).
 _firecrawl_client = _firecrawl_client_config = _parallel_client = _async_parallel_client = _exa_client = None
 
-from plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecrawl_api_key
+from hermes_agent.plugins.web.firecrawl.provider import _is_tool_gateway_ready, check_firecrawl_api_key
 from hermes_agent.tools.debug_helpers import DebugSession
 from hermes_agent.tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, read_selection, selection_exists
 from hermes_agent.tools.url_safety import async_is_safe_url
@@ -249,7 +249,7 @@ def _is_backend_available(backend: str) -> bool:
 
 # ─── Firecrawl Client ──────────────────────────────────────────────────────── After PR #25182, the
 # firecrawl client, lazy SDK proxy, dual-auth config resolution, response normalizers, and
-# check_firecrawl_api_key() all live in plugins.web.firecrawl.provider.
+# check_firecrawl_api_key() all live in hermes_agent.plugins.web.firecrawl.provider.
 def _web_requires_env() -> list[str]:
     """Tool-registry metadata env vars for the web backends. Gateway vars are always listed: gating them
     on ``managed_nous_tools_enabled()`` cost a synchronous portal HTTP refresh at every CLI startup.
@@ -267,7 +267,7 @@ _debug = DebugSession("web_tools", env_var="WEB_TOOLS_DEBUG")
 
 # ─── Exa / Parallel inline helpers — moved into plugins ────────────────────── After PR #25182, the exa
 # client + search/extract and parallel client + search/extract helpers all live in their respective plugins:
-# - plugins/web/exa/provider.py - plugins/web/parallel/provider.py Both plugins register through
+# - hermes_agent/plugins/web/exa/provider.py - hermes_agent/plugins/web/parallel/provider.py Both plugins register through
 # hermes_agent.agent.web_search_registry and the dispatchers in this file resolve them via get_active_*_provider().
 def _ensure_web_plugins_loaded() -> None:
     """Idempotently run plugin discovery so the web registry is populated. Dispatch is reachable from contexts

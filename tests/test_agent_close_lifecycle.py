@@ -105,7 +105,7 @@ class TestBatchRunnerClosesAgent:
 
 class TestFeishuCommentClosesAgent:
     def _run(self, monkeypatch):
-        from plugins.platforms.feishu import feishu_comment
+        from hermes_agent.plugins.platforms.feishu import feishu_comment
 
         RecordingAgent.reset()
         monkeypatch.setattr("hermes_agent.run_agent.AIAgent", RecordingAgent)
@@ -121,7 +121,7 @@ class TestFeishuCommentClosesAgent:
         assert RecordingAgent.instances[0].closed
 
     def test_agent_closed_when_run_fails(self, monkeypatch):
-        from plugins.platforms.feishu import feishu_comment
+        from hermes_agent.plugins.platforms.feishu import feishu_comment
 
         class FailingAgent(RecordingAgent):
             def __init__(self, *args, **kwargs):

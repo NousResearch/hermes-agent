@@ -68,7 +68,7 @@ from hermes_agent.gateway.platforms.base import (
 from hermes_agent.gateway.platforms.helpers import cancel_task
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.config import Platform
-from plugins.platforms.buzz.buzz_cursors import _SEEN_CAP, BuzzCursorMixin
+from hermes_agent.plugins.platforms.buzz.buzz_cursors import _SEEN_CAP, BuzzCursorMixin
 
 
 _CHAT_KIND = 9  # ``messages get`` also returns housekeeping kinds, never dispatched

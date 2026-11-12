@@ -89,7 +89,7 @@ class TestMattermostConfigLoading:
 
 def _make_adapter():
     """Create a MattermostAdapter with mocked config."""
-    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
     config = PlatformConfig(
         enabled=True,
         token="test-token",
@@ -516,14 +516,14 @@ class TestMattermostRequirements:
     def test_check_requirements_with_token_and_url(self, monkeypatch):
         monkeypatch.setenv("MATTERMOST_TOKEN", "test-token")
         monkeypatch.setenv("MATTERMOST_URL", "https://mm.example.com")
-        from plugins.platforms.mattermost.adapter import check_mattermost_requirements
+        from hermes_agent.plugins.platforms.mattermost.adapter import check_mattermost_requirements
         assert check_mattermost_requirements() is True
 
 
     def test_validate_config_accepts_platform_values(self, monkeypatch):
         monkeypatch.delenv("MATTERMOST_TOKEN", raising=False)
         monkeypatch.delenv("MATTERMOST_URL", raising=False)
-        from plugins.platforms.mattermost.adapter import validate_mattermost_config
+        from hermes_agent.plugins.platforms.mattermost.adapter import validate_mattermost_config
 
         config = PlatformConfig(
             enabled=True,
@@ -679,7 +679,7 @@ class TestMultiplexProfileScope:
             set_multiplex_active,
             set_secret_scope,
         )
-        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
 
         monkeypatch.setenv("MATTERMOST_REQUIRE_MENTION", "true")
         monkeypatch.delenv("MATTERMOST_FREE_RESPONSE_CHANNELS", raising=False)
@@ -720,7 +720,7 @@ class TestMultiplexProfileScope:
     def test_apply_yaml_config_scoped_skips_env_write_and_seeds_extra(
         self, multiplex_scope
     ):
-        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+        from hermes_agent.plugins.platforms.mattermost.adapter import _apply_yaml_config
 
         multiplex_scope()
         with patch.dict(os.environ, {}, clear=False):

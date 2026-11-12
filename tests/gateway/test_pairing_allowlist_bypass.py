@@ -313,7 +313,7 @@ def test_whatsapp_live_allowlist_keeps_explicit_config_over_env(monkeypatch):
     replace) an explicit config allowlist.
     """
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000002")
     adapter = WhatsAppAdapter(
@@ -342,7 +342,7 @@ def test_whatsapp_live_allowlist_keeps_explicit_config_over_env(monkeypatch):
 def test_whatsapp_explicit_empty_allow_from_blocks_env_grant(monkeypatch):
     """allow_from: [] is present config — must not fall through to env grants."""
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15550000002")
     adapter = WhatsAppAdapter(
@@ -364,7 +364,7 @@ def test_whatsapp_explicit_empty_allow_from_blocks_env_grant(monkeypatch):
 def test_whatsapp_live_allowlist_rereads_env_when_env_seeded(monkeypatch):
     """Env-seeded adapters still pick up pairing allowlist mutations live."""
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
     adapter = WhatsAppAdapter(
@@ -382,7 +382,7 @@ def test_whatsapp_live_allowlist_rereads_env_when_env_seeded(monkeypatch):
 def test_whatsapp_live_allowlist_denies_when_env_key_removed(monkeypatch):
     """Sole-entry revoke pops the env key — must not revive the construction snapshot."""
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")
     adapter = WhatsAppAdapter(
@@ -403,7 +403,7 @@ async def test_matrix_pairing_revoke_denies_live_message_and_approval_without_re
 
     from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
     from hermes_agent.gateway.run import GatewayRunner
-    from plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter, _MatrixApprovalPrompt
 
     user_id = "@paired:example.org"
     room_id = "!room:example.org"
@@ -473,7 +473,7 @@ def test_matrix_pairing_revoke_purges_live_allowlist_snapshot(store, monkeypatch
     from hermes_agent.gateway.config import PlatformConfig
     import hermes_agent.gateway.run as gateway_run
     import hermes_agent.hermes_cli.config as cfg
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     owner_id = "@owner:example.org"
     paired_id = "@paired:example.org"

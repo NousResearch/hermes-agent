@@ -3460,7 +3460,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # Startup-wait budget starts here so a slow JWKS fetch cannot outlast the forwarder timeout.
         received_at = asyncio.get_running_loop().time()
         from hermes_agent.hermes_cli.config import cfg_get, load_config
-        from plugins.cron_providers.chronos.verify import get_fire_verifier
+        from hermes_agent.plugins.cron_providers.chronos.verify import get_fire_verifier
         auth = request.headers.get("Authorization", "")
         token = auth[7:].strip() if auth.startswith("Bearer ") else ""
         cfg = load_config()

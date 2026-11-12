@@ -1,7 +1,7 @@
 """config.yaml readers for the Discord adapter: DM role-auth guild opt-in, button-view timeout and
 exec-approval admin gate.
 
-Re-exported from ``plugins.platforms.discord.adapter`` (callers and tests import them there).
+Re-exported from ``hermes_agent.plugins.platforms.discord.adapter`` (callers and tests import them there).
 """
 from typing import Any, Optional
 

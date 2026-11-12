@@ -89,7 +89,7 @@ def hosted_home(request, tmp_path, monkeypatch):
     plugin_dir = home / "plugins" / request.param
     plugin_dir.mkdir(parents=True)
     if request.param != "hostedprov":
-        import plugins.memory as memory_plugins
+        import hermes_agent.plugins.memory as memory_plugins
         real = memory_plugins.find_provider_dir
         monkeypatch.setattr(memory_plugins, "find_provider_dir",
                             lambda name: plugin_dir if name == "hostedprov" else real(name))

@@ -2,7 +2,7 @@
 
 from unittest.mock import Mock
 
-from plugins.browser.browser_use import provider as browser_use_provider
+from hermes_agent.plugins.browser.browser_use import provider as browser_use_provider
 from hermes_agent.tools import browser_session as bs
 from hermes_agent.tools import browser_session_cloud as bs_cloud
 

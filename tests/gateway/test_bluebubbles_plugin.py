@@ -13,7 +13,7 @@ from hermes_agent.gateway.platforms.base import BasePlatformAdapter
 def _make_adapter(monkeypatch, **extra):
     monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
     monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
-    from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
+    from hermes_agent.plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
 
     cfg = PlatformConfig(
         enabled=True,
@@ -260,7 +260,7 @@ class TestBlueBubblesAttachmentDownload:
             return cached_path
 
         monkeypatch.setattr(
-            "plugins.platforms.bluebubbles.adapter.cache_image_from_bytes_async",
+            "hermes_agent.plugins.platforms.bluebubbles.adapter.cache_image_from_bytes_async",
             mock_cache_image,
         )
 
@@ -331,7 +331,7 @@ class TestBlueBubblesWebhookUrl:
     def test_register_url_omits_query_when_no_password(self, monkeypatch):
         """If no password is configured, the register URL should be the bare URL."""
         monkeypatch.delenv("BLUEBUBBLES_PASSWORD", raising=False)
-        from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
+        from hermes_agent.plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
         cfg = PlatformConfig(
             enabled=True,
             extra={"server_url": "http://localhost:1234", "password": ""},
@@ -589,8 +589,8 @@ class TestBlueBubblesPluginRegistration:
     def test_register_declares_platform_entry_hooks(self):
         """Plugin shape: the former core wiring (_BUILTIN_ADAPTERS row, _send_bluebubbles,
         _setup_bluebubbles) now rides on the registry entry."""
-        import plugins.platforms.bluebubbles as plugin
-        from plugins.platforms.bluebubbles import adapter as mod
+        import hermes_agent.plugins.platforms.bluebubbles as plugin
+        from hermes_agent.plugins.platforms.bluebubbles import adapter as mod
 
         captured = {}
 

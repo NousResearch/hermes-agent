@@ -26,7 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 
 @pytest.fixture

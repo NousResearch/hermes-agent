@@ -136,7 +136,7 @@ def test_every_selection_category_key_set_is_what_read_selection_returns(hermes_
 
 
 def test_computer_use_backend_set_is_what_the_selector_reads(hermes_home, capsys):
-    from plugins.computer_use import configured_backend_name
+    from hermes_agent.plugins.computer_use import configured_backend_name
 
     assert not _set_notice("computer_use.backend", "widget-driver", capsys)
     assert configured_backend_name() == "widget-driver"

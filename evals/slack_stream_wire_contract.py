@@ -52,11 +52,11 @@ async def run(repo: str, out: str):
 
     sys.path.insert(0, repo)
     for m in list(sys.modules):
-        if m.startswith(("hermes_agent.gateway", "plugins", "hermes_agent.tools", "hermes", "hermes_agent.agent")):
+        if m.startswith(("hermes_agent.gateway", "hermes_agent.plugins", "hermes_agent.tools", "hermes", "hermes_agent.agent")):
             del sys.modules[m]
     from slack_sdk.web.async_client import AsyncWebClient
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.slack.adapter import SlackAdapter, SLACK_AVAILABLE
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter, SLACK_AVAILABLE
 
     assert SLACK_AVAILABLE, "slack_sdk must be importable for a real-client wire probe"
 

@@ -175,12 +175,12 @@ def _read_configured_image_model():
 
 def _read_configured_image_provider():
     """``image_gen.provider`` from config.yaml, or None (unset keeps the in-tree FAL fallback even
-    when other providers are registered; ``"fal"`` routes via ``plugins/image_gen/fal/``).
+    when other providers are registered; ``"fal"`` routes via ``hermes_agent/plugins/image_gen/fal/``).
 
     We only consult the plugin registry when this is explicitly set — an unset value keeps users on the
     in-tree FAL fallback even when other providers happen to be registered (e.g. a user has OPENAI_API_KEY
     set for other features but never asked for OpenAI image gen). ``"fal"`` explicitly routes through
-    ``plugins/image_gen/fal/`` (which delegates back into this module's pipeline via call-time indirection —
+    ``hermes_agent/plugins/image_gen/fal/`` (which delegates back into this module's pipeline via call-time indirection —
     see issue #26241).
     """
     return _read_image_gen_key("provider")
@@ -732,7 +732,7 @@ def _dispatch_to_plugin_provider(
 
 def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
     """Return ``model_id`` when it is one of the Krea plugin's model ids, else ``None``."""
-    from plugins.image_gen.krea import KREA_MODEL_IDS
+    from hermes_agent.plugins.image_gen.krea import KREA_MODEL_IDS
 
     candidate = model_id.strip() if isinstance(model_id, str) else None
     return candidate if candidate in KREA_MODEL_IDS else None
@@ -764,7 +764,7 @@ def _maybe_route_managed_model(
     plugin_name, model_id = target
     try:
         if plugin_name == "krea":
-            from plugins.image_gen.krea import _resolve_managed_krea_gateway
+            from hermes_agent.plugins.image_gen.krea import _resolve_managed_krea_gateway
             if _resolve_managed_krea_gateway() is None:
                 return None
         provider = _get_plugin_provider(plugin_name)
@@ -855,7 +855,7 @@ def _fall_back_to_fal(raw: str, prompt: str, aspect_ratio: str, sources: dict[st
         return raw
     if sources.get("image_url") or sources.get("reference_image_urls"):
         return raw
-    from plugins.image_gen.krea import fallback_to_fal_enabled
+    from hermes_agent.plugins.image_gen.krea import fallback_to_fal_enabled
     if not fallback_to_fal_enabled():
         return raw
     logger.warning("Managed Krea refused the request before starting a job; falling back to FAL: %s", result.get("error"))

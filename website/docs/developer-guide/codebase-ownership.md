@@ -11,9 +11,9 @@ Hermes is a large repository, and most contributions touch exactly one subsystem
 |-----------|-------------------|------------------|
 | Agent core (loop, transports, compression) | `agent/`, `hermes_agent/run_agent.py` | [Agent Loop](agent-loop.md), [Context Compression & Caching](context-compression-and-caching.md) |
 | Prompt assembly | `hermes_agent/agent/prompt_builder.py`, `hermes_agent/agent/system_prompt.py` | [Prompt Assembly](prompt-assembly.md) |
-| Model providers & transports | `hermes_agent/agent/transports/`, `plugins/model-providers/`, `hermes_agent/hermes_cli/models.py` | [Adding Providers](adding-providers.md), [Model Provider Plugins](model-provider-plugin.md), [Provider Runtime](provider-runtime.md) |
+| Model providers & transports | `hermes_agent/agent/transports/`, `hermes_agent/plugins/model-providers/`, `hermes_agent/hermes_cli/models.py` | [Adding Providers](adding-providers.md), [Model Provider Plugins](model-provider-plugin.md), [Provider Runtime](provider-runtime.md) |
 | Built-in tools | `hermes_agent/tools/` | [Adding Tools](adding-tools.md), [Tools Runtime](tools-runtime.md) |
-| Messaging gateway | `gateway/`, `plugins/platforms/` | [Gateway Internals](gateway-internals.md), [Adding Platform Adapters](adding-platform-adapters.md) |
+| Messaging gateway | `gateway/`, `hermes_agent/plugins/platforms/` | [Gateway Internals](gateway-internals.md), [Adding Platform Adapters](adding-platform-adapters.md) |
 | CLI | `hermes_agent/hermes_cli/` | [Extending the CLI](extending-the-cli.md) |
 | Plugins system | `plugins/` | [Build a Hermes Plugin](plugins/index.md) |
 | Skills (bundled & optional) | `skills/`, `optional-skills/` | [Creating Skills](creating-skills.md) |
@@ -30,5 +30,5 @@ Hermes is a large repository, and most contributions touch exactly one subsystem
 A few conventions that fall out of this map:
 
 - **Changes should stay inside their subsystem.** A plugin that needs to edit core files is a design smell — widen the generic plugin surface instead (see the contribution rubric in the repository's `AGENTS.md`).
-- **Run the mirror test directory for every source directory you touch.** A change to `plugins/platforms/telegram/` needs `tests/plugins/platforms/` green, not just the test file you happened to think of.
+- **Run the mirror test directory for every source directory you touch.** A change to `hermes_agent/plugins/platforms/telegram/` needs `tests/plugins/platforms/` green, not just the test file you happened to think of.
 - **When two subsystems are involved, the narrower one owns the change.** Prefer a fix in an adapter or plugin over a branch in the agent core; the core is a narrow waist, and every addition there is paid for on every API call.

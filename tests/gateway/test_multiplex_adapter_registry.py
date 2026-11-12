@@ -1140,7 +1140,7 @@ class TestSecondaryProfileConfigHandling:
         def _create_adapter(platform, config):
             factory_calls.append(platform)
             if platform is Platform.WHATSAPP:
-                from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+                from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
                 wa = WhatsAppAdapter(config)
                 assert wa._session_path == session
                 return wa

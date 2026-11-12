@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # ``_send_dingtalk`` and ``_send_matrix`` moved into their bundled plugins
 # (``plugins/platforms/<x>/adapter.py::_standalone_send``) in #41112. Keep
 # thin pre-migration-shaped shims so existing test bodies work unchanged.
-from plugins.platforms.dingtalk.adapter import (
+from hermes_agent.plugins.platforms.dingtalk.adapter import (
     _standalone_send as _dingtalk_standalone_send,
 )
-from plugins.platforms.matrix.adapter import (
+from hermes_agent.plugins.platforms.matrix.adapter import (
     _standalone_send as _matrix_standalone_send,
 )
 
@@ -30,10 +30,10 @@ async def _send_matrix(token, extra, chat_id, message):
     return await _matrix_standalone_send(pconfig, chat_id, message)
 
 # ``_send_mattermost`` moved into the mattermost plugin
-# (``plugins/platforms/mattermost/adapter.py::_standalone_send``).  Keep a
+# (``hermes_agent/plugins/platforms/mattermost/adapter.py::_standalone_send``).  Keep a
 # thin ``(token, extra, chat_id, message)``-shaped wrapper so existing test
 # bodies continue to work without rewriting every signature.
-from plugins.platforms.mattermost.adapter import (
+from hermes_agent.plugins.platforms.mattermost.adapter import (
     _standalone_send as _mattermost_standalone_send,
 )
 

@@ -1155,11 +1155,11 @@ class VoiceReceiver:
         )
 
 
-from plugins.platforms.discord.adapter_config_readers import (
+from hermes_agent.plugins.platforms.discord.adapter_config_readers import (
     _DISCORD_PROMPT_TIMEOUT_DEFAULT, _DISCORD_PROMPT_TIMEOUT_MIN, _read_discord_prompt_timeout, _read_dm_role_auth_guild,
     _resolve_exec_approval_admin_gate)
-from plugins.platforms.discord.adapter_exec_approval_view import build_exec_approval_view
-from plugins.platforms.discord.adapter_component_auth import opener_refusal
+from hermes_agent.plugins.platforms.discord.adapter_exec_approval_view import build_exec_approval_view
+from hermes_agent.plugins.platforms.discord.adapter_component_auth import opener_refusal
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -1169,12 +1169,12 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in {"true", "1", "yes", "on"}
 
 
-from plugins.platforms.discord.adapter_media import DiscordMediaMixin
-from plugins.platforms.discord.adapter_opus import load_opus_codec
-from plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
-from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
-from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
-from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
+from hermes_agent.plugins.platforms.discord.adapter_media import DiscordMediaMixin
+from hermes_agent.plugins.platforms.discord.adapter_opus import load_opus_codec
+from hermes_agent.plugins.platforms.discord.adapter_authorization import DiscordAuthorizationMixin
+from hermes_agent.plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
+from hermes_agent.plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
+from hermes_agent.plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 
 
 class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
@@ -1284,7 +1284,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         self._last_dispatched_event_monotonic: Optional[float] = None
         self._missed_message_backfill_task: Optional[asyncio.Task] = None
         from hermes_agent.hermes_constants import get_hermes_home
-        from plugins.platforms.discord.recovery import DiscordRecoveryStore
+        from hermes_agent.plugins.platforms.discord.recovery import DiscordRecoveryStore
         self._discord_recovery_store = DiscordRecoveryStore(get_hermes_home())
         # Dedup cache: Discord RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -5004,7 +5004,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     def _component_live_auth(self, interaction) -> Optional[bool]:
         """The gateway's live allowlist verdict for a component click (None when no check is wired):
         an out-of-process revoke never reaches the connect-time ``_allowed_user_ids`` snapshot."""
-        from plugins.platforms.discord.adapter_component_auth import component_chat_context
+        from hermes_agent.plugins.platforms.discord.adapter_component_auth import component_chat_context
         user_id = str(getattr(getattr(interaction, "user", None), "id", "") or "")
         chat_type, chat_id, thread_id = component_chat_context(interaction, discord.Thread)
         return self._is_sender_authorized(user_id, chat_type, chat_id, thread_id=thread_id)
@@ -6335,7 +6335,7 @@ def _define_discord_view_classes() -> None:
             self._message = None
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
-            from plugins.platforms.discord.adapter_component_auth import _component_check_auth
+            from hermes_agent.plugins.platforms.discord.adapter_component_auth import _component_check_auth
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids, live_auth=self.live_auth)
 
@@ -7278,7 +7278,7 @@ def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     from .adapter_hint import PLATFORM_HINT
     from .send_targets import SEND_ENTRY_KWARGS
-    from plugins.platforms.discord.onboarding import interactive_setup
+    from hermes_agent.plugins.platforms.discord.onboarding import interactive_setup
 
     from .dashboard_card import DASHBOARD_CARD
     from . import gateway_env  # env -> GatewayConfig bridge (hermes_agent.gateway.config_env)

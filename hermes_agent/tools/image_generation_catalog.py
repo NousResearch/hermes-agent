@@ -217,7 +217,7 @@ FAL_MODELS: dict[str, dict[str, Any]] = {
         },
         max_reference_images=3,
     ),
-    # Krea 2 on FAL — same family as ``plugins/image_gen/krea`` but billed through
+    # Krea 2 on FAL — same family as ``hermes_agent/plugins/image_gen/krea`` but billed through
     # FAL / the FAL managed gateway. Native ``krea-2-*`` ids route to the plugin.
     "fal-ai/krea/v2/medium/text-to-image": _model(
         "Krea 2 Medium", "~15-25s", "Illustration, anime, painting, expressive/artistic styles", "$0.030 (text) / $0.035 (style refs)",

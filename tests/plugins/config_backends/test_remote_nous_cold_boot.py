@@ -140,8 +140,8 @@ def test_importing_auth_and_resolving_the_nous_token_read_no_config(tmp_path):
 CONCURRENT_AUTH_IMPORT = """
 import json, os, sys, threading
 from pathlib import Path
-from plugins.config_backends.remote import client
-from plugins.config_backends.remote import get_remote_backend
+from hermes_agent.plugins.config_backends.remote import client
+from hermes_agent.plugins.config_backends.remote import get_remote_backend
 home = Path(os.environ["HERMES_HOME"])
 in_fetch, imported = threading.Event(), threading.Event()
 real_request = client.request
@@ -193,7 +193,7 @@ def refuse(*a, **k):
 cb._route = refuse
 from hermes_agent.agent.secret_scope import set_multiplex_active
 set_multiplex_active(True)
-from plugins.config_backends.remote.credentials import plane_token
+from hermes_agent.plugins.config_backends.remote.credentials import plane_token
 out = {}
 t = threading.Thread(target=lambda: out.setdefault("token", plane_token(Path(sys.argv[2]))))
 t.start(); t.join(30)

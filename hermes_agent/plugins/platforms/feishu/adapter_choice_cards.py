@@ -52,7 +52,7 @@ class FeishuChoiceCardsMixin:
                 session_key=session_key, metadata=metadata)
         if not self._client:
             return SendResult(success=False, error="Not connected")
-        from plugins.platforms.feishu.adapter import _card_button
+        from hermes_agent.plugins.platforms.feishu.adapter import _card_button
         from hermes_agent.tools.clarify_gateway import get_pending, mark_awaiting_text
 
         lines = [t("gateway.clarify.option_line", index=i, choice=c) for i, c in enumerate(choices, start=1)]
@@ -80,7 +80,7 @@ class FeishuChoiceCardsMixin:
 
     @staticmethod
     def _clarify_card(body: str, template: str, *, actions: Optional[list] = None) -> dict[str, Any]:
-        from plugins.platforms.feishu.adapter import _card
+        from hermes_agent.plugins.platforms.feishu.adapter import _card
         card = _card(f"❓ {t('platform.feishu.clarify.title')}", template, body, actions=actions)
         # Shared card: PATCH (retire_clarify_card) only reaches every recipient when the sent AND
         # the updated card both declare it.
@@ -140,7 +140,7 @@ class FeishuChoiceCardsMixin:
         state = self._clarify_state.pop(clarify_id, None)
         if not state or not state.get("message_id") or not self._client:
             return
-        from plugins.platforms.feishu import adapter as facade
+        from hermes_agent.plugins.platforms.feishu import adapter as facade
 
         card = self._settled_clarify_card(state, notice, "grey")
         body = facade._sdk_build(facade.PatchMessageRequestBody, content=json.dumps(card, ensure_ascii=False))
@@ -160,7 +160,7 @@ class FeishuChoiceCardsMixin:
             return SendResult(success=False, error="Not connected")
         if not choices:
             return SendResult(success=False, error="No choices")
-        from plugins.platforms.feishu.adapter import _card_button
+        from hermes_agent.plugins.platforms.feishu.adapter import _card_button
 
         picker_id = next(self._choice_picker_counter)
         actions = []
@@ -216,7 +216,7 @@ class FeishuChoiceCardsMixin:
 
     @staticmethod
     def _picker_card(header: str, template: str, body: str, *, actions: Optional[list] = None) -> dict[str, Any]:
-        from plugins.platforms.feishu.adapter import _card
+        from hermes_agent.plugins.platforms.feishu.adapter import _card
         card = _card(header, template, body, actions=actions)
         card["config"]["update_multi"] = True  # shared: the inline settle reaches the whole group
         return card

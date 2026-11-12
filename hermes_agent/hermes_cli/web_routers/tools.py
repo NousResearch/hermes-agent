@@ -402,7 +402,7 @@ async def get_toolset_config(name: str, profile: Optional[str] = None):
                 # reflect what a call would hit now — plus whether that call rides the Nous Tool Gateway
                 # or the user's own key (the managed and BYOK Firecrawl rows share one backend name).
                 try:
-                    from plugins.web.firecrawl.provider import is_managed_route
+                    from hermes_agent.plugins.web.firecrawl.provider import is_managed_route
                     from hermes_agent.tools.web_tools import _get_extract_backend, _get_search_backend, _managed_web_search
 
                     search_backend = _get_search_backend()

@@ -206,7 +206,7 @@ def generate(self, prompt, *, image_url=None, model=None, **kwargs):
 
 ## 选择优先级
 
-针对每个实例的模型配置（参见 `plugins/video_gen/fal/__init__.py`）：
+针对每个实例的模型配置（参见 `hermes_agent/plugins/video_gen/fal/__init__.py`）：
 
 1. 工具调用中的 `model=` 关键字参数
 2. `<PROVIDER>_VIDEO_MODEL` 环境变量

@@ -79,7 +79,7 @@ async def _ok(*args, **kwargs):
 
 
 def _slack(uploaded):
-    from plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
     a = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
     a._app = MagicMock()
     a.send = _ok
@@ -102,7 +102,7 @@ def _slack(uploaded):
 
 
 def _telegram(uploaded):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
     a = TelegramAdapter(PlatformConfig(enabled=True, token="123:fake"))
     a.send = _ok
 
@@ -120,7 +120,7 @@ def _telegram(uploaded):
 
 
 def _feishu(uploaded):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
     a = FeishuAdapter(PlatformConfig())
     a.send = _ok
 
@@ -134,7 +134,7 @@ def _feishu(uploaded):
 
 def _mattermost(uploaded):
     import aiohttp
-    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
     a = MattermostAdapter(PlatformConfig(enabled=True, token="t", extra={"url": "https://mm.example.com"}))
     a._session = aiohttp.ClientSession()
     a.send = _ok
@@ -152,7 +152,7 @@ def _mattermost(uploaded):
 
 def _weixin(uploaded):
     import aiohttp
-    from plugins.platforms.weixin.adapter import WeixinAdapter
+    from hermes_agent.plugins.platforms.weixin.adapter import WeixinAdapter
     a = WeixinAdapter(PlatformConfig(enabled=True, token="t", extra={"account_id": "acct"}))
     a._send_session = aiohttp.ClientSession()
     a.send = _ok

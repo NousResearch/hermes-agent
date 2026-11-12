@@ -28,7 +28,7 @@ def _clean_queues():
 @pytest.mark.parametrize(("clicker", "allowed"), [("22", True), ("33", False)])
 async def test_discord_admin_answers_with_require_admin_off(clicker, allowed, monkeypatch):
     from tests.gateway.test_discord_exec_approval_content import _capture_channel
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv("DISCORD_ALLOW_ALL_USERS", "true")
     write_approvers([])

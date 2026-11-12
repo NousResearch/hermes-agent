@@ -6,8 +6,8 @@ import logging
 import os
 import time
 
-from plugins.platforms.signal import signal_rate_limit as rl
-from plugins.platforms.signal.signal_format import markdown_to_signal
+from hermes_agent.plugins.platforms.signal import signal_rate_limit as rl
+from hermes_agent.plugins.platforms.signal.signal_format import markdown_to_signal
 from hermes_agent.gateway.platforms.base import describe_proxy_error, env_proxy_for_redaction  # httpx reads HTTPS_PROXY itself
 from hermes_agent.tools.send_message_senders import _error, _success
 

@@ -34,7 +34,7 @@ def _fits_one_event(content: dict) -> bool:
 
 
 def _make_adapter():
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     return MatrixAdapter(PlatformConfig(enabled=True, token="syt_test_token", extra={
         "homeserver": "https://matrix.example.org", "user_id": "@bot:example.org"}))
@@ -73,7 +73,7 @@ async def test_sends_and_budget_sized_edits_fit_one_event():
 
 @pytest.mark.asyncio
 async def test_standalone_sender_events_fit_one_event(monkeypatch):
-    from plugins.platforms.matrix.adapter import DEFAULT_MAX_MESSAGE_LENGTH, _standalone_send
+    from hermes_agent.plugins.platforms.matrix.adapter import DEFAULT_MAX_MESSAGE_LENGTH, _standalone_send
 
     payloads = []
 

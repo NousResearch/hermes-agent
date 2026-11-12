@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_agent.hermes_constants import get_hermes_home
-from plugins.google_meet._jsonfile import read_json, say_queue_lock
+from hermes_agent.plugins.google_meet._jsonfile import read_json, say_queue_lock
 from hermes_agent.utils import atomic_json_write
-from plugins.google_meet.node import protocol as _proto
+from hermes_agent.plugins.google_meet.node import protocol as _proto
 
 _START_BOT_KEYS = ("url", "guest_name", "duration", "headed", "auth_state", "session_id", "out_dir")
 
@@ -100,7 +100,7 @@ class NodeServer:
         if handler is None:
             return _proto.make_error(req_id, f"unhandled type: {t!r}")
         # Import lazily so test mocks can monkeypatch freely.
-        from plugins.google_meet import process_manager as pm
+        from hermes_agent.plugins.google_meet import process_manager as pm
         try:
             return _proto.make_response(req_id, handler(msg["payload"], pm))
         except _RpcError as exc:

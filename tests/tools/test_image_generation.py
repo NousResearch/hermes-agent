@@ -446,7 +446,7 @@ class TestManagedKreaRouting:
             "_read_configured_image_model",
             lambda: "krea-2-large",
         )
-        import plugins.image_gen.krea as krea_mod
+        import hermes_agent.plugins.image_gen.krea as krea_mod
 
         monkeypatch.setattr(
             krea_mod,

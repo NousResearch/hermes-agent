@@ -383,7 +383,7 @@ kanban_complete(
 
 ## 仪表盘（GUI）
 
-`/kanban` CLI 和斜杠命令足以无头运行看板，但可视化看板通常是人工介入的正确界面：分诊、跨配置文件监督、阅读评论线程以及在列之间拖动卡片。Hermes 将此作为**内置仪表盘插件**在 `plugins/kanban/` 中提供 —— 不是核心功能，不是单独的服务 —— 遵循[扩展仪表盘](./extending-the-dashboard)中描述的模型。
+`/kanban` CLI 和斜杠命令足以无头运行看板，但可视化看板通常是人工介入的正确界面：分诊、跨配置文件监督、阅读评论线程以及在列之间拖动卡片。Hermes 将此作为**内置仪表盘插件**在 `hermes_agent/plugins/kanban/` 中提供 —— 不是核心功能，不是单独的服务 —— 遵循[扩展仪表盘](./extending-the-dashboard)中描述的模型。
 
 使用以下命令打开：
 
@@ -530,7 +530,7 @@ WebSocket 额外增加了一步：它要求仪表盘的临时会话 token 作为
 
 插件使用标准的 Hermes 仪表盘插件契约 —— 完整的 manifest 参考、shell 槽、页面范围槽和 Plugin SDK，请参阅[扩展仪表盘](./extending-the-dashboard)。额外的列、自定义卡片样式、租户过滤布局或完整的 `tab.override` 替换都可以表达，无需 fork 此插件。
 
-要禁用而不删除：在 `config.yaml` 中添加 `dashboard.plugins.kanban.enabled: false`（或删除 `plugins/kanban/dashboard/manifest.json`）。
+要禁用而不删除：在 `config.yaml` 中添加 `dashboard.plugins.kanban.enabled: false`（或删除 `hermes_agent/plugins/kanban/dashboard/manifest.json`）。
 
 ### 范围边界
 

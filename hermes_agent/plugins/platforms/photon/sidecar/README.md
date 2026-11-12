@@ -16,7 +16,7 @@ The sidecar:
 ## Install
 
 ```bash
-cd plugins/platforms/photon/sidecar
+cd hermes_agent/plugins/platforms/photon/sidecar
 npm install
 ```
 

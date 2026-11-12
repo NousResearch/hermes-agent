@@ -22,7 +22,7 @@ import requests
 
 from hermes_agent.agent.secret_scope import get_secret
 from hermes_agent.agent.image_gen_provider import DEFAULT_ASPECT_RATIO, resolve_aspect_ratio, save_url_image, success_response
-from plugins.image_gen._common import (
+from hermes_agent.plugins.image_gen._common import (
     ErrorFn, HttpFailure, StaticImageGenProvider, collect_source_images, error_factory, load_image_gen_config,
     post_json, prompt_required_error, resolve_static_model)
 

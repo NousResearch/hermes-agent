@@ -13,8 +13,8 @@ SK = "agent:main:qqbot:dm:u-42"
 
 
 def _qq_tap(button_data):
-    from plugins.platforms.qqbot.adapter import QQAdapter
-    from plugins.platforms.qqbot.keyboards import parse_interaction_event
+    from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
+    from hermes_agent.plugins.platforms.qqbot.keyboards import parse_interaction_event
 
     adapter = QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "a", "client_secret": "b"}))
     asyncio.run(adapter._default_interaction_dispatch(parse_interaction_event(
@@ -73,7 +73,7 @@ def test_a_published_request_is_deny_only_before_its_card_is_rendered():
 @pytest.mark.asyncio
 async def test_a_card_that_shows_the_whole_command_lifts_the_mark(monkeypatch):
     from hermes_agent.gateway.platforms.base import SendResult
-    from plugins.platforms.qqbot.adapter import QQAdapter
+    from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
     from hermes_agent.tools import approval
     from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 

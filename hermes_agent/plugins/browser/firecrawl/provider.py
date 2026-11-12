@@ -1,4 +1,4 @@
-"""Firecrawl cloud browser (``/v2/browser`` only; the web plugin under ``plugins/web/firecrawl/``
+"""Firecrawl cloud browser (``/v2/browser`` only; the web plugin under ``hermes_agent/plugins/web/firecrawl/``
 shares ``FIRECRAWL_API_KEY``). Config ``browser.cloud_provider: "firecrawl"`` (explicit only — not
 in the legacy auto-detect walk). Env: ``FIRECRAWL_API_KEY``, ``FIRECRAWL_API_URL`` (default
 https://api.firecrawl.dev), ``FIRECRAWL_BROWSER_TTL`` (default 300 s)."""
@@ -10,7 +10,7 @@ import os
 from typing import Any, Dict, Optional
 
 from hermes_agent.agent.secret_scope import get_secret
-from plugins.browser._common import CloudBrowserProvider
+from hermes_agent.plugins.browser._common import CloudBrowserProvider
 
 logger = logging.getLogger(__name__)
 

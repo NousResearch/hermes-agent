@@ -453,7 +453,7 @@ class TestReconnectKeepsInboundDedup:
 
     @staticmethod
     def _telegram_cls():
-        from plugins.platforms.telegram.adapter import TelegramAdapter
+        from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
         class _Telegram(TelegramAdapter):
             def __init__(self, succeed, hold=None, salvage=None):

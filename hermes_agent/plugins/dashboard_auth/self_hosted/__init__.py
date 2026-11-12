@@ -22,7 +22,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from hermes_agent.hermes_cli.dashboard_auth import LoginStart, ProviderError, Session
-from plugins.dashboard_auth._shared import (
+from hermes_agent.plugins.dashboard_auth._shared import (
     DEFAULT_TOKEN_LEEWAY_SECONDS,
     JSON_HEADERS,
     TOKEN_ENDPOINT_TIMEOUT_SEC as _TOKEN_ENDPOINT_TIMEOUT_SEC,

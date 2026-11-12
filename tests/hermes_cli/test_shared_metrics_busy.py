@@ -339,7 +339,7 @@ async def _real_runner(monkeypatch):
     from hermes_agent.gateway.platforms.base import SendResult
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setattr(SessionAuthority, "_schedule", lambda self, ref: None)
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")

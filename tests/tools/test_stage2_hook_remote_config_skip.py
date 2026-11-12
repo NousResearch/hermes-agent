@@ -65,7 +65,7 @@ def _runtime_selects(home: Path, backend_env: str | None) -> str:
     and ends the process right there (there is no plane in this test)."""
     code = ("import os, sys\n"
             "from hermes_agent.hermes_cli.config_backend import FileBackend\n"
-            "from plugins.config_backends.remote.backend import RemoteBackend\n"
+            "from hermes_agent.plugins.config_backends.remote.backend import RemoteBackend\n"
             "def report(name):\n"
             "    def stop(self, *args, **kwargs):\n"
             "        print(name, flush=True)\n"

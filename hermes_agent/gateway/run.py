@@ -3540,7 +3540,7 @@ class GatewayRunner(
             logger.debug("Teams pipeline plugin is disabled; skipping runtime wiring")
             return
         try:
-            from plugins.teams_pipeline.runtime import bind_gateway_runtime
+            from hermes_agent.plugins.teams_pipeline.runtime import bind_gateway_runtime
         except Exception as exc:
             logger.warning("Teams pipeline runtime import failed: %s", exc)
             return

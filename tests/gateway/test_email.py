@@ -50,7 +50,7 @@ class TestCheckRequirements(unittest.TestCase):
         "EMAIL_SMTP_HOST": "smtp.b.com",
     }, clear=False)
     def test_requirements_met(self):
-        from plugins.platforms.email.adapter import check_email_requirements
+        from hermes_agent.plugins.platforms.email.adapter import check_email_requirements
         self.assertTrue(check_email_requirements())
 
 
@@ -59,14 +59,14 @@ class TestHelperFunctions(unittest.TestCase):
 
 
     def test_decode_header_encoded(self):
-        from plugins.platforms.email.adapter import _decode_header_value
+        from hermes_agent.plugins.platforms.email.adapter import _decode_header_value
         # RFC 2047 encoded subject
         encoded = "=?utf-8?B?TWVyaGFiYQ==?="  # "Merhaba" in base64
         result = _decode_header_value(encoded)
         self.assertEqual(result, "Merhaba")
 
     def test_extract_email_address_with_name(self):
-        from plugins.platforms.email.adapter import _extract_email_address
+        from hermes_agent.plugins.platforms.email.adapter import _extract_email_address
         self.assertEqual(
             _extract_email_address("John Doe <john@example.com>"),
             "john@example.com"
@@ -87,19 +87,19 @@ class TestHelperFunctions(unittest.TestCase):
                     "Doe, " + "(" * 500 + ")" * 500 + " <v@example.com>"):
             self.assertEqual(_extract_email_address(raw), "", raw)
         # A From with no usable address is dropped at parse time, before dispatch.
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
         self.assertIsNone(EmailAdapter._parse_fetched_message(
             object.__new__(EmailAdapter), b"2", b"From: a@x.com, b@y.com\r\nSubject: x\r\n\r\nbody"))
 
     def test_extract_email_address_ignores_angle_brackets_in_display_name(self):
-        from plugins.platforms.email.adapter import _extract_email_address
+        from hermes_agent.plugins.platforms.email.adapter import _extract_email_address
         self.assertEqual(
             _extract_email_address('"Victim <victim@example.com>" <attacker@evil.test>'),
             "attacker@evil.test",
         )
 
     def test_extract_email_address_unfolds_display_name_before_parsing(self):
-        from plugins.platforms.email.adapter import _extract_email_address
+        from hermes_agent.plugins.platforms.email.adapter import _extract_email_address
         self.assertEqual(
             _extract_email_address(
                 '"Some Very Long Display Name That Exceeds The Line\r\n Limit" <real@example.com>'
@@ -112,7 +112,7 @@ class TestHelperFunctions(unittest.TestCase):
 
 
     def test_strip_html_basic(self):
-        from plugins.platforms.email.adapter import _strip_html
+        from hermes_agent.plugins.platforms.email.adapter import _strip_html
         html = "<p>Hello <b>world</b></p>"
         result = _strip_html(html)
         self.assertIn("Hello", result)
@@ -125,14 +125,14 @@ class TestExtractTextBody(unittest.TestCase):
     """Test email body extraction from different message formats."""
 
     def test_plain_text_body(self):
-        from plugins.platforms.email.adapter import _extract_text_body
+        from hermes_agent.plugins.platforms.email.adapter import _extract_text_body
         msg = MIMEText("Hello, this is a test.", "plain", "utf-8")
         result = _extract_text_body(msg)
         self.assertEqual(result, "Hello, this is a test.")
 
 
     def test_multipart_prefers_plain(self):
-        from plugins.platforms.email.adapter import _extract_text_body
+        from hermes_agent.plugins.platforms.email.adapter import _extract_text_body
         msg = MIMEMultipart("alternative")
         msg.attach(MIMEText("<p>HTML version</p>", "html", "utf-8"))
         msg.attach(MIMEText("Plain version", "plain", "utf-8"))
@@ -172,7 +172,7 @@ class TestDispatchMessage(unittest.TestCase):
             "EMAIL_SMTP_PORT": "587",
             "EMAIL_POLL_INTERVAL": "15",
         }):
-            from plugins.platforms.email.adapter import EmailAdapter
+            from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -347,7 +347,7 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
         from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
         from hermes_agent.gateway.pairing import PairingStore
         from hermes_agent.gateway.run import GatewayRunner
-        from plugins.platforms.email.adapter import _NO_AUTH_RESULTS_REASON, EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import _NO_AUTH_RESULTS_REASON, EmailAdapter
         with tempfile.TemporaryDirectory() as pairing_dir, \
                 patch("hermes_agent.gateway.pairing.PAIRING_DIR", Path(pairing_dir)), \
                 patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
@@ -383,9 +383,9 @@ class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
         reconnect after a failed initial connect."""
         import asyncio
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.email.adapter import _MISSING_AUTHSERV_REASON, _UNTRUSTED_AUTHSERV_REASON, EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import _MISSING_AUTHSERV_REASON, _UNTRUSTED_AUTHSERV_REASON, EmailAdapter
 
-        adapter_log = "plugins.platforms.email.adapter"
+        adapter_log = "hermes_agent.plugins.platforms.email.adapter"
         with self.assertLogs(adapter_log, level="WARNING") as logs:
             self.assertEqual(self._reached_gateway(authenticated=False, env={"EMAIL_ALLOW_ALL_USERS": "true"}), [])
         self.assertIn("require_authenticated_sender: false", logs.output[0])
@@ -507,7 +507,7 @@ class TestThreadContext(unittest.TestCase):
             "EMAIL_IMAP_HOST": "imap.test.com",
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }):
-            from plugins.platforms.email.adapter import EmailAdapter
+            from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -545,7 +545,7 @@ class TestSendMethods(unittest.TestCase):
             "EMAIL_IMAP_HOST": "imap.test.com",
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }):
-            from plugins.platforms.email.adapter import EmailAdapter
+            from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -617,7 +617,7 @@ class TestConnectDisconnect(unittest.TestCase):
             "EMAIL_IMAP_HOST": "imap.test.com",
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }):
-            from plugins.platforms.email.adapter import EmailAdapter
+            from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -657,7 +657,7 @@ class TestFetchNewMessages(unittest.TestCase):
             "EMAIL_IMAP_HOST": "imap.test.com",
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }):
-            from plugins.platforms.email.adapter import EmailAdapter
+            from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -703,7 +703,7 @@ class TestPollLoop(unittest.TestCase):
             "EMAIL_SMTP_HOST": "smtp.test.com",
             "EMAIL_POLL_INTERVAL": "1",
         }):
-            from plugins.platforms.email.adapter import EmailAdapter
+            from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         # _check_inbox gates every UID on _sender_accepted before the RFC822 fetch; authorize the
         # unauthenticated test senders so these tests exercise the fetch/dispatch loop itself.
@@ -748,7 +748,7 @@ class TestPollLoop(unittest.TestCase):
         """A header-only, bounded preflight rejects a forged lower auth result
         before IMAP returns the MIME body or an attachment is decoded."""
         import asyncio
-        from plugins.platforms.email.adapter import _MAX_PREAUTH_HEADER_BYTES
+        from hermes_agent.plugins.platforms.email.adapter import _MAX_PREAUTH_HEADER_BYTES
 
         adapter = self._make_adapter()
         adapter._require_authenticated_sender = True
@@ -810,7 +810,7 @@ class TestPollLoop(unittest.TestCase):
             "GATEWAY_ALLOWED_USERS": "",
             "GATEWAY_ALLOW_ALL_USERS": "",
         }, clear=False), patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch(
-            "plugins.platforms.email.adapter._extract_attachments", return_value=[],
+            "hermes_agent.plugins.platforms.email.adapter._extract_attachments", return_value=[],
         ) as extract_attachments:
             asyncio.run(adapter._check_inbox())
 
@@ -961,7 +961,7 @@ class TestPollLoop(unittest.TestCase):
         mock_imap.uid.side_effect = uid_handler
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch(
-            "plugins.platforms.email.adapter.EmailAdapter._parse_fetched_message",
+            "hermes_agent.plugins.platforms.email.adapter.EmailAdapter._parse_fetched_message",
             side_effect=[ValueError("unparseable"), {"subject": "good"}],
         ):
             results = adapter._fetch_new_messages(lambda _c: True)
@@ -984,12 +984,12 @@ class TestReconnectSeenUidsRestore(unittest.TestCase):
             "EMAIL_IMAP_HOST": "imap.test.com",
             "EMAIL_SMTP_HOST": "smtp.test.com",
         }):
-            from plugins.platforms.email.adapter import EmailAdapter
+            from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
     def setUp(self):
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
         EmailAdapter._seen_uids_snapshot.clear()
 
     tearDown = setUp
@@ -1057,7 +1057,7 @@ class TestSendEmailStandalone(unittest.TestCase):
         """_send_email should use verified STARTTLS when sending."""
         import asyncio
         import ssl
-        from plugins.platforms.email.adapter import _standalone_send as _email_send
+        from hermes_agent.plugins.platforms.email.adapter import _standalone_send as _email_send
         from types import SimpleNamespace
         async def _send_email(extra, chat_id, message):
             return await _email_send(SimpleNamespace(token=None, api_key=None, extra=extra or {}), chat_id, message)
@@ -1094,7 +1094,7 @@ class TestSmtpConnectionCleanup(unittest.TestCase):
     }, clear=False)
     def _make_adapter(self):
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
         return EmailAdapter(PlatformConfig(enabled=True))
 
 
@@ -1131,7 +1131,7 @@ class TestImapConnectionCleanup(unittest.TestCase):
     }, clear=False)
     def _make_adapter(self):
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
         return EmailAdapter(PlatformConfig(enabled=True))
 
     @patch.dict(os.environ, {
@@ -1177,7 +1177,7 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
             "EMAIL_IMAP_HOST": "imap.163.com",
             "EMAIL_SMTP_HOST": "smtp.163.com",
         }):
-            from plugins.platforms.email.adapter import EmailAdapter
+            from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
@@ -1224,14 +1224,14 @@ class TestConnectSmtp(unittest.TestCase):
             "EMAIL_SMTP_HOST": "smtp.test.com",
             "EMAIL_SMTP_PORT": port,
         }):
-            from plugins.platforms.email.adapter import EmailAdapter
+            from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
             return EmailAdapter(PlatformConfig(enabled=True))
 
 
     def test_ipv6_timeout_falls_back_to_ipv4(self):
         """When default connection times out, retry with an IPv4-only SMTP path."""
         import socket as _socket
-        import plugins.platforms.email.adapter as email_mod
+        import hermes_agent.plugins.platforms.email.adapter as email_mod
 
         adapter = self._make_adapter("587")
 
@@ -1249,7 +1249,7 @@ class TestConnectSmtp(unittest.TestCase):
     def test_port_465_ipv6_fallback(self):
         """Port 465 IPv6 timeout falls back to IPv4 with SMTP_SSL."""
         import socket as _socket
-        import plugins.platforms.email.adapter as email_mod
+        import hermes_agent.plugins.platforms.email.adapter as email_mod
 
         adapter = self._make_adapter("465")
 
@@ -1275,7 +1275,7 @@ class TestConnectionConfigResolution(unittest.TestCase):
         the failure non-retryable so the gateway stops reconnecting (#40715)."""
         import asyncio
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
         with patch.dict(os.environ, {
             "EMAIL_ADDRESS": "hermes@test.com",
             "EMAIL_PASSWORD": "secret",
@@ -1299,7 +1299,7 @@ class TestConnectionConfigResolution(unittest.TestCase):
     def test_blank_present_env_vars_are_not_required(self):
         """Blank/whitespace EMAIL_* values must read as missing (#40715) — an
         abandoned setup with empty keys must not enable the platform."""
-        from plugins.platforms.email.adapter import check_email_requirements
+        from hermes_agent.plugins.platforms.email.adapter import check_email_requirements
         for blank in ("", "   ", "\n"):
             with patch.dict(os.environ, {
                 "EMAIL_ADDRESS": blank, "EMAIL_PASSWORD": blank,
@@ -1323,7 +1323,7 @@ class TestSenderAuthentication(unittest.TestCase):
 
     def _verify(self, from_addr, auth_results=None, authserv_id="mx.ourserver.com"):
         """Rows stamp the pinned receiver's id, so a verdict is judged on its content, not on a pin mismatch."""
-        from plugins.platforms.email.adapter import (
+        from hermes_agent.plugins.platforms.email.adapter import (
             _verify_sender_authentication,
             _extract_email_address,
         )
@@ -1408,7 +1408,7 @@ class TestSenderAuthentication(unittest.TestCase):
     def test_only_topmost_exact_authserv_id_is_trusted(self):
         """Never search below the authoritative field or relax an authserv-id pin.
         The subdomain and comment-smuggled rows carry dmarc=pass, so only the exact pin rejects them."""
-        from plugins.platforms.email.adapter import _MISSING_AUTHSERV_REASON
+        from hermes_agent.plugins.platforms.email.adapter import _MISSING_AUTHSERV_REASON
 
         forged_lower = "mx.ourserver.com; dmarc=pass header.from=example.com"
         for topmost in (
@@ -1447,7 +1447,7 @@ def test_oversized_cron_output_is_delivered_as_one_whole_email():
 
     with patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
                                  "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com"}):
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
         adapter = EmailAdapter(PlatformConfig(enabled=True))
     sent = []
     smtp = MagicMock()

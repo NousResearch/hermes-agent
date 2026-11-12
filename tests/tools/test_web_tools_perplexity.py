@@ -41,7 +41,7 @@ def test_search_dispatch_maps_search_api_shape():
     }
     with patch.dict(os.environ, {"PERPLEXITY_API_KEY": "pplx-test"}), \
          patch.object(wt, "_get_search_backend", return_value="perplexity"), \
-         patch("plugins.web.perplexity.provider.httpx.post", return_value=_ok(payload)) as post:
+         patch("hermes_agent.plugins.web.perplexity.provider.httpx.post", return_value=_ok(payload)) as post:
         out = json.loads(wt.web_search_tool("bloom filter", limit=3))
 
     assert post.call_args.args[0] == "https://api.perplexity.ai/search"
@@ -74,7 +74,7 @@ def test_extract_dispatch_snippets_per_url_and_missing_key(public_dns):
     ]}
     with patch.dict(os.environ, {"PERPLEXITY_API_KEY": "pplx-test"}), \
          patch.object(wt, "_get_extract_backend", return_value="perplexity"), \
-         patch("plugins.web.perplexity.provider.httpx.post", return_value=_ok(payload)) as post:
+         patch("hermes_agent.plugins.web.perplexity.provider.httpx.post", return_value=_ok(payload)) as post:
         out = json.loads(asyncio.run(wt.web_extract_tool(urls)))
 
     assert post.call_args.args[0] == "https://api.perplexity.ai/sdk/content/snippets"
@@ -88,9 +88,9 @@ def test_extract_dispatch_snippets_per_url_and_missing_key(public_dns):
     assert by_url[urls[1]]["error"] == "Page not found or unavailable."
 
     with patch.dict(os.environ, {}, clear=False), \
-         patch("plugins.web.perplexity.provider.httpx.post") as post:
+         patch("hermes_agent.plugins.web.perplexity.provider.httpx.post") as post:
         os.environ.pop("PERPLEXITY_API_KEY", None)
-        from plugins.web.perplexity.provider import PerplexityWebSearchProvider
+        from hermes_agent.plugins.web.perplexity.provider import PerplexityWebSearchProvider
         p = PerplexityWebSearchProvider()
         assert p.is_available() is False
         res = p.search("x")

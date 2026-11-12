@@ -818,7 +818,7 @@ async def cron_fire_webhook(request: Request):
     and its response passed through (the gateway re-verifies the JWT). Gateway
     unreachable -> 503 so NAS retries; deliberately NO local-execution fallback.
     """
-    from plugins.cron_providers.chronos.verify import get_fire_verifier
+    from hermes_agent.plugins.cron_providers.chronos.verify import get_fire_verifier
 
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""

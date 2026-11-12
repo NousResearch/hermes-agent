@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
 
 @pytest.fixture(autouse=True)

@@ -217,7 +217,7 @@ async def messaging(tmp_path, monkeypatch):
     from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
     from hermes_agent.gateway.session_ingress_context import native_callback, register_transport_home
     from hermes_agent.hermes_state import SessionDB
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)

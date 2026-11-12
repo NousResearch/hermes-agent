@@ -614,7 +614,7 @@ ctx.register_platform(
 )
 ```
 
-Why this hook is necessary: the live adapter is only reachable through `_gateway_runner_ref()`, which returns `None` outside the gateway process, so without `standalone_sender_fn` the cron-side send fails with `No live adapter for platform '<name>'`. The bundled platforms use this same hook: Telegram's out-of-process sender (`hermes send`, the `send_message` tool, standalone cron delivery) is `plugins/platforms/telegram/standalone.py::standalone_send` and Signal's is `plugins/platforms/signal/standalone.py`; core reaches them only through the platform registry.
+Why this hook is necessary: the live adapter is only reachable through `_gateway_runner_ref()`, which returns `None` outside the gateway process, so without `standalone_sender_fn` the cron-side send fails with `No live adapter for platform '<name>'`. The bundled platforms use this same hook: Telegram's out-of-process sender (`hermes send`, the `send_message` tool, standalone cron delivery) is `hermes_agent/plugins/platforms/telegram/standalone.py::standalone_send` and Signal's is `hermes_agent/plugins/platforms/signal/standalone.py`; core reaches them only through the platform registry.
 
 The function receives the same `pconfig` and `chat_id` that the live adapter would, plus optional `thread_id`, `media_files`, and `force_document` keyword arguments. Optional keywords added later are forwarded only to a sender that declares them (by name or through `**kwargs`), so a sender written to the signature above keeps working: `notify=True` (cron's `cron.delivery.notify`: this delivery should ring even under a quiet notification mode) is one; Telegram's sender takes it. Returning `{"success": True, "message_id": ...}` is treated as a successful delivery; returning `{"error": "..."}` surfaces the message in cron's `delivery_errors`. Exceptions raised inside the function are caught by the dispatcher and reported as `Plugin standalone send failed: <reason>`. Reference implementations live in `plugins/platforms/{irc,teams,google_chat}/adapter.py`.
 
@@ -743,11 +743,11 @@ LINE supports both: the threshold defaults to 45s for free postback fetch, and `
 
 ### Reference Implementation
 
-See `plugins/platforms/line/adapter.py` for the full LINE postback implementation — a `RequestCache` state machine (`PENDING → READY → DELIVERED`, plus `ERROR` for `/stop`), a `_keep_typing` override that fires the Template Buttons bubble at threshold, a `send` override that routes through the cache, and an `interrupt_session_activity` override that resolves orphan PENDING entries.
+See `hermes_agent/plugins/platforms/line/adapter.py` for the full LINE postback implementation — a `RequestCache` state machine (`PENDING → READY → DELIVERED`, plus `ERROR` for `/stop`), a `_keep_typing` override that fires the Template Buttons bubble at threshold, a `send` override that routes through the cache, and an `interrupt_session_activity` override that resolves orphan PENDING entries.
 
 ### Reference Implementations (Plugin Path)
 
-See `plugins/platforms/irc/` in the repo for a complete working example — a full async IRC adapter with zero external dependencies. `plugins/platforms/teams/` covers Bot Framework / Adaptive Cards, `plugins/platforms/google_chat/` covers OAuth-based REST APIs, and `plugins/platforms/line/` covers webhook-driven Messaging APIs with platform-specific slow-LLM UX.
+See `hermes_agent/plugins/platforms/irc/` in the repo for a complete working example — a full async IRC adapter with zero external dependencies. `hermes_agent/plugins/platforms/teams/` covers Bot Framework / Adaptive Cards, `hermes_agent/plugins/platforms/google_chat/` covers OAuth-based REST APIs, and `hermes_agent/plugins/platforms/line/` covers webhook-driven Messaging APIs with platform-specific slow-LLM UX.
 
 ---
 
@@ -992,7 +992,7 @@ async def disconnect(self):
 
 | Adapter | Pattern | Complexity | Good reference for |
 |---------|---------|------------|-------------------|
-| `plugins/platforms/bluebubbles/adapter.py` | REST + webhook | Medium | Simple REST API integration |
-| `plugins/platforms/weixin/adapter.py` | Long-poll + CDN | High | Media handling, encryption |
-| `plugins/platforms/wecom/callback_adapter.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
-| `plugins/platforms/irc/adapter.py` | Long-poll + IRC protocol | High | Full-featured plugin adapter with scoped token lock |
+| `hermes_agent/plugins/platforms/bluebubbles/adapter.py` | REST + webhook | Medium | Simple REST API integration |
+| `hermes_agent/plugins/platforms/weixin/adapter.py` | Long-poll + CDN | High | Media handling, encryption |
+| `hermes_agent/plugins/platforms/wecom/callback_adapter.py` | Callback/webhook | Medium | HTTP server, AES crypto, multi-app |
+| `hermes_agent/plugins/platforms/irc/adapter.py` | Long-poll + IRC protocol | High | Full-featured plugin adapter with scoped token lock |

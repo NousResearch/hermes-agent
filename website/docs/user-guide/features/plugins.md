@@ -164,8 +164,8 @@ Within each source, Hermes also recognizes sub-category directories that route p
 | `plugins/platforms/<name>/` | Gateway channel adapters (`ctx.register_platform()`) | `PluginManager` (kind: `platform`, one level deeper) |
 | `plugins/image_gen/<name>/` | Image-generation backends (`ctx.register_image_gen_provider()`) | `PluginManager` (kind: `backend`, one level deeper) |
 | `plugins/delegation/<name>/` | Delegation strategies (`ctx.register_delegation_provider()`); `default` is today's routing | `PluginManager` (kind: `backend`, one level deeper) |
-| `plugins/memory/<name>/` | Memory providers (subclass `MemoryProvider`) | **Own loader** in `plugins/memory/__init__.py` (kind: `exclusive` — one active at a time) |
-| `plugins/context_engine/<name>/` | Context-compression engines (`ctx.register_context_engine()`) | **Own loader** in `plugins/context_engine/__init__.py` (one active at a time) |
+| `plugins/memory/<name>/` | Memory providers (subclass `MemoryProvider`) | **Own loader** in `hermes_agent/plugins/memory/__init__.py` (kind: `exclusive` — one active at a time) |
+| `plugins/context_engine/<name>/` | Context-compression engines (`ctx.register_context_engine()`) | **Own loader** in `hermes_agent/plugins/context_engine/__init__.py` (one active at a time) |
 | `plugins/model-providers/<name>/` | LLM provider profiles (`register_provider(ProviderProfile(...))`) | **Own loader** in `hermes_agent/providers/__init__.py` (lazily scanned on first `get_provider_profile()` call) |
 
 User plugins at `~/.hermes/plugins/model-providers/<name>/` override bundled model providers of the same name (last-writer-wins in `register_provider()`), so you can replace a built-in provider profile without any repo edits. Memory providers resolve the other way round: for `~/.hermes/plugins/memory/<name>/` the **bundled** provider wins on a name collision (bundled, then user, then project, then entry points; first seen wins), so a user memory provider needs its own unique name.
@@ -279,11 +279,11 @@ Several categories of plugin bypass `plugins.enabled` — they're part of Hermes
 
 | Plugin kind | How it's activated instead |
 |---|---|
-| **Bundled platform plugins** (IRC, Teams, etc. under `plugins/platforms/`) | Auto-loaded so every shipped gateway channel is available. The actual channel turns on via `gateway.platforms.<name>.enabled` in `config.yaml`. |
-| **Bundled backends** (image-gen providers under `plugins/image_gen/`, etc.) | Auto-loaded so the default backend "just works". Selection happens via `<category>.provider` in `config.yaml` (e.g. `image_gen.provider: openai`). |
-| **Memory providers** (`plugins/memory/`) | All discovered; exactly one is active, chosen by `memory.provider` in `config.yaml`. |
-| **Context engines** (`plugins/context_engine/`) | All discovered; one is active, chosen by `context.engine` in `config.yaml`. |
-| **Model providers** (`plugins/model-providers/`) | All bundled providers under `plugins/model-providers/` discover and register at the first `get_provider_profile()` call. The user picks one at a time via `--provider` or `config.yaml`. |
+| **Bundled platform plugins** (IRC, Teams, etc. under `hermes_agent/plugins/platforms/`) | Auto-loaded so every shipped gateway channel is available. The actual channel turns on via `gateway.platforms.<name>.enabled` in `config.yaml`. |
+| **Bundled backends** (image-gen providers under `hermes_agent/plugins/image_gen/`, etc.) | Auto-loaded so the default backend "just works". Selection happens via `<category>.provider` in `config.yaml` (e.g. `image_gen.provider: openai`). |
+| **Memory providers** (`hermes_agent/plugins/memory/`) | All discovered; exactly one is active, chosen by `memory.provider` in `config.yaml`. |
+| **Context engines** (`hermes_agent/plugins/context_engine/`) | All discovered; one is active, chosen by `context.engine` in `config.yaml`. |
+| **Model providers** (`hermes_agent/plugins/model-providers/`) | All bundled providers under `hermes_agent/plugins/model-providers/` discover and register at the first `get_provider_profile()` call. The user picks one at a time via `--provider` or `config.yaml`. |
 | **Pip-installed `backend` plugins** | Opt-in via `plugins.enabled` (same as general plugins). |
 | **User-installed platforms** (under `~/.hermes/plugins/platforms/`) | Opt-in via `plugins.enabled` — third-party gateway adapters need explicit consent. |
 
@@ -366,9 +366,9 @@ Hermes has four kinds of plugins:
 | Type | What it does | Selection | Location |
 |------|-------------|-----------|----------|
 | **General plugins** | Add tools, hooks, slash commands, CLI commands | Multi-select (enable/disable) | `~/.hermes/plugins/` |
-| **Memory providers** | Replace or augment built-in memory | Single-select (one active) | `plugins/memory/` |
-| **Context engines** | Replace the built-in context compressor | Single-select (one active) | `plugins/context_engine/` |
-| **Model providers** | Declare an inference backend (OpenRouter, Anthropic, …) | Multi-register, picked by `--provider` / `config.yaml` | `plugins/model-providers/` |
+| **Memory providers** | Replace or augment built-in memory | Single-select (one active) | `hermes_agent/plugins/memory/` |
+| **Context engines** | Replace the built-in context compressor | Single-select (one active) | `hermes_agent/plugins/context_engine/` |
+| **Model providers** | Declare an inference backend (OpenRouter, Anthropic, …) | Multi-register, picked by `--provider` / `config.yaml` | `hermes_agent/plugins/model-providers/` |
 
 Memory providers and context engines are **provider plugins** — only one of each type can be active at a time. Model providers are also plugins, but many load simultaneously; the user picks one at a time via `--provider` or `config.yaml`. General plugins can be enabled in any combination.
 

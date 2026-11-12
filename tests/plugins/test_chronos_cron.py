@@ -21,7 +21,7 @@ def temp_home(tmp_path, monkeypatch):
 @pytest.fixture
 def chronos(monkeypatch):
     """A ChronosCronScheduler with a fake NAS client capturing calls."""
-    from plugins.cron_providers.chronos import ChronosCronScheduler
+    from hermes_agent.plugins.cron_providers.chronos import ChronosCronScheduler
 
     class FakeClient:
         def __init__(self):
@@ -47,7 +47,7 @@ def chronos(monkeypatch):
     fake = FakeClient()
     prov._client = fake
     # callback_url is read via _cfg; patch the module helper to avoid config.
-    monkeypatch.setattr("plugins.cron_providers.chronos._cfg",
+    monkeypatch.setattr("hermes_agent.plugins.cron_providers.chronos._cfg",
                         lambda *k, default="": "https://agent.example/" if k[-1] == "callback_url" else "https://portal.test")
     return prov, fake
 
@@ -55,9 +55,9 @@ def chronos(monkeypatch):
 # -- is_available -------------------------------------------------------------
 
 def test_is_available_false_without_config(temp_home, monkeypatch):
-    from plugins.cron_providers.chronos import ChronosCronScheduler
+    from hermes_agent.plugins.cron_providers.chronos import ChronosCronScheduler
 
-    monkeypatch.setattr("plugins.cron_providers.chronos._cfg", lambda *k, default="": "")
+    monkeypatch.setattr("hermes_agent.plugins.cron_providers.chronos._cfg", lambda *k, default="": "")
     assert ChronosCronScheduler().is_available() is False
 
 
@@ -107,7 +107,7 @@ def test_identity_rejection_hands_fires_to_the_builtin_ticker(temp_home, chronos
     fire on time instead of only via the late misfire sweep."""
     import threading
 
-    from plugins.cron_providers.chronos._nas_client import NasCronClientError
+    from hermes_agent.plugins.cron_providers.chronos._nas_client import NasCronClientError
 
     prov, fake = chronos
     calls = []
@@ -147,7 +147,7 @@ def test_identity_rejection_hands_fires_to_the_builtin_ticker(temp_home, chronos
 
 def test_transient_provision_failure_does_not_degrade(temp_home, chronos, monkeypatch):
     """A 5xx / transport error is retried on the next reconcile; only 403 invalid_client degrades."""
-    from plugins.cron_providers.chronos._nas_client import NasCronClientError
+    from hermes_agent.plugins.cron_providers.chronos._nas_client import NasCronClientError
 
     prov, fake = chronos
     attempts = []

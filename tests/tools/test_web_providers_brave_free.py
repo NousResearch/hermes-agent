@@ -28,7 +28,7 @@ from tests.tools.conftest import register_all_web_providers
 class TestBraveFreeProviderIsConfigured:
     def test_configured_when_key_set(self, monkeypatch):
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+        from hermes_agent.plugins.web.brave_free.provider import BraveFreeWebSearchProvider
         assert BraveFreeWebSearchProvider().is_available() is True
 
 
@@ -55,7 +55,7 @@ class TestBraveFreeProviderSearch:
 
     def test_happy_path_normalizes_results(self, monkeypatch):
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+        from hermes_agent.plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
         with patch("httpx.get", return_value=self._mock_resp(self._SAMPLE_RESPONSE)):
             result = BraveFreeWebSearchProvider().search("test query", limit=5)
@@ -69,7 +69,7 @@ class TestBraveFreeProviderSearch:
     def test_sends_subscription_token_header_and_count(self, monkeypatch):
         """Brave uses X-Subscription-Token; count maps from limit."""
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+        from hermes_agent.plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
         captured = {}
 
@@ -91,7 +91,7 @@ class TestBraveFreeProviderSearch:
     def test_missing_web_key_returns_empty(self, monkeypatch):
         """Responses without a ``web`` block should produce an empty result set, not crash."""
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
-        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+        from hermes_agent.plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
         with patch("httpx.get", return_value=self._mock_resp({})):
             result = BraveFreeWebSearchProvider().search("q", limit=5)
@@ -102,7 +102,7 @@ class TestBraveFreeProviderSearch:
 
     def test_missing_key_returns_failure(self, monkeypatch):
         monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
-        from plugins.web.brave_free.provider import BraveFreeWebSearchProvider
+        from hermes_agent.plugins.web.brave_free.provider import BraveFreeWebSearchProvider
 
         result = BraveFreeWebSearchProvider().search("q", limit=5)
         assert result["success"] is False

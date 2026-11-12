@@ -111,7 +111,7 @@ class TestMemoryManagerUserIdThreading:
             "hermes_agent.hermes_cli.config.load_config_readonly",
             return_value={"memory": {"provider": "recording"}},
         ), patch(
-            "plugins.memory.load_memory_provider",
+            "hermes_agent.plugins.memory.load_memory_provider",
             return_value=provider,
         ):
             agent = AIAgent(

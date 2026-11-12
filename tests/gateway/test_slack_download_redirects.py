@@ -20,7 +20,7 @@ if "aiohttp" not in sys.modules:
     sys.modules.setdefault("aiohttp", MagicMock())
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 
 START = "https://files.slack.com/files-pri/TSECOND-F123/image.png"

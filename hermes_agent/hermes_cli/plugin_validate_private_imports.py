@@ -89,7 +89,7 @@ def _core_module_exists(module: str) -> bool:
 
 def _is_own_module_path(module: str, local: set[str]) -> bool:
     """A Hermes-shaped path that core does not ship but whose tail is one of the plugin's own modules:
-    the fallback spelling of the plugin's install location (``plugins.memory.openltm._db`` beside
+    the fallback spelling of the plugin's install location (``hermes_agent.plugins.memory.openltm._db`` beside
     ``from . import _db``). A path core DOES ship stays a core import."""
     parts = module.split(".")
     return any(".".join(parts[i:]) in local for i in range(1, len(parts))) and not _core_module_exists(module)

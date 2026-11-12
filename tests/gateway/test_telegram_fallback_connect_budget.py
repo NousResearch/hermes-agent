@@ -9,7 +9,7 @@ deadline then fired mid-walk as a bare TimeoutError, which the send classifier t
 import httpx
 import pytest
 
-import plugins.platforms.telegram.telegram_network as tnet
+import hermes_agent.plugins.platforms.telegram.telegram_network as tnet
 
 
 class _Clock:

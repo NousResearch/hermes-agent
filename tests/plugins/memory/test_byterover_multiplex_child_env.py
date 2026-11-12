@@ -12,7 +12,7 @@ import pytest
 
 from hermes_agent.agent import secret_scope
 from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from plugins.memory import byterover
+from hermes_agent.plugins.memory import byterover
 
 
 @pytest.fixture

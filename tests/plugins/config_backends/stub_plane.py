@@ -20,9 +20,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from plugins.config_backends.remote.diff import write_check
-from plugins.config_backends.remote.paths import decode, encode
-from plugins.config_backends.remote.values import secret_literal_path
+from hermes_agent.plugins.config_backends.remote.diff import write_check
+from hermes_agent.plugins.config_backends.remote.paths import decode, encode
+from hermes_agent.plugins.config_backends.remote.values import secret_literal_path
 
 TOKEN = "plane-token-1"
 # Cloud mode: the agent sends its Nous Portal access token; the stub also serves the Portal's

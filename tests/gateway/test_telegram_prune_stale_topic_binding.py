@@ -142,7 +142,7 @@ def _bare_adapter(db: SessionDB | None = None):
     # property that delegates to ``platform.value.title()``, so
     # we set ``platform`` rather than poking ``name`` directly.
     from hermes_agent.gateway.config import Platform
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM

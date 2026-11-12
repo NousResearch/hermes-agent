@@ -56,7 +56,7 @@ from hermes_agent.gateway.platforms._shared import (
     extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
 )
 from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy
-from plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text
+from hermes_agent.plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text
 
 
 logger = logging.getLogger(__name__)

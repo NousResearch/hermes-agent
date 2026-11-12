@@ -108,7 +108,7 @@ def test_builtin_cua_is_default_and_plugin_never_self_activates(tmp_path, backen
     home = _home(tmp_path / "home", ("cu-alpha",), backend)  # installed but not selected
     tok = set_hermes_home_override(str(home))
     try:
-        from plugins.computer_use import get_active_provider
+        from hermes_agent.plugins.computer_use import get_active_provider
         from hermes_agent.tools.computer_use.cua_backend import CuaDriverBackend
         from hermes_agent.tools.computer_use.tool import _new_backend
         assert get_active_provider().name == "cua"

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.teams_pipeline.models import TeamsMeetingRef, TeamsMeetingSummaryPayload
+from hermes_agent.plugins.teams_pipeline.models import TeamsMeetingRef, TeamsMeetingSummaryPayload
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 
@@ -163,7 +163,7 @@ def _ensure_teams_mock():
 
 _ensure_teams_mock()
 
-# Load plugins/platforms/teams/adapter.py under a unique module name
+# Load hermes_agent/plugins/platforms/teams/adapter.py under a unique module name
 # (plugin_adapter_teams) so it cannot collide with sibling plugin adapters.
 _teams_mod = load_plugin_adapter("teams")
 
@@ -190,7 +190,7 @@ if _mt and _teams_mod.TypingActivityInput is None:
     _teams_mod.TypingActivityInput = _mt.TypingActivityInput
 
 TeamsAdapter = _teams_mod.TeamsAdapter
-from plugins.platforms.teams.summary_writer import TeamsSummaryWriter
+from hermes_agent.plugins.platforms.teams.summary_writer import TeamsSummaryWriter
 check_requirements = _teams_mod.check_requirements
 check_teams_requirements = _teams_mod.check_teams_requirements
 validate_config = _teams_mod.validate_config

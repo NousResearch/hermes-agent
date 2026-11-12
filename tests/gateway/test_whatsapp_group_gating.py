@@ -6,7 +6,7 @@ from hermes_agent.gateway.config import Platform, PlatformConfig, load_gateway_c
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
                   dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     extra = {}
     if require_mention is not None:
@@ -120,7 +120,7 @@ def test_free_response_chats_bypass_mention_gating():
 
 def test_blank_free_response_chats_falls_through_to_env(monkeypatch):
     """A present-but-blank ``free_response_chats: ''`` in config.yaml means unset: the env CSV applies."""
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     monkeypatch.setenv("WHATSAPP_FREE_RESPONSE_CHATS", "123@g.us")
     adapter = object.__new__(WhatsAppAdapter)

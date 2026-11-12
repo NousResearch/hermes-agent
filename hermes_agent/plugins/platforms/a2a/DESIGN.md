@@ -12,7 +12,7 @@ Since then the codebase grew `ctx.register_platform()` (the plugin
 platform-adapter API — used by irc, line, teams, ntfy, simplex, …) and
 `ctx.register_tool()`. That makes the standing policy achievable: **plugins
 must not touch core files.** A2A now lives entirely under
-`plugins/platforms/a2a/`.
+`hermes_agent/plugins/platforms/a2a/`.
 
 ## Two directions
 
@@ -153,7 +153,7 @@ them (#11025 requirement). The `a2a_history` tool recalls them by context id.
 
 ## Files
 ```
-plugins/platforms/a2a/
+hermes_agent/plugins/platforms/a2a/
 ├── plugin.yaml      # manifest (kind: platform)
 ├── __init__.py      # register(): platform adapter + client tools
 ├── adapter.py       # inbound A2A v1.0 server (stdlib http.server)

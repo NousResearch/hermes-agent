@@ -320,8 +320,8 @@ def test_telegram_named_private_dm_topic_is_parsed() -> None:
     # Only the live cron router resolves the name; the REST sender (send_message, cron's
     # standalone fallback) must say so instead of failing on int("Debug").
     pconfig, bot = SimpleNamespace(token="token", extra={}), AsyncMock()
-    with patch("plugins.platforms.telegram.standalone._telegram_bot", return_value=bot), \
-            patch("plugins.platforms.telegram.standalone._telegram_format", return_value=("hi", None, False)):
+    with patch("hermes_agent.plugins.platforms.telegram.standalone._telegram_bot", return_value=bot), \
+            patch("hermes_agent.plugins.platforms.telegram.standalone._telegram_format", return_value=("hi", None, False)):
         result = asyncio.run(_send_to_platform(Platform.TELEGRAM, pconfig, "722341991", "hi", thread_id="Debug"))
     assert "numeric thread id" in result["error"] and not bot.send_message.called
 

@@ -8,7 +8,7 @@ import pytest
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, CachedMedia
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.session_envelope import _media_clause
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 @pytest.mark.asyncio

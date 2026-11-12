@@ -297,7 +297,7 @@ async def test_native_admission_envelope_round_trips_the_names(tmp_path, monkeyp
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_envelope import restore_native, snapshot_native
     from hermes_agent.hermes_state_runtime import RuntimeStoreError
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     chat = "15551234567@s.whatsapp.net"
     monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "15551234567")

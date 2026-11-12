@@ -41,7 +41,7 @@ def _memory_provider_options() -> list[str]:
     """
     options = [""]
     try:
-        from plugins.memory import list_memory_provider_names
+        from hermes_agent.plugins.memory import list_memory_provider_names
 
         options.extend(list_memory_provider_names())
     except Exception:

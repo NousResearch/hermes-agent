@@ -123,17 +123,17 @@ _ensure_google_mocks()
 # Our google_chat plugin has a companion ``oauth.py`` module (the
 # OAuth helper for native attachment delivery), so we need a real package
 # context. The fully-qualified package import below resolves correctly
-# because ``plugins/__init__.py`` and ``plugins/platforms/__init__.py``
+# because ``hermes_agent/plugins/__init__.py`` and ``plugins/platforms/__init__.py``
 # exist as regular packages on disk. The conftest anti-pattern guard
 # (which targets bare ``import adapter`` / ``from adapter import …`` and
-# ``sys.path.insert`` into ``plugins/platforms/``) does not flag this
+# ``sys.path.insert`` into ``hermes_agent/plugins/platforms/``) does not flag this
 # fully-qualified form.
-import plugins.platforms.google_chat.adapter as _gc_mod
+import hermes_agent.plugins.platforms.google_chat.adapter as _gc_mod
 
 _gc_mod.GOOGLE_CHAT_AVAILABLE = True
 
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from plugins.platforms.google_chat.adapter import (
+from hermes_agent.plugins.platforms.google_chat.adapter import (
     GoogleChatAdapter,
     _is_google_owned_host,
     _mime_for_message_type,
@@ -165,7 +165,7 @@ def adapter(tmp_path):
     don't pollute (or read state from) the developer's real
     ~/.hermes/google_chat_thread_counts.json.
     """
-    from plugins.platforms.google_chat.adapter import _ThreadCountStore
+    from hermes_agent.plugins.platforms.google_chat.adapter import _ThreadCountStore
     a = GoogleChatAdapter(_base_config())
     a._loop = asyncio.get_event_loop_policy().new_event_loop()
     a._chat_api = MagicMock()
@@ -788,7 +788,7 @@ class TestSend:
         # After patch, the typing slot holds the consumed sentinel so the
         # base class's _keep_typing loop cannot post a fresh marker that
         # the cleanup pass would later delete and tombstone.
-        from plugins.platforms.google_chat.adapter import _TYPING_CONSUMED_SENTINEL
+        from hermes_agent.plugins.platforms.google_chat.adapter import _TYPING_CONSUMED_SENTINEL
         assert adapter._typing_messages["spaces/S"] == _TYPING_CONSUMED_SENTINEL
 
 
@@ -931,7 +931,7 @@ class TestTypingLifecycle:
         _orphan_typing_messages. on_processing_complete must patch each
         orphan to a benign marker so users don't see stuck
         'Hermes is thinking…' messages."""
-        from plugins.platforms.google_chat.adapter import _TYPING_CONSUMED_SENTINEL
+        from hermes_agent.plugins.platforms.google_chat.adapter import _TYPING_CONSUMED_SENTINEL
         adapter._orphan_typing_messages["spaces/S"] = [
             "spaces/S/messages/ORPHAN1",
             "spaces/S/messages/ORPHAN2",
@@ -1109,7 +1109,7 @@ class TestUserOAuthHelper:
         """Path components must be filesystem-safe across users.
         ``a@B.com`` and ``A@b.com`` must collapse to the same key, and
         path-traversal characters must NOT escape into the filename."""
-        from plugins.platforms.google_chat.oauth import _sanitize_email
+        from hermes_agent.plugins.platforms.google_chat.oauth import _sanitize_email
         assert _sanitize_email("Ramon@NTTData.com") == "ramon@nttdata.com"
         assert _sanitize_email("user+tag@x.io") == "user_tag@x.io"
         # Slashes are stripped (path separator); dots inside names are
@@ -1125,7 +1125,7 @@ class TestUserOAuthHelper:
         """A user who has not authorized has no token file; load returns
         ``None`` and never throws — same contract as the legacy path."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from plugins.platforms.google_chat.oauth import load_user_credentials
+        from hermes_agent.plugins.platforms.google_chat.oauth import load_user_credentials
         assert load_user_credentials("nobody@example.com") is None
 
     def test_list_authorized_emails_lists_per_user_files(
@@ -1141,7 +1141,7 @@ class TestUserOAuthHelper:
         # Legacy file should NOT appear in the list.
         (tmp_path / "google_chat_user_token.json").write_text("{}")
 
-        from plugins.platforms.google_chat.oauth import list_authorized_emails
+        from hermes_agent.plugins.platforms.google_chat.oauth import list_authorized_emails
         assert list_authorized_emails() == [
             "alice@example.com", "bob@example.com",
         ]
@@ -1153,7 +1153,7 @@ class TestUserOAuthHelper:
         payload = {"installed": {"client_id": "cid", "client_secret": "secret"}}
         src.write_text(json.dumps(payload), encoding="utf-8")
 
-        from plugins.platforms.google_chat.oauth import (
+        from hermes_agent.plugins.platforms.google_chat.oauth import (
             _client_secret_path,
             store_client_secret,
         )
@@ -1200,7 +1200,7 @@ class TestPerUserAttachmentRouting:
         adapter._user_credentials = MagicMock(valid=True)
         adapter._consume_typing_card_with_text = AsyncMock(return_value=None)
 
-        from plugins.platforms.google_chat import oauth as helper
+        from hermes_agent.plugins.platforms.google_chat import oauth as helper
         with patch.object(
             helper, "load_user_credentials",
             return_value=MagicMock(valid=True),
@@ -1243,7 +1243,7 @@ class TestPerUserAttachmentRouting:
                                         "error": None})()
         )
 
-        from plugins.platforms.google_chat import oauth as helper
+        from hermes_agent.plugins.platforms.google_chat import oauth as helper
         with patch.object(helper, "revoke") as rev:
             await adapter._handle_setup_files_command(
                 chat_id="spaces/S",
@@ -1268,7 +1268,7 @@ class TestPerUserAttachmentRouting:
 
 class TestThreadCountStore:
     def test_missing_file_returns_zero_counts(self, tmp_path):
-        from plugins.platforms.google_chat.adapter import _ThreadCountStore
+        from hermes_agent.plugins.platforms.google_chat.adapter import _ThreadCountStore
         store = _ThreadCountStore(tmp_path / "nonexistent.json")
         store.load()
         assert store.get("spaces/X", "spaces/X/threads/T") == 0
@@ -1276,7 +1276,7 @@ class TestThreadCountStore:
     def test_corrupt_json_treated_as_empty(self, tmp_path):
         """A garbage file shouldn't crash the adapter — log warn, treat
         as fresh, move on. The next incr() will overwrite."""
-        from plugins.platforms.google_chat.adapter import _ThreadCountStore
+        from hermes_agent.plugins.platforms.google_chat.adapter import _ThreadCountStore
         path = tmp_path / "counts.json"
         path.write_text("not valid json {")
         store = _ThreadCountStore(path)
@@ -1320,7 +1320,7 @@ class TestAttachmentSSRFGuard:
             return b"%PDF-fake"
 
         monkeypatch.setattr(asyncio, "to_thread", _fake_to_thread)
-        from plugins.platforms.google_chat import adapter as gc_mod
+        from hermes_agent.plugins.platforms.google_chat import adapter as gc_mod
         monkeypatch.setattr(
             gc_mod,
             "cache_document_from_bytes_async",
@@ -1427,7 +1427,7 @@ class TestOutboundRetry:
         reply with no visible failure. The wrapper's sleep is patched
         out so the test runs instantly.
         """
-        from plugins.platforms.google_chat import adapter as gc_mod
+        from hermes_agent.plugins.platforms.google_chat import adapter as gc_mod
         async def _no_sleep(*_a, **_kw):
             return None
         monkeypatch.setattr(gc_mod.asyncio, "sleep", _no_sleep)
@@ -1558,7 +1558,7 @@ class TestSupervisorReconnect:
         async def _instant(*args, **kwargs):
             return None
         monkeypatch.setattr(
-            "plugins.platforms.google_chat.adapter.asyncio.sleep", _instant
+            "hermes_agent.plugins.platforms.google_chat.adapter.asyncio.sleep", _instant
         )
 
         def _fail(*args, **kwargs):
@@ -1655,7 +1655,7 @@ class TestCronSchedulerRegistry:
         if platform_registry.get("google_chat") is not None:
             return
         # Fallback: construct a minimal ctx and call register directly.
-        from plugins.platforms.google_chat.adapter import register as _register
+        from hermes_agent.plugins.platforms.google_chat.adapter import register as _register
         class _Ctx:
             class _M:
                 name = "google_chat-platform"

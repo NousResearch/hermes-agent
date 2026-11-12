@@ -7,13 +7,13 @@ Drives the real ``hermes_agent.tools.approval`` queue through ``send_exec_approv
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.qqbot.keyboards import build_approval_keyboard, parse_approval_button_data, parse_interaction_event
+from hermes_agent.plugins.platforms.qqbot.keyboards import build_approval_keyboard, parse_approval_button_data, parse_interaction_event
 
 SESSION = "agent:main:qqbot:dm:u-42"
 
 
 def _adapter():
-    from plugins.platforms.qqbot.adapter import QQAdapter
+    from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter
     return QQAdapter(PlatformConfig(enabled=True, extra={"app_id": "a", "client_secret": "b"}))
 
 
@@ -82,7 +82,7 @@ async def test_card_of_a_settled_request_resolves_nothing():
 
 def test_legacy_card_whose_session_ends_in_hex_keeps_its_whole_session():
     """QQ openids are 32 hex: a card without a request id must not have its session tail read as one."""
-    from plugins.platforms.qqbot.keyboards import approval_button_request_id
+    from hermes_agent.plugins.platforms.qqbot.keyboards import approval_button_request_id
     hex_session = "agent:main:qqbot:dm:" + "ab" * 16
     assert parse_approval_button_data(f"approve:{hex_session}:deny") == (hex_session, "deny")
     assert approval_button_request_id(f"approve:{hex_session}:deny") is None

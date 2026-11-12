@@ -1,7 +1,7 @@
 """Tests for config-schema loading from memory provider plugin dirs."""
 
-from plugins.memory import config_schema
-from plugins.memory.config_schema import get_provider_config_schema
+from hermes_agent.plugins.memory import config_schema
+from hermes_agent.plugins.memory.config_schema import get_provider_config_schema
 
 
 def test_unknown_provider_is_none():
@@ -15,7 +15,7 @@ def test_unknown_provider_is_none():
 def test_cache_keys_on_schema_path_not_name(monkeypatch, tmp_path):
     # User-installed plugins are per-profile; two profiles' plugins sharing a
     # name must not answer for each other.
-    from plugins import memory
+    from hermes_agent.plugins import memory
 
     schemas = {}
     for label in ("A", "B"):
@@ -44,7 +44,7 @@ def test_broken_schema_is_not_cached(monkeypatch, tmp_path):
     schema_file.write_text("this is not python(", encoding="utf-8")
 
     monkeypatch.setattr(config_schema, "_SCHEMA_CACHE", {})
-    from plugins import memory
+    from hermes_agent.plugins import memory
 
     monkeypatch.setattr(memory, "find_provider_dir", lambda name: broken_dir)
 

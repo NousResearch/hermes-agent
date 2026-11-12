@@ -179,7 +179,7 @@ Install the Google Chat adapter dependencies through its maintained installer.
 It applies the same pinned security floors used by the runtime checks:
 
 ```bash
-python -m plugins.platforms.google_chat.oauth --install-deps
+python -m hermes_agent.plugins.platforms.google_chat.oauth --install-deps
 ```
 
 `--install-deps` asks PM to add the `google-chat` extra to the managed Python
@@ -284,11 +284,11 @@ specifically, as the user who asked for the file.
 
 ```bash
 # Default profile:
-python -m plugins.platforms.google_chat.oauth \
+python -m hermes_agent.plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 
 # A named profile gets its own separate registration:
-hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
+hermes -p <profile> python -m hermes_agent.plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 
@@ -386,11 +386,11 @@ From a terminal, run it under the profile the gateway uses:
 
 ```bash
 # Default profile:
-python -m plugins.platforms.google_chat.oauth \
+python -m hermes_agent.plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 
 # Named profile:
-hermes -p <profile> python -m plugins.platforms.google_chat.oauth \
+hermes -p <profile> python -m hermes_agent.plugins.platforms.google_chat.oauth \
     --client-secret /path/to/client_secret.json
 ```
 

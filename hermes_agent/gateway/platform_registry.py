@@ -186,7 +186,7 @@ class PlatformEntry:
 
 def core_ships_platform(name: str) -> bool:
     """*name* is a platform core ships an adapter for: a static ``Platform`` member or a bundled
-    ``plugins/platforms/`` plugin. A user plugin may replace such an adapter but never mark it
+    ``hermes_agent/plugins/platforms/`` plugin. A user plugin may replace such an adapter but never mark it
     ``trusted_inbound``: its senders are people, and that flag waives allowlists and pairing."""
     from hermes_agent.gateway.config import Platform
     value = str(name or "").strip().lower()

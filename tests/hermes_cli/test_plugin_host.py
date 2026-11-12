@@ -108,7 +108,7 @@ def test_plugin_runs_out_of_process_with_ctx_round_trips_and_survives_host_crash
 @pytest.mark.platforms("any")  # the host is a child process: its env/home resolution is per-OS
 def test_isolation_host_keeps_every_user_import_path_out_of_process(tmp_path, monkeypatch):
     from hermes_agent.hermes_cli.plugin_isolation_audit import audit_plugin_dir
-    from plugins import plugin_loader
+    from hermes_agent.plugins import plugin_loader
 
     home = _home_with_plugins(tmp_path, monkeypatch, {"platformprobe": PLATFORM_PLUGIN, "fine": PROBE_PLUGIN})
     # Category loaders' in-process import refuses user code under host isolation (the backstop
@@ -250,8 +250,8 @@ def register(ctx):
 @pytest.mark.platforms("posix")  # SIGKILL
 def test_hosted_memory_provider_stays_live_across_a_host_crash(tmp_path, monkeypatch):
     import signal
-    from plugins.memory import load_memory_provider
-    from plugins.memory.config_schema import get_provider_config_schema
+    from hermes_agent.plugins.memory import load_memory_provider
+    from hermes_agent.plugins.memory.config_schema import get_provider_config_schema
 
     home = _home_with_plugins(tmp_path, monkeypatch, {})
     provider_dir = home / "plugins" / "memprobe"

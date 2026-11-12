@@ -30,7 +30,7 @@ def _make_email_adapter(address="hermes@test.com"):
         "EMAIL_IMAP_HOST": "imap.test.com",
         "EMAIL_SMTP_HOST": "smtp.test.com",
     }):
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
         return EmailAdapter(PlatformConfig(enabled=True))
 
@@ -40,7 +40,7 @@ class TestCloseImap(unittest.TestCase):
 
 
     def test_logout_abort_falls_back_to_shutdown(self):
-        from plugins.platforms.email.adapter import _close_imap
+        from hermes_agent.plugins.platforms.email.adapter import _close_imap
 
         imap = MagicMock()
         imap.logout.side_effect = imaplib.IMAP4.abort("socket error: EOF")
@@ -48,7 +48,7 @@ class TestCloseImap(unittest.TestCase):
         imap.shutdown.assert_called_once()
 
     def test_shutdown_failure_is_swallowed(self):
-        from plugins.platforms.email.adapter import _close_imap
+        from hermes_agent.plugins.platforms.email.adapter import _close_imap
 
         imap = MagicMock()
         imap.logout.side_effect = imaplib.IMAP4.abort("broken")
@@ -95,7 +95,7 @@ class TestWeixinPollSessionRecycle(unittest.TestCase):
 
     def _make_adapter(self):
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.weixin.adapter import WeixinAdapter
+        from hermes_agent.plugins.platforms.weixin.adapter import WeixinAdapter
 
         return WeixinAdapter(
             PlatformConfig(
@@ -106,7 +106,7 @@ class TestWeixinPollSessionRecycle(unittest.TestCase):
         )
 
     def test_recycle_closes_old_and_installs_fresh_session(self):
-        from plugins.platforms.weixin import adapter as weixin_mod
+        from hermes_agent.plugins.platforms.weixin import adapter as weixin_mod
 
         adapter = self._make_adapter()
         adapter._running = True
@@ -139,7 +139,7 @@ class TestWeixinPollSessionRecycle(unittest.TestCase):
 
 
     def test_poll_loop_recycles_after_max_consecutive_failures(self):
-        from plugins.platforms.weixin import adapter as weixin_mod
+        from hermes_agent.plugins.platforms.weixin import adapter as weixin_mod
 
         adapter = self._make_adapter()
         adapter._running = True

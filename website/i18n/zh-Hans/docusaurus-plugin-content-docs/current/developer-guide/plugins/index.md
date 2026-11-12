@@ -882,7 +882,7 @@ optional_env:
     password: false
 ```
 
-**完整指南：** [添加平台适配器](../adding-platform-adapters.md)——完整的 `BasePlatformAdapter` 约定、消息路由、认证限制、设置向导集成。参考 `plugins/platforms/irc/` 获取仅使用标准库的可用示例。
+**完整指南：** [添加平台适配器](../adding-platform-adapters.md)——完整的 `BasePlatformAdapter` 约定、消息路由、认证限制、设置向导集成。参考 `hermes_agent/plugins/platforms/irc/` 获取仅使用标准库的可用示例。
 
 ### 记忆提供商插件——添加跨会话知识后端
 
@@ -970,7 +970,7 @@ description: Custom image generation backend
 
 **完整指南：** [图像生成提供商插件](../image-gen-provider-plugin.md)——完整的 `ImageGenProvider` ABC、`list_models()` / `get_setup_schema()` 元数据、`success_response()`/`error_response()` 辅助函数、base64 与 URL 输出、用户覆盖、pip 分发。
 
-**参考示例：** `plugins/image_gen/openai/`（DALL-E / GPT-Image via OpenAI SDK）、`plugins/image_gen/openai-codex/`、`plugins/image_gen/xai/`（Grok 图像生成）。
+**参考示例：** `hermes_agent/plugins/image_gen/openai/`（DALL-E / GPT-Image via OpenAI SDK）、`hermes_agent/plugins/image_gen/openai-codex/`、`hermes_agent/plugins/image_gen/xai/`（Grok 图像生成）。
 
 ## 非 Python 扩展接口
 

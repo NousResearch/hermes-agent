@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 def _feishu_adapter_module():
     """Import the adapter with the Windows app-data root available in CI."""
     with patch.dict(os.environ, {"LOCALAPPDATA": tempfile.gettempdir()}):
-        from plugins.platforms.feishu import adapter
+        from hermes_agent.plugins.platforms.feishu import adapter
 
     return adapter
 

@@ -17,8 +17,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram.callback_answer import answer_callback, is_stale_query_error
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.callback_answer import answer_callback, is_stale_query_error
 
 STALE = "Bad Request: Query is too old and response timeout expired or query id is invalid"
 EDIT_GONE = "Bad Request: message to edit not found"

@@ -7,7 +7,7 @@ from typing import Any
 
 from hermes_agent.gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
 
-logger = logging.getLogger("plugins.platforms.slack.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.slack.adapter")
 
 # content-type substring → upload filename extension (first match wins; default png).
 _IMAGE_CT_EXTS = (("jpeg", "jpg"), ("jpg", "jpg"), ("gif", "gif"), ("webp", "webp"))

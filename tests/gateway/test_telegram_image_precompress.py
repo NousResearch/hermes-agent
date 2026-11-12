@@ -18,7 +18,7 @@ PIL = pytest.importorskip("PIL")
 from PIL import Image
 
 from hermes_agent.gateway.platforms.base import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _adapter():

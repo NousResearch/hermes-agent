@@ -45,7 +45,7 @@ def _wire(home):
     from hermes_agent.gateway.config import load_gateway_config
     from hermes_agent.gateway.pairing import PairingStore
     from hermes_agent.gateway.run import GatewayRunner
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     runner = object.__new__(GatewayRunner)
     runner.config = load_gateway_config()
@@ -78,7 +78,7 @@ def _thread():
 def test_button_click_in_a_thread_follows_the_thread_message_verdict(config_only_discord):
     """Guard: a thread click is checked like the thread's messages, so an allowlisted user who can
     chat in a thread is not told "This bot is private" when clicking Allow Once there."""
-    from plugins.platforms.discord.adapter_component_auth import _component_check_auth
+    from hermes_agent.plugins.platforms.discord.adapter_component_auth import _component_check_auth
 
     _runner, adapter = _wire(config_only_discord)
     snapshot = adapter._get_allowed_users()
@@ -94,7 +94,7 @@ def test_button_click_in_a_thread_follows_the_thread_message_verdict(config_only
 def test_guild_channel_message_and_button_honor_config_allow_from(config_only_discord, user_id, expected):
     """Guard: ``allow_from`` is Discord's only user allowlist, so it governs guild channels too:
     the default bot admits the allowlisted user's channel messages and button clicks."""
-    from plugins.platforms.discord.adapter_component_auth import _component_check_auth
+    from hermes_agent.plugins.platforms.discord.adapter_component_auth import _component_check_auth
 
     runner, adapter = _wire(config_only_discord)
     source = adapter.build_source(
@@ -113,7 +113,7 @@ def test_telegram_allow_from_admits_the_user_in_groups_too(monkeypatch):
     from hermes_agent.gateway.pairing import PairingStore
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session import SessionSource
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     for key in ("TELEGRAM_ALLOWED_USERS", "TELEGRAM_GROUP_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS",
                 "GATEWAY_ALLOW_ALL_USERS", "TELEGRAM_ALLOW_ALL_USERS"):
@@ -141,7 +141,7 @@ def test_discord_ignores_a_stray_group_allow_from(monkeypatch):
     from hermes_agent.gateway.pairing import PairingStore
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session import SessionSource
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     for key in ("DISCORD_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS", "GATEWAY_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS"):
         monkeypatch.delenv(key, raising=False)
@@ -208,7 +208,7 @@ def test_secondary_profiles_own_bot_honors_its_config_allow_from_in_guild_channe
     from hermes_agent.gateway.config import GatewayConfig, PlatformConfig
     from hermes_agent.gateway.pairing import PairingStore
     from hermes_agent.gateway.run import GatewayRunner
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     home = Path(os.environ["HERMES_HOME"])
     (home / "profiles" / "kody").mkdir(parents=True)

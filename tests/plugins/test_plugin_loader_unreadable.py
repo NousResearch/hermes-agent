@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from plugins import plugin_loader
+from hermes_agent.plugins import plugin_loader
 
 
 def _deny(monkeypatch, denied: Path) -> None:

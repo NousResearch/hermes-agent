@@ -17,7 +17,7 @@ def _make_discord_adapter():
     sys.modules.setdefault("discord.ext", fake_ext)
     sys.modules.setdefault("discord.ext.commands", fake_commands)
 
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     adapter = object.__new__(DiscordAdapter)
     return adapter
 

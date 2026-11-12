@@ -36,7 +36,7 @@ from hermes_agent.gateway.session import SessionSource, build_session_key
 def _organic_discord_thread_key(thread_id: str, parent_id: str, user_id: str) -> str:
     """Key the Discord adapter produces for a message typed inside a thread.
 
-    Mirrors plugins/platforms/discord/adapter.py _handle_message: chat_id is
+    Mirrors hermes_agent/plugins/platforms/discord/adapter.py _handle_message: chat_id is
     the thread's own id, chat_type is "thread", thread_id is the thread id,
     parent_chat_id is the parent channel.
     """
@@ -155,7 +155,7 @@ def test_slack_channel_handoff_key_matches_the_thread_reply_key():
 def test_slack_handoff_without_stored_scope_uses_the_sole_workspace_on_a_cold_channel_map():
     """An env/legacy home has no scope_id and the adapter's channel→team map is empty right after
     boot; a single authenticated workspace still identifies the team the reply key will carry."""
-    from plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
     adapter = SlackAdapter.__new__(SlackAdapter)
     adapter._channel_team, adapter._channel_teams, adapter._team_clients = {}, {}, {"T0C2HL96FH6": object()}
@@ -175,7 +175,7 @@ def test_telegram_forum_handoff_key_matches_the_topic_reply_key():
 
 def _matrix_adapter(room_id: str, *, is_dm: bool, monkeypatch):
     """A real MatrixAdapter with a fake client: the room's DM flag comes from the m.direct cache."""
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
     monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)

@@ -766,7 +766,7 @@ For best results, pair it with a profile whose toolsets are restricted to board 
 
 ## Dashboard (GUI)
 
-The `/kanban` CLI and slash command are enough to run the board headlessly, but a visual board is often the right interface for humans-in-the-loop: triage, cross-profile supervision, reading comment threads, and dragging cards between columns. Hermes ships this as a **bundled dashboard plugin** at `plugins/kanban/` — not a core feature, not a separate service — following the model laid out in [Extending the Dashboard](./extending-the-dashboard).
+The `/kanban` CLI and slash command are enough to run the board headlessly, but a visual board is often the right interface for humans-in-the-loop: triage, cross-profile supervision, reading comment threads, and dragging cards between columns. Hermes ships this as a **bundled dashboard plugin** at `hermes_agent/plugins/kanban/` — not a core feature, not a separate service — following the model laid out in [Extending the Dashboard](./extending-the-dashboard).
 
 Open it with:
 
@@ -928,7 +928,7 @@ Tasks in `~/.hermes/kanban.db` are profile-agnostic on purpose (that's the coord
 
 The plugin uses the standard Hermes dashboard plugin contract — see [Extending the Dashboard](./extending-the-dashboard) for the full manifest reference, shell slots, page-scoped slots, and the Plugin SDK. Extra columns, tenant-filtered layouts, or full `tab.override` replacements are all expressible without forking this plugin. The dashboard has no per-card slot; on the desktop board, plugins add per-card labels through the `KANBAN_CARD_AREAS.badges` contribution area (see [Desktop Plugin SDK](../../developer-guide/desktop-plugin-sdk.md#kanban-card-badges)).
 
-To disable without removing: add `dashboard.plugins.kanban.enabled: false` to `config.yaml` (or delete `plugins/kanban/dashboard/manifest.json`).
+To disable without removing: add `dashboard.plugins.kanban.enabled: false` to `config.yaml` (or delete `hermes_agent/plugins/kanban/dashboard/manifest.json`).
 
 ### Scope boundary
 

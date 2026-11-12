@@ -327,10 +327,10 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod
+import hermes_agent.plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 from hermes_agent.gateway.config import PlatformConfig
 
 
@@ -453,7 +453,7 @@ class TestSlackDownloadSlackFileBytes:
 
 def _make_mm_adapter():
     """Build a minimal MattermostAdapter with mocked internals."""
-    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
     config = PlatformConfig(
         enabled=True, token="mm-token-fake",
         extra={"url": "https://mm.example.com"},

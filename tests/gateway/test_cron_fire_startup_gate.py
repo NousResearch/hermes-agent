@@ -46,7 +46,7 @@ def provider(monkeypatch):
     spy = _SpyProvider()
     monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
     monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        "hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
     return spy
@@ -177,7 +177,7 @@ async def test_slow_token_verify_spends_the_startup_budget(adapter, provider, mo
         await asyncio.sleep(0.5)
         return {"purpose": "cron_fire"}
 
-    monkeypatch.setattr("plugins.cron_providers.chronos.verify.get_fire_verifier", lambda: _slow_verifier)
+    monkeypatch.setattr("hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier", lambda: _slow_verifier)
     runner = _StartingRunner()
     # Startup completes as soon as the gate first looks: a budget measured from the gate would then
     # admit the fire on its next poll; one measured from entry is already spent and refuses at once.

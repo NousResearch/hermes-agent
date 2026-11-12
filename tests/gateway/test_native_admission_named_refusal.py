@@ -16,7 +16,7 @@ CHAT = '15551234567@s.whatsapp.net'
 
 
 async def _authority(tmp_path, monkeypatch):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={'session_path': str(tmp_path / 'wa')}))

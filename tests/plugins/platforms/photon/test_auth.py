@@ -10,7 +10,7 @@ from typing import Any, Dict
 
 import pytest
 
-from plugins.platforms.photon import auth as photon_auth
+from hermes_agent.plugins.platforms.photon import auth as photon_auth
 
 
 # ---------------------------------------------------------------------------

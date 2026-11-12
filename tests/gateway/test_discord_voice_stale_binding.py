@@ -25,7 +25,7 @@ import pytest
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.base import SessionSource
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
-from plugins.platforms.discord.adapter import DiscordAdapter, VoiceReceiver
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter, VoiceReceiver
 
 _GUILD, _USER = 1, 42
 
@@ -60,7 +60,7 @@ async def test_transcribed_utterance_keeps_its_captured_binding(bound_after: int
         release.wait(5)
         return {"success": True, "transcript": "what broke on the ingest box"}
 
-    with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
+    with patch("hermes_agent.plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
          patch("hermes_agent.tools.transcription_tools.transcribe_audio", side_effect=transcribe):
         task = asyncio.ensure_future(adapter._voice_listen_loop(_GUILD))
         while not started.is_set():
@@ -121,7 +121,7 @@ async def _transcribed_pcm(adapter: DiscordAdapter, drain: Callable[[], Awaitabl
     """Run *drain* with STT stubbed; return (callback dispatches, PCM length of each converted utterance)."""
     converted: list[int] = []
     adapter._voice_input_callback = callback = AsyncMock()
-    with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav",
+    with patch("hermes_agent.plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav",
                side_effect=lambda pcm, path: converted.append(len(pcm))), \
          patch("hermes_agent.tools.transcription_tools.transcribe_audio",
                return_value={"success": True, "transcript": "what broke on the ingest box"}):
@@ -206,7 +206,7 @@ async def test_a_programmatic_join_while_connected_applies_the_requested_binding
     adapter._voice_sources[_GUILD] = {"chat_id": "700"}
     _speak(receiver, 0.6)
     target = SimpleNamespace(id=voice_channel, guild=SimpleNamespace(id=_GUILD))
-    with patch("plugins.platforms.discord.adapter.DISCORD_AVAILABLE", True):
+    with patch("hermes_agent.plugins.platforms.discord.adapter.DISCORD_AVAILABLE", True):
         assert await adapter.join_voice_channel(target, text_channel_id=text_channel, source=source)
     assert vc.move_to.await_count == (voice_channel != 900)
     assert adapter._voice_text_channels[_GUILD] == text_channel

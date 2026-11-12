@@ -234,10 +234,10 @@ class TestCloudProviderCachePolicy:
         bb_unconfigured = Mock()
         bb_unconfigured.is_available.return_value = False
         monkeypatch.setattr(
-            "plugins.browser.browser_use.provider.BrowserUseBrowserProvider", lambda: bu_unconfigured
+            "hermes_agent.plugins.browser.browser_use.provider.BrowserUseBrowserProvider", lambda: bu_unconfigured
         )
         monkeypatch.setattr(
-            "plugins.browser.browserbase.provider.BrowserbaseBrowserProvider", lambda: bb_unconfigured
+            "hermes_agent.plugins.browser.browserbase.provider.BrowserbaseBrowserProvider", lambda: bb_unconfigured
         )
 
         assert bs_cloud.get_cloud_provider() is None
@@ -246,7 +246,7 @@ class TestCloudProviderCachePolicy:
         # Credentials self-heal — next call must retry and pick up the provider.
         healed = Mock(name="healed-provider")
         healed.is_available.return_value = True
-        monkeypatch.setattr("plugins.browser.browser_use.provider.BrowserUseBrowserProvider", lambda: healed)
+        monkeypatch.setattr("hermes_agent.plugins.browser.browser_use.provider.BrowserUseBrowserProvider", lambda: healed)
 
         assert bs_cloud.get_cloud_provider() is healed
         assert _resolution_cached() is True

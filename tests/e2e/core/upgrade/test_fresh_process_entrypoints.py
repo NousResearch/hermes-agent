@@ -182,7 +182,7 @@ def _shipped_modules() -> tuple[list[dict], set[str]]:
     Tests are excluded (``tests`` package dirs, ``test_*.py``, ``conftest.py``), as are
     ``__main__`` modules (executed, never imported). Files a parallel test drops at the repo
     root (``_test_*``) and untracked scratch files are not part of a release checkout.
-    Directory plugins whose path is not a Python identifier (``plugins/model-providers/nous``)
+    Directory plugins whose path is not a Python identifier (``hermes_agent/plugins/model-providers/nous``)
     are imported the way ``hermes_agent.hermes_cli.plugins_loader`` imports them.
     """
     tracked = _tracked()

@@ -20,7 +20,7 @@ async def test_message_during_classic_wake_runs_after_it_not_inside_it(monkeypat
     from hermes_agent.gateway.session_results import execution_result
     from hermes_agent.gateway.wake import deliver_wake
     from hermes_agent.hermes_state_runtime import list_session_admissions
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
     runner = GatewayRunner(GatewayConfig())

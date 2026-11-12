@@ -16,7 +16,7 @@ import pytest
 
 from hermes_agent.agent.file_safety import HOME_CREDENTIAL_DIRS
 from hermes_agent.hermes_cli.profiles import export_profile
-from plugins.teams_pipeline.store import DEFAULT_TEAMS_PIPELINE_STORE_FILENAME
+from hermes_agent.plugins.teams_pipeline.store import DEFAULT_TEAMS_PIPELINE_STORE_FILENAME
 
 # Long enough to match hermes_agent.agent.redact prefix patterns (sk- + 10+ chars).
 _LEAKED_KEY = "sk-or-v1-reallyLongSecretKeyValue12345678"

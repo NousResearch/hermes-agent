@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-import plugins.platforms.a2a.tools as a2at
+import hermes_agent.plugins.platforms.a2a.tools as a2at
 
 
 class TestA2AToolsGate(unittest.TestCase):

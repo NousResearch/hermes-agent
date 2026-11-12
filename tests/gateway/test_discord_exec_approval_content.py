@@ -6,7 +6,7 @@ import pytest
 
 from hermes_agent.agent.i18n import t
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 def _capture_channel(adapter):
@@ -88,7 +88,7 @@ async def test_exec_approval_view_honors_discord_timeout_with_request_id(monkeyp
 
 @pytest.mark.asyncio
 async def test_expired_card_cannot_resolve_a_different_pending_request(monkeypatch):
-    from plugins.platforms.discord import adapter as discord_adapter
+    from hermes_agent.plugins.platforms.discord import adapter as discord_adapter
     from hermes_agent.tools import approval
     from hermes_agent.tools.approval_gateway_wait import _ApprovalEntry
 
@@ -121,8 +121,8 @@ async def test_expired_card_cannot_resolve_a_different_pending_request(monkeypat
 @pytest.mark.asyncio
 async def test_unsettled_click_without_an_observer_marks_the_card_expired(monkeypatch):
     """A card with no request id has no observer, so its own no-op click stamps it, as before."""
-    from plugins.platforms.discord import adapter as discord_adapter
-    from plugins.platforms.discord.adapter import ExecApprovalView
+    from hermes_agent.plugins.platforms.discord import adapter as discord_adapter
+    from hermes_agent.plugins.platforms.discord.adapter import ExecApprovalView
 
     view = ExecApprovalView(session_key="agent:other:discord:555", allowed_user_ids=set())
     monkeypatch.setattr(view, "_gate", AsyncMock(return_value=True))

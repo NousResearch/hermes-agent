@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from plugins.web.openai_native.provider import OpenAINativeWebSearchProvider
+from hermes_agent.plugins.web.openai_native.provider import OpenAINativeWebSearchProvider
 
 
 def register(ctx) -> None:

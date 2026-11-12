@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 
 from hermes_agent.agent.ssl_verify import requests_verify
 
-from plugins.web._common import (
+from hermes_agent.plugins.web._common import (
     SEARCH_LIMIT_CAP, BaseWebSearchProvider, document, http_status_detail, keenable_origin_error, keyless_extract, keyless_search,
     keyless_variant_schema, page_error, provider_env, run_extract, run_search, search_fail, search_ok, use_keyless, web_hit,
 )

@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from plugins import plugin_loader as _loader
+from hermes_agent.plugins import plugin_loader as _loader
 
 if TYPE_CHECKING:
     from hermes_agent.tools.computer_use.backend import ComputerUseProvider

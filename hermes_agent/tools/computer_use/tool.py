@@ -157,7 +157,7 @@ def _cua_permission_mode(session_id: str) -> str:
     return configured
 
 def _new_backend(permission_mode: str) -> ComputerUseBackend:
-    from plugins.computer_use import get_active_provider
+    from hermes_agent.plugins.computer_use import get_active_provider
     return get_active_provider().create_backend(permission_mode=permission_mode)
 
 def _install_backend(sid: str, backend: ComputerUseBackend, permission_mode: str) -> ComputerUseBackend:
@@ -346,7 +346,7 @@ def handle_computer_use(args: dict[str, Any], **kwargs) -> Any:
     try:
         backend = call.enter_context(_backend_for_call(session_id))
     except Exception as e:
-        from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name
+        from hermes_agent.plugins.computer_use import DEFAULT_BACKEND, configured_backend_name
         hint = ({"hint": "If the cua-driver binary is missing, run `hermes computer-use install`. If a Python "
                          "dependency is missing, the error above shows the exact install command."}
                 if configured_backend_name() == DEFAULT_BACKEND else {})
@@ -970,7 +970,7 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str, *, visib
 def check_computer_use_requirements() -> bool:
     """The selected ``computer_use.backend``'s ``is_available()``. An unregistered name stays True so the call
     surfaces the "not registered (available: ...)" error instead of the tool silently vanishing."""
-    from plugins.computer_use import get_active_provider
+    from hermes_agent.plugins.computer_use import get_active_provider
     try:
         return get_active_provider().is_available()
     except LookupError:

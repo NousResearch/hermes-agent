@@ -8,7 +8,7 @@ from hermes_agent.gateway.config import Platform, PlatformConfig
 
 
 def _adapter(*, webhook_mode=False):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     stops = []
 
@@ -28,7 +28,7 @@ def _adapter(*, webhook_mode=False):
 
 @pytest.mark.asyncio
 async def test_stop_inbound_stops_polling_and_fences_the_restart_ladder():
-    from plugins.platforms.telegram.adapter import _PollingLifecycleAbort
+    from hermes_agent.plugins.platforms.telegram.adapter import _PollingLifecycleAbort
 
     adapter, stops = _adapter()
     await adapter.stop_inbound()

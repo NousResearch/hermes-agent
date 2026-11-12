@@ -5,7 +5,7 @@ status + transcript written under ``$HERMES_MEET_OUT_DIR`` (filesystem is the on
 No WebRTC audio parsing: Meet's live captions are watched via a MutationObserver — lossy and
 English-biased, but deterministic (no STT billing) and stable thanks to the ARIA role.
 Debug: ``HERMES_MEET_URL=... HERMES_MEET_OUT_DIR=./meet-out HERMES_MEET_HEADED=1 \\
-    python -m plugins.google_meet.meet_bot``
+    python -m hermes_agent.plugins.google_meet.meet_bot``
 """
 
 from __future__ import annotations
@@ -264,7 +264,7 @@ def _start_realtime_speaker(rt: dict, cfg: _BotConfig, stop_flag: dict, state: _
     queue_path.touch()  # so the speaker poller doesn't error on first iteration
     phase = "import"
     try:
-        from plugins.google_meet.realtime.openai_client import RealtimeSession, RealtimeSpeaker
+        from hermes_agent.plugins.google_meet.realtime.openai_client import RealtimeSession, RealtimeSpeaker
         phase = "connect"
         session = RealtimeSession(
             api_key=cfg.realtime_api_key, model=cfg.realtime_model, voice=cfg.realtime_voice,
@@ -309,7 +309,7 @@ def _setup_realtime(rt: dict, api_key: str, state: _BotState) -> None:
         rt["enabled"] = False
         return
     try:
-        from plugins.google_meet.audio_bridge import AudioBridge
+        from hermes_agent.plugins.google_meet.audio_bridge import AudioBridge
         rt["bridge"] = AudioBridge()
         rt["bridge_info"] = rt["bridge"].setup()
         state.set(realtime=True, realtime_device=rt["bridge_info"].get("device_name"))

@@ -3,7 +3,7 @@
 DeepInfra serves video over the OpenAI-compatible ``/v1/openai/videos`` endpoint (``create`` → poll →
 ``download_content``), so all SDK plumbing lives in :class:`hermes_agent.agent.video_gen_provider.OpenAICompatibleVideoGenProvider`.
 This plugin only declares identity, credentials, and live model discovery — no hardcoded model ids, so retired
-models drop out without a patch. Mirrors ``plugins/image_gen/deepinfra``.
+models drop out without a patch. Mirrors ``hermes_agent/plugins/image_gen/deepinfra``.
 """
 
 from __future__ import annotations

@@ -75,7 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class FakeTree:
@@ -248,7 +248,7 @@ async def test_slash_command_registration_stays_under_discord_limit(adapter):
     Regression guard for samuraiheart's recurring
     "Maximum number of application commands reached (100)" sync failures.
     """
-    from plugins.platforms.discord.adapter import _DISCORD_MAX_APP_COMMANDS
+    from hermes_agent.plugins.platforms.discord.adapter import _DISCORD_MAX_APP_COMMANDS
 
     adapter._run_simple_slash = AsyncMock()
 

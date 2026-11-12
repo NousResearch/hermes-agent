@@ -9,7 +9,7 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.helpers import ThreadParticipationTracker
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class _UnknownInteraction(Exception):

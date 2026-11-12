@@ -1,4 +1,4 @@
-"""Tests for plugins.google_meet.realtime.openai_client (v2).
+"""Tests for hermes_agent.plugins.google_meet.realtime.openai_client (v2).
 
 Uses a scripted fake WebSocket — no network, no API key required.
 """
@@ -84,7 +84,7 @@ def _install_fake_websockets(monkeypatch, fake_ws):
 
 
 def test_connect_sends_session_update_with_voice_and_instructions(monkeypatch):
-    from plugins.google_meet.realtime.openai_client import RealtimeSession
+    from hermes_agent.plugins.google_meet.realtime.openai_client import RealtimeSession
 
     ws = _FakeWS(recv_frames=[])
     captured = _install_fake_websockets(monkeypatch, ws)
@@ -123,7 +123,7 @@ def test_connect_sends_session_update_with_voice_and_instructions(monkeypatch):
 
 
 def test_speak_sends_create_and_response_and_writes_audio(monkeypatch, tmp_path):
-    from plugins.google_meet.realtime.openai_client import RealtimeSession
+    from hermes_agent.plugins.google_meet.realtime.openai_client import RealtimeSession
 
     audio_bytes = b"\x01\x02\x03\x04PCM!"
     b64 = base64.b64encode(audio_bytes).decode()
@@ -163,7 +163,7 @@ def test_speak_sends_create_and_response_and_writes_audio(monkeypatch, tmp_path)
 
 
 def test_close_is_idempotent_and_closes_ws(monkeypatch):
-    from plugins.google_meet.realtime.openai_client import RealtimeSession
+    from hermes_agent.plugins.google_meet.realtime.openai_client import RealtimeSession
 
     ws = _FakeWS(recv_frames=[])
     _install_fake_websockets(monkeypatch, ws)
@@ -196,7 +196,7 @@ class _StubSession:
 
 
 def test_speaker_run_until_stopped_processes_queue(tmp_path):
-    from plugins.google_meet.realtime.openai_client import RealtimeSpeaker
+    from hermes_agent.plugins.google_meet.realtime.openai_client import RealtimeSpeaker
 
     queue = tmp_path / "queue.jsonl"
     processed = tmp_path / "processed.jsonl"
@@ -232,8 +232,8 @@ def test_speaker_drain_keeps_a_say_enqueued_during_the_rewrite(tmp_path, monkeyp
     survive the rewrite and be spoken (it was reported "enqueued" to the agent)."""
     import threading
 
-    from plugins.google_meet import process_manager as pm
-    from plugins.google_meet.realtime.openai_client import RealtimeSpeaker
+    from hermes_agent.plugins.google_meet import process_manager as pm
+    from hermes_agent.plugins.google_meet.realtime.openai_client import RealtimeSpeaker
     from tests.lock_contention import watch_file_lock_contention
     from tests.waiting import wait_until
 

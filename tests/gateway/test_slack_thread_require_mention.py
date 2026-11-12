@@ -2,7 +2,7 @@ import asyncio
 import os
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.slack.adapter import SlackAdapter, _apply_yaml_config
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter, _apply_yaml_config
 
 
 def run(coro):

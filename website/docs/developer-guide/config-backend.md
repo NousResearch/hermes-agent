@@ -9,7 +9,7 @@ description: "Where a profile's user config.yaml is read and written: the Config
 Every read, stat, existence check and write of a profile's user `config.yaml` goes through
 `hermes_agent/hermes_cli/config_backend.py`. The backend is chosen once per process from
 `HERMES_CONFIG_BACKEND`, never from a config value: `file` is the default, and `remote` is
-[Remote Config](../user-guide/remote-config.md) (`plugins/config_backends/remote/`).
+[Remote Config](../user-guide/remote-config.md) (`hermes_agent/plugins/config_backends/remote/`).
 
 ## Helpers
 

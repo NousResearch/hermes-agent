@@ -11,7 +11,7 @@ import pytest
 import hermes_agent.gateway.run_adapters_recovery as recovery
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.run import GatewayRunner
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_multiplex_adapter_registry import _secondary_recovery_runner
 
 TG = Platform.TELEGRAM

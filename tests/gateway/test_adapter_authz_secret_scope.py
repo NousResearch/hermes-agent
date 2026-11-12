@@ -44,7 +44,7 @@ def _scope(secrets):
 
 
 def _matrix(extra=None):
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     return MatrixAdapter(PlatformConfig(enabled=True, token="t", extra={"homeserver": "https://m.example",
                                                                        "user_id": "@bot:m.example", **(extra or {})}))
@@ -59,7 +59,7 @@ def _whatsapp():
 
 
 def _slack():
-    from plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
     adapter = SlackAdapter.__new__(SlackAdapter)
     adapter.config = PlatformConfig(enabled=True, extra={})
@@ -67,7 +67,7 @@ def _slack():
 
 
 def _dingtalk():
-    from plugins.platforms.dingtalk.adapter import DingTalkAdapter
+    from hermes_agent.plugins.platforms.dingtalk.adapter import DingTalkAdapter
 
     adapter = DingTalkAdapter.__new__(DingTalkAdapter)
     adapter.config = PlatformConfig(enabled=True, extra={})
@@ -75,13 +75,13 @@ def _dingtalk():
 
 
 def _email():
-    from plugins.platforms.email.adapter import EmailAdapter
+    from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
     return EmailAdapter(PlatformConfig(enabled=True, extra={"address": "bot2@example.org"}))
 
 
 def _line():
-    from plugins.platforms.line.adapter import LineAdapter
+    from hermes_agent.plugins.platforms.line.adapter import LineAdapter
 
     return LineAdapter(PlatformConfig(enabled=True, extra={"channel_access_token": "t", "channel_secret": "s"}))
 
@@ -89,7 +89,7 @@ def _line():
 # (label, opt-in the SECONDARY scope grants, gate(scope) -> observed value, closed value, open value)
 _GATES = [
     ("email.allow_all", {"GATEWAY_ALLOW_ALL_USERS": "true"},
-     lambda: __import__("plugins.platforms.email.adapter", fromlist=["EmailAdapter"]).EmailAdapter._allow_all_senders(),
+     lambda: __import__("hermes_agent.plugins.platforms.email.adapter", fromlist=["EmailAdapter"]).EmailAdapter._allow_all_senders(),
      False, True),
     ("email.allowlist", {"EMAIL_ALLOWED_USERS": "bot2-admin@example.org"},
      lambda: _email()._sender_accepted("bot2-admin@example.org", {"sender_authenticated": True}),
@@ -98,7 +98,7 @@ _GATES = [
      lambda: _email()._sender_accepted("bot2-admin@example.org", {"sender_authenticated": True}),
      False, True),
     ("qqbot.open_dm", {"QQ_ALLOW_ALL_USERS": "true"},
-     lambda: __import__("plugins.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter._open_dm_opted_in(object.__new__(__import__("plugins.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter)),
+     lambda: __import__("hermes_agent.plugins.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter._open_dm_opted_in(object.__new__(__import__("hermes_agent.plugins.platforms.qqbot.adapter", fromlist=["QQAdapter"]).QQAdapter)),
      False, True),
     ("whatsapp.open_dm", {"GATEWAY_ALLOW_ALL_USERS": "true"},
      lambda: __import__("hermes_agent.gateway.platforms.whatsapp_common", fromlist=["WhatsAppBehaviorMixin"]).WhatsAppBehaviorMixin._open_dm_opted_in(_whatsapp()),
@@ -107,7 +107,7 @@ _GATES = [
      lambda: __import__("hermes_agent.gateway.platforms.whatsapp_common", fromlist=["WhatsAppBehaviorMixin"]).WhatsAppBehaviorMixin._live_dm_allow_from(_whatsapp()),
      set(), {"+15559998888"}),
     ("teams.card_action", {"TEAMS_ALLOWED_USERS": "clicker"},
-     lambda: __import__("plugins.platforms.teams.adapter", fromlist=["TeamsAdapter"]).TeamsAdapter._card_action_denied(
+     lambda: __import__("hermes_agent.plugins.platforms.teams.adapter", fromlist=["TeamsAdapter"]).TeamsAdapter._card_action_denied(
          SimpleNamespace(aad_object_id="clicker")) is None,
      False, True),
     ("matrix.authorized_user", {"MATRIX_ALLOWED_USERS": "@bot2-admin:example.org"},

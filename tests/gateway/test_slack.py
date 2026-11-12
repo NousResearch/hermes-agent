@@ -86,11 +86,11 @@ def _ensure_slack_mock():
 _ensure_slack_mock()
 
 # Patch SLACK_AVAILABLE before importing the adapter
-import plugins.platforms.slack.adapter as _slack_mod
+import hermes_agent.plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 
 class _StreamExpiredError(Exception):
@@ -3741,7 +3741,7 @@ class TestSlashEphemeralAck:
         """Failed response_url POST falls back to chat.postEphemeral — never
         a public channel post (#19688)."""
         import time
-        from plugins.platforms.slack.adapter import _slash_user_id
+        from hermes_agent.plugins.platforms.slack.adapter import _slash_user_id
 
         adapter._slash_command_contexts[("C1", "U1")] = {
             "response_url": "https://hooks.slack.com/commands/bad",
@@ -3771,7 +3771,7 @@ class TestSlashEphemeralAck:
         token = _slash_user_id.set("U1")
         try:
             with patch(
-                "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
+                "hermes_agent.plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
             ):
                 result = await adapter.send("C1", "Some response")
         finally:
@@ -3790,7 +3790,7 @@ class TestSlashEphemeralAck:
         """When response_url AND chat.postEphemeral both fail, the reply is
         dropped with an error — never leaked to the public channel (#19688)."""
         import time
-        from plugins.platforms.slack.adapter import _slash_user_id
+        from hermes_agent.plugins.platforms.slack.adapter import _slash_user_id
 
         adapter._slash_command_contexts[("C1", "U1")] = {
             "response_url": "https://hooks.slack.com/commands/bad",
@@ -3820,7 +3820,7 @@ class TestSlashEphemeralAck:
         token = _slash_user_id.set("U1")
         try:
             with patch(
-                "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
+                "hermes_agent.plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
             ):
                 result = await adapter.send("C1", "Some response")
         finally:
@@ -3835,7 +3835,7 @@ class TestSlashEphemeralAck:
         """aiohttp exception on response_url falls back to chat.postEphemeral,
         not to public channel delivery (#19688)."""
         import time
-        from plugins.platforms.slack.adapter import _slash_user_id
+        from hermes_agent.plugins.platforms.slack.adapter import _slash_user_id
 
         adapter._slash_command_contexts[("C1", "U1")] = {
             "response_url": "https://hooks.slack.com/commands/timeout",
@@ -3858,7 +3858,7 @@ class TestSlashEphemeralAck:
         token = _slash_user_id.set("U1")
         try:
             with patch(
-                "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
+                "hermes_agent.plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
             ):
                 result = await adapter.send("C1", "Some response")
         finally:
@@ -3891,7 +3891,7 @@ class TestSlashEphemeralAck:
         long_content = "A" * (adapter.MAX_MESSAGE_LENGTH + 500)
 
         with patch(
-            "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
+            "hermes_agent.plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
         ):
             result = await adapter._send_slash_ephemeral(
                 {"response_url": "https://hooks.slack.com/commands/long"},
@@ -3973,12 +3973,12 @@ class TestSlashEphemeralAck:
             return_value={"ok": True}
         )
 
-        from plugins.platforms.slack.adapter import _slash_user_id
+        from hermes_agent.plugins.platforms.slack.adapter import _slash_user_id
 
         token = _slash_user_id.set("U1")
         try:
             with patch(
-                "plugins.platforms.slack.adapter.aiohttp.ClientSession",
+                "hermes_agent.plugins.platforms.slack.adapter.aiohttp.ClientSession",
                 return_value=mock_session,
             ):
                 result = await adapter.send("C1", "Some response")
@@ -4222,7 +4222,7 @@ class TestThreadContextCacheBounded:
 
     @pytest.mark.asyncio
     async def test_expired_entries_evicted_when_cache_exceeds_max(self, adapter):
-        from plugins.platforms.slack.adapter import _ThreadContextCache
+        from hermes_agent.plugins.platforms.slack.adapter import _ThreadContextCache
 
         adapter._THREAD_CACHE_MAX = 2
 
@@ -4424,7 +4424,7 @@ class TestThreadImageContext:
 
 
     def test_file_marker_kinds(self):
-        from plugins.platforms.slack.adapter import _slack_file_marker
+        from hermes_agent.plugins.platforms.slack.adapter import _slack_file_marker
 
         assert _slack_file_marker(
             {"name": "demo.mp4", "mimetype": "video/mp4"}
@@ -4439,7 +4439,7 @@ class TestThreadImageContext:
 
     def test_file_marker_sanitizes_hostile_name(self):
         """Newlines/brackets in filenames can't fake context structure."""
-        from plugins.platforms.slack.adapter import _slack_file_marker
+        from hermes_agent.plugins.platforms.slack.adapter import _slack_file_marker
 
         marker = _slack_file_marker(
             {
@@ -4599,7 +4599,7 @@ class TestThreadImageContext:
 # Markdown table preprocessing (Slack mrkdwn does not render GFM tables)
 # =========================================================================
 
-from plugins.platforms.slack.adapter import (
+from hermes_agent.plugins.platforms.slack.adapter import (
     _wrap_markdown_tables,
     _align_table,
     _disp_width,

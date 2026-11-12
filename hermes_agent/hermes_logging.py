@@ -328,7 +328,7 @@ class _ComponentFilter(logging.Filter):
 
 # Logger name prefixes per component; used by _ComponentFilter and ``hermes logs --component``.
 COMPONENT_PREFIXES = {
-    # ``plugins.platforms``: messaging adapters that migrated out of
+    # ``hermes_agent.plugins.platforms``: messaging adapters that migrated out of
     # ``hermes_agent/gateway/platforms/`` into bundled plugins (#41112) are still gateway
     # components and belong in gateway.log. ``hermes_agent.agent.memory_caller_scope``: a multiplexed gateway's
     # memory-provider profile refusals (#140058), which the operator reads in gateway.log.

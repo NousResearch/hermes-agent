@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.weixin import adapter as wx
+from hermes_agent.plugins.platforms.weixin import adapter as wx
 
 
 @pytest.mark.asyncio

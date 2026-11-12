@@ -16,9 +16,9 @@ import pytest
 
 from hermes_agent.tools import web_tools
 from hermes_agent.agent import web_search_registry as registry
-from plugins.web import keyless_mcp
-from plugins.web.exa.provider import ExaWebSearchProvider
-from plugins.web.parallel.provider import ParallelWebSearchProvider
+from hermes_agent.plugins.web import keyless_mcp
+from hermes_agent.plugins.web.exa.provider import ExaWebSearchProvider
+from hermes_agent.plugins.web.parallel.provider import ParallelWebSearchProvider
 
 
 @pytest.fixture(autouse=True)
@@ -162,7 +162,7 @@ class TestParseMcpBody:
     def test_keyless_firecrawl_error_keeps_status_and_reason(self, monkeypatch):
         import httpx
 
-        from plugins.web.firecrawl import provider as firecrawl_provider
+        from hermes_agent.plugins.web.firecrawl import provider as firecrawl_provider
 
         def _forbidden(url, **_kwargs):
             return httpx.Response(403, text="your IP address looks suspicious\n", request=httpx.Request("POST", url))
@@ -282,7 +282,7 @@ class TestProviderRouting:
         )
         provider = ParallelWebSearchProvider()
         with patch.object(keyless_mcp, "parallel_search_keyless") as keyless, \
-                patch("plugins.web.parallel.provider._get_sync_client") as client:
+                patch("hermes_agent.plugins.web.parallel.provider._get_sync_client") as client:
             client.return_value.beta.search.return_value.results = []
             out = provider.search("q")
         keyless.assert_not_called()
@@ -387,7 +387,7 @@ class TestResolutionOrder:
 
     def test_tavily_is_not_a_ring_member(self):
         """Tavily is opt-in keyless; zero-config rotation must not include it."""
-        from plugins.web import keyless_mcp
+        from hermes_agent.plugins.web import keyless_mcp
 
         assert "tavily" not in keyless_mcp._KEYLESS_RING
         assert "tavily" not in keyless_mcp._KEYLESS_SEARCHERS

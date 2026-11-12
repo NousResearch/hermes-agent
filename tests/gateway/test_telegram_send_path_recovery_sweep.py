@@ -5,8 +5,8 @@ import asyncio
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram import telegram_send_path_recovery as recovery
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram import telegram_send_path_recovery as recovery
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 class _Runner:

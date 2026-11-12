@@ -136,12 +136,12 @@ _ensure_discord_mock()
 _ensure_slack_mock()
 
 import discord
-from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
-import plugins.platforms.slack.adapter as _slack_mod
+import hermes_agent.plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 
 # Platform-generic factories

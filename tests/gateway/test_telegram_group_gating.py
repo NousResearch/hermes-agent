@@ -43,7 +43,7 @@ def _make_adapter(
     bots_require_mention=None,
     bot_username="hermes_bot",
 ):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     extra = {}
     if require_mention is not None:
@@ -1019,7 +1019,7 @@ def test_identity_freshness_does_not_depend_on_host_uptime(monkeypatch):
 
     # Simulate a host that booted 12 seconds ago.
     monkeypatch.setattr(
-        "plugins.platforms.telegram.adapter.time.monotonic", lambda: 12.0
+        "hermes_agent.plugins.platforms.telegram.adapter.time.monotonic", lambda: 12.0
     )
 
     assert adapter._bot_identity_is_fresh() is False

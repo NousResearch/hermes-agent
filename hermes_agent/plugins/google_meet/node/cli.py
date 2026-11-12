@@ -7,9 +7,9 @@ import asyncio
 import json
 import sys
 
-from plugins.google_meet.node.client import NodeClient
-from plugins.google_meet.node.registry import NodeRegistry
-from plugins.google_meet.node.server import NodeServer
+from hermes_agent.plugins.google_meet.node.client import NodeClient
+from hermes_agent.plugins.google_meet.node.registry import NodeRegistry
+from hermes_agent.plugins.google_meet.node.server import NodeServer
 
 
 def register_cli(subparser: argparse.ArgumentParser) -> None:

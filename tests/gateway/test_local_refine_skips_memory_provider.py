@@ -17,7 +17,7 @@ async def test_cold_refine_builds_no_memory_provider(tmp_path, monkeypatch):
     refine = pytest.importorskip('hermes_agent.gateway.session_refine')
     from hermes_agent.gateway import session_tui_side, session_policy, session_local_recovery
     from hermes_agent.agent import agent_init, background_review, safe_worker_policy
-    import plugins.memory
+    import hermes_agent.plugins.memory
     from hermes_agent.run_agent import AIAgent
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
     monkeypatch.setattr(safe_worker_policy, 'safe_worker_enabled', lambda: False)
@@ -32,7 +32,7 @@ async def test_cold_refine_builds_no_memory_provider(tmp_path, monkeypatch):
     def load_provider(name):
         loaded.append(name)
         return _Provider()
-    monkeypatch.setattr(plugins.memory, 'load_memory_provider', load_provider)
+    monkeypatch.setattr(hermes_agent.plugins.memory, 'load_memory_provider', load_provider)
     monkeypatch.setattr(agent_init, 'is_core_memory_provider', lambda name: False)
     sid = 'refine-memory-parent'
     source = SimpleNamespace(chat_id=sid)

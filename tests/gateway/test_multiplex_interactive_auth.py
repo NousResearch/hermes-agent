@@ -58,7 +58,7 @@ def _runner(home):
 
 
 def _telegram(runner):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     tg = object.__new__(TelegramAdapter)
     tg.config = PlatformConfig(enabled=True, extra={})
@@ -165,7 +165,7 @@ def test_slack_interactive_auth_prefers_wired_profile_check(mux_home, monkeypatc
     profile's process-env allow-all never leaks in — not through the
     injected path, and not through the env-only fallback either."""
     from hermes_agent.gateway.run import _profile_runtime_scope
-    from plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
     runner = _runner(mux_home)
     runner.adapters = {}

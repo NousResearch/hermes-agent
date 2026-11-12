@@ -132,28 +132,28 @@ def _install_fake_tools_package():
     # Plugin module stubs — the real plugin classes are loaded from disk by
     # the lifecycle tests below via _load_tool_module(). For the import
     # phase, we just need the class names to exist on the right module path.
-    plugins_package = types.ModuleType("plugins")
+    plugins_package = types.ModuleType("hermes_agent.plugins")
     plugins_package.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["plugins"] = plugins_package
-    plugins_browser_package = types.ModuleType("plugins.browser")
+    sys.modules["hermes_agent.plugins"] = plugins_package
+    plugins_browser_package = types.ModuleType("hermes_agent.plugins.browser")
     plugins_browser_package.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["plugins.browser"] = plugins_browser_package
+    sys.modules["hermes_agent.plugins.browser"] = plugins_browser_package
 
     for _name, _classname in (
         ("browserbase", "BrowserbaseBrowserProvider"),
         ("browser_use", "BrowserUseBrowserProvider"),
         ("firecrawl", "FirecrawlBrowserProvider"),
     ):
-        _vendor_pkg = types.ModuleType(f"plugins.browser.{_name}")
+        _vendor_pkg = types.ModuleType(f"hermes_agent.plugins.browser.{_name}")
         _vendor_pkg.__path__ = []  # type: ignore[attr-defined]
-        sys.modules[f"plugins.browser.{_name}"] = _vendor_pkg
+        sys.modules[f"hermes_agent.plugins.browser.{_name}"] = _vendor_pkg
         _provider_stub_cls = type(_classname, (_StubBrowserProvider,), {})
-        sys.modules[f"plugins.browser.{_name}.provider"] = types.SimpleNamespace(
+        sys.modules[f"hermes_agent.plugins.browser.{_name}.provider"] = types.SimpleNamespace(
             **{_classname: _provider_stub_cls},
         )
-    # The fake ``plugins.browser`` package has an empty __path__, so the shared
+    # The fake ``hermes_agent.plugins.browser`` package has an empty __path__, so the shared
     # base the real vendor modules import must be loaded by path as well.
-    _load_plugin_module("plugins.browser._common", "browser/_common.py")
+    _load_plugin_module("hermes_agent.plugins.browser._common", "browser/_common.py")
 
     sys.modules["hermes_agent.tools.managed_tool_gateway"] = _load_tool_module(
         "hermes_agent.tools.managed_tool_gateway",
@@ -242,7 +242,7 @@ def test_browserbase_does_not_use_gateway_only_configuration():
 
     with patch.dict(os.environ, env, clear=True):
         browserbase_module = _load_plugin_module(
-            "plugins.browser.browserbase.provider",
+            "hermes_agent.plugins.browser.browserbase.provider",
             "browser/browserbase/provider.py",
         )
         provider = browserbase_module.BrowserbaseBrowserProvider()

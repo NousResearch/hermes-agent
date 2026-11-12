@@ -22,7 +22,7 @@ def _make_adapter(address="hermes@test.com"):
         "EMAIL_IMAP_HOST": "imap.test.com",
         "EMAIL_SMTP_HOST": "smtp.test.com",
     }):
-        from plugins.platforms.email.adapter import EmailAdapter
+        from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
         adapter = EmailAdapter(PlatformConfig(enabled=True))
     return adapter
@@ -83,7 +83,7 @@ class TestTransportSecurity(unittest.TestCase):
             "EMAIL_IMAP_HOST": "127.0.0.1", "EMAIL_IMAP_PORT": "1143",
             "EMAIL_SMTP_HOST": "127.0.0.1", "EMAIL_SMTP_PORT": "1025",
         }, clear=True):
-            from plugins.platforms.email.adapter import EmailAdapter
+            from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
             return EmailAdapter(PlatformConfig(enabled=True, extra=extra))
 

@@ -81,7 +81,7 @@ class TestPluginDispatch:
         monkeypatch.setattr(ig, "_dispatch_to_plugin_provider", lambda *a, **k: None)
         monkeypatch.setattr(ig, "_maybe_route_managed_model", lambda *a, **k: json.dumps(krea_error))
         monkeypatch.setattr(ig, "image_generate_tool", fake_fal)
-        monkeypatch.setattr("plugins.image_gen.krea.fallback_to_fal_enabled", lambda: enabled)
+        monkeypatch.setattr("hermes_agent.plugins.image_gen.krea.fallback_to_fal_enabled", lambda: enabled)
 
         args = {"prompt": "draw cat", "aspect_ratio": "square"}
         if image_url:
@@ -115,7 +115,7 @@ class TestPluginDispatch:
         monkeypatch.setattr(ig, "_dispatch_to_plugin_provider", lambda *a, **k: None)
         monkeypatch.setattr(ig, "_maybe_route_managed_model", lambda *a, **k: json.dumps(krea_error))
         monkeypatch.setattr(ig, "image_generate_tool", fake_fal)
-        monkeypatch.setattr("plugins.image_gen.krea.fallback_to_fal_enabled", lambda: True)
+        monkeypatch.setattr("hermes_agent.plugins.image_gen.krea.fallback_to_fal_enabled", lambda: True)
 
         result = json.loads(ig._handle_image_generate({"prompt": "draw cat", "aspect_ratio": "square", "upscale": True}))
 

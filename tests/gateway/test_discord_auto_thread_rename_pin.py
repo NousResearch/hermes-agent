@@ -14,11 +14,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 import hermes_agent.gateway.run as gateway_run
-import plugins.platforms.discord.adapter as discord_platform
+import hermes_agent.plugins.platforms.discord.adapter as discord_platform
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.session import build_session_context
-from plugins.platforms.discord.adapter import DiscordAdapter
-from plugins.platforms.discord.adapter_thread_titles import SemanticThreadRenames
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter_thread_titles import SemanticThreadRenames
 
 OPENING, TITLE = "what broke?", "Database outage"
 

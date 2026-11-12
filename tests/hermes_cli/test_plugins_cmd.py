@@ -613,7 +613,7 @@ class TestProviderDiscovery:
 
     def test_discover_context_engines_empty(self):
         """Discovery returns empty list when import fails."""
-        with patch("plugins.context_engine.discover_context_engines",
+        with patch("hermes_agent.plugins.context_engine.discover_context_engines",
                     side_effect=ImportError("no module")):
             from hermes_agent.hermes_cli.plugins_cmd import _discover_context_engines
             result = _discover_context_engines()
@@ -973,7 +973,7 @@ def test_default_compressor_does_not_activate_an_offered_plugin(monkeypatch):
     from hermes_agent.agent.agent_init import _select_context_engine
     from types import SimpleNamespace
     candidate = SimpleNamespace(name='offered', clone_for_agent=lambda: candidate)
-    monkeypatch.setattr('plugins.context_engine.load_context_engine', lambda _: None)
+    monkeypatch.setattr('hermes_agent.plugins.context_engine.load_context_engine', lambda _: None)
     monkeypatch.setattr('hermes_agent.hermes_cli.plugins.get_plugin_context_engine', lambda: candidate)
     assert _select_context_engine({'context': {'engine': 'compressor'}}) is None
     assert _select_context_engine({'context': {'engine': 'offered'}}).name == 'offered'

@@ -245,7 +245,7 @@ def test_resolve_unknown_provider_falls_back_to_builtin(monkeypatch):
 def test_resolve_unavailable_provider_falls_back(monkeypatch):
     """A provider that loads but reports is_available()==False → built-in."""
     import hermes_agent.hermes_cli.config as cfg
-    import plugins.cron_providers as pc
+    import hermes_agent.plugins.cron_providers as pc
     from hermes_agent.cron import scheduler_provider as sp
     from hermes_agent.cron.scheduler_provider import CronScheduler
 
@@ -269,7 +269,7 @@ def test_resolve_unavailable_provider_falls_back(monkeypatch):
 def test_resolve_available_provider_is_used(monkeypatch):
     """A provider that loads and is available is returned (not the fallback)."""
     import hermes_agent.hermes_cli.config as cfg
-    import plugins.cron_providers as pc
+    import hermes_agent.plugins.cron_providers as pc
     from hermes_agent.cron import scheduler_provider as sp
     from hermes_agent.cron.scheduler_provider import CronScheduler
 

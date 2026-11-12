@@ -18,7 +18,7 @@ from hermes_agent.gateway.session import build_session_key
 from hermes_agent.hermes_cli import kanban_db as kb
 from hermes_agent.hermes_cli import kanban_db_connect as kbc
 from hermes_agent.hermes_cli import kanban_db_notify as kbn
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 TEAM = "T0B8U2M6NRE"
 CHANNEL = "C0BCDG3H66P"

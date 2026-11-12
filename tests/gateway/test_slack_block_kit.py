@@ -1,6 +1,6 @@
 """Unit tests for the Slack Block Kit renderer (pure function, no adapter)."""
 
-from plugins.platforms.slack.block_kit import (
+from hermes_agent.plugins.platforms.slack.block_kit import (
     MAX_BLOCKS,
     MAX_SECTION_TEXT,
     render_blocks,
@@ -342,7 +342,7 @@ class TestSplitTextFenceBalanced:
     """_split_text closes/reopens ``` fences at section chunk boundaries."""
 
     def test_fenced_split_every_chunk_balanced(self):
-        from plugins.platforms.slack.block_kit import _split_text
+        from hermes_agent.plugins.platforms.slack.block_kit import _split_text
 
         text = "```\n" + "\n".join("y" * 20 for _ in range(30)) + "\n```"
         chunks = _split_text(text, 100)

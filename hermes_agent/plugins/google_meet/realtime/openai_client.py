@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from plugins.google_meet._jsonfile import say_queue_lock
+from hermes_agent.plugins.google_meet._jsonfile import say_queue_lock
 
 
 REALTIME_URL = "wss://api.openai.com/v1/realtime"

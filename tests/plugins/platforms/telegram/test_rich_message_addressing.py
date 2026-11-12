@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.gateway.platforms.event import MessageType
-from plugins.platforms.telegram.telegram_context import group_reply_expected, group_trigger_text
+from hermes_agent.plugins.platforms.telegram.telegram_context import group_reply_expected, group_trigger_text
 from tests.gateway.test_telegram_group_gating import _group_message, _make_adapter
 
 

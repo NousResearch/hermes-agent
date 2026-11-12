@@ -76,9 +76,9 @@ def _force_inprocess_search(monkeypatch, prov):
 class TestDDGSProviderIsConfigured:
     def test_configured_when_package_importable(self, monkeypatch):
         _install_fake_ddgs(monkeypatch)
-        # Drop any cached ``plugins.web.ddgs.provider`` so is_configured re-imports ddgs fresh
-        monkeypatch.delitem(sys.modules, "plugins.web.ddgs.provider", raising=False)
-        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+        # Drop any cached ``hermes_agent.plugins.web.ddgs.provider`` so is_configured re-imports ddgs fresh
+        monkeypatch.delitem(sys.modules, "hermes_agent.plugins.web.ddgs.provider", raising=False)
+        from hermes_agent.plugins.web.ddgs.provider import DDGSWebSearchProvider
         assert DDGSWebSearchProvider().is_available() is True
 
 
@@ -91,7 +91,7 @@ class TestDDGSProviderSearch:
             {"title": "B", "href": "https://b.example.com", "body": "desc B"},
             {"title": "C", "href": "https://c.example.com", "body": "desc C"},
         ])
-        import plugins.web.ddgs.provider as prov
+        import hermes_agent.plugins.web.ddgs.provider as prov
         _force_inprocess_search(monkeypatch, prov)
 
         result = prov.DDGSWebSearchProvider().search("q", limit=5)
@@ -105,7 +105,7 @@ class TestDDGSProviderSearch:
 
     def test_empty_results(self, monkeypatch):
         _install_fake_ddgs(monkeypatch, text_results=[])
-        import plugins.web.ddgs.provider as prov
+        import hermes_agent.plugins.web.ddgs.provider as prov
         _force_inprocess_search(monkeypatch, prov)
 
         result = prov.DDGSWebSearchProvider().search("nothing", limit=5)
@@ -117,7 +117,7 @@ class TestDDGSProviderSearch:
         """#36776 / #68096: a hung worker must be bounded by the wall-clock
         timeout and reaped — even when the child never returns to Python."""
         _install_fake_ddgs(monkeypatch)
-        import plugins.web.ddgs.provider as prov
+        import hermes_agent.plugins.web.ddgs.provider as prov
 
         monkeypatch.setattr(prov, "_test_hook", "sleep", raising=True)
         monkeypatch.setattr(prov, "_SEARCH_TIMEOUT_SECS", 0.4, raising=True)
@@ -140,7 +140,7 @@ class TestDDGSProviderSearch:
             monkeypatch,
             text_results=[{"title": "T", "href": "https://e.com", "body": "B"}],
         )
-        import plugins.web.ddgs.provider as prov
+        import hermes_agent.plugins.web.ddgs.provider as prov
         _force_inprocess_search(monkeypatch, prov)
 
         result = prov.DDGSWebSearchProvider().search("q", limit=5)
@@ -168,7 +168,7 @@ class TestDDGSProcessIsolation:
     def test_gil_holding_worker_times_out_and_is_reaped(self, monkeypatch):
         """#68096: parent deadline still fires when the child holds its GIL."""
         _install_fake_ddgs(monkeypatch)
-        import plugins.web.ddgs.provider as prov
+        import hermes_agent.plugins.web.ddgs.provider as prov
 
         monkeypatch.setattr(prov, "_test_hook", "gil", raising=True)
         monkeypatch.setattr(prov, "_SEARCH_TIMEOUT_SECS", 0.5, raising=True)
@@ -187,7 +187,7 @@ class TestDDGSProcessIsolation:
     def test_interrupt_terminates_worker_promptly(self, monkeypatch):
         """TUI/gateway interrupt must kill the DDGS child before the deadline."""
         _install_fake_ddgs(monkeypatch)
-        import plugins.web.ddgs.provider as prov
+        import hermes_agent.plugins.web.ddgs.provider as prov
 
         # Flip interrupt after the first poll so the wait loop observes it.
         calls = {"n": 0}
@@ -213,7 +213,7 @@ class TestDDGSProcessIsolation:
 
     def test_no_orphan_after_successful_search(self, monkeypatch):
         _install_fake_ddgs(monkeypatch)
-        import plugins.web.ddgs.provider as prov
+        import hermes_agent.plugins.web.ddgs.provider as prov
 
         monkeypatch.setattr(prov, "_test_hook", "empty", raising=True)
         monkeypatch.setattr("hermes_agent.tools.interrupt.is_interrupted", lambda: False)

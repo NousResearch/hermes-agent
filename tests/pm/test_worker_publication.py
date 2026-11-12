@@ -174,7 +174,7 @@ def test_memory_setup_sends_candidate_paths_instead_of_discovery_callbacks(tmp_p
     candidate = tmp_path / "provider"
     candidate.mkdir()
     (candidate / "plugin.yaml").write_text("name: provider\npython_dependencies: [fixture-dep==1]\n")
-    monkeypatch.setattr("plugins.memory.find_provider_dir", lambda name: candidate)
+    monkeypatch.setattr("hermes_agent.plugins.memory.find_provider_dir", lambda name: candidate)
     _, inputs = memory_provider_dependency_inputs("provider")
     assert inputs == {"extras": [], "plugins": Candidates([candidate])}
 

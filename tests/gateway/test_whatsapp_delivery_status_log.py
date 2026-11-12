@@ -32,7 +32,7 @@ class _Resp:
 @pytest.mark.asyncio
 async def test_delivery_status_is_logged_to_gateway_log_and_never_dispatched(caplog):
     from hermes_agent.hermes_logging import COMPONENT_PREFIXES
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={}))
     batch = [
@@ -56,18 +56,18 @@ async def test_delivery_status_is_logged_to_gateway_log_and_never_dispatched(cap
     adapter._build_message_event = AsyncMock(return_value=None)
     adapter.handle_message = AsyncMock()
 
-    with caplog.at_level(logging.INFO, logger="plugins.platforms.whatsapp.adapter"):
+    with caplog.at_level(logging.INFO, logger="hermes_agent.plugins.platforms.whatsapp.adapter"):
         await asyncio.wait_for(adapter._poll_messages(), timeout=10)
 
     tag = f"[{adapter.name}] WhatsApp delivery status:"
-    lines = [r.getMessage() for r in caplog.records if r.name == "plugins.platforms.whatsapp.adapter"
+    lines = [r.getMessage() for r in caplog.records if r.name == "hermes_agent.plugins.platforms.whatsapp.adapter"
              and "delivery status" in r.getMessage()]
     assert lines == [
         f"{tag} message=3EB0A1 chat=15551234567@s.whatsapp.net status=read at=1760000000",
         f"{tag} message=3EB0A2 chat=120363001234567890@g.us status=delivered recipient=15550001111@s.whatsapp.net at=1760000050",
         f"{tag} message=3EB0A3 chat=15551234567@s.whatsapp.net status=error at=1760000060 error=463",
     ]
-    # gateway.log takes every plugins.platforms.* logger (hermes_logging component prefixes).
+    # gateway.log takes every hermes_agent.plugins.platforms.* logger (hermes_logging component prefixes).
     assert any("plugins.platforms.whatsapp.adapter".startswith(p) for p in COMPONENT_PREFIXES["gateway"])
     adapter._build_message_event.assert_not_awaited()
     adapter.handle_message.assert_not_awaited()

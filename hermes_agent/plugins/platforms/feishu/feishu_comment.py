@@ -617,7 +617,7 @@ async def _handle_drive_comment_event(client: Any, data: Any, *, self_open_id: s
     logger.info("[Feishu-Comment] Event: notice=%s file=%s:%s comment=%s from=%s", notice_type, file_type, file_token, comment_id, from_open_id)
     # Access control. Wiki-hosted docs report their underlying obj token, so when no exact rule
     # matched and the config has wiki: keys, reverse-lookup the wiki node.
-    from plugins.platforms.feishu.feishu_comment_rules import load_config, resolve_rule, is_user_allowed, has_wiki_keys
+    from hermes_agent.plugins.platforms.feishu.feishu_comment_rules import load_config, resolve_rule, is_user_allowed, has_wiki_keys
     comments_cfg = load_config()
     rule = resolve_rule(comments_cfg, file_type, file_token)
     if rule.match_source in {"wildcard", "top"} and has_wiki_keys(comments_cfg) and (wiki_token := await _reverse_lookup_wiki_token(client, file_type, file_token)):

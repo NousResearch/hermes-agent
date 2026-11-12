@@ -63,7 +63,7 @@ class TestTranscodeEngine(unittest.TestCase):
 class TestTelegramSendVoiceTranscode(unittest.TestCase):
     def test_mp3_with_intent_is_transcoded_and_sent_as_voice(self):
         """mp3 + is_voice=True: adapter transcodes, calls bot.send_voice, cleans up."""
-        from plugins.platforms.telegram.adapter import TelegramAdapter
+        from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
         adapter = TelegramAdapter.__new__(TelegramAdapter)
 
@@ -109,7 +109,7 @@ class TestTelegramSendVoiceTranscode(unittest.TestCase):
 
         try:
             with patch("hermes_agent.gateway.platforms.base.transcode_to_ogg_opus", side_effect=fake_transcode), \
-                 patch("plugins.platforms.telegram.adapter._probe_voice_duration_seconds", return_value=1):
+                 patch("hermes_agent.plugins.platforms.telegram.adapter._probe_voice_duration_seconds", return_value=1):
                 result = asyncio.run(
                     adapter.send_voice("123", mp3, is_voice=True)
                 )

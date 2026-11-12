@@ -51,7 +51,7 @@ Si tu habilidad es especializada, contribuida por la comunidad o de nicho, es me
 
 ## Proveedores de Memoria: Publicar como Plugin Independiente
 
-**Ya no aceptamos nuevos proveedores de memoria en este repositorio.** El conjunto de proveedores integrados en `plugins/memory/` (byterover, retaindb) está cerrado, y los antiguos proveedores integrados hindsight, honcho, supermemory, mem0, openviking y holographic ahora se distribuyen desde el catálogo de plugins. Si quieres añadir un nuevo backend de memoria, publícalo como un **repositorio de plugin independiente** que los usuarios instalen en `~/.hermes/plugins/` (o a través de un entry point de pip).
+**Ya no aceptamos nuevos proveedores de memoria en este repositorio.** El conjunto de proveedores integrados en `hermes_agent/plugins/memory/` (byterover, retaindb) está cerrado, y los antiguos proveedores integrados hindsight, honcho, supermemory, mem0, openviking y holographic ahora se distribuyen desde el catálogo de plugins. Si quieres añadir un nuevo backend de memoria, publícalo como un **repositorio de plugin independiente** que los usuarios instalen en `~/.hermes/plugins/` (o a través de un entry point de pip).
 
 Los plugins de memoria independientes:
 
@@ -61,7 +61,7 @@ Los plugins de memoria independientes:
 - Pueden registrar sus propios subcomandos CLI a través de `register_cli(subparser)` en un archivo `cli.py`
 - Obtienen todos los mismos hooks de ciclo de vida y plomería de configuración que los proveedores incluidos en el árbol
 
-Los PRs que añadan un nuevo directorio bajo `plugins/memory/` serán cerrados con un puntero para publicar el proveedor como su propio repositorio. Los proveedores en árbol existentes se mantienen; las correcciones de errores para ellos son bienvenidas.
+Los PRs que añadan un nuevo directorio bajo `hermes_agent/plugins/memory/` serán cerrados con un puntero para publicar el proveedor como su propio repositorio. Los proveedores en árbol existentes se mantienen; las correcciones de errores para ellos son bienvenidas.
 
 Esto no es una barra de calidad — es una decisión de acoplamiento y mantenimiento. Los proveedores de memoria son el tipo de plugin más común y no deberían vivir todos en este árbol.
 

@@ -149,7 +149,7 @@ def _data_dir() -> Path:
     live in the install tree and died on ``hermes plugins remove``/``update``; legacy files
     migrate on first read (see ``_data_file``)."""
     try:
-        from plugins.plugin_storage import plugin_data_dir
+        from hermes_agent.plugins.plugin_storage import plugin_data_dir
         return plugin_data_dir("hermes-achievements")
     except Exception:
         # Standalone dashboard import (no plugins package on sys.path): same layout, computed locally.

@@ -11,7 +11,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.raft.adapter import (
+from hermes_agent.plugins.platforms.raft.adapter import (
     ACTIVITY_DRAIN_SCHEMA,
     ACTIVITY_EVENT_SCHEMA,
     ActivityQueue,
@@ -257,7 +257,7 @@ class TestMultiplexProfileScope:
         """Bridge spawn, env-enablement and the register() hint all resolve
         the secondary profile's own RAFT_PROFILE; with none of its own the
         profile fails closed (bridge not spawned, not auto-enabled)."""
-        import plugins.platforms.raft.adapter as raft_mod
+        import hermes_agent.plugins.platforms.raft.adapter as raft_mod
 
         monkeypatch.setattr(raft_mod.shutil, "which", lambda name: "/usr/bin/raft")
         spawned = []

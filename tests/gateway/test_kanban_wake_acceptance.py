@@ -17,7 +17,7 @@ from hermes_agent.hermes_cli import kanban_db_notify as kbn
 
 def setup_route(raft=False):
     if raft:
-        from plugins.platforms.raft.adapter import RaftAdapter
+        from hermes_agent.plugins.platforms.raft.adapter import RaftAdapter
         adapter = RaftAdapter(PlatformConfig(enabled=True, typing_indicator=False,
             extra={"bridge_token": "owned-test-token", "port": 0}))
     else:

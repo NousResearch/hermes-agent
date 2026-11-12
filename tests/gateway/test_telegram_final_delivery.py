@@ -8,7 +8,7 @@ import pytest
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.base import SendResult
 from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _adapter() -> MagicMock:

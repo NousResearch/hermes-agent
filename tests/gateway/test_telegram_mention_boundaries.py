@@ -14,7 +14,7 @@ those contexts.
 from types import SimpleNamespace
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter():

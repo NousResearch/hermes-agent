@@ -147,7 +147,7 @@ Gateway 从多个来源读取配置：
 所有消息平台都以插件适配器形式位于 `plugins/platforms/<name>/`；`hermes_agent/gateway/platforms/` 只保留基类和 HTTP 入站适配器（`api_server`、`webhook`、`msgraph_webhook`）。它们都继承 `hermes_agent/gateway/platforms/base.py` 中的 `BasePlatformAdapter`：
 
 ```text
-plugins/platforms/                  # 插件打包的适配器（每个一个目录）
+hermes_agent/plugins/platforms/                  # 插件打包的适配器（每个一个目录）
 ├── telegram/adapter.py     # Telegram Bot API（长轮询或 webhook）
 ├── discord/adapter.py      # Discord bot（通过 discord.py）
 ├── slack/adapter.py        # Slack Socket Mode

@@ -749,7 +749,7 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     key, source = resolved
     _refuse_legacy_relay(key)
     if source != "bundled":
-        # Activating recalled code is the same act as installing it (`plugins/AGENTS.md`: kill list).
+        # Activating recalled code is the same act as installing it (`hermes_agent/plugins/AGENTS.md`: kill list).
         try:
             _refuse_recalled_entry(_find_plugin_entry(key))
         except PluginOperationError as exc:

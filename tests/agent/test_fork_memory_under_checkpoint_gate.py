@@ -54,7 +54,7 @@ def _fork_site(site):
             0, {"prompt": "p"}, 0, {"model": "m", "max_iterations": 3, "distribution": {}},
         )), (patch.object(batch_runner, "sample_toolsets_from_distribution", return_value=["terminal"]),)
     if site == "feishu_comment":
-        from plugins.platforms.feishu import feishu_comment
+        from hermes_agent.plugins.platforms.feishu import feishu_comment
         from hermes_agent import run_agent
 
         return run_agent, (lambda: feishu_comment._run_comment_agent("p", client=object(), session_key="")), (
@@ -156,7 +156,7 @@ def _build_agent_with_recording_provider(seen, builtin_memory=False, **extra):
     with (
         patch("hermes_agent.hermes_cli.config.load_config", return_value=cfg),
         patch("hermes_agent.hermes_cli.config.load_config_readonly", return_value=cfg),
-        patch("plugins.memory.load_memory_provider", return_value=_RecordingProvider(seen)),
+        patch("hermes_agent.plugins.memory.load_memory_provider", return_value=_RecordingProvider(seen)),
         patch("hermes_agent.agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("hermes_agent.model_tools.get_tool_definitions", return_value=[]),
         patch("hermes_agent.model_tools.check_toolset_requirements", return_value={}),

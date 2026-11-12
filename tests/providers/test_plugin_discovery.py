@@ -28,7 +28,7 @@ def _clear_provider_caches():
     # Evict any cached plugin modules so the next import re-executes.
     for mod in list(sys.modules.keys()):
         if (
-            mod.startswith("plugins.model_providers")
+            mod.startswith("hermes_agent.plugins.model_providers")
             or mod.startswith("_hermes_user_provider")
         ):
             del sys.modules[mod]

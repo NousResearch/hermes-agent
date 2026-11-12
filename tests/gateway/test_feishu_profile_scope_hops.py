@@ -55,8 +55,8 @@ def routed_scope(tmp_path):
 def test_drive_comment_agent_turn_runs_under_the_adapter_profile_scope(routed_scope):
     """The comment agent thread must resolve model/credentials/home for the routed profile,
     not the launch profile (bare run_in_executor drops the contextvar scope)."""
-    from plugins.platforms.feishu import feishu_comment as fc
-    from plugins.platforms.feishu import feishu_comment_rules as rules
+    from hermes_agent.plugins.platforms.feishu import feishu_comment as fc
+    from hermes_agent.plugins.platforms.feishu import feishu_comment_rules as rules
 
     seen = {}
 
@@ -88,8 +88,8 @@ def test_drive_comment_agent_turn_binds_the_unscoped_launch_profile(tmp_path):
     The comment entry point must install the launch profile scope before the
     copied executor context resolves model credentials.
     """
-    from plugins.platforms.feishu import feishu_comment as fc
-    from plugins.platforms.feishu import feishu_comment_rules as rules
+    from hermes_agent.plugins.platforms.feishu import feishu_comment as fc
+    from hermes_agent.plugins.platforms.feishu import feishu_comment_rules as rules
 
     launch_home = tmp_path / "launch"
     launch_home.mkdir()
@@ -136,8 +136,8 @@ def test_drive_comment_on_the_launch_adapter_reads_the_launch_env_through_the_re
     """#139232 end to end on the real seam (no patched scope factory): the launch profile's Feishu
     callback arrives with no contextvar scope while multiplexing is on. The comment turn must read
     the launch profile's own ``.env`` credential, not raise ``UnscopedSecretError``."""
-    from plugins.platforms.feishu import feishu_comment as fc
-    from plugins.platforms.feishu import feishu_comment_rules as rules
+    from hermes_agent.plugins.platforms.feishu import feishu_comment as fc
+    from hermes_agent.plugins.platforms.feishu import feishu_comment_rules as rules
 
     launch_home = tmp_path / "launch"
     launch_home.mkdir()
@@ -175,7 +175,7 @@ def test_ws_client_thread_and_its_loop_callbacks_carry_the_adapter_profile_scope
     """Lark SDK callbacks run on the WS thread and re-enter the adapter loop through
     run_coroutine_threadsafe (which copies the caller's context): both must see the profile that
     connected the adapter, so media caching / markers / env reads before handle_message stay in it."""
-    from plugins.platforms.feishu import adapter as fa
+    from hermes_agent.plugins.platforms.feishu import adapter as fa
 
     client_mod = types.ModuleType("lark_oapi.ws.client")
     client_mod.loop = SimpleNamespace(name="sdk-default-loop")
@@ -228,7 +228,7 @@ def test_an_unscoped_comment_from_a_secondary_adapter_fails_closed(tmp_path, mon
     """Review on #140186: only the launch adapter's unscoped callback may borrow the launch scope.
     A secondary's callback that lost its context must not run its comment turn on the launch
     profile's credentials; it is refused before any rule, config or model read."""
-    from plugins.platforms.feishu import feishu_comment as fc
+    from hermes_agent.plugins.platforms.feishu import feishu_comment as fc
 
     launch_home = tmp_path / "launch"
     launch_home.mkdir()
@@ -253,8 +253,8 @@ def test_an_unscoped_comment_from_a_secondary_adapter_fails_closed(tmp_path, mon
 
 def test_the_adapter_tells_the_comment_handler_whether_it_is_a_secondary(monkeypatch):
     """The Feishu adapter passes ``secondary`` from its multiplex owner profile."""
-    from plugins.platforms.feishu import adapter as fa
-    from plugins.platforms.feishu import feishu_comment as fc
+    from hermes_agent.plugins.platforms.feishu import adapter as fa
+    from hermes_agent.plugins.platforms.feishu import feishu_comment as fc
 
     calls = []
 

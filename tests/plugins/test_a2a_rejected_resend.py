@@ -1,8 +1,8 @@
 """A forwarded message refused by an admission guard stays refused on its exact resend."""
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.a2a import protocol
-from plugins.platforms.a2a.adapter import A2AAdapter
+from hermes_agent.plugins.platforms.a2a import protocol
+from hermes_agent.plugins.platforms.a2a.adapter import A2AAdapter
 
 
 def test_resend_of_an_over_budget_message_is_rejected_again(monkeypatch):

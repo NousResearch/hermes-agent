@@ -113,7 +113,7 @@ class TestFeishuFallbackThreadRouting:
     async def test_create_uses_thread_id_when_available(self):
         """When reply_to=None and metadata has thread_id, message.create
         should use receive_id_type='thread_id'."""
-        from plugins.platforms.feishu.adapter import FeishuAdapter
+        from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
         # We test the _send_raw_message method directly by mocking the client
         adapter = MagicMock(spec=FeishuAdapter)

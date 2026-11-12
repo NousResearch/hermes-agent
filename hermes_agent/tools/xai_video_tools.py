@@ -7,7 +7,7 @@ import json
 from typing import Any, Dict, Optional
 
 from hermes_agent.hermes_cli.config import load_config
-from plugins.video_gen.xai import has_xai_video_credentials, run_xai_video_edit, run_xai_video_extend
+from hermes_agent.plugins.video_gen.xai import has_xai_video_credentials, run_xai_video_edit, run_xai_video_extend
 from hermes_agent.tools.registry import registry, tool_error
 
 

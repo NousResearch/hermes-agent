@@ -123,14 +123,14 @@ class TestEditMessageFinalizeSignature:
     @pytest.mark.parametrize(
         "module_path,class_name",
         [
-            ("plugins.platforms.telegram.adapter", "TelegramAdapter"),
-            ("plugins.platforms.discord.adapter", "DiscordAdapter"),
-            ("plugins.platforms.slack.adapter", "SlackAdapter"),
-            ("plugins.platforms.matrix.adapter", "MatrixAdapter"),
-            ("plugins.platforms.mattermost.adapter", "MattermostAdapter"),
-            ("plugins.platforms.feishu.adapter", "FeishuAdapter"),
-            ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
-            ("plugins.platforms.dingtalk.adapter", "DingTalkAdapter"),
+            ("hermes_agent.plugins.platforms.telegram.adapter", "TelegramAdapter"),
+            ("hermes_agent.plugins.platforms.discord.adapter", "DiscordAdapter"),
+            ("hermes_agent.plugins.platforms.slack.adapter", "SlackAdapter"),
+            ("hermes_agent.plugins.platforms.matrix.adapter", "MatrixAdapter"),
+            ("hermes_agent.plugins.platforms.mattermost.adapter", "MattermostAdapter"),
+            ("hermes_agent.plugins.platforms.feishu.adapter", "FeishuAdapter"),
+            ("hermes_agent.plugins.platforms.whatsapp.adapter", "WhatsAppAdapter"),
+            ("hermes_agent.plugins.platforms.dingtalk.adapter", "DingTalkAdapter"),
         ],
     )
     def test_edit_message_accepts_finalize(self, module_path, class_name):

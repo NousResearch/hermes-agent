@@ -1,6 +1,6 @@
 """A user-installed memory provider parked in ``plugins.disabled`` must not load.
 
-The Plugins hub / `hermes plugins disable` write the deny-list; ``plugins/memory`` never read it, so
+The Plugins hub / `hermes plugins disable` write the deny-list; ``hermes_agent/plugins/memory`` never read it, so
 the UI said "disabled" while the provider kept loading at every agent init.
 """
 
@@ -11,7 +11,7 @@ import contextlib
 import pytest
 
 from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from plugins.memory import find_provider_dir, load_memory_provider
+from hermes_agent.plugins.memory import find_provider_dir, load_memory_provider
 
 _PROVIDER = """
 from hermes_agent.agent.memory_provider import MemoryProvider

@@ -245,7 +245,7 @@ LEGACY_AUTHOR_MAP = {
     "dana@added-value.co.il": "Danamove",  # PR #46726 salvage (kill venv-resident pythonw gateway before recreating venv on Windows; #47036/#47557/#47910)
     "rcint@klaith.com": "rc-int",  # PR #9126 salvage / co-author (cap subagent summary size vs parent context overflow)
     "145739220+wgu9@users.noreply.github.com": "wgu9",  # PR #51468 salvage (WSL/no-systemd orphan gateway tracking, #51325)
-    "165020384+uperLu@users.noreply.github.com": "uperLu",  # PR #50958 salvage (rename plugins/cron → plugins/cron_providers; #50872)
+    "165020384+uperLu@users.noreply.github.com": "uperLu",  # PR #50958 salvage (rename plugins/cron → hermes_agent/plugins/cron_providers; #50872)
     "277269729+yusekiotacode@users.noreply.github.com": "yusekiotacode",  # PR #48706 salvage (anthropic OAuth login token endpoint → platform.claude.com; #45250/#49821)
     "minz0721@outlook.com": "s010mn",  # PR #29221 salvage (ollama-cloud reasoning_effort xhigh→max)
     "128256017+chriswesley4@users.noreply.github.com": "chriswesley4",  # PR #53185 salvage (re-enable titleBarOverlay on plain Linux; missing min/max/close regression)

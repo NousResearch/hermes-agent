@@ -43,14 +43,14 @@ class _AsyncCM:
 @pytest.fixture(autouse=True)
 def _pm_node(monkeypatch):
     """Stand-in for PM's Node/npm; the user's PATH copy is never picked up."""
-    from plugins.platforms.whatsapp import adapter as whatsapp_adapter
+    from hermes_agent.plugins.platforms.whatsapp import adapter as whatsapp_adapter
     monkeypatch.setattr(whatsapp_adapter, "find_node_executable", lambda name: f"/pm/{name}")
 
 
 def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
                   session_path: Path = Path("/tmp/test-wa-session")):
     """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -108,7 +108,7 @@ def _setup_bridge_dir(tmp_path: Path) -> Path:
 
 def _fresh_node_modules(bridge_dir: Path) -> None:
     """Create node_modules with a stamp matching the current package.json."""
-    from plugins.platforms.whatsapp.adapter import _file_content_hash
+    from hermes_agent.plugins.platforms.whatsapp.adapter import _file_content_hash
 
     nm = bridge_dir / "node_modules"
     nm.mkdir()
@@ -124,7 +124,7 @@ class TestStaleBridgeHandshake:
 
     @pytest.mark.asyncio
     async def test_restarts_bridge_when_read_receipt_config_changed(self, tmp_path):
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
+        from hermes_agent.plugins.platforms.whatsapp.adapter import _file_content_hash
 
         bridge_dir = _setup_bridge_dir(tmp_path)
         _fresh_node_modules(bridge_dir)
@@ -146,12 +146,12 @@ class TestStaleBridgeHandshake:
         mock_proc.poll.return_value = 1
         mock_proc.returncode = 1
 
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+        with patch("hermes_agent.plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch("aiohttp.ClientSession", mock_client), \
-             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
-             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc) as mock_popen, \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc) as mock_popen, \
              patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
             await adapter.connect()
 
@@ -171,7 +171,7 @@ class TestStaleBridgeHandshake:
         """Two profiles default to one bridge_port; only this profile's own session may be adopted. Another profile's
         bridge is never killed, even while it reports ``disconnected`` (startup, reconnect, QR wait), and neither is a
         port holder that gives no /health answer, which proves no ownership."""
-        from plugins.platforms.whatsapp.adapter import _file_content_hash
+        from hermes_agent.plugins.platforms.whatsapp.adapter import _file_content_hash
 
         bridge_dir = _setup_bridge_dir(tmp_path)
         _fresh_node_modules(bridge_dir)
@@ -192,15 +192,15 @@ class TestStaleBridgeHandshake:
         windows = holder.endswith("-windows")  # the listener scan must be the platform's own, or Windows still kills
 
         with (
-            patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True),
+            patch("hermes_agent.plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True),
             patch("aiohttp.ClientSession", mock_client),
-            patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
-            patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pidfile,
-            patch("plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port,
-            patch("plugins.platforms.whatsapp.adapter._IS_WINDOWS", windows),
-            patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port", return_value=[] if windows else [4242]),
-            patch("plugins.platforms.whatsapp.adapter._windows_listener_pids", return_value=[4242] if windows else []),
-            patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=MagicMock()) as mock_popen,
+            patch("hermes_agent.plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock),
+            patch("hermes_agent.plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile") as mock_kill_pidfile,
+            patch("hermes_agent.plugins.platforms.whatsapp.adapter._kill_port_process") as mock_kill_port,
+            patch("hermes_agent.plugins.platforms.whatsapp.adapter._IS_WINDOWS", windows),
+            patch("hermes_agent.plugins.platforms.whatsapp.adapter._listener_pids_on_port", return_value=[] if windows else [4242]),
+            patch("hermes_agent.plugins.platforms.whatsapp.adapter._windows_listener_pids", return_value=[4242] if windows else []),
+            patch("hermes_agent.plugins.platforms.whatsapp.adapter.spawn_owned", return_value=MagicMock()) as mock_popen,
             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True),
         ):
             assert await adapter.connect() is (fatal is None)
@@ -231,13 +231,13 @@ class TestDepRefreshStamp:
         mock_proc.poll.return_value = 1
         mock_proc.returncode = 1
 
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+        with patch("hermes_agent.plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch("aiohttp.ClientSession", _mock_health({"status": "disconnected"})), \
-             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter._kill_port_process"), \
              patch("subprocess.run") as mock_run, \
-             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc), \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc), \
              patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
             await adapter.connect()
 
@@ -258,12 +258,12 @@ class TestCacheDirEnvPassthrough:
         mock_proc.poll.return_value = 1
         mock_proc.returncode = 1
 
-        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+        with patch("hermes_agent.plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
              patch("aiohttp.ClientSession", _mock_health({"status": "disconnected"})), \
-             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
-             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
-             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
-             patch("plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc) as mock_popen, \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("hermes_agent.plugins.platforms.whatsapp.adapter.spawn_owned", return_value=mock_proc) as mock_popen, \
              patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
             await adapter.connect()
 

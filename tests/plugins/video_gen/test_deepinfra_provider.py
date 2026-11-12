@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import plugins.video_gen.deepinfra as deepinfra_plugin
+import hermes_agent.plugins.video_gen.deepinfra as deepinfra_plugin
 
 
 @pytest.fixture(autouse=True)

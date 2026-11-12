@@ -21,7 +21,7 @@ from telegram.error import NetworkError
 def _reset_signal_scheduler():
     """Drop the process-wide attachment scheduler so each test gets a
     fresh token bucket."""
-    from plugins.platforms.signal.signal_rate_limit import _reset_scheduler
+    from hermes_agent.plugins.platforms.signal.signal_rate_limit import _reset_scheduler
     _reset_scheduler()
     yield
     _reset_scheduler()
@@ -33,13 +33,13 @@ from hermes_agent.tools.send_message_tool import (
     _send_to_platform,
     send_message_tool,
 )
-from plugins.platforms.telegram.standalone import _send_telegram
+from hermes_agent.plugins.platforms.telegram.standalone import _send_telegram
 from hermes_agent.tools.send_message_targets import _parse_target_ref
-from plugins.platforms.signal.standalone import _send_signal
+from hermes_agent.plugins.platforms.signal.standalone import _send_signal
 # Discord helpers moved to the plugin in #24325.  Import from the new path
 # and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
 # pre-migration signature so the existing test bodies keep working.
-from plugins.platforms.discord.adapter import (
+from hermes_agent.plugins.platforms.discord.adapter import (
     _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
     _derive_forum_thread_name,
     _standalone_send,
@@ -205,7 +205,7 @@ class _patch_slack_standalone_sender:
         self._original = None
 
     async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, **_kw):
-        from plugins.platforms.slack.adapter import SlackAdapter
+        from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
         formatted = message
         if message:
             try:
@@ -534,7 +534,7 @@ class TestSendToPlatformChunking:
         truncate_message() pass in _send_to_platform must know Signal's limit
         (regression for #67279 / #57929 — long sends were rejected whole).
         """
-        from plugins.platforms.signal.adapter import MAX_MESSAGE_LENGTH as SIGNAL_MAX
+        from hermes_agent.plugins.platforms.signal.adapter import MAX_MESSAGE_LENGTH as SIGNAL_MAX
         from hermes_agent.hermes_cli.plugins import discover_plugins
         from hermes_agent.gateway.platform_registry import platform_registry
 
@@ -568,7 +568,7 @@ class TestSendToPlatformChunking:
     def test_slack_pre_escaped_entities_not_double_escaped(self, monkeypatch):
         """Pre-escaped HTML entities survive tool-layer formatting without double-escaping."""
         _ensure_slack_mock(monkeypatch)
-        import plugins.platforms.slack.adapter as slack_mod
+        import hermes_agent.plugins.platforms.slack.adapter as slack_mod
         monkeypatch.setattr(slack_mod, "SLACK_AVAILABLE", True)
         send = _make_recording_slack_sender()
         with _patch_slack_standalone_sender(send):
@@ -659,7 +659,7 @@ class TestMatrixMediaLiveAdapterReuse:
             "hermes_agent.gateway.run._gateway_runner_ref",
             return_value=fake_runner,
         ), patch.dict(
-            sys.modules, {"plugins.platforms.matrix.adapter": SimpleNamespace()}
+            sys.modules, {"hermes_agent.plugins.platforms.matrix.adapter": SimpleNamespace()}
         ):
             result = asyncio.run(
                 _send_matrix_via_adapter(
@@ -709,7 +709,7 @@ class TestMatrixMediaLiveAdapterReuse:
 
         with patch(
             "hermes_agent.gateway.run._gateway_runner_ref", return_value=None
-        ), patch.dict(sys.modules, {"plugins.platforms.matrix.adapter": fake_module}):
+        ), patch.dict(sys.modules, {"hermes_agent.plugins.platforms.matrix.adapter": fake_module}):
             result = asyncio.run(
                 _send_matrix_via_adapter(
                     SimpleNamespace(enabled=True, token="tok", extra={}),
@@ -1429,10 +1429,10 @@ def _patch_sendmsg_sleep_and_time(monkeypatch, capture: list):
             await _real_sleep(0)
 
     monkeypatch.setattr(
-        "plugins.platforms.signal.signal_rate_limit.asyncio.sleep", fake_sleep
+        "hermes_agent.plugins.platforms.signal.signal_rate_limit.asyncio.sleep", fake_sleep
     )
     monkeypatch.setattr(
-        "plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: offset[0]
+        "hermes_agent.plugins.platforms.signal.signal_rate_limit.time.monotonic", lambda: offset[0]
     )
 
 

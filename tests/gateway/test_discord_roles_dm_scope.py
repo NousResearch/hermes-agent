@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 def _set_dm_role_auth_guild(monkeypatch, guild_id=None):

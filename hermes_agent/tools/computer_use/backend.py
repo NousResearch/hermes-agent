@@ -1,7 +1,7 @@
 """Abstract backend interface for computer use. Any implementation (cua-driver over MCP, a plugin
 driver, the test noop) returns the shapes below. All methods are synchronous; async is handled inside
 the backend implementation if needed. :class:`ComputerUseProvider` is the factory a provider plugin
-registers (see :mod:`plugins.computer_use`); ``computer_use.backend`` selects exactly one."""
+registers (see :mod:`hermes_agent.plugins.computer_use`); ``computer_use.backend`` selects exactly one."""
 
 from __future__ import annotations
 
@@ -148,7 +148,7 @@ class ComputerUseBackend(ABC):
 
 class ComputerUseProvider(ProviderBase):
     """Factory for one computer_use driver, registered via ``ctx.register_computer_use_provider`` from a provider
-    plugin whose directory name is the ``computer_use.backend`` value (built-in: ``plugins/computer_use/cua``). Only
+    plugin whose directory name is the ``computer_use.backend`` value (built-in: ``hermes_agent/plugins/computer_use/cua``). Only
     the selected provider is imported and instantiated. The model-facing tool schema is identical for every backend:
     an action the driver cannot perform returns ``ActionResult(ok=False, code="unsupported_action", message=...)``
     rather than changing the schema."""

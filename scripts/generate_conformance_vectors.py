@@ -9,13 +9,13 @@ CONNECTOR's constructed REST payloads against them — so cross-repo renderer
 drift breaks a test instead of a user's formatting.
 
 Oracles (all imported, never reimplemented):
-  telegram  plugins.platforms.telegram.adapter.TelegramAdapter.format_message
+  telegram  hermes_agent.plugins.platforms.telegram.adapter.TelegramAdapter.format_message
             (standard markdown → Telegram MarkdownV2)
-  slack     plugins.platforms.slack.adapter.SlackAdapter.format_message
+  slack     hermes_agent.plugins.platforms.slack.adapter.SlackAdapter.format_message
             (standard markdown → Slack mrkdwn)
   whatsapp  gateway.platforms.whatsapp_common.WhatsAppBehaviorMixin
             .format_message (standard markdown → WhatsApp formatting)
-  discord   plugins.platforms.discord.adapter.DiscordAdapter.format_message
+  discord   hermes_agent.plugins.platforms.discord.adapter.DiscordAdapter.format_message
             (GFM tables → bullet groups; otherwise identity)
 
 Expect semantics (consumed by the gg runner):
@@ -138,9 +138,9 @@ def corpus() -> list[dict[str, str]]:
 
 
 def _oracles() -> dict[str, Callable[[str], str]]:
-    from plugins.platforms.telegram.adapter import TelegramAdapter
-    from plugins.platforms.slack.adapter import SlackAdapter
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     from hermes_agent.gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
 
     wa = object.__new__(WhatsAppBehaviorMixin)  # format_message needs no __init__

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from hermes_agent.gateway.platforms.event import MessageEvent
-from plugins.platforms.feishu.feishu_meeting_invite import (
+from hermes_agent.plugins.platforms.feishu.feishu_meeting_invite import (
     handle_meeting_invited_event,
     parse_meeting_invited_event,
 )
@@ -161,7 +161,7 @@ class TestMeetingInviteSendRouting(unittest.TestCase):
 
     def test_feishu_user_id_prefix_sends_with_user_id_receive_type(self):
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.feishu.adapter import FeishuAdapter
+        from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
         created_requests = []
 

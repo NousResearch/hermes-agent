@@ -24,9 +24,9 @@ from tests.gateway.test_discord_connect import (
 
 _ensure_discord_mock()
 
-import plugins.platforms.discord.adapter as discord_platform
+import hermes_agent.plugins.platforms.discord.adapter as discord_platform
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class _LiveBot(FakeBot):
@@ -140,7 +140,7 @@ def test_unusable_liveness_config_warns_instead_of_disabling_silently(caplog):
     Pre-fix, ``websocket_liveness_interval_seconds: 15s`` mapped to 0.0 with no log line —
     the watchdog was off and the only visible symptom was hours of Discord silence.
     """
-    with caplog.at_level("WARNING", logger="plugins.platforms.discord.adapter"):
+    with caplog.at_level("WARNING", logger="hermes_agent.plugins.platforms.discord.adapter"):
         adapter = DiscordAdapter(
             PlatformConfig(
                 enabled=True,
@@ -164,7 +164,7 @@ def test_unusable_liveness_config_warns_instead_of_disabling_silently(caplog):
 
 def test_explicit_zero_liveness_knob_disables_without_warning(caplog):
     """``0`` is the documented opt-out, not a config error: no warning."""
-    with caplog.at_level("WARNING", logger="plugins.platforms.discord.adapter"):
+    with caplog.at_level("WARNING", logger="hermes_agent.plugins.platforms.discord.adapter"):
         adapter = DiscordAdapter(
             PlatformConfig(
                 enabled=True,
@@ -382,7 +382,7 @@ async def test_closed_transport_first_strike_forces_reconnect(monkeypatch, caplo
 
     monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
 
-    with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
+    with caplog.at_level("INFO", logger="hermes_agent.plugins.platforms.discord.adapter"):
         await _connect(adapter, monkeypatch, _live_bot_factory())
         await _wait_until(
             lambda: handler.called,
@@ -419,7 +419,7 @@ async def test_recovery_after_unhealthy_streak_is_logged(monkeypatch, caplog):
 
     monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
 
-    with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
+    with caplog.at_level("INFO", logger="hermes_agent.plugins.platforms.discord.adapter"):
         await _connect(adapter, monkeypatch, _live_bot_factory())
         await _wait_until(
             lambda: any(
@@ -455,7 +455,7 @@ async def test_probe_exit_after_mark_disconnected_is_logged_at_info(monkeypatch,
 
     monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
 
-    with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
+    with caplog.at_level("INFO", logger="hermes_agent.plugins.platforms.discord.adapter"):
         await _connect(adapter, monkeypatch, _live_bot_factory())
         task = adapter._liveness_task
         assert task is not None

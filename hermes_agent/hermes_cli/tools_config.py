@@ -284,7 +284,7 @@ TOOL_CATEGORIES = {
         "name": "Web Search & Extract", "setup_title": "Select Search Provider",
         "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need a premium provider.",
         "icon": "🔍",
-        # Provider rows come from plugins.web.<vendor> via _plugin_web_search_providers(). Only the two
+        # Provider rows come from hermes_agent.plugins.web.<vendor> via _plugin_web_search_providers(). Only the two
         # non-provider firecrawl setup-flow rows live here: managed via Nous subscription, and self-hosted.
         "providers": [
             {"name": "Nous Subscription", "badge": "subscription", "tag": "Managed web search and extract billed to your subscription",
@@ -297,7 +297,7 @@ TOOL_CATEGORIES = {
     },
     "image_gen": {
         "name": "Image Generation", "icon": "🎨",
-        # Provider rows (FAL, OpenAI, OpenAI Codex, xAI, Krea, …) come from plugins.image_gen.<vendor> via
+        # Provider rows (FAL, OpenAI, OpenAI Codex, xAI, Krea, …) come from hermes_agent.plugins.image_gen.<vendor> via
         # _plugin_image_gen_providers(). Only the managed "Nous Subscription" row lives here: ONE row for the
         # FAL, Krea and Portal gateways, whose union catalog is `imagegen_backend: "nous"`; the stored model id
         # picks the gateway at run time (hermes_agent/tools/image_generation_managed.py).
@@ -335,7 +335,7 @@ TOOL_CATEGORIES = {
     },
     "browser": {
         "name": "Browser Automation", "icon": "🌐",
-        # Cloud provider rows (Browserbase, Browser Use, Firecrawl) come from plugins.browser.<vendor> via
+        # Cloud provider rows (Browserbase, Browser Use, Firecrawl) come from hermes_agent.plugins.browser.<vendor> via
         # _plugin_browser_providers(); only non-provider setup-flow rows live here. "Local Browser" MUST stay
         # first so a fresh install's Enter lands on the free local backend (index 0), never on the paid Nous row.
         # Lightpanda is local too (cloud_provider: local, browser.engine: lightpanda — browser_exec spawns

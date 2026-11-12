@@ -19,7 +19,7 @@ TAIL = "&& rm -rf ~ # TAIL_MARKER"
 
 
 def _discord():
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
     sent = []

@@ -12,7 +12,7 @@ fell off the 25-option cliff.
 from types import SimpleNamespace
 
 from hermes_agent.gateway.platforms.base import utf16_len
-from plugins.platforms.discord.adapter import ModelPickerView
+from hermes_agent.plugins.platforms.discord.adapter import ModelPickerView
 
 
 def _all_options(view: ModelPickerView):

@@ -1,4 +1,4 @@
-"""Tests for plugins.platforms.telegram.telegram_network – fallback transport layer.
+"""Tests for hermes_agent.plugins.platforms.telegram.telegram_network – fallback transport layer.
 
 Background
 ----------
@@ -22,7 +22,7 @@ import httpx
 import pytest
 import socket
 
-import plugins.platforms.telegram.telegram_network as tnet
+import hermes_agent.plugins.platforms.telegram.telegram_network as tnet
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -332,7 +332,7 @@ class TestAdapterFallbackIps:
                 sys.modules.setdefault(name, mod)
 
         from hermes_agent.gateway.config import PlatformConfig
-        from plugins.platforms.telegram.adapter import TelegramAdapter
+        from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
         config = PlatformConfig(enabled=True, token="test-token")
         if extra:

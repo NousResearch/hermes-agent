@@ -37,7 +37,7 @@ async def test_redelivered_media_message_returns_its_receipt_and_changed_bytes_c
     from hermes_agent.hermes_constants import get_hermes_home
     from hermes_agent.hermes_state_runtime import (RuntimeStoreError, claim_session_input, list_session_admissions,
                                       settle_session_input)
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     monkeypatch.setattr(SessionAuthority, '_schedule', lambda self, ref: None)
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
     server = ThreadingHTTPServer(('127.0.0.1', 0), _Media)

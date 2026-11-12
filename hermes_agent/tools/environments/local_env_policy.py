@@ -138,7 +138,7 @@ def _home_adapter_secret_env() -> frozenset:
     process-wide: under multiplex profile A's plugin must neither strip a same-named value from
     profile B's children nor be missing from A's. Cached per home and keyed on every manifest's
     file signature, so an edit, replacement or deletion takes effect on the next spawn. A plugin
-    manifest under ``plugins/platforms/`` that cannot be read raises. A partial scan (a plugin dir
+    manifest under ``hermes_agent/plugins/platforms/`` that cannot be read raises. A partial scan (a plugin dir
     or flat manifest unreadable or unparsable) keeps the names this home already had and is not
     cached, so a failed discovery never releases a known denial and recovery is seen at once."""
     from hermes_agent.hermes_cli.config import platform_manifest_secret_scan, platform_manifest_stamp

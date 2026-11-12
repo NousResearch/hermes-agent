@@ -692,7 +692,7 @@ def cmd_install(
     # A memory provider activates through memory.provider alone; the loader never reads plugins.enabled.
     # Decide from the installed tree's code (not a text match): catalog category "memory" also holds hooks,
     # context engines and skills, and a hook's docstring may name MemoryProvider.
-    from plugins.memory import _defines_memory_provider
+    from hermes_agent.plugins.memory import _defines_memory_provider
     is_memory_provider = _defines_memory_provider(target)
     if should_enable is None and not already_active:
         should_enable = _pc()._is_tty() and _pc()._ask_yes(
@@ -774,7 +774,7 @@ def _select_memory_provider(name: str, console, *, select: bool) -> None:
             f"(or set memory.provider: {name}) to use it.[/dim]")
         return
     from hermes_agent.hermes_cli.memory_setup import prepare_memory_provider_dependencies
-    from plugins.memory import find_provider_dir
+    from hermes_agent.plugins.memory import find_provider_dir
     if find_provider_dir(name) is None:  # never save a provider name the loader cannot resolve
         console.print(f"[red]✗[/red] {name} does not resolve as a memory provider; memory.provider is unchanged.")
         return

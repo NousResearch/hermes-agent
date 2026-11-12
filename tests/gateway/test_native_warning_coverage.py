@@ -10,11 +10,11 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.base import SendResult
-from plugins.platforms.buzz.adapter import BuzzAdapter
-from plugins.platforms.discord.adapter import DiscordAdapter
-from plugins.platforms.google_chat.adapter import GoogleChatAdapter
-from plugins.platforms.matrix.adapter import MatrixAdapter
-from plugins.platforms.wecom.adapter import WeComAdapter
+from hermes_agent.plugins.platforms.buzz.adapter import BuzzAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.google_chat.adapter import GoogleChatAdapter
+from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
+from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
 
 @pytest.fixture(params=[None, False, True, "override"])
@@ -214,7 +214,7 @@ async def test_wecom_downgrade_preserves_native_upload_and_caption(policy):
 
 @pytest.mark.asyncio
 async def test_google_chat_revoked_oauth_fallback_uses_same_policy(policy, tmp_path, monkeypatch, caplog):
-    from plugins.platforms.google_chat import adapter as google
+    from hermes_agent.plugins.platforms.google_chat import adapter as google
 
     class Revoked(Exception):
         resp = SimpleNamespace(status=403)
@@ -247,7 +247,7 @@ async def test_google_chat_revoked_oauth_fallback_uses_same_policy(policy, tmp_p
 
 @pytest.mark.asyncio
 async def test_mattermost_thread_fallback_keeps_requested_result(policy, caplog):
-    from plugins.platforms.mattermost.adapter import MattermostAdapter
+    from hermes_agent.plugins.platforms.mattermost.adapter import MattermostAdapter
 
     adapter = MattermostAdapter(PlatformConfig(extra={"reply_mode": "thread"}))
     frames = []
@@ -274,7 +274,7 @@ async def test_mattermost_thread_fallback_keeps_requested_result(policy, caplog)
 
 @pytest.mark.asyncio
 async def test_feishu_downgrade_keeps_attachment_and_caption(policy, tmp_path):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
     adapter = FeishuAdapter(PlatformConfig())
     frames = []
@@ -300,7 +300,7 @@ async def test_feishu_downgrade_keeps_attachment_and_caption(policy, tmp_path):
 
 @pytest.mark.asyncio
 async def test_telegram_cache_warning_does_not_hide_inbound_context(policy):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = TelegramAdapter(PlatformConfig())
     frames = []

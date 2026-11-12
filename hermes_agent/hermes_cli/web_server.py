@@ -886,7 +886,7 @@ def _no_auth_provider_message(host: str) -> str:
     """
     skip_reasons: list[str] = []
     try:
-        from plugins.dashboard_auth import nous as _nous_plugin
+        from hermes_agent.plugins.dashboard_auth import nous as _nous_plugin
 
         if _nous_plugin.LAST_SKIP_REASON:
             skip_reasons.append(f"  • nous: {_nous_plugin.LAST_SKIP_REASON}")

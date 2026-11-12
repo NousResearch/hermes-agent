@@ -45,7 +45,7 @@ class TestSmsFormatAndTruncate:
     """Test SmsAdapter.format_message strips markdown."""
 
     def _make_adapter(self):
-        from plugins.platforms.sms.adapter import SmsAdapter
+        from hermes_agent.plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -96,7 +96,7 @@ class TestStartupGuard:
     """Adapter must refuse to start without SMS_WEBHOOK_URL."""
 
     def _make_adapter(self, extra_env=None):
-        from plugins.platforms.sms.adapter import SmsAdapter
+        from hermes_agent.plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -113,7 +113,7 @@ class TestStartupGuard:
 
     @pytest.mark.asyncio
     async def test_missing_phone_number_is_non_retryable(self):
-        from plugins.platforms.sms.adapter import SmsAdapter
+        from hermes_agent.plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -165,7 +165,7 @@ class TestTwilioSignatureValidation:
     """Unit tests for SmsAdapter._validate_twilio_signature."""
 
     def _make_adapter(self, auth_token="test_token_secret"):
-        from plugins.platforms.sms.adapter import SmsAdapter
+        from hermes_agent.plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -200,7 +200,7 @@ class TestTwilioSignatureValidation:
         blank = self._make_adapter(auth_token="   ")
         assert not any(blank._validate_twilio_signature(url, params, _compute_twilio_signature(k, url, params))
                        for k in ("   ", ""))
-        from plugins.platforms.sms.adapter import check_sms_requirements
+        from hermes_agent.plugins.platforms.sms.adapter import check_sms_requirements
         with patch.dict(os.environ, {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "   "}):
             assert check_sms_requirements() is False
 
@@ -223,7 +223,7 @@ class TestWebhookSignatureEnforcement:
     """Integration tests for signature validation in _handle_webhook."""
 
     def _make_adapter(self, webhook_url=""):
-        from plugins.platforms.sms.adapter import SmsAdapter
+        from hermes_agent.plugins.platforms.sms.adapter import SmsAdapter
 
         env = {
             "TWILIO_ACCOUNT_SID": "ACtest",
@@ -296,7 +296,7 @@ class TestMultiplexProfileScope:
 
     def test_init_pairs_secondary_secrets_with_secondary_from_number(self):
         from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
-        from plugins.platforms.sms.adapter import SmsAdapter
+        from hermes_agent.plugins.platforms.sms.adapter import SmsAdapter
 
         token = set_secret_scope({"TWILIO_ACCOUNT_SID": "AC-profile", "TWILIO_AUTH_TOKEN": "token-profile",
                                   "TWILIO_PHONE_NUMBER": "+15551112222"})
@@ -310,7 +310,7 @@ class TestMultiplexProfileScope:
     async def test_standalone_send_without_own_number_fails_closed(self):
         """A secondary lacking its own from-number must NOT send from the default's +15550000000."""
         from hermes_agent.agent.secret_scope import reset_secret_scope, set_secret_scope
-        from plugins.platforms.sms.adapter import _standalone_send
+        from hermes_agent.plugins.platforms.sms.adapter import _standalone_send
 
         token = set_secret_scope({"TWILIO_ACCOUNT_SID": "AC-profile", "TWILIO_AUTH_TOKEN": "token-profile"})
         try:
@@ -322,7 +322,7 @@ class TestMultiplexProfileScope:
     @pytest.mark.asyncio
     async def test_standalone_send_with_a_non_string_or_blank_key_fails_closed(self):
         """A YAML int api_key must not raise, and a blank one must not reach Twilio."""
-        from plugins.platforms.sms.adapter import _standalone_send
+        from hermes_agent.plugins.platforms.sms.adapter import _standalone_send
 
         env = {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "", "TWILIO_PHONE_NUMBER": "+15550001111"}
         with patch.dict(os.environ, env):
@@ -340,7 +340,7 @@ async def test_oversized_cron_output_reaches_twilio_in_1600_char_chunks():
     cap (a larger Body is rejected with 21617, which used to fail the whole delivery)."""
     from hermes_agent.gateway.config import GatewayConfig
     from hermes_agent.gateway.delivery import DeliveryRouter
-    from plugins.platforms.sms.adapter import SmsAdapter
+    from hermes_agent.plugins.platforms.sms.adapter import SmsAdapter
 
     with patch.dict(os.environ, {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "tok",
                                  "TWILIO_PHONE_NUMBER": "+15550001111"}):
@@ -375,7 +375,7 @@ async def test_oversized_cron_output_reaches_twilio_in_1600_char_chunks():
 async def test_failure_after_delivered_chunks_is_never_resent_whole():
     """Twilio rejects chunk 3 of a long reply. The chunks already on the phone must not arrive again
     via the retry/plain-text fallback, which would also drop the tail (it resends content[:3500])."""
-    from plugins.platforms.sms.adapter import SmsAdapter
+    from hermes_agent.plugins.platforms.sms.adapter import SmsAdapter
 
     with patch.dict(os.environ, {"TWILIO_ACCOUNT_SID": "ACtest", "TWILIO_AUTH_TOKEN": "tok",
                                  "TWILIO_PHONE_NUMBER": "+15550001111"}):

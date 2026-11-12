@@ -42,7 +42,7 @@ async def test_origin_injection_is_refused_up_front_until_the_chat_holds_a_human
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_results import execution_result
     from hermes_agent.hermes_constants import get_hermes_home
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
     runner = GatewayRunner(GatewayConfig())

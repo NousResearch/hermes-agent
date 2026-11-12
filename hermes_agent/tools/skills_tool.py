@@ -351,17 +351,17 @@ def _resolve_plugin_skill(name, file_path, task_id, preprocess):
         namespace = legacy.partition(":")[0]
     active_memory_provider = None
     try:
-        from plugins.memory import _get_active_memory_provider, _prune_inactive_memory_provider_skills
+        from hermes_agent.plugins.memory import _get_active_memory_provider, _prune_inactive_memory_provider_skills
         active_memory_provider = _get_active_memory_provider()
         _prune_inactive_memory_provider_skills(active_memory_provider)
     except Exception as exc:
         logger.debug("Failed pruning inactive memory-provider skills: %s", exc)
     plugin_skill_md = pm.find_plugin_skill(name)
-    # Memory providers load through plugins.memory, not the general PluginManager: load the
+    # Memory providers load through hermes_agent.plugins.memory, not the general PluginManager: load the
     # namespaced provider once so its collector can forward its skills into the registry.
     if plugin_skill_md is None and namespace == active_memory_provider:
         try:
-            from plugins.memory import load_memory_provider
+            from hermes_agent.plugins.memory import load_memory_provider
             load_memory_provider(namespace)
             plugin_skill_md = pm.find_plugin_skill(name)
         except Exception as exc:

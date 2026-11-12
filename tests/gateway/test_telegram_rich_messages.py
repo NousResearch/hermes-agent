@@ -20,7 +20,7 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from telegram.error import BadRequest, NetworkError, TimedOut
 
 
@@ -126,7 +126,7 @@ async def test_rich_delivery_keeps_literal_hash_references(operation):
     "$$\n#89\n$$",
 ])
 def test_literal_hash_normalization_preserves_markdown_regions(content):
-    from plugins.platforms.telegram.rich_markdown import escape_literal_hash_prefixes
+    from hermes_agent.plugins.platforms.telegram.rich_markdown import escape_literal_hash_prefixes
 
     assert escape_literal_hash_prefixes(content) == content
     escaped = escape_literal_hash_prefixes("1. #89\n\n> - ##tag\n\n#release")
@@ -153,7 +153,7 @@ def test_literal_hash_normalization_preserves_markdown_regions(content):
     ("- \n\n   ```\n#89\n```\n#90", "- \n\n   ```\n#89\n```\n\\#90"),
 ])
 def test_literal_hash_fences_close_like_commonmark(content, expected):
-    from plugins.platforms.telegram.rich_markdown import escape_literal_hash_prefixes
+    from hermes_agent.plugins.platforms.telegram.rich_markdown import escape_literal_hash_prefixes
 
     assert escape_literal_hash_prefixes(content) == expected
 
@@ -938,7 +938,7 @@ def test_rich_reply_and_inbound_blocks_share_one_flattener():
     from types import MappingProxyType
 
     from hermes_agent.gateway.platforms.event import MessageType
-    from plugins.platforms.telegram.telegram_entities import rich_message_text
+    from hermes_agent.plugins.platforms.telegram.telegram_entities import rich_message_text
 
     blocks = [
         {"type": "paragraph", "text": ["See ", {"type": "bold", "children": ["the plan"]}]},
@@ -976,7 +976,7 @@ def test_reply_to_deeply_nested_rich_message_still_reaches_the_agent():
 def test_rich_message_filter_leaves_media_messages_to_the_media_handler():
     """``rich_message_filter`` (registered ahead of the media handler) claims a rich-only message but not a
     caption-less photo that also carries ``rich_message``: that photo must still be downloaded as media."""
-    from plugins.platforms.telegram.telegram_entities import rich_message_filter
+    from hermes_agent.plugins.platforms.telegram.telegram_entities import rich_message_filter
 
     class _MessageFilter:  # PTB's MessageFilter: subclass overrides filter(message)
         def __init__(self, name=None):
@@ -995,7 +995,7 @@ def test_rich_message_text_keeps_tables_details_math_links_and_custom_emoji():
     """Bot API 10.1 block and span types whose content is not under ``text``/``items``/``blocks`` still reach
     the agent: table rows, a details summary, math, a hidden link's URL (inlined like a ``text_link``) and a
     custom emoji's alternative text. The mention scan (``skip_code``) does not see the inlined URL."""
-    from plugins.platforms.telegram.telegram_entities import rich_message_text
+    from hermes_agent.plugins.platforms.telegram.telegram_entities import rich_message_text
 
     blocks = [
         {"type": "table", "cells": [[{"text": "Model"}, {"text": "Price"}], [{"text": "HD103UJ"}, {"text": "20 EUR"}]]},

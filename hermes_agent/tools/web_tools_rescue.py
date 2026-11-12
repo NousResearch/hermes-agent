@@ -1,6 +1,6 @@
 """One-shot keyless-ring rescue for failed keyed/configured web calls.
 
-Stateless by design: a rescue routes THIS call through the free-tier ring (plugins/web/keyless_mcp.py);
+Stateless by design: a rescue routes THIS call through the free-tier ring (hermes_agent/plugins/web/keyless_mcp.py);
 the next web_search/web_extract call attempts the chosen backend again. Callers must never cache a
 rescue-served response, or the one-shot rescue becomes sticky for a whole TTL. Logs under the origin
 (hermes_agent.tools.web_tools) logger.
@@ -39,10 +39,10 @@ def _ring_vendor_keyless(name: str) -> bool:
     gateway is ready) and a self-hosted ``FIRECRAWL_API_URL`` — so it is asked directly.
     """
     if name == "firecrawl":
-        from plugins.web.firecrawl.provider import _use_keyless_ring
+        from hermes_agent.plugins.web.firecrawl.provider import _use_keyless_ring
         return _use_keyless_ring()
     from hermes_agent.agent.web_search_provider import get_provider_env
-    from plugins.web.keyless_mcp import use_keyless
+    from hermes_agent.plugins.web.keyless_mcp import use_keyless
     key_var = _RING_KEY_VARS.get(name, "")
     return use_keyless(name, get_provider_env(key_var) if key_var else "")
 
@@ -82,7 +82,7 @@ def _rescue_eligible(provider) -> bool:
     if not _keyless_rescue_enabled() or provider is None:
         return False
     try:
-        from plugins.web.keyless_mcp import _KEYLESS_RING
+        from hermes_agent.plugins.web.keyless_mcp import _KEYLESS_RING
         name = getattr(provider, "name", "")
         return name not in _KEYLESS_RING or not _ring_vendor_keyless(name)
     except Exception as exc:
@@ -92,7 +92,7 @@ def _rescue_eligible(provider) -> bool:
 
 def _rescue_search(provider_name: str, original_error: str, query: str, limit: int) -> dict:
     """Rescue a failed search via the ring; annotate the result with the original failure."""
-    from plugins.web.keyless_mcp import search_with_failover
+    from hermes_agent.plugins.web.keyless_mcp import search_with_failover
     logger.warning(
         "web_search backend '%s' failed (%s); one-shot keyless rescue",
         provider_name, (original_error or "")[:200],
@@ -131,7 +131,7 @@ def _rescue_extract(provider_name: str, urls: list, results: list) -> list:
     broke url/result order parity, every entry is treated as rescueable and the ring's list replaces the
     batch wholesale.
     """
-    from plugins.web.keyless_mcp import extract_with_failover
+    from hermes_agent.plugins.web.keyless_mcp import extract_with_failover
 
     parity = len(results) == len(urls)
     rescue_idx = [i for i, r in enumerate(results) if not parity or not _policy_blocked_result(r)]

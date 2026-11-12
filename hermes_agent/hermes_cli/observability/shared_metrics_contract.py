@@ -213,7 +213,7 @@ class _CatalogValues:
         return value in self.extra or value in self.values()
 
 
-# A provider that moved from plugins/memory/ to the plugin catalog keeps its public name; any other
+# A provider that moved from hermes_agent/plugins/memory/ to the plugin catalog keeps its public name; any other
 # third-party provider reports as "plugin".
 MEMORY_PROVIDERS = _CatalogValues("plugin_catalog_names", extra=_bundled_memory_providers() | {"builtin", "plugin"})
 
@@ -297,7 +297,7 @@ DELEGATION_DEPTHS = frozenset({"1", "2", "3", "gte_4"})
 DELEGATION_MODES = frozenset({"background", "foreground"})
 EXECUTION_KINDS = frozenset({"browser", "code", "terminal"})
 # Browser backend labels: tools/browser_{lightpanda,session_cdp,session_cloud}.py plus the bundled cloud
-# providers in plugins/browser/. ``camofox`` (now the catalog plugin) and ``extension`` (the removed
+# providers in hermes_agent/plugins/browser/. ``camofox`` (now the catalog plugin) and ``extension`` (the removed
 # browser-extension control) stay as legacy values: removing a shipped schema value breaks older relays.
 BROWSER_BACKENDS = frozenset({
     "browser-use", "browserbase", "camofox", "cdp", "extension", "firecrawl", "lightpanda", "local", "other",
@@ -314,7 +314,7 @@ PLATFORM_HEALTH_MARK = PLATFORM_HEALTH_METRIC = "hermes.platform.health"
 PLATFORM_DELIVERY_MARK = PLATFORM_DELIVERY_METRIC = "hermes.platform.delivery"
 REPLY_LATENCY_MARK = REPLY_LATENCY_METRIC = "hermes.gateway.reply_latency"
 CRON_RUN_MARK = CRON_RUN_METRIC = "hermes.cron.run"
-# Plugin platforms are named only when Nous ships them (plugins/platforms/) or the installer proved a
+# Plugin platforms are named only when Nous ships them (hermes_agent/plugins/platforms/) or the installer proved a
 # plugin-catalog install (shared_metrics_catalog.platform_metric_name); every other one is ``plugin``.
 _PLATFORM_CATALOGS = ("bundled_platform_names", "catalog_platform_names")
 GATEWAY_PLATFORMS = _CatalogValues(*_PLATFORM_CATALOGS, extra=_CORE_GATEWAY_PLATFORMS)

@@ -53,7 +53,7 @@ def _load_installed_package(name):
 _load_installed_package("slack_bolt")
 _load_installed_package("slack_sdk")
 
-_slack_mod = importlib.import_module("plugins.platforms.slack.adapter")
+_slack_mod = importlib.import_module("hermes_agent.plugins.platforms.slack.adapter")
 SlackAdapter = _slack_mod.SlackAdapter
 
 CHANNEL = "C0BF1EYUA9H"

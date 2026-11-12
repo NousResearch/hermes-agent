@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram import adapter as tg_adapter
-from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram.telegram_network import TelegramFallbackTransport
+from hermes_agent.plugins.platforms.telegram import adapter as tg_adapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.telegram_network import TelegramFallbackTransport
 
 
 class _ControlledRequest:

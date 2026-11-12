@@ -11,7 +11,7 @@ from pm import plugins_state
 @pytest.fixture
 def remote_home(tmp_path, monkeypatch):
     from hermes_agent.hermes_cli import config_backend
-    from plugins.config_backends import remote
+    from hermes_agent.plugins.config_backends import remote
     home = tmp_path / "home"
     home.mkdir()
     (home / "config.yaml").write_text("plugins:\n  enabled: [alpha]\n", encoding="utf-8")
@@ -28,9 +28,9 @@ def test_pm_runtime_reads_the_local_selection_without_the_plane(remote_home, mon
     import pm.runtime
     monkeypatch.setattr(pm.runtime, "is_runtime", lambda: True)
     # The runtime cannot import the remote backend at all.
-    for name in [m for m in sys.modules if m.startswith("plugins.config_backends.remote")]:
+    for name in [m for m in sys.modules if m.startswith("hermes_agent.plugins.config_backends.remote")]:
         monkeypatch.delitem(sys.modules, name)
-    monkeypatch.setitem(sys.modules, "plugins.config_backends.remote", None)
+    monkeypatch.setitem(sys.modules, "hermes_agent.plugins.config_backends.remote", None)
     assert plugins_state.read_home_selection(remote_home)["plugins"]["enabled"] == ["alpha"]
     assert plugins_state.read_home_selection(remote_home / "absent") is None
 

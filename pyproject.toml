@@ -759,7 +759,7 @@ include = [
 # wheel contains adapters but discovery finds zero bundled plugins.
 # The remote config backend checks its vendored config-plane conformance fixtures (secret-key
 # list) at runtime: plugins/config_backends/remote/values.py.
-plugins = ["**/plugin.yaml", "**/plugin.yml", "config_backends/remote/vendor/**/*"]
+"hermes_agent.plugins" = ["**/plugin.yaml", "**/plugin.yml", "config_backends/remote/vendor/**/*"]
 # pm/lock.json is the runtime pin table (uv/python/tool versions + sha256s).
 # Without it a sealed wheel installs the pm package but has no pins to
 # realize — the pm store would be empty.

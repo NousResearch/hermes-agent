@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter(*, stalled_seconds: float) -> TelegramAdapter:
@@ -76,7 +76,7 @@ async def test_stalled_long_poll_hands_off_to_supervisor():
 async def test_confirmed_stall_hands_off_before_reusing_updater(monkeypatch, via_verifier):
     """#113618: a confirmed stall (watchdog or post-reconnect verifier) must escalate to the
     retryable fatal and mark the adapter degraded instead of restarting the same Updater."""
-    from plugins.platforms.telegram import adapter as tg_adapter
+    from hermes_agent.plugins.platforms.telegram import adapter as tg_adapter
 
     adapter = _make_adapter(stalled_seconds=0 if via_verifier else 400)
     adapter._running = True

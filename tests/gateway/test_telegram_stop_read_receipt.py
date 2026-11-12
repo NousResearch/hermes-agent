@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter() -> TelegramAdapter:
@@ -68,7 +68,7 @@ async def test_network_recovery_skips_read_receipt_cleanup_wedged_in_stop():
     adapter._drain_polling_connections = _fake_drain
     adapter._start_polling_once = _fake_start
 
-    import plugins.platforms.telegram.adapter as _mod
+    import hermes_agent.plugins.platforms.telegram.adapter as _mod
 
     try:
         with patch.object(_mod, "_UPDATER_STOP_TIMEOUT", 0.05), patch(

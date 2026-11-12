@@ -14,9 +14,9 @@ import logging
 from typing import Any, Awaitable, Callable, Optional
 
 from hermes_agent.gateway.platforms.base import SendResult
-from plugins.platforms.telegram.telegram_media_flood import _MAX_WINDOW_WAITS, flood_wait_seconds
+from hermes_agent.plugins.platforms.telegram.telegram_media_flood import _MAX_WINDOW_WAITS, flood_wait_seconds
 
-logger = logging.getLogger("plugins.platforms.telegram.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.telegram.adapter")
 
 
 def note_flood(adapter: Any, chat_id: Any, error: Exception) -> bool:
@@ -40,7 +40,7 @@ def skipped_draft(adapter: Any, chat_id: Any) -> Optional[SendResult]:
 async def _after_window(adapter: Any, chat_id: Any, delete: Callable[[], Awaitable[bool]], *, inline: bool) -> bool:
     """``inline`` (the caller awaits it): every wake re-checks the cap, so a window another request
     extended meanwhile is handed to the background task instead of being slept on the caller's turn."""
-    from plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS
+    from hermes_agent.plugins.platforms.telegram.adapter import _FLOOD_INLINE_WAIT_CAP_SECS
     for waits in range(_MAX_WINDOW_WAITS + 2):  # re-check after the last allowed wait
         remaining = adapter._send_flood_cooldown_remaining(chat_id)
         if remaining is None:
@@ -73,7 +73,7 @@ def _defer(adapter: Any, chat_id: Any, delete: Callable[[], Awaitable[bool]], re
 
 async def delete_message(adapter: Any, chat_id: str, message_id: str) -> bool:
     """``TelegramAdapter.delete_message`` body: ``deleteMessage`` once the chat's flood window is closed."""
-    from plugins.platforms.telegram.adapter import _redact_telegram_error_text, normalize_telegram_chat_id
+    from hermes_agent.plugins.platforms.telegram.adapter import _redact_telegram_error_text, normalize_telegram_chat_id
     if not adapter._bot:
         live = adapter._replacement_telegram_adapter()
         return await live.delete_message(chat_id, message_id) if live is not None else False
@@ -91,7 +91,7 @@ async def delete_message(adapter: Any, chat_id: str, message_id: str) -> bool:
 
 async def send_draft(adapter: Any, chat_id: str, draft_id: int, content: str, metadata: Optional[dict[str, Any]]) -> SendResult:
     """``TelegramAdapter.send_draft`` body: rich draft, else MarkdownV2 then plain ``sendMessageDraft``."""
-    from plugins.platforms.telegram.adapter import (
+    from hermes_agent.plugins.platforms.telegram.adapter import (
         _TEXT_SEND_DEADLINE, ParseMode, _await_with_thread_deadline, _redact_telegram_error_text, normalize_telegram_chat_id,
         utf16_len)
     if not adapter._bot:

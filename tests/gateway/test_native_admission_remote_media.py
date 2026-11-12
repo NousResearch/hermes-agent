@@ -13,7 +13,7 @@ CHAT = '15551234567@s.whatsapp.net'
 
 @pytest.mark.asyncio
 async def test_remote_media_url_is_dropped_with_a_note_instead_of_refusing_the_message(tmp_path, monkeypatch):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={'session_path': str(tmp_path / 'wa')}))
@@ -37,7 +37,7 @@ async def test_remote_media_url_is_dropped_with_a_note_instead_of_refusing_the_m
 
 @pytest.mark.asyncio
 async def test_an_attachment_only_message_stores_just_the_note(tmp_path, monkeypatch):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={'session_path': str(tmp_path / 'wa')}))
@@ -57,7 +57,7 @@ async def test_an_attachment_only_message_stores_just_the_note(tmp_path, monkeyp
 async def test_dropping_a_remote_attachment_keeps_original_names_aligned(tmp_path, monkeypatch):
     """Relay keeps a public URL whose download failed, with its original name; dropping that URL must
     drop its name too, or the length check refuses the whole message."""
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={'session_path': str(tmp_path / 'wa')}))

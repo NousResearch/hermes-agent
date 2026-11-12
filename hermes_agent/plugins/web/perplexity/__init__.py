@@ -7,7 +7,7 @@ caller is async.
 
 from __future__ import annotations
 
-from plugins.web.perplexity.provider import PerplexityWebSearchProvider
+from hermes_agent.plugins.web.perplexity.provider import PerplexityWebSearchProvider
 
 
 def register(ctx) -> None:

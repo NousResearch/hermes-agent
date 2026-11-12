@@ -35,7 +35,7 @@ from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.base import BasePlatformAdapter, SendResult
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
 from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, send_chunks
-from plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
+from hermes_agent.plugins.platforms.wecom.wecom_crypto import WXBizMsgCrypt, WeComCryptoError
 
 logger = logging.getLogger(__name__)
 

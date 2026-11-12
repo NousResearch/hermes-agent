@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 import itertools
 
 
@@ -48,7 +48,7 @@ async def test_split_send_resumes_from_undelivered_tail_without_resending_head(m
         return MagicMock(message_id=1000 + calls["n"])
 
     adapter = _adapter(AsyncMock(side_effect=fake_send_message))
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock())
 
     async def _penalty_elapses(_delay):  # the base retry sleep is mocked; model the window having passed
         adapter._telegram_send_cooldown_until.clear()
@@ -78,7 +78,7 @@ async def test_over_cap_flood_returns_partial_overflow_and_arms_cooldown(monkeyp
         return MagicMock(message_id=1000 + calls["n"])
 
     adapter = _adapter(AsyncMock(side_effect=fake_send_message))
-    monkeypatch.setattr("plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.adapter.asyncio.sleep", AsyncMock())
 
     content = _three_chunk_text()
     total = len(adapter.truncate_message(adapter.format_message(content), adapter.MAX_MESSAGE_LENGTH))

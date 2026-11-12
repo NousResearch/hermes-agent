@@ -113,7 +113,7 @@ def test_import_memory_provider_module_imports_without_constructing(tmp_path, mo
     only in ``is_available()``), and nothing more: no provider instance, no register()."""
     import sys
 
-    from plugins import memory as memory_plugins
+    from hermes_agent.plugins import memory as memory_plugins
 
 
     provider = tmp_path / "plugins" / "warmprov"

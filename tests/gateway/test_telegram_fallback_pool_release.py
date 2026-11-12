@@ -2,7 +2,7 @@
 
 Background
 ----------
-``TelegramFallbackTransport`` (plugins/platforms/telegram/telegram_network.py)
+``TelegramFallbackTransport`` (hermes_agent/plugins/platforms/telegram/telegram_network.py)
 routes Telegram Bot API requests via per-IP fallback ``httpx`` pools when the
 primary DNS path is unreachable.  The pre-fix version built one
 ``AsyncHTTPTransport`` per fallback IP eagerly in ``__init__`` and *never* tore
@@ -32,7 +32,7 @@ Contract asserted here (mutation-survivable)
 import httpx
 import pytest
 
-import plugins.platforms.telegram.telegram_network as tnet
+import hermes_agent.plugins.platforms.telegram.telegram_network as tnet
 
 
 def _telegram_request(path="/botTOKEN/getMe"):

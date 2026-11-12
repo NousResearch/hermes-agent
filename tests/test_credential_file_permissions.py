@@ -71,7 +71,7 @@ class TestGoogleChatReadPathWarns:
         token.write_text("{}")
         token.chmod(0o644)
 
-        from plugins.platforms.google_chat.oauth import load_user_credentials
+        from hermes_agent.plugins.platforms.google_chat.oauth import load_user_credentials
 
         with caplog.at_level(logging.WARNING):
             load_user_credentials()

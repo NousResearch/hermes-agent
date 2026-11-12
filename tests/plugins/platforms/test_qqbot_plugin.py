@@ -16,9 +16,9 @@ def _clear_qq(monkeypatch):
 def test_register_shape():
     """The plugin registers the same identity/env/routing the core table carried."""
     from hermes_agent.gateway.platform_registry import PlatformEntry
-    from plugins.platforms.qqbot import register
-    from plugins.platforms.qqbot.adapter import QQAdapter, check_qq_requirements
-    from plugins.platforms.qqbot.register import setup_qqbot, standalone_send
+    from hermes_agent.plugins.platforms.qqbot import register
+    from hermes_agent.plugins.platforms.qqbot.adapter import QQAdapter, check_qq_requirements
+    from hermes_agent.plugins.platforms.qqbot.register import setup_qqbot, standalone_send
 
     captured = {}
 
@@ -43,7 +43,7 @@ def test_is_connected_needs_both_credentials(monkeypatch):
     import hermes_agent.hermes_cli.gateway as gateway_mod
     monkeypatch.setattr(gateway_mod, "get_env_value", lambda name: None)
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.qqbot.register import is_connected
+    from hermes_agent.plugins.platforms.qqbot.register import is_connected
 
     assert is_connected(PlatformConfig(enabled=True, extra={"app_id": "a"})) is False
     assert is_connected(PlatformConfig(enabled=True, extra={"app_id": "a", "client_secret": "s"})) is True
@@ -98,7 +98,7 @@ def test_cron_deliver_qqbot_without_a_live_gateway():
 async def test_standalone_sender_reports_missing_credentials(monkeypatch):
     _clear_qq(monkeypatch)
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.qqbot.register import standalone_send
+    from hermes_agent.plugins.platforms.qqbot.register import standalone_send
 
     result = await standalone_send(PlatformConfig(enabled=True, extra={}), "chat-1", "hi")
     assert "QQ_APP_ID" in result["error"]

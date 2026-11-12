@@ -462,7 +462,7 @@ async def test_goal_continuation_keeps_channel_pin_through_session_authority(tmp
     import hermes_agent.gateway.run as gr
     from hermes_agent.gateway.platforms.base import SendResult
     from hermes_agent.gateway.session_authority import initialize_session_authority
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     from tests.waiting import async_wait_until
 
     chat = "15551234567@s.whatsapp.net"

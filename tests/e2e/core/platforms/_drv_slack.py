@@ -1,7 +1,7 @@
 """Slack driver for the adapter contract: binds the shared contract to ``SlackStandin``.
 
 Same surface as ``_drv_telegram.TelegramDriver`` (see its docstring). The child gateway runs the real
-``plugins/platforms/slack`` adapter (slack_bolt Socket Mode + slack_sdk Web API); the
+``hermes_agent/plugins/platforms/slack`` adapter (slack_bolt Socket Mode + slack_sdk Web API); the
 ``slack_shim/sitecustomize.py`` module on the child's ``PYTHONPATH`` points slack_sdk at the stand-in
 (``HERMES_STANDIN_SLACK_API``). Chat ids are Slack channel ids: DMs are ``D<user>``, the group is a
 public channel ``C…``. Message ids are Slack ``ts`` strings.

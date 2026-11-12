@@ -25,7 +25,7 @@ def client(monkeypatch, _isolate_hermes_home):
 
 
 def test_web_capability_picks_choose_own_key_or_nous_gateway(client, monkeypatch):
-    import plugins.web.firecrawl.provider as fc
+    import hermes_agent.plugins.web.firecrawl.provider as fc
     import hermes_agent.tools.web_tools as wt
     from hermes_agent.hermes_cli.config import load_config
 

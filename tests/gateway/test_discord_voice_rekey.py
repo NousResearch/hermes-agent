@@ -24,7 +24,7 @@ import pytest
 
 pytest.importorskip("discord")
 
-from plugins.platforms.discord.adapter import VoiceReceiver
+from hermes_agent.plugins.platforms.discord.adapter import VoiceReceiver
 
 
 KEY_A = bytes(range(32))

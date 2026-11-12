@@ -25,7 +25,7 @@ LID = "77214955630717"
 
 
 def _make_adapter(dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     extra = {}
     if dm_policy is not None:

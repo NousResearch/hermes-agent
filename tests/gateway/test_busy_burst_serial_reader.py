@@ -65,7 +65,7 @@ async def _busy_owner(monkeypatch, adapter, source, **wiring):
 
 
 def _signal(monkeypatch):
-    from plugins.platforms.signal.adapter import SignalAdapter
+    from hermes_agent.plugins.platforms.signal.adapter import SignalAdapter
     monkeypatch.setenv('SIGNAL_ALLOWED_USERS', '+15550001')
     adapter = SignalAdapter(PlatformConfig(enabled=True, extra={'account': '+15559999'}))
     return adapter, adapter.build_source(chat_id='+15550001', chat_type='dm', user_id='+15550001')
@@ -300,7 +300,7 @@ async def test_buzz_split_text_merges_through_the_reader(monkeypatch):
 def _buzz(monkeypatch):
     from collections import OrderedDict
 
-    from plugins.platforms.buzz.adapter import BuzzAdapter
+    from hermes_agent.plugins.platforms.buzz.adapter import BuzzAdapter
 
     monkeypatch.setenv('BUZZ_ALLOWED_USERS', 'aa11bb22')
     adapter = BuzzAdapter(PlatformConfig(enabled=True))

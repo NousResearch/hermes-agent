@@ -19,9 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from plugins.platforms.photon import adapter as adapter_mod
-from plugins.platforms.photon import cli as cli_mod
-from plugins.platforms.photon import sidecar_paths
+from hermes_agent.plugins.platforms.photon import adapter as adapter_mod
+from hermes_agent.plugins.platforms.photon import cli as cli_mod
+from hermes_agent.plugins.platforms.photon import sidecar_paths
 
 _NODE_ON_PATH = __import__("shutil").which("node") is not None
 _requires_node = pytest.mark.skipif(
@@ -205,7 +205,7 @@ def test_regression_stale_log_not_surfaced_after_successful_reinstall(
     monkeypatch.setattr(sidecar_paths, "_SIDECAR_DIR", tmp_path)
     monkeypatch.setattr(sidecar_paths, "_NPM_ERROR_LOG", error_log)
 
-    with caplog.at_level(logging.DEBUG, logger="plugins.platforms.photon.adapter"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.plugins.platforms.photon.adapter"):
         result = adapter_mod.check_requirements()
 
     assert result is True
@@ -231,7 +231,7 @@ def test_regression_debug_log_emitted_even_without_error_log(
     monkeypatch.setattr(adapter_mod, "_dir_writable", lambda _p: False)
     # node_modules NOT created, error log NOT created
 
-    with caplog.at_level(logging.DEBUG, logger="plugins.platforms.photon.adapter"):
+    with caplog.at_level(logging.DEBUG, logger="hermes_agent.plugins.platforms.photon.adapter"):
         result = adapter_mod.check_requirements()
 
     assert result is False

@@ -62,7 +62,7 @@ def test_platform_names_are_published_or_proven_by_the_installer_record(tmp_path
     ]
     try:
         assert contract.adapter_platform("telegram") == "telegram"
-        assert contract.adapter_platform("irc") == "irc"  # bundled plugins/platforms/irc
+        assert contract.adapter_platform("irc") == "irc"  # bundled hermes_agent/plugins/platforms/irc
         assert contract.adapter_platform("vk") == "vk-platform"
         assert contract.adapter_platform("sneaky") == "plugin"
         assert contract.adapter_platform("my-private-bridge") == "plugin"

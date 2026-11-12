@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig, Platform
-from plugins.platforms.telegram.telegram_ids import (
+from hermes_agent.plugins.platforms.telegram.telegram_ids import (
     normalize_telegram_chat_id,
 )
 
@@ -110,7 +110,7 @@ def _inject_fake_telegram(monkeypatch):
 
 
 def _make_adapter():
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = object.__new__(TelegramAdapter)

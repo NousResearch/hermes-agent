@@ -17,7 +17,7 @@ from hermes_agent.hermes_state import SessionDB
 
 
 def test_observed_group_message_is_persisted_with_its_own_timestamp(tmp_path, caplog):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     db = SessionDB(tmp_path / "state.db")
     store = SessionStore(tmp_path / "sessions", GatewayConfig())

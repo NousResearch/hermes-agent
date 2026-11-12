@@ -94,7 +94,7 @@ from hermes_agent.gateway.platforms.base import (
 )
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from hermes_agent.gateway.platforms.helpers import send_chunks
-from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
+from hermes_agent.plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
 from hermes_agent.gateway.status import acquire_scoped_lock
 from hermes_agent.gateway.status_scoped_locks import release_scoped_lock
 from hermes_agent.hermes_constants import get_hermes_home
@@ -2169,13 +2169,13 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
 
     def _on_drive_comment_event(self, data: Any) -> None:
         """drive.notice.comment_add_v1 → feishu_comment.handle_drive_comment_event on the adapter loop."""
-        from plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
+        from hermes_agent.plugins.platforms.feishu.feishu_comment import handle_drive_comment_event
         self._submit_if_ready("drive comment event", lambda: handle_drive_comment_event(
             self._client, data, self_open_id=self._bot_open_id, secondary=bool(getattr(self, "_owner_profile", None))))
 
     def _on_meeting_invited_event(self, data: Any) -> None:
         """vc.bot.meeting_invited_v1 → feishu_meeting_invite.handle_meeting_invited_event."""
-        from plugins.platforms.feishu.feishu_meeting_invite import handle_meeting_invited_event
+        from hermes_agent.plugins.platforms.feishu.feishu_meeting_invite import handle_meeting_invited_event
         self._submit_if_ready("meeting invite event", lambda: handle_meeting_invited_event(self, data))
 
     def _on_reaction_event(self, event_type: str, data: Any) -> None:
@@ -3464,7 +3464,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         """
         if self._warned_empty_allowlist_deny:
             return
-        from plugins.platforms.feishu.feishu_admission_diagnostics import empty_allowlist_drop_warning
+        from hermes_agent.plugins.platforms.feishu.feishu_admission_diagnostics import empty_allowlist_drop_warning
         text = empty_allowlist_drop_warning(
             chat_id=chat_id, group_rules=self._group_rules,
             default_group_policy=self._default_group_policy, allowed_group_users=self._allowed_group_users,

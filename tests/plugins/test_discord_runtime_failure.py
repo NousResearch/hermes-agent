@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 @pytest.mark.asyncio

@@ -69,7 +69,7 @@ class TestSendTelegramStandaloneProxy:
         instances whose ``proxy=`` kwarg is the configured URL — applied to
         both ``request`` and ``get_updates_request``.
         """
-        from plugins.platforms.telegram.standalone import _send_telegram
+        from hermes_agent.plugins.platforms.telegram.standalone import _send_telegram
 
         proxy_url = "socks5://127.0.0.1:1080"
         monkeypatch.setenv("TELEGRAM_PROXY", proxy_url)
@@ -116,8 +116,8 @@ class TestSendTelegramStandaloneProxy:
         HERMES_TELEGRAM_HTTP_* timeouts (not PTB's 5s/1s/20s defaults) and the fallback-IP
         transport, so a blocked api.telegram.org DNS path fails over like the gateway does.
         """
-        from plugins.platforms.telegram.telegram_network import SEED_FALLBACK_IPS, TelegramFallbackTransport
-        from plugins.platforms.telegram.standalone import _send_telegram
+        from hermes_agent.plugins.platforms.telegram.telegram_network import SEED_FALLBACK_IPS, TelegramFallbackTransport
+        from hermes_agent.plugins.platforms.telegram.standalone import _send_telegram
 
         for var in (
             "TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy",
@@ -206,13 +206,13 @@ def test_standalone_requests_match_the_gateway_adapter_build(monkeypatch: pytest
     """The standalone Bot gets the gateway's pool size, keepalive limits and TLS context, not a
     hand-copied subset (HERMES_TELEGRAM_HTTP_POOL_SIZE, platform keepalive, platform_ssl_context)."""
     import ssl
-    from plugins.platforms.telegram.standalone import _send_telegram
+    from hermes_agent.plugins.platforms.telegram.standalone import _send_telegram
 
     for var in ("TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", "64")
     shared = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    monkeypatch.setattr("plugins.platforms.telegram.telegram_network.platform_ssl_context", lambda: shared)
+    monkeypatch.setattr("hermes_agent.plugins.platforms.telegram.telegram_network.platform_ssl_context", lambda: shared)
     monkeypatch.setattr("hermes_agent.gateway.run._gateway_runner_ref", lambda: None)
     monkeypatch.setattr("hermes_agent.gateway.platforms.base._detect_macos_system_proxy", lambda: None)
     bot = _make_bot()
@@ -227,5 +227,5 @@ def test_standalone_requests_match_the_gateway_adapter_build(monkeypatch: pytest
     assert general["connection_pool_size"] == 64
     assert general["httpx_kwargs"]["verify"] is shared
     assert general["httpx_kwargs"]["limits"].max_connections == 64
-    from plugins.platforms.telegram.telegram_network import getupdates_keepalive_connections
+    from hermes_agent.plugins.platforms.telegram.telegram_network import getupdates_keepalive_connections
     assert updates["httpx_kwargs"]["limits"].max_keepalive_connections == getupdates_keepalive_connections()

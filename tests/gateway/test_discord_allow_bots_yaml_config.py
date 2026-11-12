@@ -15,8 +15,8 @@ import pytest
 
 @pytest.fixture
 def adapter_mod():
-    sys.modules.pop("plugins.platforms.discord.adapter", None)
-    return importlib.import_module("plugins.platforms.discord.adapter")
+    sys.modules.pop("hermes_agent.plugins.platforms.discord.adapter", None)
+    return importlib.import_module("hermes_agent.plugins.platforms.discord.adapter")
 
 
 def _seed(adapter_mod, yaml_cfg, discord_cfg):

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from hermes_agent.gateway.platforms.base import utf16_len
-from plugins.platforms.discord.adapter import ModelPickerView
+from hermes_agent.plugins.platforms.discord.adapter import ModelPickerView
 
 
 @pytest.mark.asyncio

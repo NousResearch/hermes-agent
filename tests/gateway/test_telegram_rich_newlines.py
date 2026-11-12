@@ -16,8 +16,8 @@ tests construct a real ``TelegramAdapter``.
 import pytest
 from markdown_it import MarkdownIt
 
-from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram.rich_markdown import _rich_separate_ordered_lists
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.rich_markdown import _rich_separate_ordered_lists
 
 
 @pytest.fixture()

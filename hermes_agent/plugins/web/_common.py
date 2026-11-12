@@ -1,7 +1,7 @@
 """Shared plumbing for the bundled web-search provider plugins.
 
 Every helper resolves patched-in-tests collaborators (``get_provider_env``,
-``hermes_agent.tools.interrupt``, ``plugins.web.keyless_mcp``, ``hermes_agent.tools.web_tools`` client
+``hermes_agent.tools.interrupt``, ``hermes_agent.plugins.web.keyless_mcp``, ``hermes_agent.tools.web_tools`` client
 slots) lazily at call time so monkeypatching the source module keeps working.
 """
 
@@ -26,7 +26,7 @@ def provider_env(name: str) -> str:
 
 
 def use_keyless(name: str, api_key: str) -> bool:
-    from plugins.web.keyless_mcp import use_keyless as _use_keyless
+    from hermes_agent.plugins.web.keyless_mcp import use_keyless as _use_keyless
     return _use_keyless(name, api_key)
 
 
@@ -145,13 +145,13 @@ def vendor_error_entry(url: str, *, status: Any = None, reason: Any = None, body
 
 # --- Keyless ring hand-off (shared by exa / parallel / keenable) ---------------
 def keyless_search(display: str, name: str, query: str, limit: int, logger: logging.Logger) -> dict[str, Any]:
-    from plugins.web.keyless_mcp import search_with_failover
+    from hermes_agent.plugins.web.keyless_mcp import search_with_failover
     logger.info("%s keyless search: '%s' (limit=%d)", display, query, limit)
     return search_with_failover(name, query, limit)
 
 
 def keyless_extract(display: str, name: str, urls: list[str], logger: logging.Logger) -> list[dict[str, Any]]:
-    from plugins.web.keyless_mcp import extract_with_failover
+    from hermes_agent.plugins.web.keyless_mcp import extract_with_failover
     logger.info("%s keyless extract: %d URL(s)", display, len(urls))
     return extract_with_failover(name, list(urls))
 
@@ -295,7 +295,7 @@ class BaseWebSearchProvider(WebSearchProvider):
         return bool(provider_env(self.KEY_ENV))
 
     def is_keyless_available(self) -> bool:
-        from plugins.web.keyless_mcp import keyless_enabled, provider_tier
+        from hermes_agent.plugins.web.keyless_mcp import keyless_enabled, provider_tier
         return self.KEYLESS and keyless_enabled() and provider_tier(self.NAME) != "paid"
 
     def supports_search(self) -> bool:

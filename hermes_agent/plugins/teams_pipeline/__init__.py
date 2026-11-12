@@ -5,7 +5,7 @@ Registers only operator-facing CLI surfaces (invoked by the agent via the termin
 
 from __future__ import annotations
 
-from plugins.teams_pipeline.cli import register_cli, teams_pipeline_command
+from hermes_agent.plugins.teams_pipeline.cli import register_cli, teams_pipeline_command
 
 
 def register(ctx) -> None:

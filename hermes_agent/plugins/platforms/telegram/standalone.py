@@ -14,8 +14,8 @@ import re
 from types import SimpleNamespace
 
 from hermes_agent.agent.redact import redact_sensitive_text
-from plugins.platforms.telegram.rich_code_regions import strip_code
-from plugins.platforms.telegram.telegram_send_errors import SAME_REQUEST_ATTEMPTS, is_entity_parse_error
+from hermes_agent.plugins.platforms.telegram.rich_code_regions import strip_code
+from hermes_agent.plugins.platforms.telegram.telegram_send_errors import SAME_REQUEST_ATTEMPTS, is_entity_parse_error
 from pm import install_hint
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     ``retry_after`` wins; a connect or pool failure (the request never left) and Telegram's own 5xx
     JSON answer back off; a timeout, a 504, a reset after the write or an unreadable 5xx body may
     have posted the message, and a refusal or a local error will not change, so both are final."""
-    from plugins.platforms.telegram import telegram_send_errors as kinds
+    from hermes_agent.plugins.platforms.telegram import telegram_send_errors as kinds
     kind = kinds.send_error_kind(exc)
     if kind == kinds.FLOOD:
         try:
@@ -105,7 +105,7 @@ def _telegram_fallback_ips(extra):
     ``[]`` when ``HERMES_TELEGRAM_DISABLE_FALLBACK_IPS`` opts out, as for the gateway."""
     if os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"}:
         return []
-    from plugins.platforms.telegram.telegram_network import SEED_FALLBACK_IPS, parse_fallback_ip_env
+    from hermes_agent.plugins.platforms.telegram.telegram_network import SEED_FALLBACK_IPS, parse_fallback_ip_env
     # TELEGRAM_FALLBACK_IPS reaches ``extra["fallback_ips"]`` through the gateway env bridge.
     configured = extra.get("fallback_ips") or ""
     if not isinstance(configured, str):
@@ -127,7 +127,7 @@ def _telegram_bot(token, extra=None):
     urls = {"base_url": base_url, "base_file_url": extra.get("base_file_url") or base_url} if base_url else {}
     try:
         from telegram.request import HTTPXRequest
-        from plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts
+        from hermes_agent.plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts
         fallback_ips = [] if base_url else _telegram_fallback_ips(extra)  # a custom server is reached directly
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_target_hosts(base_url, fallback_ips),
                                   configured=extra.get("proxy_url"))
@@ -148,7 +148,7 @@ def _telegram_thread_kwargs(thread_id):
     if thread_id is None:
         return {}
     try:
-        from plugins.platforms.telegram.adapter import TelegramAdapter
+        from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
         effective = TelegramAdapter._message_thread_id_for_send(str(thread_id))
     except Exception:  # adapter import failed (python-telegram-bot missing): explicit mapping
         effective = None if str(thread_id) == "1" else int(thread_id)
@@ -158,7 +158,7 @@ def _telegram_thread_kwargs(thread_id):
 def _strip_mdv2_safe(text):
     """Strip MarkdownV2 escapes for the plain-text fallback; identity if unavailable."""
     try:
-        from plugins.platforms.telegram.adapter import _strip_mdv2
+        from hermes_agent.plugins.platforms.telegram.adapter import _strip_mdv2
         return _strip_mdv2(text)
     except Exception:
         return text
@@ -218,7 +218,7 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                                         if caption is not None and not voice_note else {})}
     if voice_note or ext in _TELEGRAM_SEND_AUDIO_EXTS:
         with contextlib.suppress(Exception):
-            from plugins.platforms.telegram.adapter import _probe_voice_duration_seconds
+            from hermes_agent.plugins.platforms.telegram.adapter import _probe_voice_duration_seconds
             duration = await asyncio.to_thread(_probe_voice_duration_seconds, media_path)
             if duration is not None:
                 media_kwargs["duration"] = duration
@@ -229,14 +229,14 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
         # Keyed on the extension because ``_telegram_send_media`` routes every video extension to
         # ``sendVideo`` regardless of ``force_document`` (which only forces images to documents).
         with contextlib.suppress(Exception):
-            from plugins.platforms.telegram.adapter import _probe_video_geometry, _video_thumbnail_jpeg
+            from hermes_agent.plugins.platforms.telegram.adapter import _probe_video_geometry, _video_thumbnail_jpeg
             geometry = await asyncio.to_thread(_probe_video_geometry, media_path)
             if geometry:
                 media_kwargs.update(geometry)
                 thumb_path = await asyncio.to_thread(_video_thumbnail_jpeg, media_path, geometry.get("duration"))
                 if thumb_path:
                     media_kwargs["thumbnail"] = thumb_path
-    from plugins.platforms.telegram.telegram_media_budget import scaled_budgets
+    from hermes_agent.plugins.platforms.telegram.telegram_media_budget import scaled_budgets
     # The adapter's media budgets (#133164): the Bot's 20s read timeout cuts off Telegram's
     # post-upload processing, so a delivered file came back "Timed out" and got resent.
     media_kwargs.update(scaled_budgets([media_path, thumb_path], 0.0)[0])
@@ -322,7 +322,7 @@ def _telegram_mdv2(text, *, max_units=None):
     unavailable or the escaped text exceeds ``max_units`` UTF-16 units."""
     from hermes_agent.gateway.platforms.base import utf16_len
     try:
-        from plugins.platforms.telegram.adapter import TelegramAdapter
+        from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
     except ImportError:
         return None
     formatted = TelegramAdapter.__new__(TelegramAdapter).format_message(text)
@@ -341,14 +341,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                       "resolve named topics. Use telegram:<chat_id>:<numeric thread id>, or deliver "
                       "through a cron job while the gateway is running.")
     try:
-        from plugins.platforms.telegram.telegram_outbound import (
+        from hermes_agent.plugins.platforms.telegram.telegram_outbound import (
             is_visually_empty, notification_kwargs, resolve_notifications_mode, send_album_standalone,
             send_rich_standalone)
         if is_visually_empty(message):
             message = ""  # invisible-only text would land as an empty bubble
         formatted, send_parse_mode, _has_html = _telegram_format(message)
         bot = _telegram_bot(token, extra)
-        from plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
+        from hermes_agent.plugins.platforms.telegram.telegram_ids import normalize_telegram_chat_id
         from hermes_agent.gateway.platforms.base import BasePlatformAdapter, utf16_len
         # Telegram accepts a numeric chat_id OR an @username string; never force-int.
         # See #13206.
@@ -375,7 +375,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if len(chunks) > 1 and not _has_html:
             # truncate_message appends a raw " (1/2)" suffix after format_message escaped the text;
             # escape the MarkdownV2-special parentheses, as the live adapter does (#74004).
-            from plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
+            from hermes_agent.plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
             chunks = [
                 _separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
                 for chunk in chunks
@@ -413,7 +413,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
             except Exception as e:
-                from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
+                from hermes_agent.plugins.platforms.telegram.telegram_send_errors import may_have_delivered
                 maybe = " (Telegram may still deliver it; do not resend)" if may_have_delivered(e) else ""
                 warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}{maybe}"))
                 logger.error(warnings[-1])

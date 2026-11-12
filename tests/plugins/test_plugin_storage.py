@@ -1,4 +1,4 @@
-"""Tests for the per-plugin durable storage convention (plugins/plugin_storage).
+"""Tests for the per-plugin durable storage convention (hermes_agent/plugins/plugin_storage).
 
 The contract under test: data lives under ``<hermes home>/plugin-data/<name>/``
 (NOT the ``plugins/<name>/`` install tree), names that could escape the root
@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_agent.hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from plugins.plugin_storage import plugin_data_dir, plugin_db
+from hermes_agent.plugins.plugin_storage import plugin_data_dir, plugin_db
 
 
 @pytest.fixture

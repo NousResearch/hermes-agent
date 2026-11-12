@@ -81,7 +81,7 @@ def imap_peer(id_mode):
 @pytest.mark.parametrize("id_mode", ["absent", "accept", "reject"])
 def test_id_negotiation_preserves_inbox_connection(monkeypatch, id_mode):
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.email.adapter import EmailAdapter
+    from hermes_agent.plugins.platforms.email.adapter import EmailAdapter
 
     for key, value in {
         "EMAIL_ADDRESS": "agent@example.test",

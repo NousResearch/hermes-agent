@@ -307,8 +307,8 @@ class TestSkillViewQualifiedName:
         def fail_if_loaded(name):
             raise AssertionError(f"unexpected provider load: {name}")
 
-        monkeypatch.setattr("plugins.memory._get_active_memory_provider", lambda: "active")
-        monkeypatch.setattr("plugins.memory.load_memory_provider", fail_if_loaded)
+        monkeypatch.setattr("hermes_agent.plugins.memory._get_active_memory_provider", lambda: "active")
+        monkeypatch.setattr("hermes_agent.plugins.memory.load_memory_provider", fail_if_loaded)
 
         result = json.loads(skill_view("inactive:maintenance"))
 
@@ -344,11 +344,11 @@ class TestSkillViewQualifiedName:
 
         self._make_memory_provider_with_skill(tmp_path, "memtest")
         monkeypatch.setattr(
-            "plugins.memory._get_user_plugins_dir",
+            "hermes_agent.plugins.memory._get_user_plugins_dir",
             lambda: tmp_path / ".hermes" / "plugins",
         )
         monkeypatch.setattr(
-            "plugins.memory._get_active_memory_provider",
+            "hermes_agent.plugins.memory._get_active_memory_provider",
             lambda: "memtest",
         )
 
@@ -361,17 +361,17 @@ class TestSkillViewQualifiedName:
     def test_discovery_does_not_pre_register_inactive_memory_provider_skills(
         self, tmp_path, monkeypatch
     ):
-        from plugins.memory import discover_memory_providers
+        from hermes_agent.plugins.memory import discover_memory_providers
         from hermes_agent.tools.skills_tool import skill_view
 
         self._make_memory_provider_with_skill(tmp_path, "memactive", "Active body.")
         self._make_memory_provider_with_skill(tmp_path, "meminactive", "Inactive body.")
         monkeypatch.setattr(
-            "plugins.memory._get_user_plugins_dir",
+            "hermes_agent.plugins.memory._get_user_plugins_dir",
             lambda: tmp_path / ".hermes" / "plugins",
         )
         monkeypatch.setattr(
-            "plugins.memory._get_active_memory_provider",
+            "hermes_agent.plugins.memory._get_active_memory_provider",
             lambda: "memactive",
         )
 

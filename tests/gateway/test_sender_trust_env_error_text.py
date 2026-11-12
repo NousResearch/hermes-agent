@@ -38,7 +38,7 @@ async def _serve(status, body, send):
 
 
 def _line(monkeypatch):
-    from plugins.platforms.line import adapter as line
+    from hermes_agent.plugins.platforms.line import adapter as line
 
     async def send(base):
         monkeypatch.setattr(line, "LINE_PUSH_URL", f"{base}/v2/bot/message/push")
@@ -48,7 +48,7 @@ def _line(monkeypatch):
 
 
 def _weixin(monkeypatch):
-    from plugins.platforms.weixin import adapter as wx
+    from hermes_agent.plugins.platforms.weixin import adapter as wx
 
     if not wx.check_weixin_requirements():
         pytest.skip("weixin needs aiohttp + cryptography")
@@ -87,7 +87,7 @@ def test_wecom_connect_under_trust_env_false_never_shows_the_proxy_secret(tmp_pa
     import logging
 
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.wecom.adapter import WeComAdapter
+    from hermes_agent.plugins.platforms.wecom.adapter import WeComAdapter
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("gateway:\n  trust_env: false\n")

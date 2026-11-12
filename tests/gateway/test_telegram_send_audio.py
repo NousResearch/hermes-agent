@@ -9,8 +9,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-import plugins.platforms.telegram.adapter as telegram_adapter
-from plugins.platforms.telegram.adapter import TelegramAdapter
+import hermes_agent.plugins.platforms.telegram.adapter as telegram_adapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 _needs_ffmpeg = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,

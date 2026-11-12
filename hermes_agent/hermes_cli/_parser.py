@@ -337,7 +337,7 @@ def _plugin_command_install_hint(prog: str, value: str):
     if prog != "hermes" or not re.fullmatch(r"[a-z0-9_-]{1,64}", value):
         return None
     try:
-        from plugins.memory import find_provider_dir
+        from hermes_agent.plugins.memory import find_provider_dir
         if find_provider_dir(value) is not None:
             return None
         from hermes_agent.hermes_cli.memory_provider_migration import catalog_install_hint

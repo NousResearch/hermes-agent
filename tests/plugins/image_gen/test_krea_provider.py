@@ -63,7 +63,7 @@ class TestKreaImageGenProvider:
 
     def test_is_available_with_key(self, monkeypatch):
         monkeypatch.setenv("KREA_API_KEY", "sk-test")
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         assert KreaImageGenProvider().is_available() is True
 
@@ -81,7 +81,7 @@ class TestModelResolution:
 
     def test_env_override_large(self, monkeypatch):
         monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-2-large")
-        from plugins.image_gen.krea import _resolve_model
+        from hermes_agent.plugins.image_gen.krea import _resolve_model
 
         model_id, meta = _resolve_model()
         assert model_id == "krea-2-large"
@@ -98,7 +98,7 @@ class TestModelResolution:
 class TestGenerate:
     def test_missing_api_key(self, monkeypatch):
         monkeypatch.delenv("KREA_API_KEY", raising=False)
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         result = KreaImageGenProvider().generate(prompt="test")
         assert result["success"] is False
@@ -106,7 +106,7 @@ class TestGenerate:
         assert result["error_type"] == "auth_required"
 
     def test_empty_prompt(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         result = KreaImageGenProvider().generate(prompt="   ")
         assert result["success"] is False
@@ -114,18 +114,18 @@ class TestGenerate:
 
     def test_successful_generation(self):
         """Happy path: submit → one poll → completed → URL downloaded."""
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         submit = _submit_response()
         poll = _poll_response(_completed_job("https://krea.cdn/result.png"))
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll) as mock_get, \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll) as mock_get, \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  return_value=Path("/tmp/krea_krea-2-medium_test.png"),
              ) as mock_save, \
-             patch("plugins.image_gen.krea.time.sleep"):  # skip real waits
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):  # skip real waits
             result = KreaImageGenProvider().generate(prompt="A cinematic lamp", upscale=False)
 
         assert result["success"] is True
@@ -147,18 +147,18 @@ class TestGenerate:
 
     def test_large_model_routes_to_large_endpoint(self, monkeypatch):
         monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-2-large")
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         submit = _submit_response()
         poll = _poll_response(_completed_job())
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll), \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  return_value=Path("/tmp/x.png"),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             KreaImageGenProvider().generate(prompt="test")
 
         post_url = mock_post.call_args[0][0]
@@ -166,18 +166,18 @@ class TestGenerate:
 
     def test_aspect_ratio_mapping(self):
         """Hermes 'square' must map to Krea '1:1' in the wire payload."""
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         submit = _submit_response()
         poll = _poll_response(_completed_job())
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll), \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  return_value=Path("/tmp/x.png"),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             KreaImageGenProvider().generate(prompt="test", aspect_ratio="square", upscale=False)
 
         payload = mock_post.call_args.kwargs["json"]
@@ -185,18 +185,18 @@ class TestGenerate:
         assert payload["resolution"] == "1K"
 
     def test_auth_header(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         submit = _submit_response()
         poll = _poll_response(_completed_job())
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll), \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  return_value=Path("/tmp/x.png"),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             KreaImageGenProvider().generate(prompt="test")
 
         headers = mock_post.call_args.kwargs["headers"]
@@ -204,18 +204,18 @@ class TestGenerate:
         assert headers["Content-Type"] == "application/json"
 
     def test_passthrough_seed_styles_moodboards(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         submit = _submit_response()
         poll = _poll_response(_completed_job())
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll), \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  return_value=Path("/tmp/x.png"),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             KreaImageGenProvider().generate(
                 prompt="test",
                 seed=42,
@@ -234,15 +234,15 @@ class TestGenerate:
         assert payload["creativity"] == "high"
 
     def test_sliders_reach_payload_and_out_of_range_values_are_dropped(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         submit = _submit_response()
         poll = _poll_response(_completed_job())
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
-             patch("plugins.image_gen.krea.save_url_image", return_value=Path("/tmp/x.png")), \
-             patch("plugins.image_gen.krea.time.sleep"):
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll), \
+             patch("hermes_agent.plugins.image_gen.krea.save_url_image", return_value=Path("/tmp/x.png")), \
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             KreaImageGenProvider().generate(
                 prompt="test", intensity=80, complexity=-100, movement=150, upscale=False)
 
@@ -254,18 +254,18 @@ class TestGenerate:
     def test_string_style_references_converted_to_objects(self):
         """Krea requires {url, strength} objects; bare URL strings must be
         converted (a string yields a 422 'Expected object, received string')."""
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         submit = _submit_response()
         poll = _poll_response(_completed_job())
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll), \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  return_value=Path("/tmp/x.png"),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             KreaImageGenProvider().generate(
                 prompt="test",
                 image_style_references=[
@@ -282,17 +282,17 @@ class TestGenerate:
         ]
 
     def test_local_style_reference_is_embedded_as_data_uri(self, tmp_path):
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         image = tmp_path / "ref.png"
         image.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-bytes")
         submit = _submit_response()
         poll = _poll_response(_completed_job())
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
-             patch("plugins.image_gen.krea.save_url_image", return_value=Path("/tmp/x.png")), \
-             patch("plugins.image_gen.krea.time.sleep"):
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll), \
+             patch("hermes_agent.plugins.image_gen.krea.save_url_image", return_value=Path("/tmp/x.png")), \
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             KreaImageGenProvider().generate(prompt="test", image_url=str(image), upscale=False)
 
         [ref] = mock_post.call_args.kwargs["json"]["image_style_references"]
@@ -308,14 +308,14 @@ class TestGenerate:
             self, names, error_type, message, tmp_path, monkeypatch):
         """Refused with no request sent: a missing file, local files whose TOTAL (not each) exceeds the
         cap, and a path the credential-read guard denies (before its existence is probed)."""
-        from plugins.image_gen import krea
+        from hermes_agent.plugins.image_gen import krea
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(krea, "_MAX_LOCAL_REFERENCE_BYTES", 10)
         for name in ("a.png", "b.png"):
             (tmp_path / name).write_bytes(b"\x89PNG\r\n")
 
-        with patch("plugins.image_gen.krea.requests.post") as mock_post:
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post") as mock_post:
             result = krea.KreaImageGenProvider().generate(
                 prompt="test", reference_image_urls=[str(tmp_path / n) for n in names])
 
@@ -325,18 +325,18 @@ class TestGenerate:
 
     def test_unknown_kwargs_ignored(self):
         """Forward-compat: unknown kwargs must not break generate()."""
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         submit = _submit_response()
         poll = _poll_response(_completed_job())
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit), \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit), \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll), \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  return_value=Path("/tmp/x.png"),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             result = KreaImageGenProvider().generate(
                 prompt="test",
                 fictional_param="should be ignored",
@@ -354,7 +354,7 @@ class TestGenerate:
 class TestGenerateErrors:
     def test_submit_http_error(self):
         import requests as req_lib
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         resp = req_lib.Response()
         resp.status_code = 401
@@ -364,7 +364,7 @@ class TestGenerateErrors:
             side_effect=req_lib.HTTPError(response=resp)
         )
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=resp):
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=resp):
             result = KreaImageGenProvider().generate(prompt="test")
 
         assert result["success"] is False
@@ -383,22 +383,22 @@ class TestGenerateErrors:
         have happened after Krea accepted the job."""
         import requests as req_lib
         from urllib3.exceptions import MaxRetryError, NewConnectionError
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         if failure == "refused":
             refused = MaxRetryError(None, "http://x", reason=NewConnectionError(None, "Connection refused"))
-            post = patch("plugins.image_gen.krea.requests.post", side_effect=req_lib.ConnectionError(refused))
+            post = patch("hermes_agent.plugins.image_gen.krea.requests.post", side_effect=req_lib.ConnectionError(refused))
         elif failure == "disconnected":
-            post = patch("plugins.image_gen.krea.requests.post",
+            post = patch("hermes_agent.plugins.image_gen.krea.requests.post",
                          side_effect=req_lib.ConnectionError("Remote end closed connection without response"))
         elif failure == "timeout":
-            post = patch("plugins.image_gen.krea.requests.post", side_effect=req_lib.Timeout())
+            post = patch("hermes_agent.plugins.image_gen.krea.requests.post", side_effect=req_lib.Timeout())
         else:
             resp = req_lib.Response()
             resp.status_code = 200 if failure == "invalid_json" else failure
             resp._content = b"not json" if failure == "invalid_json" else b'{"error": "nope"}'
             resp.raise_for_status = MagicMock(side_effect=None if failure == "invalid_json" else req_lib.HTTPError(response=resp))
-            post = patch("plugins.image_gen.krea.requests.post", return_value=resp)
+            post = patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=resp)
 
         with post:
             result = KreaImageGenProvider().generate(prompt="test")
@@ -407,7 +407,7 @@ class TestGenerateErrors:
         assert result["fallback_eligible"] is eligible
 
     def test_job_failed(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         failed = {
             "job_id": "abc",
@@ -417,12 +417,12 @@ class TestGenerateErrors:
         }
 
         submit = _submit_response()
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit), \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit), \
              patch(
-                 "plugins.image_gen.krea.requests.get",
+                 "hermes_agent.plugins.image_gen.krea.requests.get",
                  return_value=_poll_response(failed),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             result = KreaImageGenProvider().generate(prompt="test")
 
         assert result["success"] is False
@@ -432,7 +432,7 @@ class TestGenerateErrors:
 
 
     def test_completed_but_missing_urls(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         completed_empty = {
             "job_id": "abc",
@@ -441,12 +441,12 @@ class TestGenerateErrors:
             "result": {"urls": []},
         }
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
              patch(
-                 "plugins.image_gen.krea.requests.get",
+                 "hermes_agent.plugins.image_gen.krea.requests.get",
                  return_value=_poll_response(completed_empty),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             result = KreaImageGenProvider().generate(prompt="test")
 
         assert result["success"] is False
@@ -455,19 +455,19 @@ class TestGenerateErrors:
     def test_url_download_failure_falls_back_to_bare_url(self):
         """Mirror of xAI behaviour — if local cache fails, return the URL."""
         import requests as req_lib
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         url = "https://krea.cdn/expired-soon.png"
         submit = _submit_response()
         poll = _poll_response(_completed_job(url))
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit), \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit), \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll), \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  side_effect=req_lib.HTTPError("404"),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             result = KreaImageGenProvider().generate(prompt="test")
 
         assert result["success"] is True
@@ -475,7 +475,7 @@ class TestGenerateErrors:
 
     def test_polling_picks_up_completed_at_with_unknown_status(self):
         """``completed_at`` set + unrecognised pending status → still terminal."""
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         # Use a status value that is NOT in our terminal set ("intermediate-complete")
         # but with completed_at populated — Krea's spec says completed_at is the
@@ -487,16 +487,16 @@ class TestGenerateErrors:
             "result": {"urls": ["https://krea.cdn/done.png"]},
         }
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
              patch(
-                 "plugins.image_gen.krea.requests.get",
+                 "hermes_agent.plugins.image_gen.krea.requests.get",
                  return_value=_poll_response(oddball),
              ), \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  return_value=Path("/tmp/x.png"),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             result = KreaImageGenProvider().generate(prompt="test")
 
         assert result["success"] is True
@@ -519,13 +519,13 @@ class TestPollRetryPolicy:
 
     def test_poll_fails_fast_on_401(self):
         """Auth failure mid-poll should not wait the 180s deadline."""
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         bad_poll = self._http_error_response(401)
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
-             patch("plugins.image_gen.krea.requests.get", return_value=bad_poll) as mock_get, \
-             patch("plugins.image_gen.krea.time.sleep"):
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=_submit_response()), \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=bad_poll) as mock_get, \
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             result = KreaImageGenProvider().generate(prompt="test")
 
         assert result["success"] is False
@@ -557,21 +557,21 @@ def _managed_cfg(
 class TestManagedGateway:
     def test_managed_submit_uses_gateway_origin_and_nous_token(self, monkeypatch):
         """Managed mode submits to the gateway origin with the Nous token."""
-        import plugins.image_gen.krea as krea_mod
-        from plugins.image_gen.krea import KreaImageGenProvider
+        import hermes_agent.plugins.image_gen.krea as krea_mod
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         # Even with a direct key present, an active managed gateway wins.
         monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
 
         submit = _submit_response()
         poll = _poll_response(_completed_job())
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll) as mock_get, \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll) as mock_get, \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  return_value=Path("/tmp/x.png"),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             result = KreaImageGenProvider().generate(prompt="A managed lamp", upscale=False)
 
         assert result["success"] is True
@@ -592,8 +592,8 @@ class TestManagedGateway:
 
     def test_managed_429_concurrency_hint(self, monkeypatch):
         import requests as req_lib
-        import plugins.image_gen.krea as krea_mod
-        from plugins.image_gen.krea import KreaImageGenProvider
+        import hermes_agent.plugins.image_gen.krea as krea_mod
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         monkeypatch.setattr(krea_mod, "_resolve_managed_krea_gateway", lambda: _managed_cfg())
 
@@ -603,7 +603,7 @@ class TestManagedGateway:
         resp.headers["Content-Type"] = "application/json"
         resp.raise_for_status = MagicMock(side_effect=req_lib.HTTPError(response=resp))
 
-        with patch("plugins.image_gen.krea.requests.post", return_value=resp):
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=resp):
             result = KreaImageGenProvider().generate(prompt="test")
 
         assert result["success"] is False
@@ -614,24 +614,24 @@ class TestManagedGateway:
 class TestExplicitModelOverride:
     def test_model_kwarg_overrides_config(self, monkeypatch):
         """An explicit ``model`` kwarg (managed routing) wins over config/default."""
-        from plugins.image_gen.krea import _resolve_model
+        from hermes_agent.plugins.image_gen.krea import _resolve_model
 
         model_id, meta = _resolve_model("krea-2-large")
         assert model_id == "krea-2-large"
         assert meta["path"] == "/generate/image/krea/krea-2/large"
 
     def test_turbo_routes_to_medium_turbo_endpoint(self):
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         submit = _submit_response()
         poll = _poll_response(_completed_job())
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll), \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  return_value=Path("/tmp/x.png"),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             result = KreaImageGenProvider().generate(prompt="test", model="krea-2-medium-turbo", upscale=False)
 
         assert result["success"] is True
@@ -652,7 +652,7 @@ class TestUpscalePass:
         Sequence: generation submit POST → generation poll GET; then (when
         upscale fires) enhance submit POST → enhance poll GET.
         """
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         gen_submit = _submit_response()
         gen_poll = _poll_response(_completed_job("https://krea.cdn/native.png"))
@@ -666,13 +666,13 @@ class TestUpscalePass:
         if model is not None:
             kwargs["model"] = model
 
-        with patch("plugins.image_gen.krea.requests.post", side_effect=posts) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", side_effect=gets) as mock_get, \
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", side_effect=posts) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", side_effect=gets) as mock_get, \
              patch(
-                 "plugins.image_gen.krea.save_url_image",
+                 "hermes_agent.plugins.image_gen.krea.save_url_image",
                  side_effect=lambda url, prefix: Path(f"/tmp/{url.rsplit('/', 1)[-1]}"),
              ), \
-             patch("plugins.image_gen.krea.time.sleep"):
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             result = KreaImageGenProvider().generate(**kwargs)
         return result, mock_post, mock_get
 
@@ -742,7 +742,7 @@ class TestUpscalePass:
 
 class TestRegistration:
     def test_register(self):
-        from plugins.image_gen.krea import KreaImageGenProvider, register
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider, register
 
         mock_ctx = MagicMock()
         register(mock_ctx)
@@ -755,13 +755,13 @@ class TestRegistration:
 class TestKrea3:
     def _generate(self, monkeypatch, **kwargs):
         monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-3")
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         submit, poll = _submit_response(), _poll_response(_completed_job())
-        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
-             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
-             patch("plugins.image_gen.krea.save_url_image", return_value=Path("/tmp/x.png")), \
-             patch("plugins.image_gen.krea.time.sleep"):
+        with patch("hermes_agent.plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("hermes_agent.plugins.image_gen.krea.requests.get", return_value=poll), \
+             patch("hermes_agent.plugins.image_gen.krea.save_url_image", return_value=Path("/tmp/x.png")), \
+             patch("hermes_agent.plugins.image_gen.krea.time.sleep"):
             result = KreaImageGenProvider().generate(prompt="make the mug red", upscale=False, **kwargs)
         return result, mock_post.call_args
 
@@ -791,7 +791,7 @@ class TestKrea3:
         assert len(call.kwargs["json"]["image_urls"]) == 4
 
     def test_capabilities_follow_the_active_model(self, monkeypatch):
-        from plugins.image_gen.krea import KreaImageGenProvider
+        from hermes_agent.plugins.image_gen.krea import KreaImageGenProvider
 
         monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-3")
         krea3 = KreaImageGenProvider().capabilities()
@@ -805,7 +805,7 @@ class TestKrea3:
     def test_capabilities_describe_the_stored_model_the_dispatcher_sends(self, monkeypatch):
         """Managed and direct dispatch both pass ``image_gen.model`` to generate() explicitly, so the
         schema must describe that model even when KREA_IMAGE_MODEL names another one."""
-        import plugins.image_gen.krea as krea_mod
+        import hermes_agent.plugins.image_gen.krea as krea_mod
 
         monkeypatch.setenv("KREA_IMAGE_MODEL", "krea-2-large")
         for provider, gateway in (("nous", _managed_cfg()), ("krea", None)):

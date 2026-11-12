@@ -123,7 +123,7 @@ def test_served_secondary_resolves_its_own_setting(monkeypatch, module, var, def
 def test_signal_startup_gate_reads_the_profile_env(monkeypatch):
     """A secondary whose SIGNAL_HTTP_URL/SIGNAL_ACCOUNT live only in its own .env must pass the startup
     gate served exactly as it does standalone; a secondary WITHOUT them must not borrow the default's."""
-    from plugins.platforms.signal import adapter as sig
+    from hermes_agent.plugins.platforms.signal import adapter as sig
     for k in ("SIGNAL_HTTP_URL", "SIGNAL_ACCOUNT"):
         monkeypatch.delenv(k, raising=False)
     ss.set_multiplex_active(True)
@@ -142,7 +142,7 @@ def test_signal_startup_gate_reads_the_profile_env(monkeypatch):
 
 
 def test_sms_webhook_listener_is_profile_scoped(monkeypatch):
-    from plugins.platforms.sms import adapter as sms
+    from hermes_agent.plugins.platforms.sms import adapter as sms
     for k, v in {"TWILIO_ACCOUNT_SID": "AC0", "TWILIO_AUTH_TOKEN": "tok", "TWILIO_PHONE_NUMBER": "+1",
                  "SMS_WEBHOOK_PORT": "18039", "SMS_WEBHOOK_HOST": "default-host", "SMS_WEBHOOK_URL": "http://d/"}.items():
         monkeypatch.setenv(k, v)

@@ -1,6 +1,6 @@
 """Tests for the security-guidance plugin.
 
-Covers ``plugins/security-guidance/``:
+Covers ``hermes_agent/plugins/security-guidance/``:
 
   * ``patterns.py`` data integrity — every rule has a name, reminder, and at
     least one trigger; names are unique.

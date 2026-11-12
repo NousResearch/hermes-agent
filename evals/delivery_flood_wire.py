@@ -79,7 +79,7 @@ async def setup(url):
     from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session import SessionStore
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
     from telegram import Bot
     runner = object.__new__(GatewayRunner)
     runner.session_store = SessionStore(Path(os.environ['HERMES_HOME']) / 'sessions', GatewayConfig())

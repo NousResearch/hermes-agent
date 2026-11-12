@@ -11,7 +11,7 @@ import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 # SDK-free stand-ins: the adapter's classifiers key on PTB's class names.

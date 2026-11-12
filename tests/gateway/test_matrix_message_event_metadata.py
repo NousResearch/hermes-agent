@@ -40,7 +40,7 @@ def _make_adapter(require_mention=False, auto_thread=False, monkeypatch=None):
         os.environ["MATRIX_REQUIRE_MENTION"] = "true" if require_mention else "false"
         os.environ["MATRIX_AUTO_THREAD"] = "true" if auto_thread else "false"
 
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     from hermes_agent.gateway.config import PlatformConfig
 

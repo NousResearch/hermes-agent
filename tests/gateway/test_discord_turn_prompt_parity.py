@@ -20,10 +20,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import hermes_agent.gateway.run as gateway_run
-import plugins.platforms.discord.adapter as discord_platform
+import hermes_agent.plugins.platforms.discord.adapter as discord_platform
 from hermes_agent.gateway.config import GatewayConfig, Platform, PlatformConfig
 from hermes_agent.gateway.session import build_session_context, build_session_key
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 class _DM:

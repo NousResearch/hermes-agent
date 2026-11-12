@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from plugins.web.firecrawl import provider as firecrawl_provider
+from hermes_agent.plugins.web.firecrawl import provider as firecrawl_provider
 from hermes_agent.tools import website_policy
 
 REQUESTED = "https://redirector.example/go"
@@ -77,7 +77,7 @@ def test_allowed_redirect_keeps_content_and_requested_url_for_the_cache(scrape, 
 def test_keyless_extract_reports_the_redirect_target_for_the_shared_gate(monkeypatch, tmp_path):
     """The keyless REST path must surface ``metadata.url`` too: reporting the requested URL hid the
     redirect target from the dispatch-level re-gate, so a blocklisted landing page was returned."""
-    from plugins.web import keyless_mcp
+    from hermes_agent.plugins.web import keyless_mcp
     from hermes_agent.tools import web_tools_extract
 
     monkeypatch.setattr(firecrawl_provider._KeylessFirecrawlClient, "scrape",

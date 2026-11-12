@@ -12,7 +12,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from plugins.web._common import BaseWebSearchProvider, search_fail as _fail, search_ok, setup_schema, title_hit as _row
+from hermes_agent.plugins.web._common import BaseWebSearchProvider, search_fail as _fail, search_ok, setup_schema, title_hit as _row
 from hermes_agent.tools.xai_http import has_xai_credentials, hermes_xai_user_agent, resolve_xai_http_credentials
 
 logger = logging.getLogger(__name__)

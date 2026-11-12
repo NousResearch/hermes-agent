@@ -16,7 +16,7 @@ CHAT = '15551234567@s.whatsapp.net'
 
 @pytest.mark.asyncio
 async def test_edit_of_an_admitted_message_is_its_own_admission(tmp_path, monkeypatch):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
     monkeypatch.setenv('WHATSAPP_ALLOWED_USERS', '15551234567')
     runner = GatewayRunner(GatewayConfig(sessions_dir=tmp_path / 'sessions'))
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={'session_path': str(tmp_path / 'wa')}))
@@ -46,7 +46,7 @@ async def test_edit_of_an_admitted_message_is_its_own_admission(tmp_path, monkey
 def test_telegram_same_second_edits_get_distinct_revisions():
     """``edit_date`` is whole seconds: two edits inside one second must still key apart, while a
     redelivered edit keeps its key (the admission above then replays it once)."""
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
     adapter.config = PlatformConfig(enabled=True, token='***', extra={})

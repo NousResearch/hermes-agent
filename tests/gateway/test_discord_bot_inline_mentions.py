@@ -8,7 +8,7 @@ import discord
 import pytest
 
 from hermes_agent.gateway.platforms.helpers import MessageDeduplicator
-from plugins.platforms.discord.adapter import DiscordAdapter
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
 
 def _adapter(*, allow_bots: str = "mentions", extra=None) -> DiscordAdapter:

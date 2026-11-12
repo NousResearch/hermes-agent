@@ -39,7 +39,7 @@ def newer_request_pending():
 
 
 async def _press_telegram_card(request_id):
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="t"))
     adapter._bot, adapter._app = AsyncMock(), MagicMock()
     adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
@@ -53,7 +53,7 @@ async def _press_telegram_card(request_id):
 
 
 async def _press_slack_card(request_id):
-    from plugins.platforms.slack.adapter import SlackAdapter
+    from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
     adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-t"))
     client = AsyncMock()
     client.chat_postMessage = AsyncMock(return_value={"ts": "1.2"})
@@ -71,7 +71,7 @@ async def _press_slack_card(request_id):
 
 
 async def _press_feishu_card(request_id):
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
     adapter = FeishuAdapter(PlatformConfig(enabled=True))
     adapter._client = MagicMock()
     adapter.set_authorization_check(lambda *_a, **_k: True)
@@ -83,7 +83,7 @@ async def _press_feishu_card(request_id):
 
 
 async def _press_matrix_card(request_id):
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
     adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
     adapter._user_id, adapter._client = "@bot:example.org", MagicMock()
     adapter.set_authorization_check(lambda *_a, **_k: True)
@@ -96,7 +96,7 @@ async def _press_matrix_card(request_id):
 
 
 async def _press_whatsapp_card(request_id):
-    from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
+    from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
     adapter = WhatsAppCloudAdapter(PlatformConfig(enabled=True, extra={"phone_number_id": "1", "access_token": "t"}))
     with patch.object(adapter, "_post_message_result", new=AsyncMock(return_value=SendResult(success=True, message_id="w1"))), \
             patch.object(adapter, "send", new=AsyncMock()):
@@ -163,7 +163,7 @@ async def test_card_resolves_its_own_request(newer_request_pending, press):
 async def test_matrix_settled_card_reports_expiry(newer_request_pending):
     """A reaction on a settled Matrix card says it expired and retires the card, as the other adapters do."""
     from hermes_agent.agent.i18n import t
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
     adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
     adapter._user_id, adapter._client = "@bot:example.org", MagicMock()
     adapter.set_authorization_check(lambda *_a, **_k: True)

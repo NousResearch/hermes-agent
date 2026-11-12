@@ -62,7 +62,7 @@ def _configured_backend(capability: str) -> Optional[str]:
 # tier on upgrade; filtered by ``is_available()`` at walk time.
 _LEGACY_PREFERENCE = ("firecrawl", "parallel", "tavily", "perplexity", "exa", "searxng", "brave-free", "ddgs")
 
-# Anonymous public free tiers (see plugins/web/keyless_mcp.py); strictly last
+# Anonymous public free tiers (see hermes_agent/plugins/web/keyless_mcp.py); strictly last
 # resort, i.e. zero web credentials and no importable ddgs. Unpinned keyless
 # traffic round-robins across the ring per request; an explicit `hermes tools`
 # pick bypasses this walk. Disable with ``web.keyless_fallback: false``.
@@ -71,10 +71,10 @@ _KEYLESS_PREFERENCE = ("exa", "parallel", "firecrawl", "keenable")
 
 def _keyless_preference() -> tuple:
     """Keyless walk order, starting at the ring cursor in
-    :mod:`plugins.web.keyless_mcp` so resolution and dispatch agree on which
+    :mod:`hermes_agent.plugins.web.keyless_mcp` so resolution and dispatch agree on which
     vendor a fresh install starts at; the rest follow in ring order."""
     try:
-        from plugins.web.keyless_mcp import _KEYLESS_RING, _ring_cursor
+        from hermes_agent.plugins.web.keyless_mcp import _KEYLESS_RING, _ring_cursor
 
         start = _ring_cursor % len(_KEYLESS_RING)
         return tuple(_KEYLESS_RING[start:] + _KEYLESS_RING[:start])

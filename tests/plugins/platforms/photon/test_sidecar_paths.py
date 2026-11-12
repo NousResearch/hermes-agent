@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from plugins.platforms.photon import sidecar_paths
+from hermes_agent.plugins.platforms.photon import sidecar_paths
 
 
 def _seed_source(source: Path, *, with_node_modules: bool = False) -> None:
@@ -112,8 +112,8 @@ def test_adapter_import_does_not_resolve_sidecar_dir(monkeypatch) -> None:
     """
     import importlib
 
-    from plugins.platforms.photon import adapter as photon_adapter
-    from plugins.platforms.photon import cli as photon_cli
+    from hermes_agent.plugins.platforms.photon import adapter as photon_adapter
+    from hermes_agent.plugins.platforms.photon import cli as photon_cli
 
     def _boom(*args, **kwargs):  # pragma: no cover - failure path
         raise AssertionError("resolve_sidecar_dir called at import time")

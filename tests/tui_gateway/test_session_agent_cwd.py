@@ -86,7 +86,7 @@ def workspace_runtime(monkeypatch, tmp_path):
         def close(self):
             pass
 
-    monkeypatch.setattr("plugins.memory.load_memory_provider", load_provider)
+    monkeypatch.setattr("hermes_agent.plugins.memory.load_memory_provider", load_provider)
     monkeypatch.setattr(socket.socket, "connect", blocked_connect)
     monkeypatch.setattr(codex_app_server_session, "CodexAppServerClient", CodexClient)
     db = SessionDB(tmp_path / "state.db")

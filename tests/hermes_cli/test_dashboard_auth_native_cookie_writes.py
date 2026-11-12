@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-import plugins.dashboard_auth.basic as basic_plugin
+import hermes_agent.plugins.dashboard_auth.basic as basic_plugin
 from hermes_agent.hermes_cli import web_server
 from hermes_agent.hermes_cli.config import read_raw_config
 from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider

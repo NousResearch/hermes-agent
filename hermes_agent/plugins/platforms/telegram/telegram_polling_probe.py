@@ -4,7 +4,7 @@ general request path stays healthy is only visible through ``getWebhookInfo.pend
 import asyncio
 import logging
 
-logger = logging.getLogger("plugins.platforms.telegram.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.telegram.adapter")
 
 
 class TelegramPendingProbeMixin:
@@ -99,7 +99,7 @@ class TelegramPendingProbeMixin:
         """End a conflict episode after a quiet period of getUpdates progress (#82303): getUpdates also succeeds
         between the 409s of a live storm, so any-progress resets pinned the ladder at (1/5). The window reopens at
         each generation's first progress, so stop/backoff/drain downtime never counts as healthy polling."""
-        from plugins.platforms.telegram.adapter import _POLLING_CONFLICT_QUIET_PERIOD
+        from hermes_agent.plugins.platforms.telegram.adapter import _POLLING_CONFLICT_QUIET_PERIOD
         if not self._polling_conflict_count:
             return
         since = self._polling_conflict_quiet_since

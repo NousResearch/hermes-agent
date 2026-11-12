@@ -45,7 +45,7 @@ def _mock_chat_response(images):
 
 
 def _openrouter():
-    from plugins.image_gen.openrouter import OpenRouterCompatImageProvider
+    from hermes_agent.plugins.image_gen.openrouter import OpenRouterCompatImageProvider
 
     return OpenRouterCompatImageProvider(
         provider_name="openrouter",
@@ -78,11 +78,11 @@ class TestProviderClass:
 
     def test_default_model_ignores_runtime_overrides(self, monkeypatch):
         """Catalog defaults must not inherit another provider's saved model."""
-        from plugins.image_gen.openrouter import DEFAULT_MODEL
+        from hermes_agent.plugins.image_gen.openrouter import DEFAULT_MODEL
 
         monkeypatch.setenv("OPENROUTER_IMAGE_MODEL", "custom/provider-image-model")
         stale = {"model": "gpt-image-2-medium"}
-        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=stale):
+        with patch("hermes_agent.plugins.image_gen.openrouter._load_image_gen_config", return_value=stale):
             provider = _openrouter()
             assert provider.default_model() == DEFAULT_MODEL
             assert provider._resolve_model() == "custom/provider-image-model"
@@ -95,16 +95,16 @@ class TestProviderClass:
 
 
     def test_nous_honors_top_level_model(self):
-        from plugins.image_gen.openrouter import _build_providers
+        from hermes_agent.plugins.image_gen.openrouter import _build_providers
 
         cfg = {"model": "openai/gpt-image-2"}
         nous = {p.name: p for p in _build_providers()}["nous"]
-        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+        with patch("hermes_agent.plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
             assert nous._resolve_model_chain() == ["openai/gpt-image-2"]
 
     def test_explicit_model_kwarg_wins_over_config(self):
         cfg = {"model": "openai/gpt-image-2"}
-        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
+        with patch("hermes_agent.plugins.image_gen.openrouter._load_image_gen_config", return_value=cfg):
             assert _openrouter()._resolve_model_chain("google/gemini-3-pro-image") == [
                 "google/gemini-3-pro-image"
             ]
@@ -164,7 +164,7 @@ class TestLiveCatalog:
         provider = _openrouter()
         with patch(_RUNTIME, side_effect=RuntimeError("no creds")):
             models = provider.list_models()
-        from plugins.image_gen.openrouter import DEFAULT_MODEL, _FALLBACK_MODEL
+        from hermes_agent.plugins.image_gen.openrouter import DEFAULT_MODEL, _FALLBACK_MODEL
 
         assert [m["id"] for m in models] == [DEFAULT_MODEL, _FALLBACK_MODEL]
 
@@ -186,7 +186,7 @@ class TestLiveCatalog:
     def test_picker_merges_image_api_and_chat_catalogs(self):
         """OpenRouter picker = union of /images/models and image-output
         /models entries, deduped, defaults first."""
-        from plugins.image_gen.openrouter import _build_providers
+        from hermes_agent.plugins.image_gen.openrouter import _build_providers
 
         orp = {p.name: p for p in _build_providers()}["openrouter"]
 
@@ -223,12 +223,12 @@ class TestLiveCatalog:
     def test_nous_portal_picker_excludes_image_api_catalog(self):
         """Nous Portal has no /images route; its picker must not offer
         Image-API-only models it cannot serve."""
-        from plugins.image_gen.openrouter import _build_providers
+        from hermes_agent.plugins.image_gen.openrouter import _build_providers
 
         nous = {p.name: p for p in _build_providers()}["nous"]
         with patch(_RUNTIME, side_effect=RuntimeError("no creds")):
             ids = [m["id"] for m in nous.list_models()]
-        from plugins.image_gen.openrouter import DEFAULT_MODEL, _FALLBACK_MODEL
+        from hermes_agent.plugins.image_gen.openrouter import DEFAULT_MODEL, _FALLBACK_MODEL
 
         assert ids == [DEFAULT_MODEL, _FALLBACK_MODEL]
 
@@ -240,14 +240,14 @@ class TestLiveCatalog:
 
 class TestHelpers:
     def test_to_image_url_part_passthrough_url(self):
-        from plugins.image_gen.openrouter import _to_image_url_part
+        from hermes_agent.plugins.image_gen.openrouter import _to_image_url_part
 
         assert _to_image_url_part("https://x/y.png") == "https://x/y.png"
         assert _to_image_url_part("data:image/png;base64,AAAA") == "data:image/png;base64,AAAA"
 
 
     def test_to_image_url_part_blocks_credential_store(self, tmp_path, monkeypatch):
-        from plugins.image_gen.openrouter import _to_image_url_part
+        from hermes_agent.plugins.image_gen.openrouter import _to_image_url_part
 
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -260,7 +260,7 @@ class TestHelpers:
 
 
     def test_extract_images(self):
-        from plugins.image_gen.openrouter import _extract_images
+        from hermes_agent.plugins.image_gen.openrouter import _extract_images
 
         payload = {
             "choices": [
@@ -271,7 +271,7 @@ class TestHelpers:
 
 
     def test_access_error_hint_for_gated_openai_model(self):
-        from plugins.image_gen.openrouter import _FALLBACK_MODEL, _access_error_hint
+        from hermes_agent.plugins.image_gen.openrouter import _FALLBACK_MODEL, _access_error_hint
 
         hint = _access_error_hint(
             "OpenRouter", "openai/gpt-5.4-image-2", "OPENROUTER_IMAGE_MODEL", 404, "No endpoints found"
@@ -300,7 +300,7 @@ class TestGenerate:
         with patch(_RUNTIME, return_value=_runtime_ok()), \
              patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])), \
              patch(
-                 "plugins.image_gen.openrouter.save_b64_image",
+                 "hermes_agent.plugins.image_gen.openrouter.save_b64_image",
                  return_value=Path("/tmp/openrouter_gen.png"),
              ) as mock_save:
             result = _openrouter().generate(prompt="a pet")
@@ -327,7 +327,7 @@ class TestGenerate:
 
         with patch(_RUNTIME, return_value=_runtime_ok()), \
              patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
-             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
+             patch("hermes_agent.plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
             _openrouter().generate(
                 prompt="a pet", aspect_ratio="square", reference_images=[str(ref)]
             )
@@ -344,7 +344,7 @@ class TestGenerate:
     def test_auth_header(self):
         with patch(_RUNTIME, return_value=_runtime_ok()), \
              patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
-             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
+             patch("hermes_agent.plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
             _openrouter().generate(prompt="a pet")
 
         headers = mock_post.call_args.kwargs["headers"]
@@ -354,7 +354,7 @@ class TestGenerate:
         """image_generate passes image_gen.model as a model kwarg — honor it."""
         with patch(_RUNTIME, return_value=_runtime_ok()), \
              patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
-             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
+             patch("hermes_agent.plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
             result = _openrouter().generate(prompt="a pet", model="openai/gpt-image-2")
 
         assert result["success"] is True
@@ -368,8 +368,8 @@ class TestGenerate:
         )
         with patch(_RUNTIME, return_value=nous_runtime), \
              patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
-             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
-            from plugins.image_gen.openrouter import _build_providers
+             patch("hermes_agent.plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
+            from hermes_agent.plugins.image_gen.openrouter import _build_providers
 
             nous = {p.name: p for p in _build_providers()}["nous"]
             result = nous.generate(prompt="a pet")
@@ -417,7 +417,7 @@ class TestGenerate:
 
 def _openrouter_image_api():
     """The provider as `_build_providers` really configures it (surface on)."""
-    from plugins.image_gen.openrouter import _build_providers
+    from hermes_agent.plugins.image_gen.openrouter import _build_providers
 
     return {p.name: p for p in _build_providers()}["openrouter"]
 
@@ -439,7 +439,7 @@ class TestImageApiSurface:
     @pytest.fixture(autouse=True)
     def _isolate(self, monkeypatch):
         """No config bleed, no catalog cache bleed between tests."""
-        import plugins.image_gen.openrouter as mod
+        import hermes_agent.plugins.image_gen.openrouter as mod
 
         mod._CATALOG_CACHE.clear()
         monkeypatch.setattr(mod, "_load_image_gen_config", dict)
@@ -454,7 +454,7 @@ class TestImageApiSurface:
 
     def test_curated_model_routes_without_any_probe(self):
         """The static table answers the common case offline."""
-        from plugins.image_gen.openrouter import _select_surface
+        from hermes_agent.plugins.image_gen.openrouter import _select_surface
 
         with patch("requests.get", side_effect=AssertionError("must not probe")):
             assert _select_surface("openai/gpt-image-2", "https://x/api/v1", "k", "openrouter") == "images"
@@ -463,7 +463,7 @@ class TestImageApiSurface:
         """The regression this guards: /images/models is a superset that
         includes DEFAULT_MODEL and _FALLBACK_MODEL. Routing on catalog
         membership would silently move every existing default call."""
-        from plugins.image_gen.openrouter import (
+        from hermes_agent.plugins.image_gen.openrouter import (
             DEFAULT_MODEL,
             _FALLBACK_MODEL,
             _select_surface,
@@ -482,8 +482,8 @@ class TestImageApiSurface:
         """An id past the curated snapshot but in the live catalog is served
         by the dedicated API — a model picked from the live picker must not
         fall onto chat-completions and 404."""
-        import plugins.image_gen.openrouter as orp
-        from plugins.image_gen.openrouter import _select_surface
+        import hermes_agent.plugins.image_gen.openrouter as orp
+        from hermes_agent.plugins.image_gen.openrouter import _select_surface
 
         orp._CATALOG_CACHE.clear()
         catalog = MagicMock()
@@ -496,8 +496,8 @@ class TestImageApiSurface:
         assert mock_get.call_count == 1
 
     def test_unknown_model_not_in_catalog_stays_on_chat(self):
-        import plugins.image_gen.openrouter as orp
-        from plugins.image_gen.openrouter import _select_surface
+        import hermes_agent.plugins.image_gen.openrouter as orp
+        from hermes_agent.plugins.image_gen.openrouter import _select_surface
 
         orp._CATALOG_CACHE.clear()
         catalog = MagicMock()
@@ -507,15 +507,15 @@ class TestImageApiSurface:
             assert _select_surface("not-served/model", "https://x/api/v1", "k", "openrouter") == "chat"
 
     def test_failed_probe_costs_nothing(self):
-        import plugins.image_gen.openrouter as orp
-        from plugins.image_gen.openrouter import _select_surface
+        import hermes_agent.plugins.image_gen.openrouter as orp
+        from hermes_agent.plugins.image_gen.openrouter import _select_surface
 
         orp._CATALOG_CACHE.clear()
         with patch("requests.get", side_effect=OSError("network down")):
             assert _select_surface("unknown/model", "https://x/api/v1", "k", "openrouter") == "chat"
 
     def test_surface_can_be_forced_both_ways(self, monkeypatch):
-        from plugins.image_gen.openrouter import DEFAULT_MODEL, _select_surface
+        from hermes_agent.plugins.image_gen.openrouter import DEFAULT_MODEL, _select_surface
 
         monkeypatch.setenv("OPENROUTER_IMAGE_API_SURFACE", "images")
         with patch("requests.get", side_effect=AssertionError("must not probe")):
@@ -528,7 +528,7 @@ class TestImageApiSurface:
     def test_image_api_model_posts_to_images_generations(self):
         with patch(_RUNTIME, return_value=_runtime_ok()), \
              patch("requests.post", return_value=_mock_image_api_response()) as mock_post, \
-             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
+             patch("hermes_agent.plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
             result = _openrouter_image_api().generate(
                 prompt="a red square", aspect_ratio="square", model="openai/gpt-image-2"
             )
@@ -546,7 +546,7 @@ class TestImageApiSurface:
         """The new surface must not capture the existing default chain."""
         with patch(_RUNTIME, return_value=_runtime_ok()), \
              patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
-             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
+             patch("hermes_agent.plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
             result = _openrouter_image_api().generate(prompt="a pet")
 
         assert result["success"] is True
@@ -554,14 +554,14 @@ class TestImageApiSurface:
 
     def test_nous_never_uses_the_image_api(self):
         """Nous Portal proxies chat-completions and has no /images route."""
-        from plugins.image_gen.openrouter import _build_providers
+        from hermes_agent.plugins.image_gen.openrouter import _build_providers
 
         nous_runtime = _runtime_ok(
             provider="nous", base_url="https://inference.nousresearch.com/v1", api_key="nous-tok"
         )
         with patch(_RUNTIME, return_value=nous_runtime), \
              patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
-             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
+             patch("hermes_agent.plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
             nous = {p.name: p for p in _build_providers()}["nous"]
             result = nous.generate(prompt="a pet", model="openai/gpt-image-2")
 
@@ -571,7 +571,7 @@ class TestImageApiSurface:
     # -- per-model parameter filtering ------------------------------------
 
     def test_aspect_ratio_is_mapped_per_model(self):
-        from plugins.image_gen.openrouter import _build_image_api_payload
+        from hermes_agent.plugins.image_gen.openrouter import _build_image_api_payload
 
         gemini, _ = _build_image_api_payload(
             model_id="google/gemini-3.1-flash-lite-image", prompt="p",
@@ -587,7 +587,7 @@ class TestImageApiSurface:
 
     def test_unsupported_parameter_is_dropped_and_explained(self):
         """The endpoint silently ignores unknown fields, so we must filter."""
-        from plugins.image_gen.openrouter import _build_image_api_payload
+        from hermes_agent.plugins.image_gen.openrouter import _build_image_api_payload
 
         payload, notes = _build_image_api_payload(
             model_id="openai/gpt-image-2", prompt="p", semantic_aspect="square",
@@ -603,7 +603,7 @@ class TestImageApiSurface:
         assert payload["background"] == "transparent"
 
     def test_n_is_clamped_to_the_model_cap(self):
-        from plugins.image_gen.openrouter import _build_image_api_payload
+        from hermes_agent.plugins.image_gen.openrouter import _build_image_api_payload
 
         payload, notes = _build_image_api_payload(
             model_id="qwen/qwen-image-3-pro", prompt="p", semantic_aspect="square",
@@ -615,7 +615,7 @@ class TestImageApiSurface:
     def test_grok_imagine_2_knobs_follow_its_catalog_entry(self):
         """``GET /images/models`` gives x-ai/grok-imagine-image-2.0 quality low|medium, 1K/2K and
         the exotic ratios; anything else would be silently ignored upstream."""
-        from plugins.image_gen.openrouter import _build_image_api_payload
+        from hermes_agent.plugins.image_gen.openrouter import _build_image_api_payload
 
         payload, notes = _build_image_api_payload(
             model_id="x-ai/grok-imagine-image-2.0", prompt="p", semantic_aspect="portrait",
@@ -635,7 +635,7 @@ class TestImageApiSurface:
 
     def test_unknown_model_omits_the_aspect_ratio(self):
         """An out-of-enum ratio is a hard 400, so never guess one."""
-        from plugins.image_gen.openrouter import _build_image_api_payload
+        from hermes_agent.plugins.image_gen.openrouter import _build_image_api_payload
 
         payload, notes = _build_image_api_payload(
             model_id="brandnew/model-9", prompt="p", semantic_aspect="landscape",
@@ -645,7 +645,7 @@ class TestImageApiSurface:
         assert any("catalog" in n for n in notes)
 
     def test_env_knob_applies(self, monkeypatch):
-        from plugins.image_gen.openrouter import _build_image_api_payload
+        from hermes_agent.plugins.image_gen.openrouter import _build_image_api_payload
 
         monkeypatch.setenv("OPENROUTER_IMAGE_API_QUALITY", "high")
         payload, _ = _build_image_api_payload(
@@ -666,7 +666,7 @@ class TestImageApiSurface:
 
         with patch(_RUNTIME, return_value=_runtime_ok()), \
              patch("requests.post", return_value=_mock_image_api_response()) as mock_post, \
-             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
+             patch("hermes_agent.plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
             result = _openrouter_image_api().generate(
                 prompt="edit", model="openai/gpt-image-2", reference_image_urls=refs
             )
@@ -695,7 +695,7 @@ class TestImageApiSurface:
         with patch(_RUNTIME, return_value=_runtime_ok()), \
              patch("requests.post", return_value=_mock_image_api_response(
                  usage={"cost": 0.0336, "total_tokens": 1128})), \
-             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
+             patch("hermes_agent.plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
             result = _openrouter_image_api().generate(
                 prompt="p", aspect_ratio="portrait", model="krea/krea-2-medium"
             )
@@ -735,7 +735,7 @@ class TestImageApiSurface:
         try:
             with patch(_RUNTIME, return_value=_runtime_ok()), \
                  patch("requests.post", return_value=response), \
-                 patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
+                 patch("hermes_agent.plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
                 result = _openrouter_image_api().generate(prompt="p", aspect_ratio="portrait", model=model)
         finally:
             aux_accounting.reset_accounting_context(token)
@@ -760,7 +760,7 @@ class TestImageApiSurface:
         ]
         with patch(_RUNTIME, return_value=_runtime_ok()), \
              patch("requests.post", return_value=_mock_image_api_response(entries)), \
-             patch("plugins.image_gen.openrouter.save_b64_image",
+             patch("hermes_agent.plugins.image_gen.openrouter.save_b64_image",
                    side_effect=[Path("/tmp/a.png"), Path("/tmp/b.png")]):
             result = _openrouter_image_api().generate(prompt="p", model="openai/gpt-image-2")
 
@@ -776,7 +776,7 @@ class TestImageApiSurface:
         assert result["error_type"] == "empty_response"
 
     def test_zod_validation_error_is_flattened(self):
-        from plugins.image_gen.openrouter import _extract_image_api_error
+        from hermes_agent.plugins.image_gen.openrouter import _extract_image_api_error
 
         resp = MagicMock()
         resp.json.return_value = {
@@ -806,7 +806,7 @@ class TestImageApiSurface:
         assert "_retryable" not in result
 
     def test_catalog_models_are_offered_only_by_openrouter(self):
-        from plugins.image_gen.openrouter import _IMAGE_API_MODELS, _build_providers
+        from hermes_agent.plugins.image_gen.openrouter import _IMAGE_API_MODELS, _build_providers
 
         by_name = {p.name: p for p in _build_providers()}
         # The tables' contract, not OpenRouter's live catalog: offline, list_models serves them.
@@ -820,7 +820,7 @@ class TestImageApiSurface:
 
 class TestRegistration:
     def test_register_both(self):
-        from plugins.image_gen.openrouter import register
+        from hermes_agent.plugins.image_gen.openrouter import register
 
         ctx = MagicMock()
         register(ctx)

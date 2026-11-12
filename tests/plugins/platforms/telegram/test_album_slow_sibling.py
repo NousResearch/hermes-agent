@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram import telegram_media_group
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram import telegram_media_group
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_documents import _make_file_obj, _make_message, _make_photo
 from tests.waiting import async_wait_until
 
@@ -58,7 +58,7 @@ async def _send_album(adapter, release, *, stall_s: float) -> None:
 async def test_album_waits_for_a_sibling_still_downloading():
     adapter = _adapter()
     release = asyncio.Event()
-    with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
+    with patch("hermes_agent.plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
                new=AsyncMock(side_effect=["/tmp/front.jpg", "/tmp/back.jpg"])):
         await _send_album(adapter, release, stall_s=1.2)  # past both the old 0.8 s window and the debounce
         await async_wait_until(lambda: adapter.handle_message.await_count, timeout=5)
@@ -74,7 +74,7 @@ async def test_a_stuck_sibling_does_not_hold_the_album_forever(monkeypatch):
     monkeypatch.setattr(telegram_media_group, "MEDIA_GROUP_MAX_WAIT_SECONDS", 0.3)
     adapter = _adapter()
     release = asyncio.Event()
-    with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
+    with patch("hermes_agent.plugins.platforms.telegram.adapter.cache_image_from_bytes_async",
                new=AsyncMock(side_effect=["/tmp/front.jpg", "/tmp/back.jpg"])):
         first = _make_message(caption="front", photo=[_make_photo(_make_file_obj(b"first"))], media_group_id="mg")
         await adapter._handle_media_message(_make_update(first), MagicMock())

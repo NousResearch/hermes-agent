@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from plugins.platforms.feishu.adapter import FeishuAdapter
+from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
 
 def _bare_adapter() -> FeishuAdapter:

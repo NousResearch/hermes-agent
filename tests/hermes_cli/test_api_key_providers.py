@@ -691,7 +691,7 @@ class TestMinimaxOAuthProvider:
 
     def test_minimax_oauth_aux_model_registered(self):
         # Aux model for the minimax-oauth provider now lives on the
-        # ProviderProfile (plugins/model-providers/minimax/__init__.py),
+        # ProviderProfile (hermes_agent/plugins/model-providers/minimax/__init__.py),
         # not the legacy _API_KEY_PROVIDER_AUX_MODELS dict in
         # hermes_agent/agent/auxiliary_client.py. The profile layer is the source
         # of truth; _get_aux_model_for_provider() reads from it first
@@ -1007,7 +1007,7 @@ class TestKilocodePricingFetcher:
 
 
 class TestDeepInfraProviderProfile:
-    """plugins/model-providers/deepinfra registration + aux resolution."""
+    """hermes_agent/plugins/model-providers/deepinfra registration + aux resolution."""
 
     def test_profile_registered_with_alias_and_aux(self):
         from hermes_agent.providers import get_provider_profile

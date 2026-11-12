@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 from hermes_agent.agent import video_gen_registry
-from plugins.video_gen.openrouter import OpenRouterVideoGenProvider, _build_payload
+from hermes_agent.plugins.video_gen.openrouter import OpenRouterVideoGenProvider, _build_payload
 
 _VEO = {"id": "google/veo-3.1", "name": "Google: Veo 3.1", "supported_durations": [4, 6, 8],
         "supported_resolutions": ["720p", "1080p", "4K"], "supported_aspect_ratios": ["16:9", "9:16"],
@@ -100,13 +100,13 @@ def test_generate_submits_polls_and_downloads_from_configured_origin(monkeypatch
     provider = _provider(monkeypatch, [_VEO], configured="google/veo-3.1")
     session = _Session()
     monkeypatch.setattr(provider, "_session", lambda: session)
-    monkeypatch.setattr("plugins.video_gen.openrouter.time.sleep", lambda s: None)
+    monkeypatch.setattr("hermes_agent.plugins.video_gen.openrouter.time.sleep", lambda s: None)
     saved = []
 
     def fake_save(url, **kwargs):
         saved.append((url, kwargs))
         return tmp_path / "clip.mp4"
-    monkeypatch.setattr("plugins.video_gen.openrouter.save_url_video", fake_save)
+    monkeypatch.setattr("hermes_agent.plugins.video_gen.openrouter.save_url_video", fake_save)
 
     result = provider.generate("a fox", duration=6, resolution="1080p", aspect_ratio="16:9", audio=True)
 
@@ -126,13 +126,13 @@ def _generate_capturing(monkeypatch, tmp_path, provider):
     """``generate()`` over the fake transport; returns the result and every Authorization header sent."""
     session = _Session()
     monkeypatch.setattr(provider, "_session", lambda: session)
-    monkeypatch.setattr("plugins.video_gen.openrouter.time.sleep", lambda s: None)
+    monkeypatch.setattr("hermes_agent.plugins.video_gen.openrouter.time.sleep", lambda s: None)
     saved = []
 
     def fake_save(url, **kwargs):
         saved.append((url, kwargs))
         return tmp_path / "clip.mp4"
-    monkeypatch.setattr("plugins.video_gen.openrouter.save_url_video", fake_save)
+    monkeypatch.setattr("hermes_agent.plugins.video_gen.openrouter.save_url_video", fake_save)
     result = provider.generate("a fox")
     bearers = [kwargs["headers"]["Authorization"] for _, kwargs in session.posts + session.gets + saved]
     return result, session, bearers
@@ -232,7 +232,7 @@ def test_generate_rejects_local_image_paths_before_spending(monkeypatch):
 
 def test_register_exposes_openrouter_in_the_video_gen_picker(monkeypatch):
     from hermes_agent.hermes_cli import plugins as plugin_loader, tools_config
-    from plugins.video_gen.openrouter import register
+    from hermes_agent.plugins.video_gen.openrouter import register
 
     class _Context:
         def register_video_gen_provider(self, provider):

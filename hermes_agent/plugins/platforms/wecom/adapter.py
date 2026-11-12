@@ -36,9 +36,9 @@ from hermes_agent.utils import env_float
 
 from hermes_agent.gateway.platforms._shared import get_scoped_secret as _get_scoped_secret, send_error
 from hermes_agent.gateway.platforms.send_targets import StandaloneSendPolicy, parse_nonempty
-from plugins.platforms.wecom.send_queue import ChatSendQueueMixin
-from plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
-from plugins.platforms.wecom.streaming import (
+from hermes_agent.plugins.platforms.wecom.send_queue import ChatSendQueueMixin
+from hermes_agent.plugins.platforms.wecom.media import WeComMediaMixin, APP_CMD_SEND
+from hermes_agent.plugins.platforms.wecom.streaming import (
     WeComStreamMixin, ReplyQueue, StreamTurn, APP_CMD_RESPONSE,
     STREAM_NOT_SUBSCRIBED_ERRCODE, MAX_STREAM_CONTENT_LENGTH,
     STREAM_SAFE_DURATION_SECONDS, STREAM_KEEPALIVE_INTERVAL_SECONDS, STREAM_KEEPALIVE_ENABLED_DEFAULT,
@@ -829,7 +829,7 @@ def _callback_is_connected(config) -> bool:
 
 
 def _build_callback_adapter(config):
-    from plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
+    from hermes_agent.plugins.platforms.wecom.callback_adapter import WecomCallbackAdapter
     return WecomCallbackAdapter(config)
 
 
@@ -865,7 +865,7 @@ def register(ctx) -> None:
         env_overrides=gateway_env.ENV_OVERRIDES,
         env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS, **gateway_env.AUTHZ,
     )
-    from plugins.platforms.wecom.callback_adapter import check_wecom_callback_requirements, ensure_wecom_callback_requirements
+    from hermes_agent.plugins.platforms.wecom.callback_adapter import check_wecom_callback_requirements, ensure_wecom_callback_requirements
     ctx.register_platform(
         name="wecom_callback", label="WeCom Callback (self-built apps)", adapter_factory=_build_callback_adapter,
         dashboard_label="WeCom (app)",

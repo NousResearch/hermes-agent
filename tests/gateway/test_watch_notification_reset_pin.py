@@ -18,7 +18,7 @@ async def _gateway(monkeypatch):
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session_results import execution_result
     from hermes_agent.gateway.session_authority import SessionAuthority, initialize_session_authority
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv('DISCORD_ALLOWED_USERS', '42')
     runner = GatewayRunner(GatewayConfig())

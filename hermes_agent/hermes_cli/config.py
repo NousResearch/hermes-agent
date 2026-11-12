@@ -3815,7 +3815,7 @@ def _platform_plugin_manifests(home: Optional[Path] = None, source: PlatformMani
     """Yield ``(dir_name, manifest_dict)`` for every platform plugin manifest (see
     :func:`_platform_manifest_paths`). ``strict`` raises when a manifest cannot be read instead of
     skipping it: the child-env scrub must not lose a declared secret to an I/O error. Only a
-    manifest known to be a platform's counts (the bundled and ``plugins/platforms/`` dirs); a
+    manifest known to be a platform's counts (the bundled and ``hermes_agent/plugins/platforms/`` dirs); a
     flat ``plugins/*`` manifest proves it is one only by its content, so an unreadable one is
     skipped with a warning, as is an unsearchable plugin directory. A manifest that does not
     parse declares nothing (its adapter cannot load either) and is skipped. Every skip is appended

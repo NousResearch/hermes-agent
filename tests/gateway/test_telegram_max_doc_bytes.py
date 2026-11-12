@@ -7,7 +7,7 @@ of `extra.base_url` as the explicit opt-in to the higher cap.
 
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def test_max_doc_bytes_raised_to_2gb_when_base_url_set():

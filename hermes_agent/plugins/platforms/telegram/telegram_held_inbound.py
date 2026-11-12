@@ -10,7 +10,7 @@ from typing import Optional
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.gateway.platforms.helpers import cancel_task
 
-logger = logging.getLogger("plugins.platforms.telegram.adapter")
+logger = logging.getLogger("hermes_agent.plugins.platforms.telegram.adapter")
 
 # Process-wide, so positions stay comparable when a replacement adapter adopts a predecessor's queue.
 _ARRIVALS = itertools.count()
@@ -43,7 +43,7 @@ class TelegramHeldInboundMixin:
         The fence is set even when the updater is not running: a conflict/network recovery sleeping
         between its stop and its restart would otherwise restart polling after the handler is gone.
         """
-        from plugins.platforms.telegram.adapter import _UPDATER_STOP_TIMEOUT, _await_with_thread_deadline
+        from hermes_agent.plugins.platforms.telegram.adapter import _UPDATER_STOP_TIMEOUT, _await_with_thread_deadline
         if self._teardown_started or self._webhook_mode:
             return
         self._polling_teardown_started = True

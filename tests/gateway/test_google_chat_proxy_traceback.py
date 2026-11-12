@@ -22,7 +22,7 @@ def _through_env_proxy(*_args, **_kwargs):  # the Google client's transport: req
 
 
 def _adapter():
-    from plugins.platforms.google_chat.adapter import GoogleChatAdapter
+    from hermes_agent.plugins.platforms.google_chat.adapter import GoogleChatAdapter
 
     adapter = GoogleChatAdapter(PlatformConfig(enabled=True, extra={"project_id": "p"}))
     adapter._chat_api = MagicMock()
@@ -54,7 +54,7 @@ def _rendered(caplog):
 
 
 def _send(monkeypatch, caplog, op, env):
-    from plugins.platforms.google_chat import adapter as gc
+    from hermes_agent.plugins.platforms.google_chat import adapter as gc
 
     monkeypatch.setattr(gc, "HttpError", http_error)  # as bound once connect() loads the Google client
     for name in ENV_PROXY_VARS:
@@ -93,7 +93,7 @@ def test_httplib2_unparseable_secret_redacts_even_under_no_proxy_star(monkeypatc
 
     adapter = _adapter()
     adapter._create_message = _async(_through_httplib2)
-    from plugins.platforms.google_chat import adapter as gc
+    from hermes_agent.plugins.platforms.google_chat import adapter as gc
 
     monkeypatch.setattr(gc, "HttpError", http_error)
     for name in ENV_PROXY_VARS:

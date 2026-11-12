@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from plugins.web._common import (
+from hermes_agent.plugins.web._common import (
     BaseWebSearchProvider, cached_sdk_client, document, exa_crawl_status, keyless_extract, keyless_search, keyless_variant_schema,
     provider_env, run_extract, run_search, search_ok, use_keyless, vendor_error_entry, web_hit,
 )

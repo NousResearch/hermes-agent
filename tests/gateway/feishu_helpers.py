@@ -37,7 +37,7 @@ def make_adapter_skeleton(
     group_policy: str = "allowlist",
     allow_all_dm: bool = False,
 ) -> Any:
-    from plugins.platforms.feishu.adapter import FeishuAdapter
+    from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
     adapter = object.__new__(FeishuAdapter)
     adapter._bot_open_id = bot_open_id

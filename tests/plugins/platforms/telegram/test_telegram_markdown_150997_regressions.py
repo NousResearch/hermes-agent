@@ -6,8 +6,8 @@ import time
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
-from plugins.platforms.telegram.telegram_markdown import escape_rich_currency_dollars
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.telegram_markdown import escape_rich_currency_dollars
 from tests.fakes.platforms.telegram_standin import mdv2_error
 
 

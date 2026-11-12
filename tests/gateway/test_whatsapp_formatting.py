@@ -29,7 +29,7 @@ def _whatsapp_open_optin(monkeypatch):
 
 def _make_adapter():
     """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -223,7 +223,7 @@ class TestBridgeEventMetadata:
         quoted_image_path = cache_dir / "img_original.jpg"
         quoted_image_path.write_bytes(b"fake-jpeg-bytes")
 
-        from plugins.platforms.whatsapp import adapter as adapter_module
+        from hermes_agent.plugins.platforms.whatsapp import adapter as adapter_module
         monkeypatch.setattr(
             adapter_module, "_is_allowed_bridge_path", lambda url: True,
         )
@@ -263,7 +263,7 @@ class TestBridgeEventMetadata:
         adapter = _make_adapter()
         doc_path = tmp_path / "doc_abc_notes.txt"
         doc_path.write_text(content, encoding="utf-8")
-        from plugins.platforms.whatsapp import adapter as adapter_module
+        from hermes_agent.plugins.platforms.whatsapp import adapter as adapter_module
         monkeypatch.setattr(adapter_module, "_is_allowed_bridge_path", lambda url: True)
 
         event = await adapter._build_message_event({
@@ -283,7 +283,7 @@ class TestBridgeEventMetadata:
         # respect the same guard as direct media, not bypass it.
         adapter = _make_adapter()
 
-        from plugins.platforms.whatsapp import adapter as adapter_module
+        from hermes_agent.plugins.platforms.whatsapp import adapter as adapter_module
         monkeypatch.setattr(
             adapter_module, "_is_allowed_bridge_path", lambda url: False,
         )

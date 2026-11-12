@@ -4,7 +4,7 @@ There are two ways to add a platform to the Hermes gateway:
 
 ## Plugin Path (Recommended for Community/Third-Party)
 
-Create a plugin directory in `~/.hermes/plugins/` (or under `plugins/platforms/`
+Create a plugin directory in `~/.hermes/plugins/` (or under `hermes_agent/plugins/platforms/`
 for bundled plugins) with a `plugin.yaml` and `adapter.py`.  The adapter
 inherits from `BasePlatformAdapter` and registers via
 `ctx.register_platform()` in the `register(ctx)` entry point.  This requires
@@ -55,7 +55,7 @@ time-window constraint that the base adapter can't anticipate (LINE's
 adapter can override `_keep_typing` to layer a mid-flight bubble at a
 threshold without expanding the kwarg surface. Always
 `await super()._keep_typing(...)` so the typing heartbeat keeps running,
-and tear down your side task in `finally`. See `plugins/platforms/line/`
+and tear down your side task in `finally`. See `hermes_agent/plugins/platforms/line/`
 for the full pattern (Template Buttons postback at 45s, `RequestCache`
 state machine, `interrupt_session_activity` override for `/stop`
 orphans) and the developer-guide page for the prose walkthrough.
@@ -64,8 +64,8 @@ orphans) and the developer-guide page for the prose walkthrough.
 two transport modes the user picks between — unofficial vs official
 APIs, polling vs websocket, library A vs library B — the right
 structure is two adapters that share a behavior mixin. WhatsApp does
-this: `plugins/platforms/whatsapp/adapter.py` (Baileys bridge) and
-`plugins/platforms/whatsapp_cloud/adapter.py` (Meta Cloud API) both inherit
+this: `hermes_agent/plugins/platforms/whatsapp/adapter.py` (Baileys bridge) and
+`hermes_agent/plugins/platforms/whatsapp_cloud/adapter.py` (Meta Cloud API) both inherit
 from `WhatsAppBehaviorMixin` in `hermes_agent/gateway/platforms/whatsapp_common.py`.
 The mixin owns gating, allow-lists, mention parsing, broadcast
 filters, and the WhatsApp-flavored markdown conversion — everything
@@ -76,8 +76,8 @@ come **first** in the bases list — `class WhatsAppAdapter(Mixin,
 BasePlatformAdapter)` — so the mixin's `format_message` overrides
 `BasePlatformAdapter`'s generic default.
 
-See `plugins/platforms/irc/`, `plugins/platforms/teams/`, and
-`plugins/platforms/google_chat/` for complete working examples, and
+See `hermes_agent/plugins/platforms/irc/`, `hermes_agent/plugins/platforms/teams/`, and
+`hermes_agent/plugins/platforms/google_chat/` for complete working examples, and
 `website/docs/developer-guide/adding-platform-adapters.md` for the full
 plugin guide with code examples and hook documentation.
 
@@ -137,7 +137,7 @@ If your platform supports interactive button/menu messages, implement these for 
 | `send_model_picker(...)` | Interactive `/model` picker. Used by Telegram, Discord, and Slack (Socket Mode). |
 | `send_choice_picker(...)` | Flat single-level picker for finite-choice commands (`/reasoning`, `/fast`). Implemented by Telegram (inline keyboard), Discord (select menu), Matrix (reactions), and Feishu (interactive card buttons). Platforms without it fall back to the text status card automatically. |
 
-See `plugins/platforms/telegram/adapter.py`, `plugins/platforms/discord/adapter.py`, and `plugins/platforms/whatsapp_cloud/adapter.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
+See `hermes_agent/plugins/platforms/telegram/adapter.py`, `hermes_agent/plugins/platforms/discord/adapter.py`, and `hermes_agent/plugins/platforms/whatsapp_cloud/adapter.py` for reference implementations. The button-callback id convention (`cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>`) is shared across adapters — match it so the gateway-side resolvers work without modification.
 
 ### Required function
 
@@ -178,7 +178,7 @@ class Platform(Enum):
 ```
 
 Env credentials reach the config through the plugin's own `gateway_env.py` (the template is
-`plugins/platforms/telegram/gateway_env.py`), passed to `ctx.register_platform` as
+`hermes_agent/plugins/platforms/telegram/gateway_env.py`), passed to `ctx.register_platform` as
 `env_overrides=gateway_env.ENV_OVERRIDES` and `env_enable_credentials=gateway_env.ENV_ENABLE_CREDENTIALS`.
 Steps run in order; `EnvCred` (`hermes_agent/gateway/platform_env.py`) enables the platform when the named env
 vars resolve and copies them into `extra`. Import only `gateway.*` there: core reads the file

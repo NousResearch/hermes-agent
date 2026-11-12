@@ -86,7 +86,7 @@ def computer_use_status(driver_cmd: Optional[str] = None) -> dict[str, Any]:
     """OS-aware readiness for the desktop card; key order is an API payload contract. ``ready`` is the single signal the
     UI keys off: macOS = both TCC grants, elsewhere = driver health (no TCC model); ``None`` = unknown (binary missing /
     probe failed). ``can_grant`` is macOS-only."""
-    from plugins.computer_use import DEFAULT_BACKEND, configured_backend_name, get_active_provider
+    from hermes_agent.plugins.computer_use import DEFAULT_BACKEND, configured_backend_name, get_active_provider
     from hermes_agent.tools.computer_use.cua_backend_driver import resolve_cua_driver_cmd  # same resolver as the tool itself
     plat, name = sys.platform, configured_backend_name()
     binary = resolve_cua_driver_cmd(driver_cmd) if name == DEFAULT_BACKEND else None

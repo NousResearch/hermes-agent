@@ -16,7 +16,7 @@ from hermes_agent.gateway.config import PlatformConfig
 
 def _make_adapter(tmp_path=None):
     """Create a MatrixAdapter with mocked config."""
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     config = PlatformConfig(
         enabled=True,
@@ -380,7 +380,7 @@ async def test_dm_mention_thread_creates_thread(monkeypatch):
 def test_yaml_bridge_respects_scope_and_existing_env(monkeypatch, existing, secondary):
     import os
     from hermes_agent.agent.secret_scope import set_multiplex_active, set_secret_scope, reset_secret_scope
-    from plugins.platforms.matrix.adapter import _apply_yaml_config
+    from hermes_agent.plugins.platforms.matrix.adapter import _apply_yaml_config
 
     expected = {"MATRIX_REQUIRE_MENTION": "false", "MATRIX_AUTO_THREAD": "false",
                 "MATRIX_FREE_RESPONSE_ROOMS": "!one:example.org,!two:example.org"}

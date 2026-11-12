@@ -29,7 +29,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-import plugins.dashboard_auth.nous as nous_plugin
+import hermes_agent.plugins.dashboard_auth.nous as nous_plugin
 from hermes_agent.hermes_cli.dashboard_auth import (
     InvalidCodeError,
     ProviderError,
@@ -355,7 +355,7 @@ class TestCompleteLogin:
                 "refresh_token": "rt_initial_value",
             },
         )
-        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
+        with patch("hermes_agent.plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
             session = provider.complete_login(
                 code="abc",
                 state="state-val",
@@ -375,7 +375,7 @@ class TestCompleteLogin:
 
     def test_400_raises_invalid_code(self, provider):
         mock_resp = self._mock_post(400, {"error": "invalid_grant"})
-        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
+        with patch("hermes_agent.plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
             with pytest.raises(InvalidCodeError, match="invalid_grant"):
                 provider.complete_login(
                     code="bad", state="s", code_verifier="v",
@@ -385,7 +385,7 @@ class TestCompleteLogin:
     def test_500_raises_provider_error(self, provider):
         mock_resp = self._mock_post(500, "internal server error", ctype="text/plain")
         mock_resp.text = "internal server error"
-        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
+        with patch("hermes_agent.plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
             with pytest.raises(ProviderError, match="500"):
                 provider.complete_login(
                     code="x", state="s", code_verifier="v",
@@ -394,7 +394,7 @@ class TestCompleteLogin:
 
     def test_missing_access_token_raises(self, provider):
         mock_resp = self._mock_post(200, {"token_type": "Bearer"})
-        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
+        with patch("hermes_agent.plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
             with pytest.raises(ProviderError, match="access_token"):
                 provider.complete_login(
                     code="x", state="s", code_verifier="v",
@@ -406,7 +406,7 @@ class TestCompleteLogin:
         mock_resp = self._mock_post(
             200, {"access_token": access_token, "token_type": "DPoP"}
         )
-        with patch("plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
+        with patch("hermes_agent.plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp):
             with pytest.raises(ProviderError, match="token_type"):
                 provider.complete_login(
                     code="x", state="s", code_verifier="v",
@@ -415,7 +415,7 @@ class TestCompleteLogin:
 
     def test_network_error_raises_provider_error(self, provider):
         with patch(
-            "plugins.dashboard_auth._shared.httpx.post",
+            "hermes_agent.plugins.dashboard_auth._shared.httpx.post",
             side_effect=httpx.ConnectError("conn refused"),
         ):
             with pytest.raises(ProviderError, match="unreachable"):
@@ -458,7 +458,7 @@ class TestVerifySession:
         rejection is a 401, so the warning log is where drift shows up."""
         import logging
         token = _mint_token(rsa_keypair, iss="https://evil.example")
-        with caplog.at_level(logging.WARNING, logger="plugins.dashboard_auth._shared"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.plugins.dashboard_auth._shared"):
             assert provider.verify_session(access_token=token) is None
         msg = caplog.text
         # Both the observed (token) and expected (configured) values appear.
@@ -474,7 +474,7 @@ class TestVerifySession:
     ):
         import logging
         token = _mint_token(rsa_keypair, oauth_contract_version=None)
-        with caplog.at_level(logging.WARNING, logger="plugins.dashboard_auth.nous"):
+        with caplog.at_level(logging.WARNING, logger="hermes_agent.plugins.dashboard_auth.nous"):
             session = provider.verify_session(access_token=token)
         assert session is not None
         assert any(
@@ -529,7 +529,7 @@ class TestRefreshAndRevoke:
             },
         )
         with patch(
-            "plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp
+            "hermes_agent.plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp
         ) as mock_post:
             session = provider.refresh_session(refresh_token="rt_old_value")
 
@@ -559,7 +559,7 @@ class TestRefreshAndRevoke:
             {"access_token": access_token, "token_type": "Bearer", "refresh_token": "rt2"},
         )
         with patch(
-            "plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp
+            "hermes_agent.plugins.dashboard_auth._shared.httpx.post", return_value=mock_resp
         ):
             with pytest.raises(RefreshExpiredError, match="verification failed"):
                 provider.refresh_session(refresh_token="rt_old")

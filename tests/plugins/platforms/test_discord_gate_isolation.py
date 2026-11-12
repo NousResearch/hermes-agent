@@ -22,7 +22,7 @@ import os
 import pytest
 
 from hermes_agent.gateway.config import Platform, PlatformConfig
-from plugins.platforms.discord.adapter import DiscordAdapter, _GATE_ENV_KEYS
+from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter, _GATE_ENV_KEYS
 
 
 GATE_VARS = [
@@ -298,7 +298,7 @@ class TestYamlBridgeSeeding:
 
     def test_seeds_extra_and_bridges_env_single_profile(self, monkeypatch):
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.discord.adapter import _apply_yaml_config
+        from hermes_agent.plugins.platforms.discord.adapter import _apply_yaml_config
 
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
         seeded = _apply_yaml_config(
@@ -321,7 +321,7 @@ class TestYamlBridgeSeeding:
 
     def test_profile_scoped_load_skips_env_bridge(self, monkeypatch):
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.discord.adapter import _apply_yaml_config
+        from hermes_agent.plugins.platforms.discord.adapter import _apply_yaml_config
 
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
         token = secret_scope.set_secret_scope({"SOME": "scope"})
@@ -343,7 +343,7 @@ class TestYamlBridgeSeeding:
         """End-to-end shape of the original repro: profile A bridges env first;
         profile B (scoped load) still gets ITS channels via extras."""
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.discord.adapter import _apply_yaml_config
+        from hermes_agent.plugins.platforms.discord.adapter import _apply_yaml_config
 
         # Profile A: single first load (multiplex flag not yet set).
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
@@ -379,7 +379,7 @@ class TestTelegramGateIsolation:
 
     def test_scoped_gate_env_prefers_profile_scope(self, monkeypatch):
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.telegram.adapter import _scoped_gate_env
+        from hermes_agent.plugins.platforms.telegram.adapter import _scoped_gate_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111111111")
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
@@ -395,7 +395,7 @@ class TestTelegramGateIsolation:
         """Under multiplex, a scope WITHOUT the key must not fall through to
         another profile's process-env value."""
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.telegram.adapter import _scoped_gate_env
+        from hermes_agent.plugins.platforms.telegram.adapter import _scoped_gate_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111111111")
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
@@ -407,7 +407,7 @@ class TestTelegramGateIsolation:
 
     def test_scoped_gate_env_single_profile_fallback(self, monkeypatch):
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.telegram.adapter import _scoped_gate_env
+        from hermes_agent.plugins.platforms.telegram.adapter import _scoped_gate_env
 
         monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111111111")
         monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
@@ -415,7 +415,7 @@ class TestTelegramGateIsolation:
 
     def test_telegram_yaml_bridge_skipped_for_scoped_profile(self, monkeypatch):
         from hermes_agent.agent import secret_scope
-        from plugins.platforms.telegram.adapter import _apply_yaml_config
+        from hermes_agent.plugins.platforms.telegram.adapter import _apply_yaml_config
 
         monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
         monkeypatch.delenv("TELEGRAM_ALLOWED_USERS", raising=False)

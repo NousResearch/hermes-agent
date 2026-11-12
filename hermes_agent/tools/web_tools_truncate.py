@@ -15,7 +15,7 @@ logger = logging.getLogger("hermes_agent.tools.web_tools")
 # Per-page char budget sent to the model (override: web.extract_char_limit); larger pages are head+tail
 # truncated, full text stored on disk.
 # Per-vendor client construction, request helpers and response normalizers live in
-# plugins.web.<vendor>.provider (parallel / tavily / firecrawl) since PR #25182.
+# hermes_agent.plugins.web.<vendor>.provider (parallel / tavily / firecrawl) since PR #25182.
 DEFAULT_EXTRACT_CHAR_LIMIT = 15000
 # Ceiling on the full-text file written to cache/web so a multi-MB page can't write unbounded bytes on
 # every extract; the model only ever sees char_limit.

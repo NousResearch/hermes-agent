@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-import plugins.dashboard_auth.nous as nous_plugin
+import hermes_agent.plugins.dashboard_auth.nous as nous_plugin
 from hermes_agent.hermes_cli import web_server
 from hermes_agent.hermes_cli.dashboard_auth import clear_providers, register_provider
 from hermes_agent.hermes_cli.web_routers import peer as peer_routes

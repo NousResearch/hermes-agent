@@ -247,7 +247,7 @@ def _collect_memory_provider_external_paths() -> list[Path]:
     """Existing paths the active memory provider declares via ``backup_paths()``; ``[]`` on any
     provider failure (backup must never fail because of a flaky plugin)."""
     try:
-        from plugins.memory import _get_active_memory_provider, load_memory_provider
+        from hermes_agent.plugins.memory import _get_active_memory_provider, load_memory_provider
         active = _get_active_memory_provider()
         provider = load_memory_provider(active) if active else None
     except Exception:

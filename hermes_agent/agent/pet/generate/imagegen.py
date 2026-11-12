@@ -60,7 +60,7 @@ def _available(name: str):
 def _managed_krea_model() -> str | None:
     """The stored native Krea id when the stored selection routes to the Krea gateway (a managed
     ``nous`` pick, or no provider set), else ``None``."""
-    from plugins.image_gen._common import load_image_gen_config
+    from hermes_agent.plugins.image_gen._common import load_image_gen_config
     from hermes_agent.tools.image_generation_managed import KREA, managed_route
 
     cfg = load_image_gen_config()

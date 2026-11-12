@@ -69,7 +69,7 @@ class DiscordProgressCaptureAdapter(ProgressCaptureAdapter):
         super().__init__(platform=Platform.DISCORD)
 
     def format_tool_preview(self, preview, **kwargs):
-        from plugins.platforms.discord.adapter import DiscordAdapter
+        from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
         return DiscordAdapter.format_tool_preview(self, preview, **kwargs)
 

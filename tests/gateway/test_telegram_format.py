@@ -17,8 +17,8 @@ from hermes_agent.gateway.config import PlatformConfig
 # ---------------------------------------------------------------------------
 # Mock the telegram package if it's not installed
 # ---------------------------------------------------------------------------
-from plugins.platforms.telegram.adapter import TelegramAdapter, _strip_mdv2
-from plugins.platforms.telegram.telegram_markdown import _escape_mdv2, _wrap_markdown_tables
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter, _strip_mdv2
+from hermes_agent.plugins.platforms.telegram.telegram_markdown import _escape_mdv2, _wrap_markdown_tables
 
 
 def _assert_balanced_mdv2_code_entities(text: str) -> None:
@@ -709,7 +709,7 @@ class TestEditMessageStreamingSafety:
     def _real_link_preview_options(self, monkeypatch):
         # The suite's telegram stub makes LinkPreviewOptions a MagicMock whose
         # attributes are always truthy mocks; record the real kwargs instead.
-        import plugins.platforms.telegram.adapter as tg_adapter
+        import hermes_agent.plugins.platforms.telegram.adapter as tg_adapter
 
         monkeypatch.setattr(
             tg_adapter, "LinkPreviewOptions", lambda **kw: SimpleNamespace(**kw)

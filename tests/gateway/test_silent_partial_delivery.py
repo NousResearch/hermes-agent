@@ -404,7 +404,7 @@ async def test_recordless_flag_with_dead_transport_leaves_normal_send(
 
 class TestDiscordTransportClassification:
     def _adapter_module(self):
-        import plugins.platforms.discord.adapter as mod
+        import hermes_agent.plugins.platforms.discord.adapter as mod
 
         return mod
 

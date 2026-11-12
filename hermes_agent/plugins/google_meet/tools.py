@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
-from plugins.google_meet import process_manager as pm
+from hermes_agent.plugins.google_meet import process_manager as pm
 
 
 def check_meet_requirements() -> bool:
@@ -26,8 +26,8 @@ def check_meet_requirements() -> bool:
 
 def resolve_node(node: str):
     """``(NodeClient, node_name)`` for *node* (``'auto'`` = the sole registered node), or ``(None, None)``."""
-    from plugins.google_meet.node.registry import NodeRegistry
-    from plugins.google_meet.node.client import NodeClient
+    from hermes_agent.plugins.google_meet.node.registry import NodeRegistry
+    from hermes_agent.plugins.google_meet.node.client import NodeClient
     entry = NodeRegistry().resolve(node if node != "auto" else None)
     if entry is None:
         return None, None

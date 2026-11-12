@@ -80,7 +80,7 @@ async def test_valid_fire_reservation_blocks_drain_before_body_and_task(adapter,
 
     monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", BlockingProvider)
     monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        "hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
     app = _create_app(adapter)
@@ -121,7 +121,7 @@ async def test_admission_failure_is_retryable_and_never_dispatches(adapter, monk
     provider = FailingProvider()
     monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
     monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        "hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
 
@@ -152,7 +152,7 @@ async def test_accepted_response_waits_for_durable_admission(adapter, monkeypatc
     provider = BlockingAdmissionProvider()
     monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
     monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        "hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
 
@@ -190,7 +190,7 @@ async def test_missing_job_id_400(adapter, monkeypatch):
     spy = _SpyProvider()
     monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
     monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        "hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
 
@@ -210,7 +210,7 @@ async def test_fire_does_not_require_api_server_key(adapter, monkeypatch):
     spy = _SpyProvider()
     monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
     monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        "hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
 
@@ -246,7 +246,7 @@ async def test_sync_verifier_runs_off_the_event_loop(adapter, monkeypatch):
     spy = _SpyProvider()
     monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: spy)
     monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        "hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: blocking_verifier,
     )
 
@@ -275,7 +275,7 @@ async def test_crashing_verifier_fails_closed_401(adapter, monkeypatch):
         raise RuntimeError("JWKS endpoint unreachable")
 
     monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        "hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: exploding_verifier,
     )
 
@@ -302,7 +302,7 @@ async def test_async_verifier_is_awaited(adapter, monkeypatch):
         return {"purpose": "cron_fire", "aud": "agent:x"}
 
     monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        "hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: async_verifier,
     )
 
@@ -350,7 +350,7 @@ async def test_fire_passes_live_adapters_to_provider(adapter, monkeypatch):
         lambda: _AdapterSpyProvider(),
     )
     monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        "hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
 
@@ -386,7 +386,7 @@ async def test_estop_refuses_fire_before_admission_and_lifts_on_resume(adapter, 
     provider = _SpyProvider()
     monkeypatch.setattr("hermes_agent.cron.scheduler_provider.resolve_cron_scheduler", lambda: provider)
     monkeypatch.setattr(
-        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        "hermes_agent.plugins.cron_providers.chronos.verify.get_fire_verifier",
         lambda: (lambda **kw: {"purpose": "cron_fire"}),
     )
 

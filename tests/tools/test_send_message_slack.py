@@ -1,7 +1,7 @@
 """Slack-specific send_message delivery regressions.
 
 Salvaged from #47547 and adapted to the post-#41112 plugin layout: the legacy
-``_send_slack`` helper moved to ``plugins/platforms/slack/adapter.py::
+``_send_slack`` helper moved to ``hermes_agent/plugins/platforms/slack/adapter.py::
 _standalone_send`` and text sends now route through ``_send_via_adapter``
 (live adapter first, registry standalone fallback).
 """
@@ -86,7 +86,7 @@ class _SlackSession:
 @pytest.fixture
 def _standalone_send(monkeypatch):
     _ensure_slack_mock(monkeypatch)
-    from plugins.platforms.slack import adapter as slack_adapter
+    from hermes_agent.plugins.platforms.slack import adapter as slack_adapter
 
     return slack_adapter._standalone_send
 

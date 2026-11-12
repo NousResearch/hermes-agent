@@ -5,8 +5,8 @@ import time
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram import telegram_markdown
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram import telegram_markdown
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.fakes.platforms.telegram_standin import mdv2_error
 
 
@@ -219,6 +219,6 @@ def test_link_targets_telegram_cannot_open_degrade_to_label(adapter, markdown, e
 
 @pytest.mark.parametrize("span", ["``[k](v w)``", "``a ` [k](v w)``", "`[k](v w)`"])
 def test_link_shaped_text_inside_a_code_span_stays_verbatim(span):
-    from plugins.platforms.telegram.telegram_markdown import degrade_unrenderable_links
+    from hermes_agent.plugins.platforms.telegram.telegram_markdown import degrade_unrenderable_links
 
     assert degrade_unrenderable_links(f"use {span} then [x](y)") == f"use {span} then x"

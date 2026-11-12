@@ -64,7 +64,7 @@ def _build_telegram_stubs():
 @pytest.fixture
 def telegram_adapter_cls(monkeypatch):
     """Import TelegramAdapter without leaking temporary telegram stubs."""
-    module_name = "plugins.platforms.telegram.adapter"
+    module_name = "hermes_agent.plugins.platforms.telegram.adapter"
     existing_module = sys.modules.get(module_name)
     if existing_module is not None:
         yield existing_module.TelegramAdapter
@@ -209,7 +209,7 @@ async def test_media_handler_uses_effective_message_for_channel_post(
     adapter._photo_batch_key = MagicMock(return_value="batch-key")
     adapter._enqueue_photo_event = MagicMock()
 
-    adapter_module = sys.modules["plugins.platforms.telegram.adapter"]
+    adapter_module = sys.modules["hermes_agent.plugins.platforms.telegram.adapter"]
     async def _cache(*_a, **_k):
         return "/cache/photo.png"
 
@@ -255,7 +255,7 @@ async def test_media_handler_blocks_unauthorized_channel_post(
     adapter._enqueue_photo_event = MagicMock()
 
     cache_calls = []
-    adapter_module = sys.modules["plugins.platforms.telegram.adapter"]
+    adapter_module = sys.modules["hermes_agent.plugins.platforms.telegram.adapter"]
     async def _cache(*a, **_k):
         cache_calls.append(a)
         return "/cache/photo.png"

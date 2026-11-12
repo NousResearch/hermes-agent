@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-import plugins.web.keenable.provider as keenable
+import hermes_agent.plugins.web.keenable.provider as keenable
 from hermes_agent.tools import web_result_cache as wrc
 from hermes_agent.tools import web_tools_extract as wte
 

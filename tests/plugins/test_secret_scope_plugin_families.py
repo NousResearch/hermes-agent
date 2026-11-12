@@ -59,7 +59,7 @@ class TestMemoryFamily:
         monkeypatch.setenv("RETAINDB_API_KEY", "env-other-profile")
         multiplex_scope({"RETAINDB_API_KEY": "scoped-key"})
 
-        from plugins.memory.retaindb import RetainDBMemoryProvider
+        from hermes_agent.plugins.memory.retaindb import RetainDBMemoryProvider
 
         assert RetainDBMemoryProvider().is_available() is True
 
@@ -70,7 +70,7 @@ class TestMemoryFamily:
         monkeypatch.setenv("RETAINDB_API_KEY", "env-other-profile")
         multiplex_scope({})
 
-        from plugins.memory.retaindb import RetainDBMemoryProvider
+        from hermes_agent.plugins.memory.retaindb import RetainDBMemoryProvider
 
         assert RetainDBMemoryProvider().is_available() is False
 
@@ -84,7 +84,7 @@ class TestImageGenFamily:
         monkeypatch.delenv("DEEPINFRA_API_KEY", raising=False)
         multiplex_scope({"DEEPINFRA_API_KEY": "scoped-key"})
 
-        from plugins.image_gen.deepinfra import DeepInfraImageGenProvider
+        from hermes_agent.plugins.image_gen.deepinfra import DeepInfraImageGenProvider
 
         assert DeepInfraImageGenProvider().is_available() is True
 
@@ -94,7 +94,7 @@ class TestImageGenFamily:
         monkeypatch.setenv("DEEPINFRA_API_KEY", "env-other-profile")
         multiplex_scope({})
 
-        from plugins.image_gen.deepinfra import DeepInfraImageGenProvider
+        from hermes_agent.plugins.image_gen.deepinfra import DeepInfraImageGenProvider
 
         assert DeepInfraImageGenProvider().is_available() is False
 
@@ -108,7 +108,7 @@ class TestBrowserFamily:
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
         multiplex_scope({"FIRECRAWL_API_KEY": "scoped-key"})
 
-        from plugins.browser.firecrawl.provider import FirecrawlBrowserProvider
+        from hermes_agent.plugins.browser.firecrawl.provider import FirecrawlBrowserProvider
 
         provider = FirecrawlBrowserProvider()
         assert provider.is_available() is True
@@ -120,7 +120,7 @@ class TestBrowserFamily:
         monkeypatch.setenv("FIRECRAWL_API_KEY", "env-other-profile")
         multiplex_scope({})
 
-        from plugins.browser.firecrawl.provider import FirecrawlBrowserProvider
+        from hermes_agent.plugins.browser.firecrawl.provider import FirecrawlBrowserProvider
 
         assert FirecrawlBrowserProvider().is_available() is False
 
@@ -138,7 +138,7 @@ class TestGoogleMeetSpawn:
         monkeypatch.delenv("HERMES_MEET_REALTIME_KEY", raising=False)
         multiplex_scope({"OPENAI_API_KEY": "scoped-openai-key"})
 
-        import plugins.google_meet.process_manager as pm
+        import hermes_agent.plugins.google_meet.process_manager as pm
 
         monkeypatch.setattr(pm, "_root", lambda: tmp_path)
 
@@ -170,7 +170,7 @@ class TestGoogleMeetSpawn:
     ):
         multiplex_scope({"OPENAI_API_KEY": "scoped-openai-key"})
 
-        import plugins.google_meet.process_manager as pm
+        import hermes_agent.plugins.google_meet.process_manager as pm
 
         monkeypatch.setattr(pm, "_root", lambda: tmp_path)
 

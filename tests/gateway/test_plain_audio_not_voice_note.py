@@ -15,7 +15,7 @@ from hermes_agent.gateway.config import PlatformConfig
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_voice, expected", [(False, "document"), (None, "audio")], ids=["plain", "voice"])
 async def test_whatsapp_bridge_sends_plain_audio_as_a_document(tmp_path, is_voice, expected):
-    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+    from hermes_agent.plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={"session_path": str(tmp_path / "wa")}))
     posted = []
@@ -36,7 +36,7 @@ async def test_whatsapp_bridge_sends_plain_audio_as_a_document(tmp_path, is_voic
 @pytest.mark.asyncio
 @pytest.mark.parametrize("is_voice, audio_message", [(False, False), (None, True)], ids=["plain", "voice"])
 async def test_bluebubbles_sends_plain_audio_without_the_voice_memo_flag(tmp_path, monkeypatch, is_voice, audio_message):
-    from plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
+    from hermes_agent.plugins.platforms.bluebubbles.adapter import BlueBubblesAdapter
 
     adapter = BlueBubblesAdapter(PlatformConfig(enabled=True, extra={"server_url": "http://localhost:1234", "password": "x"}))
     response = MagicMock()
@@ -54,7 +54,7 @@ async def test_bluebubbles_sends_plain_audio_without_the_voice_memo_flag(tmp_pat
 
 @pytest.mark.asyncio
 async def test_whatsapp_cloud_never_converts_plain_mp3_into_a_voice_bubble(tmp_path):
-    from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
+    from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
     adapter = WhatsAppCloudAdapter.__new__(WhatsAppCloudAdapter)
     adapter._convert_to_opus = AsyncMock(side_effect=AssertionError("plain audio must not become Opus"))

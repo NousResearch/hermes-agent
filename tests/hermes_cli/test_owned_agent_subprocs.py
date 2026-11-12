@@ -210,7 +210,7 @@ async def test_whatsapp_disconnect_releases_the_bridge_it_stopped(monkeypatch):
 
 
 def test_raft_stop_releases_the_bridge_it_stopped(monkeypatch):
-    from plugins.platforms.raft import adapter as raft
+    from hermes_agent.plugins.platforms.raft import adapter as raft
 
     released = []
     monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.append(list(pgids)))
@@ -264,7 +264,7 @@ def test_whatsapp_pairing_terminate_releases_the_process_it_stopped(monkeypatch)
 def test_a_stopped_bridge_whose_child_survived_stays_covered(monkeypatch, tmp_path):
     """Leader exit is not proof the group is empty: a helper that ignores TERM keeps it alive, and
     releasing that group would let the helper outlive a later kill -9 of this process."""
-    from plugins.platforms.raft import adapter as raft
+    from hermes_agent.plugins.platforms.raft import adapter as raft
 
     released, release_timeouts = [], []
     monkeypatch.setattr(process_identity, "release_process_groups", lambda pgids: released.append(list(pgids)))

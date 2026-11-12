@@ -79,8 +79,8 @@ from hermes_agent.gateway.platforms.base import (
 )
 from hermes_agent.gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from hermes_agent.gateway.platforms.helpers import ThreadParticipationTracker
-from plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
-from plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
+from hermes_agent.plugins.platforms.matrix.session_proxy import matrix_redaction_proxy
+from hermes_agent.plugins.platforms.matrix.voice_mention import ParkedVoices, VoiceGate, has_voice_marker, is_voice_event
 
 logger = logging.getLogger(__name__)
 
@@ -1219,7 +1219,7 @@ class MatrixAdapter(BasePlatformAdapter):
             if not _store_was_reset and not await self._migrate_legacy_crypto_pickle(
                     crypto_store, crypto_db, _acct_id, _pickle_key):
                 logger.warning("Matrix: crypto pickle migration failed — E2EE may not work correctly")
-            from plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
+            from hermes_agent.plugins.platforms.matrix.adapter_crypto import _CryptoStateStore
             crypto_state = _CryptoStateStore(state_store, self._joined_rooms, client)
             olm = OlmMachine(client, crypto_store, crypto_state)
             olm.share_keys_min_trust = TrustState.UNVERIFIED

@@ -26,13 +26,13 @@ class TestFalImageGenProviderSurface:
 
 
     def test_default_model_matches_legacy(self):
-        from plugins.image_gen.fal import FalImageGenProvider
+        from hermes_agent.plugins.image_gen.fal import FalImageGenProvider
         from hermes_agent.tools.image_generation_catalog import DEFAULT_MODEL
 
         assert FalImageGenProvider().default_model() == DEFAULT_MODEL
 
     def test_list_models_uses_legacy_catalog(self):
-        from plugins.image_gen.fal import FalImageGenProvider
+        from hermes_agent.plugins.image_gen.fal import FalImageGenProvider
         from hermes_agent.tools.image_generation_catalog import FAL_MODELS
 
         provider = FalImageGenProvider()
@@ -60,7 +60,7 @@ class TestFalImageGenProviderGenerate:
         ``monkeypatch.setattr(image_tool, "image_generate_tool", ...)``
         takes effect."""
         import hermes_agent.tools.image_generation_tool as image_tool
-        from plugins.image_gen.fal import FalImageGenProvider
+        from hermes_agent.plugins.image_gen.fal import FalImageGenProvider
 
         captured = {}
 
@@ -99,7 +99,7 @@ class TestFalImageGenProviderGenerate:
 
 class TestFalImageGenPluginRegistration:
     def test_register_wires_provider_into_registry(self):
-        from plugins.image_gen.fal import FalImageGenProvider, register
+        from hermes_agent.plugins.image_gen.fal import FalImageGenProvider, register
 
         ctx = MagicMock()
         register(ctx)

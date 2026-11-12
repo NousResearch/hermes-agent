@@ -30,7 +30,7 @@ async def authority_route(monkeypatch, executed, hold=None):
     from hermes_agent.gateway.run import GatewayRunner
     from hermes_agent.gateway.session_authority import initialize_session_authority
     from hermes_agent.gateway.session_results import execution_result
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
 
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")
     runner = GatewayRunner(GatewayConfig())

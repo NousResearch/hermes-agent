@@ -19,7 +19,7 @@ from hermes_agent.gateway.config import Platform
 
 def _build_adapter(monkeypatch, env: dict[str, str], extra: dict | None = None):
     """Construct a real WhatsAppCloudAdapter through __init__ with env vars."""
-    from plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
+    from hermes_agent.plugins.platforms.whatsapp_cloud.adapter import WhatsAppCloudAdapter
 
     for var in (
         "WHATSAPP_CLOUD_ALLOW_FROM",

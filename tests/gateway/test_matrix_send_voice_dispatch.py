@@ -12,7 +12,7 @@ from hermes_agent.gateway.config import PlatformConfig
 
 
 def _make_adapter(**extra):
-    from plugins.platforms.matrix.adapter import MatrixAdapter
+    from hermes_agent.plugins.platforms.matrix.adapter import MatrixAdapter
 
     config = PlatformConfig(
         enabled=True,
@@ -76,7 +76,7 @@ def test_legacy_caller_without_flag_keeps_voice_bubble():
 def test_voice_bubble_transcodes_non_ogg():
     adapter = _make_adapter()
     spy = _spy_send_local_file(adapter)
-    with patch("plugins.platforms.matrix.adapter.transcode_to_ogg_opus",
+    with patch("hermes_agent.plugins.platforms.matrix.adapter.transcode_to_ogg_opus",
                MagicMock(return_value="/tmp/clip_converted.ogg")):
         asyncio.run(adapter.send_voice(
             chat_id="!room:example.org", audio_path="/tmp/clip.mp3", is_voice=True))

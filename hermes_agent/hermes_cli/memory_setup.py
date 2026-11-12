@@ -57,7 +57,7 @@ def memory_provider_dependency_inputs(provider_name: str) -> tuple[dict, dict]:
     from pm.package import InstallError
     from pm.plugin_inputs import Candidates
     from pm.workspace import _is_member_candidate
-    from plugins.memory import find_provider_dir
+    from hermes_agent.plugins.memory import find_provider_dir
 
     plugin_dir = find_provider_dir(provider_name)
     if not plugin_dir:
@@ -120,9 +120,9 @@ def _schema_of(provider) -> list:
 
 
 def _get_available_providers() -> list:
-    """Discover memory providers from plugins/memory/ as ``(name, setup_hint, provider)`` tuples."""
+    """Discover memory providers from hermes_agent/plugins/memory/ as ``(name, setup_hint, provider)`` tuples."""
     try:
-        from plugins.memory import discover_memory_providers, load_memory_provider
+        from hermes_agent.plugins.memory import discover_memory_providers, load_memory_provider
         raw = discover_memory_providers()
     except Exception:
         raw = []
@@ -156,7 +156,7 @@ def _find_provider(providers: list, provider_name: str):
 
 def _catalog_install_hint(provider_name: str):
     """The install command for a catalog memory provider that resolves nowhere, else None."""
-    from plugins.memory import find_provider_dir
+    from hermes_agent.plugins.memory import find_provider_dir
     from hermes_agent.hermes_cli.memory_provider_migration import catalog_install_hint
     if not provider_name or find_provider_dir(provider_name) is not None:
         return None
@@ -403,7 +403,7 @@ def cmd_status(args) -> None:
             for key, val in display_config.items():
                 print(f"    {key}: {val}")
 
-        from plugins.memory import parked_provider_notice
+        from hermes_agent.plugins.memory import parked_provider_notice
         parked = parked_provider_notice(provider_name)
         if parked:
             print(f"\n  Plugin:    turned off ✗\n  {parked}")

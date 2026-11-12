@@ -31,7 +31,7 @@ def home(tmp_path, monkeypatch):
 def _current(home: Path) -> tuple[str, ...]:
     from hermes_agent.agent.secret_sources import bitwarden as bw
     from hermes_agent.agent.secret_sources import onepassword as op
-    from plugins.platforms.photon import adapter as photon
+    from hermes_agent.plugins.platforms.photon import adapter as photon
 
     paths = (bw._disk_cache_path(home), bw._encrypted_disk_cache_path(home), op._STORE.disk.path(home),
              photon._runtime_record_path())

@@ -16,7 +16,7 @@ import sys
 import time
 from typing import Any, Dict, Optional
 
-from plugins.web._common import BaseWebSearchProvider, search_fail, search_ok, setup_schema, title_hit
+from hermes_agent.plugins.web._common import BaseWebSearchProvider, search_fail, search_ok, setup_schema, title_hit
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +53,10 @@ def _run_ddgs_search(query: str, safe_limit: int) -> list[dict[str, Any]]:
 
 
 def _plugins_path_entry() -> str:
-    """``sys.path`` entry that makes ``import plugins`` work in the child (live package
+    """``sys.path`` entry that makes ``from hermes_agent import plugins`` work in the child (live package
     location first; correct for source checkouts and site-packages)."""
     try:
-        import plugins as plugins_pkg
+        import hermes_agent.plugins as plugins_pkg
         if pkg_file := getattr(plugins_pkg, "__file__", None):
             return os.path.dirname(os.path.dirname(os.path.abspath(pkg_file)))
     except Exception:
@@ -91,7 +91,7 @@ def _terminate_and_reap(proc: Optional[subprocess.Popen], *, grace: float = _TER
 
 def _spawn_worker(env: dict[str, str]) -> subprocess.Popen:
     """Start ``_search_worker.py`` as a script with ``plugins`` importable. Running as a
-    script puts ``plugins/web/ddgs/`` on ``sys.path[0]``, breaking ``import plugins...``,
+    script puts ``hermes_agent/plugins/web/ddgs/`` on ``sys.path[0]``, breaking ``from hermes_agent import plugins...``,
     so the real package location is prepended to PYTHONPATH."""
 
     # pm store PATH: the worker runs under the STORE python, whose third-party

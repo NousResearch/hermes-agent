@@ -24,7 +24,7 @@ async def _followup_while_running(monkeypatch, event, marker, *, fail_admit=Fals
     admit is visible to the drain. ``fail_admit`` makes that admit refuse (``admission_conflict``).
     """
     from hermes_agent.gateway.session_authority import initialize_session_authority
-    from plugins.platforms.discord.adapter import DiscordAdapter
+    from hermes_agent.plugins.platforms.discord.adapter import DiscordAdapter
     from tests.waiting import async_wait_until
 
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "42")

@@ -103,7 +103,7 @@ async def test_timed_out_fresh_final_does_not_edit_the_preview_up_to_the_answer(
 
 def _telegram_flagged(adapter: MagicMock) -> MagicMock:
     """Carry the real Telegram adapter's stream-fallback flags onto the double."""
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     for flag in ("RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK", "FALLBACK_ON_FINAL_EDIT_FLOOD"):
         setattr(adapter, flag, getattr(TelegramAdapter, flag))
@@ -218,7 +218,7 @@ def _timing_out_telegram(delivered: list, *, outcomes: tuple = (), then=None) ->
     first bot calls (``None`` times out after landing) and ``then`` every later one; an exception
     outcome is a refusal: nothing lands."""
     from hermes_agent.gateway.config import PlatformConfig
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
     from telegram.error import TimedOut
 
     pending = list(outcomes)

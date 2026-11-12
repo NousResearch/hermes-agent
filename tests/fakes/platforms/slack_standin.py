@@ -1,6 +1,6 @@
 """Slack Web API + Socket Mode stand-in (https://api.slack.com/methods, /apis/socket-mode).
 
-The real ``plugins/platforms/slack`` adapter reaches it through slack_bolt/slack_sdk: the
+The real ``hermes_agent/plugins/platforms/slack`` adapter reaches it through slack_bolt/slack_sdk: the
 ``slack_shim/sitecustomize.py`` module (on the child's ``PYTHONPATH``) defaults every slack_sdk Web
 API client's ``base_url`` to ``{base}/api/``, so ``auth.test``, ``chat.*``, ``conversations.*`` and
 ``apps.connections.open`` all land here. ``apps.connections.open`` hands out ``ws://…/ws``; the SDK's

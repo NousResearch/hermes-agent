@@ -27,8 +27,8 @@ def _ensure_feishu_mocks():
 _ensure_feishu_mocks()
 
 from hermes_agent.gateway.config import PlatformConfig
-import plugins.platforms.feishu.adapter as feishu_module
-from plugins.platforms.feishu.adapter import FeishuAdapter
+import hermes_agent.plugins.platforms.feishu.adapter as feishu_module
+from hermes_agent.plugins.platforms.feishu.adapter import FeishuAdapter
 
 
 class _FakeCallBackCard:

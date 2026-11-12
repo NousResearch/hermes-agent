@@ -66,7 +66,7 @@ class TestExtractLoggerName:
 class TestLineMatchesComponent:
 
     def test_gateway_nested(self):
-        # Migrated platform adapters log under plugins.platforms.* (#41112) and
+        # Migrated platform adapters log under hermes_agent.plugins.platforms.* (#41112) and
         # must still resolve to the gateway component. Use the real expanded
         # gateway prefixes (COMPONENT_PREFIXES["gateway"]) the CLI passes, not a
         # bare ("gateway",), since the logger name no longer literally starts

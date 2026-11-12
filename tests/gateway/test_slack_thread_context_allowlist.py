@@ -43,14 +43,14 @@ def _ensure_slack_mock():
 
 _ensure_slack_mock()
 
-import plugins.platforms.slack.adapter as _slack_mod
+import hermes_agent.plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
 from hermes_agent.gateway.config import Platform, load_gateway_config
 from hermes_agent.gateway.pairing import PairingStore
 from hermes_agent.hermes_constants import get_hermes_home
-from plugins.platforms.slack.adapter import SlackAdapter
+from hermes_agent.plugins.platforms.slack.adapter import SlackAdapter
 
 STRONG_HEADER = "Messages prefixed with [unverified]"
 PLAIN_HEADER = "[Thread context — prior messages in this thread (not yet in conversation history):]"

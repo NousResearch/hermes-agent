@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
-from plugins.web._common import BaseWebSearchProvider, search_fail
+from hermes_agent.plugins.web._common import BaseWebSearchProvider, search_fail
 
 _UNSUPPORTED_MSG = (
     "openai-native declares OpenAI's server-side web_search tool; it cannot run as a "
@@ -78,7 +78,7 @@ class OpenAINativeWebSearchProvider(BaseWebSearchProvider):
         return search_fail(_UNSUPPORTED_MSG)
 
     def get_setup_schema(self) -> dict[str, Any]:
-        from plugins.web._common import setup_schema
+        from hermes_agent.plugins.web._common import setup_schema
 
         return setup_schema(
             self.DISPLAY_NAME,

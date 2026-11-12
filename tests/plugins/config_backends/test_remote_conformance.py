@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from plugins.config_backends.remote import paths as P
-from plugins.config_backends.remote.diff import write_check
-from plugins.config_backends.remote.values import secret_literal_path
+from hermes_agent.plugins.config_backends.remote import paths as P
+from hermes_agent.plugins.config_backends.remote.diff import write_check
+from hermes_agent.plugins.config_backends.remote.values import secret_literal_path
 
 VENDOR = Path(__file__).resolve().parents[3] / "plugins" / "config_backends" / "remote" / "vendor"
 MANIFEST = VENDOR / "conformance" / "config-fixtures.sha256"

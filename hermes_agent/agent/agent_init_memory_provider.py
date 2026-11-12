@@ -55,7 +55,7 @@ def _warn_memory_provider_unavailable(name: str, reason: str = "", say=None) -> 
 
 def resolve_memory_provider(name: str, say=None):
     """The configured provider ready to add, or None after telling the user why not (once per home)."""
-    from plugins.memory import find_provider_dir, load_memory_provider, parked_provider_notice
+    from hermes_agent.plugins.memory import find_provider_dir, load_memory_provider, parked_provider_notice
 
     provider = load_memory_provider(name)
     if provider is None:

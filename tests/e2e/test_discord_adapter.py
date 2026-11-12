@@ -120,7 +120,7 @@ class TestRepliedToMediaDispatch:
             return cached_path
 
         monkeypatch.setattr(
-            "plugins.platforms.discord.adapter.cache_image_from_url",
+            "hermes_agent.plugins.platforms.discord.adapter.cache_image_from_url",
             fake_cache_image_from_url,
         )
         discord_adapter.handle_message = AsyncMock()

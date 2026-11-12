@@ -50,7 +50,7 @@ from hermes_agent.gateway.platforms._shared import (
 )
 from hermes_agent.gateway.platforms.base_log_safety import safe_url_for_log
 from hermes_agent.gateway.platforms.helpers import MessageDeduplicator, clarify_text_with_choices
-from plugins.platforms.slack.adapter_config_readers import (
+from hermes_agent.plugins.platforms.slack.adapter_config_readers import (
     _extra_or_env_channel_set_getter, _extra_or_env_flag_getter)
 from hermes_agent.gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,

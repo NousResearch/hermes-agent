@@ -18,7 +18,7 @@ from tests.waiting import async_wait_until
 
 def _make_adapter():
     """Create a minimal TelegramAdapter for testing text batching."""
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(TelegramAdapter)
@@ -56,7 +56,7 @@ def _make_adapter():
 
 def _make_default_adapter(monkeypatch):
     """Construct an adapter with the production text-batch defaults."""
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     monkeypatch.delenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", raising=False)
     monkeypatch.delenv("HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", raising=False)
@@ -152,7 +152,7 @@ class TestTextBatching:
     @pytest.mark.asyncio
     async def test_disconnected_adapter_drops_pending_media_group_flush_before_dispatch(self):
         """A pending media group should not dispatch after disconnect starts."""
-        from plugins.platforms.telegram.adapter import TelegramAdapter
+        from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
         adapter = _make_adapter()
         event = _make_event("album caption")
@@ -247,7 +247,7 @@ class TestHoldInboundAcrossReconnect:
     async def test_late_teardown_salvage_on_retired_adapter_reaches_replacement(self):
         """Teardown of a rebuilt-away adapter can salvage a batch after the replacement drained (#132829)."""
         from contextvars import ContextVar
-        from plugins.platforms.telegram.update_admission import _Claim
+        from hermes_agent.plugins.platforms.telegram.update_admission import _Claim
 
         old, new = _make_adapter(), _make_adapter()
         from telegram import Update

@@ -17,7 +17,7 @@ engine plugins (e.g. hermes-lcm) rely on:
    ``update_from_response``, on top of the legacy aggregate keys.
 
 4. ``_discover_context_engines`` includes plugin-registered engines (not
-   just repo-shipped engines under ``plugins/context_engine/``).
+   just repo-shipped engines under ``hermes_agent/plugins/context_engine/``).
 
 5. The repo-shipped ``_EngineCollector`` honors ``ctx.register_command``
    from a plugin engine's ``register(ctx)`` entry point and routes it
@@ -130,7 +130,7 @@ def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp
 
 def test_engine_collector_forwards_register_command_to_plugin_manager():
     """A plugin context engine can register a slash command via ``ctx.register_command``."""
-    from plugins.context_engine import _EngineCollector
+    from hermes_agent.plugins.context_engine import _EngineCollector
     from hermes_agent.hermes_cli.plugins import get_plugin_manager
 
     handler = lambda raw_args: f"echo: {raw_args}"

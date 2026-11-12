@@ -123,7 +123,7 @@ def test_unentitled_nous_identity_autodetects_free_fast_search(monkeypatch, tmp_
 
 
 def test_free_fast_search_failure_skips_paid_firecrawl_but_keeps_keyless_rescue(monkeypatch, tmp_path, gateway_server):
-    from plugins.web import keyless_mcp
+    from hermes_agent.plugins.web import keyless_mcp
 
     state = _nous_state(ANON, "anonymous")
     _write_home(tmp_path / "home", monkeypatch, nous_state=state, config={"web": {"keyless_rescue": True}})

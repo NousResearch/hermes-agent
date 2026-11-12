@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from plugins.google_meet.node import protocol as _proto
+from hermes_agent.plugins.google_meet.node import protocol as _proto
 
 
 class NodeClient:

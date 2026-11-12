@@ -1,4 +1,4 @@
-"""Tests for plugins.platforms.feishu.adapter — Feishu scan-to-create registration."""
+"""Tests for hermes_agent.plugins.platforms.feishu.adapter — Feishu scan-to-create registration."""
 
 import json
 from unittest.mock import patch, MagicMock
@@ -19,9 +19,9 @@ class TestPostRegistration:
     """Tests for the low-level HTTP helper."""
 
 
-    @patch("plugins.platforms.feishu.adapter.urlopen")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter.urlopen")
     def test_post_registration_sends_form_encoded_body(self, mock_urlopen_fn):
-        from plugins.platforms.feishu.adapter import _post_registration
+        from hermes_agent.plugins.platforms.feishu.adapter import _post_registration
 
         mock_urlopen_fn.return_value = _mock_urlopen({})
         _post_registration("https://accounts.feishu.cn", {"action": "init", "key": "val"})
@@ -36,9 +36,9 @@ class TestPostRegistration:
 class TestInitRegistration:
     """Tests for the init step."""
 
-    @patch("plugins.platforms.feishu.adapter.urlopen")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter.urlopen")
     def test_init_succeeds_when_client_secret_supported(self, mock_urlopen_fn):
-        from plugins.platforms.feishu.adapter import _init_registration
+        from hermes_agent.plugins.platforms.feishu.adapter import _init_registration
 
         mock_urlopen_fn.return_value = _mock_urlopen({
             "nonce": "abc",
@@ -46,9 +46,9 @@ class TestInitRegistration:
         })
         _init_registration("feishu")
 
-    @patch("plugins.platforms.feishu.adapter.urlopen")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter.urlopen")
     def test_init_raises_when_client_secret_not_supported(self, mock_urlopen_fn):
-        from plugins.platforms.feishu.adapter import _init_registration
+        from hermes_agent.plugins.platforms.feishu.adapter import _init_registration
 
         mock_urlopen_fn.return_value = _mock_urlopen({
             "nonce": "abc",
@@ -61,9 +61,9 @@ class TestInitRegistration:
 class TestBeginRegistration:
     """Tests for the begin step."""
 
-    @patch("plugins.platforms.feishu.adapter.urlopen")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter.urlopen")
     def test_begin_returns_device_code_and_qr_url(self, mock_urlopen_fn):
-        from plugins.platforms.feishu.adapter import _begin_registration
+        from hermes_agent.plugins.platforms.feishu.adapter import _begin_registration
 
         mock_urlopen_fn.return_value = _mock_urlopen({
             "device_code": "dc_123",
@@ -84,10 +84,10 @@ class TestBeginRegistration:
 class TestPollRegistration:
     """Tests for the poll step."""
 
-    @patch("plugins.platforms.feishu.adapter.time")
-    @patch("plugins.platforms.feishu.adapter.urlopen")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter.time")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter.urlopen")
     def test_poll_returns_credentials_on_success(self, mock_urlopen_fn, mock_time):
-        from plugins.platforms.feishu.adapter import _poll_registration
+        from hermes_agent.plugins.platforms.feishu.adapter import _poll_registration
 
         mock_time.monotonic.side_effect = [0, 1]
         mock_time.sleep = MagicMock()
@@ -106,10 +106,10 @@ class TestPollRegistration:
         assert result["domain"] == "feishu"
         assert result["open_id"] == "ou_owner"
 
-    @patch("plugins.platforms.feishu.adapter.time")
-    @patch("plugins.platforms.feishu.adapter.urlopen")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter.time")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter.urlopen")
     def test_poll_switches_domain_on_lark_tenant_brand(self, mock_urlopen_fn, mock_time):
-        from plugins.platforms.feishu.adapter import _poll_registration
+        from hermes_agent.plugins.platforms.feishu.adapter import _poll_registration
 
         mock_time.monotonic.side_effect = [0, 1, 2]
         mock_time.sleep = MagicMock()
@@ -139,15 +139,15 @@ class TestPollRegistration:
 class TestQrRegister:
     """Tests for the public qr_register entry point."""
 
-    @patch("plugins.platforms.feishu.adapter.probe_bot")
-    @patch("plugins.platforms.feishu.adapter._render_qr")
-    @patch("plugins.platforms.feishu.adapter._poll_registration")
-    @patch("plugins.platforms.feishu.adapter._begin_registration")
-    @patch("plugins.platforms.feishu.adapter._init_registration")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter.probe_bot")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._render_qr")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._poll_registration")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._begin_registration")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._init_registration")
     def test_qr_register_success_flow(
         self, mock_init, mock_begin, mock_poll, mock_render, mock_probe
     ):
-        from plugins.platforms.feishu.adapter import qr_register
+        from hermes_agent.plugins.platforms.feishu.adapter import qr_register
 
         mock_begin.return_value = {
             "device_code": "dc_123",
@@ -173,14 +173,14 @@ class TestQrRegister:
         mock_render.assert_called_once()
 
 
-    @patch("plugins.platforms.feishu.adapter._render_qr")
-    @patch("plugins.platforms.feishu.adapter._poll_registration")
-    @patch("plugins.platforms.feishu.adapter._begin_registration")
-    @patch("plugins.platforms.feishu.adapter._init_registration")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._render_qr")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._poll_registration")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._begin_registration")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._init_registration")
     def test_qr_register_returns_none_on_poll_failure(
         self, mock_init, mock_begin, mock_poll, mock_render
     ):
-        from plugins.platforms.feishu.adapter import qr_register
+        from hermes_agent.plugins.platforms.feishu.adapter import qr_register
 
         mock_begin.return_value = {
             "device_code": "dc_123",
@@ -194,16 +194,16 @@ class TestQrRegister:
         result = qr_register()
         assert result is None
 
-    @patch("plugins.platforms.feishu.adapter._render_qr", return_value=False)
-    @patch("plugins.platforms.feishu.adapter._poll_registration", return_value=None)
-    @patch("plugins.platforms.feishu.adapter._begin_registration")
-    @patch("plugins.platforms.feishu.adapter._init_registration")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._render_qr", return_value=False)
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._poll_registration", return_value=None)
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._begin_registration")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._init_registration")
     def test_qr_fallback_tip_targets_active_interpreter(
         self, mock_init, mock_begin, mock_poll, mock_render, capsys
     ):
         """#111695: the install tip goes through PM, never a bare pip that targets the wrong env."""
         from pm import install_hint
-        from plugins.platforms.feishu.adapter import _qr_register_inner
+        from hermes_agent.plugins.platforms.feishu.adapter import _qr_register_inner
 
         mock_begin.return_value = {
             "device_code": "dc_123",
@@ -226,16 +226,16 @@ class TestQrRegister:
     # -- Negative paths: partial/malformed server responses --
 
 
-    @patch("plugins.platforms.feishu.adapter.probe_bot")
-    @patch("plugins.platforms.feishu.adapter._render_qr")
-    @patch("plugins.platforms.feishu.adapter._poll_registration")
-    @patch("plugins.platforms.feishu.adapter._begin_registration")
-    @patch("plugins.platforms.feishu.adapter._init_registration")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter.probe_bot")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._render_qr")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._poll_registration")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._begin_registration")
+    @patch("hermes_agent.plugins.platforms.feishu.adapter._init_registration")
     def test_qr_register_succeeds_even_when_probe_fails(
         self, mock_init, mock_begin, mock_poll, mock_render, mock_probe
     ):
         """Registration succeeds but probe fails → result with bot_name=None."""
-        from plugins.platforms.feishu.adapter import qr_register
+        from hermes_agent.plugins.platforms.feishu.adapter import qr_register
 
         mock_begin.return_value = {
             "device_code": "dc_123",

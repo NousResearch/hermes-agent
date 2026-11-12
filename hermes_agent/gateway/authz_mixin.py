@@ -92,7 +92,7 @@ def _adapter_config_extra(adapter) -> dict:
 
 
 # Nostr npub -> hex (Buzz): ``BUZZ_ALLOWED_USERS`` accepts hex or ``npub1…`` but inbound pubkeys
-# are always hex. Pure stdlib; mirrors plugins/platforms/buzz/adapter.py.
+# are always hex. Pure stdlib; mirrors hermes_agent/plugins/platforms/buzz/adapter.py.
 # Without decoding, the central allowlist comparison string-matches the raw npub against the hex pubkey and
 # an operator who listed only their npub sees every message rejected ("Unauthorized user: <hex pubkey>",
 # #78428).

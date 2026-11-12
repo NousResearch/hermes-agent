@@ -98,7 +98,7 @@ def _build_telegram_message(*, is_bot: bool):
 
 def _capture_build_source_is_bot(is_bot: bool):
     from hermes_agent.gateway.platforms.event import MessageType
-    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM

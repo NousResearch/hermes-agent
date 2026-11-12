@@ -22,7 +22,7 @@ import time
 from typing import Optional
 
 from hermes_agent.hermes_cli.dashboard_auth import DashboardAuthProvider, InvalidCredentialsError, RefreshExpiredError, Session
-from plugins.dashboard_auth._shared import (
+from hermes_agent.plugins.dashboard_auth._shared import (
     NonInteractiveMixin, SkipRegistration, load_config_section, register_provider, resolve_env_or_cfg)
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ LAST_SKIP_REASON: str = ""
 def hash_password(password: str) -> str:
     """Return a ``scrypt$n$r$p$<salt_b64>$<dk_b64>`` hash string. Public so operators can
     precompute ``password_hash`` for config.yaml (the plaintext then never sits at rest):
-    ``python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('pw'))"``."""
+    ``python -c "from hermes_agent.plugins.dashboard_auth.basic import hash_password; print(hash_password('pw'))"``."""
     salt = secrets.token_bytes(_SCRYPT_SALT_BYTES)
     dk = hashlib.scrypt(
         password.encode("utf-8"), salt=salt, n=_SCRYPT_N, r=_SCRYPT_R, p=_SCRYPT_P, dklen=_SCRYPT_DKLEN, maxmem=0)

@@ -26,7 +26,7 @@ _ensure_telegram_mock()
 from hermes_agent.gateway.config import Platform, PlatformConfig
 from hermes_agent.gateway.platforms.event import MessageEvent
 from hermes_agent.hermes_state import SessionDB
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 from tests.gateway.test_telegram_topic_mode import (
     _make_runner,
     _make_source,
@@ -166,7 +166,7 @@ async def test_opt_in_root_dm_command_stays_in_the_lobby(tmp_path, monkeypatch):
 def test_top_level_telegram_yaml_key_reaches_extra(monkeypatch):
     """``telegram: dm_topic_auto_transfer: true`` (top-level YAML) lands in PlatformConfig.extra,
     like its neighbour ``disable_topic_auto_rename``."""
-    from plugins.platforms.telegram.adapter import _apply_yaml_config
+    from hermes_agent.plugins.platforms.telegram.adapter import _apply_yaml_config
 
     extras = _apply_yaml_config({}, {"dm_topic_auto_transfer": True}) or {}
     assert extras.get("dm_topic_auto_transfer") is True
@@ -215,7 +215,7 @@ async def test_new_topic_reply_anchor_survives_native_codec(tmp_path, monkeypatc
     """A durably admitted (snapshot -> restore) transferred event still sends without quoting the root DM."""
     from hermes_agent.gateway.session_envelope import restore_native, snapshot_native
     from hermes_agent.gateway.session_ingress import deliver_response
-    from plugins.platforms.telegram.telegram_topic_transfer import apply_root_dm_topic_transfer
+    from hermes_agent.plugins.platforms.telegram.telegram_topic_transfer import apply_root_dm_topic_transfer
 
     runner, adapter, db, _runs = _rig(tmp_path, monkeypatch, extra={"dm_topic_auto_transfer": True})
     runner.config.multiplex_profiles = False

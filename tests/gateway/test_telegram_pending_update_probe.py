@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from hermes_agent.gateway.config import PlatformConfig
-from plugins.platforms.telegram.adapter import TelegramAdapter
+from hermes_agent.plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter(*, pending: int) -> TelegramAdapter:
@@ -198,7 +198,7 @@ async def test_short_confirm_passes_do_not_speed_up_dispatch_stall_watchdog():
     """A flickering server queue shortens some heartbeat passes to 30s; the ingress dispatch watchdog
     counts heartbeats, so those passes must not count or a slow-but-bounded handler (<=300s) gets its
     adapter rebuilt after 240s instead of the documented 360s."""
-    from plugins.platforms.telegram import adapter as tg_adapter
+    from hermes_agent.plugins.platforms.telegram import adapter as tg_adapter
 
     adapter = _make_adapter(pending=0)
     adapter._app.bot.get_me = AsyncMock()

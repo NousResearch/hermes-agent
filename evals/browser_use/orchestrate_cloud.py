@@ -2,7 +2,7 @@
 
 Backends:
     nous-cloud   - Nous Portal-provisioned Browser Use cloud browser
-                   (plugins.browser.browser_use provider; needs gateway access)
+                   (hermes_agent.plugins.browser.browser_use provider; needs gateway access)
     browserbase  - fresh Browserbase session per cell
                    (needs BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID)
 
@@ -61,7 +61,7 @@ class NousCloud:
         sys.path.insert(0, os.environ["BUBENCH_PR_TREE"])
         import importlib
 
-        self._mod = importlib.import_module("plugins.browser.browser_use.provider")
+        self._mod = importlib.import_module("hermes_agent.plugins.browser.browser_use.provider")
 
     def create(self, name):
         self._prov = self._mod.BrowserUseBrowserProvider()

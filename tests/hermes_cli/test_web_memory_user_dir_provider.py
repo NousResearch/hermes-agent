@@ -1,6 +1,6 @@
 """A memory provider installed under ``$HERMES_HOME/plugins/`` (catalog install) keeps the
 Desktop surfaces a bundled copy has: its provider-owned config panel and the OAuth connect routes
-resolve through ``find_provider_dir``, not a hard-coded ``plugins.memory.<name>`` import that
+resolve through ``find_provider_dir``, not a hard-coded ``hermes_agent.plugins.memory.<name>`` import that
 only the bundled copy satisfies."""
 
 import json
@@ -47,7 +47,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
 def user_dir_honcho(monkeypatch, tmp_path, _isolate_hermes_home):
     """A user-dir ``honcho`` with the bundled copy gone: empty bundled root and the bundled
     module path blocked, the way a post-removal core + a catalog install look."""
-    import plugins.memory as memory_pkg
+    import hermes_agent.plugins.memory as memory_pkg
     from hermes_agent.hermes_constants import get_hermes_home
 
     plugin_dir = get_hermes_home() / "plugins" / "honcho"
@@ -74,7 +74,7 @@ def user_dir_honcho(monkeypatch, tmp_path, _isolate_hermes_home):
     )
 
     monkeypatch.setattr(memory_pkg, "_MEMORY_PLUGINS_DIR", tmp_path / "no-bundled")
-    for name in ("plugins.memory.honcho", "plugins.memory.honcho.client", "plugins.memory.honcho.oauth_flow"):
+    for name in ("hermes_agent.plugins.memory.honcho", "hermes_agent.plugins.memory.honcho.client", "hermes_agent.plugins.memory.honcho.oauth_flow"):
         monkeypatch.setitem(sys.modules, name, None)
     return plugin_dir
 
@@ -103,7 +103,7 @@ def test_user_dir_provider_oauth_flow_resolves_from_its_directory(user_dir_honch
 
 def test_oauth_routes_load_the_provider_from_the_requested_profile(tmp_path, monkeypatch):
     """A desktop serving two homes must not import the launch home's OAuth flow for both."""
-    import plugins.memory as memory_pkg
+    import hermes_agent.plugins.memory as memory_pkg
     from hermes_agent.hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
     from starlette.testclient import TestClient
 

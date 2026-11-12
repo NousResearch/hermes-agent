@@ -7,9 +7,9 @@ import logging
 from typing import Any
 
 from hermes_agent.gateway.config import Platform
-from plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
-from plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipeline_store_path
-from plugins.teams_pipeline.subscriptions import build_graph_client
+from hermes_agent.plugins.teams_pipeline.pipeline import TeamsMeetingPipeline
+from hermes_agent.plugins.teams_pipeline.store import TeamsPipelineStore, resolve_teams_pipeline_store_path
+from hermes_agent.plugins.teams_pipeline.subscriptions import build_graph_client
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ def build_pipeline_runtime(gateway: Any) -> TeamsMeetingPipeline:
     pipeline_config = build_pipeline_runtime_config(gateway.config)
     if teams_config and teams_config.enabled and (pipeline_config.get("teams_delivery") or {}).get("enabled"):
         try:
-            from plugins.platforms.teams.summary_writer import TeamsSummaryWriter
+            from hermes_agent.plugins.platforms.teams.summary_writer import TeamsSummaryWriter
         except ImportError:
             logger.debug("TeamsSummaryWriter unavailable; Teams outbound delivery remains disabled until the adapter layer is present.")
         else:

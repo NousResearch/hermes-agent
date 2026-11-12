@@ -240,7 +240,7 @@ _POST_SETUP_AUTH_READY: dict = {
 _POST_SETUP_HOOKS: dict = {
     "lightpanda": _post_setup_lightpanda,
     "chromium": _post_setup_chromium,
-    # Cloud browser rows (plugins.browser.*): the vendor hosts Chromium; browser_exec attaches over CDP.
+    # Cloud browser rows (hermes_agent.plugins.browser.*): the vendor hosts Chromium; browser_exec attaches over CDP.
     "browserbase": lambda: _ensure_browser_use_cli(),
     "cua_driver": lambda: install_cua_driver(upgrade=False),
     "xai_grok": _post_setup_xai_grok,

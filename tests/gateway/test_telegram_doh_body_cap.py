@@ -9,7 +9,7 @@ import json
 import httpx
 import pytest
 
-import plugins.platforms.telegram.telegram_network as tnet
+import hermes_agent.plugins.platforms.telegram.telegram_network as tnet
 
 
 class _Stream(httpx.AsyncByteStream):

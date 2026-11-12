@@ -1,8 +1,12 @@
 """Tests for tools/terminal_hints.py — output-pattern failure hints."""
 
+import shlex
+import subprocess
 from unittest.mock import patch as mock_patch
 
+import pytest
 
+from tools.environments.base_session_env import _wrap_command_script
 from tools.terminal_hints import annotate_failure, annotate_masked_success
 
 
@@ -91,6 +95,34 @@ class TestBoundedScan:
         with mock_patch("tools.terminal_hints._OUTPUT_HINTS", [lambda c, o: 1 / 0]):
             assert annotate_failure("x", 1, "boom") is None
 
+
+class TestWrapperCdFailure:
+    """A 126 from the session wrapper's own ``cd`` is a missing working directory, not chmod."""
+
+    @pytest.mark.platforms("posix")
+    def test_missing_working_directory_is_named_not_chmod(self, tmp_path):
+        gone = tmp_path / "gone dir"  # never created: a deleted session cwd looks the same
+        # The real per-command wrapper every backend runs, pointed at the missing directory.
+        script = _wrap_command_script(
+            "pwd", quoted_cwd=shlex.quote(str(gone)), quoted_snap=shlex.quote(str(tmp_path / "no-snap")),
+            snap_tmp_template=shlex.quote(str(tmp_path / "snap.XXXXXX")), passthrough_names=(),
+            snapshot_ready=False, cwd_marker="__HERMES_CWD_test__")
+        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+        assert proc.returncode == 126
+        hint = annotate_failure("pwd", 126, proc.stdout + proc.stderr) or ""
+        assert str(gone) in hint and "workdir" in hint and "chmod" not in hint
+        # bash localizes "line N: " and Git Bash prefixes a drive-letter path.
+        de = annotate_failure("pwd", 126, "bash: Zeile 4: cd: /srv/app: No such file or directory") or ""
+        assert "/srv/app" in de and "chmod" not in de
+
+    @pytest.mark.parametrize("out", [
+        "",
+        "bash: line 1: cd: OLDPWD not set",
+        "bash: cd: build: No such file or directory\nbash: ./run.sh: Permission denied",
+    ])
+    def test_other_126s_keep_the_not_executable_hints(self, out):
+        hint = annotate_failure("./run.sh", 126, out) or ""
+        assert "chmod" in hint or "Permission denied" in hint
 
 
 

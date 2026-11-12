@@ -1158,7 +1158,7 @@ def _caller_identity_for_target(platform: str, chat_id: str, thread_id, user_id,
     from a group chat omits ``--user-id``; under ``group_sessions_per_user`` the wake would then key
     a second, participant-less session (#147522). Another chat's (or topic's) subscription is
     never stamped with the caller's identity."""
-    if user_id:
+    if user_id or user_id_alt:  # an explicit recipient is never paired with the caller's other id
         return user_id, user_id_alt
     from gateway.session_context import get_session_env
     if (str(get_session_env("HERMES_SESSION_PLATFORM", "")).lower() != str(platform or "").lower()
@@ -1166,7 +1166,7 @@ def _caller_identity_for_target(platform: str, chat_id: str, thread_id, user_id,
             or str(get_session_env("HERMES_SESSION_THREAD_ID", "")) != str(thread_id or "")):
         return user_id, user_id_alt
     return (get_session_env("HERMES_SESSION_USER_ID", "") or None,
-            user_id_alt or get_session_env("HERMES_SESSION_USER_ID_ALT", "") or None)
+            get_session_env("HERMES_SESSION_USER_ID_ALT", "") or None)
 
 
 def _cmd_notify_subscribe(args: argparse.Namespace) -> int:

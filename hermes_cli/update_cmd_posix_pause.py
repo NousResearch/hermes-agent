@@ -389,14 +389,25 @@ def _start_job(job: dict) -> None:
     """Load and start *job*. The invoking profile's plist is regenerated first, as the restart it
     replaces does (``launchd_restart``); that refresh also loads it."""
     from hermes_cli.gateway import (
-        _launchctl_bootstrap, _wait_for_launchd_service_pid, get_launchd_label, refresh_launchd_plist_if_needed,
+        _launchctl_bootstrap, _locate_launchd_gateway_service, _wait_for_launchd_service_pid,
+        get_launchd_label, refresh_launchd_plist_if_needed,
     )
-    if not (job["label"] == get_launchd_label() and refresh_launchd_plist_if_needed()):
-        _launchctl_bootstrap(job["domain"], job["plist"], job["label"])
-    subprocess.run(["launchctl", "kickstart", f"{job['domain']}/{job['label']}"],
+    if job["label"] == get_launchd_label():
+        refresh_launchd_plist_if_needed()
+    # Start it where launchd holds it NOW, not where it held it at pause time. The refresh above
+    # loads into the domain launchd resolves for this profile at this moment -- gui/<uid> under
+    # Aqua -- while the pause recorded the domain the job lived in then, which is user/<uid> for a
+    # job first bootstrapped from a non-Aqua session. Bootstrapping the recorded domain once the
+    # refresh has registered the other one returns EIO 5 ("label already registered"), so a
+    # healthy restart was reported as a failed resume and the pause record stayed owed.
+    domain, _running = _locate_launchd_gateway_service(job["label"])
+    if domain is None:
+        domain = job["domain"]
+        _launchctl_bootstrap(domain, job["plist"], job["label"])
+    subprocess.run(["launchctl", "kickstart", f"{domain}/{job['label']}"],
                    capture_output=True, text=True, encoding="utf-8", errors="replace",
                    stdin=subprocess.DEVNULL, timeout=30, check=False)
-    if not _wait_for_launchd_service_pid(job["label"], old_pid=job["pid"], timeout=15.0, domain=job["domain"]):
+    if not _wait_for_launchd_service_pid(job["label"], old_pid=job["pid"], timeout=15.0, domain=domain):
         raise RuntimeError(f"{job['label']} did not come back under launchd")
 
 
@@ -654,6 +665,37 @@ def _pause(token: dict) -> str | None:
 
 # --------------------------------------------------------------------------- resume
 
+def _supervised_pid(entry: dict) -> int | None:
+    """PID the supervisor runs for *entry* right now, or ``None`` when it runs none.
+
+    Asked of launchd/systemd rather than the process table: the question is "is the runtime this
+    service owns up", and a pid-reuse hit in ``ps`` would answer it wrongly. An unreadable
+    supervisor reports ``None`` — "not known to have restarted" — so the caller still attempts the
+    start it has always attempted.
+    """
+    try:
+        if entry.get("kind") == "launchd":
+            from hermes_cli.gateway import _locate_launchd_gateway_service
+            _domain, pid = _locate_launchd_gateway_service(entry["label"])
+        else:
+            from hermes_cli.update_cmd_fleet import _unit_main_pid
+            pid = _unit_main_pid(_scope_cmd(entry), entry["unit"])
+    except Exception:  # health: allow BLE001 -- unknown supervisor state must not fail the resume
+        return None
+    return int(pid) if pid and int(pid) > 0 else None
+
+
+def _note_restarted(entry: dict, pid: int | None = None) -> str:
+    """Record *entry* as running on the new code; its label/unit name, for the report."""
+    if entry.get("kind") == "launchd":
+        _RESTARTED["labels"].add(entry["label"])
+        return entry["label"]
+    _RESTARTED["units"].add(f"{entry['scope']}/{entry['unit']}")
+    if pid:
+        _RESTARTED["pids"].add(int(pid))
+    return entry["unit"]
+
+
 def resume_paused_set(token: dict) -> None:
     """Start every paused runtime again; each leaves *token* only on its own verified start."""
     failures: list[str] = []
@@ -661,14 +703,23 @@ def resume_paused_set(token: dict) -> None:
     kept_units = []
     for entry in token.get("posix_units") or []:
         try:
+            # The supervisor may have restarted this runtime by itself between the stop and now:
+            # systemd units carry Restart=always and launchd jobs KeepAlive, so the paused process
+            # exiting hands them straight back on the code that just landed. Nothing is owed then,
+            # and starting it again is not free -- on a system unit with no passwordless sudo the
+            # start cannot succeed, so the entry stayed owed and every later command retried a
+            # restart that had already happened (#145375).
+            live_pid = _supervised_pid(entry)
+            if live_pid is not None and live_pid != int(entry.get("pid") or 0):
+                name = _note_restarted(entry, live_pid)
+                restarted.append(f"{name} (already running as PID {live_pid})")
+                token.setdefault("restarted_services", []).append(name)
+                continue
             if entry.get("kind") == "launchd":
                 _start_job(entry)
-                _RESTARTED["labels"].add(entry["label"])
-                name = entry["label"]
+                name = _note_restarted(entry)
             else:
-                _RESTARTED["pids"].add(_start_unit(entry))
-                _RESTARTED["units"].add(f"{entry['scope']}/{entry['unit']}")
-                name = entry["unit"]
+                name = _note_restarted(entry, _start_unit(entry))
             restarted.append(name)
             token.setdefault("restarted_services", []).append(name)
         except Exception as exc:  # health: allow BLE001 -- one failed unit never keeps the others stopped

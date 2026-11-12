@@ -80,6 +80,18 @@ def test_matching_fingerprint_keeps_the_live_worker(board):
     assert killed and killed[0] == (os.getpid(), signal.SIGTERM)
 
 
+def test_start_time_drift_within_tolerance_keeps_the_live_worker():
+    """macOS start-time reads drift by ~1 s (kern.boottime adjustment): a fingerprint recorded
+    100 centiseconds off is still our worker, while one past the shared tolerance is foreign."""
+    from gateway.status import START_TIME_DRIFT_TOLERANCE
+
+    epoch, _, start = kbd._process_fingerprint(os.getpid()).partition("|")
+    drifted = f"{epoch}|{int(start) + 100}"
+    assert kbd._worker_alive(os.getpid(), drifted) is True
+    foreign = f"{epoch}|{int(start) + START_TIME_DRIFT_TOLERANCE + 1}"
+    assert kbd._worker_alive(os.getpid(), foreign) is False
+
+
 def test_same_pid_and_start_tick_on_another_boot_is_foreign(board, monkeypatch):
     """A row that survived a reboot: the PID AND the boot-relative start tick both match a process on
     this boot (the Linux start time is clock ticks since boot, so that recurs), but the persisted

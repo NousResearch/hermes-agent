@@ -338,7 +338,7 @@ Get access at [parallel.ai](https://parallel.ai).
 
 ### MrScraper (plugin) {#mrscraper-plugin}
 
-[MrScraper](https://mrscraper.com) adds Google SERP search and page retrieval to the standard `web_search` and `web_extract` tools. Its [standalone native plugin](https://github.com/ai-mrscraper/hermes-mrscraper-plugin) calls MrScraper's HTTP API directly and exposes three tools: `mrscraper_scraper_api`, `mrscraper_web_search`, and `mrscraper_account`. No MCP connection is required for the plugin.
+[MrScraper](https://mrscraper.com) adds web search and page retrieval to the standard `web_search` and `web_extract` tools. Its [standalone native plugin](https://github.com/ai-mrscraper/hermes-mrscraper-plugin) calls MrScraper's HTTP API directly and exposes three tools: `mrscraper_scraper_api`, `mrscraper_web_search`, and `mrscraper_account`. No MCP connection is required for the plugin.
 
 ```bash
 hermes plugins install mrscraper
@@ -359,7 +359,7 @@ For targeted tasks, use the three native tools directly; they do not require sel
 | Tool | Use |
 | --- | --- |
 | `mrscraper_scraper_api` | Retrieve one URL as HTML, Markdown, or a screenshot with rendering and proxy options. |
-| `mrscraper_web_search` | Search Google with query text or a Google search URL; optionally set region, language, or result page. Returns structured JSON by default. |
+| `mrscraper_web_search` | Search the web with query text or a search URL containing `q`; optionally set `region` and `num_results` (10–100, default 10). Returns ranked results with titles, URLs, and descriptions. |
 | `mrscraper_account` | Read a filtered account summary with subscription status, token usage, remaining quota, and rate limits. |
 
 Derive structured fields and listings from returned page content. MrScraper API requests may consume account credits and send the target URLs, search queries, and request options you supply to MrScraper. Page retrieval does not provide an interactive browser session; see [Browser Automation](browser.md#mrscraper-rendered-page-extraction) for the distinction.

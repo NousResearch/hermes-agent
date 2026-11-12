@@ -64,6 +64,12 @@ def test_env_key_pairing_survives_aux_url_rewrite(monkeypatch, paired_url):
     assert _key_for(paired_url) == ENV_KEY
 
 
+def test_env_key_pairing_matches_the_rewritten_url(monkeypatch):
+    """OPENAI_BASE_URL may name the OpenAI surface aux actually calls (/coding/v1, not /coding)."""
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.kimi.com/coding/v1")
+    assert _key_for("https://api.kimi.com/coding") == ENV_KEY
+
+
 def test_same_origin_main_key_wins_over_env_key():
     from agent.auxiliary_client import _RUNTIME_MAIN_CONTEXT, set_runtime_main
     token = set_runtime_main("custom", "m", base_url="https://api.fireworks.ai/inference/v1",

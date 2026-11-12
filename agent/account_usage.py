@@ -950,15 +950,15 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
 def describe_fetch_error(exc: BaseException) -> str:
     """Short, non-secret cause of a failed usage fetch.
 
-    HTTP/transport errors keep their message (httpx and the OS generate them, and they carry the
-    cause: ``HTTP 401``, ``ConnectError``). Any other exception — a plugin hook's, say — contributes
-    only its class name, so arbitrary text (an opaque credential the redactor cannot recognize)
-    never reaches the log or the CLI."""
+    httpx errors keep their message (they carry the cause: ``HTTP 401``, ``ConnectError``, and
+    every built-in fetcher's network failure is one). Any other exception — a plugin hook's, say,
+    including an ``OSError`` — contributes only its class name, so arbitrary text (an opaque
+    credential the redactor cannot recognize) never reaches the log or the CLI."""
     from agent.redact import redact_sensitive_text
     name = type(exc).__name__
     if isinstance(exc, httpx.HTTPStatusError):
         return f"{name}: HTTP {exc.response.status_code} {exc.response.reason_phrase}".rstrip()
-    if isinstance(exc, (httpx.HTTPError, OSError)):
+    if isinstance(exc, httpx.HTTPError):
         return f"{name}: {redact_sensitive_text(str(exc), force=True)}"
     return name
 

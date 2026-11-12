@@ -166,6 +166,22 @@ def test_fetch_account_usage_reports_the_failure_to_the_caller_and_the_log(monke
     assert all("opaque-SECRET-marker" not in record.getMessage() for record in caplog.records)
 
 
+def test_fetch_account_usage_drops_a_plugin_oserror_message(monkeypatch, caplog):
+    """Only httpx errors keep their message; a provider hook's ``OSError`` contributes its class
+    name alone (review on #154173)."""
+    from agent import account_usage
+
+    def raising(_base_url, _api_key):
+        raise OSError("opaque-SECRET-marker")
+
+    monkeypatch.setitem(account_usage._USAGE_FETCHERS, "openrouter", raising)
+    failures = []
+    with caplog.at_level("WARNING", logger="agent.account_usage"):
+        assert account_usage.fetch_account_usage("openrouter", on_error=failures.append) is None
+    assert account_usage.describe_fetch_error(failures[0]) == "OSError"
+    assert all("opaque-SECRET-marker" not in record.getMessage() for record in caplog.records)
+
+
 def test_fetch_account_usage_codex_without_credentials_is_not_a_failure(monkeypatch):
     """An empty Codex credential pool is "no credential", not ``fetch_failed`` (review on #154173)."""
     from types import SimpleNamespace

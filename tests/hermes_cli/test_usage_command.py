@@ -82,6 +82,16 @@ def test_hermes_usage_names_a_failed_fetch_without_echoing_arbitrary_text(capsys
     assert err.count("\n") == 1
 
 
+def test_hermes_usage_drops_a_plugin_oserror_message(capsys):
+    def fetch(provider, **kwargs):
+        kwargs["on_error"](OSError("opaque-SECRET-marker"))
+
+    assert _run(["usage", "--json", "--provider", "anthropic"], fetch) == 1
+    out, err = capsys.readouterr()
+    assert json.loads(out)["detail"] == "the fetch failed: OSError"
+    assert "opaque-SECRET-marker" not in out + err
+
+
 def test_hermes_usage_names_the_http_status_of_a_rejected_fetch(capsys):
     import httpx
 

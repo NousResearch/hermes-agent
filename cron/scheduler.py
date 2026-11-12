@@ -2567,11 +2567,15 @@ def run_job(
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
     from cron.scheduler_unrun_session import end_unrun_owner_session
-    early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
-    if early is not None:
+    try:  # preparation and the agent import run before the main try/finally below
+        early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
+        if early is not None:
+            end_unrun_owner_session(owner_execution, job_id)
+            return early
+        from run_agent import AIAgent
+    except BaseException:
         end_unrun_owner_session(owner_execution, job_id)
-        return early
-    from run_agent import AIAgent
+        raise
 
     _cron_session_id = (owner_execution[1] if owner_execution is not None else
                         f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}")

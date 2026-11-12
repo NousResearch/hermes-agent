@@ -281,10 +281,13 @@ def _open_bridge_log(path: Path, *, private: bool):
     return open(path, "a", encoding="utf-8", opener=_owner_only_opener if private else None)
 
 
-def _bridge_config_fingerprint(bridge_env: dict) -> str:
-    """16-hex digest over the bridge-consumed keys of a spawn env: identifies the config a bridge bakes in at startup."""
+def _bridge_config_fingerprint(bridge_env: dict, package_hash: str = "") -> str:
+    """16-hex digest over the bridge-consumed keys of a spawn env plus the package.json hash its
+    node_modules were installed from: identifies everything a bridge bakes in at startup."""
     import hashlib
     digest = hashlib.sha256()
+    # _ensure_bridge_deps() reinstalls on package.json drift, but a running bridge keeps the modules it loaded.
+    digest.update(b"package.json\x00" + package_hash.encode("utf-8") + b"\x00")
     for key in _BRIDGE_CONSUMED_ENV:
         digest.update(key.encode("utf-8"))
         digest.update(b"\x00")
@@ -735,6 +738,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._http_session = aiohttp.ClientSession(headers=_bridge_auth_headers(self._bridge_token))
         self._poll_task = asyncio.create_task(self._poll_messages())
 
+    def _bridge_package_hash(self) -> str:
+        return _file_content_hash(Path(self._bridge_script).parent / "package.json")
+
     def _adopted_config_matches(self) -> bool:
         """Adopt only a bridge spawned with the env this adapter would use now.
 
@@ -746,7 +752,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         recorded = ""
         with suppress(OSError):
             recorded = (self._session_path / _BRIDGE_FINGERPRINT_FILE).read_text(encoding="utf-8-sig").strip()
-        return bool(recorded) and recorded == _bridge_config_fingerprint(self._bridge_env())
+        return bool(recorded) and recorded == _bridge_config_fingerprint(self._bridge_env(), self._bridge_package_hash())
 
     async def _reuse_running_bridge(self, bridge_path: Path) -> bool:
         """Adopt a connected bridge serving the on-disk bridge.js + the spawn config it was launched with; else say why it restarts."""
@@ -1004,7 +1010,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
                  "--mode", _wenv("WHATSAPP_MODE", "self-chat")], bridge_log_fh, bridge_env, store_umask)
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid, self._bridge_port)
-            _write_bridge_fingerprint(self._session_path, _bridge_config_fingerprint(bridge_env))
+            _write_bridge_fingerprint(self._session_path, _bridge_config_fingerprint(bridge_env, self._bridge_package_hash()))
             if not await self._wait_for_bridge():
                 return False
             self._attach_to_bridge(self._bridge_process)

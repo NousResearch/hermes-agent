@@ -214,7 +214,7 @@ class TestStaleBridgeHandshake:
             # An own-session bridge is adopted only when its recorded spawn-config
             # fingerprint matches the env this adapter would spawn with now (#126824).
             (adapter._session_path / _BRIDGE_FINGERPRINT_FILE).write_text(
-                _bridge_config_fingerprint(adapter._bridge_env()), encoding="utf-8"
+                _bridge_config_fingerprint(adapter._bridge_env(), adapter._bridge_package_hash()), encoding="utf-8"
             )
         reported = tmp_path / ("session" if holder == "own" else "other-profile-session")
         mock_client = _mock_health(
@@ -337,7 +337,7 @@ class TestStaleBridgeHandshake:
         _fresh_node_modules(bridge_dir)
         adapter = _make_adapter(bridge_script=str(bridge_dir / "bridge.js"), session_path=tmp_path / "session")
         (adapter._session_path / _BRIDGE_FINGERPRINT_FILE).write_text(  # adopted only on a matching spawn config
-            _bridge_config_fingerprint(adapter._bridge_env()), encoding="utf-8")
+            _bridge_config_fingerprint(adapter._bridge_env(), adapter._bridge_package_hash()), encoding="utf-8")
         mock_client = _mock_health(
             {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
              "sendReadReceipts": False, "session": str(tmp_path / "session")})
@@ -428,7 +428,7 @@ class TestConfigFingerprintAdoption:
             _BRIDGE_FINGERPRINT_FILE, _bridge_config_fingerprint,
         )
         (adapter._session_path / _BRIDGE_FINGERPRINT_FILE).write_text(
-            _bridge_config_fingerprint(bridge_env), encoding="utf-8"
+            _bridge_config_fingerprint(bridge_env, adapter._bridge_package_hash()), encoding="utf-8"
         )
 
     async def _reuse(self, adapter, bridge_path):
@@ -482,6 +482,27 @@ class TestConfigFingerprintAdoption:
         assert "Running bridge is stale (config changed), restarting" in capsys.readouterr().out
 
     @pytest.mark.asyncio
+    async def test_restarts_bridge_when_package_json_changed(self, tmp_path, capsys):
+        """_ensure_bridge_deps() reinstalls node_modules on package.json drift; the running bridge
+        still holds the old modules, so it must not be adopted either."""
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        self._record_fingerprint(adapter, adapter._bridge_env())
+        (bridge_dir / "package.json").write_text('{"name": "bridge", "version": "2"}\n', encoding="utf-8")
+
+        with patch("aiohttp.ClientSession", _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False})):
+            assert await self._reuse(adapter, bridge_dir / "bridge.js") is False
+
+        assert "Running bridge is stale (config changed), restarting" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
     async def test_missing_fingerprint_file_is_stale(self, tmp_path):
         """A bridge from before the fingerprint existed (or a lost file) is never adopted."""
         from plugins.platforms.whatsapp.adapter import _bridge_source_hash
@@ -523,7 +544,7 @@ class TestConfigFingerprintAdoption:
             await adapter.connect()
 
         recorded = (tmp_path / "session" / _BRIDGE_FINGERPRINT_FILE).read_text(encoding="utf-8").strip()
-        assert recorded == _bridge_config_fingerprint(mock_popen.call_args.kwargs["env"])
+        assert recorded == _bridge_config_fingerprint(mock_popen.call_args.kwargs["env"], adapter._bridge_package_hash())
 
     @pytest.mark.asyncio
     async def test_disconnect_keeps_fingerprint_file_for_adopted_bridge(self, tmp_path):

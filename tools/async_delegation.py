@@ -304,8 +304,9 @@ def recover_abandoned_delegations() -> int:
     now, recovered = time.time(), 0
     from tools.delegate_tool_resumable import continuable_of, plan_recovery, recover_abandoned
     plan = plan_recovery(_db_path(), alive)  # its git probes run before the write lock below
+    recovered_records: dict[str, dict[str, Any]] = {}
     with _DB_LOCK, _transaction() as conn:
-        recover_abandoned(conn, plan)
+        recover_abandoned(conn, plan, recovered_records)
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
                       owner_started_at, task_json, origin_session_id, result_json, state
@@ -331,9 +332,11 @@ def recover_abandoned_delegations() -> int:
                 diagnostics["git_state_hint"] = hint
             if continuable := continuable_of(conn, delegation_id):
                 diagnostics["resumable_subagent_ids"] = continuable
-                error += (" Its subagents can be continued on their own conversation and worktree: "
-                          "delegate_task(action='continue', subagent_id=..., message=...); check git state and the "
-                          "last tool before re-running side effects.")
+                from tools.delegate_tool_auto_resume import boot_notice
+                error += boot_notice(continuable, recovered_records) or (
+                    " Its subagents can be continued on their own conversation and worktree: "
+                    "delegate_task(action='continue', subagent_id=..., message=...); check git state and the "
+                    "last tool before re-running side effects.")
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
                 "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
@@ -1455,6 +1458,13 @@ def interrupt_for_session(
     """Signal running async delegations owned by ONE ending session to stop (any
     selector matches, see ``_session_records``). Returns how many."""
     targets = _session_records(_ACTIVE_STATES, session_key, origin_ui_session_id, parent_session_id)
+    # Its children already waiting to resume must not wake up after the person stopped or closed it.
+    from tools.delegate_tool_auto_resume import supersede_for_session
+    try:
+        supersede_for_session(session_key=session_key, origin_ui_session_id=origin_ui_session_id,
+                              parent_session_id=parent_session_id, reason=reason)
+    except Exception:  # health: allow BLE001 -- the interrupt itself must still run
+        logger.warning("could not cancel automatic resumes for an ending session", exc_info=True)
     return _interrupt_records(
         targets, "interrupt_for_session", reason, "Interrupted %d async delegation(s) for ending session (%s)")
 

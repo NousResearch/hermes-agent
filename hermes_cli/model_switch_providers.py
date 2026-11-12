@@ -1444,11 +1444,12 @@ def _attach_window_model_notes(providers: list[dict]) -> None:
 def _saved_entry_on_other_origin(name: str, base_url: str) -> bool:
     """True when the saved ``providers.<name>`` points at another origin than *base_url*."""
     from hermes_cli.config import load_config
+    from hermes_cli.config_providers import ENDPOINT_ADDRESS_FIELDS
 
     saved = (load_config().get("providers") or {}).get(name)
     if not isinstance(saved, dict):
         return False
-    old_urls = (str(saved.get(field) or "").strip() for field in ("base_url", "url", "api"))
+    old_urls = (str(saved.get(field) or "").strip() for field in ENDPOINT_ADDRESS_FIELDS)
     return any(url and not same_base_url_origin(url, base_url) for url in old_urls)
 
 

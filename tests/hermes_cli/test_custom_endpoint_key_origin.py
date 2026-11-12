@@ -153,9 +153,15 @@ class TestDesktopEndpointEdit:
         assert get_env_value(entry["key_env"]) == "sk-new-origin-fixture"
 
 
-@pytest.mark.parametrize("address_field", ["api", "url"])
-def test_desktop_move_of_an_entry_addressed_by_api_or_url_drops_its_key(_isolate_hermes_home, address_field):
-    """Migrated v12 entries store the address under ``api`` (hand-written ones may use ``url``)."""
+@pytest.mark.parametrize(("address_field", "credential"), [
+    ("api", {"key_env": "MYEP_KEY"}), ("url", {"key_env": "MYEP_KEY"}), ("baseUrl", {"key_env": "MYEP_KEY"}),
+    ("base_url", {"apiKey": "sk-old...ture"}), ("base_url", {"keyEnv": "MYEP_KEY"}),
+    ("base_url", {"apiKeyEnv": "MYEP_KEY"}),
+])
+def test_desktop_move_of_an_entry_addressed_by_api_or_url_drops_its_key(_isolate_hermes_home, address_field,
+                                                                         credential):
+    """Migrated v12 entries store the address under ``api``; hand-written ones may use ``url`` or the
+    camelCase aliases the readers accept (``baseUrl``, ``apiKey``/``keyEnv``/``apiKeyEnv``)."""
     from starlette.testclient import TestClient
 
     from hermes_cli.config import load_config, save_config, save_env_value
@@ -164,7 +170,7 @@ def test_desktop_move_of_an_entry_addressed_by_api_or_url_drops_its_key(_isolate
 
     cfg = load_config()
     cfg["providers"] = {"myep": {"name": "myep", address_field: "https://llm.old.example/v1", "model": "m",
-                                 "key_env": "MYEP_KEY", "models": {"m": {}}}}
+                                 **credential, "models": {"m": {}}}}
     save_config(cfg)
     save_env_value("MYEP_KEY", "sk-old...ture")
     client = TestClient(app)
@@ -177,10 +183,15 @@ def test_desktop_move_of_an_entry_addressed_by_api_or_url_drops_its_key(_isolate
 
     entry = load_config()["providers"]["myep"]
     assert entry["base_url"] == "https://llm.new.example/v1"
-    assert not ({"api", "url", "key_env", "api_key"} & entry.keys())
+    assert not ({"api", "url", "baseUrl", "key_env", "api_key", *credential} & entry.keys())
     runtime = resolve_runtime_provider(requested="myep")
     assert runtime["base_url"] == "https://llm.new.example/v1"
     assert runtime.get("api_key") != "sk-old...ture"
+    # Bare ``provider: custom`` at the new address must not find the old key on the entry either.
+    cfg = load_config()
+    cfg["model"] = {"provider": "custom", "base_url": "https://llm.new.example/v1", "default": "m"}
+    save_config(cfg)
+    assert resolve_runtime_provider().get("api_key") != "sk-old...ture"
 
 
 def test_desktop_move_of_a_legacy_custom_providers_row_keeps_its_key_home(_isolate_hermes_home):

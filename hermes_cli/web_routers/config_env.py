@@ -26,7 +26,9 @@ from hermes_cli.web_server_profiles import (
 )
 from fastapi import HTTPException, Request
 from hermes_cli.config import DEFAULT_CONFIG, OPTIONAL_ENV_VARS, read_raw_config, require_readable_config_before_write, custom_endpoint_key_env, coerce_provider_id, find_provider_entry, get_compatible_custom_providers, _ENV_REF_RE, _deep_merge
-from hermes_cli.config_providers import _canonical_api_mode, _custom_provider_entry_to_provider_config
+from hermes_cli.config_providers import (
+    _CAMEL_ALIASES, ENDPOINT_ADDRESS_FIELDS, _canonical_api_mode, _custom_provider_entry_to_provider_config,
+)
 from hermes_cli.web_models import ConfigUpdate, EnvVarUpdate, EnvVarDelete, EnvVarReveal, CustomEndpointUpdate
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -574,7 +576,10 @@ def _detach_main_model_from_provider(cfg: dict[str, Any], provider_key: str, ent
     cfg["model"] = model_cfg
 
 
-_ORIGIN_BOUND_FIELDS = ("api_key", "key_env", "api_key_env", "key_cmd", "extra_headers")
+_SNAKE_ORIGIN_BOUND_FIELDS = ("api_key", "key_env", "api_key_env", "key_cmd", "extra_headers")
+# The readers accept camelCase aliases (``apiKey``/``keyEnv``/``apiKeyEnv``) for the same credentials.
+_ORIGIN_BOUND_FIELDS = (*_SNAKE_ORIGIN_BOUND_FIELDS,
+                        *(camel for camel, snake in _CAMEL_ALIASES.items() if snake in _SNAKE_ORIGIN_BOUND_FIELDS))
 
 
 def _drop_credentials_on_origin_move(entry: dict[str, Any], existing: dict[str, Any], new_url: str,
@@ -586,8 +591,8 @@ def _drop_credentials_on_origin_move(entry: dict[str, Any], existing: dict[str, 
     """
     from utils import same_base_url_origin
 
-    # Migrated and legacy entries store the address under ``api``/``url``, not ``base_url``.
-    old_url = next((url for url in (str(existing.get(field) or "").strip() for field in ("base_url", "url", "api"))
+    # Migrated, legacy and hand-written entries store the address under ``api``/``url``/``baseUrl`` too.
+    old_url = next((url for url in (str(existing.get(field) or "").strip() for field in ENDPOINT_ADDRESS_FIELDS)
                     if url and not same_base_url_origin(url, new_url)), "")
     if not old_url:
         return
@@ -600,6 +605,13 @@ def _drop_credentials_on_origin_move(entry: dict[str, Any], existing: dict[str, 
         )
     for field in stored:
         entry.pop(field)
+
+
+def _drop_stale_addresses(entry: dict[str, Any]) -> None:
+    """``base_url`` is the address from now on; a stale ``api``/``url``/``baseUrl`` would outrank or shadow it."""
+    for field in ENDPOINT_ADDRESS_FIELDS:
+        if field != "base_url":
+            entry.pop(field, None)
 
 
 def _store_endpoint_key(entry: dict[str, Any], env_var: str, key: str, base_url: str, own_provider: Any) -> None:
@@ -697,9 +709,7 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     # credentials — ``request_overrides``); rebuilding from scratch silently
     # dropped them on an unrelated edit.
     entry: dict[str, Any] = dict(existing)
-    # ``base_url`` is the address from now on; a stale ``api``/``url`` would outrank it at runtime.
-    entry.pop("api", None)
-    entry.pop("url", None)
+    _drop_stale_addresses(entry)
     entry.update({
         "name": name, "base_url": base_url, "model": model,
         "discover_models": bool(body.discover_models),

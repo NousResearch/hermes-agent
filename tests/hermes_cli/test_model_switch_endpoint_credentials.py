@@ -100,7 +100,7 @@ def test_stored_key_follows_the_endpoint_it_was_entered_for(monkeypatch, switch,
     assert (sent == A_SECRET) is keeps_a_key, f"{switch}: next launch sends {sent!r}"
 
 
-@pytest.mark.parametrize("address_field", ["base_url", "url", "api"])
+@pytest.mark.parametrize("address_field", ["base_url", "url", "api", "baseUrl"])
 def test_switch_probe_treats_a_saved_entry_on_another_origin_as_moved(address_field):
     """The /model probe must not reload the saved key when the saved copy (under any address field)
     points at another host than the edited entry."""

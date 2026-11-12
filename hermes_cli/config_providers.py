@@ -110,6 +110,10 @@ _CAMEL_ALIASES: dict[str, str] = {
     "rateLimitDelay": "rate_limit_delay",
     "sessionAffinityHeader": "session_affinity_header"}
 
+# Every field a provider entry may store its address under (v12 migrations write ``api``).
+ENDPOINT_ADDRESS_FIELDS = ("base_url", "url", "api",
+                           *(camel for camel, snake in _CAMEL_ALIASES.items() if snake == "base_url"))
+
 
 _KNOWN_PROVIDER_KEYS = {
     # ``provider`` duplicates the ``providers.<name>`` mapping key and is unused here, but Hermes'

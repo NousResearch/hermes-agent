@@ -1,3 +1,4 @@
+import type { ProfilesCreateResult } from '@hermes/plugin-sdk'
 import {
   Badge,
   Button,
@@ -254,17 +255,20 @@ function slugTaken(roster: RosterRow[], slug: string, target: string, draft: nul
  *  elsewhere by then, and a same-named bot there is not the draft. Each discard,
  *  and the dialog unmounting, bumps `draftGenRef` so an in-flight create
  *  deletes its own draft and configures nothing. */
-function useDraftProfile(
-  createdRef: { current: null | string },
-  flightRef: { current: Promise<null | string> | null }
-) {
+function useDraftProfile() {
+  const createdRef = useRef<null | string>(null)
+  const flightRef = useRef<Promise<null | string> | null>(null)
+  const [createdForCaps, setCreatedForCaps] = useState<null | string>(null)
   const draftGenRef = useRef(0)
   const draftTargetRef = useRef('')
+  const draftWarningRef = useRef<{ generation: number; message: string; title: string } | null>(null)
 
   const discardDraft = () => {
     const draft = createdRef.current
     draftGenRef.current += 1
+    draftWarningRef.current = null
     createdRef.current = flightRef.current = null
+    setCreatedForCaps(null)
 
     if (draft) {
       discardDraftProfile(draft, draftTargetRef.current)
@@ -274,27 +278,29 @@ function useDraftProfile(
   useEffect(
     () => () => {
       draftGenRef.current += 1
+      draftWarningRef.current = null
     },
     []
   )
 
-  return { discardDraft, draftGenRef, draftTargetRef }
+  const renameDraft = (next: string, slug: string, setName: (name: string) => void) => {
+    if (botProfileIdentity(next, '').slug !== slug) {
+      discardDraft()
+    }
+
+    setName(next)
+  }
+
+  return { createdRef, flightRef, createdForCaps, setCreatedForCaps, discardDraft, renameDraft, draftGenRef, draftTargetRef, draftWarningRef }
 }
 
 export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: CreateAgentDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const [name, setName] = useState('')
-  // Create mode: the profile is created LAZILY. Capability toggles are staged in
-  // component state; the profile is materialized either on Create (submit) or on
-  // the first MCP credential setup (ensureAgentCreated), whichever comes first —
-  // so OAuth / API-key setup works DURING creation, not only after in Edit.
-  const createdRef = useRef<null | string>(null)
-  // In-flight profiles.create shared across concurrent triggers (Create
-  // button + MCP setup buttons). Distinct from createdRef on purpose:
-  // createdRef must stay a slug string for its sibling consumers.
-  const flightRef = useRef<Promise<null | string> | null>(null)
-  const { discardDraft, draftGenRef, draftTargetRef } = useDraftProfile(createdRef, flightRef)
+
+  const { createdRef, flightRef, createdForCaps, setCreatedForCaps, discardDraft, renameDraft, draftGenRef, draftTargetRef, draftWarningRef } = useDraftProfile()
+
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   // Default shapes mode: deterministic blob face drawn from the agent's name
@@ -354,10 +360,6 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
   const requestForTarget = <T,>(method: string, params: Record<string, unknown> = {}): Promise<T> =>
     requestOnTarget<T>(createTarget, method, params)
 
-  // Set once ensureAgentCreated() materializes the profile for the live
-  // Capabilities tab (CapabilitiesView needs a real backend to point at). State —
-  // not just createdRef — because the render must flip when it lands.
-  const [createdForCaps, setCreatedForCaps] = useState<null | string>(null)
   const [caps, setCaps] = useState<CapabilityCatalog | null>(null)
   const [capsFailed, setCapsFailed] = useState(false)
 
@@ -413,6 +415,8 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     setError(null)
     createdRef.current = null
     flightRef.current = null
+    draftWarningRef.current = null
+    draftGenRef.current += 1
   }
 
   // Capability catalog for the tabs: the profile doesn't exist yet, so show
@@ -499,7 +503,11 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
     // discard it and create fresh under the new slug.
     if (createdRef.current && createdRef.current !== slug) {
       discardDraft()
-      setCreatedForCaps(null)
+    }
+
+    // A recorded draft can still be applying its initial capability picks.
+    if (flightRef.current) {
+      return flightRef.current
     }
 
     if (createdRef.current) {
@@ -515,9 +523,12 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
 
     const generation = draftGenRef.current
     const target = createTarget
+    const targetId = target || activeConnectionId || 'local'
+    const machine = (connections || []).find(c => c.id === targetId)?.label
+    const warningTitle = `${slug} — ${machine ? `${machine} (${targetId})` : targetId}`
 
     const flight = singleFlight(flightRef, async () => {
-      await requestForTarget('profiles.create', {
+      const result = await requestForTarget<ProfilesCreateResult>('profiles.create', {
         name: slug,
         description: descriptionText,
         // Clone sources are profiles of the TARGET backend. The picker's
@@ -630,6 +641,11 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         queryKey: ROSTER_KEY
       })
 
+      // A disposable draft owns its warnings until final adoption, not a toast.
+      draftWarningRef.current = result.warnings?.length
+        ? { generation, title: warningTitle, message: result.warnings.join('\n') }
+        : null
+
       return slug
     })
 
@@ -658,9 +674,15 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
       // first so a bot whose machine has no usable credential lands as
       // "created, needs a model" instead of a doomed "No LLM provider" turn.
       // Only an explicit `ok: false` counts; older gateways proceed as before.
+      const generation = draftGenRef.current
+
       const readiness = await requestForTarget<{ error?: string; ok?: boolean }>('setup.runtime_check', {
         profile: slugCreated
       }).catch(() => null)
+
+      if (generation !== draftGenRef.current) {
+        return
+      }
 
       const needsModel = readiness?.ok === false
       const who = displayName({ name: slug, title: botTitle })
@@ -673,12 +695,20 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
         ...(remoteTarget ? { connectionId: targetConnection, remoteSource: true } : {})
       }
 
+      const warning = draftWarningRef.current
+
+      if (warning?.generation === draftGenRef.current) {
+        host.notify({ kind: 'warning', title: warning.title, message: warning.message, persistent: true })
+        draftWarningRef.current = null
+      }
+
       host.notify(
         needsModel
           ? {
               kind: 'warning',
               title: createdMessage,
               message: b.editor.needsModel,
+              persistent: true,
               detail: readiness?.error,
               ...(!remoteTarget && onConfigureModel
                 ? { action: { label: b.editor.configureModel, onClick: () => onConfigureModel(bot) } }
@@ -787,7 +817,13 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
           />
           {labeled(
             b.editor.name,
-            <Input autoFocus onChange={event => setName(event.target.value)} placeholder="inbox-triage" value={name} />
+            <Input
+              autoFocus
+              disabled={busy}
+              onChange={event => renameDraft(event.target.value, slug, setName)}
+              placeholder="inbox-triage"
+              value={name}
+            />
           )}
           {taken ? (
             <div className="text-xs text-(--ui-accent)">
@@ -801,10 +837,10 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
             ? labeled(
                 b.editor.createOn,
                 <Select
+                  disabled={busy}
                   onValueChange={value => {
                     // A draft minted on the old home is not this bot anymore.
                     discardDraft()
-                    setCreatedForCaps(null)
                     setTargetConnection(value === (activeConnectionId || 'local') ? '' : value)
                     // The capability catalog and clone list belong to the
                     // target backend — refetch for the new home. The live
@@ -1076,6 +1112,7 @@ export function CreateAgentDialog({ open, onClose, onConfigureModel, roster }: C
                                 <McpSetupButton
                                   ensureProfile={ensureAgentCreated}
                                   entry={m}
+                                  key={draftGenRef.current}
                                   onDone={() => {
                                     // Setup done: mark installed so the row's
                                     // checkbox un-disables, and enable it.

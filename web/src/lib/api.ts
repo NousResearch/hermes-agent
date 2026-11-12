@@ -8,6 +8,7 @@ import { createDashboardSessionMutations } from "./session-mutations";
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
 
 import type { AuxiliaryModelsResponse, ModelAssignmentResponse } from "./api-aux";
+import type { ProfileCreateResponse } from "./api-profiles";
 import type {
   AgentPluginUpdateResponse,
   AgentPluginsUpdateAllResponse,
@@ -752,15 +753,7 @@ export const api = {
     keep_skills?: string[];
     hub_skills?: string[];
   }) =>
-    fetchJSON<{
-      ok: boolean;
-      name: string;
-      path: string;
-      model_set?: boolean;
-      mcp_written?: number;
-      skills_disabled?: number;
-      hub_installs?: Array<{ identifier: string; pid: number | null }>;
-    }>("/api/profiles", {
+    fetchJSON<ProfileCreateResponse>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

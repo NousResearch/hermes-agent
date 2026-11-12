@@ -52,6 +52,17 @@ def _seed(home, session_id):
         db.close()
 
 
+def _seed_cron(home, job_id):
+    (home / "cron").mkdir(exist_ok=True)
+    job = {"id": job_id, "name": job_id, "prompt": "hi", "enabled": True,
+           "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"}}
+    (home / "cron" / "jobs.json").write_text(json.dumps({"jobs": [job]}), encoding="utf-8")
+
+
+def _cron_ids(client):
+    return {job["id"] for job in client.get("/api/cron/jobs").json()}
+
+
 def _launch_in(monkeypatch, home, *, isolated=True, desktop_owned=False):
     monkeypatch.setenv("HERMES_HOME", str(home))
     return isolated_scope.record_launch_scope(isolated=isolated, desktop_owned=desktop_owned)
@@ -76,6 +87,8 @@ def _sidebar_ids(client):
 def test_isolated_named_profile_lists_only_itself(client, homes, monkeypatch):
     _seed(homes["default"], "default-chat")
     _seed(homes["worker"], "worker-chat")
+    _seed_cron(homes["default"], "default-job")
+    _seed_cron(homes["worker"], "worker-job")
     assert _launch_in(monkeypatch, homes["worker"]) == "worker"
 
     assert [p["name"] for p in client.get("/api/profiles").json()["profiles"]] == ["worker"]
@@ -83,11 +96,14 @@ def test_isolated_named_profile_lists_only_itself(client, homes, monkeypatch):
     assert status["profiles"] == ["worker"]
     assert status["isolated_profile"] == "worker"
     assert _sidebar_ids(client) == {"worker-chat"}
+    assert _cron_ids(client) == {"worker-job"}
 
     import tui_gateway.server as srv
+    from tui_gateway.methods_complete import _profile_mention_items
 
     rows = srv._methods["profiles.list"](1, {"include_sessions": False})["result"]["profiles"]
     assert [row["name"] for row in rows] == ["worker"]
+    assert [item["text"] for item in _profile_mention_items("")] == ["@worker"]
 
 
 @pytest.mark.parametrize("launch", [
@@ -97,11 +113,16 @@ def test_isolated_named_profile_lists_only_itself(client, homes, monkeypatch):
 def test_unscoped_backends_still_list_every_profile(client, homes, monkeypatch, launch):
     _seed(homes["default"], "default-chat")
     _seed(homes["worker"], "worker-chat")
+    _seed_cron(homes["default"], "default-job")
+    _seed_cron(homes["worker"], "worker-job")
     assert _launch_in(monkeypatch, homes["worker"], **launch) is None
 
     assert {p["name"] for p in client.get("/api/profiles").json()["profiles"]} == {"default", "worker"}
     assert client.get("/api/status").json()["isolated_profile"] is None
     assert _sidebar_ids(client) == {"default-chat", "worker-chat"}
+    assert _cron_ids(client) == {"default-job", "worker-job"}
+    from tui_gateway.methods_complete import _profile_mention_items
+    assert {item["text"] for item in _profile_mention_items("")} == {"@default", "@worker", "@hermes"}
 
 
 def test_isolated_root_home_stays_unscoped(homes, monkeypatch):

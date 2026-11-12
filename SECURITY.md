@@ -283,6 +283,11 @@ private-disclosure channel and don't receive advisories.
   isolation that only sandboxes shell; reports whose preconditions
   require pre-existing write access to operator-owned configuration
   or credential files (those are already inside the trust envelope).
+- **Sibling-profile reach from a dashboard/`serve` caller.** Profiles
+  under one OS user share one trust envelope (§2.6 rule 4); an
+  `--isolated` server or a `?profile=` selector reaching a sibling
+  profile's files is not a vulnerability. Separate users need separate
+  OS users or containers (§2.2).
 - **Documented break-glass settings.** Operator-selected trade-offs
   that explicitly disable protections: `--insecure` and equivalent
   flags on the dashboard or other components, disabled approvals,

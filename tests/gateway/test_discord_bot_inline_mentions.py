@@ -20,7 +20,7 @@ def _adapter(*, allow_bots: str = "mentions", extra=None) -> DiscordAdapter:
     adapter._is_allowed_user = Mock(return_value=True)
     adapter._text_batch_delay_seconds = 0.6
     adapter._text_batch_split_delay_seconds = 2.0
-    adapter._bot_tag_debounce_until = {}
+    adapter._bot_tag_windows = {}
     return adapter
 
 

@@ -51,6 +51,7 @@ def _ensure_discord_mock():
 _ensure_discord_mock()
 
 import plugins.platforms.discord.adapter as discord_platform
+import plugins.platforms.discord.adapter_bot_tag as discord_bot_tag
 from plugins.platforms.discord.adapter import DiscordAdapter
 
 
@@ -257,7 +258,7 @@ async def test_unmentioned_bot_chunks_join_recent_tag_batch(adapter, monkeypatch
     # Fake clock: chunk 3 lands past the tag's own 2s window and is admitted only because
     # chunk 2 re-armed it (Discord paces bot sends at ~1/s, so real bursts look like this).
     clock = [1000.0]
-    monkeypatch.setattr(discord_platform, "time", SimpleNamespace(monotonic=lambda: clock[0], time=time.time))
+    monkeypatch.setattr(discord_bot_tag, "time", SimpleNamespace(monotonic=lambda: clock[0], time=time.time))
     assert await adapter._dispatch_discord_message(tagged) is True
     clock[0] += 1.5
     assert await adapter._dispatch_discord_message(second) is True

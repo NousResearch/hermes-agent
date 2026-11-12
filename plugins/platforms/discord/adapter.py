@@ -1176,10 +1176,11 @@ from plugins.platforms.discord.adapter_slash_auth import DiscordSlashAuthMixin
 from plugins.platforms.discord.adapter_thread_titles import DiscordThreadTitlesMixin, SemanticThreadRenames
 from plugins.platforms.discord.adapter_voice_info import DiscordVoiceInfoMixin
 from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
+from plugins.platforms.discord.adapter_bot_tag import BotTagHandoff, BotTagWindow, DiscordBotTagMixin
 
 
 class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
-                     DiscordSlashAuthMixin, DiscordReactionsMixin, BasePlatformAdapter):
+                     DiscordSlashAuthMixin, DiscordReactionsMixin, DiscordBotTagMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
 
     MAX_MESSAGE_LENGTH = 2000
@@ -1192,6 +1193,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
     # characters — without a cap the adapter posts every 2000-char chunk back-to-back and floods the channel
     # (the incident delivered 60,698 chars as 31 messages).
     MAX_SPLIT_MESSAGES = 8
+    _EMPTY_MESSAGE_TEXT = "(The user sent a message with no text content)"
 
     # Voice auto-disconnect after N idle seconds (discord.voice_channel_inactivity_timeout_seconds; 0 off).
     VOICE_TIMEOUT = 300
@@ -1221,10 +1223,10 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
-        # A tagged bot may emit one logical response as several Discord
-        # messages. Keep its unmentioned continuation chunks eligible for the
-        # existing text batcher during this short, sender-scoped window.
-        self._bot_tag_debounce_until: dict[str, float] = {}
+        # A tagged bot may emit one logical response as several Discord messages. Its unmentioned
+        # chunks are admitted during this short, sender-scoped window and follow the tag's routing
+        # (auto-thread, text batch); see adapter_bot_tag.py.
+        self._bot_tag_windows: dict[str, BotTagWindow] = {}
         self._voice_text_channels: dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: dict[int, dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: dict[int, asyncio.Task] = {}  # guild_id -> timeout task
@@ -1718,8 +1720,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         admitted, role_authorized = self._discord_message_admission(message, claim=True)
         if not admitted:
             return False
-        self._record_bot_tag_debounce(message)
-        return await self._handle_message(message, role_authorized=role_authorized)
+        return await self._handle_live_message(message, role_authorized=role_authorized)
 
     # --- gateway_platform_event fire-sites ---
 
@@ -4985,45 +4986,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         raw = self._gate_raw("allow_bots", "DISCORD_ALLOW_BOTS")
         return str(raw or "none").lower().strip() or "none"
 
-    @staticmethod
-    def _bot_tag_debounce_key(message: Any) -> str:
-        return (
-            f"{getattr(getattr(message, 'channel', None), 'id', '')}:"
-            f"{getattr(getattr(message, 'author', None), 'id', '')}"
-        )
-
-    def _bot_tag_window_seconds(self) -> float:
-        return max(self._text_batch_delay_seconds, self._text_batch_split_delay_seconds)
-
-    def _record_bot_tag_debounce(self, message: Any) -> None:
-        """Open a short continuation window after a bot-authored tag."""
-        if (
-            self._text_batch_delay_seconds <= 0
-            or not getattr(message.author, "bot", False)
-            or not self._self_is_explicitly_mentioned(message)
-        ):
-            return
-        self._bot_tag_debounce_until[self._bot_tag_debounce_key(message)] = (
-            time.monotonic() + self._bot_tag_window_seconds()
-        )
-
-    def _is_bot_tag_debounce_continuation(self, message: Any) -> bool:
-        """Return whether an unmentioned chunk belongs to a recent bot tag.
-
-        A hit re-arms the window: Discord paces a bot's sends at roughly one per
-        second, so chunk N of a long handoff lands well after the tag itself; each
-        admitted chunk therefore vouches for the next one. The gateway bot loop
-        guard bounds a bot that never stops talking."""
-        if self._text_batch_delay_seconds <= 0 or not getattr(message.author, "bot", False):
-            return False
-        key = self._bot_tag_debounce_key(message)
-        now = time.monotonic()
-        if self._bot_tag_debounce_until.get(key, 0.0) <= now:
-            self._bot_tag_debounce_until.pop(key, None)
-            return False
-        self._bot_tag_debounce_until[key] = now + self._bot_tag_window_seconds()
-        return True
-
     def _discord_free_response_channels(self) -> set:
         """Channel IDs/names needing no mention; a lone "*" is preserved for wildcard short-circuit."""
         raw = self.config.extra.get("free_response_channels")
@@ -5383,6 +5345,18 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         except Exception:
             pass
         return thread
+
+    async def _notify_auto_thread_failed(self, message: DiscordMessage) -> None:
+        """Tell the channel the auto-thread failed so the user can retry (no inline fallback, #20243)."""
+        try:
+            await message.channel.send(
+                self.warning_text(
+                    t("platform.discord.thread.auto_create_failed"),
+                    t("platform.discord.thread.auto_create_failed_generic"))
+            )
+        except Exception as notify_error:
+            logger.warning("[%s] Failed to notify user of auto-thread failure: %s", self.name, notify_error,
+                           exc_info=True)
 
     async def _auto_create_thread(self, message: DiscordMessage) -> Optional[Any]:
         """Create an auto-thread from a user message; returns the thread or ``None``.
@@ -6029,6 +6003,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
     async def _handle_message(
         self, message: DiscordMessage, role_authorized: bool = False, *, recovered: bool = False,
+        bot_tag: Optional[BotTagHandoff] = None,
     ) -> bool:
         """Handle one Discord message and report whether it reached dispatch."""
         # Server channels (not DMs) require @mention unless free-response or an already-joined thread.
@@ -6098,11 +6073,12 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 if (
                     not self._self_is_explicitly_mentioned(message)
                     and not mention_prefix
+                    and bot_tag is None
                     and not self._is_bot_tag_debounce_continuation(message)
                 ):
                     return False
         # Auto-thread: isolate each @mention in a text channel into its own thread (Slack-style).
-        auto_threaded_channel = None
+        auto_threaded_channel = thread_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels = self._get_no_thread_channels()
             # Voice-linked and reply exclusions live in the auto-thread gate below, not in skip_thread.
@@ -6111,37 +6087,15 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             )
             auto_thread = self._extra_or_env_flag("auto_thread", "DISCORD_AUTO_THREAD", "true", truthy=True)
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
-            if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
-                thread = await self._auto_create_thread(message)
-                if thread:
-                    parent_channel_id = str(message.channel.id)
-                    is_thread = True
-                    thread_id = str(thread.id)
-                    # Pre-seed dedup: message.create_thread() fires a second MESSAGE_CREATE for the
-                    # starter (id == thread.id, maybe type=default); mark it so it can't trigger a rerun.
-                    # Must run before the first await below: mark_async yields to the loop, and the
-                    # echo's _discord_message_admission would otherwise claim the id first.
-                    self._dedup.is_duplicate(str(thread.id))
-                    auto_threaded_channel = thread
-                    await self._threads.mark_async(thread_id)
-                else:
-                    # Auto-threading is the routing target; do NOT fall back to an inline parent-channel
-                    # reply (dumps the task into a shared channel). Surface an error and skip the run.
-                    try:
-                        # That breaks thread-first Discord workflows by dumping a new task into a shared
-                        # channel. Surface a short visible error so the user can retry once Discord
-                        # recovers, and skip agent invocation for this message. See #20243.
-                        await message.channel.send(
-                            self.warning_text(
-                                t("platform.discord.thread.auto_create_failed"),
-                                t("platform.discord.thread.auto_create_failed_generic"))
-                        )
-                    except Exception as notify_error:
-                        logger.warning(
-                            "[%s] Failed to notify user of auto-thread failure: %s", self.name,
-                            notify_error,
-                        )
+            wants_thread = auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message
+            if self._bot_tag_auto_threads(bot_tag, wants_thread):
+                thread_channel, created = await self._open_auto_thread(message, bot_tag)
+                if thread_channel is None:
                     return False
+                parent_channel_id = str(message.channel.id)
+                is_thread = True
+                thread_id = str(thread_channel.id)
+                auto_threaded_channel = thread_channel if created else None
         referenced_attachments = []
         reference = getattr(message, "reference", None)
         resolved_reference = getattr(reference, "resolved", None) if reference else None
@@ -6154,7 +6108,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             msg_type = self._attachment_message_type(all_attachments[0])
         else:
             msg_type = MessageType.TEXT
-        effective_channel = auto_threaded_channel or message.channel
+        effective_channel = thread_channel or message.channel
         if isinstance(message.channel, discord.DMChannel):
             chat_type = "dm"
             chat_name = message.author.name
@@ -6204,7 +6158,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             # reply (hydrate context around the referenced message). DMs/fresh auto-threads: nothing.
             _has_mention_gap = require_mention and not is_free_channel and not in_bot_thread
             _is_reply = message.reference is not None
-            if (_has_mention_gap or is_thread or _is_reply) and auto_threaded_channel is None:
+            if (_has_mention_gap or is_thread or _is_reply) and thread_channel is None:
                 _backfill_text = await self._fetch_channel_context(
                     message.channel, before=message,
                     reply_target=self._reply_target(message.reference) if _is_reply else None,
@@ -6221,7 +6175,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                     getattr(message.channel, "id", "unknown"),
                 )
                 return False
-            event_text = "(The user sent a message with no text content)"
+            event_text = self._EMPTY_MESSAGE_TEXT
         _chan = message.channel
         _parent_id = str(getattr(_chan, "parent_id", "") or "")
         _chan_id = str(getattr(_chan, "id", ""))
@@ -6241,28 +6195,18 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
         )
-        if (
-            getattr(getattr(message, "author", None), "bot", False)
-            and self._is_bot_tag_debounce_continuation(message)
-        ):
-            event._bot_tag_debounce = True  # type: ignore[attr-defined]
+        self._mark_bot_tag_event(event, message, bot_tag)
 
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
             await self._threads.mark_async(thread_id)
-        # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
-        if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
+        # Live plain text is batched, and a bot handoff's tag and file chunks; recovery would replay IDs.
+        if not recovered and self._text_batch_delay_seconds > 0 and (
+                msg_type == MessageType.TEXT or self._batches_bot_tag_event(event, bot_tag)):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
         return True
-
-    def _text_batch_delay_for(self, pending: Optional[MessageEvent]) -> float:
-        """A bot handoff's continuation chunks arrive at Discord's send rate (~1/s), so a
-        batch opened by a bot tag waits the split delay regardless of chunk length."""
-        if getattr(pending, "_bot_tag_debounce", False):
-            return self._text_batch_split_delay_seconds
-        return super()._text_batch_delay_for(pending)
 
 
 # ---------------------------------------------------------------------------

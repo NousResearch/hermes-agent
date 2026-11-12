@@ -32,6 +32,43 @@ def clear_aux_credentials_on_route_change(entry: dict, provider: Any, base_url: 
     return True
 
 
+_CARRIED_CREDENTIAL_FIELDS = ("api_key", "api", "key_env", "api_key_env", "api_mode")
+
+
+def _url(value: Any) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
+def drop_carried_route_state(old: Any, new: Any, config: dict) -> None:
+    """Guard for whole-document writers (``PUT /api/config``) that merge a form over the disk block.
+    The form re-sends or omits the block's base_url/key fields, so a provider change keeps the old
+    route's base_url and credentials, and the runtime hands them to the new provider (#141832).
+
+    Mutates *new* in place. A carried base_url the new provider does not own is dropped, as the
+    dashboard assignment does. When the endpoint then moves, credential fields still equal to the
+    old block's go too; values the form changed are its own and stay.
+    An inline api_key set under an unset/auto block with no endpoint is kept: it was entered for
+    the provider being chosen now, not for an old endpoint."""
+    if not isinstance(old, dict) or not isinstance(new, dict):
+        return
+    old_route = _route_of(old.get("provider"), old.get("base_url"))
+    if old_route == _route_of(new.get("provider"), new.get("base_url")):
+        return
+    base_url = _url(new.get("base_url"))
+    carried_url = bool(base_url) and base_url == old_route[1]
+    if carried_url and _route_of(new.get("provider"), "")[0] != old_route[0]:
+        from hermes_cli.route_identity import provider_owns_route
+        if provider_owns_route(new.get("provider"), base_url, config) is not True:
+            new.pop("base_url")
+            carried_url = False
+    if carried_url:
+        return  # same endpoint: its credentials stay paired with it
+    fields = _CARRIED_CREDENTIAL_FIELDS[2:] if old_route == ("", "") else _CARRIED_CREDENTIAL_FIELDS
+    for key in fields:
+        if key in new and new[key] == old.get(key):
+            new.pop(key)
+
+
 def _safe(value: Any) -> str:
     """A route value fit for the terminal: userinfo and credential query params masked."""
     from agent.redact import redact_sensitive_text

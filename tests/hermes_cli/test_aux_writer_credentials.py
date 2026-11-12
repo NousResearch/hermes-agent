@@ -101,3 +101,59 @@ def test_dashboard_same_route_keeps_its_key(home):
     _apply_aux_assignment_sync(load_config(), "custom", "m2", "vision", "https://a.example/v1", "")
 
     assert _resolved_vision()[2:4] == ("https://a.example/v1", "a-key")
+
+
+@pytest.mark.parametrize("seed", [
+    OPENROUTER_ROUTE,
+    {"provider": "custom", "model": "m", "base_url": "https://a.example/v1", "api_key": OLD_SECRET,
+     "api_mode": "codex_responses"},
+], ids=["openrouter_key_env", "custom_inline_key"])
+def test_wizard_custom_endpoint_sends_no_old_key(home, seed):
+    import hermes_cli.tools_config as tc
+    import hermes_cli.tools_config_providers as tcp
+    _seed(home, seed)
+    answers = iter(["https://b.example/v1", "new-key", "m"])
+    with patch.object(tc, "_prompt_choice", return_value=2), \
+         patch.object(tcp, "_prompt", side_effect=lambda *a, **k: next(answers)):
+        tc._configure_vision_backend()
+
+    assert _resolved_vision() == ("custom", "m", "https://b.example/v1", None, None)
+
+
+def _put_config(config: dict) -> None:
+    import asyncio
+    from hermes_cli.web_routers.config_env import ConfigUpdate, update_config
+    asyncio.run(update_config(ConfigUpdate(config=config)))
+
+
+@pytest.mark.parametrize("seed", [
+    {"provider": "openrouter", "key_env": "OLD_ENDPOINT_KEY"},
+    {"provider": "openrouter", "key_env": "OLD_ENDPOINT_KEY", "base_url": "https://openrouter.ai/api/v1"},
+], ids=["key_env", "key_env_and_base_url"])
+def test_dashboard_config_form_provider_change_sends_no_old_key(home, seed):
+    _seed(home, seed)
+
+    # The schema form re-sends what GET returned (base_url) and never sends key_env.
+    _put_config({"auxiliary": {"vision": {**{k: v for k, v in seed.items() if k != "key_env"},
+                                          "provider": "anthropic"}}})
+
+    assert _resolved_vision() == ("anthropic", None, None, None, None)
+
+
+def test_dashboard_config_form_main_model_provider_change_drops_old_route(home):
+    from hermes_cli.config import read_raw_config
+    (home / "config.yaml").write_text(yaml.safe_dump({"model": {
+        "provider": "custom", "default": "m", "base_url": "https://a.example/v1", "key_env": "OLD_ENDPOINT_KEY"}}))
+
+    _put_config({"model": {"provider": "anthropic"}})
+
+    assert read_raw_config()["model"] == {"provider": "anthropic", "default": "m"}
+
+
+def test_dashboard_config_form_keeps_same_route_and_new_keys(home):
+    _seed(home, {"provider": "custom", "model": "m", "base_url": "https://a.example/v1", "api_key": "a-key"})
+    _put_config({"auxiliary": {"vision": {"model": "m2", "base_url": "https://a.example/v1", "api_key": "a-key"}}})
+    assert _resolved_vision()[2:4] == ("https://a.example/v1", "a-key")
+
+    _put_config({"auxiliary": {"vision": {"base_url": "https://b.example/v1", "api_key": "b-key"}}})
+    assert _resolved_vision()[2:4] == ("https://b.example/v1", "b-key")

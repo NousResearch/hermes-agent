@@ -106,7 +106,6 @@ _GUARDS = {
     "shebangs": ["scripts/check_bash_shebangs.py"],
     "no-tmp": ["scripts/check_no_tmp_literals.py"],
     "detached-spawns": ["scripts/check_detached_spawns.py"],
-    "thread-hops": ["scripts/ci/check_thread_hops.py"],
     "install-root": ["scripts/install_root_lint.py"],
     "config-writers": ["scripts/check_config_yaml_writers.py"],
     "config-readers": ["scripts/check_config_yaml_readers.py"],
@@ -120,7 +119,8 @@ _GUARDS = {
 }
 # Guards that judge a diff, not a tree: they get the same base/head as the ratchet
 # (the blob-size step of repo-guards.yml).
-_DIFF_GUARDS = {"blob-size": ["scripts/ci/check_blob_size.py"]}
+_DIFF_GUARDS = {"blob-size": ["scripts/ci/check_blob_size.py"],
+                "thread-hops": ["scripts/ci/check_thread_hops.py"]}
 _CHECKS = (*_GUARDS, *_DIFF_GUARDS, "ruff", "health")
 
 

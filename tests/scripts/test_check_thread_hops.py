@@ -23,6 +23,9 @@ other.map(f, items)
 def test_no_guessed_context_and_direct_wrappers():
     source = '''\
 import threading
+from contextvars import copy_context
+from functools import partial
+from agent.memory_provider import ctx_bound
 threading.Thread(target=context.run)
 threading.Thread(target=copy_context().run)
 threading.Thread(target=ctx_bound(f))
@@ -96,3 +99,64 @@ def test_check_runner_dispatches_guard():
     sys.modules[spec.name] = module
     loader.exec_module(module)
     assert module._jobs(['thread-hops'], None, None)['thread-hops'].argv[1:] == ['scripts/ci/check_thread_hops.py']
+
+
+def test_enclosing_expressions_and_method_scope():
+    source = """
+import threading as th
+@th.Thread(target=deco)
+def f(x=th.Thread(target=default)) -> th.Thread(target=annotation):
+    pass
+class C(th.Thread(target=base), metaclass=th.Thread(target=meta)):
+    th = object()
+    def method(self):
+        th.Thread(target=inside)
+"""
+    assert len(guard.sites('a.py', source)) == 6
+
+
+def test_trusted_imports_and_shadowing():
+    source = """
+from agent.memory_provider import ctx_bound as wrap
+from contextvars import copy_context as copy
+from functools import partial as part
+x.submit(wrap(f))
+x.submit(part(wrap(f), 1))
+x.submit(copy().run)
+x.submit(fake.ctx_bound(f))
+x.submit(fake.copy_context().run)
+def f(*wrap, **copy):
+    x.submit(wrap(f))
+    x.submit(copy().run)
+"""
+    assert len(guard.sites('a.py', source)) == 4
+
+
+def test_lambda_and_comprehension_bindings_do_not_leak():
+    source = """
+import threading as th
+(lambda th: th.Thread(target=no))(x)
+[th.Thread(target=no) for th in things]
+th.Thread(target=yes)
+"""
+    assert len(guard.sites('a.py', source)) == 1
+
+
+def test_lambda_parameter_shadows_trusted_copy():
+    source = """
+from contextvars import copy_context
+x.submit(lambda copy_context: copy_context().run(f))
+x.submit(lambda: copy_context().run(f))
+"""
+    assert len(guard.sites('a.py', source)) == 1
+
+
+def test_qualified_trusted_imports():
+    source = """
+import contextvars as cv
+import tools.thread_context as tc
+import functools as ft
+x.submit(cv.copy_context().run)
+x.submit(ft.partial(tc.propagate_context_to_thread(f), 1))
+"""
+    assert not guard.sites('a.py', source)

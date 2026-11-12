@@ -92,7 +92,7 @@ jobs:
 
       - name: Forbid new unbound thread handoffs
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.python }}
-        run: just check --only thread-hops
+        run: just check --only thread-hops ${{ inputs.event_name == 'pull_request' && '--base HEAD^1' || '' }}
 
       # The install root has one owner, hermes_cli._startup_fast.project_root_str(); sys.path
       # belongs to entry points. New __file__ climbs or import-time sys.path edits fail here.

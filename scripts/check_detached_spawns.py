@@ -44,7 +44,8 @@ import ast
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.ci.production_scan import in_scope, marked, tracked_files as _tracked_files
 
 ROOT = Path(__file__).resolve().parent.parent

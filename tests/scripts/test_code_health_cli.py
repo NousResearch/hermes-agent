@@ -30,6 +30,7 @@ _GUARD_SCRIPTS = (
     "scripts/check_profile_create_entry.py", "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
     "scripts/ci/check_lazy_deps_imports.py", "scripts/ci/check_profile_archive_boundary.py",
     "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py", "scripts/ci/check_line_endings.py",
+    "scripts/ci/production_scan.py", "scripts/ci/check_thread_hops.py",
 )
 _SUPPORT = ("scripts/ci/profile_scope_patterns.json", "scripts/install_root_lint_baseline.json", "agent/subdirectory_hints.py", *_GUARD_SCRIPTS)
 # The config guards fail when a tree they scan is missing, so the fixture carries an empty stand-in.
@@ -94,7 +95,8 @@ def _add_engine(repo: Path, checker: bool = True) -> list[str]:
     for rel in _SUPPORT:
         (repo / rel).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(REPO / rel, repo / rel)
-    _write(repo, {"tests/README.md": "os-marker-fakes scans tests/\n"})
+    _write(repo, {"tests/README.md": "os-marker-fakes scans tests/\n",
+                  "scripts/ci/thread_hops_baseline.json": "[]\n"})
     _write(repo, {tree if tree.endswith(".py") else f"{tree}/__init__.py": "" for tree in _SCANNED_TREES
                   if not (repo / tree).exists()})
     if checker:

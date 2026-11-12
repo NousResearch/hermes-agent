@@ -3,7 +3,7 @@ import type { AuxTaskCopyMap } from './types_aux_tasks'
 export const ruAuxTasks: AuxTaskCopyMap = {
   vision: { label: 'Зрение', hint: 'Анализ изображений' },
   compression: { label: 'Сжатие', hint: 'Компрессия контекста' },
-  approval: { label: 'Одобрение', hint: 'Умное авто-одобрение' },
+  approval: { label: 'Подтверждение', hint: 'Умное автоподтверждение' },
   mcp: { label: 'MCP', hint: 'Маршрутизация MCP-инструментов' },
   title_generation: { label: 'Ген. заголовка', hint: 'Заголовки сеансов' },
   review: {

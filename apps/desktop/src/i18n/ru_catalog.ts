@@ -30,7 +30,7 @@ export const ruCatalog = {
   listView: 'Список',
   cardView: 'Карточки',
   installTitle: (name: string) => `Установить «${name}»?`,
-  installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
+  installDescription: 'Навык будет доступен в новых сеансах. Устанавливайте только из источников, которым доверяете.',
   installTo: 'Установить в',
   thisComputer: 'Этот компьютер',
   installing: 'Установка…',
@@ -67,7 +67,7 @@ export const ruCatalog = {
   more: 'Показать ещё',
   pinned: 'Проверенный коммит',
   snapshotHint: 'Из каталога Hermes. При просмотре нет обращений к исходным репозиториям.',
-  installHint: 'Проверьте исходный код перед установкой. Изменения применяются к новым сессиям.',
+  installHint: 'Проверьте исходный код перед установкой. Изменения применяются к новым сеансам.',
   results: (count: number) =>
     `${count.toLocaleString('ru')} ${resultWord(count)}`,
   back: 'Назад к результатам',
@@ -136,12 +136,12 @@ export const ruCatalog = {
 
 export const ruSkillDeepLink = {
   installTitle: (name: string) => `Установить «${name}»?`,
-  installDescription: 'Навык будет доступен в новых сессиях. Устанавливайте только из источников, которым доверяете.',
+  installDescription: 'Навык будет доступен в новых сеансах. Устанавливайте только из источников, которым доверяете.',
   installTo: 'Установить в',
   thisComputer: 'Этот компьютер',
   installing: 'Установка…',
   installComplete: (name: string) => `«${name}» установлен`,
   destinationChanged: 'Место установки изменилось. Закройте диалог и снова откройте ссылку установки.',
-  installed: 'Установленные',
+  installed: 'Установлено',
   source: 'Источник'
 } satisfies TranslationOverrides['skillDeepLink']

@@ -1094,7 +1094,8 @@ async def fs_read_text(
             )
         except Exception as exc:
             _raise_fs_backend_error(exc)
-        target_path = Path(target)
+        # Keep the alias's preview type: reading a vetted realpath must not change its MIME.
+        target_path = Path(path)
         return {
             "binary": _fs_looks_binary(data[:4096]),
             "byteSize": size,
@@ -1282,13 +1283,14 @@ async def fs_read_data_url(
     backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
         try:
-            data, _size, target = await asyncio.to_thread(
+            data, _size, _target = await asyncio.to_thread(
                 _remote_read_bytes, backend, path, max_bytes=_FS_DATA_URL_MAX_BYTES
             )
         except Exception as exc:
             _raise_fs_backend_error(exc)
         encoded = base64.b64encode(data).decode("ascii")
-        return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
+        # The caller's .html alias determines the preview type, not the target's suffix.
+        return {"dataUrl": f"data:{_fs_mime_type(Path(path))};base64,{encoded}"}
     target = await _fs_download_path(path, profile, session_id, session=session)
     # A browser paste or pick reads back to be sent wherever a locked files root sits: the server
     # wrote it into the profile's own image cache or staged uploads, outside the managed tree.

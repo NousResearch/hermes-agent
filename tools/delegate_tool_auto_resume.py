@@ -39,8 +39,9 @@ SUPERSEDED = "superseded"
 CANCELLED = "Not continued: its parent cancelled the automatic resume"
 STAND_IN_FAILED = "Not continued: the scheduler could not build the parent's stand-in"
 # A continue refused for one of these reasons ran nothing and can succeed on a later tick: the attempt is refunded.
-_TRANSIENT_REFUSALS = ("still running", "being continued", "still stopping", "paused", "capacity", "depth limit",
-                       CANCELLED, STAND_IN_FAILED)
+# A depth-limit refusal is not one: the child's depth does not change between ticks.
+_TRANSIENT_REFUSALS = ("still running", "being continued", "still stopping", "paused", "capacity", CANCELLED,
+                       STAND_IN_FAILED)
 
 
 def enabled() -> bool:
@@ -358,7 +359,8 @@ def _verdict(record: dict[str, Any], now: float) -> tuple[str, Any]:
 def tick(start: Callable[..., Optional[str]], *, capacity: int, now: Optional[float] = None) -> list[str]:
     """One pass over the bound profile's records; returns the subagent ids it resumed. ``start(record, unit_row,
     message)`` performs the continue and returns an error string, or None once the child was dispatched."""
-    if not enabled() or capacity <= 0:
+    from tools.delegate_tool_registry import is_spawn_paused
+    if not enabled() or capacity <= 0 or is_spawn_paused():  # paused: no claim, no stand-in parent built
         return []
     now = now or time.time()
     resumed, endpoints = [], set()

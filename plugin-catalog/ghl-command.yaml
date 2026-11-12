@@ -1,7 +1,7 @@
 name: ghl-command
 repo: https://github.com/PXMichael/GHL-Command
 sha: 19abebe09f93608868725fb2cb735fe63d5ebea7
-description: "GoHighLevel lives inside Hermes. Create contacts, move deals, send email and SMS, trigger workflows from chat. Live in 90 seconds, no browser clicks."
+description: "GoHighLevel lives inside Hermes. Create contacts, move deals, send email and SMS, trigger workflows from chat. Live in 90 seconds, no browser clicks. Disclosure — sends CRM reads and writes, contact deletes, workflow enrollments and outbound SMS/email (to recipients the agent names, each delete/send/enroll after a Hermes approval prompt) through the user's own GoHighLevel account at services.leadconnectorhq.com using the GHL_API_KEY Private Integration Token; no other hosts, no telemetry."
 maintainer: PXMichael
 tier: community
 category: tools
@@ -28,3 +28,4 @@ capabilities:
   requires_env:
     - GHL_API_KEY
     - GHL_LOCATION_ID
+requires_hermes: ">=0.19.0"

@@ -856,7 +856,10 @@ class GatewayTurnPrepareMixin:
             self._set_pending_turn_sidecar_notes(session_key, turn_sidecar_notes)
 
         # Bind this run generation to the adapter so deferred post-delivery callbacks are released
-        # by the run that registered them.
+        # by the run that registered them. The turn's own event carries it too: a busy follow-up's
+        # reply is sent by ``dispatch_shared_busy``'s observer, which holds no session guard and
+        # releases the turn's callbacks by this per-turn stamp (``turn_run_generation``).
+        event._hermes_run_generation = run_generation
         self._bind_adapter_run_generation(self._delivery_adapter_for(source), session_key, run_generation)
         # Delivery IDs are only unique in their transport namespace. Keyless turns
         # need their own identity, even when another process writes to this session.

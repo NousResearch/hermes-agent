@@ -1,9 +1,8 @@
 """Credential selection for an explicit custom endpoint.
 
 The route that names a URL owns its credential: the same-origin main key or the
-``providers.<id>`` entry's own key. An ambient ``OPENAI_API_KEY`` is never a route credential,
-because sending a live OpenAI key to a third-party endpoint is credential misdirection
-(#145452).
+``providers.<id>`` entry's own key, both ahead of the ambient ``OPENAI_API_KEY`` — ahead of
+them a live OpenAI key reached a third-party endpoint that declares its own (#145452).
 """
 
 from __future__ import annotations

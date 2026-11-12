@@ -1,12 +1,15 @@
 """Credential order for explicit custom endpoints (regression for #145452).
 
 A route's own credential — the same-origin main key or the ``providers.<id>`` entry owning the
-URL — must beat an ambient ``OPENAI_API_KEY``. A route without one stays keyless instead of
-borrowing the OpenAI key. Real config.yaml under a temp ``HERMES_HOME``, resolved through the
+URL — must beat an ambient ``OPENAI_API_KEY``, which stays only the documented last resort for a
+URL with no credential of its own, and then only on an OpenAI host or the exact ``OPENAI_BASE_URL``
+it is paired with (#91308). Real config.yaml under a temp ``HERMES_HOME``, resolved through the
 task route; HTTP is faked.
 """
 
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 import hermes_yaml as yaml
 
@@ -82,18 +85,28 @@ def test_declared_provider_key_env_beats_ambient_openai_key(tmp_path, monkeypatc
     assert captured.get("api_key") == "sk-route-credential"
 
 
-def test_route_without_credential_never_borrows_ambient_openai_key(tmp_path, monkeypatch):
-    """Cross-origin route with no credential of its own falls to the placeholder — never the
-    ambient OpenAI key (regression for #145452)."""
+@pytest.mark.parametrize(("paired_base", "expected"), [
+    ("https://other.example.net/v1", "ambient-openai-key"),
+    (None, "no-key-required"),
+])
+def test_route_without_credential_falls_back_to_openai_key_never_the_main_key(
+    tmp_path, monkeypatch, paired_base, expected,
+):
+    """A cross-origin base_url with no credential of its own gets the documented
+    OPENAI_API_KEY last resort only when paired with it via OPENAI_BASE_URL (#91308) —
+    never the main route's key (regression for #145452)."""
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "config.yaml").write_text(yaml.safe_dump({
         "model": {"provider": "custom", "base_url": "https://main.example.test/v1",
-                  "api_key": "sk-main-route-key", "default": "main-model"},
+                  "api_key": "main-route-key", "default": "main-model"},
     }))
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-openai")
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-openai-key")
+    if paired_base:
+        monkeypatch.setenv("OPENAI_BASE_URL", paired_base)
+    else:
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     captured: dict = {}
 
     def _capture_create(**kwargs):
@@ -108,4 +121,4 @@ def test_route_without_credential_never_borrows_ambient_openai_key(tmp_path, mon
             explicit_base_url="https://other.example.net/v1", explicit_api_key=None,
         )
 
-    assert captured.get("api_key") == "no-key-required"
+    assert captured.get("api_key") == expected

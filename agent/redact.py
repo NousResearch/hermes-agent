@@ -22,6 +22,11 @@ from agent.redact_headers import (
     _SECRET_HEADER_JSON_UNTERMINATED_RE, json_header_value_is_credential, redact_cookie_assignments,
     redact_header_credentials,
 )
+from agent.redact_patterns import (
+    extract_literal_prefix as _extract_literal_prefix,
+    has_nested_unbounded_repeat as _has_nested_unbounded_repeat,
+    has_top_level_alternation as _has_top_level_alternation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -876,6 +881,20 @@ _ZHIPU_API_KEY_RE = re.compile(
     r"(?<![A-Za-z0-9_.-])([0-9a-f]{32}\.[A-Za-z0-9]{16,})(?![A-Za-z0-9_.-])"
 )
 
+# Bitwarden Secrets Manager access token: ``0.<uuid>.<client-secret>:<base64-key>``. The SDK's
+# AccessToken parser requires exactly this structure (version ``0``, UUID id, opaque client
+# secret, ``:``, base64 encryption key), which is what makes the shape safe to match without a
+# vendor prefix. The leading literal is a bare ``0.``: joining _PREFIX_PATTERNS would degrade the
+# mechanical pre-screen (_PREFIX_SUBSTRINGS, derived from each pattern's literal prefix) to a
+# substring true on nearly every text — versions, floats, timestamps — and force the
+# per-character control-split pass on all of it. This runs as its own pass behind a
+# ``"0."``+``"-"`` gate instead (the UUID's hyphens are required, so the gate stays
+# false-negative-free). Deliberately hyphenated-UUID only, matching what Bitwarden issues.
+_BWS_ACCESS_TOKEN_RE = re.compile(
+    r"0\.[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    r"\.[A-Za-z0-9+/=_-]{16,}(?::[A-Za-z0-9+/=_-]{16,})?"
+)
+
 
 def _mask_control_split_tokens(text: str, mask_fn) -> str:
     """Mask tokens whose body is split by control/zero-width characters.
@@ -1554,6 +1573,15 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         _zhipu_sub = _mask_token_nonreusable if file_read else _mask_token
         text = _ZHIPU_API_KEY_RE.sub(lambda m: _zhipu_sub(m.group(1)), text)
 
+    # Bitwarden Secrets Manager access token — shape-matched, because the leaking rendering had no
+    # ``KEY=`` context at all (``echo "... ${VAR:+set}${VAR:-unset}"`` concatenated the value onto
+    # ``set`` text) and the token carries no vendor prefix, so neither the prefix matcher nor the
+    # assignment passes could see it. Like the prefix matcher, this runs in code_file (source-dump)
+    # output too, where the assignment passes are deliberately skipped.
+    if "0." in text and "-" in text:
+        _bws_sub = _mask_token_nonreusable if file_read else _mask_token
+        text = _BWS_ACCESS_TOKEN_RE.sub(lambda m: _bws_sub(m.group(0)), text)
+
     if not code_file:
         text = _redact_assignments(text, mask_nonreusable=file_read)
 
@@ -1829,77 +1857,6 @@ def redact_terminal_output(output: str, command: str | None = None, *, force: bo
 # --- Prefix pre-screen: derived from _PREFIX_PATTERNS so a new prefix can't
 # silently break the gate (every match contains its pattern's literal prefix).
 
-def _extract_literal_prefix(pattern: str) -> str:
-    """Leading literal chars of a regex (up to the first metacharacter)."""
-    meta = "[(\\.?*+|{^$"
-    for i, ch in enumerate(pattern):
-        if ch in meta:
-            return pattern[:i]
-    return pattern
-
-
-def _skip_char_class(pattern: str, i: int) -> int:
-    """Given ``pattern[i] == "["``, return the index just past the closing ``]``."""
-    i += 2 if pattern[i + 1:i + 2] == "]" else 1  # a leading "]" is literal
-    while i < len(pattern) and pattern[i] != "]":
-        i += 2 if pattern[i] == "\\" else 1
-    return i
-
-
-def _unbounded_quantifier_follows(pattern: str, j: int) -> bool:
-    """True if an open-ended quantifier (``*``, ``+``, ``{m,}``) starts at ``pattern[j]``."""
-    if j >= len(pattern):
-        return False
-    if pattern[j] in "*+":
-        return True
-    if pattern[j] == "{":
-        k = pattern.find("}", j)
-        body = pattern[j + 1:k] if k != -1 else ""
-        return body[:-1].isdigit() and body.endswith(",")  # {m,} is open-ended; {m} / {m,n} bounded
-    return False
-
-
-def _pattern_structure(pattern: str) -> tuple[bool, bool]:
-    """One scan → ``(has_top_level_alternation, has_nested_unbounded_repeat)``.
-
-    Top-level ``|`` defeats the literal-prefix guarantee (in ``ab|.*`` the prefix
-    binds only the first branch; ``ab(?:x|y)`` is fine). An unbounded quantifier
-    on a group containing one (``(a+)+``, ``(a{2,})+``) is the canonical ReDoS
-    shape. Structural only; overlapping branches (``(a|aa)+``) are not detected.
-    """
-    top_level_alt = nested = False
-    contains_unbounded = [False]  # per open group: does it contain an unbounded repeat?
-    i = 0
-    while i < len(pattern):
-        ch = pattern[i]
-        if ch == "\\":
-            i += 2
-            continue
-        if ch == "[":
-            i = _skip_char_class(pattern, i)
-        elif ch == "(":
-            contains_unbounded.append(False)
-        elif ch == ")":
-            inner = contains_unbounded.pop() if len(contains_unbounded) > 1 else False
-            if inner and _unbounded_quantifier_follows(pattern, i + 1):
-                nested = True
-            contains_unbounded[-1] = contains_unbounded[-1] or inner
-        elif ch == "|" and len(contains_unbounded) == 1:
-            top_level_alt = True
-        elif _unbounded_quantifier_follows(pattern, i):
-            contains_unbounded[-1] = True
-            if ch == "{":
-                i = pattern.find("}", i)  # skip the {m,} body
-        i += 1
-    return top_level_alt, nested
-
-
-def _has_top_level_alternation(pattern: str) -> bool:
-    return _pattern_structure(pattern)[0]
-
-
-def _has_nested_unbounded_repeat(pattern: str) -> bool:
-    return _pattern_structure(pattern)[1]
 
 
 _PREFIX_SUBSTRINGS = tuple(_extract_literal_prefix(p) for p in _PREFIX_PATTERNS)

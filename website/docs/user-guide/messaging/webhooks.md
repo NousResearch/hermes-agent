@@ -427,20 +427,20 @@ hermes webhook subscribe antenna-matches \
 | Status | Meaning |
 |--------|---------|
 | `200 OK` | Delivered successfully. Body: `{"status": "delivered", "route": "...", "target": "...", "delivery_id": "..."}` |
-| `200 OK` (status=duplicate) | Duplicate `X-GitHub-Delivery` ID within the idempotency TTL (1 hour). Not re-delivered. |
+| `200 OK` (status=duplicate) | This delivery ID was already delivered (or its outcome is unknown because the send raised), even before a gateway restart. Not re-delivered. |
 | `401 Unauthorized` | HMAC signature invalid or missing. |
 | `400 Bad Request` | Malformed JSON body. |
 | `404 Not Found` | Unknown route name. |
 | `413 Payload Too Large` | Body exceeded `max_body_bytes`. |
 | `429 Too Many Requests` | Route rate limit exceeded. |
-| `502 Bad Gateway` | Target adapter rejected the message or raised. The error is logged server-side; the response body is a generic `Delivery failed` to avoid leaking adapter internals. |
+| `502 Bad Gateway` | Target adapter rejected the message or raised. The error is logged server-side and kept in [`hermes webhook history`](#delivery-history); the response body is a generic `Delivery failed` to avoid leaking adapter internals. A rejection releases the delivery ID so the sender's retry is delivered; a send that raised keeps it, because the message may already have gone out. |
 
 ### Configuration gotchas
 
 - `deliver_only: true` requires `deliver` to be a real target. `deliver: log` (or omitting `deliver`) is rejected at startup — the adapter refuses to start if it finds a misconfigured route.
 - The `skills` field is ignored in direct delivery mode (no agent runs, so there's nothing to inject skills into).
 - Template rendering uses the same `{dot.notation}` syntax as agent mode, including the `{__raw__}` token.
-- Idempotency uses the same `X-GitHub-Delivery` / `X-Request-ID` header — retries with the same ID return `status=duplicate` and do NOT re-deliver.
+- Idempotency uses the same `X-GitHub-Delivery` / `X-Request-ID` header — retries with the same ID return `status=duplicate` and do NOT re-deliver, including after a gateway restart.
 
 ---
 
@@ -450,9 +450,9 @@ Set `cron_job` on a route to fire an **existing cron job** whenever an event arr
 
 How it works:
 
-1. The event passes the same HMAC auth, rate limiting, `events`/`filters`/`script` filtering, and idempotency as any other route.
+1. The event passes the same HMAC auth, rate limiting, and `events`/`filters`/`script` filtering as any other route.
 2. The route's `prompt` template is rendered from the payload and injected into the job as **transient per-run context** (the same rail as `cronjob(action='run', prompt=...)` — the job's stored prompt is never mutated).
-3. The job fires through the same at-most-once claim the scheduler uses, so a webhook burst cannot double-fire a job that is already running, and the job's own delivery target receives the output.
+3. Hermes preflights the referenced job under the routed profile and acquires the scheduler's at-most-once fire claim **before** acknowledging the POST. Only then is `202 Accepted` returned; a worker runs the claimed snapshot without claiming again. Unknown, paused, disabled, completed, or busy targets return a retryable `503` with a generic error and release the delivery ID so the producer's retry is processed. The real reason (for example "Job is paused/disabled") is kept in [`hermes webhook history`](#delivery-history), never in the response.
 
 ### Example: fire a PR-review job on review feedback
 
@@ -486,8 +486,8 @@ The job reference is validated when you create the subscription, so typos surfac
 
 - `cron_job` and `deliver_only` are mutually exclusive (the adapter refuses to start if a route sets both). A cron job handles its own delivery.
 - The route-level `deliver`, `deliver_extra`, and `skills` fields are ignored on `cron_job` routes — the job's own settings apply.
-- Paused/disabled jobs are not fired; the event is logged and dropped.
-- The POST returns `202 Accepted` immediately; the job runs in the background.
+- Paused, disabled, completed, unknown, or otherwise unrunnable jobs are not fired. The POST returns retryable `503` with a generic error and does **not** consume the delivery ID, so the producer can retry after the job is resumed. A job that is already running is also `503` (there is no second fire queue).
+- The POST returns `202 Accepted` only after the fire claim is acquired; the claimed run then executes in the background.
 
 ---
 
@@ -626,7 +626,33 @@ Requests exceeding the limit receive a `429 Too Many Requests` response.
 
 ### Idempotency
 
-Delivery IDs (from `X-GitHub-Delivery`, `svix-id`, `webhook-id`, `X-Request-ID`, or a random per-request ID) are cached for **1 hour**. Duplicate deliveries (e.g. webhook retries) are silently skipped with a `200` response, preventing duplicate agent runs.
+Delivery IDs (from `X-GitHub-Delivery`, `svix-id`, `webhook-id`, `X-Request-ID`, or a random per-request ID) are scoped to the route and profile. Duplicate deliveries (e.g. webhook retries) are skipped with a `200` response, preventing duplicate agent runs. Agent routes dedupe through the session admission ledger; `deliver_only`, `cron_job` and coalesced routes dedupe through the delivery receipts below, so a retry that arrives after a gateway restart, or days later, is still a duplicate. A delivery that failed with a retryable error (`503`, or a target that rejected the message) is not remembered as delivered, so the sender's retry runs.
+
+### Delivery history {#delivery-history}
+
+Every authenticated delivery leaves a receipt in `~/.hermes/webhook_receipts.db`: the route, delivery ID, event type, outcome and reason, and what it started. Payload bodies are never stored. Unauthenticated requests and rate-limited (`429`) requests are not recorded.
+
+| Outcome | Meaning |
+|---------|---------|
+| `accepted` | Ran or was queued. The detail names what it started: `admission:<id>` (agent run), `cron_job:<id>`, or `deliver:<target>`; `coalesced`/`delivered` say how. |
+| `duplicate` | The delivery ID was already accepted. Nothing ran. |
+| `ignored` | Not for this route: the event type is not in `events`, a `filters` rule did not match (`filter`), or the `script` dropped it (`script`). |
+| `failed` | Not processed: the cron job was not available (with the job's reason), the target rejected the message, the routed profile was not served, or the body could not be parsed. |
+
+```bash
+hermes webhook history                    # 20 most recent deliveries, newest first
+hermes webhook history --route github-pr  # one route
+hermes webhook history --limit 100
+```
+
+Receipts are kept for 7 days (and at most 10,000 history rows). Change the retention, which is also how long a delivery ID is remembered for dedupe:
+
+```yaml
+platforms:
+  webhook:
+    extra:
+      receipt_retention_days: 14
+```
 
 ### Body size limits
 
@@ -685,8 +711,9 @@ This is the same trust model that applies to everything the agent reads: web pag
 
 ### Duplicate responses
 
-- The idempotency cache should prevent this — check that the webhook source is sending a delivery ID header (`X-GitHub-Delivery`, `svix-id`, `webhook-id`, or `X-Request-ID`)
-- Delivery IDs are cached for 1 hour
+- Idempotency should prevent this — check that the webhook source is sending a delivery ID header (`X-GitHub-Delivery`, `svix-id`, `webhook-id`, or `X-Request-ID`)
+- `hermes webhook history --route <name>` shows whether each copy was `accepted` or `duplicate`
+- Delivery IDs are remembered for `receipt_retention_days` (default 7)
 
 ### `gh` CLI errors (GitHub comment delivery)
 

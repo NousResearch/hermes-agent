@@ -2319,8 +2319,11 @@ def cleanup_task_resources(agent, task_id: str) -> None:
     terminal envs (``_cleanup_inactive_envs`` reaps them after ``terminal.lifetime_seconds``)
     and ``cleanup_browser`` in headed mode (the inactivity reaper handles idle sessions)."""
     def _headed() -> bool:
-        from tools.browser_session_cloud import is_headed_mode
-        return is_headed_mode()
+        from tools.browser_session_cdp import get_cdp_override_raw
+        from tools.browser_session_cloud import get_cloud_provider, is_headed_mode
+        # Visible local Chromium is the only browser held across turns. An external CDP
+        # endpoint or cloud backend still needs per-turn cleanup for its task supervisor.
+        return is_headed_mode() and not get_cdp_override_raw() and get_cloud_provider() is None
 
     for label, skip, skip_what, cleanup in (
         ("VM", is_persistent_env, "cleanup_vm for persistent env", lambda: _ra().cleanup_vm(task_id)),

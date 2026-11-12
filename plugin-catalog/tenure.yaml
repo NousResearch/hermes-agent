@@ -1,7 +1,7 @@
 name: tenure
 title: tenure
 repo: https://github.com/otsoa-dubief/tenure
-sha: 038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0
+sha: 1e619fbc42d5cae2e585408f956b434ba7866e36
 subdir: tenure
 version: "1.0.0"
 description: >-
@@ -32,13 +32,13 @@ tier: community
 category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/otsoa-dubief/tenure#readme
-image: https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/social-preview.png
+image: https://raw.githubusercontent.com/otsoa-dubief/tenure/1e619fbc42d5cae2e585408f956b434ba7866e36/docs/images/social-preview.png
 screenshots:
-  - https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/hero.gif
-  - https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/desktop-trusted.png
-  - https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/desktop-probation.png
-  - https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/desktop-asks-first.png
-  - https://raw.githubusercontent.com/otsoa-dubief/tenure/038e8c2ad6f5ec1a3b3af336852d49be9e71d0b0/docs/images/passport.gif
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/1e619fbc42d5cae2e585408f956b434ba7866e36/docs/images/hero.gif
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/1e619fbc42d5cae2e585408f956b434ba7866e36/docs/images/desktop-trusted.png
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/1e619fbc42d5cae2e585408f956b434ba7866e36/docs/images/desktop-probation.png
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/1e619fbc42d5cae2e585408f956b434ba7866e36/docs/images/desktop-asks-first.png
+  - https://raw.githubusercontent.com/otsoa-dubief/tenure/1e619fbc42d5cae2e585408f956b434ba7866e36/docs/images/passport.gif
 platforms: []
 known_issues: []
 capabilities:

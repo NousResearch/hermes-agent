@@ -209,6 +209,26 @@ describe('keyboard (#89884)', () => {
 
     expect(onSubmitDraft).not.toHaveBeenCalled()
   })
+
+  it('keeps the composition keys away from the popover too', async () => {
+    const { input, onChange } = await mount()
+
+    typeInto(input, '@')
+
+    // Enter here confirms the candidate text, so no mention is inserted.
+    fireEvent.keyDown(input, { isComposing: true, key: 'Enter' })
+
+    expect(onChange).toHaveBeenCalledTimes(1) // the typing itself
+
+    // The arrows that walk the IME candidate window must not move our
+    // highlight either: the real Enter below still takes the first option.
+    const firstHandle = options()[0].match(/^@[a-z]+/)![0]
+
+    fireEvent.keyDown(input, { isComposing: true, key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onChange).toHaveBeenLastCalledWith(`${firstHandle} `)
+  })
 })
 
 // #91706: a command approval in a room could be SELECTED but never sent — the

@@ -77,12 +77,18 @@ def _telegram_retry_delay(exc: Exception, attempt: int) -> float | None:
     return kinds.same_request_backoff(attempt) if kind in (kinds.UNSENT, kinds.SERVER_ERROR) else None
 
 
-async def _send_telegram_message_with_retry(bot, *, attempts: int = SAME_REQUEST_ATTEMPTS, **kwargs):
-    """``bot.send_message`` with bounded retries on transient failures."""
+async def _send_telegram_message_with_retry(bot, *, attempts: int = SAME_REQUEST_ATTEMPTS, outcome=None, **kwargs):
+    """``bot.send_message`` with bounded retries on transient failures. ``outcome`` (a
+    ``DeliveryOutcome``) records every failed try that may have posted the message (Telegram's own
+    5xx is retried, yet may follow a committed send), so a later connect failure cannot read as
+    "nothing sent"."""
+    from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
     for attempt in range(attempts):
         try:
             return await bot.send_message(**kwargs)
         except Exception as exc:
+            if outcome is not None and may_have_delivered(exc):
+                outcome.ambiguous()
             delay = _telegram_retry_delay(exc, attempt)
             if delay is None or attempt >= attempts - 1:
                 raise
@@ -127,13 +133,14 @@ def _telegram_bot(token, extra=None):
     urls = {"base_url": base_url, "base_file_url": extra.get("base_file_url") or base_url} if base_url else {}
     try:
         from telegram.request import HTTPXRequest
-        from plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts
+        from plugins.platforms.telegram.telegram_network import build_ptb_requests, proxy_target_hosts, telegram_verify
         fallback_ips = [] if base_url else _telegram_fallback_ips(extra)  # a custom server is reached directly
         proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_target_hosts(base_url, fallback_ips),
                                   configured=extra.get("proxy_url"))
         if proxy:
             logger.info("send_message: standalone Telegram send routed through proxy %s", safe_proxy_url_for_log(proxy))
-        request, updates_request = build_ptb_requests(HTTPXRequest, fallback_ips=fallback_ips, proxy_url=proxy)
+        request, updates_request = build_ptb_requests(HTTPXRequest, fallback_ips=fallback_ips, proxy_url=proxy,
+                                                      verify=telegram_verify(extra, None))
         return Bot(token=token, request=request, get_updates_request=updates_request, **urls)
     except Exception as request_err:
         logger.warning("send_message: failed to build the Telegram request (%s), using PTB defaults",
@@ -177,13 +184,14 @@ def _is_telegram_parse_error(error) -> bool:
     return is_entity_parse_error(error)
 
 
-async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs):
+async def _telegram_send_text_chunk(bot, chat_id, chunk, parse_mode, has_html, text_kwargs, outcome=None):
     """One text chunk with adapter-matching fallbacks: thread-not-found -> retry without
     ``message_thread_id`` (dropped from ``text_kwargs`` for later chunks too); parse failure
     -> plain text. A rejected HTML chunk (an unsupported tag beside supported ones) first
-    retries as MarkdownV2, so its Markdown still renders."""
+    retries as MarkdownV2, so its Markdown still renders. ``outcome`` sees every attempt."""
     async def send(text, mode):
-        return await _send_telegram_message_with_retry(bot, chat_id=chat_id, text=text, parse_mode=mode, **text_kwargs)
+        return await _send_telegram_message_with_retry(
+            bot, chat_id=chat_id, text=text, parse_mode=mode, outcome=outcome, **text_kwargs)
     try:
         return await send(chunk, parse_mode)
     except Exception as md_error:
@@ -240,10 +248,14 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
     # The adapter's media budgets (#133164): the Bot's 20s read timeout cuts off Telegram's
     # post-upload processing, so a delivered file came back "Timed out" and got resent.
     media_kwargs.update(scaled_budgets([media_path, thumb_path], 0.0)[0])
+    from plugins.platforms.telegram.telegram_media_retry import send_media_retrying
     try:
         with open(media_path, "rb") as f:  # noqa: ASYNC230 -- file handle is streamed to the upload; a local open() is non-blocking in practice
+            def upload():  # a failure Telegram provably never posted repeats, as in the adapter (#62079)
+                return send_media_retrying(lambda: _telegram_send_media(
+                    bot, chat_id, f, ext, is_voice, force_document, **media_kwargs), lambda: f.seek(0), "media upload")
             try:
-                return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
+                return await upload()
             except Exception as media_err:
                 if _is_telegram_thread_not_found(media_err) and media_kwargs.get("message_thread_id"):
                     logger.warning("Thread %s not found for media send, retrying without message_thread_id",
@@ -257,7 +269,7 @@ async def _telegram_send_one_media(bot, chat_id, media_path, is_voice, *, captio
                 else:
                     raise
                 f.seek(0)
-                return await _telegram_send_media(bot, chat_id, f, ext, is_voice, force_document, **media_kwargs)
+                return await upload()
     finally:
         if thumb_path:
             with contextlib.suppress(OSError):
@@ -329,6 +341,27 @@ def _telegram_mdv2(text, *, max_units=None):
     return None if max_units is not None and utf16_len(formatted) > max_units else formatted
 
 
+def _record_media_failure(error, media_path, warnings, last_msg):
+    """Warn about a failed upload; one that may have landed counts as sent (never a resend)."""
+    from plugins.platforms.telegram.telegram_media_retry import request_may_have_delivered
+    maybe = request_may_have_delivered(error)
+    warnings.append(_sanitize_error_text(
+        f"Failed to send media {media_path}: {error}" + (" (Telegram may still deliver it; do not resend)" if maybe else "")))
+    logger.error(warnings[-1])
+    if maybe:  # delivery unknown, never a hard failure a caller would answer with a resend
+        return last_msg or SimpleNamespace(message_id=None)
+    return last_msg
+
+
+def _rich_send_result(rich, chat_id, outcome) -> dict:
+    """Envelope for a finished rich send. ``retryable`` (nothing sent) only on the adapter's
+    ``never_sent`` proof: a lost answer or a server error may already be in the chat."""
+    if rich.success:
+        return _success(chat_id, message_id=rich.message_id)
+    never_sent = isinstance(rich.raw_response, dict) and rich.raw_response.get("never_sent") is True
+    return outcome.failure(_error(f"Telegram send failed: {rich.error}"), never_sent=never_sent)
+
+
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
                          force_document=False, extra=None, notify=None):
     """One-shot Telegram Bot API send over the platform's ``extra`` (base_url, proxy, fallback IPs,
@@ -337,9 +370,13 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
     if str(thread_id or "").strip() and not str(thread_id).strip().lstrip("-").isdigit():
         # ``<chat>:<topic name>`` parses for every caller, but only the live gateway's cron router
         # resolves a name (ensure_dm_topic): the Bot API has no topic lookup by name (#80483).
-        return _error(f"Telegram topic '{thread_id}' is a name, not a thread id: a direct send cannot "
-                      "resolve named topics. Use telegram:<chat_id>:<numeric thread id>, or deliver "
-                      "through a cron job while the gateway is running.")
+        return {**_error(f"Telegram topic '{thread_id}' is a name, not a thread id: a direct send cannot "
+                         "resolve named topics. Use telegram:<chat_id>:<numeric thread id>, or deliver "
+                         "through a cron job while the gateway is running."), "retryable": True}
+    from gateway.platforms._shared import DeliveryOutcome
+    # One record across the rich attempt, every chunk and every retry: what landed (ids) and what
+    # may have. ``last_msg`` is the final receipt for the success envelope.
+    last_msg, outcome = None, DeliveryOutcome()
     try:
         from plugins.platforms.telegram.telegram_outbound import (
             is_visually_empty, notification_kwargs, resolve_notifications_mode, send_album_standalone,
@@ -358,36 +395,38 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                          **notification_kwargs(resolve_notifications_mode(), notify)}
         # disable_web_page_preview is only valid for send_message, not media sends.
         text_kwargs = {**thread_kwargs, **({"disable_web_page_preview": True} if disable_link_previews else {})}
-        last_msg, warnings, _tg_caption = None, [], None
+        warnings, _tg_caption = [], None
         if message and not media_files:
             rich = await send_rich_standalone(bot, {**(extra or {}), "disable_link_previews": disable_link_previews},
                                               chat_id, message, thread_id=thread_id, notify=notify)
             if rich is not None:
-                return (_success(chat_id, message_id=rich.message_id) if rich.success
-                        else _error(f"Telegram send failed: {rich.error}"))
+                return _rich_send_result(rich, chat_id, outcome)
         # MEDIA caption rides on the bubble as its *formatted* caption; formatting can inflate a
         # raw <1024 string past Telegram's cap, so re-check in UTF-16 units.
         _cap, _ = _media_caption_split(message, media_files)
         if _cap is not None and utf16_len(formatted) <= _TELEGRAM_CAPTION_LIMIT:
             _tg_caption, formatted = formatted, ""  # suppress the separate text send below
         # Chunk *after* formatting, in UTF-16 units: escaping can push a raw-<4096 message over.
-        chunks = BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len) if formatted.strip() else []
-        if len(chunks) > 1 and not _has_html:
-            # truncate_message appends a raw " (1/2)" suffix after format_message escaped the text;
-            # escape the MarkdownV2-special parentheses, as the live adapter does (#74004).
-            from plugins.platforms.telegram.adapter import _separate_chunk_indicator_from_fence
-            chunks = [
-                _separate_chunk_indicator_from_fence(re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk))
-                for chunk in chunks
-            ]
+        if not formatted.strip():
+            chunks = []
+        elif _has_html:
+            chunks = BasePlatformAdapter.truncate_message(formatted, 4096, len_fn=utf16_len)
+        else:
+            # Same split as the live adapter: entities cut by a split are closed and reopened, and the
+            # " (1/2)" markers come back MarkdownV2-escaped (#74004).
+            from plugins.platforms.telegram.telegram_chunking import split_formatted_mdv2
+            chunks = split_formatted_mdv2(formatted, 4096, BasePlatformAdapter.truncate_message, utf16_len)
         for chunk in chunks:
-            last_msg = await _telegram_send_text_chunk(bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs)
+            last_msg = await _telegram_send_text_chunk(
+                bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs, outcome=outcome)
+            outcome.landed(getattr(last_msg, "message_id", None))
         if album := _telegram_album_paths(media_files, force_document, _tg_caption):
             result = await send_album_standalone(bot, extra or {}, chat_id, album, thread_id=thread_id, notify=notify)
             detail = result.raw_response or {}
             warnings += [_sanitize_error_text(f"Failed to send Telegram photo {path}: {err}")
                          for path, err in detail.get("failed", ())]
             if detail.get("ambiguous"):
+                outcome.ambiguous()
                 warnings.append("Telegram never confirmed a photo album; it may already be in the chat, so it was not resent")
             if not result.success and not detail.get("failed") and not detail.get("refused"):
                 warnings.append(_sanitize_error_text(f"Failed to send Telegram photo album: {result.error}"))
@@ -413,19 +452,22 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     bot, int_chat_id, media_path, is_voice, caption=_tg_caption, parse_mode=send_parse_mode,
                     has_html=_has_html, thread_kwargs=thread_kwargs, force_document=force_document)
             except Exception as e:
-                from plugins.platforms.telegram.telegram_send_errors import may_have_delivered
-                maybe = " (Telegram may still deliver it; do not resend)" if may_have_delivered(e) else ""
-                warnings.append(_sanitize_error_text(f"Failed to send media {media_path}: {e}{maybe}"))
-                logger.error(warnings[-1])
+                last_msg = _record_media_failure(e, media_path, warnings, last_msg)
         if last_msg is None:
             return {"error": _NO_DELIVERABLE, **({"warnings": warnings} if warnings else {})}
         return _success(chat_id, warnings, **({"message_id": str(last_msg.message_id)}
-                                                          if last_msg.message_id is not None else {}))
+                                              if last_msg.message_id is not None else {}),
+                        **outcome.split_fields())
     except ImportError:
         return {"error": "python-telegram-bot not installed. Run: "
-                f"{install_hint('telegram')}"}
+                f"{install_hint('telegram')}", "retryable": True}
     except Exception as e:
-        return _error(f"Telegram send failed: {e}")
+        from plugins.platforms.telegram import telegram_send_errors as kinds
+        # Nothing sent (cron may replay it) only when this request never left or was refused, no
+        # receipt came back (``last_msg``: a chunk or the album) and ``outcome`` saw no earlier try
+        # that may have posted it.
+        return outcome.failure(_error(f"Telegram send failed: {e}"), never_sent=last_msg is None and (
+            kinds.send_error_kind(e) in (kinds.REFUSED, kinds.FLOOD, kinds.UNSENT)))
 
 
 async def standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False,

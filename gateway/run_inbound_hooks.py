@@ -112,10 +112,16 @@ class GatewayInboundHooksMixin:
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
                     from gateway.session_ingress_context import carry_callback
-                    rewritten = dataclasses.replace(event, text=_new_text)
-                    carry_callback(event, rewritten)
-                    _carry_replied_voice_answer(event, rewritten, _new_text)
-                    event = rewritten
+                    if getattr(event, '_busy_observed', False):
+                        # Its observer closes the hooks using this exact event. Replacing it loses
+                        # the process-local admission handle assigned after this hook returns.
+                        _carry_replied_voice_answer(event, event, _new_text)
+                        event.text = _new_text
+                    else:
+                        rewritten = dataclasses.replace(event, text=_new_text)
+                        carry_callback(event, rewritten)
+                        _carry_replied_voice_answer(event, rewritten, _new_text)
+                        event = rewritten
                 break
             if _action == "allow":
                 break

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Run ONE (arm, model, task, rep) cell of the text_to_speech / manage_connections deferral A/B.
 
-Usage: worker.py <arm:base|pr> <model_slug> <task_id> <rep> <out_json>
+Usage: worker.py <arm:base|pr|A|B|C|D> <model_slug> <task_id> <rep> <out_json>
 Env: TCD_INFERENCE_URL + TCD_INFERENCE_KEY (any OpenAI-compatible endpoint), TCD_BASE_TREE, TCD_PR_TREE.
 Exit 3 = infra/config error (never scored).
+
+Arms base/pr compare two trees. Arms A-D run ONE tree (TCD_TREE) and differ only in the cell's own
+config and one sentence: A = manage_connections eager, B = deferred, C = deferred with the reworded
+first sentence (the catalog line), D = eager with the reworded sentence. Task id ``__dry__`` makes no
+model call: it proves the stubs and the sandbox and dumps the tool surface.
 
 The only thing that differs between the arms is whether the two tools are sent as schemas (base) or
 sit behind tool_search (pr). Both tools, the hosted connector search/describe legs and the hosted
@@ -19,9 +24,12 @@ import time
 import traceback
 
 ARM, MODEL, TASK_ID, REP, OUT = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5]
-TREE = os.environ.get(f"TCD_{ARM.upper()}_TREE") or ""
+# arm -> (manage_connections deferred, first sentence reworded)
+ARMS = {"A": (False, False), "B": (True, False), "C": (True, True), "D": (False, True)}
+OLD_LEAD, NEW_LEAD = "Connect the user to apps.", "Connect the user's app accounts and install MCP servers."
+TREE = os.environ.get("TCD_TREE" if ARM in ARMS else f"TCD_{ARM.upper()}_TREE") or ""
 if not TREE or not os.path.isdir(TREE):
-    print(f"ABORT: TCD_{ARM.upper()}_TREE not set or not a directory", file=sys.stderr)
+    print("ABORT: the arm's tree env var is not set or not a directory", file=sys.stderr)
     sys.exit(3)
 INFER_URL, INFER_KEY = os.environ.get("TCD_INFERENCE_URL") or "", os.environ.pop("TCD_INFERENCE_KEY", "")
 if not (INFER_URL and INFER_KEY):
@@ -36,23 +44,28 @@ HARNESS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HARNESS, "..", "core_tool_deferral"))
 from sandbox import isolate_host
 
-tmp_root = tempfile.mkdtemp(prefix=f"tcd-{ARM}-{TASK_ID}-")
+tmp_root = os.environ.get("TCD_CELL_ROOT") or tempfile.mkdtemp(prefix="tcd-cell-")  # never the arm name: the model sees it
 hermes_home = os.path.join(tmp_root, ".hermes")
 workspace = os.path.join(tmp_root, "ws")
-os.makedirs(hermes_home)
-os.makedirs(workspace)
+os.makedirs(hermes_home, exist_ok=True)
+os.makedirs(workspace, exist_ok=True)
 isolate_host(tmp_root, hermes_home)
 # A model that cannot see manage_connections reaches for the host's `hermes` CLI (`hermes mcp install`,
 # `hermes pm repair`); keep that out of the operator's install.
 with open(os.path.join(tmp_root, "bin", "hermes"), "w", encoding="utf-8") as f:
     f.write("#!/bin/sh\necho 'hermes: the CLI is not available inside this eval sandbox' >&2\nexit 127\n")
 os.chmod(os.path.join(tmp_root, "bin", "hermes"), 0o755)
-with open(os.path.join(hermes_home, "config.yaml"), "w", encoding="utf-8") as f:
-    f.write(f"model:\n  provider: custom\n  base_url: {INFER_URL}\n  model: {MODEL}\n")
 os.environ["HERMES_HOME"] = hermes_home
 os.environ["TERMINAL_CWD"] = workspace
 os.chdir(workspace)
 sys.path.insert(0, TREE)
+defer_yaml = ""
+if ARM in ARMS:  # every arm pins the list, so the only difference is the one name
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    defer = [n for n in DEFAULT_CONFIG["tools"]["tool_search"]["defer"] if n != "manage_connections"]
+    defer_yaml = "tools:\n  tool_search:\n    defer: [" + ", ".join(defer + ["manage_connections"] * ARMS[ARM][0]) + "]\n"
+with open(os.path.join(hermes_home, "config.yaml"), "w", encoding="utf-8") as f:
+    f.write(f"model:\n  provider: custom\n  base_url: {INFER_URL}\n  model: {MODEL}\n{defer_yaml}")
 
 NOTES = "Dentist moved to Thursday 3pm.\nPick up the rye bread from Larder.\nCall Priya about the cabin keys.\n"
 POEM = "The fog comes\non little cat feet.\nIt sits looking\nover harbor and city\non silent haunches\nand then moves on.\n"
@@ -75,17 +88,28 @@ TASKS = {
     "conn_required_recovery": {
         "kind": "conn", "expect": True, "connected": [],
         "prompt": "Send an email from my Gmail to sam@example.com, subject 'Lunch', body 'Noon works for me.'"},
-    "conn_mcp_install": {"kind": "conn", "expect": True, "prompt": "Install the Linear MCP server.", "connected": []},
+    "conn_mcp_install": {"kind": "conn", "expect": True, "prompt": "Install the Linear MCP server.", "connected": [],
+                         "mcp": "linear"},
+    # MCP installs that do not say "install ... MCP server": the catalog line has to carry them.
+    "mcp_add_linear_server": {"kind": "conn", "expect": True, "prompt": "Add the Linear server.", "connected": [],
+                              "mcp": "linear"},
+    "mcp_setup_github": {"kind": "conn", "expect": True, "prompt": "Set up the GitHub MCP.", "connected": [], "mcp": "github"},
+    # Either side is a right answer here (hosted account or MCP server); the terminal is not.
+    "mcp_talk_sentry": {"kind": "conn", "expect": True, "prompt": "I want Hermes to talk to Sentry.", "connected": [],
+                        "mcp": "sentry", "hosted_ok": True},
     "conn_second_account": {
         "kind": "conn", "expect": True, "connected": ["gmail"], "replies": ["Call it work.", "Yes, go ahead."],
         "prompt": "My personal Gmail is already connected. Add my work Gmail as a second account."},
     # No scripted reply: a connection string ends in "?sslmode=..." and would read as a question.
     "conn_negative": {"kind": "conn", "expect": False, "final": "postgres", "connected": [], "replies": [],
                       "prompt": "What does a PostgreSQL connection string look like? Answer in two lines, no tools needed."},
+    "mcp_negative": {"kind": "conn", "expect": False, "final": "model context protocol", "connected": [], "replies": [],
+                     "prompt": "In one sentence: what does MCP stand for, and what is an MCP server? No tools needed."},
     "ctl_write_file": {"kind": None, "prompt": "Create hello.txt in the workspace containing just the word hello."},
     "ctl_count_lines": {"kind": None, "final": "3", "prompt": "How many lines are in notes.txt? Check with the terminal."},
 }
-TASK = TASKS[TASK_ID]
+DRY = TASK_ID == "__dry__"
+TASK = {"kind": "conn", "expect": True, "prompt": "", "connected": []} if DRY else TASKS[TASK_ID]
 REPLIES = list(TASK["replies"] if "replies" in TASK else ["Yes, go ahead."])
 
 with open(os.path.join(workspace, "notes.txt"), "w", encoding="utf-8") as f:
@@ -207,6 +231,25 @@ connectors_dispatch.dispatch_connector_call = connectors_pkg.dispatch_connector_
 connectors_bridge.connector_search_hits = connectors_pkg.connector_search_hits = search_stub
 connectors_bridge.connector_describe = connectors_pkg.connector_describe = describe_stub
 
+
+
+def _real_backend_reached(*a, **kw):
+    raise RuntimeError("eval sandbox: the real connection backend must never run")
+
+
+# Backstop: if a caller ever bypasses the stub above, the real managed/MCP backends raise instead of acting.
+connectors_tool.run_managed_action = connectors_tool.run_mcp_operation = _real_backend_reached
+if ARM in ARMS:  # every arm pins its sentence: the tree's own default may be either one
+    want = NEW_LEAD if ARMS[ARM][1] else OLD_LEAD
+    for schema in (connectors_tool.MANAGE_CONNECTIONS_SCHEMA, registry.get_entry("manage_connections").schema):
+        for lead in (NEW_LEAD, OLD_LEAD):
+            if schema["description"].startswith(lead):
+                schema["description"] = want + schema["description"][len(lead):]
+                break
+    if not registry.get_entry("manage_connections").schema["description"].startswith(want):
+        print("ABORT: the arm's first sentence did not land in the registry schema", file=sys.stderr)
+        sys.exit(3)
+
 TOOLSETS = ["clarify", "code_execution", "cronjob", "file", "memory", "session_search", "skills", "terminal",
             "todo", "vision", "image_gen", "tts", "connections"]
 
@@ -218,6 +261,56 @@ agent = AIAgent(base_url=INFER_URL, api_key=INFER_KEY, provider="custom", model=
                     "answers": {q["qid"]: (REPLIES[0] if REPLIES else "Use your best judgement.") for q in qs},
                     "outcome": "submitted"})
 sent_names = [(t.get("function") or {}).get("name") for t in (agent.tools or [])]
+_fn = {(t.get("function") or {}).get("name"): (t.get("function") or {}) for t in (agent.tools or [])}
+SURFACE = {"tools_sent": sent_names,
+           "catalog_line": next((ln for ln in (_fn.get("tool_search", {}).get("description") or "").splitlines()
+                                 if "manage_connections:" in ln), None),
+           "eager_lead": (_fn.get("manage_connections", {}).get("description") or "")[:80] or None}
+
+if DRY:
+    import socket
+    from types import SimpleNamespace
+
+    from agent.inline_tool_executors import _manage_connections
+    from tools.terminal_tool import terminal_tool
+
+    real_home = os.environ.get("TCD_REAL_HERMES_HOME") or "/nonexistent"
+    proof = {"arm": ARM, "surface": SURFACE, "tools": agent.tools, "hermes_home": hermes_home, "env_home": os.environ["HOME"],
+             "real_home_visible": {n: os.path.exists(os.path.join(real_home, n))
+                                   for n in ("config.yaml", "auth.json", ".env", "state.db", "mcp-tokens", "hermes-agent")},
+             "real_home_listing": sorted(os.listdir(real_home)) if os.path.isdir(real_home) else None, "net": {}}
+    for host in ("api.notion.com", "mcp.linear.app", "backend.composio.dev", "1.1.1.1", "github.com"):
+        try:
+            socket.create_connection((host, 443), timeout=4).close()
+            proof["net"][host] = "CONNECTED"
+        except OSError as exc:
+            proof["net"][host] = f"blocked: {type(exc).__name__}: {exc}"
+    ctx = SimpleNamespace(effective_task_id="dry", tool_call_id="dry", messages=None)
+    proof["inline_install"] = _manage_connections(agent, {"action": "install", "connectors": [{"name": "linear", "mcp": True}]}, ctx)
+    proof["inline_connect"] = _manage_connections(agent, {"action": "connect", "connectors": ["notion"]}, ctx)
+    proof["registry_connect"] = model_tools.handle_function_call("manage_connections", {"action": "connect", "connectors": ["gmail"]})
+    proof["bridge_search"] = model_tools.handle_function_call("tool_search", {"queries": ["send gmail email"]}, enabled_toolsets=TOOLSETS)
+    proof["bridge_describe"] = model_tools.handle_function_call("tool_describe", {"names": ["connectors__notion__SEARCH_PAGES"]}, enabled_toolsets=TOOLSETS)
+    proof["bridge_call"] = model_tools.handle_function_call(
+        "tool_call", {"calls": [{"name": "connectors__notion__SEARCH_PAGES", "arguments": {"query": "x"}}]}, enabled_toolsets=TOOLSETS)
+    try:
+        connectors_tool.run_mcp_operation([], "install")
+        proof["real_backend"] = "RAN"
+    except RuntimeError as exc:
+        proof["real_backend"] = f"raises: {exc}"
+    proof["terminal"] = terminal_tool(
+        "command -v hermes; hermes mcp install linear; echo rc=$?; echo HOME=$HOME; ls -a " + real_home + "; cat " + real_home
+        + "/config.yaml; curl -sS -m 5 -o /dev/null -w '%{http_code}' https://mcp.linear.app/mcp; echo curl_rc=$?", task_id="dry")
+    proof["stub_log"], proof["conn_calls"] = LOG, len(CONN_CALLS)
+    with open(OUT, "w", encoding="utf-8") as f:
+        json.dump(proof, f, indent=1, default=str)
+    # The dry cell is the gate: a visible credential file, a reachable host or a live backend fails it.
+    leaks = ([n for n, seen in proof["real_home_visible"].items() if seen]
+             + [h for h, state in proof["net"].items() if state == "CONNECTED"] + ["real_backend"] * (proof["real_backend"] == "RAN"))
+    if leaks:
+        print(f"ABORT: sandbox leak in the dry cell: {leaks}", file=sys.stderr)
+        sys.exit(4)
+    sys.exit(0)
 
 PREAMBLE = f"Your working directory (the workspace) is: {workspace}\n\nTask: "
 t0, error, convo, roundtrips = time.time(), None, None, 0
@@ -226,7 +319,7 @@ try:
     for _ in range(2):  # interactive fairness: answer a plain-text question like a user would
         msgs = (convo or {}).get("messages") or []
         last = next((m.get("content") or "" for m in reversed(msgs) if m.get("role") == "assistant" and (m.get("content") or "").strip()), "")
-        if "?" not in last[-300:] or not REPLIES:
+        if "?" not in last or not REPLIES:
             break
         roundtrips += 1
         convo = agent.run_conversation(REPLIES.pop(0), conversation_history=msgs)
@@ -273,8 +366,15 @@ for m in messages:
         calls.append(name)
 final = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "assistant" and (m.get("content") or "").strip()), "")
 # Bridge-side schema refusals never reach the stub; count them so "valid on first call" is honest.
-refusals = sum(1 for m in messages if m.get("role") == "tool" and "failed argument validation" in str(m.get("content")))
+_REFUSED = ("failed argument validation", "The tool was NOT invoked", "must be an object")
+refusals = sum(1 for m in messages if m.get("role") == "tool" and any(s in str(m.get("content")) for s in _REFUSED))
 stub_calls = TTS_CALLS if TASK["kind"] == "tts" else CONN_CALLS if TASK["kind"] == "conn" else []
+if calls.count("manage_connections") > len(CONN_CALLS) + refusals:
+    print("ABORT: manage_connections was called more often than the stub recorded", file=sys.stderr)
+    sys.exit(3)
+# Wrong route: on a connection task nothing but the connection tools (and asking the user) is needed.
+WRONG_ROUTE_TOOLS = ("terminal", "execute_code", "write_file", "patch", "process_manage", "cronjob_manage")
+wrong_route = [c for c in calls if c in WRONG_ROUTE_TOOLS] if TASK["kind"] == "conn" and TASK["expect"] else []
 reached = bool(stub_calls)
 first_valid = reached and stub_calls[0]["valid"] and refusals == 0
 
@@ -309,9 +409,17 @@ def grade():
         notes.append(f"required_seen={STATE['connection_required_seen']} sent={STATE['email_sent']}")
         connected = any(c["action"] in ("connect", "reconnect") for c in valid) and "gmail" in STATE["connected"]
         return (1.0 if connected and STATE["email_sent"] else 0.5 if connected else 0.0), notes
-    if TASK_ID == "conn_mcp_install":
-        ok = any(c["action"] == "install" and "linear" in json.dumps(c["args"]).lower() for c in valid)
-        return (1.0 if ok else 0.5 if reached else 0.0), notes
+    if TASK.get("mcp"):
+        def _is_mcp(t):
+            return isinstance(t, dict) and t.get("mcp") is True and TASK["mcp"] in str(t.get("name")).lower()
+
+        def _is_hosted(t):
+            return TASK["mcp"] in str(t.get("name") if isinstance(t, dict) else t).lower() and not (isinstance(t, dict) and t.get("mcp"))
+        mcp_ok = any(c["action"] == "install" and any(_is_mcp(t) for t in c["args"].get("connectors") or []) for c in valid)
+        hosted_ok = TASK.get("hosted_ok") and any(
+            c["action"] == "connect" and any(_is_hosted(t) for t in c["args"].get("connectors") or []) for c in valid)
+        notes.append(f"shape={'mcp' if mcp_ok else 'hosted' if hosted_ok else 'none'}")
+        return (1.0 if mcp_ok or hosted_ok else 0.5 if reached else 0.0), notes
     if TASK_ID == "conn_second_account":
         ok = any(c["action"] == "connect" and "alias" in json.dumps(c["args"].get("connectors")) for c in valid)
         return (1.0 if ok and "gmail" in targets else 0.5 if reached else 0.0), notes
@@ -322,6 +430,9 @@ score, notes = (0.0, [f"run errored: {error}"]) if error else grade()
 record = {"arm": ARM, "model": MODEL, "task": TASK_ID, "rep": REP, "score": score, "notes": notes, "error": error,
           "kind": TASK["kind"], "expect": TASK.get("expect"), "reached": reached, "first_call_valid": first_valid,
           "eager": {n: n in sent_names for n in ("text_to_speech", "manage_connections")},
+          "catalog_line": SURFACE["catalog_line"], "eager_lead": SURFACE["eager_lead"],
+          "wrong_route": wrong_route, "searched": any(
+              tc.get("function", {}).get("name") == "tool_search" for m in messages for tc in (m.get("tool_calls") or [])),
           "api_turns": turns, "api_calls": getattr(agent, "session_api_calls", None), "bridge_calls": bridge, "tool_calls": calls,
           "input_tokens": getattr(agent, "session_input_tokens", None),
           "cache_read_tokens": getattr(agent, "session_cache_read_tokens", None),
@@ -340,4 +451,5 @@ with open(OUT, "w", encoding="utf-8") as f:
 print(json.dumps({k: record[k] for k in ("arm", "model", "task", "rep", "score", "reached", "api_calls", "total_tokens",
                                          "cost_usd", "wall_s", "bridge_calls", "error")}))
 agent.close()
-shutil.rmtree(tmp_root, ignore_errors=True)
+if not os.environ.get("TCD_CELL_ROOT"):
+    shutil.rmtree(tmp_root, ignore_errors=True)

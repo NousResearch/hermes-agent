@@ -604,7 +604,12 @@ async def _send_via_adapter(platform, pconfig, chat_id, chunk, *, thread_id=None
 
 
 async def _send_chunks(chunks, send_one):
-    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result."""
+    """``send_one(chunk, is_last)`` in order; stop at the first error dict, else last result. An
+    error after a chunk landed is a PARTIAL delivery (``gateway.platforms._shared`` contract): it
+    loses ``retryable`` (replaying the whole payload would post the landed head twice) and carries
+    the landed chunks' ids."""
+    from gateway.platforms._shared import DeliveryOutcome
+    outcome = DeliveryOutcome()
     result = None
     # --- Matrix: route ALL sends through the native adapter so text is encrypted in E2EE rooms too (issue:
     # text-only sends arrived with a red padlock because they took the raw-HTTP standalone path). The
@@ -613,7 +618,12 @@ async def _send_chunks(chunks, send_one):
     for i, chunk in enumerate(chunks):
         result = await send_one(chunk, i == len(chunks) - 1)
         if isinstance(result, dict) and result.get("error"):
+            if outcome.has_landed:
+                result = outcome.failure(result)
             break
+        outcome.landed(result.get("message_id") if isinstance(result, dict) else None)
+    if isinstance(result, dict) and not result.get("error"):
+        result = {**result, **outcome.split_fields()}
     return result
 
 

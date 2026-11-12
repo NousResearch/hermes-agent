@@ -26,6 +26,16 @@ def _prop(type_: str, description: str) -> dict[str, str]:
     return {"type": type_, "description": description}
 
 
+def _with_nullable_optionals(schema: dict[str, Any]) -> dict[str, Any]:
+    """Let every optional field take ``null``: models that fill each optional field then answer
+    ``null`` instead of a placeholder like ``max_runtime_seconds: 0`` (#38366)."""
+    params = schema["parameters"]
+    for name, prop in params["properties"].items():
+        if name not in params["required"] and isinstance(prop.get("type"), str):
+            prop["type"] = [prop["type"], "null"]
+    return schema
+
+
 def _board_schema_prop() -> dict[str, str]:
     """Schema fragment for the optional ``board`` parameter (one place to tweak)."""
     return _prop("string", _DESC_BOARD)
@@ -383,7 +393,7 @@ KANBAN_ATTACHMENTS_SCHEMA = _schema(
     [],
 )
 
-KANBAN_CREATE_SCHEMA = _schema(
+KANBAN_CREATE_SCHEMA = _with_nullable_optionals(_schema(
     "kanban_create",
     (
         "Create a kanban task, optionally a child of the current one (via ``parents``). Used by "
@@ -453,11 +463,16 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "exists, return that task's id instead of creating "
                 "a duplicate. Useful for retry-safe automation."
         )),
-        "max_runtime_seconds": _prop("integer", (
-                "Per-task runtime cap. When exceeded, the "
+        "max_runtime_seconds": {
+            "type": "integer",
+            "minimum": 1,
+            "description": (
+                "Per-task runtime cap in seconds: a positive integer, "
+                "or null for no cap. When exceeded, the "
                 "dispatcher SIGTERMs the worker and re-queues the "
                 "task with outcome='timed_out'."
-        )),
+            ),
+        },
         "initial_status": {
             "type": "string",
             "enum": ["running", "blocked"],
@@ -493,8 +508,9 @@ KANBAN_CREATE_SCHEMA = _schema(
                 "work. Defaults to false (classic single-shot worker)."
         )),
         "completion_contract": _prop("string", (
-            "Declare at creation: local-only (default), OWNER/REPO for PR publication, or an exact GitHub PR URL. "
-            "PR tasks cannot complete until repository-required exact-head CI passes. On publication pass metadata.published_pr."
+            "Leave null for local-only, the default — including tasks that only review, read or comment on a PR. "
+            "Set OWNER/REPO or an exact GitHub PR URL only when this task's own worker publishes that PR: such a task "
+            "cannot complete until the PR's repository-required exact-head CI passes. On publication pass metadata.published_pr."
         )),
         "goal_max_turns": _prop("integer", (
                 "Turn budget for goal_mode workers. Caps how many "
@@ -518,7 +534,7 @@ KANBAN_CREATE_SCHEMA = _schema(
         )),
     },
     ["title", "assignee"],
-)
+))
 
 KANBAN_UNBLOCK_SCHEMA = _schema(
     "kanban_unblock",

@@ -34,6 +34,7 @@ from agent.async_utils import (consume_detached_task_result as _consume_backgrou
 from agent.display import ToolPreview
 from agent.i18n import get_language, t
 from agent.retry_utils import parse_retry_after_seconds
+from plugins.platforms.discord.card import CardValidationError, DiscordCard, parse_discord_card
 
 logger = logging.getLogger(__name__)
 
@@ -5659,6 +5660,55 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 
         return observe_gateway_settle(session_key, view.request_id, retire)
 
+    async def send_card(
+        self, chat_id: str, card: dict[str, Any], *, handlers: dict[str, Callable],
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send one validated Discord-native card with optional trusted one-shot actions.
+
+        ``card`` is parsed before target resolution or any transport call.  It never accepts raw
+        Discord payloads; handlers are supplied by trusted Python callers and must exactly match
+        the card's declared action ids.  This intentionally does not expose a model-facing tool,
+        durable callback registry, or routing/configuration surface.
+        """
+        try:
+            parsed = parse_discord_card(card)
+            expected = {action.id for action in parsed.actions}
+            actual = set(handlers)
+            if actual != expected:
+                raise CardValidationError(
+                    "$.actions", "handler_mismatch",
+                    "handlers must exactly match the validated action ids",
+                )
+            for action_id, handler in handlers.items():
+                if not callable(handler):
+                    raise CardValidationError(
+                        f"$.actions[{action_id}]", "invalid_handler", "must be callable",
+                    )
+        except CardValidationError as exc:
+            return SendResult(success=False, error=f"Invalid Discord card at {exc.path}: {exc.code}")
+
+        def _build(_channel):
+            embed = discord.Embed(
+                title=_truncate_discord_component_text(parsed.title, _DISCORD_EMBED_TITLE_LIMIT),
+                description=parsed.body or None,
+                color=discord.Color.blue(),
+            )
+            for field in parsed.fields:
+                embed.add_field(name=field.name, value=field.value, inline=field.inline)
+            view = (
+                ValidatedCardView(
+                    parsed, handlers, self._allowed_user_ids, self._allowed_role_ids,
+                )
+                if parsed.actions else None
+            )
+            kwargs: dict[str, Any] = {"content": parsed.content, "embed": embed}
+            if view is not None:
+                kwargs["view"] = view
+            return kwargs, view
+
+        return await self._send_prompt(chat_id, metadata, _build, fail_log="send_card")
+
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[dict] = None,
@@ -6273,7 +6323,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
     Called at module load and after a lazy install so the classes exist whenever DISCORD_AVAILABLE."""
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, ChoicePickerView, ValidatedCardView
 
     class _HermesView(discord.ui.View):
         """Shared plumbing for Hermes component views: allowlist auth, single-use
@@ -6372,6 +6422,59 @@ def _define_discord_view_classes() -> None:
             await self._expire_embed(t("platform.discord.prompt.expired_footer"))
 
     ExecApprovalView = build_exec_approval_view(discord, _HermesView, unauthorized=_unauthorized)
+
+    class ValidatedCardView(_HermesView):
+        """Bound, one-shot buttons for a :class:`DiscordCard` sent by ``send_card``.
+
+        The view owns admission and the in-memory claim before awaiting its trusted handler, so a
+        repeated click cannot execute the same handler twice while this gateway process is alive.
+        """
+
+        def __init__(
+            self, card: DiscordCard, handlers: dict[str, Callable], allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(allowed_user_ids, allowed_role_ids, timeout=_read_discord_prompt_timeout())
+            self._actions = {action.id: action for action in card.actions}
+            self._handlers = dict(handlers)
+            for action in card.actions:
+                button = discord.ui.Button(
+                    label=action.label,
+                    style=getattr(discord.ButtonStyle, action.style),
+                    custom_id=f"hermes-card:{action.id}",
+                )
+                button.callback = self._make_action_callback(action.id)
+                self.add_item(button)
+
+        def _make_action_callback(self, action_id: str):
+            async def _callback(interaction: discord.Interaction):
+                await self._on_action(interaction, action_id)
+            return _callback
+
+        async def _on_action(self, interaction: discord.Interaction, action_id: str) -> None:
+            if not await self._gate(
+                interaction,
+                resolved_msg="This card has already been acted on.",
+                unauth_msg=_unauthorized(),
+            ):
+                return
+            action = self._actions[action_id]
+            # Claim before an await: a concurrent click sees ``resolved`` and cannot re-run the
+            # handler.  This is intentionally at-most-once, matching other ephemeral prompt views.
+            self.resolved = True
+            self._disable_all()
+            embed = self._first_embed(interaction.message)
+            if embed:
+                embed.color = discord.Color.green()
+                embed.set_footer(text=f"Selected {action.label} by {interaction.user.display_name}")
+            try:
+                await interaction.response.edit_message(embed=embed, view=self)
+            finally:
+                self.stop()
+            try:
+                await self._handlers[action_id](interaction)
+            except Exception:
+                logger.exception("Discord validated-card action failed (action=%s)", action_id)
 
     class SlashConfirmView(_HermesView):
         """Approve Once / Always Approve / Cancel for slash-command confirmations (``/reload-mcp``,

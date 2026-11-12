@@ -1,8 +1,8 @@
 name: branchpoint
 repo: https://github.com/Sahil-SS9/hermes-branchpoint
-sha: "148f96f59007fad383e9444706af663d8bc869c9"
+sha: "b9ff80bf851e5f1cf7549b73b9c7f32811a0b11b"
 title: Branchpoint
-version: "0.2.3"
+version: "0.2.4"
 maintainer: Sahil-SS9
 tier: community
 category: tools

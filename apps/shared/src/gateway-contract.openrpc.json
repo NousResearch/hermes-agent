@@ -30417,6 +30417,149 @@
         "title": "ProfileCanonicalSession",
         "type": "object"
       },
+      "ProfileCreateReceipt": {
+        "additionalProperties": false,
+        "description": "What ``hermes profile create`` prints about a new profile, read on the machine (and in the\nprofile scope) that made it: built after a local create, or sent by the gateway that made it\n(``profiles.create`` with ``report``). The contract uses this type itself; a stdlib dataclass, so a\nlocal create never loads pydantic. A client treats a receipt missing a field, or with a wrong type,\nas an unknown outcome.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "display_path": {
+            "title": "Display Path",
+            "type": "string"
+          },
+          "launch_label": {
+            "title": "Launch Label",
+            "type": "string"
+          },
+          "source_label": {
+            "title": "Source Label",
+            "type": "string"
+          },
+          "skills_synced": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Skills Synced"
+          },
+          "skills_opted_out": {
+            "title": "Skills Opted Out",
+            "type": "boolean"
+          },
+          "alias_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias Path"
+          },
+          "alias_collision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias Collision"
+          },
+          "mirrored": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "const": "shared",
+                  "type": "string"
+                }
+              ]
+            },
+            "title": "Mirrored",
+            "type": "object"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          },
+          "cloned_plugins": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cloned Plugins",
+            "type": "array"
+          },
+          "memory_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Provider"
+          },
+          "channels_left_behind": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels Left Behind",
+            "type": "array"
+          },
+          "shared_channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Shared Channels",
+            "type": "array"
+          },
+          "served_now": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Served Now"
+          }
+        },
+        "required": [
+          "path",
+          "display_path",
+          "launch_label",
+          "source_label",
+          "skills_synced",
+          "skills_opted_out",
+          "alias_path",
+          "alias_collision",
+          "mirrored",
+          "warnings",
+          "cloned_plugins",
+          "memory_provider",
+          "channels_left_behind",
+          "shared_channels",
+          "served_now"
+        ],
+        "title": "ProfileCreateReceipt",
+        "type": "object"
+      },
       "ProfileMirrored": {
         "additionalProperties": false,
         "description": "What was copied from the launch profile; ``auth`` is ``\"shared\"`` when the new profile has no\nauth.json of its own and reads the default root's.",
@@ -31255,6 +31398,51 @@
             ],
             "default": null,
             "title": "Mirror Credentials"
+          },
+          "clone_config": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clone Config"
+          },
+          "sync_imports": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sync Imports"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Report"
           }
         },
         "required": [
@@ -31299,6 +31487,17 @@
             },
             "title": "Warnings",
             "type": "array"
+          },
+          "receipt": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileCreateReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [

@@ -1,0 +1,24 @@
+name: calm-mode
+title: Calm Mode
+repo: https://github.com/salch-cred/calm-mode
+sha: abdc314a4fc81bbc089123c205fddd4e4e82445f
+description: >-
+  When you get frustrated, your agent slows down. Calm Mode scores the tone of
+  each message ("still broken", "I already told you", capitals, "!!", the same
+  message twice); frustration builds and fades. Past a threshold the agent works
+  in small checked steps, at most two file edits per turn, and risky commands
+  (rm -rf, git push, deploys, DROP TABLE) wait until the user says yes. /calm
+  shows the level and forces it on or off. No model calls, nothing stored.
+
+maintainer: salch-cred
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/salch-cred/calm-mode
+version: "0.1.0"
+
+capabilities:
+  provides_tools: []
+  provides_hooks: [pre_llm_call, pre_tool_call]
+  provides_middleware: []
+  requires_env: []

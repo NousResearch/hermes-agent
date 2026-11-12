@@ -1,0 +1,27 @@
+name: hermes-zotero
+repo: https://github.com/gerdosi/hermes-zotero
+sha: f25a01ed2e481d30cca26f0ac79958337836478f
+title: "Zotero Library"
+description: "Search and read the papers in your own Zotero library before going to the web: a local, read-only full-text index (SQLite FTS5, BM25) built from a copy of Zotero's database, so it works with Zotero open or closed. Four tools (zotero_search with a strong/thin/none coverage verdict, zotero_read for passages, your own highlights and notes and a citation line, zotero_status, zotero_sync), a bundled skill that sends literature questions to the library first, and a `hermes zotero` command (doctor, snapshot, sync). Disclosure — reads outside its own data folder: the Zotero data directory (copies zotero.sqlite and its write-ahead log, reads the .zotero-ft-cache text files in storage/), Zotero's prefs.js to find that directory, and a Markdown folder only if the user sets one; writes only to its plugin-data folder (snapshot, index, lock file) and never to Zotero; the index holds the full text of the user's papers and stays on the machine; its only network request goes to Zotero's local API on 127.0.0.1:23119 for formatted citations, bypassing any proxy, and succeeds only when the user has switched that API on (off by default); no credentials, no shell commands, no background processes, no telemetry. Independent community plugin, not affiliated with Zotero."
+maintainer: gerdosi
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+docs_url: https://github.com/gerdosi/hermes-zotero#readme
+readme: true
+platforms: []
+known_issues:
+  - "The first `hermes zotero sync` builds the index before the tools return results: about 70 s and 3.5 GB for 19,000 papers with full text (roughly 180 KB per paper); later syncs take seconds"
+  - "Citations come from Zotero itself only while Zotero is running with its local API switched on (Settings → Advanced, off by default); otherwise the citation line is an approximate author-year line marked approximate: true"
+  - "Search is lexical (BM25 with stemming), not semantic: synonyms and brand names can miss, and PDFs without a text layer are found by title and abstract only"
+  - "Tested on macOS with Zotero 11; the Windows and Linux data-directory paths are implemented but not yet tested"
+capabilities:
+  provides_tools:
+    - zotero_status
+    - zotero_search
+    - zotero_read
+    - zotero_sync
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

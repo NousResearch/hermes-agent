@@ -296,6 +296,7 @@ class SSHEnvironment(BaseEnvironment):
         return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
 
     def cleanup(self):
+        self.stop_all_processes()
         if self._sync_manager:
             logger.info("SSH: syncing files from sandbox...")
             self._sync_manager.sync_back()

@@ -24,6 +24,7 @@ async def test_button_resolution_preserves_next_worker_pause(typing_fixture, mon
     second_published = threading.Event()
     key = "discord:typing-test"
     original_resolve = approval.resolve_gateway_approval
+    original_card_resolve = approval.resolve_gateway_approval_card
 
     def notify_first(data):
         adapter.pause_typing_for_chat("77")
@@ -43,7 +44,7 @@ async def test_button_resolution_preserves_next_worker_pause(typing_fixture, mon
         )
 
     def resolve_then_allow_worker_to_continue(*args, **kwargs):
-        count = original_resolve(*args, **kwargs)
+        count = original_card_resolve(*args, **kwargs)
         # Force a valid schedule: the awakened worker publishes its next approval
         # before the UI callback continues after the resolver call.
         assert second_published.wait(5), "worker did not publish its second approval"
@@ -53,7 +54,7 @@ async def test_button_resolution_preserves_next_worker_pause(typing_fixture, mon
     try:
         await asyncio.wait_for(first_published.wait(), 5)
         view = await approval_view(adapter)
-        monkeypatch.setattr(approval, "resolve_gateway_approval", resolve_then_allow_worker_to_continue)
+        monkeypatch.setattr(approval, "resolve_gateway_approval_card", resolve_then_allow_worker_to_continue)
         await view._resolve(interaction(), "once", None, "gateway.exec_approval.action_once")
         assert approval.has_blocking_approval(key)
         assert "77" in adapter._typing_paused, "first decision erased the next approval's pause"
@@ -67,9 +68,10 @@ async def approval_view(adapter):
     channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=123)))
     adapter._client.get_channel = lambda channel_id: channel
     adapter._allowed_user_ids = {"user"}
+    pending = approval.list_gateway_approvals("discord:typing-test")
     result = await adapter.send_exec_approval(
-        chat_id="77", command="test-command", session_key="discord:typing-test",
-        metadata={"thread_id": "88"},
+        chat_id="77", command=pending[0]["command"] if pending else "test-command", session_key="discord:typing-test",
+        metadata={"thread_id": "88"}, request_id=pending[0]["request_id"] if pending else None,
     )
     assert result.success
     view = channel.send.await_args.kwargs["view"]

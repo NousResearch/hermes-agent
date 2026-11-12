@@ -2289,10 +2289,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         api_platform["metrics"] = api_status
         platforms["api_server"] = api_platform
         # Served BY the gateway process, so gateway_running is True by definition; busy/
-        # drainable use the same shared contract as /api/status so the two never disagree.
+        # drainable share /api/status's contract; its probe waits on _live_lock, run off-loop.
         active_api_runs, process_depth, active_delegations = self._readiness_work_counts()
         from gateway.run import _resolve_gateway_model
-        readiness = collect_runtime_readiness(
+        readiness = await asyncio.to_thread(collect_runtime_readiness,
             configured_model=_resolve_gateway_model(), runtime_status=runtime,
             active_api_runs=active_api_runs, process_completion_queue_depth=process_depth,
             active_delegations=active_delegations)

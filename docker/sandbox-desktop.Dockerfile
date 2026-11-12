@@ -8,7 +8,8 @@
 #   docker build -f docker/sandbox-desktop.Dockerfile -t nousresearch/hermes-sandbox:desktop .
 #
 # Published as nousresearch/hermes-sandbox:desktop by .github/workflows/sandbox-image.yml
-# on releases and manual dispatch only: it carries no Hermes code, so it does not track main.
+# after each stable release, weekly, and on manual dispatch: it carries no Hermes code, so it
+# does not track main, but the weekly rebuild picks up base-image and apt security fixes.
 # The tag lives in the ARG so CI and a local build read one place; hadolint cannot
 # see through the substitution, hence the inline ignore.
 ARG SANDBOX_BASE=nikolaik/python-nodejs:python3.13-nodejs26

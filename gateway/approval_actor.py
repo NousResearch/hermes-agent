@@ -75,6 +75,18 @@ def _refusal(authority: dict, actor_id: Any, admin_ids: Any, extra: Any, command
     else:
         policy = SlashAccessPolicy(False, frozenset(str(a) for a in admin_ids), frozenset())
     approvers = _coerce_id_list(authority.get("approvers"))
+    if authority.get("approvers_only") is True and commands:
+        # A requester (including a peer bot) is not implicitly an approver.
+        # A wildcard is not an explicit approver list. Denials remain available
+        # to admitted senders; callers enforce admission before this check.
+        # ``_refusal`` returns a refusal name, not a bool: None means allowed.
+        if commands == ("deny",):
+            return None if actor else _NO_REQUESTER
+        if actor and "*" not in approvers and (
+            actor in approvers or actor in policy.admin_user_ids
+        ):
+            return None
+        return _NO_REQUESTER
     if "*" in approvers:
         if commands and policy.enabled and not any(policy.can_run(actor or None, c) for c in commands):
             return _ADMIN_ONLY + commands[0]
@@ -93,6 +105,18 @@ def approval_commands(choice: Optional[str] = None) -> tuple[str, ...]:
     if choice is None:
         return ("approve", "deny")
     return ("deny",) if choice == "deny" else ("approve",)
+
+
+def _refusal_name(authority: dict, commands: tuple[str, ...]) -> str:
+    """What a refusal names: the answer's admin-only command under ``approvers: ["*"]`` (the slash
+    policy refused it), else the requester."""
+    from gateway.slash_access import _coerce_id_list
+
+    if authority.get("approvers_only") is True and commands:
+        return _NO_REQUESTER  # existing translated "admin or listed approver" message
+    if commands and "*" in _coerce_id_list(authority.get("approvers")):
+        return _ADMIN_ONLY + commands[0]
+    return str(authority.get("requester_name") or authority.get("requester_id") or _NO_REQUESTER)
 
 
 def runner_answer_policy(source: Any):

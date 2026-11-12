@@ -82,6 +82,22 @@ def test_at_file_colon_only_files(tmp_path, monkeypatch):
     assert not any(t == "@file:docs/" for t in texts)
 
 
+@pytest.mark.platforms("windows")
+def test_windows_device_path_skips_entries_outside_the_display_mount(tmp_path, monkeypatch):
+    """A device-namespace candidate has no relative display path from an ordinary drive path."""
+    monkeypatch.chdir(tmp_path)
+    device_root = tmp_path / "device-root"
+    device_root.mkdir()
+    (device_root / "note.txt").write_text("x", encoding="utf-8")
+    device_word = f"\\\\.\\{device_root}\\"
+
+    response = server.handle_request({
+        "id": "1", "method": "complete.path", "params": {"word": device_word}})
+
+    assert "error" not in response, response
+    assert response["result"]["items"] == []
+
+
 # ── Non-local terminal backend: the popup must show the backend's tree ──
 
 

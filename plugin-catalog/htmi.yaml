@@ -1,28 +1,32 @@
 name: htmi
 repo: https://github.com/Thamirawaran/htmi
-sha: 85379a5ee3dc56ba274cd71d6d3a2caff218c8a1
+sha: e82147f418f01aa58494c873b63807de81a2cd0a
 subdir: hermes
 description: >-
   Review the HTML pages your agent writes, on the page itself: comment on the exact
   element, chart, table row or passage; Hermes is told about new comments, reads each one
   with its context, makes checked edits and replies. Pages can also be published as a
   GitHub issue or pull request description, and comments posted there are pulled back.
-  Adds 11 tools, a pre_llm_call notice, a skill, the /htmi command and a Review tab in the
-  dashboard. Disclosure: runs its bundled engine with Node and runs git in the current
-  repository; reads documents and writes comments only inside that repository
-  (.htmi/annotations.jsonl); opening a review page starts a local review server bound to
-  127.0.0.1 that keeps running until /htmi stop or a restart; GitHub actions (publish,
-  pull comments, reply) use your own gh CLI login and run only when asked; no telemetry,
-  no stored credentials, no third-party services.
+  Adds 11 tools, a pre_llm_call notice, a pre_tool_call approval gate, a skill, the /htmi
+  command and a Review tab in the dashboard. Disclosure: runs its bundled engine with Node
+  and runs git in the current repository, all with an explicit minimal environment (no
+  provider keys); reads and writes documents only inside that repository, also refusing
+  symbolic links that point outside (comments go to .htmi/annotations.jsonl); opening a
+  review page starts a local review server bound to 127.0.0.1 that keeps running until
+  /htmi stop or a restart; GitHub work (publish, pull comments, reply, edit a description)
+  uses your own gh CLI login, only in the repository's origin remote and repositories you
+  list in its github_repos setting, and every issue it creates and every description it
+  replaces or edits waits for your approval in Hermes; no telemetry, no stored credentials,
+  no third-party services.
 maintainer: Thamirawaran
 tier: community
 category: tools
 requires_hermes: ">=0.23.0"
-docs_url: https://github.com/Thamirawaran/htmi/tree/85379a5ee3dc56ba274cd71d6d3a2caff218c8a1/hermes
-version: "0.1.0"
-image: https://raw.githubusercontent.com/Thamirawaran/htmi/85379a5ee3dc56ba274cd71d6d3a2caff218c8a1/assets/banner.png
+docs_url: https://github.com/Thamirawaran/htmi/tree/e82147f418f01aa58494c873b63807de81a2cd0a/hermes
+version: "0.1.1"
+image: https://raw.githubusercontent.com/Thamirawaran/htmi/e82147f418f01aa58494c873b63807de81a2cd0a/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Thamirawaran/htmi/85379a5ee3dc56ba274cd71d6d3a2caff218c8a1/hermes/assets/review-tab.png
+  - https://raw.githubusercontent.com/Thamirawaran/htmi/e82147f418f01aa58494c873b63807de81a2cd0a/hermes/assets/review-tab.png
 readme: true
 platforms: [linux, macos]
 title: HTMi
@@ -43,5 +47,6 @@ capabilities:
     - htmi_open_review
   provides_hooks:
     - pre_llm_call
+    - pre_tool_call
   provides_middleware: []
   requires_env: []

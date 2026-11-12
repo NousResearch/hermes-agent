@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict'
 import type { SpawnOptions } from 'node:child_process'
+import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   collectRelaunchArgs,
+  describeUpdaterHandoffFailure,
+  LAUNCHER_ROOT_MISS_TTL_MS,
+  launcherInstallDirectory,
+  launcherInstallRoot,
   MARKER_SELF_ADOPT_EPOCH_MS,
   observeUpdaterHandoff,
   resolvePosixScriptHandoff,
@@ -218,7 +224,10 @@ test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () =
   assert.equal(handoff, null)
 })
 
-test('wrapHandoffForDetachedConsole routes through cmd start with own console', () => {
+test('wrapHandoffForDetachedConsole runs the script inside a non-detached hidden wrapper console', () => {
+  // #116161: `start /min` allocated a NEW (minimized, visible) console for
+  // powershell on every hand-off; `detached: true` (DETACHED_PROCESS) would
+  // leave the wrapper console-less, forcing the same allocation under `/b`.
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
   const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
@@ -231,13 +240,14 @@ test('wrapHandoffForDetachedConsole routes through cmd start with own console', 
   const wrapped = wrapHandoffForDetachedConsole(handoff, ['-InstallRoot', root, '-Branch', 'main'])
 
   assert.equal(wrapped.command, 'cmd.exe')
+  assert.equal(wrapped.detached, false)
   assert.deepEqual(wrapped.args, [
     '/d',
     '/s',
     '/c',
     'start',
     '',
-    '/min',
+    '/b',
     'powershell',
     '-NoProfile',
     '-ExecutionPolicy',
@@ -393,6 +403,18 @@ test('observeUpdaterHandoff reports a non-zero early exit', async () => {
   assert.equal(outcome.code, 127)
 })
 
+test('describeUpdaterHandoffFailure leads with plain copy and confines the raw outcome to Details', () => {
+  for (const raw of ['updater exited 127 before the settle window elapsed', 'updater spawn failed: ENOENT']) {
+    const text = describeUpdaterHandoffFailure({ message: raw })
+    const [lead, details] = text.split('\n\nDetails: ')
+
+    assert.ok(lead && !lead.includes(raw))
+    assert.equal(details, raw)
+  }
+
+  assert.doesNotMatch(describeUpdaterHandoffFailure({}), /Details:/)
+})
+
 test('observeUpdaterHandoff reports a signal death inside the window', async () => {
   const child = new FakeChild()
   const timer = manualTimer()
@@ -460,3 +482,79 @@ test('observeUpdaterHandoff settles ok for children without an event interface',
 
   assert.equal(outcome.ok, true)
 })
+
+test.skipIf(process.platform === 'win32')('launcherInstallDirectory returns the root the launcher reports', async () => {
+  const dir = await realpathMkdtemp('launcher-install-')
+  const reported = await fs.realpath(await fs.mkdir(path.join(dir, 'hermes-agent')).then(() => path.join(dir, 'hermes-agent')))
+  const launcher = await writeLauncher(dir, `printf 'Hermes Agent v0.22.1\\nInstall directory: ${reported}\\n'`)
+
+  assert.equal(launcherInstallDirectory(launcher), reported)
+})
+
+test.skipIf(process.platform === 'win32')('launcherInstallDirectory stays null when the launcher reports nothing', async () => {
+  const dir = await realpathMkdtemp('launcher-install-')
+
+  for (const body of ["printf 'Hermes Agent v0.22.1\\n'", 'exit 3']) {
+    const launcher = await writeLauncher(dir, body)
+
+    assert.equal(launcherInstallDirectory(launcher), null)
+  }
+})
+
+// The backend resolver runs on Electron's main thread, pool resolves included (every tick of
+// reensureDuringRestart): the `--version` probe must not block it, and a launcher that never
+// names its root must not pay a fresh spawn on each resolve.
+test.skipIf(process.platform === 'win32')('launcherInstallRoot probes off the main thread, once for concurrent callers', async () => {
+  const dir = await realpathMkdtemp('launcher-root-')
+  const reported = await fs.realpath(await fs.mkdir(path.join(dir, 'hermes-agent')).then(() => path.join(dir, 'hermes-agent')))
+  const calls = path.join(dir, 'calls')
+  const launcher = await writeLauncher(dir, `echo x >> ${calls}; sleep 0.4; printf 'Install directory: ${reported}\\n'`)
+  let ticked = false
+  const timer = setTimeout(() => { ticked = true }, 50)
+
+  const first = launcherInstallRoot(launcher)
+  const second = launcherInstallRoot(launcher)
+
+  assert.ok(first instanceof Promise, 'the probe must not run synchronously on the caller')
+  assert.deepEqual(await Promise.all([first, second]), [reported, reported])
+  clearTimeout(timer)
+  assert.equal(ticked, true, 'the event loop kept running while the launcher probed')
+  assert.equal((await fs.readFile(calls, 'utf8')).trim().split('\n').length, 1)
+})
+
+// A miss is cached briefly, not forever: the ticket resolver retries after a failure, and a
+// permanent miss would keep the override rootless until Desktop restarts.
+test.skipIf(process.platform === 'win32')('launcherInstallRoot caches a miss for a short window, then retries and keeps the root', async () => {
+  const dir = await realpathMkdtemp('launcher-root-')
+  const reported = await fs.realpath(await fs.mkdir(path.join(dir, 'hermes-agent')).then(() => path.join(dir, 'hermes-agent')))
+  const calls = path.join(dir, 'calls')
+  const launcher = await writeLauncher(dir, `echo x >> ${calls}; printf 'Hermes Agent v0.22.1\\n'`)
+  const count = async () => (await fs.readFile(calls, 'utf8')).trim().split('\n').length
+  const now = vi.spyOn(Date, 'now')
+
+  try {
+    now.mockReturnValue(1_000_000)
+    assert.equal(await launcherInstallRoot(launcher), undefined)
+    assert.equal(await launcherInstallRoot(launcher), undefined)
+    assert.equal(await count(), 1, 'a miss inside the window does not spawn again')
+
+    await writeLauncher(dir, `echo x >> ${calls}; printf 'Install directory: ${reported}\\n'`)
+    now.mockReturnValue(1_000_000 + LAUNCHER_ROOT_MISS_TTL_MS + 1)
+    assert.equal(await launcherInstallRoot(launcher), reported)
+    await writeLauncher(dir, 'exit 3')
+    assert.equal(await launcherInstallRoot(launcher), reported)
+    assert.equal(await count(), 2)
+  } finally { now.mockRestore() }
+})
+
+async function realpathMkdtemp(prefix: string): Promise<string> {
+  return fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), prefix)))
+}
+
+/** A POSIX script stands in for the installation launcher's --version boundary. */
+async function writeLauncher(dir: string, body: string): Promise<string> {
+  const file = path.join(dir, 'hermes')
+  await fs.writeFile(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 })
+
+  return file
+}

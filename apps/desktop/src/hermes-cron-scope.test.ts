@@ -8,6 +8,7 @@ import {
   getCronJobs,
   pauseCronJob,
   resumeCronJob,
+  setApiRequestConnection,
   setApiRequestProfile,
   triggerCronJob,
   updateCronJob
@@ -29,6 +30,7 @@ describe('cron helpers are profile-scoped', () => {
 
   afterEach(() => {
     setApiRequestProfile(null)
+    setApiRequestConnection(null)
     delete (window as { hermesDesktop?: unknown }).hermesDesktop
   })
 
@@ -57,6 +59,37 @@ describe('cron helpers are profile-scoped', () => {
     }
   })
 
+  it('omits connectionId when the local pool serves the active gateway', () => {
+    void getCronJobRuns('job-1')
+    expect(api.mock.calls.at(-1)?.[0]).not.toHaveProperty('connectionId')
+  })
+
+  // Contract: with a registered gateway connection active, cron run sessions
+  // live in THAT gateway's state.db — not in any local profile's. Every cron
+  // helper must tag the owning connection so the main process routes the REST
+  // call to the same backend the job list (and its runs) actually live on.
+  // Without it, run history read a local state.db with zero cron rows and
+  // every job showed "No runs yet" (#87882).
+  it('forwards the active registry connection to every cron helper', () => {
+    setApiRequestProfile('research')
+    setApiRequestConnection('gw-tailscale')
+
+    void getCronJobs('research')
+    void getCronJob('job-1')
+    void getCronJobRuns('job-1')
+    void createCronJob({ name: 'nightly', prompt: 'run', schedule: '0 3 * * *' } as never)
+    void updateCronJob('job-1', { enabled: false } as never)
+    void pauseCronJob('job-1')
+    void resumeCronJob('job-1')
+    void triggerCronJob('job-1')
+    void deleteCronJob('job-1')
+
+    for (const call of api.mock.calls) {
+      expect((call[0] as { connectionId?: string }).connectionId).toBe('gw-tailscale')
+      expect(call[0].profile).toBe('research')
+    }
+  })
+
   it('list accepts an explicit ?profile= for endpoint-level filtering', () => {
     // profileScoped() routes the backend process; the list endpoint ALSO
     // aggregates 'all' by default, so callers pass an explicit profile to
@@ -70,5 +103,57 @@ describe('cron helpers are profile-scoped', () => {
     // Omitting the arg keeps the legacy unfiltered path.
     void getCronJobs()
     expect(api.mock.calls.at(-1)?.[0].path).toBe('/api/cron/jobs')
+  })
+})
+
+// Contract (#82527): the run rows a cron job returns are sessions like any
+// other backend page, so they must carry the same ownership tag the session
+// lists do — the registry connection that served them. Clicking a run then
+// hands the open path a row whose (connection, profile) names the backend
+// that actually holds it, instead of the ambient one a bare id resolves to.
+describe('cron run rows carry their owning connection', () => {
+  const run: { connection_id?: string; id: string; profile: string; source: string } = {
+    id: 'cron-nightly-1',
+    profile: 'research',
+    source: 'cron'
+  }
+
+  const api = vi.fn(async () => ({ runs: [{ ...run }] }))
+
+  beforeEach(() => {
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { api }
+    api.mockClear()
+  })
+
+  afterEach(() => {
+    setApiRequestProfile(null)
+    setApiRequestConnection(null)
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  it('stamps the active registry connection onto every run row', async () => {
+    setApiRequestProfile('research')
+    setApiRequestConnection('gw-tailscale')
+
+    const rows = await getCronJobRuns('job-1')
+
+    expect(rows[0].connection_id).toBe('gw-tailscale')
+    // The backend's owning profile is preserved, not overwritten.
+    expect(rows[0].profile).toBe('research')
+  })
+
+  it('leaves run rows untagged on a local/single-source window', async () => {
+    const rows = await getCronJobRuns('job-1')
+
+    expect(rows[0].connection_id).toBeUndefined()
+  })
+
+  it('never clobbers an owner a row already names', async () => {
+    setApiRequestConnection('gw-tailscale')
+    api.mockResolvedValueOnce({ runs: [{ ...run, connection_id: 'gw-homelab' }] })
+
+    const rows = await getCronJobRuns('job-1')
+
+    expect(rows[0].connection_id).toBe('gw-homelab')
   })
 })

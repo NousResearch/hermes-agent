@@ -38,7 +38,8 @@ describe('resolveTargetSessionId', () => {
     expect(requestGateway).toHaveBeenCalledWith('session.resume', {
       session_id: STORED,
       source: 'desktop',
-      profile: 'work'
+      profile: 'work',
+      omit_messages: true
     })
   })
 

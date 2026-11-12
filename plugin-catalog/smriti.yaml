@@ -1,0 +1,18 @@
+name: smriti
+repo: https://github.com/vn-envy/Smriti
+sha: 7735717795f53841c542fd40049a409627035774
+subdir: hermes-plugin
+description: >-
+  Local personal memory with dated facts, scoped corrections, and source records
+  you can retrieve from any compatible MCP client.
+maintainer: vn-envy
+tier: community
+category: memory
+requires_hermes: ">=0.23.0"
+version: "0.1.0"
+platforms: [macos]
+capabilities:
+  provides_tools: [remember, recall, search, facts_about, add_fact, stats]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

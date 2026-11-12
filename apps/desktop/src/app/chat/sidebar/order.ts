@@ -226,3 +226,17 @@ function clusterId(rows: SidebarListRow[]): string {
 export function reorderableRowIds(rows: SidebarListRow[]): string[] {
   return rows.flatMap(row => (row.kind === 'session' && !row.entry.branchStem ? [row.entry.session.id] : []))
 }
+
+/** Splice a new visible-id order back into the full id list, keeping hidden
+ *  ids in their original slots. A drag while some date groups are collapsed
+ *  must not wipe those groups' saved ranking. */
+export function mergeVisibleReorder(allIds: string[], nextVisibleIds: string[]): string[] {
+  if (nextVisibleIds.length === allIds.length) {
+    return nextVisibleIds
+  }
+
+  const visible = new Set(nextVisibleIds)
+  let i = 0
+
+  return allIds.map(id => (visible.has(id) ? (nextVisibleIds[i++] ?? id) : id))
+}

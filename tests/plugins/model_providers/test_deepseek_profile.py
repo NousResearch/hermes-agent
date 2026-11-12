@@ -25,7 +25,7 @@ def deepseek_profile():
     """
     # ``model_tools`` triggers plugin discovery on import, which is what
     # registers the DeepSeek profile in the global provider registry.
-    import model_tools  # noqa: F401
+    import model_tools
     import providers
 
     profile = providers.get_provider_profile("deepseek")
@@ -74,6 +74,32 @@ class TestDeepSeekThinkingWireShape:
         # No effort when disabled — DeepSeek rejects it.
         assert top_level == {}
 
+    @pytest.mark.parametrize(
+        "reasoning_config",
+        [
+            {"effort": "none"},
+            {"effort": "false"},
+            {"effort": "disabled"},
+            {"effort": "NONE"},
+            {"enabled": True, "effort": "none"},
+        ],
+    )
+    def test_effort_none_without_enabled_false_sends_disabled(
+        self, deepseek_profile, reasoning_config
+    ):
+        """UI/CLI ``none`` can arrive as ``{effort: "none"}`` without ``enabled: False``.
+
+        ``_session_info`` / ``_cfg_get_reasoning`` already report that as Off, but
+        the plugin used to fall through to ``thinking: enabled`` (#107238).
+        """
+        extra_body, top_level = deepseek_profile.build_api_kwargs_extras(
+            reasoning_config=reasoning_config,
+            model="deepseek-v4.1-flash-expires-on-0910",
+        )
+        assert extra_body == {"thinking": {"type": "disabled"}}
+        assert top_level == {}
+        assert "reasoning_effort" not in top_level
+
     def test_disabled_ignores_effort_field(self, deepseek_profile):
         """Effort silently dropped when thinking is off."""
         _, top_level = deepseek_profile.build_api_kwargs_extras(
@@ -108,6 +134,10 @@ class TestDeepSeekModelGating:
             "deepseek-v4-flash",
             "deepseek-v4-future-variant",
             "DEEPSEEK-V4-PRO",  # case-insensitive
+            # Version-less canonical ids (2026-09 Flash refresh) carry the
+            # same thinking-mode contract but no v<N> marker.
+            "deepseek-flash",
+            "DEEPSEEK-FLASH",  # case-insensitive
         ],
     )
     def test_thinking_capable_models_emit_thinking(self, deepseek_profile, model):
@@ -137,7 +167,7 @@ class TestDeepSeekModelGating:
 class TestDeepSeekFullKwargsIntegration:
     """End-to-end: the transport's full kwargs match DeepSeek's live wire format.
 
-    The live test harness in ``tests/run_agent/test_deepseek_v4_thinking_live.py``
+    The live test harness in ``tests/agent/test_deepseek_v4_thinking_live.py``
     sends ``{"reasoning_effort": "high", "extra_body": {"thinking": {"type":
     "enabled"}}}``.  Confirm the transport produces that exact shape when wired
     through the registered DeepSeek profile.
@@ -174,6 +204,55 @@ class TestDeepSeekFullKwargsIntegration:
         assert "reasoning_effort" not in kwargs
         assert "extra_body" not in kwargs or "thinking" not in kwargs.get("extra_body", {})
 
+    def test_unset_full_kwargs_still_enable_thinking(self, deepseek_profile):
+        """CONTROL: rc=None on V4 must keep thinking=enabled (echo-trap / #106648)."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek-v4.1-flash-expires-on-0910",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=deepseek_profile,
+            reasoning_config=None,
+            base_url="https://api.deepseek.com/v1",
+            provider_name="deepseek",
+        )
+        assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+        assert "reasoning_effort" not in kwargs
+
+    def test_effort_none_full_kwargs_disable_thinking(self, deepseek_profile):
+        """CLI/UI ``none`` as ``{effort: "none"}`` (no enabled:False) must disable."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek-v4.1-flash-expires-on-0910",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=deepseek_profile,
+            reasoning_config={"effort": "none"},
+            base_url="https://api.deepseek.com/v1",
+            provider_name="deepseek",
+        )
+        assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert "reasoning_effort" not in kwargs
+
+    def test_cli_parse_none_full_kwargs_disable_thinking(self, deepseek_profile):
+        """``--reasoning none`` / ``parse_reasoning_effort('none')`` → disabled on the wire."""
+        from agent.transports.chat_completions import ChatCompletionsTransport
+        from hermes_constants import parse_reasoning_effort
+
+        kwargs = ChatCompletionsTransport().build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "ping"}],
+            tools=None,
+            provider_profile=deepseek_profile,
+            reasoning_config=parse_reasoning_effort("none"),
+            base_url="https://api.deepseek.com/v1",
+            provider_name="deepseek",
+        )
+        assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert "reasoning_effort" not in kwargs
+
 
 class TestDeepSeekAuxModel:
     """DeepSeek aux model is set on the profile so users stop seeing the
@@ -186,16 +265,14 @@ class TestDeepSeekAuxModel:
     system.
     """
 
-    def test_profile_advertises_deepseek_v4_flash(self, deepseek_profile):
-        assert deepseek_profile.default_aux_model == "deepseek-v4-flash"
 
-    def test_fallback_models_are_v4_only(self, deepseek_profile):
-        assert deepseek_profile.fallback_models == (
-            "deepseek-v4-pro",
-            "deepseek-v4-flash",
-        )
+    def test_fallback_models_are_current_ids(self, deepseek_profile):
+        from hermes_cli.model_normalize import _normalize_for_deepseek
+        # Every advertised id must survive normalization unchanged (no retired alias in the picker).
+        assert all(_normalize_for_deepseek(m) == m for m in deepseek_profile.fallback_models)
 
-    def test_consumer_api_returns_deepseek_v4_flash(self):
+    def test_consumer_api_matches_profile_aux_model(self, deepseek_profile):
         from agent.auxiliary_client import _get_aux_model_for_provider
-        assert _get_aux_model_for_provider("deepseek") == "deepseek-v4-flash"
+        assert deepseek_profile.default_aux_model
+        assert _get_aux_model_for_provider("deepseek") == deepseek_profile.default_aux_model
 

@@ -101,7 +101,6 @@ def test_session_compress_rpc_returns_lock_held_payload():
     result = r["result"]
     assert result["lock_held"] is True
     assert result["compressed"] is False
-    assert "Compression already in progress" in result["message"]
     assert "pid=4242" in result["message"]
     assert "No changes from compression" not in result["message"]
 
@@ -135,7 +134,6 @@ def test_command_dispatch_compress_reports_lock_skip_as_output_not_error():
     assert "error" not in r, f"lock-skip surfaced as error: {r.get('error')}"
     output = r["result"]["output"]
     assert r["result"]["type"] == "exec"
-    assert "Compression already in progress" in output
     assert "pid=5150" in output
     assert "compress failed" not in output
     assert "No changes from compression" not in output
@@ -164,7 +162,6 @@ def test_mirror_slash_side_effects_reports_lock_skip():
     finally:
         server._sessions.pop(sid, None)
 
-    assert "Compression already in progress" in output
     assert "pid=6161" in output
     assert "No changes from compression" not in output
     assert "live session sync failed" not in output

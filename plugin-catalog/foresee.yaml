@@ -1,0 +1,28 @@
+name: foresee
+title: Foresee
+repo: https://github.com/Foresee-Tech/foresee
+sha: 18361bd74ffce667fbceb2a60a57d3eabff11854
+subdir: plugins/foresee
+description: >-
+  Let AI assistants shop for home and auto insurance: compare instant quotes across every carrier.
+  Connects to the hosted Foresee MCP server (Streamable HTTP at agents.go-foresee.com), with three
+  workflow skills bundled. Portable Agent Plugins v1 package (mcp.json + skills/). Disclosure —
+  portable Agent Plugins v1 package (hosted MCP server plus three skills), no Python and nothing runs
+  locally; the vendor is Foresee Insurance Services, LLC (go-foresee.com). Every quote request sends
+  the profile the user gives in chat (ZIP, age or date of birth, vehicles, drivers, driving record,
+  home details) to agents.go-foresee.com with no account or API key. The live_carrier_quotes tool
+  additionally sends the user's identity (name, date of birth, street address, email, optionally phone
+  and driver's licence number) and, after the user's in-chat consent recorded verbatim, Foresee's
+  agents submit those details to the selected insurance carriers, who may run a soft credit-based
+  insurance score pull and contact the user. Foresee does not take payment or bind policies.
+maintainer: Foresee-Tech
+tier: community
+category: tools
+version: "0.4.1"
+docs_url: https://go-foresee.com/docs
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

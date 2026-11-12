@@ -53,7 +53,7 @@ def load(paths: list[Path]) -> tuple[list[dict], list[dict]]:
     batch: list[dict] = []
     for path in paths:
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text = path.read_text(encoding="utf-8-sig", errors="replace")
         except OSError as exc:
             print(f"warning: cannot read {path}: {exc}", file=sys.stderr)
             continue
@@ -67,7 +67,8 @@ def load(paths: list[Path]) -> tuple[list[dict], list[dict]]:
                 except ValueError:
                     pass
                 break
-    return micro, batch
+    # The attempt log also records blocked, skipped and refused attempts; only committed ones are compactions.
+    return micro, [b for b in batch if b.get("commit_status") == "committed"]
 
 
 def pct(values: list[float]) -> tuple[float, float, float] | None:

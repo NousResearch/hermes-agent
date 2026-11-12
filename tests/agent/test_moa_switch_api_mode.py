@@ -34,6 +34,12 @@ def _make_fake_agent():
     agent._config_context_length = 123456
     agent._transport_cache = {}
     agent.quiet_mode = True
+    # switch_model re-reads reasoning_echo for the incoming model as part of the
+    # core field swap, before the moa branch runs. On a real AIAgent this is a
+    # method; without it the swap raises and the rollback undoes every field
+    # this test asserts on.
+    agent._reasoning_echo_flag = False
+    agent._read_reasoning_echo_from_config = lambda: False
     return agent
 
 

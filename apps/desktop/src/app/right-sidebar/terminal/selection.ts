@@ -1,6 +1,8 @@
 import type { ITheme, Terminal } from '@xterm/xterm'
 import type { CSSProperties } from 'react'
 
+import { isComposerChord } from '@/lib/keybinds/chords'
+import { isMacPlatform } from '@/lib/platform'
 import type { DesktopTerminalPalette } from '@/themes/types'
 
 // VS Code's default integrated-terminal palette (terminalColorRegistry.ts) — a
@@ -97,12 +99,13 @@ export function resolveSurfaceColor(fallback: string): string {
   return resolved && resolved !== 'rgba(0, 0, 0, 0)' ? resolved : fallback
 }
 
-export const isMacPlatform = () => navigator.platform.toLowerCase().includes('mac')
+export { isMacPlatform }
 
-export function isAddSelectionShortcut(event: KeyboardEvent) {
-  const mod = isMacPlatform() ? event.metaKey : event.ctrlKey
-
-  return mod && !event.shiftKey && event.key.toLowerCase() === 'l'
+/** Whether this terminal session should own a global ⌘/Ctrl+L keydown.
+ *  `active` gates the fanout: every open tab stays mounted, so an inactive
+ *  tab must never claim the press (#76116). */
+export function shouldOwnAddSelectionShortcut(event: KeyboardEvent, opts: { active: boolean; hasSelection: boolean }) {
+  return opts.active && opts.hasSelection && isComposerChord(event)
 }
 
 export function terminalSelectionLabel(term: Terminal, shellName: string, text: string) {

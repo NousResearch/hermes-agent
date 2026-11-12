@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Tuple
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from plugins.platforms.photon import adapter as photon_adapter
 from plugins.platforms.photon.adapter import PhotonAdapter
 
@@ -27,10 +27,10 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     return PhotonAdapter(cfg)
 
 
-def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]:
-    calls: List[Tuple[str, Dict[str, Any]]] = []
+def _capture_sidecar(adapter: PhotonAdapter) -> list[tuple[str, dict[str, Any]]]:
+    calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
         calls.append((path, body))
         return {"ok": True, "messageId": "msg-123"}
 
@@ -40,8 +40,8 @@ def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]
 
 def _capture_inbound(
     adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch
-) -> List[MessageEvent]:
-    captured: List[MessageEvent] = []
+) -> list[MessageEvent]:
+    captured: list[MessageEvent] = []
 
     async def fake_handle(event: MessageEvent) -> None:
         captured.append(event)
@@ -50,7 +50,7 @@ def _capture_inbound(
     return captured
 
 
-def _dm_event(content: Dict[str, Any], msg_id: str = "spc-msg-rich") -> Dict[str, Any]:
+def _dm_event(content: dict[str, Any], msg_id: str = "spc-msg-rich") -> dict[str, Any]:
     return {
         "messageId": msg_id,
         "platform": "iMessage",
@@ -128,9 +128,9 @@ async def test_direct_url_only_send_falls_back_to_plain_send(
 ) -> None:
     monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
     adapter = _make_adapter(monkeypatch)
-    calls: List[Tuple[str, Dict[str, Any]]] = []
+    calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
         calls.append((path, body))
         if path == "/send-richlink":
             raise RuntimeError("richlink unsupported")
@@ -154,13 +154,13 @@ async def test_standalone_url_only_send_routes_to_richlink_endpoint(
 ) -> None:
     monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
     monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
-    posted: List[Tuple[str, Dict[str, Any]]] = []
+    posted: list[tuple[str, dict[str, Any]]] = []
 
     class _Resp:
         status_code = 200
 
         @staticmethod
-        def json() -> Dict[str, Any]:
+        def json() -> dict[str, Any]:
             return {"ok": True, "messageId": "m-9"}
 
     class _FakeClient:
@@ -173,7 +173,7 @@ async def test_standalone_url_only_send_routes_to_richlink_endpoint(
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, url: str, json: Dict[str, Any], headers=None):
+        async def post(self, url: str, json: dict[str, Any], headers=None):
             posted.append((url, json))
             return _Resp()
 
@@ -216,7 +216,7 @@ _PNG_1X1_B64 = (
 def _preview_attachment(
     name: str = "preview.pluginPayloadAttachment",
     mime_type: str = "image/png",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     raw = base64.b64decode(_PNG_1X1_B64)
     return {
         "type": "attachment",
@@ -230,7 +230,7 @@ def _preview_attachment(
 
 def _preview_attachment_by_id(
     attachment_id: str = "doc_123.pluginPayloadAttachment",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     payload = _preview_attachment(name="")
     payload["id"] = attachment_id
     payload["name"] = None

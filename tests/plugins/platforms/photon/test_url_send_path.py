@@ -23,7 +23,7 @@ import pytest
 
 _MODULE = Path("plugins/platforms/photon/sidecar/send-format.mjs").resolve()
 
-_CASES: Dict[str, Tuple[str, str, str]] = {
+_CASES: dict[str, tuple[str, str, str]] = {
     # name: (format, text, expected builder)
     "markdown_without_url_keeps_markdown": (
         "markdown", "**bold** and `code`", "markdown",
@@ -53,7 +53,7 @@ _CASES: Dict[str, Tuple[str, str, str]] = {
 
 
 @pytest.fixture(scope="module")
-def verdicts() -> Dict[str, str]:
+def verdicts() -> dict[str, str]:
     """Run every case through the real send-format module in one node call."""
     harness = (
         f"import {{ chooseSendFormat }} from {json.dumps(_MODULE.as_uri())};\n"
@@ -82,6 +82,6 @@ def verdicts() -> Dict[str, str]:
 
 
 @pytest.mark.parametrize("name", sorted(_CASES))
-def test_send_builder_selection(name: str, verdicts: Dict[str, str]) -> None:
+def test_send_builder_selection(name: str, verdicts: dict[str, str]) -> None:
     _, _, expected = _CASES[name]
     assert verdicts[name] == expected

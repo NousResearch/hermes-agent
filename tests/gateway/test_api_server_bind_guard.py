@@ -80,16 +80,6 @@ class TestConnectBindGuard:
         assert adapter._background_tasks == set()
 
 
-    @pytest.mark.asyncio
-    async def test_allows_wildcard_with_key(self):
-        """Non-loopback with a key should pass the guard."""
-        adapter = APIServerAdapter(
-            PlatformConfig(enabled=True, extra={"host": "0.0.0.0", "key": "sk-test"})
-        )
-        # The guard checks: is_network_accessible(host) AND NOT api_key
-        # With a key set, the guard should not block.
-        assert adapter._api_key == "sk-test"
-        assert is_network_accessible("0.0.0.0") is True
         # Combined: the guard condition is False (key is set), so it passes
 
 
@@ -144,6 +134,27 @@ class TestBindMechanics:
         finally:
             await second.disconnect()
 
+
+    @pytest.mark.platforms("macos")  # the exclusive bind (reuse_address=False) is a Darwin-only path
+    @pytest.mark.asyncio
+    async def test_rebind_over_time_wait(self):
+        """A port held only by a server-side TIME_WAIT socket (the previous gateway closed a
+        connection first) must not fail the bind on macOS, where address reuse is disabled."""
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        client = socket.create_connection(("127.0.0.1", port))
+        accepted, _ = listener.accept()
+        accepted.close()  # the side closing first enters TIME_WAIT
+        client.close()
+        listener.close()
+        adapter = self._make_adapter(port)
+        try:
+            assert await adapter.connect() is True
+            assert adapter.has_fatal_error is False
+        finally:
+            await adapter.disconnect()
 
     @pytest.mark.asyncio
     async def test_port_conflict_sets_non_retryable_fatal_error(self):

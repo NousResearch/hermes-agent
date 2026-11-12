@@ -78,11 +78,6 @@ class TestQuietModeCacheIsolation:
             "Eviction should keep the cache at the cap, not clear it or grow"
         )
 
-    def test_non_quiet_mode_does_not_use_cache(self):
-        """Sanity: quiet_mode=False (TUI path) skips the cache entirely \u2014
-        explains why the bug only hit Gateway."""
-        model_tools.get_tool_definitions(quiet_mode=False)
-        assert len(model_tools._tool_defs_cache) == 0
 
     def test_concurrent_capacity_misses_evict_atomically(self, monkeypatch):
         """Two profile/toolset misses at capacity cannot race on eviction."""

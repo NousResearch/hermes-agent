@@ -1,7 +1,7 @@
 name: Retry a flaky command
 description: >-
   Run a shell command, retrying on non-zero exit. For dependency installs
-  (npm ci, uv sync) whose only failures are transient network/toolchain
+  (pnpm install, uv sync) whose only failures are transient network/toolchain
   flakes — a node-gyp header fetch, a registry blip — so CI self-heals
   instead of needing a manual re-run. Can also capture stdout as a step
   output for commands whose result must be consumed by later steps.

@@ -1,0 +1,31 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: microsoft-learn
+description: Official Microsoft, Azure, and .NET docs and code samples.
+source: https://learn.microsoft.com/en-us/training/support/mcp-get-started
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously).
+
+transport:
+  type: http
+  url: https://learn.microsoft.com/api/mcp
+
+auth:
+  type: none
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - microsoft docs
+    - azure docs
+    - msdn
+  hosts:
+    - learn.microsoft.com
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.

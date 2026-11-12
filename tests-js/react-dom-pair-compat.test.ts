@@ -6,17 +6,17 @@
  * *before* the first paint — the Electron window just stays blank white, with
  * the only clue buried in the devtools console of a packaged build.
  *
- * npm never warns about this. ``apps/desktop`` pins both packages to one exact
+ * npm never warned about this. ``apps/desktop`` pins both packages to one exact
  * version, but a root dependency whose react peer is a loose range (e.g.
  * ``^18.0.0 || ^19.0.0``, and with no react-dom peer to keep the two in step)
- * makes npm hoist the newest react to the monorepo root while react-dom stays
+ * made npm hoist the newest react to the monorepo root while react-dom stayed
  * at the pinned version. react-dom's own peer range is a caret, so the newer
- * react still "satisfies" it and the install reports success.
+ * react still "satisfies" it and the install reported success.
  *
  * ``apps/desktop/vite.config.ts`` used to alias both packages to a hardcoded
  * ``../../node_modules/<pkg>`` — i.e. straight into the split — so the bundle
  * shipped the mismatched pair. It now resolves them from the workspace itself,
- * where npm guarantees the declared versions are reachable.
+ * where the package manager guarantees the declared versions are reachable.
  *
  * This is a *contract* test: it asserts no specific version, only that the two
  * halves of the pair can never drift apart again — neither through a loosened
@@ -27,24 +27,24 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 
+import { load } from 'js-yaml'
 import { test } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..')
-const DESKTOP_VITE_CONFIG = path.join(REPO_ROOT, 'apps', 'desktop', 'vite.config.ts')
 
 interface Manifest {
   dependencies?: Record<string, string>
   devDependencies?: Record<string, string>
-  workspaces?: string[]
 }
 
 function readManifest(file: string): Manifest {
   return JSON.parse(fs.readFileSync(file, 'utf-8')) as Manifest
 }
 
-/** Every workspace manifest, resolved from the root ``workspaces`` globs. */
+/** Every workspace manifest, resolved from the ``pnpm-workspace.yaml`` package globs. */
 function workspaceManifests(): { name: string, manifest: Manifest }[] {
-  const patterns = readManifest(path.join(REPO_ROOT, 'package.json')).workspaces ?? []
+  const workspace = load(fs.readFileSync(path.join(REPO_ROOT, 'pnpm-workspace.yaml'), 'utf-8')) as { packages?: string[] }
+  const patterns = workspace.packages ?? []
   const found: { name: string, manifest: Manifest }[] = []
 
   for (const pattern of patterns) {
@@ -69,6 +69,7 @@ function workspaceManifests(): { name: string, manifest: Manifest }[] {
 
 test('workspaces declaring react and react-dom pin them to the same exact version', () => {
   const offenders: string[] = []
+  let checked = 0
 
   for (const { name, manifest } of workspaceManifests()) {
     const deps = { ...manifest.devDependencies, ...manifest.dependencies }
@@ -76,6 +77,7 @@ test('workspaces declaring react and react-dom pin them to the same exact versio
     const reactDom = deps['react-dom']
 
     if (!react || !reactDom) {continue}
+    checked++
 
     if (react !== reactDom) {
       offenders.push(`${name} declares react"${react}" but react-dom"${reactDom}"`)
@@ -88,23 +90,12 @@ test('workspaces declaring react and react-dom pin them to the same exact versio
     }
   }
 
+  assert.ok(checked > 0, 'found no workspace declaring react and react-dom; the workspace list resolved to nothing')
   assert.deepEqual(
     offenders,
     [],
     'react and react-dom must be pinned to the same exact version per workspace, ' +
-      'otherwise npm can hoist a newer react next to the older react-dom and React ' +
+      'otherwise a hoisted newer react can meet the older react-dom and React ' +
       `throws error #527 (blank window): ${offenders.join('; ')}`
-  )
-})
-
-test('the desktop bundler does not alias react at the hoisted root copy', () => {
-  const config = fs.readFileSync(DESKTOP_VITE_CONFIG, 'utf-8')
-
-  assert.ok(
-    !config.includes('node_modules/react'),
-    'apps/desktop/vite.config.ts hardcodes a node_modules path for react/react-dom. ' +
-      'That pins the bundle to the hoisted copies, which npm is free to resolve to a ' +
-      'different version than the pinned react-dom. Resolve both from the workspace ' +
-      "instead (see this test's module docstring)."
   )
 })

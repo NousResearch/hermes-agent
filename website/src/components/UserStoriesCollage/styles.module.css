@@ -68,8 +68,13 @@
 }
 .filterActive {
   background: var(--ifm-color-emphasis-900);
-  color: var(--ifm-background-color);
+  /* --ifm-background-color is only set for the dark theme, so it resolves to transparent in light mode (#91491). */
+  color: var(--ifm-color-emphasis-0);
   border-color: var(--ifm-color-emphasis-900);
+}
+/* .filterBtn:hover outranks .filterActive and would paint emphasis-1000 text on the emphasis-900 pill. */
+.filterActive:hover {
+  color: var(--ifm-color-emphasis-0);
 }
 [data-theme='dark'] .filterActive {
   background: #e2e8f0;

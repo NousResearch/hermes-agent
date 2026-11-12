@@ -28,91 +28,14 @@ the bridge forwards responses correctly into the inner SDK generator.
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required")
 
 
-@pytest.mark.asyncio
-async def test_hermes_provider_forwards_asend_values(tmp_path, monkeypatch):
-    """The wrapper MUST forward ``.asend(response)`` into the inner generator.
-
-    This is the primary regression test. With the broken wrapper, the inner
-    SDK generator sees ``response = None`` and raises ``AttributeError`` at
-    ``oauth2.py:505``. With the correct bridge, a 200 response finishes the
-    flow cleanly (``StopAsyncIteration``).
-    """
-    import httpx
-    from mcp.shared.auth import OAuthClientMetadata, OAuthToken
-    from pydantic import AnyUrl
-
-    from tools.mcp_oauth import HermesTokenStorage
-    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
-
-    assert _HERMES_PROVIDER_CLS is not None, "SDK OAuth types must be available"
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    reset_manager_for_tests()
-
-    # Seed a valid-looking token so the SDK's _initialize loads something and
-    # can_refresh_token() is True (though we don't exercise refresh here — we
-    # go straight through the 200 path).
-    storage = HermesTokenStorage("srv")
-    await storage.set_tokens(
-        OAuthToken(
-            access_token="old_access",
-            token_type="Bearer",
-            expires_in=3600,
-            refresh_token="old_refresh",
-        )
-    )
-    # Also seed client_info so the SDK doesn't attempt registration.
-    from mcp.shared.auth import OAuthClientInformationFull
-
-    await storage.set_client_info(
-        OAuthClientInformationFull(
-            client_id="test-client",
-            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
-            grant_types=["authorization_code", "refresh_token"],
-            response_types=["code"],
-            token_endpoint_auth_method="none",
-        )
-    )
-
-    metadata = OAuthClientMetadata(
-        redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
-        client_name="Hermes Agent",
-    )
-    provider = _HERMES_PROVIDER_CLS(
-        server_name="srv",
-        server_url="https://example.com/mcp",
-        client_metadata=metadata,
-        storage=storage,
-        redirect_handler=_noop_redirect,
-        callback_handler=_noop_callback,
-    )
-
-    req = httpx.Request("POST", "https://example.com/mcp")
-    flow = provider.async_auth_flow(req)
-
-    # First anext() drives the wrapper + inner generator until the inner
-    # yields the outbound request (at oauth2.py:503 ``response = yield request``).
-    outbound = await flow.__anext__()
-    assert outbound is not None, "wrapper must yield the outbound request"
-    assert outbound.url.host == "example.com"
-
-    # Simulate httpx returning a 200 response.
-    fake_response = httpx.Response(200, request=outbound)
-
-    # The broken wrapper would crash here with AttributeError: 'NoneType'
-    # object has no attribute 'status_code', because the SDK's inner generator
-    # resumes with response=None and dereferences .status_code at line 505.
-    #
-    # The correct wrapper forwards the response, the SDK takes the non-401
-    # non-403 exit, and the generator ends cleanly (StopAsyncIteration).
-    with pytest.raises(StopAsyncIteration):
-        await flow.asend(fake_response)
 
 
 @pytest.mark.asyncio
@@ -125,7 +48,11 @@ async def test_hermes_provider_forwards_401_triggers_refresh(tmp_path, monkeypat
     bridge, the 401 is routed into the SDK's ``response.status_code == 401``
     branch which begins discovery (yielding a metadata-discovery request).
     """
-    import httpx
+    # The SDK's httpx flavour (httpx2 on mcp >= 2.0): the provider is an
+    # Auth subclass from that module and its auth_flow only accepts its own
+    # Request/Response types.
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
     from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
     from pydantic import AnyUrl
 
@@ -198,9 +125,108 @@ async def test_hermes_provider_forwards_401_triggers_refresh(tmp_path, monkeypat
     await flow.aclose()
 
 
+@pytest.mark.asyncio
+async def test_long_lived_resource_request_does_not_block_concurrent_post(
+    tmp_path, monkeypatch
+):
+    """A session-long MCP GET must not hold the provider state lock.
+
+    MCP SDK 2.0.0 wraps its entire auth-flow generator in one lock.  Leaving
+    the GET response pending then prevents a concurrent POST from even
+    acquiring its Bearer token.  Hermes narrows that lock around resource I/O
+    while retaining it for OAuth state transitions.
+    """
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
+    from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="access-token",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="refresh-token",
+        )
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="test-client",
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            grant_types=["authorization_code", "refresh_token"],
+            response_types=["code"],
+            token_endpoint_auth_method="none",
+        )
+    )
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    get_request = httpx.Request("GET", "https://example.com/mcp")
+    get_flow = provider.async_auth_flow(get_request)
+    get_outbound = await get_flow.__anext__()
+
+    # Keep the GET open, as streamable HTTP does for the session lifetime.
+    # The POST must still authenticate and reach HTTPX without waiting for it.
+    post_request = httpx.Request("POST", "https://example.com/mcp")
+    post_flow = provider.async_auth_flow(post_request)
+    post_outbound = await asyncio.wait_for(post_flow.__anext__(), timeout=2.0)
+
+    assert post_outbound is post_request
+    assert post_outbound.headers["authorization"] == "Bearer access-token"
+
+    with pytest.raises(StopAsyncIteration):
+        await post_flow.asend(httpx.Response(200, request=post_outbound))
+
+    # A completed concurrent refresh must make the pending GET retry with the
+    # new token rather than start a second OAuth transition from its stale 401.
+    provider.context.current_tokens = OAuthToken(
+        access_token="new-access-token",
+        token_type="Bearer",
+        expires_in=3600,
+        refresh_token="refresh-token",
+    )
+    provider.context.update_token_expiry(provider.context.current_tokens)
+    get_retry = await get_flow.asend(
+        httpx.Response(
+            401,
+            request=get_outbound,
+            headers={
+                "www-authenticate": (
+                    'Bearer resource_metadata="https://example.com/'
+                    '.well-known/oauth-protected-resource"'
+                )
+            },
+        )
+    )
+    assert get_retry is get_request
+    assert get_retry.headers["authorization"] == "Bearer new-access-token"
+
+    with pytest.raises(StopAsyncIteration):
+        await get_flow.asend(httpx.Response(200, request=get_retry))
+
+
 async def _noop_redirect(_url: str) -> None:
     """Redirect handler that does nothing (won't be invoked in these tests)."""
-    return None
+    return
 
 
 async def _noop_callback() -> tuple[str, str | None]:
@@ -208,3 +234,277 @@ async def _noop_callback() -> tuple[str, str | None]:
     raise AssertionError(
         "callback handler should not be invoked in bidirectional-generator tests"
     )
+
+
+@pytest.mark.asyncio
+async def test_fabricated_dcr_registration_rejected_before_network(tmp_path, monkeypatch):
+    """The bridge must raise instead of sending the SDK's *fabricated* DCR POST.
+
+    Google's hosted Gmail/Drive MCP servers advertise no RFC 7591
+    ``registration_endpoint`` in their ASM, so the SDK falls back to guessing
+    ``POST {server_origin}/register`` (``create_client_registration_request``,
+    mcp/client/auth/utils.py) — a URL those servers answer with an opaque 404
+    (GH#78190). The guard in ``HermesMCPOAuthProvider`` must intercept that
+    guessed request and raise an actionable ``OAuthRegistrationError`` before
+    any network call, instead of letting the gateway burn the reconnect
+    ladder on an unrecoverable registration failure.
+
+    Drive the full discovery dance (401 -> PRM -> ASM without
+    registration_endpoint -> fabricated registration POST) through the
+    generator manually, exactly like the other tests in this file.
+    """
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
+    from mcp.client.auth import OAuthRegistrationError
+    from mcp.shared.auth import OAuthClientMetadata
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None, "SDK OAuth types must be available"
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    # Empty storage: no tokens, no client_info — the SDK's 401 branch must
+    # take the registration path (this is the cold gateway state for a
+    # provider whose cached client is gone).
+    storage = HermesTokenStorage("srv")
+
+    metadata = OAuthClientMetadata(
+        redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+        client_name="Hermes Agent",
+    )
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=metadata,
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    req = httpx.Request("POST", "https://example.com/mcp")
+    flow = provider.async_auth_flow(req)
+
+    # 1. Initial outbound MCP request.
+    outbound = await flow.__anext__()
+    assert outbound is not None
+
+    # 2. 401 with a resource_metadata pointer -> SDK starts PRM discovery.
+    fake_401 = httpx.Response(
+        401,
+        request=outbound,
+        headers={
+            "www-authenticate": (
+                'Bearer resource_metadata="https://example.com/.well-known/'
+                'oauth-protected-resource"'
+            )
+        },
+    )
+    prm_request = await flow.asend(fake_401)
+    assert isinstance(prm_request, httpx.Request)
+    assert prm_request.method == "GET"
+
+    # 3. Serve PRM pointing at a fake authorization server.
+    prm_response = httpx.Response(
+        200,
+        request=prm_request,
+        headers={"Content-Type": "application/json"},
+        json={
+            "authorization_servers": ["https://auth.example.com"],
+            "resource": "https://example.com/mcp",
+            "bearer_methods_supported": ["header"],
+        },
+    )
+    asm_request = await flow.asend(prm_response)
+    assert isinstance(asm_request, httpx.Request)
+    assert asm_request.method == "GET"
+
+    # 4. Serve ASM with NO registration_endpoint (the Google Gmail/Drive
+    #    MCP class of provider).
+    asm_response = httpx.Response(
+        200,
+        request=asm_request,
+        headers={"Content-Type": "application/json"},
+        json={
+            "issuer": "https://auth.example.com",
+            "authorization_endpoint": "https://auth.example.com/authorize",
+            "token_endpoint": "https://auth.example.com/token",
+            "response_types_supported": ["code"],
+            "code_challenge_methods_supported": ["S256"],
+        },
+    )
+
+    # 5. The SDK now wants to POST the fabricated registration URL — the
+    #    bridge must raise the actionable error instead of yielding it.
+    with pytest.raises(OAuthRegistrationError) as excinfo:
+        await flow.asend(asm_response)
+    text = str(excinfo.value)
+    assert "does not support automatic client registration" in text
+    assert "https://example.com/register" in text
+    assert "config.yaml" in text
+    assert "hermes mcp login srv" in text
+    await flow.aclose()
+
+
+@pytest.mark.asyncio
+async def test_advertised_registration_endpoint_passes_through(tmp_path, monkeypatch):
+    """A server that *advertises* a registration endpoint must NOT be blocked.
+
+    Real-world case: Linear's MCP ASM advertises
+    ``registration_endpoint: https://mcp.linear.app/register`` — the same
+    origin+path the SDK would fabricate. The guard's AND condition (exact
+    fabricated URL **and** no advertised registration_endpoint) must let
+    such servers through; otherwise every legitimate DCR flow breaks.
+    """
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
+    from mcp.shared.auth import OAuthClientMetadata
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None, "SDK OAuth types must be available"
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    metadata = OAuthClientMetadata(
+        redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+        client_name="Hermes Agent",
+    )
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=metadata,
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    req = httpx.Request("POST", "https://example.com/mcp")
+    flow = provider.async_auth_flow(req)
+
+    outbound = await flow.__anext__()
+    fake_401 = httpx.Response(
+        401,
+        request=outbound,
+        headers={
+            "www-authenticate": (
+                'Bearer resource_metadata="https://example.com/.well-known/'
+                'oauth-protected-resource"'
+            )
+        },
+    )
+    prm_request = await flow.asend(fake_401)
+    prm_response = httpx.Response(
+        200,
+        request=prm_request,
+        headers={"Content-Type": "application/json"},
+        json={
+            "authorization_servers": ["https://auth.example.com"],
+            "resource": "https://example.com/mcp",
+            "bearer_methods_supported": ["header"],
+        },
+    )
+    asm_request = await flow.asend(prm_response)
+
+    # ASM DOES advertise a registration endpoint — at origin+/register,
+    # exactly the URL the SDK would otherwise fabricate (Linear's ASM does
+    # this: https://mcp.linear.app/register).
+    asm_response = httpx.Response(
+        200,
+        request=asm_request,
+        headers={"Content-Type": "application/json"},
+        json={
+            "issuer": "https://auth.example.com",
+            "authorization_endpoint": "https://auth.example.com/authorize",
+            "token_endpoint": "https://auth.example.com/token",
+            "registration_endpoint": "https://example.com/register",
+            "response_types_supported": ["code"],
+            "code_challenge_methods_supported": ["S256"],
+        },
+    )
+
+    # The registration POST must be yielded (not blocked): the SDK uses the
+    # advertised endpoint and the guard must pass it through.
+    registration_request = await flow.asend(asm_response)
+    assert isinstance(registration_request, httpx.Request)
+    assert registration_request.method == "POST"
+    assert str(registration_request.url) == "https://example.com/register"
+
+    # No OAuthRegistrationError may have been raised along the way. (The
+    # dance ends here: a 200 registration response would hand control to the
+    # browser-redirect flow, which is outside this test's scope.)
+    await flow.aclose()
+
+
+@pytest.mark.asyncio
+async def test_guard_ignores_non_fabricated_post_paths(tmp_path, monkeypatch):
+    """A POST to a *different* path must never be blocked by the guard.
+
+    The guard is exact-URL matched: only the SDK's fabricated
+    ``{origin}/register`` POST is rejected when the ASM lacks a
+    registration_endpoint. A server-side registration at ``/foo/register``
+    or any other path passes through untouched. Undiscovered metadata (a
+    blocked ASM fetch) never trips the guard: the SDK's guess may be a real
+    endpoint, and the discovery-context error explains a failure there.
+    """
+    from tools.mcp_tool import sdk_httpx
+    httpx = sdk_httpx()
+    from mcp.shared.auth import OAuthClientMetadata, OAuthMetadata
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None, "SDK OAuth types must be available"
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=OAuthClientMetadata(
+            redirect_uris=[AnyUrl("http://127.0.0.1:12345/callback")],
+            client_name="Hermes Agent",
+        ),
+        storage=HermesTokenStorage("srv"),
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    # No ASM discovered: even the exact guessed URL passes through.
+    assert provider.context.oauth_metadata is None
+    await provider._maybe_reject_fabricated_registration(
+        httpx.Request("POST", "https://example.com/register")
+    )  # must not raise
+
+    # ASM discovered without registration_endpoint: only the exact
+    # origin+/register POST is refused; everything else passes.
+    provider.context.oauth_metadata = OAuthMetadata(
+        issuer="https://auth.example.com",
+        authorization_endpoint="https://auth.example.com/authorize",
+        token_endpoint="https://auth.example.com/token",
+    )
+    for method, url in (
+        ("POST", "https://example.com/foo/register"),
+        ("POST", "https://example.com/register/"),
+        ("POST", "https://example.com/registers"),
+        ("POST", "https://other.example.com/register"),
+        ("POST", "https://example.com:8443/register"),
+        ("GET", "https://example.com/register"),
+    ):
+        await provider._maybe_reject_fabricated_registration(
+            httpx.Request(method, url)
+        )  # must not raise
+    from mcp.client.auth import OAuthRegistrationError
+    with pytest.raises(OAuthRegistrationError):
+        await provider._maybe_reject_fabricated_registration(
+            httpx.Request("POST", "https://example.com:443/register")
+        )

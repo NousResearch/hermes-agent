@@ -1,0 +1,19 @@
+name: hermes-witness
+version: "1.0.0"
+repo: https://github.com/BenCoy09/hermes-witness
+sha: cabc8f70e8d8eb8d058c3e14365b212152d9900b
+description: "Evidence-gated learning for Hermes Agent. Grades each agent-written skill against the session's real tool results, tracks outcomes in later use, and quarantines grade-D skills. Deterministic and local, no LLM calls. Disclosure — reads MEMORY.md, USER.md and skills under your Hermes home and grades every skill the agent creates or edits (including ones you wrote); in the default `gate` mode it moves grade-D skills to `~/.hermes/witness/quarantine` (reversible with `hermes witness release`); writes a local hash-chained ledger and a trace of tool names and argument keys only; no network calls, credentials, shell commands, background processes or telemetry. No dependencies, no self-updating code, no core overrides, no binaries. Release and trust are CLI-only."
+maintainer: BenCoy09
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://witness-site-virid.vercel.app
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - post_tool_call
+    - pre_llm_call
+    - on_session_end
+  provides_middleware: []
+  requires_env: []

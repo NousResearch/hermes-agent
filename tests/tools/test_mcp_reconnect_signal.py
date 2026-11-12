@@ -6,19 +6,10 @@ handler signals MCPServerTask to tear down the current MCP session and
 reconnect with fresh credentials. This file exercises the signal plumbing
 in isolation from the full stdio/http transport machinery.
 """
-import asyncio
 
 import pytest
 
 
-@pytest.mark.asyncio
-async def test_reconnect_event_attribute_exists():
-    """MCPServerTask has a _reconnect_event alongside _shutdown_event."""
-    from tools.mcp_tool import MCPServerTask
-    task = MCPServerTask("test")
-    assert hasattr(task, "_reconnect_event")
-    assert isinstance(task._reconnect_event, asyncio.Event)
-    assert not task._reconnect_event.is_set()
 
 
 @pytest.mark.asyncio

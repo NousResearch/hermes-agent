@@ -11,11 +11,7 @@ normalize_response capture, _sanitize_replay_block (ordered-blocks replay), and
 _convert_content_part_to_anthropic (content-list replay).
 """
 import pytest
-from agent.anthropic_adapter import (
-    _sanitize_replay_block,
-    _convert_content_part_to_anthropic,
-    _convert_assistant_message,
-)
+from agent.anthropic_message_convert import _sanitize_replay_block, _convert_content_part_to_anthropic, _convert_assistant_message
 
 FORBIDDEN = {"parsed_output", "caller"}
 

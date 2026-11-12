@@ -32,7 +32,7 @@ import pytest
 from unittest.mock import patch
 
 from agent import secret_scope as ss
-from agent.anthropic_adapter import resolve_anthropic_token
+from agent.anthropic_credentials import resolve_anthropic_token
 
 
 @pytest.fixture(autouse=True)
@@ -50,8 +50,8 @@ def _pin_file_and_pool_sources():
     This isolates the three os.getenv() call sites (sources 1, 2, 5) so each
     test exercises exactly the env-var reading behaviour under scope control.
     """
-    with patch("agent.anthropic_adapter.read_claude_code_credentials", return_value=None), \
-         patch("agent.anthropic_adapter._resolve_anthropic_pool_token", return_value=None):
+    with patch("agent.anthropic_credentials.read_claude_code_credentials", return_value=None), \
+         patch("agent.anthropic_credentials._resolve_anthropic_pool_token", return_value=None):
         yield
 
 
@@ -153,8 +153,8 @@ class TestOAuthTokenLeakageFromEnviron:
             ss.reset_secret_scope(tok)
 
         assert result != "sk-ant-oat-LEAKED-PROFILE-B", (
-            f"Profile B's OAuth token leaked from os.environ[ANTHROPIC_TOKEN] "
-            f"(anthropic_adapter.py:1218). Profile A received the wrong credential."
+            "Profile B's OAuth token leaked from os.environ[ANTHROPIC_TOKEN] "
+            "(anthropic_adapter.py:1218). Profile A received the wrong credential."
         )
         assert result == "sk-ant-api-PROFILE-A", (
             f"Expected Profile A's API key but got {result!r}."
@@ -207,8 +207,8 @@ class TestClaudeCodeOAuthTokenLeakage:
             ss.reset_secret_scope(tok)
 
         assert result != "sk-ant-oat-CC-LEAKED-ENVIRON", (
-            f"CLAUDE_CODE_OAUTH_TOKEN leaked from os.environ (anthropic_adapter.py:1226). "
-            f"Profile X's Anthropic call used the wrong credential."
+            "CLAUDE_CODE_OAUTH_TOKEN leaked from os.environ (anthropic_adapter.py:1226). "
+            "Profile X's Anthropic call used the wrong credential."
         )
         assert result == "sk-ant-api-PROFILE-X", (
             f"Expected Profile X's API key but got {result!r}."

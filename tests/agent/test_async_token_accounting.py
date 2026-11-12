@@ -277,18 +277,22 @@ class TestReaderFlush:
         assert _totals(db, "s-cc")["input_tokens"] == 4
 
 
-    def test_enqueue_after_close_raises_at_call_site(self, tmp_path):
-        """After close() the synchronous fallback surfaces the failure to the
-        caller (whose try/except logs it) — the pre-queue contract — instead
-        of silently dropping the delta."""
+    def test_enqueue_after_close_lands_via_reopen(self, tmp_path):
+        """After close() the synchronous fallback used to surface an opaque
+        AttributeError to the caller and drop the delta. Since the #94736
+        self-heal, a write that reaches the store after a teardown close()
+        reopens the connection and LANDS instead — strictly better than the
+        old raise-and-lose contract: no delta is dropped, and the recovery
+        is loud (WARNING at the persistence boundary)."""
         db = SessionDB(db_path=tmp_path / "closed.db")
         db.create_session("s-closed", "test")
         db.queue_token_counts("s-closed", input_tokens=1, api_call_count=1)
         db.close()
 
-        with pytest.raises(Exception):
-            db.queue_token_counts("s-closed", input_tokens=2, api_call_count=1)
+        db.queue_token_counts("s-closed", input_tokens=2, api_call_count=1)
         assert not db._token_queue  # not parked on a dead queue either
+        assert _totals(db, "s-closed")["input_tokens"] == 1 + 2
+        db.close()
 
 
 # =========================================================================
@@ -338,12 +342,54 @@ class TestRouteSwitchBarrier:
 
 class TestDurability:
 
+    def test_idle_writer_restarts_for_later_delta(self, tmp_path, monkeypatch):
+        db = SessionDB(db_path=tmp_path / "writer-restart.db")
+        monkeypatch.setattr(SessionDB, "_TOKEN_WRITER_IDLE_SECONDS", 0.01)
+        try:
+            db.create_session("s-restart", "test")
+            db.queue_token_counts("s-restart", input_tokens=1, api_call_count=1)
+            assert db.flush_token_counts()
+
+            deadline = time.monotonic() + 2.0
+            while db._token_writer_thread is not None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert db._token_writer_thread is None
+
+            db.queue_token_counts("s-restart", input_tokens=2, api_call_count=1)
+            assert db.flush_token_counts()
+            totals = _totals(db, "s-restart")
+            assert totals["input_tokens"] == 3
+            assert totals["api_call_count"] == 2
+        finally:
+            db.close()
+
+    def test_abandoned_db_releases_writer_and_connection(self, tmp_path, monkeypatch):
+        """An async-accounting writer must not pin an abandoned SessionDB."""
+        import gc
+        import time
+        import weakref
+
+        from hermes_cli.sqlite_safe_read import has_live_connection
+
+        db_path = tmp_path / "abandoned.db"
+        monkeypatch.setattr(SessionDB, "_TOKEN_WRITER_IDLE_SECONDS", 0.01, raising=False)
+        db = SessionDB(db_path=db_path)
+        db.create_session("s-abandoned", "test")
+        db.queue_token_counts("s-abandoned", input_tokens=1, api_call_count=1)
+        assert db.flush_token_counts()
+
+        ref = weakref.ref(db)
+        del db
+        deadline = time.monotonic() + 2.0
+        while ref() is not None and time.monotonic() < deadline:
+            gc.collect()
+            time.sleep(0.01)
+
+        assert ref() is None
+        assert has_live_connection(db_path) is False
 
     def test_close_unregisters_atexit_hook(self, tmp_path):
-        """close() must unregister the atexit drain hook: it holds a strong
-        reference (bound method) that would otherwise pin every closed
-        SessionDB — and its sqlite connection object — until interpreter
-        exit in multi-open/close processes."""
+        """close() unregisters the now-weak atexit drain hook immediately."""
         import gc
         import weakref
 

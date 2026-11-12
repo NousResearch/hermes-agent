@@ -6,7 +6,7 @@ When neither is available, exits 0 with {"rendered": false, "missing": [...]}
 so callers can branch instead of crashing.
 
 Typical uses: visual verification with a vision model, and exporting
-image-only (scanned) pages for hand-off to the ocr-and-documents skill.
+image-only (scanned) pages for hand-off to the references/ocr-extraction.md in this skill.
 """
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ def main() -> int:
     try:
         from pypdf import PdfReader
     except ImportError:
-        print("Missing dependency: install with 'python3 -m pip install pypdf'", file=sys.stderr)
+        print("Missing dependency: 'pypdf' is not importable here; rerun with the documents interpreter $PY from the pdf skill's Prerequisites setup block", file=sys.stderr)
         return 2
     reader = PdfReader(args.pdf)
     if reader.is_encrypted:

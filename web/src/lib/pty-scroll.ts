@@ -48,3 +48,31 @@ export function shouldFollowPtyOutput(
 ): boolean {
 	return Boolean(resumeParam) && stickToBottom;
 }
+
+/**
+ * When `pty_ws` falls back to the per-channel active-session file (no
+ * `?resume=` on the URL), the server sends a one-off JSON text frame naming
+ * the session it resolved before any PTY replay bytes arrive, since the
+ * frontend has no other way to learn a replay is happening (#93518). PTY
+ * output itself always arrives as binary frames, so any text frame is a
+ * candidate; this returns the resume id on a match and `null` for anything
+ * else (including the plain ANSI error banners `pty_ws` still sends as text
+ * on failure, which must keep rendering into the terminal as before).
+ */
+export function parseResumeControlMessage(data: string): string | null {
+	try {
+		const parsed = JSON.parse(data);
+		if (
+			parsed &&
+			typeof parsed === "object" &&
+			parsed.type === "resume" &&
+			typeof parsed.id === "string" &&
+			parsed.id
+		) {
+			return parsed.id;
+		}
+	} catch {
+		/* not JSON — an ANSI banner or other plain-text frame */
+	}
+	return null;
+}

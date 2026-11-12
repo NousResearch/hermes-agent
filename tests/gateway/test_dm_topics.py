@@ -31,7 +31,7 @@ from gateway.config import PlatformConfig
 # sys.modules for the rest of the session: every later telegram test that
 # asserts ParseMode repr or isinstance against telegram.error classes failed
 # order-dependently in full runs while passing in isolation.
-from tests.gateway.conftest import _ensure_telegram_mock  # noqa: E402
+from tests.gateway.conftest import _ensure_telegram_mock
 
 _ensure_telegram_mock()
 # Force reimport so the adapter binds to whatever sys.modules now holds
@@ -39,7 +39,7 @@ _ensure_telegram_mock()
 # stub an earlier test file may have bound it to.
 sys.modules.pop("plugins.platforms.telegram.adapter", None)
 
-from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter
 
 
 def _make_adapter(dm_topics_config=None, group_topics_config=None):
@@ -72,8 +72,10 @@ async def test_setup_dm_topics_creates_when_no_thread_id():
     mock_topic = SimpleNamespace(message_thread_id=999)
     adapter._bot.create_forum_topic.return_value = mock_topic
 
-    # Mock the persist method so it doesn't touch the filesystem
+    # Mock the persist method so it doesn't touch the filesystem, and the re-read so the
+    # sandboxed (config-less) HERMES_HOME doesn't wipe the in-memory snapshot under test.
     adapter._persist_dm_topic_thread_id = MagicMock()
+    adapter._reload_dm_topics_from_config = MagicMock()
 
     await adapter._setup_dm_topics()
 
@@ -103,6 +105,7 @@ async def test_setup_dm_topics_mixed_persisted_and_new():
     mock_topic = SimpleNamespace(message_thread_id=777)
     adapter._bot.create_forum_topic.return_value = mock_topic
     adapter._persist_dm_topic_thread_id = MagicMock()
+    adapter._reload_dm_topics_from_config = MagicMock()
 
     await adapter._setup_dm_topics()
 
@@ -112,6 +115,58 @@ async def test_setup_dm_topics_mixed_persisted_and_new():
     assert adapter._dm_topics["333:New"] == 777
     # Only one API call (for "New")
     adapter._bot.create_forum_topic.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_setup_dm_topics_reuses_persisted_ids_after_adapter_rebuild(tmp_path):
+    """A rebuilt adapter must not recreate topics whose thread_ids were persisted after its
+    (startup-time) config snapshot was taken (#132522)."""
+    import hermes_yaml as yaml
+
+    # In-memory snapshot the gateway hands the rebuilt adapter: created on the first run,
+    # still missing the thread_ids the adapter persisted to config.yaml afterwards.
+    adapter = _make_adapter([
+        {
+            "chat_id": 222,
+            "topics": [
+                {"name": "WEBSITE", "icon_color": 7322096},
+                {"name": "CONTENT", "icon_color": 7322096},
+            ],
+        }
+    ])
+    adapter._bot = AsyncMock()
+
+    # config.yaml on disk carries the persisted thread_ids.
+    config_data = {
+        "platforms": {
+            "telegram": {
+                "extra": {
+                    "dm_topics": [
+                        {
+                            "chat_id": 222,
+                            "topics": [
+                                {"name": "WEBSITE", "thread_id": 58890},
+                                {"name": "CONTENT", "thread_id": 58892},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    home_dir = tmp_path / "hermes-home"
+    home_dir.mkdir(parents=True)
+    config_file = home_dir / "config.yaml"
+    config_file.write_text(yaml.safe_dump(config_data), encoding="utf-8")
+
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(home_dir)}):
+        await adapter._setup_dm_topics()
+
+    # No API call: the persisted thread_ids are reused, not duplicated.
+    adapter._bot.create_forum_topic.assert_not_called()
+    assert adapter._dm_topics["222:WEBSITE"] == 58890
+    assert adapter._dm_topics["222:CONTENT"] == 58892
 
 
 # ── _create_dm_topic: error handling ──
@@ -129,16 +184,8 @@ async def test_create_dm_topic_handles_duplicate_error():
     assert result is None
 
 
-@pytest.mark.asyncio
-async def test_create_dm_topic_handles_generic_error():
-    """Generic error should return None with warning."""
-    adapter = _make_adapter()
-    adapter._bot = AsyncMock()
-    adapter._bot.create_forum_topic.side_effect = Exception("some random error")
 
-    result = await adapter._create_dm_topic(chat_id=111, name="General")
 
-    assert result is None
 
 
 @pytest.mark.asyncio
@@ -170,7 +217,7 @@ async def test_ensure_dm_topic_creates_on_demand_and_persists():
 
 def test_persist_dm_topic_thread_id_writes_config(tmp_path):
     """Should write thread_id into the correct topic in config.yaml."""
-    import yaml
+    import hermes_yaml as yaml
 
     config_data = {
         "platforms": {
@@ -193,7 +240,7 @@ def test_persist_dm_topic_thread_id_writes_config(tmp_path):
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
     with open(config_file, "w") as f:
-        yaml.dump(config_data, f)
+        yaml.safe_dump(config_data, f)
 
     adapter = _make_adapter()
 
@@ -214,7 +261,7 @@ def test_persist_dm_topic_thread_id_writes_config(tmp_path):
 
 def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
     """Failed writes should leave the original config.yaml intact."""
-    import yaml
+    import hermes_yaml as yaml
 
     config_data = {
         "platforms": {
@@ -235,7 +282,7 @@ def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
 
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
-    original_text = yaml.dump(config_data)
+    original_text = yaml.safe_dump(config_data)
     config_file.write_text(original_text, encoding="utf-8")
 
     adapter = _make_adapter()
@@ -245,7 +292,7 @@ def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}), \
-         patch("yaml.dump", side_effect=fail_dump):
+         patch("ruamel.yaml.YAML.dump", side_effect=fail_dump):
         adapter._persist_dm_topic_thread_id(111, "General", 999)
 
     assert config_file.read_text(encoding="utf-8") == original_text
@@ -275,7 +322,7 @@ def test_get_dm_topic_info_finds_cached_topic():
 
 def test_get_dm_topic_info_hot_reloads_from_config(tmp_path):
     """Should find a topic added to config after startup (hot-reload)."""
-    import yaml
+    import hermes_yaml as yaml
 
     # Start with empty topics
     adapter = _make_adapter([
@@ -302,7 +349,7 @@ def test_get_dm_topic_info_hot_reloads_from_config(tmp_path):
     config_file = tmp_path / ".hermes" / "config.yaml"
     config_file.parent.mkdir(parents=True)
     with open(config_file, "w") as f:
-        yaml.dump(config_data, f)
+        yaml.safe_dump(config_data, f)
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}):
@@ -369,7 +416,7 @@ def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id
 
 def test_build_message_event_sets_auto_skill():
     """When topic has a skill binding, auto_skill should be set on the event."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
 
     adapter = _make_adapter([
         {
@@ -391,7 +438,7 @@ def test_build_message_event_sets_auto_skill():
 
 def test_build_message_event_no_auto_skill_without_binding():
     """Topics without skill binding should have auto_skill=None."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
 
     adapter = _make_adapter([
         {
@@ -416,12 +463,12 @@ def test_build_message_event_no_auto_skill_without_binding():
 # so `from telegram.constants import ChatType` in telegram.py resolves to
 # telegram_mod.ChatType — not telegram_mod.constants.ChatType.  We must use
 # the same ChatType object the production code sees so equality checks work.
-from telegram.constants import ChatType as _ChatType  # noqa: E402
+from telegram.constants import ChatType as _ChatType
 
 
 def test_group_topic_skill_binding():
     """Group topic with skill config should set auto_skill on the event."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
 
     adapter = _make_adapter(group_topics_config=[
         {
@@ -449,7 +496,7 @@ def test_group_topic_skill_binding():
 
 def test_group_topic_skill_binding_second_topic():
     """A different thread_id in the same group should resolve its own skill."""
-    from gateway.platforms.base import MessageType
+    from gateway.platforms.event import MessageType
 
     adapter = _make_adapter(group_topics_config=[
         {
@@ -475,6 +522,67 @@ def test_group_topic_skill_binding_second_topic():
     assert event.source.chat_topic == "Sales"
 
 
+@pytest.mark.parametrize("lobby_thread_id", [None, 1], ids=["no-thread", "general"])
+def test_recovered_lobby_message_carries_the_topics_prompt_inputs(lobby_thread_id):
+    """A lobby-shaped DM recovered into a topic runs in that topic's session, so it must carry
+    the same prompt inputs as a message sent inside the topic: the session context prompt and
+    the channel prompt would otherwise flip between the root's and the topic's every turn."""
+    import hermes_yaml as yaml
+    from gateway.platforms.event import MessageType
+
+    dm_topics = [{"chat_id": 111, "topics": [{"name": "Research", "skill": "arxiv", "thread_id": 100}]}]
+    # A General-topic lookup misses the cache and hot-reloads config.yaml, so it must hold the topics.
+    with open(Path(os.environ["HERMES_HOME"]) / "config.yaml", "w") as f:
+        yaml.safe_dump({"platforms": {"telegram": {"extra": {"dm_topics": dm_topics}}}}, f)
+    adapter = _make_adapter(dm_topics)
+    adapter.config.extra["channel_prompts"] = {"111": "root prompt", "100": "research prompt"}
+    adapter._dm_topics["111:Research"] = 100
+    adapter.set_topic_recovery_fn(lambda source: "100")
+
+    inside = adapter._build_message_event(_make_mock_message(thread_id=100), MessageType.TEXT)
+    recovered = adapter._build_message_event(
+        _make_mock_message(thread_id=lobby_thread_id, is_topic_message=bool(lobby_thread_id)),
+        MessageType.TEXT)
+    adapter._apply_topic_recovery(recovered)
+
+    def inputs(event):
+        return (event.source.thread_id, event.source.chat_topic, event.auto_skill, event.channel_prompt)
+
+    assert inputs(recovered) == inputs(inside) == ("100", "Research", "arxiv", "research prompt")
+
+
 # ── _build_message_event: from_user=None fallback in DMs ──
 
 
+def test_recovered_lobby_message_inherits_the_chat_prompt_without_a_topic_prompt():
+    """A topic with no prompt of its own inherits the chat's, as a message sent inside it does."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter([{"chat_id": 111, "topics": [{"name": "Research", "thread_id": 100}]}])
+    adapter.config.extra["channel_prompts"] = {"111": "root prompt"}
+    adapter._dm_topics["111:Research"] = 100
+    adapter.set_topic_recovery_fn(lambda source: "100")
+
+    recovered = adapter._build_message_event(_make_mock_message(), MessageType.TEXT)
+    adapter._apply_topic_recovery(recovered)
+
+    assert (recovered.source.thread_id, recovered.channel_prompt) == ("100", "root prompt")
+
+
+def test_unrecovered_group_topic_message_keeps_its_prompt_inputs():
+    """Batching runs topic recovery on every text event; one it leaves alone keeps its own inputs."""
+    from gateway.platforms.event import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {"chat_id": -1001234567890, "topics": [{"name": "Engineering", "thread_id": 5, "skill": "software-development"}]},
+    ])
+    adapter.config.extra["channel_prompts"] = {"5": "engineering prompt"}
+    adapter.set_topic_recovery_fn(lambda source: None)
+    msg = _make_mock_message(chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=5,
+                             is_topic_message=True, is_forum=True)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    adapter._text_batch_key(event)
+
+    assert (event.source.chat_topic, event.auto_skill, event.channel_prompt) == (
+        "Engineering", "software-development", "engineering prompt")

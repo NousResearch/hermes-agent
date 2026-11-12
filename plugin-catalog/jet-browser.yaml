@@ -1,0 +1,24 @@
+# Community catalog entry — Jet Browser
+#
+# Owner-submitted by a Jet Browser maintainer. The pinned plugin is stdlib-only,
+# does not update itself, and registers one bounded verification tool.
+name: jet-browser
+repo: https://github.com/masakaai/jet-browser
+sha: "1b0b10feb70e52bde844ba4e1cb7c35600af4b35"
+subdir: integrations/hermes
+description: "Verify Jet Browser startup, native input, DOM agreement, and PNG capture inside a network-isolated WPE WebKit container. Disclosure — runs `docker run` (Docker access is root-equivalent on the host) on the digest-pinned image ghcr.io/masakaai/jet-browser@sha256:540a1fec…, pulled from GHCR on first use; the container has no network and only SETUID/SETGID capabilities, but runs with AppArmor and systempaths unconfined and a seccomp profile that allows user-namespace and mount syscalls for WebKit's bubblewrap sandbox; the tool takes no arguments and loads only a built-in local test page."
+maintainer: IRONICBo
+tier: community
+category: tools
+docs_url: https://github.com/masakaai/jet-browser/tree/1b0b10feb70e52bde844ba4e1cb7c35600af4b35/integrations/hermes
+platforms: [linux]
+known_issues:
+  - "Requires Docker with linux/amd64 container support; the first run may pull the pinned image from GHCR."
+capabilities:
+  provides_tools:
+    - jet_browser_verify
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"
+version: "0.1.0"

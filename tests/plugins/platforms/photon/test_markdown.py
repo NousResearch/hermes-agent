@@ -24,10 +24,10 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     return PhotonAdapter(cfg)
 
 
-def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]:
-    calls: List[Tuple[str, Dict[str, Any]]] = []
+def _capture_sidecar(adapter: PhotonAdapter) -> list[tuple[str, dict[str, Any]]]:
+    calls: list[tuple[str, dict[str, Any]]] = []
 
-    async def _fake_call(path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def _fake_call(path: str, body: dict[str, Any]) -> dict[str, Any]:
         calls.append((path, body))
         return {"ok": True, "messageId": "msg-123"}
 
@@ -43,9 +43,16 @@ def test_format_message_passthrough_by_default(
     assert adapter.format_message(_MD) == _MD
 
 
-def test_supports_code_blocks_mirrors_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_supports_code_blocks_never_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fenced code blocks are not renderable on iMessage: URL-bearing
+    messages fall back to raw text (literal fences), and the markdown path
+    renders a fence as inline monospace, not a block. The adapter therefore
+    never advertises code-block support — the gateway emits its compact
+    one-line tool preview instead (see test_code_block_capability.py)."""
     monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
-    assert _make_adapter(monkeypatch).supports_code_blocks is True
+    assert _make_adapter(monkeypatch).supports_code_blocks is False
     monkeypatch.setenv("PHOTON_MARKDOWN", "false")
     assert _make_adapter(monkeypatch).supports_code_blocks is False
 
@@ -73,13 +80,13 @@ async def test_standalone_send_includes_markdown_format(
     monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
     monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
 
-    posted: List[Tuple[str, Dict[str, Any]]] = []
+    posted: list[tuple[str, dict[str, Any]]] = []
 
     class _Resp:
         status_code = 200
 
         @staticmethod
-        def json() -> Dict[str, Any]:
+        def json() -> dict[str, Any]:
             return {"ok": True, "messageId": "m-9"}
 
     class _FakeClient:
@@ -92,7 +99,7 @@ async def test_standalone_send_includes_markdown_format(
         async def __aexit__(self, *a):
             return False
 
-        async def post(self, url: str, json: Dict[str, Any], headers=None):
+        async def post(self, url: str, json: dict[str, Any], headers=None):
             posted.append((url, json))
             return _Resp()
 
@@ -103,3 +110,21 @@ async def test_standalone_send_includes_markdown_format(
 
     assert result.get("success") is True
     assert posted[0][1]["format"] == "markdown"
+
+
+@pytest.mark.asyncio
+async def test_url_bearing_markdown_is_stripped_before_the_text_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``chooseSendFormat`` sends markdown containing a URL through spectrum-ts' verbatim ``text()``
+    builder, so the adapter strips first, and a ``[label](url)`` link keeps a tappable bare URL."""
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    await adapter.send("space-1", "**Release 1.2.0** is out\n[Read the notes](https://example.com/notes)")
+
+    path, body = calls[-1]
+    assert path == "/send"
+    assert body["format"] == "markdown"  # the sidecar owns the builder choice (test_rich_links.py)
+    assert "**" not in body["text"] and "](" not in body["text"]
+    assert "\nhttps://example.com/notes" in body["text"]

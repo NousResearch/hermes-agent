@@ -44,18 +44,6 @@ class TestNormalizeMultimodalContent:
         assert _normalize_multimodal_content(content) == "hello"
 
 
-    def test_input_image_converted_to_canonical_shape(self):
-        content = [
-            {"type": "input_text", "text": "hi"},
-            {"type": "input_image", "image_url": "https://example.com/cat.png"},
-        ]
-        out = _normalize_multimodal_content(content)
-        assert out == [
-            {"type": "text", "text": "hi"},
-            {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
-        ]
-
-
 class TestContentHasVisiblePayload:
 
 

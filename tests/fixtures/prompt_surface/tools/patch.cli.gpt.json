@@ -1,0 +1,42 @@
+{
+  "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nREPLACE MODE (mode='replace', default): find a unique string and replace it. REQUIRED PARAMETERS: mode, path, old_string, new_string.\nPATCH MODE (mode='patch'): apply V4A multi-file patches for bulk changes. REQUIRED PARAMETERS: mode, patch.",
+  "name": "patch",
+  "parameters": {
+    "properties": {
+      "mode": {
+        "default": "replace",
+        "description": "Edit mode. 'replace' (default): requires path + old_string + new_string. 'patch': requires patch content only.",
+        "enum": [
+          "replace",
+          "patch"
+        ],
+        "type": "string"
+      },
+      "new_string": {
+        "description": "Changed replacement text; it must differ from old_string. Pass empty string '' to delete the matched text.",
+        "type": "string"
+      },
+      "old_string": {
+        "description": "Exact text to find and replace. Must be unique in the file unless replace_all=true. Include surrounding context lines to ensure uniqueness.",
+        "type": "string"
+      },
+      "patch": {
+        "description": "REQUIRED when mode='patch'. V4A format patch content. Format:\n*** Begin Patch\n*** Update File: path/to/file\n@@ context hint @@\n context line\n-removed line\n+added line\n*** End Patch",
+        "type": "string"
+      },
+      "path": {
+        "description": "File path to edit.",
+        "type": "string"
+      },
+      "replace_all": {
+        "default": false,
+        "description": "Replace all occurrences instead of requiring a unique match (default: false)",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "mode"
+    ],
+    "type": "object"
+  }
+}

@@ -1,0 +1,17 @@
+name: fmsg-platform
+repo: https://github.com/markmnl/hermes-fmsg
+sha: 562f45a48a6b10504c8d6ff5c677f1ec990e6b7b
+description: fmsg platform adapter for Hermes Agent. Real-time inbound over the fmsg-webapi WebSocket
+  (/fmsg/ws), outbound via its JSON REST routes. Authenticates with an fmsg API key (fmsgk_...) exchanged
+  for a short-lived JWT — run the agent as a derived sub-account such as @alice_hermes@example.com. Only
+  http
+maintainer: markmnl
+tier: community
+category: platform
+docs_url: https://github.com/markmnl/hermes-fmsg#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - name

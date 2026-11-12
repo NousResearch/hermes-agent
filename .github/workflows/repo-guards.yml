@@ -1,0 +1,377 @@
+name: Repository guards
+
+# Every cheap repository check that ci.yaml starts right after `detect`, as ONE job on one runner.
+#
+# Each of these used to be its own job (most of them their own workflow file) on the same
+# blacksmith-4vcpu-ubuntu-2404 runner: a 2s checkout, 0-13s of work, and a full billed minute.
+# They share the trigger (after detect), the OS and the architecture, so they now share the
+# checkout. What told them apart is kept per step: the lane gate in each step's `if:`, the
+# step name, and the review-status-* artifact the live PR comment reads.
+#
+# Every check step runs with `!cancelled()`, so one failing guard never hides the others: the
+# log still names every red check, as the separate jobs did. Any failed step fails the job, and
+# `all-checks-pass` requires the job, so each check stays blocking (or advisory) as before.
+#
+# Steps that write files write under $RUNNER_TEMP, never the checkout: the icon check at the
+# end fails on any untracked file, and the profile-archive check walks the checkout.
+#
+# Ordering: the checks that need no toolchain run first, on the bare checkout. setup-pm comes
+# after them, because its dependency phase also verifies uv.lock against PyPI; a stale lock or a
+# registry blip there must not stop the guards that never needed Python dependencies.
+
+on:
+  workflow_call:
+    inputs:
+      commit:
+        description: Commit to test and build. Empty keeps the triggering commit.
+        type: string
+        default: ''
+      event_name:
+        description: The event name from the calling orchestrator (pull_request, push, ...).
+        type: string
+        required: true
+      python:
+        description: detect's `python` lane (contributor attribution, prompt-surface diff).
+        type: boolean
+        default: false
+      catalog:
+        description: detect's `catalog` lane (contributor attribution).
+        type: boolean
+        default: false
+      scan:
+        description: detect's `scan` lane (supply-chain pattern scan, PRs only).
+        type: boolean
+        default: false
+      deps:
+        description: detect's `deps` lane (PyPI upper-bound check, PRs only).
+        type: boolean
+        default: false
+      npm_lock:
+        description: detect's `npm_lock` lane (JS lockfile semantic diff, PRs only).
+        type: boolean
+        default: false
+      uv_lock:
+        description: detect's `uv_lock` lane (uv.lock in sync with pyproject.toml).
+        type: boolean
+        default: false
+      docker_meta:
+        description: detect's `docker_meta` lane (hadolint + shellcheck of the container inputs).
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  guards:
+    name: Repository guards
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
+        with:
+          ref: ${{ inputs.commit }}
+          # Full history: merge bases (history, contributors, prompt surface, lockfile diff,
+          # supply chain) and the base branch tip (blob size compares against HEAD^1).
+          fetch-depth: 0
+
+      # ── Always: policy guards on the bare checkout ────────────────────────────────────────
+
+      # PR infographics are rendered to an image-provider URL and embedded in the PR
+      # *description*; the binary never belongs in git history. This leaked twice (#48261,
+      # #54564) and `.gitignore` cannot stop `git add -f` or a differently-spelled directory
+      # (#70552), so this check, not an ignore rule, enforces the policy.
+      - id: infographic-check
+        name: Reject committed PR-infographic images
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_infographic_images.py
+
+      # The incident class in #92457: ignore files reduce accidental staging; this is the
+      # enforcement boundary that still catches `git add -f` and files generated during a build.
+      # Before setup-pm, so it judges the checkout as cloned.
+      - name: Reject profile exports in the checkout
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_profile_archive_boundary.py
+
+      # Two tracked paths that differ only by case live fine on Linux and break every clone on a
+      # case-insensitive host (Windows, default macOS). Git only warns, client-side, at checkout
+      # time; CI on Linux against the index is the only enforcement point.
+      - name: Reject case-colliding filenames
+        if: ${{ !cancelled() }}
+        run: python3 scripts/check-case-collisions.py
+
+      # A text blob stored with CRLF (web upload, API commit) reads as modified in every fresh
+      # checkout and fails clean-tree steps on every later PR. Local: `python scripts/check --only line-endings`.
+      - name: Reject text files stored with CRLF line endings
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_line_endings.py
+
+      # Any binary over 500 KiB added or modified, or any new file over 500 KiB: every blob a
+      # merge adds stays in every clone forever. Exact-path exceptions live in
+      # .github/blob-size-allowlist.txt (CODEOWNERS-reviewed). Local: `python scripts/check --only blob-size`.
+      - name: Judge files added or modified against the base branch tip
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_blob_size.py --base HEAD^1
+
+      # tools/lazy_deps.py is an old-updater stub that only raises or stops for relaunch
+      # (pm.extras is the only lazy-install surface), so a production import never gets its
+      # dependencies. AST-based, fails on inventory errors; contract tests in
+      # tests/pm/test_no_lazy_deps.py.
+      - name: Check tools.lazy_deps imports in tracked production code
+        if: ${{ !cancelled() }}
+        run: python3 scripts/ci/check_lazy_deps_imports.py
+
+      # ── Pull requests: unrelated histories ────────────────────────────────────────────────
+
+      # PR #25045 was merged from a branch disconnected from main's history; GitHub's merge UI
+      # accepted it and ~1500 files' `git blame` collapsed onto its parent-less root commit.
+      - id: merge-base-check
+        name: Reject PRs with no common ancestor on main
+        if: ${{ !cancelled() && inputs.event_name == 'pull_request' }}
+        run: python3 scripts/ci/check_common_ancestor.py
+
+      - name: Upload review status artifact (history check)
+        if: always() && steps.merge-base-check.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-history-check
+          path: ${{ runner.temp }}/review-status/history-check/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      # ── python or catalog lane: contributor attribution ───────────────────────────────────
+
+      - name: Check for unmapped contributor emails
+        id: check-emails
+        if: ${{ !cancelled() && (inputs.python || inputs.catalog) }}
+        run: python3 scripts/ci/check_contributor_emails.py
+
+      - name: Upload review status artifact (contributor check)
+        if: always() && steps.check-emails.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-contributor-check
+          path: ${{ runner.temp }}/review-status/contributor-check/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      # ── Pull requests, python lane: prompt-surface diff (advisory summary) ────────────────
+
+      # Summarises the committed tests/fixtures/prompt_surface/ snapshot's base->head diff into the
+      # unified CI review comment. Never blocking on content: tests/ci/test_prompt_surface.py is the
+      # staleness gate and the prompt-surface-review ruleset is the review requirement. Reads only
+      # the two committed snapshots (no PR code runs).
+      - name: Summarise the prompt-surface snapshot diff
+        id: prompt-diff
+        if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.python }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python3 scripts/ci/pr_diff_report.py prompt-surface
+
+      - name: Emit review_status (prompt surface)
+        id: prompt-emit
+        if: ${{ !cancelled() && steps.prompt-diff.outcome == 'success' }}
+        env:
+          CHANGED: ${{ steps.prompt-diff.outputs.changed }}
+        run: python3 scripts/ci/review_status.py emit prompt-surface
+
+      - name: Upload review status artifact (prompt surface)
+        if: always() && steps.prompt-emit.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-prompt-surface
+          path: ${{ runner.temp }}/review-status/prompt-surface/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      # ── Pull requests, npm_lock lane: JS lockfile semantic diff (advisory) ───────────────
+
+      # Covers pnpm-lock.yaml and the standalone npm projects' package-lock.json. The raw
+      # textual diff of a lockfile is unreadable (entries reorder and integrity hashes churn),
+      # so scripts/ci/lockfile_diff.py set-diffs the locked package versions at the merge base
+      # and at HEAD, plus (pnpm) the project and package dependency edges those versions
+      # cannot show. Review signal, not enforcement.
+      - name: Generate semantic lockfile diff
+        id: lockfile-diff
+        if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.npm_lock }}
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: python3 scripts/ci/pr_diff_report.py lockfile
+
+      - name: Emit review_status (lockfile diff)
+        id: lockfile-emit
+        if: ${{ !cancelled() && steps.lockfile-diff.outcome == 'success' }}
+        env:
+          CHANGED: ${{ steps.lockfile-diff.outputs.changed }}
+        run: python3 scripts/ci/review_status.py emit lockfile-diff
+
+      - name: Upload review status artifact (lockfile diff)
+        if: always() && steps.lockfile-emit.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-lockfile-diff
+          path: ${{ runner.temp }}/review-status/lockfile-diff/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      - name: Upload lockfile diff artifact
+        if: ${{ !cancelled() && steps.lockfile-emit.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lockfile-diff
+          path: ${{ runner.temp }}/lockfile-diff.md
+          retention-days: 1
+          overwrite: true
+
+      # ── Pull requests, scan / deps lanes: supply-chain audit ──────────────────────────────
+
+      # Narrow, high-signal scanner: only critical indicators of supply chain attacks (the
+      # litellm-style payloads). Low-signal heuristics were removed on purpose because they fired
+      # on nearly every PR and trained reviewers to ignore the scanner; keep it ruthlessly narrow
+      # and put WARNING-tier patterns in a separate advisory workflow instead. Files that run at
+      # install/startup (.pth, setup.py, ...) and the MCP catalog are not scanned here:
+      # .github/CODEOWNERS requires a maintainer review for them.
+      - name: Scan diff for critical supply-chain patterns
+        id: scan
+        if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.scan }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          _HERMES_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          _HERMES_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci/scan_supply_chain.py patterns
+
+      - name: Emit review_status (supply-chain scan)
+        id: emit-scan
+        if: always() && steps.scan.outcome != 'skipped'
+        env:
+          FOUND: ${{ steps.scan.outputs.found }}
+        run: python3 scripts/ci/review_status.py emit supply-chain-scan
+
+      - name: Fail on critical supply-chain findings
+        if: ${{ !cancelled() && steps.scan.outputs.found == 'true' }}
+        run: |
+          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the review comment for details."
+          exit 1
+
+      - name: Check for unbounded PyPI deps
+        id: bounds
+        if: ${{ !cancelled() && inputs.event_name == 'pull_request' && inputs.deps }}
+        env:
+          _HERMES_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          _HERMES_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci/scan_supply_chain.py dependency-bounds
+
+      - name: Emit review_status (dependency bounds)
+        id: emit-deps
+        if: always() && steps.bounds.outcome != 'skipped'
+        env:
+          FOUND: ${{ steps.bounds.outputs.found }}
+        run: python3 scripts/ci/review_status.py emit dependency-bounds
+
+      - name: Fail on unbounded deps (supply-chain policy)
+        if: ${{ !cancelled() && steps.bounds.outputs.found == 'true' }}
+        run: |
+          echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling per CONTRIBUTING.md policy."
+          exit 1
+
+      - name: Merge supply-chain review statuses
+        id: supply-chain-merge
+        if: always() && (steps.scan.outcome != 'skipped' || steps.bounds.outcome != 'skipped')
+        env:
+          SCAN_STATUS: ${{ steps.emit-scan.outputs.review_status }}
+          DEP_STATUS: ${{ steps.emit-deps.outputs.review_status }}
+        run: python3 scripts/ci/review_status.py merge supply-chain SCAN_STATUS DEP_STATUS
+
+      - name: Upload review status artifact (supply chain)
+        if: always() && steps.supply-chain-merge.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-supply-chain
+          path: ${{ runner.temp }}/review-status/supply-chain/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      # ── docker_meta lane: Dockerfile and docker/ shell lint ───────────────────────────────
+
+      # Catches what the behavioural docker smoke test can't: unquoted expansions, silently
+      # failing RUN commands. Rules and ignores live in .hadolint.yaml at the repo root.
+      # `docker run`, not hadolint/hadolint-action: the runner builds a Dockerfile action's image
+      # before the first step of every run, whatever the step's `if:`. Same hadolint, by digest.
+      - name: Lint Dockerfiles (hadolint)
+        if: ${{ !cancelled() && inputs.docker_meta }}
+        run: scripts/ci/lint_docker.sh hadolint
+
+      - name: Lint shell scripts (shellcheck)
+        if: ${{ !cancelled() && inputs.docker_meta }}
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # v2.0.0
+        env:
+          # Severity = error: SC1091 (can't follow sourced script) is info-
+          # level and would otherwise fail when the venv activate script
+          # doesn't exist at lint time.
+          SHELLCHECK_OPTS: --severity=error
+        with:
+          scandir: ./docker
+
+      # ── Always: icon assets freshness (needs a Hermes runtime interpreter) ────────────────
+
+      # The generator runs on a Hermes runtime interpreter; [] exports one as HERMES_PYTHON.
+      # Its dependency phase also runs the frozen-lock check, so a stale uv.lock fails this step;
+      # the uv.lock step below still runs and says why.
+      - uses: ./.github/actions/setup-pm
+        id: setup-pm
+        if: ${{ !cancelled() }}
+        with:
+          toolchain: all
+          extras: '[]'
+          cache-python: true
+          prune-python-cache: true
+
+      # ── uv_lock lane: uv.lock in sync with pyproject.toml ─────────────────────────────────
+
+      # Blocking: the Docker build's `uv sync --frozen` fails on a stale lockfile, so catch it
+      # here rather than in docker.yml on main. On PRs this runs against the MERGED state
+      # (refs/pull/<N>/merge): main's pyproject.toml plus the PR's changes. A branch that passes
+      # `python -m pm.build_env --source . --check-lock` locally but fails here is usually behind
+      # main; fix with `git fetch origin main && git rebase origin/main && hermes pm lock`.
+      # Gated on uv_lock: only pyproject.toml / uv.lock can desync the lock, and the check
+      # re-resolves against PyPI. Needs only the toolchain, so it runs even when setup-pm's
+      # dependency phase failed on that same stale lock.
+      - name: Verify uv.lock is up-to-date
+        id: verify-lock
+        if: ${{ !cancelled() && inputs.uv_lock }}
+        run: python3 scripts/ci/verify_uv_lock.py
+
+      - name: Upload review status artifact (uv.lock)
+        if: always() && steps.verify-lock.outcome != 'skipped'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: review-status-uv-lockfile
+          path: ${{ runner.temp }}/review-status/uv-lockfile/review-status.json
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: ignore
+
+      # ── Always: icon assets freshness ─────────────────────────────────────────────────────
+
+      # The committed icon outputs must match what scripts/generate_icons.py renders from
+      # assets/nous-girl-*.svg + assets/backgrounds/*.svg. Regular builds and user installs consume
+      # the committed files and never render, so this is what keeps them honest. Fix a red run
+      # with `node scripts/generate-icons.mjs` on a Hermes runtime interpreter and commit.
+      #
+      # Byte-determinism note: resvg renders the same SVG to identical bytes on any host for
+      # pure-shape artwork. If the master ever contains <text>, font rendering can differ across
+      # OSes — pin fonts via resvg's font_files/font_dirs and commit a known font first.
+      - name: Regenerate every icon target, verify structure, diff against committed
+        if: ${{ !cancelled() && steps.setup-pm.outcome == 'success' }}
+        run: just check-icons

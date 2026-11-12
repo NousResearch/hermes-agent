@@ -7,17 +7,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 from tools import approval as approval_mod
 from tools import slash_confirm as slash_confirm_mod
-from tools.approval import (
-    _ApprovalEntry,
-    approve_session,
-    enable_session_yolo,
-    is_approved,
-    is_session_yolo_enabled,
-)
+from tools.approval import approve_session, enable_session_yolo, is_approved, is_session_yolo_enabled
+from tools.approval_gateway_wait import _ApprovalEntry
 
 
 @pytest.fixture(autouse=True)
@@ -78,10 +73,6 @@ def _make_resume_runner():
     runner.adapters = {}
     runner._background_tasks = set()
     runner._running_agents = {}
-    runner._running_agents_ts = {}
-    runner._busy_ack_ts = {}
-    runner._pending_approvals = {}
-    runner._update_prompt_pending = {}
     runner._agent_cache_lock = None
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = current_entry
@@ -109,10 +100,6 @@ def _make_branch_runner():
     runner.adapters = {}
     runner.config = {}
     runner._running_agents = {}
-    runner._running_agents_ts = {}
-    runner._busy_ack_ts = {}
-    runner._pending_approvals = {}
-    runner._update_prompt_pending = {}
     runner._agent_cache_lock = None
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = current_entry
@@ -136,8 +123,6 @@ def test_clear_session_boundary_security_state_is_scoped():
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-    runner._pending_approvals = {}
-    runner._update_prompt_pending = {}
     runner._pending_skills_reload_notes = {}
 
     source = _make_source()
@@ -148,10 +133,10 @@ def test_clear_session_boundary_security_state_is_scoped():
     approve_session(other_key, "recursive delete")
     enable_session_yolo(session_key)
     enable_session_yolo(other_key)
-    runner._pending_approvals[session_key] = {"command": "rm -rf /tmp/demo"}
-    runner._pending_approvals[other_key] = {"command": "rm -rf /tmp/other"}
-    runner._update_prompt_pending[session_key] = True
-    runner._update_prompt_pending[other_key] = True
+    runner._session_state(session_key).persistent.approvals = {"command": "rm -rf /tmp/demo"}
+    runner._session_state(other_key).persistent.approvals = {"command": "rm -rf /tmp/other"}
+    runner._session_state(session_key).persistent.update_prompt_pending = True
+    runner._session_state(other_key).persistent.update_prompt_pending = True
     runner._pending_skills_reload_notes[session_key] = (
         "[USER INITIATED SKILLS RELOAD: target]"
     )
@@ -173,22 +158,22 @@ def test_clear_session_boundary_security_state_is_scoped():
     # Target session cleared
     assert is_approved(session_key, "recursive delete") is False
     assert is_session_yolo_enabled(session_key) is False
-    assert session_key not in runner._pending_approvals
-    assert session_key not in runner._update_prompt_pending
+    assert runner._session_state(session_key).persistent.approvals is None
+    assert not runner._session_state(session_key).persistent.update_prompt_pending
     assert session_key not in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(session_key) is None
     # Other session untouched
     assert is_approved(other_key, "recursive delete") is True
     assert is_session_yolo_enabled(other_key) is True
-    assert other_key in runner._pending_approvals
-    assert other_key in runner._update_prompt_pending
+    assert runner._session_state(other_key).persistent.approvals is not None
+    assert runner._session_state(other_key).persistent.update_prompt_pending
     assert other_key in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(other_key) is not None
 
     # Empty session_key is a no-op
     runner._clear_session_boundary_security_state("")
     assert is_approved(other_key, "recursive delete") is True
-    assert other_key in runner._update_prompt_pending
+    assert runner._session_state(other_key).persistent.update_prompt_pending
     assert other_key in runner._pending_skills_reload_notes
     assert slash_confirm_mod.get_pending(other_key) is not None
 
@@ -198,8 +183,6 @@ def test_clear_session_boundary_security_state_wakes_blocked_approvals():
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
-    runner._pending_approvals = {}
-    runner._update_prompt_pending = {}
 
     source = _make_source()
     session_key = build_session_key(source)
@@ -213,8 +196,11 @@ def test_clear_session_boundary_security_state_wakes_blocked_approvals():
     runner._clear_session_boundary_security_state(session_key)
 
     assert target_entry.event.is_set()
-    assert target_entry.result == "deny"
+    # Withdrawn, not denied: the waiter renders outcome="cancelled" rather than a user deny.
+    assert target_entry.result is None
+    assert target_entry.cancelled
     assert other_entry.event.is_set() is False
     assert other_entry.result is None
+    assert other_entry.cancelled is None
     assert session_key not in approval_mod._gateway_queues
     assert other_key in approval_mod._gateway_queues

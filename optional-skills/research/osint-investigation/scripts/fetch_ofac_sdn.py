@@ -19,7 +19,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from _http import get  # noqa: E402
+from _http import get
 
 SDN_URL = "https://www.treasury.gov/ofac/downloads/sdn.csv"
 ADD_URL = "https://www.treasury.gov/ofac/downloads/add.csv"

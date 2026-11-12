@@ -1,0 +1,29 @@
+name: melange
+title: Melange
+repo: https://github.com/lEWFkRAD/melange
+subdir: hermes-plugin
+sha: 51e7c405a006b5f22f0162cca712e4bedece302e
+version: "0.1.0"
+description: "A video codec for computation: record terminal sessions as rewindable, hash-chained timelines, scrub to any step, ask where a character on screen came from in plain words, fork What-ifs, clamp one recorded input and watch only its dependents recompute, and ask what went wrong with forward-verified candidate answers. Ten tools (record, versions, screen, where_from, note, whatif, clamp, explain, shelf, demo) plus a bundled flagship demo. Disclosure — melange_record runs the model-supplied shell command on the host in a PTY (outside the terminal sandbox) after Hermes's owner approval prompt; the child receives only PATH, HOME, LANG and TERM; recordings (redacted screen output) are stored under ~/.hermes/plugins-data/melange/."
+maintainer: lEWFkRAD
+tier: community
+category: tools
+requires_hermes: ">=0.23"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - melange_record
+    - melange_versions
+    - melange_screen
+    - melange_where_from
+    - melange_note
+    - melange_whatif
+    - melange_clamp
+    - melange_explain
+    - melange_shelf
+    - melange_demo
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env: []

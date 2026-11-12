@@ -8,6 +8,11 @@ import {
 import { useLocation, useSearchParams } from "react-router";
 import { api, setManagementProfile } from "@/lib/api";
 import { ProfileContext } from "@/contexts/profile-context";
+import {
+  dashboardInitialProfile,
+  initialProfileScope,
+  shouldAdoptActiveProfile,
+} from "@/lib/profile-bootstrap";
 
 /**
  * Machine-level management-profile scope.
@@ -38,34 +43,37 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   const [profiles, setProfiles] = useState<string[]>([]);
   const [currentProfile, setCurrentProfile] = useState("default");
+  const bootstrapProfile = dashboardInitialProfile();
 
-  // Initial value comes from the URL (deep link / refresh / unified-launch
-  // preselect); afterwards state leads and the URL follows.
+  // An explicit URL wins; profile-less deep links inherit the unified-launch
+  // preselection injected by the server. Afterwards state leads and the URL
+  // follows.
   const [profile, setProfileState] = useState(
-    () => searchParams.get("profile") ?? "",
+    () => initialProfileScope(searchParams, bootstrapProfile),
   );
+
+  // A profile param that CHANGED (e.g. the Profiles page's "Manage skills &
+  // tools" linking to /skills?profile=X) is an explicit scope request and
+  // wins over current state. Adopt it during render, before any effect runs,
+  // so the URL sync below never sees the old state next to the new URL and
+  // writes it back.
+  const urlProfile = searchParams.get("profile");
+  const [seenUrlProfile, setSeenUrlProfile] = useState(urlProfile);
+  if (urlProfile !== seenUrlProfile) {
+    setSeenUrlProfile(urlProfile);
+    if (urlProfile !== null && urlProfile !== profile) {
+      setProfileState(urlProfile);
+    }
+  }
 
   // Mirror into the api module synchronously on every render where it
   // changed, so fetches fired by child effects in the same commit see it.
   setManagementProfile(profile);
 
-  // A profile param arriving via in-app navigation (e.g. the Profiles
-  // page's "Manage skills & tools" linking to /skills?profile=X) must win
-  // over current state — it's an explicit scope request.
-  const urlProfile = searchParams.get("profile");
+  // Re-assert ?profile= after navigations that dropped it (bare nav links)
+  // and after state-only changes. No-ops when already in sync.
   useEffect(() => {
-    if (urlProfile !== null && urlProfile !== profile) {
-      setManagementProfile(urlProfile);
-      setProfileState(urlProfile);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlProfile]);
-
-  // Re-assert ?profile= after navigations that dropped it (bare nav links).
-  // Runs on every pathname/profile change; no-ops when already in sync.
-  useEffect(() => {
-    const inUrl = searchParams.get("profile") ?? "";
-    if ((profile || "") === inUrl) return;
+    if ((profile || "") === (urlProfile ?? "")) return;
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -76,7 +84,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       { replace: true },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pathname, profile]);
+  }, [pathname, urlProfile, profile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -92,11 +100,17 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         const active = info.active || "default";
         setCurrentProfile(current);
 
-        // Deep links (?profile=) win. Otherwise align the switcher with the
-        // sticky active profile so Chat and management pages match what the
-        // Profiles page shows as "active" (machine dashboard runs as
-        // `current`, usually default).
-        if (urlProfile === null && active !== current) {
+        // Explicit URL and unified-launch bootstrap scopes win. Without
+        // either, align the switcher with the sticky active profile so Chat
+        // and management pages match what Profiles shows as "active".
+        if (
+          shouldAdoptActiveProfile(
+            urlProfile,
+            bootstrapProfile,
+            current,
+            active,
+          )
+        ) {
           setManagementProfile(active);
           setProfileState(active);
         }

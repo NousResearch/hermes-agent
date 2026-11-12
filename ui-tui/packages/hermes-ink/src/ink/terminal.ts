@@ -326,6 +326,16 @@ export function supportsExtendedKeys(): boolean {
   return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
 }
 
+/** True when the Kitty keyboard protocol push (CSI >1u) must be skipped for
+ *  this terminal even though extended keys are supported. Ghostty's Kitty
+ *  disambiguate-mode implementation strips the Alt modifier from Backspace —
+ *  Option+Backspace arrives as bare \x7f instead of CSI-u \x1b[127;3u —
+ *  breaking backward-kill-word. Ghostty implements modifyOtherKeys correctly,
+ *  so it gets only that push (mirrors cli.py's Ghostty exception). */
+export function skipKittyKeyboardProtocol(): boolean {
+  return env.terminal === 'ghostty'
+}
+
 /** True if the terminal scrolls the viewport when it receives cursor-up
  *  sequences that reach above the visible area. On Windows, conhost's
  *  SetConsoleCursorPosition follows the cursor into scrollback

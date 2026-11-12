@@ -35,6 +35,35 @@ _CA_CSV = "https://cppa.ca.gov/data_broker_registry/registry{year}.csv"
 _CA_FLOOR_YEAR = 2025
 DEFAULT_URL = _CA_CSV.format(year=_CA_FLOOR_YEAR)
 DROP_URL = "https://privacy.ca.gov/drop"
+# National Do Not Call Registry (FTC): the US-wide personal-number list for spam-call runs.
+DNC_URL = "https://www.donotcall.gov/register.html"
+
+
+def phone_digits(phone: str) -> str:
+    """Best-effort NANP normalization: keep digits, strip a leading country-code 1."""
+    d = re.sub(r"\D", "", str(phone or ""))
+    return d[1:] if len(d) == 11 and d.startswith("1") else d
+
+
+_NANP = re.compile(r"^[2-9]\d{2}[2-9]\d{6}$")
+
+
+def dnc_eligible(dossier: dict) -> list:
+    """The subject's numbers eligible for the National Do Not Call Registry: NANP only.
+
+    A US-residency subject can still carry a non-NANP number (or a Canadian NANP one -- the
+    residency check lives with the caller), and the FTC form rejects non-US numbers, so the
+    surfaced list is digits-normalized and deduped: "555-123-4567" and "5551234567" are ONE
+    number, never two registrations.
+    """
+    out: list = []
+    seen: set = set()
+    for p in (dossier.get("identity") or {}).get("phones") or []:
+        d = phone_digits(p)
+        if _NANP.match(d) and d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
 USER_AGENT = "Mozilla/5.0 (compatible; unbroker/1.0; data opt-out)"
 
 
@@ -89,7 +118,7 @@ def _norm(s: str) -> str:
 
 
 def slug(name: str, website: str = "") -> str:
-    base = re.sub(r"\.(com|org|net|io|ai|inc|co|us|info|llc)\b", "", (name or "").strip(), flags=re.I)
+    base = re.sub(r"\.(com|org|net|io|ai|inc|co|us|info|llc)\b", "", (name or "").strip(), flags=re.IGNORECASE)
     s = re.sub(r"[^a-z0-9]+", "", base.lower())
     if s:
         return s
@@ -214,7 +243,7 @@ MIN_EXPECTED_CA = 100  # CA registry has ~500+; far fewer => wrong/empty file, w
 
 def fetch(url: str = DEFAULT_URL, timeout: int = 60) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
 
@@ -224,7 +253,7 @@ def _fetch_ca_latest() -> tuple[str, list[dict]]:
     for url in ca_candidate_urls():
         try:
             recs = parse(fetch(url), jurisdiction="US-CA", has_drop=True)
-        except Exception:  # noqa: BLE001 - a missing year 404s; fall through to older years
+        except Exception:
             continue
         if recs:
             return url, recs
@@ -269,7 +298,7 @@ def refresh_all(cache_path: Path, fetched: dict[str, str] | None = None) -> dict
                 used_url, recs = _fetch_ca_latest()   # newest-year-first with fallback
             else:
                 recs = parse(fetch(src["url"]), jurisdiction=src["jurisdiction"], has_drop=src["has_drop"])
-        except Exception as exc:  # noqa: BLE001 - one source failing must not sink the rest
+        except Exception as exc:
             per_source[key] = {"jurisdiction": src["jurisdiction"], "format": "csv", "error": str(exc)}
             continue
         added = 0

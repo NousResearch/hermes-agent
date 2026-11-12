@@ -1,3 +1,5 @@
+import { isWindowsAbsolutePath } from '@/lib/path-compare'
+
 import type { ToolPart } from './types'
 
 export function looksLikeUrl(value: string): boolean {
@@ -5,14 +7,19 @@ export function looksLikeUrl(value: string): boolean {
 }
 
 export function looksLikePath(value: string): boolean {
-  return /^file:\/\//i.test(value) || /^(?:\/|\.{1,2}\/|~\/).+/.test(value)
+  return /^file:\/\//i.test(value) || /^(?:\/|\.{1,2}\/|~\/).+/.test(value) || isWindowsAbsolutePath(value)
 }
 
 export function isPreviewableTarget(target: string): boolean {
+  // Renderer metadata is not a deliverable; app.asar.unpacked is a real directory.
+  if (/^file:\/\//i.test(target) && target.replace(/\\/g, '/').split('/').includes('app.asar')) {
+    return false
+  }
+
   return Boolean(
     target &&
     (/^file:\/\//i.test(target) ||
-      /^(?:\/|\.{1,2}\/|~\/).+\.html?$/i.test(target) ||
+      (looksLikePath(target) && /\.html?$/i.test(target)) ||
       /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])/i.test(target))
   )
 }
@@ -27,7 +34,7 @@ export function stableHash(value: string): string {
   return Math.abs(hash).toString(36)
 }
 
-export function toolPartDisclosureId(part: ToolPart): string {
+export function toolPartDisclosureId(part: Pick<ToolPart, 'toolCallId' | 'toolName' | 'args'>): string {
   if (part.toolCallId) {
     return `tool:${part.toolCallId}`
   }
@@ -37,6 +44,14 @@ export function toolPartDisclosureId(part: ToolPart): string {
 
 export function toolGroupDisclosureId(parts: ToolPart[]): string {
   return `tool-group:${parts.map(toolPartDisclosureId).join('|')}`
+}
+
+/** Shared by a tool row and the activity summaries that open it. */
+export function toolEntryDisclosureId(
+  messageId: string,
+  part: Pick<ToolPart, 'toolCallId' | 'toolName' | 'args'>
+): string {
+  return `tool-entry:${messageId}:${toolPartDisclosureId(part)}`
 }
 
 export const URL_PATTERN = /https?:\/\/[^\s'"<>)\]]+/i

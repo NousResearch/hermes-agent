@@ -1,0 +1,98 @@
+name: hermes-sysadmin
+title: Hermes Sysadmin · Active Directory
+repo: https://github.com/kdegeek/hermessysadmin
+sha: bf972526ae24cd5bcb1441a2f91882e030c2cab5
+description: "Windows and Active Directory RMM for Hermes Agent and Hermes Desktop: users, groups and lockouts, Group Policy, RDP, Windows Server Backup, a desktop fleet and 231 vetted PowerShell scripts, all behind tiered approvals with a preview before every change, protected objects and a local audit log. Disclosure — runs PowerShell on the Hermes machine (local transport on a domain-joined Windows host, optionally as a configured account via runas /netonly) or over WinRM to one configured jump host, and from there talks to your domain controllers and the computers you target (AD, SMB, RPC, WinRM). Reads the account password only through Hermes secret scope. While the dashboard is open a background collector in the gateway refreshes read-only snapshots (setting background_collector turns it off); scheduled monitoring adds a Hermes cron job (and two launcher scripts in the Hermes scripts folder) only when you turn it on, and a cron run cannot create or remove it unless cron.allow_agent_scheduling is true. In permissive mode standard writes run without an approval prompt. Writes a local SQLite audit log with passwords redacted. Never reads .env or any other credential store; the opt-in monitoring cron script gets the password only if the user lists SYSADMIN_WINRM_PASSWORD in terminal.env_passthrough. No telemetry and no other network calls; the raw PowerShell tool is off by default."
+maintainer: kdegeek
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/kdegeek/hermessysadmin#readme
+version: "0.2.2"
+image: https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/overview.png
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/preview.png
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/fleet-remote.png
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/catalog.png
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/ask-hermes.png
+  - https://raw.githubusercontent.com/kdegeek/hermessysadmin/bf972526ae24cd5bcb1441a2f91882e030c2cab5/docs/screenshots/gpo.png
+readme: true
+capabilities:
+  provides_tools:
+    - ad_connection_test
+    - ad_dc_health
+    - ad_dc_list
+    - ad_domain_overview
+    - ad_group_add_member
+    - ad_group_get
+    - ad_group_list
+    - ad_group_remove_member
+    - ad_lockout_source
+    - ad_powershell
+    - ad_recycle_bin_list
+    - ad_recycle_bin_restore
+    - ad_search
+    - ad_user_create
+    - ad_user_delete
+    - ad_user_disable
+    - ad_user_enable
+    - ad_user_get
+    - ad_user_list
+    - ad_user_move
+    - ad_user_reset_password
+    - ad_user_unlock
+    - ad_user_update
+    - backup_cancel
+    - backup_jobs
+    - backup_set_policy
+    - backup_start
+    - backup_status
+    - backup_versions
+    - catalog_get
+    - catalog_module_install
+    - catalog_module_status
+    - catalog_run
+    - catalog_search
+    - fleet_device
+    - fleet_history
+    - fleet_inventory
+    - gpo_backup
+    - gpo_backups
+    - gpo_create
+    - gpo_delete
+    - gpo_get
+    - gpo_health
+    - gpo_link
+    - gpo_list
+    - gpo_report
+    - gpo_restore
+    - gpo_rsop
+    - gpo_set_link
+    - gpo_set_security_filter
+    - gpo_set_status
+    - gpo_unlink
+    - gpo_update_hosts
+    - monitoring_disable
+    - monitoring_enable
+    - monitoring_status
+    - rdp_connect_file
+    - rdp_host_status
+    - rdp_session_disconnect
+    - rdp_session_logoff
+    - rdp_session_message
+    - rdp_sessions
+    - rdp_set_enabled
+    - rdp_set_nla
+    - rdp_users_add
+    - rdp_users_remove
+    - remote_access_check
+    - remote_assist_command
+    - remote_sessions
+    - remote_shadow_command
+    - sysadmin_audit_log
+  provides_hooks:
+    - pre_tool_call
+    - post_tool_call
+  provides_middleware: []
+  requires_env: []

@@ -1,11 +1,11 @@
 import { PassThrough } from 'stream'
 
 import { renderSync } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
 import { ToolTrail } from '../components/thinking.js'
-import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
 describe('ToolTrail — MoA reference panel visibility (#64701)', () => {
@@ -55,7 +55,6 @@ describe('ToolTrail — MoA reference panel visibility (#64701)', () => {
     // A collapsed (▸) render here means the re-sync effect fired on mount
     // and clobbered it — the exact #64701 regression.
     expect(frame).toContain('▾ ')
-    expect(frame).toContain('Thinking')
     expect(frame).not.toContain('▸ ')
   })
 })

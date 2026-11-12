@@ -118,7 +118,7 @@ def browser_send_payload(broker: dict, body_text: str, to: str | None = None) ->
 
     No network and no credentials: the deterministic part (recipient-lock to the broker's own
     declared address, subject/body split) happens here; the agent then composes and sends it in
-    the operator's logged-in webmail with browser_* tools. Same recipient guard as `send()`, so
+    the operator's logged-in webmail with browser_exec. Same recipient guard as `send()`, so
     the browser lane cannot be pointed at an arbitrary person either.
     """
     allowed = broker_addresses(broker)
@@ -244,7 +244,7 @@ def _decode_part(part) -> str:
             return ""
         charset = part.get_content_charset() or "utf-8"
         return payload.decode(charset, errors="replace")
-    except Exception:  # noqa: BLE001 - malformed MIME must not kill the poll
+    except Exception:
         return ""
 
 
@@ -310,7 +310,7 @@ def fetch_recent(env: dict | None = None, since_days: int = 3, limit: int = 30,
     finally:
         try:
             conn.logout()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 

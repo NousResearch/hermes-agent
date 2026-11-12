@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -93,6 +93,86 @@ class TestAutoVoiceReplyFormat:
         voice_event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=MessageType.VOICE)
         assert runner._should_send_voice_reply(voice_event, "hello", [], already_sent=True) is True
 
+    def test_should_send_voice_reply_a2a_ignores_global_auto_tts(self):
+        """A2A text tasks must stay text even when voice.auto_tts is on.
+
+        Desktop Read-replies-aloud writes the global default. The runner used
+        that default for every adapter with no /voice mode, including A2A,
+        which cannot deliver native audio: the synthesized MP3 failed delivery
+        and the peer saw "Couldn't deliver the audio attachment." instead of
+        the agent's text reply (#90103).
+        """
+        runner = _make_runner()
+        a2a = Platform("a2a")
+        adapter = _make_adapter(a2a)
+        adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[a2a] = adapter
+        event = _make_event(a2a, chat_id="ctx-peer")
+
+        assert runner._should_send_voice_reply(event, "audit findings", []) is False
+
+        # The same global default still voices a human platform.
+        telegram_adapter = _make_adapter(Platform.TELEGRAM)
+        telegram_adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[Platform.TELEGRAM] = telegram_adapter
+        telegram = _make_event(Platform.TELEGRAM, chat_id="999")
+
+        assert runner._should_send_voice_reply(telegram, "hello", []) is True
+
+    def test_should_send_voice_reply_local_session_never_synthesizes(self):
+        """A local session cannot play owner audio. A saved mode ``all`` (``/voice tts``)
+        must not start a provider call."""
+        runner = _make_runner()
+        local_adapter = _make_adapter(Platform.LOCAL)
+        local_adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[Platform.LOCAL] = local_adapter
+        local = _make_event(Platform.LOCAL, chat_id="sess")
+        runner._voice_mode[runner._voice_key_for_source(local.source)] = "all"
+
+        assert runner._should_send_voice_reply(local, "the reply", []) is False
+
+        telegram_adapter = _make_adapter(Platform.TELEGRAM)
+        runner.adapters[Platform.TELEGRAM] = telegram_adapter
+        telegram = _make_event(Platform.TELEGRAM, chat_id="999")
+        runner._voice_mode[runner._voice_key_for_source(telegram.source)] = "all"
+        assert runner._should_send_voice_reply(telegram, "hello", []) is True
+
+    def test_should_send_voice_reply_local_session_ignores_global_auto_tts(self):
+        """With no ``/voice`` mode, global ``voice.auto_tts`` (Desktop "Read replies aloud",
+        which the desktop speaks itself) must not make the owner synthesize a local reply."""
+        runner = _make_runner()
+        local_adapter = _make_adapter(Platform.LOCAL)
+        local_adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+        runner.adapters[Platform.LOCAL] = local_adapter
+        local = _make_event(Platform.LOCAL, chat_id="sess")
+        assert runner._voice_key_for_source(local.source) not in runner._voice_mode
+
+        assert runner._should_send_voice_reply(local, "the reply", []) is False
+
+    def test_sync_voice_mode_state_never_inherits_global_auto_tts_for_a2a(self):
+        """The adapter-side default must match the runner-side skip (#90103).
+
+        voice.auto_tts is synced onto every adapter at connect; for A2A the
+        base adapter's own auto-TTS gate would otherwise read a speak default
+        the platform cannot honor.
+        """
+        runner = _make_runner()
+        a2a = Platform("a2a")
+        a2a_adapter = _make_adapter(a2a)
+        a2a_adapter._auto_tts_disabled_chats = set()
+        a2a_adapter._auto_tts_enabled_chats = set()
+
+        telegram_adapter = _make_adapter(Platform.TELEGRAM)
+        telegram_adapter._auto_tts_disabled_chats = set()
+        telegram_adapter._auto_tts_enabled_chats = set()
+
+        with patch("hermes_cli.config.load_config", return_value={"voice": {"auto_tts": True}}):
+            runner._sync_voice_mode_state_to_adapter(a2a_adapter)
+            runner._sync_voice_mode_state_to_adapter(telegram_adapter)
+
+        assert a2a_adapter._auto_tts_default is False
+        assert telegram_adapter._auto_tts_default is True
+
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):
         runner = GatewayRunner.__new__(GatewayRunner)
@@ -120,3 +200,43 @@ def _make_event(platform: Platform, chat_id: str = "123", message_type: MessageT
         message_type=message_type,
         message_id="456",
     )
+
+
+def _bridge_tts_turn(audio_path: str) -> list[dict]:
+    """One turn where the model reached a deferred text_to_speech through tool_call."""
+    arguments = json.dumps({"calls": [{"name": "text_to_speech", "arguments": {"text": "hello"}}]})
+    return [
+        {"role": "user", "content": "send me a voice note"},
+        {"role": "assistant", "tool_calls": [
+            {"id": "c1", "function": {"name": "tool_call", "arguments": arguments}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": f"[[audio_as_voice]]\nMEDIA:{audio_path}"},
+        {"role": "assistant", "content": "Sent."},
+    ]
+
+
+def test_bridge_called_tts_suppresses_the_auto_voice_reply():
+    """A text_to_speech call made through the tool_call bridge is still the turn's voice reply:
+    the runner must not synthesize a second one on top of it."""
+    runner = _make_runner()
+    adapter = _make_adapter(Platform.TELEGRAM)
+    adapter._should_auto_tts_for_chat = MagicMock(return_value=True)
+    runner.adapters[Platform.TELEGRAM] = adapter
+    event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=MessageType.VOICE)
+
+    assert runner._should_send_voice_reply(event, "Sent.", [{"role": "user", "content": "hi"}], already_sent=True) is True
+    assert runner._should_send_voice_reply(
+        event, "Sent.", _bridge_tts_turn("/tmp/voice/note.ogg"), already_sent=True) is False
+
+
+def test_bridge_called_tts_audio_is_delivered():
+    """The audio a bridge-called text_to_speech produced is attached to the reply, while a MEDIA:
+    string in another bridge-called tool's result still is not."""
+    from gateway.run import _collect_auto_append_media_tags
+
+    tags, voice = _collect_auto_append_media_tags(_bridge_tts_turn("/tmp/voice/note.ogg"))
+    assert tags == ["MEDIA:/tmp/voice/note.ogg"] and voice is True
+
+    other = _bridge_tts_turn("/tmp/voice/note.ogg")
+    other[1]["tool_calls"][0]["function"]["arguments"] = json.dumps(
+        {"calls": [{"name": "session_search", "arguments": {"query": "voice"}}]})
+    assert _collect_auto_append_media_tags(other) == ([], False)

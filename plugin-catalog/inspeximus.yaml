@@ -1,0 +1,18 @@
+name: inspeximus
+title: Inspeximus
+repo: https://github.com/DanceNitra/inspeximus
+sha: 2a4141cf89e0bbe5bcca9d2e167df41477ef5463
+subdir: integrations/hermes-plugin-inspeximus
+version: "3.23.1"
+description: "Memory provider with keyed corrections you can undo. A correction retires the old value by key, so it stops being recalled, and inspeximus_revert puts the previous value back from the key alone, without anyone retyping what the record used to say. Recall before each turn returns retrieval minus what a later correction retired, so a value corrected three sessions ago cannot come back as context. Adds inspeximus_remember, inspeximus_correct, inspeximus_revert, inspeximus_forget and inspeximus_forget_me. Disclosure — installs the inspeximus package from PyPI (inspeximus>=3.23.1,<4, including its `inspeximus` command-line tools) into the Hermes environment; the provider makes no network calls and carries no telemetry: memories live in a local JSON file under the profile's Hermes home (or a path you set), recalled memories are added to each turn's context and to the compression summary prompt, and writes made with the built-in memory tool are mirrored into the store."
+maintainer: DanceNitra
+tier: community
+category: memory
+requires_hermes: ">=0.21"
+docs_url: https://github.com/DanceNitra/inspeximus/blob/main/integrations/hermes-plugin-inspeximus/README.md
+readme: true
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

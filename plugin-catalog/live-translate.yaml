@@ -1,0 +1,27 @@
+name: live-translate
+title: Live Translate
+repo: https://github.com/WestWaters/hermes-live-translator
+sha: 6a5fcf91a7b738ceaa5d68b25295348f664063d9
+description: "Real-time speech-to-speech translation on your own computer: anyone speaks in any language and you hear them in yours, in their own voice, about 2-3 seconds behind. Hears ~100 languages (Qwen3-ASR + Whisper), translates between 201 (Qwen3.5-4B, a local server, a subscription, or the model Hermes already uses through ctx.llm), and speaks with the speaker's cloned voice in 23 languages and natural voices in 600+. One-way, two-way conversations and meetings/streams through a virtual audio device (Zoom, Meet, Teams, Discord, OBS, with OBS closed captions viewers can switch on); echo cancellation, background voices ignored, several speakers each with their own language and voice. Tools translate_start/stop/status/languages, /translate, hermes translate setup|start|file|serve|languages|devices, and an agent skill; optional desktop tray app (separate download). Disclosure — while translating it listens to the microphone or audio input you choose and plays to the output you choose; it never starts from a chat app or a scheduled job unless you enable allow_remote_start. Voice cloning uses a 5-second sample of each speaker on this computer, except with ElevenLabs voices, which upload each speaker's sample to ElevenLabs to create a cloned voice in your account that is deleted when the speaker changes or translation stops; temporary local copies are deleted when the session stops. Each session's captions are saved to plugin-data/live-translate/sessions/*.jsonl. hermes translate setup builds a separate Python environment with uv (plus three voice-model environments on Windows/Linux) under plugin-data/live-translate, installs packages from PyPI, PyTorch's index (Windows/Linux) and llama.cpp's prebuilt-wheel index (abetlen.github.io), installs uv from PyPI into the plugin's data folder if it is missing, and downloads 6-9 GB of model weights pinned to exact commits from their official Hugging Face repos into the standard Hugging Face cache. While translating it runs the engine and voice-worker processes (stopped on Stop or when the session that started them ends) and a local server on 127.0.0.1:7865 only, protected by a token kept in an owner-only file under plugin-data/live-translate, a Host check and an Origin check. No network while translating with built-in or local models; a cloud model or voice you choose receives the session's text or audio with your key, read only through Hermes's secret store. No telemetry. Licences: Apache-2.0/MIT models by default; OmniVoice (best preset) is CC-BY-NC-4.0; on CPU-only machines Kokoro uses espeak-ng (GPL-3.0)."
+maintainer: WestWaters
+tier: community
+category: voice
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/WestWaters/hermes-live-translator#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/WestWaters/hermes-live-translator/6a5fcf91a7b738ceaa5d68b25295348f664063d9/assets/live-translate.jpg
+screenshots:
+  - https://raw.githubusercontent.com/WestWaters/hermes-live-translator/6a5fcf91a7b738ceaa5d68b25295348f664063d9/docs/media/call.jpg
+  - https://raw.githubusercontent.com/WestWaters/hermes-live-translator/6a5fcf91a7b738ceaa5d68b25295348f664063d9/docs/media/settings.jpg
+  - https://raw.githubusercontent.com/WestWaters/hermes-live-translator/6a5fcf91a7b738ceaa5d68b25295348f664063d9/docs/media/daylight.jpg
+readme: true
+platforms: [macos, windows, linux]
+known_issues:
+  - "First setup downloads 6-9 GB of models and builds its own Python environments; run hermes translate setup once (or press Set up in the app)."
+  - "Real-time voice needs Apple Silicon or an NVIDIA GPU; on CPU-only machines captions come first and the voice follows with a delay."
+  - "Under plugins.isolation: host the hermes translate terminal commands are not available (Hermes skips plugin CLI commands in the host); the tools and /translate still work."
+capabilities:
+  provides_tools: [translate_start, translate_stop, translate_status, translate_languages]
+  provides_hooks: [on_session_finalize]
+  provides_middleware: []
+  requires_env: []

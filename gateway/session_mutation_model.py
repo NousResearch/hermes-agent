@@ -28,7 +28,9 @@ def _current_route(authority, live, old):
     pick on the same entry must not read as a route change. Only the session's own route counts:
     a fallback is where a turn lands, not what the user switches from. A route that cannot be
     resolved here must not block leaving it: like main's agent-less ``--provider`` path, the
-    pick then switches from the configured provider alone and resolves its own target.
+    pick then switches from the configured provider alone and resolves its own target. A provider
+    the profile has since disabled is such a route: it cannot run, and it must not be the reason a
+    switch away from it fails.
     """
     from gateway.session_policy import profile_read_scope
     from hermes_cli.auth import AuthError
@@ -40,7 +42,9 @@ def _current_route(authority, live, old):
                 source=live.source, session_key=live.route, fallback=False)
         except (AuthError, ValueError) as exc:
             # A stopped local model server raises ValueError here. The session still has to be
-            # able to leave that route (#146253).
+            # able to leave that route (#146253). A provider the profile disabled raises
+            # ProviderDisabledError, which is a ValueError too: it cannot run either, and it must
+            # not be the reason a switch away from it fails.
             logger.debug("session model switch: current route unresolvable (%s); switching from "
                          "the configured provider instead", exc)
             return config, _Route(block.get('provider') or '', old.current_model(authority) or '',

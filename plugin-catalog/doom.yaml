@@ -2,7 +2,7 @@ name: doom
 repo: https://github.com/SilentKnight87/hermes-doom
 sha: 5f9faadd1ba346c52d79bfd9c07c7f3c1908ff38
 title: Doom
-description: Play Doom in a dashboard tab. The GPL engine runs as plain JavaScript on Freedoom or your own WAD.
+description: "Play Doom in a dashboard tab. The GPL engine runs as plain JavaScript on Freedoom or your own WAD. Disclosure — The Doom engine is Emscripten-compiled JavaScript (doomgeneric, GPL) committed as a generated file and built by hand from the repo's engine/build.sh; clicking \"Download Freedoom\" fetches the 23 MB Freedoom 0.13.0 release zip from github.com/freedoom, checksum-verified, into HERMES_HOME/plugin-data/doom. No tools, hooks or other network calls."
 maintainer: SilentKnight87
 tier: community
 category: general

@@ -53,11 +53,19 @@ def enabled() -> bool:
 def promise(record: dict[str, Any]) -> Optional[dict[str, Any]]:
     """What the stop notice may promise for a just-stopped record: ``{"at": epoch}`` or ``{"on_boot": True}``, or
     None when this record will not be resumed automatically."""
-    if not enabled() or int(record.get("auto_attempts") or 0) >= MAX_AUTO_ATTEMPTS:
+    if not enabled() or not _scheduler_runs() or int(record.get("auto_attempts") or 0) >= MAX_AUTO_ATTEMPTS:
         return None
     if record.get("resume_mode") == AUTO_AT and isinstance(record.get("next_attempt_at"), (int, float)):
         return {"at": float(record["next_attempt_at"])}
     return {"on_boot": True} if record.get("resume_mode") == AUTO_ON_BOOT else None
+
+
+def _scheduler_runs() -> bool:
+    """Whether this process is the gateway serving the bound profile, so its watcher will run the resume (a
+    background child's completion route is this process's). A classic CLI parent has no scheduler: no promise."""
+    from gateway.runtime_ownership import process_ownership
+    from hermes_constants import get_hermes_home
+    return process_ownership.owns(get_hermes_home())
 
 
 def notice_line(sid: str, auto: dict[str, Any]) -> str:

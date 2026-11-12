@@ -5,7 +5,8 @@ built-in DeepSeek provider's env vars and auth files. Those rows are the built-i
 acquisition of a pool for the custom entry's runtime (main, frozen and auxiliary resolution, a
 URL-matched bare ``custom`` route, restoring the primary after a fallback, a delegated child's pool)
 takes the entry-scoped view from here, so the built-in's account never stands in for the entry's
-declared credential. The built-in provider itself still loads, and persists, the whole pool.
+declared credential, and no pooled key leaves the origin it was entered for (#130410). The
+built-in provider itself still loads, and persists, the whole pool.
 """
 
 from __future__ import annotations
@@ -34,41 +35,30 @@ def row_owned_by_entry(row: Any, entry: Any) -> bool:
     return _is_manual_source(source) or source in own_env
 
 
-def entry_scoped_pool(pool: Any, pool_key: str, entry: Optional[dict[str, Any]]) -> Any:
-    """The rows of ``pool`` the custom ``entry`` owns: the pool itself when it owns them all, else a
-    view of them, or None when it owns none. ``custom:<name>`` pools are seeded from the entry's own
-    config and stay whole; so does any pool for an entry that declares no credential (as before).
+def entry_scoped_pool(pool: Any, pool_key: str, entry: Optional[dict[str, Any]], base_url: Optional[str] = None) -> Any:
+    """The rows of ``pool`` the custom ``entry`` may send to ``base_url`` (default: the entry's own
+    address). Every acquisition of a custom entry's pool goes through here.
 
-    The view shares the loaded rows and token baselines, so persisting it merges into the stored
-    pool under its lock and leaves the built-in's omitted rows on disk.
+    Ownership: a pool the entry shares with a same-named built-in yields only the entry's rows when
+    the entry declares a credential. Origin binding: a row is kept only when it is one the entry
+    re-seeds from its current config (``env:<its key_env>``, ``config:<its name>``,
+    ``model_config``) or it recorded the same origin (scheme/host/port) as ``base_url``, so no key
+    entered for one host, nor a built-in's seeded account, follows the entry to another host. A
+    manual row that recorded no address is bound to the entry's current one first (see
+    ``bind_unrecorded_rows``); any other row without one is dropped.
+
+    The pool itself when every row is kept, else a view sharing its rows and token baselines
+    (persisting it merges into the stored pool under its lock), None when nothing is left.
     """
     from agent.credential_pool import CUSTOM_POOL_PREFIX, CredentialPool
-    if pool is None or str(pool_key or "").startswith(CUSTOM_POOL_PREFIX) or not entry_declares_credential(entry):
+    if pool is None or not isinstance(entry, dict):
         return pool
+    target = str(base_url or entry.get("base_url") or "").strip()
+    bind_unrecorded_rows(pool, str(entry.get("base_url") or "").strip())
+    whole = str(pool_key or "").startswith(CUSTOM_POOL_PREFIX) or not entry_declares_credential(entry)
+    own = _own_seeded_sources(entry)
     rows = pool.entries()
-    owned = [row for row in rows if row_owned_by_entry(row, entry)]
-    if len(owned) == len(rows):
-        return pool
-    if not owned:
-        return None
-    view = CredentialPool(pool.provider, owned)
-    view._persisted_token_pairs = pool._persisted_token_pairs
-    return view
-
-
-def origin_scoped_pool(pool: Any, base_url: Optional[str]) -> Any:
-    """``pool`` without the ``hermes auth add`` rows recorded for another origin (scheme/host/port)
-    than ``base_url``, so a key added for an endpoint never follows the entry to a new host. Only
-    manual rows record where the key was entered; seeded rows carry the provider's default URL and,
-    like rows with no recorded base_url, are kept. The pool itself when nothing is dropped, a view
-    sharing its token baselines otherwise, None when no row is left."""
-    from agent.credential_pool import CredentialPool, _is_manual_source
-    from utils import same_base_url_origin
-    if not isinstance(pool, CredentialPool) or not base_url:
-        return pool
-    rows = pool.entries()
-    kept = [row for row in rows if not _is_manual_source(str(row.source or ""))
-            or not (url := str(row.base_url or "").strip()) or same_base_url_origin(url, base_url)]
+    kept = [row for row in rows if (whole or row_owned_by_entry(row, entry)) and _row_serves(row, own, target)]
     if len(kept) == len(rows):
         return pool
     if not kept:
@@ -76,6 +66,40 @@ def origin_scoped_pool(pool: Any, base_url: Optional[str]) -> Any:
     view = CredentialPool(pool.provider, kept)
     view._persisted_token_pairs = pool._persisted_token_pairs
     return view
+
+
+def _own_seeded_sources(entry: dict[str, Any]) -> set[str]:
+    """Sources ``load_pool`` re-seeds from the entry's current config: they carry whatever key the
+    entry holds now (an origin move strips it), never one recorded for an earlier address."""
+    envs = {f"env:{name}" for name in (str(entry.get(k) or "").strip() for k in ("key_env", "api_key_env")) if name}
+    return envs | {f"config:{str(entry.get('name') or '').strip()}", "model_config"}
+
+
+def _row_serves(row: Any, own_sources: set[str], target: str) -> bool:
+    from utils import same_base_url_origin
+    if str(getattr(row, "source", "") or "").strip() in own_sources:
+        return True
+    url = str(getattr(row, "base_url", "") or "").strip()
+    return bool(url and target) and same_base_url_origin(url, target)
+
+
+def bind_unrecorded_rows(pool: Any, base_url: str) -> list[Any]:
+    """Record ``base_url`` on the pool's manual rows that recorded no address (``hermes auth add``
+    and dashboard rows written before writers recorded one): the key was entered while the entry
+    pointed there. Persisted once when the active store owns the rows, so a later edit of the
+    entry's address leaves them behind. Returns the rows it bound."""
+    from dataclasses import replace
+
+    from agent.credential_pool import CredentialPool, _is_manual_source, _profile_owns_pool_provider
+    if not isinstance(pool, CredentialPool) or not base_url:
+        return []
+    unbound = [row for row in pool.entries()
+               if _is_manual_source(str(row.source or "")) and not str(row.base_url or "").strip()]
+    for row in unbound:
+        pool._replace_entry(row, replace(row, base_url=base_url.rstrip("/")))
+    if unbound and _profile_owns_pool_provider(pool.provider):
+        pool._persist()
+    return unbound
 
 
 def custom_entry_for_endpoint(
@@ -153,5 +177,16 @@ def load_runtime_pool(
     if snapshot is not None and name and not owner:
         return None
     match = (owner["name"], owner) if owner else custom_entry_for_endpoint(base_url, name)
+    if name and match is None:
+        return None  # a named identity off its entry's address has no pool to borrow (fail closed)
     key = (_pool_keys_for_custom_entry(*match) or [""])[0] if match and (name or owner) else resolve_runtime_pool_key(provider, base_url)
-    return entry_scoped_pool(load_pool(key), key, match[1] if match else None) if key else None
+    return entry_scoped_pool(load_pool(key), key, match[1] if match else None, base_url) if key else None
+
+
+def load_route_pool(provider: Optional[str], base_url: Optional[str], requested_provider: Optional[str] = None) -> Any:
+    """The pool to attach when a live agent moves onto a route (fallback activation, ``/model``): a
+    custom identity gets its entry's origin-bound view (``load_runtime_pool``), a built-in its own pool."""
+    from agent.credential_pool import load_pool
+    if _custom_identity(provider, requested_provider)[0]:
+        return load_runtime_pool(provider, base_url, requested_provider)
+    return load_pool(str(provider or "").strip().lower())

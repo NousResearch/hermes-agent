@@ -324,7 +324,7 @@ def _resolve_child_credential_pool(
             # owns, or a fixed entry credential becomes the built-in's account on a shared endpoint.
             from agent.custom_entry_pool import custom_entry_for_endpoint, entry_scoped_pool
             owner = custom_entry_for_endpoint(effective_base_url, effective_requested_provider)
-            return entry_scoped_pool(_loaded_pool(child_key), child_key, owner[1] if owner else None)
+            return entry_scoped_pool(_loaded_pool(child_key), child_key, owner[1] if owner else None, effective_base_url)
         if effective_provider == parent_provider:
             # A same-provider parent with no pool is using a fixed credential.
             # Loading a separate provider pool here can replace the inherited

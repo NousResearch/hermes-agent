@@ -582,12 +582,30 @@ _ORIGIN_BOUND_FIELDS = (*_SNAKE_ORIGIN_BOUND_FIELDS,
                         *(camel for camel, snake in _CAMEL_ALIASES.items() if snake in _SNAKE_ORIGIN_BOUND_FIELDS))
 
 
+def _pooled_keys_left_on(old_url: str, new_url: str, pool_keys: tuple[str, ...]) -> bool:
+    """Bind the entry's manual pool rows that recorded no address to *old_url* (they were entered
+    while the entry pointed there), then report whether any manual row stays bound to another
+    origin than *new_url*. Those rows never serve the new address (``entry_scoped_pool``)."""
+    from agent.credential_pool import _is_manual_source, load_pool
+    from agent.custom_entry_pool import bind_unrecorded_rows
+    from utils import same_base_url_origin
+
+    left = False
+    for key in dict.fromkeys(k for k in pool_keys if k):
+        pool = load_pool(key)
+        bind_unrecorded_rows(pool, old_url)
+        left |= any(_is_manual_source(str(row.source or "")) and not same_base_url_origin(str(row.base_url or ""), new_url)
+                    for row in pool.entries())
+    return left
+
+
 def _drop_credentials_on_origin_move(entry: dict[str, Any], existing: dict[str, Any], new_url: str,
-                                     submitted_key: Optional[str]) -> None:
+                                     submitted_key: Optional[str], pool_keys: tuple[str, ...] = ()) -> None:
     """Strip *entry*'s stored credentials when the edit changes the endpoint's origin.
 
-    Raises 400 when credentials exist and the payload left the key untouched (``None``):
-    reusing them would authenticate to a host they were never entered for.
+    Raises 400 when credentials exist (config fields, or ``hermes auth add`` / dashboard pool
+    rows for the entry) and the payload left the key untouched (``None``): reusing them would
+    authenticate to a host they were never entered for. Pool rows stay bound to the old origin.
     """
     from utils import same_base_url_origin
 
@@ -597,7 +615,7 @@ def _drop_credentials_on_origin_move(entry: dict[str, Any], existing: dict[str, 
     if not old_url:
         return
     stored = [field for field in _ORIGIN_BOUND_FIELDS if entry.get(field)]
-    if stored and submitted_key is None:
+    if (stored or _pooled_keys_left_on(old_url, new_url, pool_keys)) and submitted_key is None:
         raise HTTPException(
             status_code=400,
             detail=(f"The saved API key is for {old_url}, not {new_url}. "
@@ -773,7 +791,10 @@ def _write_custom_endpoint(cfg: dict[str, Any], body: CustomEndpointUpdate) -> t
     # bound to the origin it was entered for: an edit that moves the endpoint
     # to another scheme/host/port must supply that host's key, or an explicit
     # blank for none, rather than ship the old secret to the new address.
-    _drop_credentials_on_origin_move(entry, existing, base_url, body.api_key)
+    from agent.credential_pool import _pool_keys_for_custom_entry, _normalize_custom_pool_name
+    pool_keys = _pool_keys_for_custom_entry(_normalize_custom_pool_name(str(existing.get("name") or name)),
+                                            {"provider_key": endpoint_id})
+    _drop_credentials_on_origin_move(entry, existing, base_url, body.api_key, tuple(pool_keys))
 
     # API keys never belong in config.yaml: write to .env and reference it via
     # ``key_env`` — the indirection built-in providers use and that

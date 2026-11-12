@@ -120,12 +120,14 @@ def test_shadowing_entry_manual_pool_row_still_wins(tmp_path, monkeypatch):
     assert BUILTIN_KEY in {e.access_token for e in load_pool("deepseek").entries()}
 
 
-def test_entry_without_key_env_keeps_existing_resolution(tmp_path, monkeypatch):
-    """No key_env / api_key / key_cmd: resolution is unchanged by this fix (pool first, then
-    host-gated env, then the keyless placeholder)."""
-    _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra={})
+def test_entry_without_key_env_uses_builtin_rows_only_on_their_own_origin(tmp_path, monkeypatch):
+    """No key_env / api_key / key_cmd: the built-in's env-seeded row (recorded for api.deepseek.com)
+    serves the entry on that origin only; at any other host the entry goes keyless (#130410)."""
+    home = _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra={})
     from hermes_cli import runtime_provider as rp
 
+    assert rp.resolve_runtime_provider(requested="custom:deepseek")["api_key"] == "no-key-required"
+    _edit_config(home, entry={"api": BUILTIN_HOST})
     assert rp.resolve_runtime_provider(requested="custom:deepseek")["api_key"] == BUILTIN_KEY
 
 
@@ -174,12 +176,12 @@ def test_url_matched_bare_custom_frozen_route_sends_the_entry_key(tmp_path, monk
     assert (resolved["base_url"], resolved["api_key"]) == (ENDPOINT, ENTRY_KEY)
 
 
-def test_url_matched_entry_without_declared_credential_keeps_existing_resolution(tmp_path, monkeypatch):
+def test_url_matched_entry_without_declared_credential_never_sends_the_builtin_key_elsewhere(tmp_path, monkeypatch):
     _home(tmp_path, monkeypatch, "deepseek", "DEEPSEEK_API_KEY", entry_extra={})
     from hermes_cli import runtime_provider as rp
 
     resolved = rp.resolve_runtime_provider(requested="custom", explicit_base_url=ENDPOINT)
-    assert resolved["api_key"] == BUILTIN_KEY
+    assert resolved["api_key"] != BUILTIN_KEY
 
 
 @pytest.mark.parametrize("requested", ["custom:deepseek", "custom"])

@@ -241,8 +241,11 @@ def test_desktop_move_never_resolves_a_pooled_key_recorded_for_the_old_origin(_i
 
     client = TestClient(app)
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
-    assert client.post("/api/providers/custom-endpoints", json={
-        "id": "myep", "name": "myep", "base_url": new, "model": "m", "make_default": False}).status_code == 200
+    edit = {"id": "myep", "name": "myep", "base_url": new, "model": "m", "make_default": False}
+    # The pooled key counts as a stored credential: an untouched key field refuses the move...
+    assert client.post("/api/providers/custom-endpoints", json=edit).status_code == 400
+    # ...and an explicit blank moves the entry keyless, leaving the row bound to the old origin.
+    assert client.post("/api/providers/custom-endpoints", json={**edit, "api_key": ""}).status_code == 200
 
     named = resolve_runtime_provider(requested="custom:myep")
     assert named["base_url"] == new and named.get("api_key") != pooled

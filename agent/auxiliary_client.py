@@ -4632,7 +4632,7 @@ def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_ba
                     pool = load_pool(pool_key)
                 except Exception:
                     continue
-                if (pool := entry_scoped_pool(pool, pool_key, custom_entry)) is None or not pool.has_credentials():
+                if (pool := entry_scoped_pool(pool, pool_key, custom_entry, custom_base)) is None or not pool.has_credentials():
                     continue
                 if (pool_entry := pool.select(model=model)) is None:
                     continue

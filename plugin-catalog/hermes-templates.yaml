@@ -1,7 +1,7 @@
 name: hermes-templates
 title: Agent Templates
 repo: https://github.com/Ilyassbm/hermes-templates
-sha: 8cb136ee889a098d6bb13b64c5ff985fd9a44ff5
+sha: 38aa642245ea393a9fe8ffa450c095516f7ef492
 subdir: ""
 description: >-
   Share a whole Hermes agent as one .htemplate bundle and install it from a single
@@ -10,9 +10,13 @@ description: >-
   ids. A recipe, not a clone — credentials, sessions, conversation history, logs,
   caches and workspace never travel. Publish puts the bundle in a GitHub repository and
   returns one permanent link (re-publishing updates the same URL); Install previews a
-  link, a path or a dropped file and writes nothing before you confirm, ships routines
-  paused, enables a plugin only if it is already installed, and reinstalling the same
-  link offers "Update v1.0.0 → v1.1.0" while keeping memories, sessions and .env.
+  link, a path or a dropped file and shows the template itself before anything is
+  written (SOUL.md, each skill, every routine's schedule and prompt, every MCP command,
+  settings such as approvals or hooks). Install enforces what the packer promises on any
+  bundle: config sanitized again, routines imported paused through Hermes' cron API, MCP
+  servers set enabled: false; plugins already installed here are enabled unless
+  --no-enable-plugins. Reinstalling the same link offers "Update v1.0.0 → v1.1.0" and
+  keeps memories, sessions and .env.
   Disclosure: reads the selected profile under HERMES_HOME (config.yaml, SOUL.md,
   skills/, cron/jobs.json, mcp.json, memories/ when opted in) and writes a new profile
   directory plus its own bundles under plugin-data/; the page may read a bundle only
@@ -24,22 +28,22 @@ description: >-
   URL. Credentials: the optional GITHUB_TOKEN is read with agent.secret_scope under the
   named profile, never stored in a bundle, never logged and never returned; bundles that
   carry a credential path are refused before any network call. No shell, no telemetry,
-  no self-updater. Imports agent.redact.redact_sensitive_text, which the public plugin
-  API page lists; the validator table in the current stable build is older than that
-  entry and still prints an advisory.
+  no self-updater. Imports outside the validator's public table, each named by review:
+  cron.job_definition.import_job_definitions with cron.jobs.use_cron_store (the import
+  hermes profile install uses), and agent.redact.redact_sensitive_text.
 maintainer: Ilyassbm
 tier: community
 category: desktop
 requires_hermes: ">=0.23"
 docs_url: https://github.com/Ilyassbm/hermes-templates#readme
-version: "1.2.4"
+version: "1.3.0"
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/8cb136ee889a098d6bb13b64c5ff985fd9a44ff5/docs/share-tab.png
-  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/8cb136ee889a098d6bb13b64c5ff985fd9a44ff5/docs/publish-plan.png
-  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/8cb136ee889a098d6bb13b64c5ff985fd9a44ff5/docs/publish-link.png
-  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/8cb136ee889a098d6bb13b64c5ff985fd9a44ff5/docs/install-tab.png
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/38aa642245ea393a9fe8ffa450c095516f7ef492/docs/share-tab.png
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/38aa642245ea393a9fe8ffa450c095516f7ef492/docs/publish-plan.png
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/38aa642245ea393a9fe8ffa450c095516f7ef492/docs/publish-link.png
+  - https://raw.githubusercontent.com/Ilyassbm/hermes-templates/38aa642245ea393a9fe8ffa450c095516f7ef492/docs/install-tab.png
 known_issues:
   - The Desktop half of a unified package starts disabled per browser; enable it once in Capabilities ▸ Plugins.
   - raw.githubusercontent.com caches plain links for up to 5 minutes per client kind, so a just-published update can briefly still serve the previous file; the result also shows the commit-pinned URL, which is immediate.

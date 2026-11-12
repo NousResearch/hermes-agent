@@ -1191,10 +1191,6 @@ def _(rid, params: dict) -> dict:
     return _err(rid, 4015, f"unknown action: {action}")
 
 
-def _max_turns_label(limit: int) -> str:
-    return "unlimited" if limit == _tools_mod("hermes_cli.config").TURN_LIMIT_UNLIMITED else str(limit)
-
-
 @_scoped_rpc("config.show", 5030)
 def _(rid, params: dict) -> dict:
     cfg = _load_cfg()
@@ -1206,7 +1202,7 @@ def _(rid, params: dict) -> dict:
         {"title": "Model", "rows": [
             ["Model", _resolve_model()], ["Base URL", base_url or "(default)"], ["API Key", masked]]},
         {"title": "Agent", "rows": [
-            ["Max Turns", _max_turns_label(_cfg_max_turns(cfg, _tools_mod("hermes_cli.config").TURN_LIMIT_UNLIMITED))],
+            ["Max Turns", _tools_mod("hermes_cli.config_turn_limit").turn_limit_label(_cfg_max_turns(cfg))],
             ["Toolsets", ", ".join(cfg.get("enabled_toolsets", [])) or "all"],
             ["Verbose", str(cfg.get("verbose", False))]]},
         {"title": "Environment", "rows": [["Working Dir", os.getcwd()], ["Config File", str(_active_config_path())]]},

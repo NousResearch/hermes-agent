@@ -21,6 +21,11 @@ import textwrap
 
 import pytest
 
+
+def _default(*keys: str):
+    from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+    return cfg_get(DEFAULT_CONFIG, *keys)
+
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     """Ensure the two env-var gates start AND end each test in a known state.
@@ -131,29 +136,23 @@ class TestIgnoreUserConfigDelegationDefault:
         """The CLI's built-in default (``hermes_cli/cli_config_load.py``, re-exported by ``cli``) is the
         value a `--ignore-user-config` run actually uses."""
         import cli
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
         from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
 
-        assert DEFAULT_MAX_ITERATIONS == DEFAULT_CONFIG["delegation"]["max_iterations"] == 250
+        assert DEFAULT_MAX_ITERATIONS == _default("delegation", "max_iterations")
         assert cli._cli_config_defaults()["delegation"]["max_iterations"] == DEFAULT_MAX_ITERATIONS
 
-    def test_ignore_user_config_resolves_the_shared_iteration_cap(self, monkeypatch):
-        """End-to-end through the reader ``delegate_task`` calls for its iteration cap.
-
-        ``CLI_CONFIG`` is pinned to the built-in defaults so the assertion cannot be flipped by a
-        developer's untracked repo-root ``cli-config.yaml`` (the file ``load_cli_config`` falls back
-        to when the flag is set — see the NOTE on ``_write_user_config`` above).
-        """
-        import cli
+    def test_ignore_user_config_resolves_the_shared_iteration_cap(self, tmp_path, monkeypatch):
+        """End-to-end through the reader ``delegate_task`` calls for its iteration cap."""
         from tools import delegate_tool_config
         from tools.delegate_tool import DEFAULT_MAX_ITERATIONS
 
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text("delegation:\n  max_iterations: 7\n")
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
-        monkeypatch.setattr(cli, "CLI_CONFIG", cli._cli_config_defaults())
 
         cfg = delegate_tool_config._load_config()
 
-        assert cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS) == DEFAULT_MAX_ITERATIONS, (
+        assert cfg["max_iterations"] == DEFAULT_MAX_ITERATIONS, (
             "an --ignore-user-config run resolved a different subagent iteration cap than "
             "delegation.max_iterations; migration 36 raised this to 250 because a smaller cap "
             "truncated substantial delegated work"
@@ -184,14 +183,14 @@ class TestOneDefaultTableAndOneBypass:
         """An empty config.yaml gives ``hermes chat`` the turn cap and subagent cap that load_config
         (gateway, TUI, dashboard) gives: unlimited and 250."""
         from hermes_cli.config import load_config
-        from hermes_cli.config_defaults import DEFAULT_CONFIG
 
         self._home(tmp_path, monkeypatch)
         import cli
         cfg, shared = cli.load_cli_config(), load_config()
 
-        assert cfg["agent"]["max_turns"] == shared["agent"]["max_turns"] == DEFAULT_CONFIG["agent"]["max_turns"]
-        assert cfg["delegation"]["max_iterations"] == shared["delegation"]["max_iterations"] == 250
+        assert cfg["agent"]["max_turns"] == shared["agent"]["max_turns"] == _default("agent", "max_turns")
+        assert cfg["delegation"]["max_iterations"] == shared["delegation"]["max_iterations"] == (
+            _default("delegation", "max_iterations"))
 
     def test_a_shell_terminal_timeout_survives_a_file_terminal_section(self, tmp_path, monkeypatch):
         """``hermes chat`` mirrors the file's terminal section to env; a key the file does not set
@@ -222,10 +221,12 @@ class TestOneDefaultTableAndOneBypass:
             "_load_gateway_config": gateway_run._load_gateway_config(home / "config.yaml"),
         }
         for name, cfg in layered.items():
-            model = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+            cfg = cfg or {}
+            model = cfg.get("model")
+            model = model if isinstance(model, dict) else {}
             assert model.get("base_url") != "https://user-only.example", name
             assert (cfg.get("terminal") or {}).get("timeout") != 9, name
-        assert delegate_tool_config._load_config().get("max_iterations") == 250
+        assert delegate_tool_config._load_config()["max_iterations"] == _default("delegation", "max_iterations")
         # No file terminal section exists, so defaults only backfill: a .env/shell value is kept.
         env = {"TERMINAL_TIMEOUT": "55"}
         C.apply_terminal_config_to_env(env=env)
@@ -255,7 +256,8 @@ class TestOneDefaultTableAndOneBypass:
             C.save_config(cfg)
 
         assert err.value.code == "config_user_ignored"
-        assert config_refusal_http(err.value).status_code == 409
+        refusal = config_refusal_http(err.value)
+        assert refusal is not None and refusal.status_code == 409
         assert (home / "config.yaml").read_bytes() == before
         # A single-key write edits the raw file and still saves.
         C.set_config_value("display.skin", "mono")
@@ -268,7 +270,7 @@ class TestOneDefaultTableAndOneBypass:
         stay, and an edit equal to the default is written, not dropped."""
         from hermes_cli import config as C
 
-        home = self._home(tmp_path, monkeypatch, self._USER_FILE)
+        self._home(tmp_path, monkeypatch, self._USER_FILE)
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
 
         C.save_config({"model": {"default": "picked/model"}}, merge_existing=True)
@@ -282,7 +284,52 @@ class TestOneDefaultTableAndOneBypass:
         assert on_disk["mcp_servers"] == {"a": {"command": "test-a"}}
         assert on_disk["agent"]["max_turns"] is None
         assert on_disk["delegation"]["max_iterations"] == 250
+
+    def test_a_migration_under_the_flag_saves(self, tmp_path, monkeypatch):
+        """A migration edits the raw file, not the defaults load_config() serves, so the flag does
+        not refuse it: ``hermes --ignore-user-config update`` still finishes the migration."""
+        from hermes_cli import config as C
+
+        home = self._home(tmp_path, monkeypatch, self._USER_FILE)
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+
+        raw = C.read_raw_config()
+        raw["display"] = {"skin": "mono"}
+        C._persist_migration(raw)
+        C.write_platform_config_field("telegram", "reply_to_mode", "all", raw=True)
+
+        on_disk = C.read_raw_config()
+        assert on_disk["display"]["skin"] == "mono"
+        assert on_disk["platforms"]["telegram"]["reply_to_mode"] == "all"
+        assert on_disk["model"]["api_key"] == "test-key-not-real"
+        assert on_disk["mcp_servers"] == {"a": {"command": "test-a"}}
         assert (home / "config.yaml").exists()
+
+    def test_a_whole_file_save_with_no_user_file_is_not_refused(self, tmp_path, monkeypatch):
+        """With no config.yaml (or an empty one) there is nothing to overwrite."""
+        from hermes_cli import config as C
+
+        home = self._home(tmp_path, monkeypatch)
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+        assert (home / "config.yaml").read_text() == ""
+        cfg = C.load_config()
+        cfg["display"]["skin"] = "mono"
+        C.save_config(cfg)
+        assert C.read_raw_config()["display"]["skin"] == "mono"
+        assert (home / "config.yaml").exists()
+
+    def test_the_flagged_load_is_cached_and_the_flag_flip_reloads(self, tmp_path, monkeypatch):
+        """Defaults + managed are cached under the flag (no rebuild per read), and turning the flag
+        off serves the file again without a stale hit."""
+        from hermes_cli import config as C
+
+        self._home(tmp_path, monkeypatch, self._USER_FILE)
+        monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
+        first = C.load_config_readonly()
+        assert C.load_config_readonly() is first
+        assert first["agent"]["max_turns"] == _default("agent", "max_turns")
+        monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG")
+        assert C.load_config_readonly()["agent"]["max_turns"] == 12
 
 
 class TestRefusalReachesTheUserCleanly:
@@ -293,7 +340,8 @@ class TestRefusalReachesTheUserCleanly:
 
     def _home(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        (tmp_path / "config.yaml").write_text(self._FILE)
+        # Current stamp: startup migrations (which do save under the flag) have nothing to do.
+        (tmp_path / "config.yaml").write_text(self._FILE + f"_config_version: {_default('_config_version')}\n")
         monkeypatch.setenv("HERMES_IGNORE_USER_CONFIG", "1")
         return tmp_path / "config.yaml"
 
@@ -344,3 +392,13 @@ class TestRefusalReachesTheUserCleanly:
         assert USER_CONFIG_IGNORED_MESSAGE in err
         assert "Traceback" not in err
         assert path.read_bytes() == before
+
+    def test_the_bare_chat_path_reports_a_refusal_the_same_way(self, capsys):
+        """``hermes`` with no subcommand runs chat inside the same reporter as every subcommand."""
+        from hermes_cli.config_backend import ConfigWriteError
+        from hermes_cli.main_dispatch import config_refusals_reported
+
+        with pytest.raises(SystemExit) as exit_, config_refusals_reported():
+            raise ConfigWriteError("not saved", code="config_user_ignored")
+        assert exit_.value.code == 1
+        assert capsys.readouterr().err == "Error: not saved\n"

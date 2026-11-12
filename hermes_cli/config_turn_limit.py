@@ -44,3 +44,8 @@ def resolve_turn_limit(raw: Any, default: int = TURN_LIMIT_UNLIMITED) -> int:
         logger.debug("resolve_turn_limit: unsupported type %s (%r) → default %d", type(raw).__name__, raw, default)
         return default
     return TURN_LIMIT_UNLIMITED if n <= 0 else n
+
+
+def turn_limit_label(limit: int) -> str:
+    """How a resolved turn limit reads on screen."""
+    return "unlimited" if limit == TURN_LIMIT_UNLIMITED else str(limit)

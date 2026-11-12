@@ -9,6 +9,7 @@ from hermes_cli.stale_modules import drop_stale_root_modules
 
 drop_stale_root_modules()
 
+import contextlib
 import copy
 import difflib
 import json
@@ -50,6 +51,7 @@ from hermes_cli.config_backend import (
     ConfigWriteError, config_cache_version, config_destination, config_exists, config_version,
     get_config_backend, probe_config_readable, read_config_doc, supports_file_tooling,
     write_config_document)
+from hermes_cli.config_turn_limit import TURN_LIMIT_UNLIMITED, resolve_turn_limit  # re-exported: callers import these from hermes_cli.config
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
@@ -1150,12 +1152,13 @@ def _persist_migration(config: dict[str, Any]) -> None:
     ON, no ``merge_existing``) so the invariant cannot regress one migration at a time. A migration
     is Hermes' own write, never a user turning a feature off. A backend without file tooling
     migrates in memory on read and never writes back (D12)."""
+    from hermes_cli.config_worker_save import saving_raw_file
     from hermes_cli.observability.shared_metrics_disabled import hermes_applied_write
 
     if not supports_file_tooling():
         get_config_backend().apply_in_memory(get_config_path().parent, config)
         return
-    with hermes_applied_write():
+    with hermes_applied_write(), saving_raw_file():
         save_config(config)
 
 
@@ -1691,9 +1694,6 @@ def _canonicalize_config(config: dict[str, Any]) -> dict[str, Any]:
     return _normalize_root_model_keys(_normalize_max_turns_config(config))
 
 
-from hermes_cli.config_turn_limit import TURN_LIMIT_UNLIMITED, resolve_turn_limit  # re-exported: callers import these from hermes_cli.config
-
-
 def cfg_get(cfg: Optional[dict[str, Any]], *keys: str, default: Any = None) -> Any:
     """Traverse nested dict keys safely, returning ``default`` on any miss.
     Explicit ``None`` values are returned as-is (``dict.get`` semantics: ``default`` only when the
@@ -1951,10 +1951,13 @@ def write_platform_config_field(
     """Persist one scalar field under ``platforms.<platform_key>``.
     ``raw=True`` (CLI setup flows) edits only the user's raw file; dashboard routes use the
     default loaded-config path to keep their profile-scoped ``load_config`` behavior."""
+    from hermes_cli.config_worker_save import saving_raw_file
+
     config = read_raw_config() if raw else load_config()
     platforms = _ensure_dict(config, "platforms")
     _ensure_dict(platforms, platform_key)[field_key] = value
-    save_config(config)
+    with saving_raw_file() if raw else contextlib.nullcontext():
+        save_config(config)
 
 
 # ``terminal.<key>`` -> env var read by tools.terminal_tool. Every key maps to ``TERMINAL_<KEY>``
@@ -2015,7 +2018,7 @@ def apply_terminal_config_to_env(
     matching env values; merged defaults only backfill missing env vars."""
     target = os.environ if env is None else env
 
-    raw_terminal_cfg = {} if user_config_ignored() else read_raw_config().get("terminal")
+    raw_terminal_cfg = None if user_config_ignored() else read_raw_config().get("terminal")
     file_has_terminal_config = isinstance(raw_terminal_cfg, dict)
     raw_terminal_cfg = raw_terminal_cfg if file_has_terminal_config else {}
     should_override = file_has_terminal_config if override is None else override
@@ -2060,9 +2063,12 @@ def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[Any, ...]]
     """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE`` (racy-clean guarded, see ``config_cache_version``).
     The managed config file's signature is folded in (zeros = none) so editing it invalidates
     the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on).
-    Under :func:`user_config_ignored` the user file counts as absent, so no layered reader parses it."""
+    Under :func:`user_config_ignored` the user file counts as absent, so no layered reader parses
+    it; the fixed ``_IGNORED_USER_SIG`` still caches defaults + managed and differs from every
+    file signature, so flipping the flag invalidates the entry."""
+    ignored = user_config_ignored()
     try:
-        user_sig: Optional[tuple[Any, ...]] = None if user_config_ignored() else config_cache_version(config_path)
+        user_sig: Optional[tuple[Any, ...]] = None if ignored else config_cache_version(config_path)
     except FileNotFoundError:
         user_sig = None
     managed_dir = managed_scope.get_managed_dir()
@@ -2070,9 +2076,14 @@ def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[Any, ...]]
         managed_sig = file_cache_version(managed_dir / "config.yaml") if managed_dir else (0, 0, 0, 0, "")  # config-reader: ok — managed overlay
     except OSError:
         managed_sig = (0, 0, 0, 0, "")
+    if ignored:
+        return None, (*_IGNORED_USER_SIG, *managed_sig)
     if user_sig is None and managed_sig == (0, 0, 0, 0, ""):
         return None, None
     return user_sig, (*(user_sig or (0, 0, 0, 0, "")), *managed_sig)
+
+
+_IGNORED_USER_SIG = (0, 0, 0, 0, "ignored")
 
 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[dict[str, Any]]:
@@ -2230,7 +2241,8 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
 
         normalized = _canonicalize_config(config)
         expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
-        _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+        if not user_config_ignored():  # defaults served under the flag are no last-known-good
+            _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         _note_policy("note_config_policy", (expanded.get("security") or {}).get("redact_secrets"))
         if cache_sig is not None:
             # The cache stores its own deepcopy so load_config() callers can mutate freely while

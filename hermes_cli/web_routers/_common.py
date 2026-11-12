@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, Optional
 from fastapi import HTTPException
 
 from hermes_cli.config_backend import CONFIG_MUTATION_LOCK, ConfigLockedError, ConfigValueError, ConfigWriteError
+from hermes_cli.config_worker_save import USER_CONFIG_IGNORED
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_profiles import _profile_cli_args
 
@@ -96,7 +97,7 @@ def config_refusal_http(exc: ConfigWriteError) -> Optional[HTTPException]:
     if isinstance(exc, ConfigValueError):
         status = 413 if exc.code in ("config_level_too_large", "config_body_too_large") else 400
         return HTTPException(status_code=status, detail=str(exc))
-    if exc.code in ("config_version_conflict", "config_user_ignored"):
+    if exc.code in ("config_version_conflict", USER_CONFIG_IGNORED):
         return HTTPException(status_code=409, detail=str(exc))
     return None
 

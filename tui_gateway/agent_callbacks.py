@@ -335,8 +335,11 @@ def _apply_personality_to_session(
     return False, info
 
 
-def _cfg_max_turns(cfg: dict, default: int) -> int:
-    from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
+def _cfg_max_turns(cfg: dict, default: int | None = None) -> int:
+    """The TUI agent's turn budget; an unset ``agent.max_turns`` is unlimited, as on every surface."""
+    from hermes_cli.config_turn_limit import TURN_LIMIT_UNLIMITED, resolve_turn_limit as _resolve_turn_limit
+    if default is None:
+        default = TURN_LIMIT_UNLIMITED
     # Env override wins; resolve_turn_limit makes "none"/"unlimited"/0 first-class spellings.
     if env_val := os.environ.get("HERMES_TUI_MAX_TURNS"):
         return _resolve_turn_limit(env_val, default=default)

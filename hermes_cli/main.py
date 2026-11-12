@@ -3434,11 +3434,11 @@ def main():
     from hermes_cli.observability.shared_metrics_disabled import set_process_surface
     set_process_surface(args.command)
     # No subcommand (optionally with top-level --resume / --continue) → chat.
+    from hermes_cli.main_dispatch import config_refusals_reported, run_subcommand
     if args.command is None:
-        _default_to_chat(args)
+        with config_refusals_reported():
+            _default_to_chat(args)
         return
-
-    from hermes_cli.main_dispatch import run_subcommand
     run_subcommand(args, parser)
 
 

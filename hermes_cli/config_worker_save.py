@@ -5,14 +5,35 @@ A managed worker binds its session's creation-time config (``agent.safe_worker_p
 (an ``always`` approval, a connector enable) must land only what it changed on the LIVE file:
 writing the whole snapshot back would revert every profile edit made since the session was
 created. Outside a frozen worker this is ``save_config``'s ordinary ``merge_existing`` handling,
-except that under ``--ignore-user-config`` a whole-file save is refused: it would write defaults
-over the file.
+except that under ``--ignore-user-config`` a whole-file save over an existing file is refused:
+it would write defaults over the file. A write built from the raw file itself (a migration, a
+``raw=True`` platform field) runs under :func:`saving_raw_file` and is not refused.
 """
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import copy
-from typing import Any
+from typing import Any, Iterator
+
+USER_CONFIG_IGNORED = "config_user_ignored"
+USER_CONFIG_IGNORED_MESSAGE = (
+    "This change was not saved: --ignore-user-config is set, so the loaded config is defaults, "
+    "not your file. Single settings (`hermes config set`) still save.")
+
+_SAVING_RAW_FILE: contextvars.ContextVar[bool] = contextvars.ContextVar("hermes_saving_raw_file", default=False)
+
+
+@contextlib.contextmanager
+def saving_raw_file() -> Iterator[None]:
+    """A whole-file save of a dict read from ``read_raw_config()``: it is the user's file plus an
+    edit, not the defaults ``load_config()`` serves under ``--ignore-user-config``."""
+    token = _SAVING_RAW_FILE.set(True)
+    try:
+        yield
+    finally:
+        _SAVING_RAW_FILE.reset(token)
 
 
 def rebase_for_save(config: dict[str, Any], live_raw: dict[str, Any], merge_existing: bool) -> dict[str, Any]:
@@ -21,18 +42,13 @@ def rebase_for_save(config: dict[str, Any], live_raw: dict[str, Any], merge_exis
     snapshot = _config._worker_config_snapshot()
     if snapshot is not None:
         return _three_way(live_raw or {}, config, _config.load_config(), _frozen_for_deletion(snapshot))
-    if not merge_existing and _config.user_config_ignored():
+    if not merge_existing and live_raw and not _SAVING_RAW_FILE.get() and _config.user_config_ignored():
         # load_config() served defaults, not the file: a whole-file save would replace the user's file.
         from hermes_cli.config_backend import ConfigWriteError
-        raise ConfigWriteError(USER_CONFIG_IGNORED_MESSAGE, code="config_user_ignored")
+        raise ConfigWriteError(USER_CONFIG_IGNORED_MESSAGE, code=USER_CONFIG_IGNORED)
     if merge_existing and live_raw:
         return _config._merge_partial_save(live_raw, config)
     return config
-
-
-USER_CONFIG_IGNORED_MESSAGE = (
-    "This change was not saved: --ignore-user-config is set, so the loaded config is defaults, "
-    "not your file. Single settings (`hermes config set`) still save.")
 
 
 def _frozen_for_deletion(snapshot: dict[str, Any]) -> Any:

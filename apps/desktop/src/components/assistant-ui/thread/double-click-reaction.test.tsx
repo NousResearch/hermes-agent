@@ -67,6 +67,28 @@ describe('isTapbackDoubleClick', () => {
     expect(isTapbackDoubleClick({ detail: 2, target: document.createElement('a') })).toBe(false)
     expect(isTapbackDoubleClick({ detail: 2, target: document.createElement('button') })).toBe(false)
   })
+
+  it('leaves a double-click that dragged alone — that gesture is a text selection', () => {
+    const target = window.document.createElement('span')
+
+    // Press and release in the same place: the iMessage tapback.
+    expect(
+      isTapbackDoubleClick({ clientX: 100, clientY: 200, detail: 2, press: { x: 100, y: 200 }, target })
+    ).toBe(true)
+
+    // A couple of pixels of hand tremble is still a tap.
+    expect(
+      isTapbackDoubleClick({ clientX: 102, clientY: 201, detail: 2, press: { x: 100, y: 200 }, target })
+    ).toBe(true)
+
+    // Dragged across the paragraph to extend a highlight: not ours.
+    expect(
+      isTapbackDoubleClick({ clientX: 420, clientY: 200, detail: 2, press: { x: 100, y: 200 }, target })
+    ).toBe(false)
+
+    // Without a recorded press the old behaviour stands.
+    expect(isTapbackDoubleClick({ clientX: 420, clientY: 200, detail: 2, press: null, target })).toBe(true)
+  })
 })
 
 describe('double-click to heart an assistant message', () => {
@@ -115,5 +137,38 @@ describe('double-click to heart an assistant message', () => {
     fireEvent.doubleClick(message!, { detail: 2 })
 
     expect($localReactions.get()['assistant-1']).toBeUndefined()
+  })
+
+  it('keeps the highlight when the double-click dragged to extend a selection', async () => {
+    $reactionsEnabled.set(true)
+    render(<Harness />)
+
+    const text = await screen.findByText('done')
+    const message = text.closest('[data-slot="aui_assistant-message-root"]')
+
+    // The gesture Ted makes: press on a word, drag to finish highlighting, release.
+    fireEvent.mouseDown(text, { clientX: 120, clientY: 200 })
+    const range = window.document.createRange()
+    range.selectNodeContents(text)
+    window.getSelection()!.addRange(range)
+    fireEvent.doubleClick(text, { clientX: 420, clientY: 200, detail: 2 })
+
+    expect(window.getSelection()!.toString()).toBe('done')
+    expect($localReactions.get()['assistant-1']).toBeUndefined()
+    window.getSelection()!.removeAllRanges()
+  })
+
+  it('still hearts a double-click that stayed put after a press', async () => {
+    $reactionsEnabled.set(true)
+    render(<Harness />)
+
+    const text = await screen.findByText('done')
+    const message = text.closest('[data-slot="aui_assistant-message-root"]')
+
+    fireEvent.mouseDown(text, { clientX: 120, clientY: 200 })
+    fireEvent.doubleClick(text, { clientX: 122, clientY: 201, detail: 2 })
+
+    await waitFor(() => expect($localReactions.get()['assistant-1']?.[0]?.emoji).toBe('❤️'))
+    expect(message).toBeTruthy()
   })
 })

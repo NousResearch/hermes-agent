@@ -299,9 +299,10 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
   const [initiallyRunning] = useState(() => messageRuntime.getState().status?.type === 'running')
   const enterRef = useEnterAnimation(initiallyRunning, `assistant-message:${messageId}`)
 
-  // Double-click the reply to heart it (iMessage). Undefined while reactions
-  // are off, so the root carries no listener at all.
-  const onDoubleClick = useTapbackDoubleClick(messageId, 'assistant')
+  // Double-click the reply to heart it (iMessage), unless the gesture dragged —
+  // that was a text selection. Undefined while reactions are off, so the root
+  // carries no listener at all.
+  const tapback = useTapbackDoubleClick(messageId, 'assistant')
 
   return (
     <MessagePrimitive.Root
@@ -315,7 +316,8 @@ const AssistantMessageBody: FC<AssistantMessageProps & { collapsedNotice?: null 
       // Collapsed inter-agent rows never carried the tapback listener; keeping
       // that exact truth table means gating it on the notice rather than on
       // whether the hook returned a handler.
-      onDoubleClick={collapsedNotice ? undefined : onDoubleClick}
+      onDoubleClick={collapsedNotice ? undefined : tapback?.onDoubleClick}
+      onMouseDown={collapsedNotice ? undefined : tapback?.onMouseDown}
       ref={enterRef}
     >
       {collapsedNotice ?? (

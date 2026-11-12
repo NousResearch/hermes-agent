@@ -868,7 +868,11 @@ def _is_opaque_prefixed_token(token: str) -> bool:
 
 def _mask_prefix_match(m: "re.Match[str]", mask) -> str:
     glued = m.start() > 0 and m.string[m.start() - 1] in "-_"
-    return m.group(0) if glued and not _is_opaque_prefixed_token(m.group(1)) else mask(m.group(1))
+    token = m.group(1)
+    # GOCSPX- is distinctive even when base64url separators break every long alphanumeric run.
+    if glued and not token.startswith("GOCSPX-") and not _is_opaque_prefixed_token(token):
+        return m.group(0)
+    return mask(token)
 
 # Zhipu API keys use an unprefixed ``id.secret`` form. Keep this deliberately
 # provider-shaped instead of applying a generic high-entropy dotted-token rule:

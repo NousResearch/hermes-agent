@@ -214,6 +214,11 @@ class TestGoogleOAuthCredentials:
         fragment = self.SECRET[:17]  # 80-char preview can end mid-body
         _assert_masked("msg='client_secret\":\"" + fragment, fragment)
 
+    @pytest.mark.parametrize("separator", ["-", "_"])
+    def test_client_secret_glued_to_identifier_is_masked(self, separator):
+        # Full base64url secrets need masking even if no body run reaches 16 alphanumerics.
+        _assert_masked(f"msg='archive{separator}{self.SECRET}'", self.SECRET)
+
     @pytest.mark.parametrize("text", ["GOCSPX-short", "ya29.short", "ya29.c.short", "notGOCSPX-" + "A" * 24, "mya29." + "A" * 24])
     def test_short_or_embedded_lookalikes_kept(self, text):
         _assert_unchanged(text)

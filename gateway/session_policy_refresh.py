@@ -286,7 +286,12 @@ def drop_session_terminal(authority, ref):
 async def _publish(authority, ref, moved=False):
     from gateway.session_local import local_session_info, publish_local_policy
     if moved:  # before the drain can run a turn on the new binding with the old environment
-        await asyncio.to_thread(drop_session_terminal, authority, ref)
+        try:
+            await asyncio.to_thread(drop_session_terminal, authority, ref)
+        except Exception:  # health: allow BLE001 -- the policy is committed: a failed cleanup must still publish it
+            # Unpublished, restore refuses the stored/live pair and a retry sees nothing moved.
+            logger.warning('Session %s refreshed without dropping its terminal environment', ref.session_id,
+                           exc_info=True)
     publish_local_policy(authority, ref.session_id)
     # A drain that ran during the off-loop commit saw the new stored policy beside the old live one and
     # paused; with both equal again, anything admitted meanwhile runs.

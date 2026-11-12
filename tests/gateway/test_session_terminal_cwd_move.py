@@ -38,3 +38,40 @@ async def test_a_workspace_move_after_a_cd_runs_the_next_command_in_the_new_fold
     finally:
         await owner.close()
         store.close_all_db_handles()
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_whose_cwd_save_fails_still_publishes_its_committed_policy(tmp_path, monkeypatch):
+    """The refresh commits the new policy, then drops the session's saved cwd. A routing store that
+    refuses that save (here: state.db rejects it and the sessions.json fallback is a directory) must
+    not leave the live policy behind the committed one: restore refuses that pair, and a retry finds
+    nothing moved and never publishes."""
+    import json
+    from gateway.session_contract import SessionRef
+    from gateway.session_local_recovery import restore_local_session
+    from gateway.session_policy import restore_policy
+    from gateway.session_policy_refresh import commit_refresh
+    from hermes_state_local import local_receipt
+    from tests.gateway.test_session_resume_config_refresh import AFTER
+    home = _home(monkeypatch)
+    store, authority = await _owner_authority(home)
+    owner = _connect(authority)
+    try:
+        sid = (await _call(owner, 'session.create', request_id='t', source='cli', cwd=str(tmp_path)))['session_id']
+        assert store.set_session_metadata(authority.sessions[sid].route, 'terminal_cwd', str(tmp_path))
+        mirror = store.sessions_dir / 'sessions.json'
+        mirror.unlink(missing_ok=True)
+        mirror.mkdir()
+        store._db._write_sql("CREATE TRIGGER refuse_routes BEFORE DELETE ON gateway_routing "
+                             "BEGIN SELECT RAISE(ABORT, 'routing disk unavailable'); END")
+        (home / 'config.yaml').write_text(AFTER)
+        assert await commit_refresh(authority, SessionRef(authority.profile_id, sid))
+        stored = restore_policy(local_receipt(authority.db, sid)['policy'])
+        backends = [json.loads(p.terminal_json)['TERMINAL_ENV'] for p in (stored, _policy(authority, sid))]
+        assert backends == ['docker', 'docker']
+        store._db._write_sql('DROP TRIGGER refuse_routes')
+        mirror.rmdir()
+        restore_local_session(authority, sid)
+    finally:
+        await owner.close()
+        store.close_all_db_handles()

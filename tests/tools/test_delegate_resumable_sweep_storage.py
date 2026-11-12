@@ -202,3 +202,25 @@ def test_a_start_retry_still_waiting_when_the_child_stops_never_reopens_the_stop
         r._flush(durable)  # a later checkpoint after the stop: must not rewrite the start record
     state, _pinned, record = _db_rows(parent)[sid]
     assert state == "resumable" and record["outcome"] == "unknown"
+
+
+def test_a_start_write_that_never_landed_before_the_stop_is_not_written_by_a_later_flush():
+    """The start write failed at record_start and again at record_stop's retry: a flush after the stop (a late
+    heartbeat tick) must not write a ``running`` row that no stop row will ever follow."""
+    from tools import delegate_tool_resumable as r
+    parent = _parent()
+    sid = "sa-never-landed"
+    run = _run(parent, sid)
+    real_upsert, failures = r._upsert, []
+
+    def upsert(conn, s, record, **kw):
+        if kw["state"] == "running" and len(failures) < 2:
+            failures.append(kw["state"])
+            raise sqlite3.OperationalError("disk I/O error")
+        return real_upsert(conn, s, record, **kw)
+
+    with patch.object(r, "_upsert", side_effect=upsert), patch.object(r, "_child_cwd", return_value=None):
+        r.record_start(run)
+        r.record_stop(run, {"status": "unknown"})
+        r._flush(run.child._delegate_durable)
+    assert len(failures) == 2 and sid not in _db_rows(parent)

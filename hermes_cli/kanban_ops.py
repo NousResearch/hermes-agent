@@ -60,27 +60,50 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee, kanban.max_in_progress,
     # kanban.max_in_progress_per_profile and kanban.max_spawn with the same
-    # semantics as the gateway dispatch path.
+    # semantics as the gateway dispatch path. The caps are read from THIS
+    # process's config home, so a home with no kanban: block is refused rather
+    # than silently run uncapped (see kbd.dispatch_cap_config).
     try:
-        from hermes_cli.config import load_config
-        _cfg = load_config()
-        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
-        default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
-        max_in_progress_per_profile = kbd._positive_int(
-            _kanban_cfg.get("max_in_progress_per_profile"), None
+        _kanban_cfg = kbd.dispatch_cap_config()
+    except kbd.UncappedHomeError as exc:
+        return _err(
+            f"kanban dispatch refused: {exc} — unset caps are not unlimited, "
+            f"and this pass would spawn without a bound. Run the dispatch from "
+            f"the home that owns the board, or add a kanban: block "
+            f"(max_in_progress, max_in_progress_per_profile) to "
+            f"{kbd._display_config_path()}.",
+            2,
         )
-        # Memory-derived default when unset — same fallback the gateway applies.
-        max_in_progress = kbd.resolve_max_in_progress(
-            kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
+    default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
+    max_in_progress_per_profile = kbd._positive_int(
+        _kanban_cfg.get("max_in_progress_per_profile"), None
+    )
+    # Memory-derived default when unset — same fallback the gateway applies.
+    configured_max_in_progress = kbd._positive_int(_kanban_cfg.get("max_in_progress"), None)
+    max_in_progress = kbd.resolve_max_in_progress(configured_max_in_progress)
+    # CLI --max is the more explicit signal, so it wins over kanban.max_spawn.
+    cli_max = getattr(args, "max", None)
+    max_spawn = (
+        cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
+    )
+    caps = {
+        "max_in_progress": max_in_progress,
+        "max_in_progress_source": (
+            "config" if configured_max_in_progress is not None
+            else f"derived floor {kbd.DERIVED_MAX_IN_PROGRESS_FLOOR}"
+        ),
+        "max_in_progress_per_profile": max_in_progress_per_profile,
+        "max_spawn": max_spawn,
+    }
+    if not getattr(args, "json", False):
+        per_profile = caps["max_in_progress_per_profile"]
+        print(
+            f"Caps: max_in_progress={max_in_progress} "
+            f"({caps['max_in_progress_source']}), "
+            f"max_in_progress_per_profile="
+            f"{per_profile if per_profile is not None else 'none'}, "
+            f"max_spawn={max_spawn if max_spawn is not None else 'unset'}"
         )
-        # CLI --max is the more explicit signal, so it wins over kanban.max_spawn.
-        cli_max = getattr(args, "max", None)
-        max_spawn = (
-            cli_max if cli_max is not None else kbd._positive_int(_kanban_cfg.get("max_spawn"), None)
-        )
-    except Exception:
-        default_assignee = max_in_progress_per_profile = max_in_progress = None
-        max_spawn = getattr(args, "max", None)
     with kbc.connect_closing() as conn:
         res = kbd.dispatch_once(
             conn,
@@ -113,6 +136,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "rate_limited": res.rate_limited,
             "skipped_locked": res.skipped_locked,
             "memory_pressure": res.memory_pressure,
+            "caps": caps,
         }, ascii=True)
         return 0
     print(f"Reclaimed:    {res.reclaimed}")

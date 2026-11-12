@@ -753,9 +753,12 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             for _i, _att in enumerate(attachments_raw):
                 if isinstance(_att, dict):
                     logger.info(
-                        "[%s] attachment[%d]: content_type=%s url=%s filename=%s",
+                        "[%s] attachment[%d]: content_type=%s url_len=%d filename_len=%d",
                         self._log_tag, _i, _att.get("content_type", ""),
-                        str(_att.get("url", ""))[:80], _att.get("filename", ""))
+                        len(str(_att.get("url") or "")), len(str(_att.get("filename") or "")))
+                    logger.debug(
+                        "[%s] attachment[%d]: url=%s filename=%s",
+                        self._log_tag, _i, _att.get("url", ""), _att.get("filename", ""))
 
         await self._ingest(
             d, msg_id, content, attachments_raw, timestamp, verbose=True,

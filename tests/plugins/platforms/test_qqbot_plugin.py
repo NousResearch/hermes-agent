@@ -102,3 +102,41 @@ async def test_standalone_sender_reports_missing_credentials(monkeypatch):
 
     result = await standalone_send(PlatformConfig(enabled=True, extra={}), "chat-1", "hi")
     assert "QQ_APP_ID" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_qq_c2c_attachment_metadata_stays_out_of_info(caplog, monkeypatch):
+    """A QQ DM's attachment URL/filename may contain private user data (#46006)."""
+    import logging
+    from unittest.mock import AsyncMock
+
+    from gateway.config import PlatformConfig
+    from plugins.platforms.qqbot.adapter import QQAdapter
+
+    adapter = QQAdapter(PlatformConfig(enabled=True, extra={}))
+    ingest = AsyncMock()
+    monkeypatch.setattr(adapter, "_ingest", ingest)
+    attachment = {
+        "content_type": "application/pdf",
+        "url": "https://files.example.test/attachment?signature=private-sentinel",
+        "filename": "Private medical report for Alice.pdf",
+    }
+    caplog.set_level(logging.DEBUG, logger="plugins.platforms.qqbot.adapter")
+    await adapter._handle_c2c_message(
+        {"attachments": [attachment]}, "msg-1", "hello", {"user_openid": "qq-user-1"}, "2026-11-12T18:00:00Z",
+    )
+    ingest.assert_awaited_once()
+    messages = [
+        r.getMessage() for r in caplog.records
+        if r.name == "plugins.platforms.qqbot.adapter" and r.levelno >= logging.INFO
+    ]
+    assert any("attachment[0]" in line for line in messages), messages
+    assert all(
+        attachment["filename"] not in line and "private-sentinel" not in line
+        for line in messages
+    ), messages
+    assert any(
+        attachment["filename"] in r.getMessage()
+        for r in caplog.records
+        if r.name == "plugins.platforms.qqbot.adapter" and r.levelno == logging.DEBUG
+    )

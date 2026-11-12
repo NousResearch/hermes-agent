@@ -1,7 +1,7 @@
 name: templeos
 title: TempleOS for Hermes
 repo: https://github.com/mojomast/hermes-templeos
-sha: 8fe30d7ac060081830446c0a78f1c06535e44a88
+sha: 0e3167ea8014e7187fdf86d2a4f973bc0f0d18ea
 subdir: ""
 description: >-
   TempleOS for Hermes: run a TempleOS-family OS in a local QEMU VM and share one
@@ -55,17 +55,17 @@ maintainer: mojomast
 tier: community
 category: desktop
 requires_hermes: ">=0.23.0"
-version: "0.2.1"
+version: "0.2.2"
 docs_url: https://github.com/mojomast/hermes-templeos#readme
 readme: true
 platforms: []
 screenshots:
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-1920x1240.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-typing.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-narrow.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-agent-log.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-user-driving.png
-  - https://raw.githubusercontent.com/mojomast/hermes-templeos/8fe30d7ac060081830446c0a78f1c06535e44a88/docs/images/pane-onboarding.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0e3167ea8014e7187fdf86d2a4f973bc0f0d18ea/docs/images/pane-1920x1240.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0e3167ea8014e7187fdf86d2a4f973bc0f0d18ea/docs/images/pane-typing.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0e3167ea8014e7187fdf86d2a4f973bc0f0d18ea/docs/images/pane-narrow.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0e3167ea8014e7187fdf86d2a4f973bc0f0d18ea/docs/images/pane-agent-log.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0e3167ea8014e7187fdf86d2a4f973bc0f0d18ea/docs/images/pane-user-driving.png
+  - https://raw.githubusercontent.com/mojomast/hermes-templeos/0e3167ea8014e7187fdf86d2a4f973bc0f0d18ea/docs/images/pane-onboarding.png
 known_issues:
   - "FAT floppy push is experimental; bake-off did not see hot-added FAT12 as A: on TinkerOS live CD."
   - "Primary host is Linux x86_64. Apple Silicon and Windows are untested."

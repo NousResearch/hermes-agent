@@ -19,7 +19,7 @@ tier: community
 category: voice
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/borealBytes/hermes-wearos#readme
-version: "0.3.10"
+version: "0.3.11"
 image: "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1140a35406ed735f12adf701fd37415406f306a0/docs/banner.png"
 screenshots:
   - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1140a35406ed735f12adf701fd37415406f306a0/docs/screenshots/66-wearkit-pane.png"

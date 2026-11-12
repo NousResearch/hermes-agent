@@ -1,19 +1,27 @@
 name: vividsites
 repo: https://github.com/krumjahn/vividsites-connectors
-sha: 4e2e8a9ab1f40836554d6eb9994875fbea0ccf8e
+sha: f298353be934985fc9a4ef11d951c2845bd8a7ce
 subdir: hermes
-description: Free VividSites components only. Returns a public component when meta.free is boolean true.
+description: Free public components without a key, plus cinematic templates and website blueprints with an optional paid library account.
 maintainer: VividSites
 tier: community
 category: tools
 requires_hermes: ">=0.23.1"
-version: "1.0.0"
-title: VividSites free components
+version: "1.2.0"
+title: VividSites
 readme: true
 capabilities:
   provides_tools:
     - list_free_components
     - get_free_component
-  provides_hooks: []
+    - vividsites_search_sites
+    - vividsites_get_template_preview
+    - vividsites_get_build_prompt
+    - vividsites_search_components
+    - vividsites_get_component
+    - vividsites_video_prompt_formula
+    - vividsites_get_website_blueprint
+  provides_hooks:
+    - pre_tool_call
   provides_middleware: []
   requires_env: []

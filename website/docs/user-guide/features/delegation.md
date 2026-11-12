@@ -544,7 +544,19 @@ The parent agent orchestrates its own running children with the same `delegate_t
 
 Control actions run synchronously in-turn (never backgrounded), are scoped to the caller's own spawn tree — a conversation can never see or control another session's children — and never consume the per-turn subagent spawn cap, so `stop` keeps working even after the cap is hit.
 
-**Continue a finished child.** `{"action": "continue", "subagent_id": "sa-0-1a2b3c4d", "message": "now add tests for it"}` gives a child that already returned its result a follow-up. The child is rebuilt on the same route (model, provider, profile) and toolsets, its history is loaded from its saved transcript, and `message` becomes its next turn; it keeps its `subagent_id` and session (the transcript appends, like `--resume`) and runs as a new background delegation with its own `delegation_id`, so the result arrives as a normal completion. A still-running child is refused with a pointer to `steer`, and so is a child whose inherited route now resolves to a different provider or endpoint because the parent switched since it ran. Only the owning conversation can continue a child, and only while this process still retains it (the last 200 finished children; not after a restart); background processes it started are gone, so it gets a fresh terminal. It is not offered in one-shot sessions or managed worker sessions; durable, resumable work belongs on the kanban board.
+**Continue a finished child.** `{"action": "continue", "subagent_id": "sa-0-1a2b3c4d", "message": "now add tests for it"}` gives a child that already returned its result a follow-up. The child is rebuilt on the same route (model, provider, profile) and toolsets, its history is loaded from its saved transcript, and `message` becomes its next turn; it keeps its `subagent_id` and session (the transcript appends, like `--resume`) and runs as a new background delegation with its own `delegation_id`, so the result arrives as a normal completion. A still-running child is refused with a pointer to `steer`, and so is a child whose inherited route now resolves to a different provider or endpoint because the parent switched since it ran. Only the owning conversation (or an ancestor in its spawn tree) can continue a child; background processes it started are gone, so it gets a fresh terminal, which starts in the directory and worktree the child stopped in. A continue is an ordinary dispatch: a closed chat, `max_concurrent_children`, `max_spawn_depth` and the spawn pause all refuse it the same way they refuse a spawn. It is not offered in one-shot sessions or managed worker sessions.
+
+**Resumable after a restart or crash.** Every child also keeps a durable record in the profile's `state.db`, so `continue` works after a gateway restart, a hard kill or a PC crash, not only while the process still remembers it. After a restart the child's route is re-resolved from its own routing request and must land on the same provider and endpoint. A child that did not complete and was not stopped by you or its parent (gateway shutdown, a crash, a usage limit, a provider refusal) is *resumable*: its completion entry carries `resume_mode`, and a limit failure also carries `failure_resets_at` (and `usage_limit` on a plan window) so you know when continuing can succeed. `resume_mode` is one of:
+
+| `resume_mode` | Typical cause | What continuing needs |
+|---|---|---|
+| `AUTO_AT` | usage/rate limit with a reset time, transient provider errors | wait until `failure_resets_at` |
+| `AUTO_ON_BOOT` | gateway shutdown, crash or hard kill | nothing; check git state and the last tool before re-running side effects |
+| `ON_FIX` | credits, auth, model access, account policy, request-shape errors | you fix the cause first |
+| `REPAIR_THEN_CONTINUE` | the conversation no longer fits, or an image/reasoning part is rejected | the transcript needs repairing first |
+| `HANDOFF` | a provider safety refusal of this conversation | another model, or the parent takes the work over |
+
+A resumable child's worktree (where its terminal was when it stopped, plus any worktree it created) is kept from the startup worktree sweep while its record lives: `delegation.resumable_ttl_hours` (default 48), at most `delegation.max_resumable` (default 32) per profile; beyond the cap the oldest loses its pin first. When the pin ends the normal sweep archives the tree to `refs/hermes/archive/` before removing it. Completed children and children you stopped are not pinned. Nothing resumes on its own unless you opt in with `delegation.auto_resume: true` (default `false`; reserved for the scheduler that reads `resume_mode`).
 
 ### From the TUI / gateway (session-facing)
 
@@ -774,6 +786,9 @@ delegation:
   # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # resumable_ttl_hours: 48                 # How long a stopped child stays continuable after a restart, worktree kept
+  # max_resumable: 32                       # Resumable children per profile whose worktree is kept (oldest unpinned first)
+  # auto_resume: false                      # Opt-in: resume such children without being asked
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

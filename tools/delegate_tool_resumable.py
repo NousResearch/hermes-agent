@@ -149,8 +149,8 @@ def _git_lines(args: list[str], cwd: str) -> list[str]:
     if env is None:
         return []
     try:
-        res = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True, timeout=10,
-                             stdin=subprocess.DEVNULL, check=False)
+        res = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=10, stdin=subprocess.DEVNULL, check=False)
     except (OSError, subprocess.SubprocessError):
         return []
     return res.stdout.splitlines() if res.returncode == 0 else []
@@ -184,11 +184,8 @@ def _pin_paths(record: dict[str, Any]) -> list[str]:
 
 # ── run lifecycle ──────────────────────────────────────────────────────────
 def _owner_identity() -> dict[str, Any]:
-    try:
-        from gateway.status import get_process_start_time
-        started = get_process_start_time(os.getpid())
-    except Exception:
-        started = None
+    from gateway.status import get_process_start_time
+    started = get_process_start_time(os.getpid())
     return {"owner_pid": os.getpid(), "owner_started_at": started}
 
 

@@ -1,0 +1,35 @@
+# Format follows plugin-catalog/hermes-video-editor.yaml in NousResearch/hermes-agent.
+name: hermes-studio
+title: Hermes Studio — local video workflow
+repo: https://github.com/Morkeeth/hermes-studio
+sha: 3f9c01035d69cfb7dc15d70c139f0c5a82b2075e
+version: "0.5.0"
+description: Local camera takes to reviewed editable portrait Shorts, with explicit
+  media-library discovery and an optional SSH conversation queue. Uses a separately
+  installed noncommercial native editor; no paid generation or automatic public posting.
+maintainer: Morkeeth
+category: tools
+tier: community
+requires_hermes: '>=0.21.5'
+docs_url: https://github.com/Morkeeth/hermes-studio/blob/3f9c01035d69cfb7dc15d70c139f0c5a82b2075e/README.md
+readme: true
+capabilities:
+  provides_tools:
+  - studio_take
+  - studio_cut
+  - studio_gate
+  - studio_verify_post
+  - studio_library
+  - studio_build
+  - studio_request
+  - studio_status
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+- Requires separately installed hermes-video-editor (PolyForm Noncommercial1.0.0),
+  FFmpeg/ffprobe and an existing local speech model.
+- New footage requires a reviewed native project recipe and real aligned words. Visual
+  checks use supplied hash-bound review, not automatic vision.
+- Single-owner connector; new music-level revisions wait for the render gate. A full
+  live attachment/reply-edit/new-export round trip is not yet verified.

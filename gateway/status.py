@@ -887,13 +887,10 @@ def _start_times_conflict(recorded_start: Any, current_start: Any) -> bool:
 
 
 def _live_pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:
-    """Record's PID when it is alive and passes the start-time PID-reuse guard, else None."""
-    pid = _pid_from_record(record)
-    if pid is None or not _pid_exists(pid):
-        return None
-    if _start_times_conflict(record.get("start_time"), _get_process_start_time(pid)):
-        return None
-    return pid
+    """Record's PID when it is alive and provably the process it names, else None."""
+    from gateway.status_boot_epoch import live_pid_from_record
+
+    return live_pid_from_record(record)
 
 
 def _clear_running_pid_cache() -> None:

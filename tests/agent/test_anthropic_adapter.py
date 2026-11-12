@@ -1842,6 +1842,45 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
     assert kwargs["system"][-1]["text"].count("claude-code") == 3  # the caller's block, not the CC prefix
 
 
+def test_oauth_system_prompt_sanitizer_preserves_paths_with_product_names():
+    """Paths containing 'Hermes Agent', 'hermes-agent' with Windows backslashes,
+    or 'Nous Research' are addresses, not prose, and must not be rewritten (#142121)."""
+    kwargs = build_anthropic_kwargs(
+        model="claude-sonnet-4-20250514",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    r"Working directory: D:\Hermes Agent\workspace ; "
+                    r"User home: C:\Users\user\Hermes Agent ; "
+                    r"Scratch directory: /home/user/Hermes Agent/scratch ; "
+                    r"Virtualenv: C:\Users\user\.hermes\hermes-agent\venv\Scripts\python.exe ; "
+                    r"Repo dir: D:\Nous Research\hermes-agent ; "
+                    r"Relative: Hermes Agent\sub and Hermes Agent/sub ; "
+                    "You are Hermes Agent by Nous Research. Hermes Agent's tools are available."
+                ),
+            },
+            {"role": "user", "content": "Hi"},
+        ],
+        tools=None,
+        max_tokens=4096,
+        reasoning_config=None,
+        is_oauth=True,
+    )
+
+    system_text = "\n".join(block["text"] for block in kwargs["system"])
+    # Prose product names are rewritten
+    assert "You are Claude Code by Anthropic." in system_text
+    assert "Claude Code's tools are available." in system_text
+    # Filesystem paths must NOT be rewritten
+    assert r"Working directory: D:\Hermes Agent\workspace" in system_text
+    assert r"User home: C:\Users\user\Hermes Agent" in system_text
+    assert "Scratch directory: /home/user/Hermes Agent/scratch" in system_text
+    assert r"Virtualenv: C:\Users\user\.hermes\hermes-agent\venv\Scripts\python.exe" in system_text
+    assert r"Repo dir: D:\Nous Research\hermes-agent" in system_text
+    assert r"Relative: Hermes Agent\sub and Hermes Agent/sub" in system_text
+
+
 def test_unsupported_inline_image_subtype_downgrades_to_text_for_anthropic(monkeypatch):
     """Sibling of the Responses guard: a data:image/svg+xml (or bmp/tiff) part forwarded verbatim as
     ``media_type`` 400s the Anthropic request on every replay — it must become a text placeholder

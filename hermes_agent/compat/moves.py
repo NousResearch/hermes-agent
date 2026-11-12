@@ -90,6 +90,7 @@ MOVES: dict[str, str] = {
     "hermes_time": "hermes_agent.hermes_time",
     "hermes_yaml": "hermes_agent.hermes_yaml",
     "model_tools": "hermes_agent.model_tools",
+    "plugins": "hermes_agent.plugins",
     "providers": "hermes_agent.providers",
     "registration_lifecycle": "hermes_agent.registration_lifecycle",
     "run_agent": "hermes_agent.run_agent",

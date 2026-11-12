@@ -686,7 +686,7 @@ List all scheduled jobs.
 
 ### POST /api/jobs
 
-Create a new scheduled job. Body accepts the same shape as `hermes cron` — prompt, schedule, skills, provider override, delivery target.
+Create a new scheduled job. Body accepts the same shape as `hermes cron` — prompt, schedule, skills, provider override, delivery target. A script job takes `script` (a path under `~/.hermes/scripts/`), optionally `workdir`, and `no_agent: true` when the script's stdout is the job's output and no model runs.
 
 ### GET /api/jobs/\{job_id\}
 
@@ -694,7 +694,7 @@ Fetch a single job's definition and last-run state.
 
 ### PATCH /api/jobs/\{job_id\}
 
-Update fields on an existing job (prompt, schedule, etc.). Partial updates are merged.
+Update fields on an existing job (prompt, schedule, script, no_agent, etc.). Partial updates are merged.
 
 ### DELETE /api/jobs/\{job_id\}
 

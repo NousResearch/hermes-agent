@@ -11,7 +11,6 @@ import {
 import { $fleetRoster } from '@/store/fleet-roster'
 import * as profile from '@/store/profile'
 import { $shellChoice } from '@/store/shell-variant'
-import { requestSimplifiedNewSession } from '@/store/simplified-new-session'
 
 import type { AppView } from '../../routes'
 
@@ -111,6 +110,7 @@ it('counts settled search outcomes once, excludes stale searches and query text'
 
 it('does not attribute a newly settled search to the previous profile while metrics rebind', () => {
   vi.useFakeTimers()
+
   const { rerender } = renderHook(({ query }) => useIaSearchMetrics(query, false, false, 3), {
     initialProps: { query: 'alpha search' }
   })
@@ -146,28 +146,25 @@ it('does not attribute a newly settled search to the previous profile while metr
   act(() => {
     vi.advanceTimersByTime(500)
   })
+
   const records = Array.from({ length: window.localStorage.length }, (_, i) => window.localStorage.key(i) ?? '')
     .filter(key => key.startsWith(DESKTOP_METRICS_STATE_KEY))
     .map(key => JSON.parse(window.localStorage.getItem(key)!))
+
   expect(records.map(record => record.today.actions['ia.search.results|state']).sort()).toEqual([1, 1])
 })
 
 it('distinguishes a default selection from dismissing the new-session picker', () => {
   render(<SimplifiedNewSession onFallback={vi.fn()} sessions={[]} />)
   fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
+  // A pick is the action: the blank chat starts at once and counts as a default start.
   fireEvent.click(screen.getByRole('option', { name: /Start blank chat/ }))
-  expect(actions()['ia.new_session.default|click']).toBeUndefined()
-  expect(profile.newSessionInProfile).not.toHaveBeenCalled()
-  act(() => {
-    expect(requestSimplifiedNewSession()).toBe(true)
-  })
   expect(actions()['ia.new_session.default|click']).toBe(1)
   expect(profile.newSessionInProfile).toHaveBeenCalledWith('default')
   expect(actions()['ia.new_session.dismissed|click']).toBeUndefined()
   fireEvent.keyDown(screen.getByRole('combobox'), { key: 'Enter' })
   fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' })
   expect(actions()['ia.new_session.dismissed|click']).toBe(1)
-  expect(actions()['ia.new_session.command|click']).toBe(1)
   expect(actions()['ia.new_session.picker_opened|click']).toBe(2)
   expect(profile.newSessionInProfile).toHaveBeenCalledTimes(1)
 })

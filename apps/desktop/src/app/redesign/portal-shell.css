@@ -196,6 +196,23 @@
   font-size: var(--portal-rail-glyph);
 }
 
+/* A destination that needs the user (Routines with a failed routine, Figma 1081:29422): the error
+   ink's dot at the glyph's top end, ringed by the rail so it reads on the brand selection too. */
+:root[data-shell='portal'] [data-slot='global-nav'] .portal-chrome-button:has(> [data-slot='rail-alert']) {
+  position: relative;
+}
+
+:root[data-shell='portal'] [data-slot='rail-alert'] {
+  position: absolute;
+  inset-block-start: 0.4375rem;
+  inset-inline-end: 0.4375rem;
+  width: 0.4375rem;
+  height: 0.4375rem;
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-status-error-ink);
+  box-shadow: 0 0 0 2px var(--portal-surface-canvas);
+}
+
 /* Figma's robot fills more of its box than the codicons do (906:19430). */
 :root[data-shell='portal'] .portal-rail-robot {
   inline-size: calc(var(--portal-rail-glyph) * 1.125);

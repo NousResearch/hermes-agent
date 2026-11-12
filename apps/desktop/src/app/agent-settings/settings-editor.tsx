@@ -10,6 +10,7 @@ import { CapabilitiesView } from '../capabilities'
 import { toolsetKeyGroup, useToolsetsQuery } from '../capabilities/toolsets/toolsets-data'
 import { useAgentCapabilityCopy } from '../capabilities/ui/agent-capability-copy'
 import { MessagingView } from '../messaging'
+import { AgentRoutines } from '../routines/agent-routines'
 import { BrowserRealProfilePanel } from '../settings/browser-real-profile-panel'
 import { ConfigSettings } from '../settings/config-settings'
 import { KeysSettings } from '../settings/keys-settings'
@@ -33,7 +34,6 @@ import {
   type AgentSettingsSection,
   resolveAgentSettingsSection
 } from './settings-routes'
-import { AgentSchedulesSettings } from './settings-schedules'
 
 interface AgentSettingsEditorProps extends SettingsPageProps {
   owner: AgentSettingsOwner
@@ -200,7 +200,7 @@ function AgentSettingsEditorContent({
           </AgentCapabilitiesSettings>
         )}
         {section === 'messaging' && <MessagingView className="agent-settings-messaging" />}
-        {section === 'schedules' && <AgentSchedulesSettings owner={owner} />}
+        {section === 'schedules' && <AgentRoutines owner={owner} />}
         {section === 'browser' && (
           <VaultSettings
             after={

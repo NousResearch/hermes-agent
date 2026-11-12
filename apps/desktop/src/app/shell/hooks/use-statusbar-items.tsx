@@ -134,6 +134,13 @@ function freeTierTrialModel(status: FreeTierStatus | null): string | null {
   return status?.available ? status.model || FREE_TIER_MODEL : null
 }
 
+/** Items the redesign retires: Cron, whose Routines live on the rail (its dot is the alert). */
+const RETIRED_IN_REDESIGN = new Set(['cron'])
+
+function withoutRetiredItems(items: readonly StatusbarItem[], redesign: boolean): readonly StatusbarItem[] {
+  return redesign ? items.filter(item => !RETIRED_IN_REDESIGN.has(item.id)) : items
+}
+
 // health: allow CC FUNC_LINES -- usage-window plans: one status-bar gauge item, hidden for every other account; this hook was over both targets on main
 export function useStatusbarItems({
   agentsOpen,
@@ -831,8 +838,8 @@ export function useStatusbarItems({
   )
 
   const leftStatusbarItems = useMemo(
-    () => [...coreLeftStatusbarItems, ...extraLeftItems],
-    [coreLeftStatusbarItems, extraLeftItems]
+    () => [...withoutRetiredItems(coreLeftStatusbarItems, simplifiedAgents), ...extraLeftItems],
+    [coreLeftStatusbarItems, extraLeftItems, simplifiedAgents]
   )
 
   const statusbarItems = useMemo(

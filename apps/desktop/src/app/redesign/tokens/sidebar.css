@@ -38,8 +38,8 @@
   --portal-sidebar-row-selected-mid: color-mix(in srgb, var(--portal-raw-blue) 14%, transparent);
   --portal-sidebar-row-selected-rule: var(--portal-raw-blue);
   --portal-sidebar-row-selected-ink: var(--ui-text-primary);
-  --portal-sidebar-row-hover-start: color-mix(in srgb, var(--portal-raw-gray) 32%, transparent);
-  --portal-sidebar-row-hover-mid: color-mix(in srgb, var(--portal-raw-gray) 14%, transparent);
+  --portal-sidebar-row-hover-start: color-mix(in srgb, var(--portal-raw-gray) 22%, transparent);
+  --portal-sidebar-row-hover-mid: color-mix(in srgb, var(--portal-raw-gray) 10%, transparent);
   --portal-sidebar-row-hover-rule: var(--portal-raw-gray);
   --portal-sidebar-row-rule-width: 1px;
   --portal-sidebar-card: var(--portal-raw-ink-5);
@@ -72,8 +72,8 @@
 :root[data-shell='portal']:not(.dark) {
   --portal-sidebar-row-selected-start: color-mix(in srgb, var(--portal-raw-blue) 16%, transparent);
   --portal-sidebar-row-selected-mid: color-mix(in srgb, var(--portal-raw-blue) 7%, transparent);
-  --portal-sidebar-row-hover-start: var(--portal-raw-ink-10);
-  --portal-sidebar-row-hover-mid: var(--portal-raw-ink-4);
+  --portal-sidebar-row-hover-start: var(--portal-raw-ink-8);
+  --portal-sidebar-row-hover-mid: var(--portal-raw-ink-3);
   --portal-sidebar-row-hover-rule: var(--portal-raw-ink-40);
   /* Brand rev light steps the machine card in black 2% / 4%: a quiet card with a header a shade
      deeper, never a grey slab. */

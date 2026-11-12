@@ -10,6 +10,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $cronJobs } from '@/store/cron'
 import { recordIaAction } from '@/store/ia-metrics'
 import type { IaAction } from '@/store/ia-metrics-contract'
 import { $sidebarOpen, setSidebarOpen, toggleSidebarOpen } from '@/store/layout'
@@ -28,6 +29,8 @@ import {
   sessionRoute,
   SETTINGS_ROUTE
 } from '../../routes'
+import { routineNeedsAttention } from '../../routines/routine-model'
+import { useRoutinesCopy } from '../../routines/routines-copy'
 import { REDESIGN_SETTINGS_SECTIONS } from '../../settings/redesign-navigation'
 import { $openSheet } from '../../shell/shell-sheet'
 import type { SidebarNavItem } from '../../types'
@@ -95,6 +98,8 @@ interface RailButtonProps {
   active: boolean
   area: string
   children: ReactNode
+  /** Something here needs the user (Routines: a failed or overdue routine), as a dot on the glyph. */
+  alert?: string
   label: string
   metric: IaAction
   onNavigate: () => void
@@ -103,14 +108,15 @@ interface RailButtonProps {
 
 /** One rail destination: a 40px chrome button whose tooltip names it, or, while it is open with a
  *  panel, names what a click does to that panel. The open destination keeps its selection either way. */
-function RailButton({ active, area, children, label, metric, onNavigate, panel }: RailButtonProps) {
+function RailButton({ active, alert, area, children, label, metric, onNavigate, panel }: RailButtonProps) {
   return (
     <Tip
-      label={panel ? <TipKeybindLabel actionId="view.toggleSidebar" text={panel.label} /> : label}
+      label={panel ? <TipKeybindLabel actionId="view.toggleSidebar" text={panel.label} /> : alert ? `${label} · ${alert}` : label}
       placement="left-rail"
     >
       <Button
         aria-current={active ? 'page' : undefined}
+        aria-description={alert}
         aria-expanded={panel ? panel.shown : undefined}
         aria-label={label}
         className="portal-chrome-button"
@@ -132,9 +138,20 @@ function RailButton({ active, area, children, label, metric, onNavigate, panel }
         variant="ghost"
       >
         {children}
+        {alert && <span aria-hidden className="portal-rail-alert" data-slot="rail-alert" />}
       </Button>
     </Tip>
   )
+}
+
+/** The Routines destination's dot (proposal point 3): how many routines need attention, from the
+ *  snapshot the sidebar sync keeps for every agent. Nothing when all is well. */
+function useRoutinesAlert(): string | undefined {
+  const jobs = useStore($cronJobs)
+  const copy = useRoutinesCopy()
+  const count = jobs.filter(job => routineNeedsAttention(job)).length
+
+  return count ? copy.railAttention(count) : undefined
 }
 
 /** The redesign's 60px global rail (Figma 906:19409): the brand badge on top, destinations under
@@ -153,6 +170,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
 
   const view = focusedSessionIsTile ? 'chat' : routeView
   const pluginPages = useSimplifiedPluginPages()
+  const routinesAlert = useRoutinesAlert()
   useIaNavigationMetrics(view)
 
   const destinations = [
@@ -228,6 +246,7 @@ export function SimplifiedGlobalNav({ onNavigate, footer }: SimplifiedGlobalNavP
           const button = (
             <RailButton
               active={item.active}
+              alert={item.area === 'cron' ? routinesAlert : undefined}
               area={item.area}
               key={item.id}
               label={item.label}

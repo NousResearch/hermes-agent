@@ -1,8 +1,12 @@
 export interface CronJob {
   /** Missed-run policy: true runs one catch-up, false skips; null/absent follows the default. */
   catch_up?: boolean | null
+  /** Jobs whose last output is injected into each run; `"self"` is the job's own previous run. */
+  context_from?: null | string[]
   deliver?: null | string
   enabled: boolean
+  /** Consecutive failed runs, reset by a success. */
+  failure_streak?: number
   id: string
   last_delivery_error?: null | string
   last_error?: null | string
@@ -19,6 +23,8 @@ export interface CronJob {
   profile?: string
   prompt?: null | string
   provider?: null | string
+  /** Run limit: `times` null = no limit; `completed` counts the runs so far. */
+  repeat?: CronJobRepeat | null
   schedule?: CronJobSchedule
   schedule_display?: null | string
   script?: null | string
@@ -43,8 +49,14 @@ export interface CronCancelResult {
   job_id: string
 }
 
+export interface CronJobRepeat {
+  completed?: number
+  times?: null | number
+}
+
 export interface CronJobCreatePayload {
   catch_up?: boolean
+  context_from?: string[]
   deliver?: string
   model?: string
   name?: string
@@ -58,16 +70,23 @@ export interface CronJobSchedule {
   display?: string
   expr?: string
   kind?: string
+  /** `interval` schedules. */
+  minutes?: number
+  /** `once` schedules: the ISO instant, in the scheduler's zone. */
+  run_at?: string
 }
 
 export interface CronJobUpdates {
   catch_up?: boolean | null
+  context_from?: string[]
   deliver?: string
   enabled?: boolean
   model?: null | string
   name?: string
   prompt?: string
   provider?: null | string
+  /** A run limit; null clears it. */
+  repeat?: null | number
   schedule?: string
 }
 

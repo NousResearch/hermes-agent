@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { computed } from 'nanostores'
 
+import { jobDeliveryFailed, jobLastRunFailed } from '@/app/cron/job-state'
 import { jobRunInFlight } from '@/app/cron/run-control'
 import type { ClientSessionState } from '@/app/types'
 import type { CronJob, SessionInfo } from '@/hermes'
@@ -252,26 +253,16 @@ function collectScheduleAttention(jobs: CronJob[], claim: ClaimAttention): void 
     }
 
     const owner = agentSidebarKey({ connectionId: snapshotConnection || null, profile })
-    const execution = job.latest_execution
 
     // A new run supersedes the previous result, as it does for chat turns.
     if (jobRunInFlight(job)) {
-      const since = Date.parse((job.live_execution ?? execution)?.claimed_at ?? '')
+      const since = Date.parse((job.live_execution ?? job.latest_execution)?.claimed_at ?? '')
       claim(owner, { kind: 'running', ...(Number.isFinite(since) ? { since } : {}) })
 
       continue
     }
 
-    const executionFailed = execution
-      ? execution.status === 'failed'
-      : job.last_status === 'error' || Boolean(job.last_error)
-
-    const deliveryFailed =
-      execution?.delivery_outcome == null
-        ? job.last_status === 'delivery_failed' || Boolean(job.last_delivery_error)
-        : execution.delivery_outcome === 'failed'
-
-    if (executionFailed || deliveryFailed) {
+    if (jobLastRunFailed(job) || jobDeliveryFailed(job)) {
       const since = job.last_run_at ? Date.parse(job.last_run_at) : NaN
       claim(owner, { kind: 'failed', ...(Number.isFinite(since) ? { since } : {}) })
     }

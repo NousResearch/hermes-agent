@@ -45,6 +45,27 @@ export function jobTitle(job: CronJob): string {
   )
 }
 
+type OutcomeFields = Pick<
+  CronJob,
+  'last_delivery_error' | 'last_error' | 'last_status' | 'latest_execution'
+>
+
+/** The newest attempt failed: the ledger's verdict when it has one, else the legacy last_status. */
+export function jobLastRunFailed(job: OutcomeFields): boolean {
+  const execution = job.latest_execution
+
+  return execution ? execution.status === 'failed' : job.last_status === 'error' || Boolean(job.last_error)
+}
+
+/** The newest attempt ran but its results did not reach their destination. */
+export function jobDeliveryFailed(job: OutcomeFields): boolean {
+  const outcome = job.latest_execution?.delivery_outcome
+
+  return outcome == null
+    ? job.last_status === 'delivery_failed' || Boolean(job.last_delivery_error)
+    : outcome === 'failed'
+}
+
 // Mirrors hermes_cli/cron.py `_OVERDUE_GRACE_SECONDS`: a busy tick can dispatch a few minutes late.
 export const NEXT_RUN_OVERDUE_GRACE_MS = 15 * 60 * 1000
 

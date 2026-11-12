@@ -8,7 +8,7 @@
    of it, so a narrow stage never scrolls sideways. */
 :root[data-shell='portal']
   [data-page-surface]
-  .management-panel:not(.agent-management, .cron-page, .page-frame-fallback) {
+  .management-panel:not(.agent-management, .routines-page, .page-frame-fallback) {
   --management-panel-lead: max(0px, calc(var(--page-stage-inset) - var(--page-content-inset)));
   width: calc(100% - var(--management-panel-lead));
   margin-inline: var(--management-panel-lead) 0;

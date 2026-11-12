@@ -40,7 +40,7 @@ export function usePageFrame(kind: PageFrameKind): PageFrame {
     library: { title: t.simplifiedAgents.library, description: copy.libraryDescription, tabs: true },
     messaging: { title: t.sidebar.nav.messaging, description: copy.messagingDescription },
     page: {},
-    schedules: { panel: t.cron.title },
+    schedules: { description: copy.schedulesDescription, panel: t.cron.title, title: t.cron.title },
     settings: { panel: t.commandCenter.settings }
   }
 

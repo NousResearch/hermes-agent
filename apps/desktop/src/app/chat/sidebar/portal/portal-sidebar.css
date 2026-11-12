@@ -1284,3 +1284,72 @@ button.portal-section-title:hover {
     min-height: var(--portal-touch-target);
   }
 }
+
+/* ── An agent's Routines chip (1100:8452): under its chats, on the guide, at the chat titles' inset ── */
+.portal-agent-routines {
+  display: flex;
+  min-height: var(--portal-sidebar-chat-row);
+  align-items: center;
+  margin-inline-start: 1.25rem;
+  padding-inline-start: 1.375rem;
+  border-inline-start: 1px solid var(--portal-sidebar-guide);
+}
+
+.portal-agent-routines-chip {
+  position: relative;
+  display: inline-flex;
+  height: 1.25rem;
+  align-items: center;
+  gap: 0.375rem;
+  padding-inline: 0.375rem 0.25rem;
+  border: 1px solid var(--portal-stroke-control);
+  border-radius: var(--portal-radius-chip);
+  background: var(--portal-surface-chrome);
+  color: var(--portal-sidebar-meta);
+  font-size: var(--portal-type-micro-size);
+  line-height: 1;
+}
+
+.portal-agent-routines-chip:hover {
+  background: var(--portal-sidebar-hover);
+  color: var(--ui-text-primary);
+}
+
+.portal-agent-routines-chip:focus-visible {
+  outline: var(--portal-focus-ring-width) solid var(--portal-focus-ring-color);
+  outline-offset: var(--portal-focus-ring-offset);
+}
+
+.portal-agent-routines-count {
+  color: var(--ui-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.portal-agent-routines-dot {
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: var(--portal-radius-round);
+  background: var(--portal-status-error-ink);
+}
+
+.portal-agent-routines-chevron {
+  opacity: 0.6;
+}
+
+.portal-agent-routines-tip {
+  display: grid;
+  gap: 0.125rem;
+}
+
+.portal-agent-routines-tip > span:last-child {
+  opacity: 0.7;
+}
+
+/* A coarse pointer: the chip keeps its look and extends its hit area to the touch target. */
+@media (hover: none), (pointer: coarse) {
+  html[data-hermes-desktop-host='browser'] .portal-agent-routines-chip::after {
+    content: '';
+    position: absolute;
+    inset: min(0px, calc((100% - var(--portal-touch-target)) / 2));
+  }
+}

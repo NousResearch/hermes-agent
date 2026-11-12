@@ -1,6 +1,6 @@
 name: hermes-handle-it
 repo: https://github.com/casualsav/hermes-handle-it
-sha: b3a3916840fe6083b94224a85a4e401bf900b056
+sha: 4d6f0cce639c8f8c69919bf3678cfe8d752f410d
 description: "Handle It: your agent sits in the customer support chat so you don't have to. Hermes holds a company's live customer-support
   chat for you in its own browser, negotiates toward your goal for as long as it takes, and asks
   you before it agrees to an offer, pays, cancels or shares a detail you did not allow. Ends with

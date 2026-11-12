@@ -1268,7 +1268,8 @@ jobs:
           ln -sf "/usr/bin/$BOOTSTRAP_PYTHON" /usr/local/bin/python3
           ln -sf "/usr/bin/$BOOTSTRAP_PYTHON" /usr/local/bin/python
           # The checkout belongs to the runner's uid, not the container's root.
-          git config --global --add safe.directory '*'
+          # System scope: preparation runs git there under its own HOME.
+          git config --system --add safe.directory '*'
 
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:

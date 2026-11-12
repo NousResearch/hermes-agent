@@ -25,29 +25,53 @@ def _stage_step(job):
 _ALSA = {"ubuntu:22.04": "libasound2", "ubuntu:24.04": "libasound2t64"}
 
 
-@pytest.mark.platforms("posix")
-@pytest.mark.parametrize("target", ["linux-x64", "linux-arm64"])
-def test_linux_userland_can_load_electron(tmp_path, target):
-    """Preparation's native probe starts the downloaded Electron, which won't load without its libraries."""
+def _run_userland(tmp_path, target, env, stubs=("apt-get", "ln", "git")):
+    """Run the job's "Install the build userland" script with ``stubs`` recording instead of acting."""
     jobs = _workflow()["jobs"]
     job = jobs[linux_builds(jobs)[target]]
     (row,) = job["strategy"]["matrix"]["target"]
     (step,) = [step for step in job["steps"] if step.get("name") == "Install the build userland"]
-    env = {key: re.sub(r"\$\{\{\s*matrix\.target\.(\w+)\s*\}\}", lambda m: row[m[1]], value)
-           for key, value in step.get("env", {}).items()}
-    stubs, installed = tmp_path / "bin", tmp_path / "installed"
-    stubs.mkdir()
-    for name in ("apt-get", "ln", "git"):
-        (stubs / name).write_text(
+    step_env = {key: re.sub(r"\$\{\{\s*matrix\.target\.(\w+)\s*\}\}", lambda m: row[m[1]], value)
+                for key, value in step.get("env", {}).items()}
+    bin_dir, installed = tmp_path / "bin", tmp_path / "installed"
+    bin_dir.mkdir()
+    installed.touch()
+    for name in stubs:
+        (bin_dir / name).write_text(
             '#!/bin/sh\nif [ "$1" = install ]; then printf "%s\\n" "$@" >> "$INSTALLED"; fi\n', encoding="utf-8")
-        (stubs / name).chmod(0o755)
+        (bin_dir / name).chmod(0o755)
     result = subprocess.run(["bash", "-e", "-c", step["run"]], capture_output=True, text=True, check=False,
-                            env={**os.environ, **env, "PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}",
+                            env={**env, **step_env, "PATH": f"{bin_dir}{os.pathsep}{env['PATH']}",
                                  "INSTALLED": str(installed)})
     assert result.returncode == 0, result.stdout + result.stderr
+    return row, set(installed.read_text(encoding="utf-8").split())
 
-    packages = set(installed.read_text(encoding="utf-8").split())
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("target", ["linux-x64", "linux-arm64"])
+def test_linux_userland_can_load_electron(tmp_path, target):
+    """Preparation's native probe starts the downloaded Electron, which won't load without its libraries."""
+    row, packages = _run_userland(tmp_path, target, dict(os.environ))
     assert {"libgtk-3-0", "libnss3", "libgbm1", _ALSA[row["image"]]} <= packages, packages
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("target", ["linux-x64", "linux-arm64"])
+def test_linux_checkout_exemption_survives_the_preparation_home(tmp_path, target):
+    """The checkout is the runner's uid, not the container's root, and preparation runs git there under its own HOME."""
+    from scripts.bundles.desktop_toolchain import bootstrap_environment
+
+    env = {key: value for key, value in os.environ.items()
+           if key not in {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"}}
+    env.update(HOME=str(tmp_path / "container-home"), GIT_CONFIG_SYSTEM=str(tmp_path / "etc-gitconfig"))
+    (tmp_path / "container-home").mkdir()
+    _run_userland(tmp_path, target, env, stubs=("apt-get", "ln"))
+
+    worker = bootstrap_environment(tmp_path / "source", tmp_path / "work", tmp_path / "cache", env)
+    assert worker["HOME"] != env["HOME"]
+    exempt = subprocess.run(["git", "config", "--get-all", "safe.directory"], capture_output=True, text=True,
+                            check=False, cwd=tmp_path, env=worker)
+    assert "*" in exempt.stdout.split(), exempt.stderr
 
 
 def test_linux_builds_run_for_tag_builds_only():

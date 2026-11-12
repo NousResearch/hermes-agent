@@ -201,8 +201,9 @@ async def test_suffixed_bsuid_live_allowlist_message_intake(monkeypatch, env_var
     await expect_intake("15551234567", "phone-revoked", False)
     monkeypatch.setenv(env_var, "")
     await expect_intake(_OTHER_BSUID, "empty", False)
-    monkeypatch.setenv(env_var, "*@s.whatsapp.net")
+    monkeypatch.setenv(env_var, "*")
     await expect_intake(_BSUID, "wildcard", True)
+    await expect_intake("15551234567", "wildcard-phone", True)
     monkeypatch.delenv(env_var)
     await expect_intake(_BSUID, "removed", False)
 
@@ -242,3 +243,15 @@ async def test_suffixed_bsuid_live_allowlist_interactive_dispatch(monkeypatch, e
     await expect_tap(_OTHER_BSUID, "restored", True)
     monkeypatch.delenv(env_var)
     await expect_tap(_OTHER_BSUID, "removed", False)
+
+
+@pytest.mark.parametrize("carrier", ["env", "config"])
+def test_suffixed_star_entry_is_not_a_wildcard(monkeypatch, carrier):
+    """Only a bare ``*`` opens the allowlist, the same for every carrier and sender shape."""
+    entry = "*@s.whatsapp.net"
+    if carrier == "env":
+        adapter = _build_adapter(monkeypatch, {"WHATSAPP_CLOUD_ALLOWED_USERS": entry})
+    else:
+        adapter = _build_adapter(monkeypatch, {}, {"allow_from": [entry]})
+    assert adapter._is_dm_allowed("15551234567") is False
+    assert adapter._is_dm_allowed(_BSUID) is False

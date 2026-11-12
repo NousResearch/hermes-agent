@@ -253,7 +253,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             digits = re.sub(r"\D", "", bare)
             if _PHONE_ALLOW_ID_DIGITS_RE.fullmatch(digits):
                 return digits
-        return bare
+        return bare if _BSUID_RE.fullmatch(bare) else entry.strip()
 
     @classmethod
     def _normalize_allow_ids(cls, ids: set[str]) -> set[str]:

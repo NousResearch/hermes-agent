@@ -44,7 +44,8 @@ import sys
 _bootstrap_root = os.path.realpath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _bootstrap_root not in sys.path:
     sys.path.insert(0, _bootstrap_root)
-from hermes_cli import _startup_fast
+from hermes_cli import _startup_fast  # noqa: E402
+from pm.paths import install_root  # noqa: E402
 import itertools
 
 # A literal ``~``/``$VAR`` in HERMES_HOME (fish, or any quoted value) must become absolute
@@ -335,7 +336,7 @@ def _require_tty(command_name: str) -> None:
         sys.exit(1)
 
 
-PROJECT_ROOT = Path(_startup_fast.project_root_str())
+PROJECT_ROOT = install_root()
 _startup_fast.ensure_project_root_on_path()
 
 

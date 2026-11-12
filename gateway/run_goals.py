@@ -257,7 +257,9 @@ class GatewayGoalsMixin:
                 "goal continuation: status send failed: %s", getattr(result, "error", "unknown error"),
             )
 
-    async def _defer_goal_status_notice_after_delivery(self, source: Any, message: str) -> None:
+    async def _defer_goal_status_notice_after_delivery(
+        self, source: Any, message: str, *, run_generation: int | None = None,
+    ) -> None:
         """Send a /goal status line after the main response is delivered.
 
         The adapter sends the agent response after this caller returns, so for reading order use
@@ -278,8 +280,13 @@ class GatewayGoalsMixin:
             session_key = self._session_key_for_source(source)
         if session_key and hasattr(adapter, "register_post_delivery_callback"):
             try:
-                active = getattr(adapter, "_active_sessions", {}).get(session_key)
-                generation = getattr(active, "_hermes_run_generation", None) if active is not None else None
+                # Authority-run busy follow-ups have no per-turn adapter guard. Their own
+                # event's generation must win over the shared guard (or lack of one), or this
+                # /goal notice turns a generated bubble-cleanup slot into a generationless one.
+                generation = run_generation
+                if generation is None:
+                    active = getattr(adapter, "_active_sessions", {}).get(session_key)
+                    generation = getattr(active, "_hermes_run_generation", None) if active is not None else None
                 adapter.register_post_delivery_callback(session_key, _deliver, generation=generation)
                 return
             except Exception as exc:
@@ -304,6 +311,7 @@ class GatewayGoalsMixin:
 
     async def _post_turn_goal_continuation(
         self, *, session_entry: Any, source: Any, final_response: str,
+        run_generation: int | None = None,
     ) -> None:
         """Run the goal judge after a gateway turn (AFTER delivery) and, if still active, enqueue a
         continuation through the adapter FIFO so a simultaneous real user message takes priority."""
@@ -336,7 +344,8 @@ class GatewayGoalsMixin:
         msg = decision.get("message") or ""
         # Deferred until the visible final response is delivered, else "✓ Goal achieved" precedes it.
         if msg and source is not None:
-            await self._defer_goal_status_notice_after_delivery(source, msg)
+            await self._defer_goal_status_notice_after_delivery(
+                source, msg, run_generation=run_generation)
         prompt = decision.get("continuation_prompt") or ""
         if not decision.get("should_continue") or not prompt or source is None:
             return
@@ -364,6 +373,7 @@ class GatewayGoalsMixin:
         """Run goal and loop bookkeeping after an agent turn returns."""
         from gateway.session_authorities import active_authority
         from gateway.session_viewer_automation import viewer_driven
+        from gateway.platforms.base_post_delivery import turn_run_generation
         if viewer_driven(active_authority(self), getattr(source, "chat_id", None)):
             return  # the classic CLI viewer judges and continues through ``session.automation``
         final_text = self._final_text_for_post_turn_hooks(agent_result, event)
@@ -384,7 +394,11 @@ class GatewayGoalsMixin:
             hooks.insert(0, ("goal continuation", self._post_turn_goal_continuation))
         for label, hook in hooks:
             try:
-                await hook(session_entry=session_entry, source=source, final_response="" if failed else final_text)
+                kwargs = dict(session_entry=session_entry, source=source,
+                              final_response="" if failed else final_text)
+                if label == "goal continuation":
+                    kwargs["run_generation"] = turn_run_generation(event)
+                await hook(**kwargs)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
         await self._publish_local_control(source, only_if_present=True)

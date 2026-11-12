@@ -56,6 +56,8 @@ class MCPServerHealthMixin:
     def _mark_stdio_recycled(self, reason: str) -> None:
         """Mark a stdio session dormant before its transport finishes closing."""
         self._recycled_reason = reason
+        from tools.mcp_skills_lifecycle import retire_transport_catalogs
+        retire_transport_catalogs(self)
         self.session = None
 
     def _schedule_tools_refresh(self) -> asyncio.Task:
@@ -97,7 +99,7 @@ class MCPServerHealthMixin:
         return _on_log
 
     def _make_message_handler(self):
-        """``message_handler``: only ``ToolListChangedNotification`` triggers a refresh; prompt/resource changes log."""
+        """Dispatch list changes without waiting for RPCs inside the receive stream."""
         async def _handler(message):
             try:
                 if isinstance(message, Exception):
@@ -117,7 +119,8 @@ class MCPServerHealthMixin:
                 elif isinstance(payload, _core.PromptListChangedNotification):
                     logger.debug("MCP server '%s': prompts/list_changed (ignored)", self.name)
                 elif isinstance(payload, _core.ResourceListChangedNotification):
-                    logger.debug("MCP server '%s': resources/list_changed (ignored)", self.name)
+                    from tools.mcp_skills_lifecycle import refresh_transport_catalogs
+                    refresh_transport_catalogs(self)
             except Exception:
                 logger.exception("Error in MCP message handler for '%s'", self.name)
         return _handler

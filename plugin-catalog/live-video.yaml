@@ -1,7 +1,7 @@
 name: live-video
 repo: https://github.com/dacheah/hermes-live-video
-sha: 02df118445b9ac7f27344623d3bdb77f0384992f
-subdir: plugin
+sha: a00a2685ec743ed35dfd7d507acfa3fc3c908771
+subdir: ""                  # the plugin is the repository root
 description: >-
   Give Hermes eyes in a live voice conversation. Open a page on your phone, talk, and the
   agent answers in duplex voice while seeing the camera; ask to be told when something comes
@@ -13,12 +13,13 @@ description: >-
   Hermes' secret scope; `start` spawns `node server.js` as a background process, which spawns a
   Python frame-change tracker (numpy, Pillow, torch) and reads that checkout's transcript.log
   and server.log; watch verification spends the key's quota. No telemetry, and the key is never
-  written to disk.
+  written to disk. Bind is loopback by default; a LAN bind mints a per-start token and the relay
+  refuses the page and the socket without it.
 maintainer: dacheah
 tier: community
 category: voice
 requires_hermes: ">=0.22.5"
-version: "1.1.0"
+version: "1.2.0"
 docs_url: https://github.com/dacheah/hermes-live-video#readme
 platforms:
   - linux

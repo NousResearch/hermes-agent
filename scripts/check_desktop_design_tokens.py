@@ -63,7 +63,7 @@ _REDESIGN_ONLY = (
     re.compile(r"^components/assistant-ui/thread/redesign\.css$"),
     re.compile(r"^app/agent-settings/[^/]+\.css$"),
     re.compile(r"^app/settings/(global-overviews|appearance-overview|portal-safety-fields|agent-config-fields)\.css$"),
-    re.compile(r"^app/cron/schedules\.css$"),
+    re.compile(r"^app/routines/[^/]+\.css$"),
     re.compile(r"^app/overlays/panel\.css$"),
 )
 _GATE = re.compile(r"data-shell=['\"]?portal")

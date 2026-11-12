@@ -1,6 +1,7 @@
 """Gateway logs at INFO+ carry no verbatim user content (#46006): `hermes debug share` uploads them."""
 
 import hashlib
+import hmac
 import logging
 import os
 import stat
@@ -84,6 +85,30 @@ def test_hash_for_log_salt_failure_is_not_retried_per_call(tmp_path, monkeypatch
     assert hash_for_log("a") == hash_for_log("a")
     hash_for_log("b")
     assert len(attempts) == 1
+
+
+def test_hash_for_log_salt_without_hard_links_reads_the_first_creators_salt(tmp_path, monkeypatch):
+    home = _fresh_home(tmp_path, monkeypatch, "nolink-race")
+    winner = bytes(range(32))
+
+    def lose_race(*_args, **_kwargs):  # another process publishes its salt before our exclusive create
+        (home / "log_hash_salt").write_bytes(winner)
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "link", lose_race)
+    assert hash_for_log("x") == "h:" + hmac.new(winner, b"x", hashlib.sha256).hexdigest()[:10]
+
+
+@pytest.mark.platforms("posix")  # POSIX permission bits
+def test_hash_for_log_salt_without_hard_links_is_private(tmp_path, monkeypatch):
+    home = _fresh_home(tmp_path, monkeypatch, "nolink-mode")
+
+    def refuse_link(*_args, **_kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "link", refuse_link)
+    hash_for_log("x")
+    assert stat.S_IMODE((home / "log_hash_salt").stat().st_mode) == 0o600
 
 
 @pytest.mark.platforms("posix")  # POSIX permission bits

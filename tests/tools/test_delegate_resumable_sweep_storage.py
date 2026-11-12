@@ -162,3 +162,43 @@ def test_a_failed_first_record_write_is_retried_whole_and_never_leaves_a_partial
         _completion(cont["delegation_id"])
     assert _db_rows(parent)[sid][0] == "completed"
     assert model.builds[-1]["session_id"] == model.turns[0]["session_id"]  # its own conversation
+
+
+def test_a_start_retry_still_waiting_when_the_child_stops_never_reopens_the_stopped_row():
+    """The heartbeat's start retry blocked on a busy store while the stop path's retry lands and the stop row is
+    written: the late retry must not set the row back to ``running`` under this live pid (claim would then refuse
+    "still running" until the process exits)."""
+    import threading
+
+    from tools import delegate_tool_resumable as r
+    parent = _parent()
+    sid = "sa-late-retry"
+    run = _run(parent, sid)
+    real_upsert, failed_once = r._upsert, threading.Event()
+    heartbeat_in_write, release_heartbeat = threading.Event(), threading.Event()
+
+    def upsert(conn, s, record, **kw):
+        if kw["state"] == "running" and not failed_once.is_set():
+            failed_once.set()
+            raise sqlite3.OperationalError("disk I/O error")  # the first start write fails: record stays pending
+        if kw["state"] == "running" and threading.current_thread().name == "heartbeat":
+            heartbeat_in_write.set()
+            release_heartbeat.wait(5)  # stuck on the busy timeout while the stop path runs
+        return real_upsert(conn, s, record, **kw)
+
+    with patch.object(r, "_upsert", side_effect=upsert), patch.object(r, "_child_cwd", return_value=None):
+        r.record_start(run)
+        durable = run.child._delegate_durable
+        assert durable["pending"] is not None
+        beat = threading.Thread(target=r._flush, args=(durable,), name="heartbeat")
+        beat.start()
+        heartbeat_in_write.wait(5)
+        stop = threading.Thread(target=r.record_stop, args=(run, {"status": "unknown"}))
+        stop.start()
+        stop.join(2)  # unfixed: the stop path lands its own retry and the stop row meanwhile; fixed: it waits
+        release_heartbeat.set()
+        beat.join(5)
+        stop.join(5)
+        r._flush(durable)  # a later checkpoint after the stop: must not rewrite the start record
+    state, _pinned, record = _db_rows(parent)[sid]
+    assert state == "resumable" and record["outcome"] == "unknown"

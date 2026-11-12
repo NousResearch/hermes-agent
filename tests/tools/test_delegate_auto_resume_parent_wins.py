@@ -62,6 +62,7 @@ def test_a_stop_from_before_opt_in_is_never_resumed_once_auto_resume_is_turned_o
     """auto_resume off at stop time: the notice told the parent to continue by hand, so no later opt-in resumes it."""
     from hermes_constants import get_hermes_home
     from tools.delegate_tool_auto_resume import tick
+    _enable()
     (get_hermes_home() / 'config.yaml').write_text(json.dumps({'delegation': {'worktree_isolation': True}}))
     parent, dispatched = _parent(), []
     sid, first = _limited_child(tmp_path, parent)
@@ -72,3 +73,15 @@ def test_a_stop_from_before_opt_in_is_never_resumed_once_auto_resume_is_turned_o
     state, _pinned, record = _db_rows(parent)[sid]
     assert state == 'resumable' and 'never promised' in record['auto_note']  # still continuable by hand
 
+
+def test_a_parent_with_no_gateway_scheduler_gets_the_manual_continue_hint(tmp_path):
+    """A classic CLI parent (no gateway owns its profile, so no watcher) is never told the child WILL resume."""
+    from tools.delegate_tool_auto_resume import tick
+    _enable(gateway=False)
+    parent, dispatched = _parent(), []
+    sid, first = _limited_child(tmp_path, parent)
+    assert 'auto_resume' not in first['results'][0]
+    assert 'WILL resume automatically' not in json.dumps(first)
+    with patch('run_agent.AIAgent', side_effect=_ScriptedModel()):
+        assert tick(_scheduler(parent, dispatched), capacity=3) == []
+    assert _db_rows(parent)[sid][0] == 'resumable'

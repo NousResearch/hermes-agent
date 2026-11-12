@@ -16,7 +16,9 @@ import subprocess
 import sys
 import textwrap
 import threading
+import time
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -421,6 +423,83 @@ def test_a_throwaway_profile_left_by_a_process_that_died_mid_launch_is_reclaimed
         alive.communicate("\n", timeout=30)
 
 
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass  # the detached stand-in is ours and must be stopped by the launcher
+@pytest.mark.parametrize("publish_port,missing_birth", [(True, False), (False, False), (True, True)])
+def test_exit_zero_handoff_tracks_and_stops_actual_browser(tmp_path, monkeypatch, publish_port, missing_birth):
+    """Chrome's launch process can exit 0 while its replacement serves the same profile."""
+    from tests.waiting import wait_until
+
+    child = tmp_path / "replacement.py"
+    child.write_text(textwrap.dedent('''\
+        import os, signal, sys, time
+        udd = next(a.split("=", 1)[1] for a in sys.argv if a.startswith("--user-data-dir="))
+        if sys.argv[1] == "publish":
+            time.sleep(0.3)
+            with open(os.path.join(udd, "DevToolsActivePort"), "w") as f:
+                f.write("45678\\n/devtools/browser/handoff\\n")
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        while True:
+            time.sleep(0.1)
+    '''))
+    parent = tmp_path / "chromium"
+    parent.write_text(textwrap.dedent(f'''\
+        #!{sys.executable}
+        import subprocess, sys
+        udd = next(a.split("=", 1)[1] for a in sys.argv if a.startswith("--user-data-dir="))
+        # A real Windows Chromium hand-off relaunches with the same command line (including our launch
+        # token), which is what lets the launcher tell it apart from an unrelated browser on this profile.
+        child = subprocess.Popen([sys.executable, {str(child)!r}, {"publish" if publish_port else "silent"!r}]
+                                 + sys.argv[1:], start_new_session=True,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open({str(tmp_path / 'replacement.pid')!r}, "w") as f:
+            f.write(str(child.pid))
+    '''))
+    parent.chmod(0o755)
+    key = "handoff-" + ("ready" if publish_port else "silent")
+    browser = None
+    replacement_pid = None
+    if missing_birth:
+        real_start_time = launcher._start_time
+
+        def missing_replacement_birth(pid):
+            try:
+                if pid == int((tmp_path / "replacement.pid").read_text()):
+                    return None  # the replacement's birth time cannot be read: identity is unverifiable
+            except (OSError, ValueError):
+                pass
+            return real_start_time(pid)
+
+        monkeypatch.setattr(launcher, "_start_time", missing_replacement_birth)
+    try:
+        browser, err = launcher.launch_chromium(key, executable=str(parent), headed=False,
+                                                env=dict(os.environ), timeout=1.5)
+        from hermes_constants import hermes_home_key
+        udd = launcher._default_user_data_dir(key, hermes_home_key())
+        replacement_pid = int((tmp_path / "replacement.pid").read_text())
+        if publish_port and not missing_birth:
+            assert err is None
+            assert browser is not None and browser.pid == replacement_pid
+            assert launcher.get_browser(key) is browser
+        else:
+            assert browser is None and err is not None
+            assert ("identity" in err if missing_birth and publish_port else "in time" in err)
+            if missing_birth and publish_port:
+                assert replacement_pid and launcher._pid_alive(replacement_pid), \
+                    "the live replacement was killed although its identity was unverified"
+                assert Path(udd).is_dir(), "a live replacement's profile was deleted"
+                assert launcher.get_browser(key) is None
+        if browser:
+            launcher.stop_browser(key)
+        if replacement_pid and not missing_birth:
+            wait_until(lambda: not launcher._pid_alive(replacement_pid) or
+                       not launcher._cmdline_names_dir(replacement_pid, udd), timeout=8,
+                       what="the replacement browser to stop")
+    finally:
+        launcher.stop_browser(key)
+        if replacement_pid and launcher._pid_alive(replacement_pid):
+            _kill_fake(replacement_pid, child)
+
 # A Chromium that never becomes ready: records its pid, never writes DevToolsActivePort.
 _NEVER_READY_CHROMIUM = textwrap.dedent('''\
     #!{python}
@@ -523,3 +602,206 @@ def test_packaged_only_flags_never_reach_an_explicit_binary(monkeypatch):
     assert not set(launcher.CHROMIUM_SANDBOX_BYPASS_ARGS) & set(real)  # the user's own browser keeps its sandbox
     for argv in (packaged, dock, real):
         assert "--lang=de" in argv and argv[-1] == "about:blank"
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass  # the fake parent/replacement are ours to stop if a leg failed
+def test_exit_zero_handoff_never_claims_a_human_browser_on_a_shared_profile(tmp_path):
+    """P0: an unrelated human browser naming the same shared profile is not this launch's replacement."""
+    udd = tmp_path / "shared-profile"
+    udd.mkdir()
+    marker = tmp_path / "parent.started"
+    human = tmp_path / "human-browser"
+    human.write_text(textwrap.dedent(f'''\
+        #!{sys.executable}
+        import os, sys, time
+        udd = next(a.split("=", 1)[1] for a in sys.argv if a.startswith("--user-data-dir="))
+        while not os.path.exists({str(marker)!r}):
+            time.sleep(0.02)
+        launcher_pid = int(open({str(marker.with_suffix(".pid"))!r}).read())
+        while os.path.exists(f"/proc/{{launcher_pid}}"):
+            time.sleep(0.02)  # the launcher has exited 0 before the human browser appears
+        with open(os.path.join(udd, "DevToolsActivePort"), "w") as f:
+            f.write("45679\\n/devtools/browser/human\\n")
+        time.sleep(60)
+    '''))
+    human.chmod(0o755)
+    parent = tmp_path / "chromium"
+    parent.write_text(textwrap.dedent(f'''\
+        #!{sys.executable}
+        import os, pathlib
+        pathlib.Path({str(marker.with_suffix(".pid"))!r}).write_text(str(os.getpid()))
+        pathlib.Path({str(marker)!r}).write_text("yes")
+    '''))
+    parent.chmod(0o755)
+    human_proc = subprocess.Popen([sys.executable, str(human), f"--user-data-dir={udd}"],
+                                  start_new_session=True)
+    try:
+        key = f"profile:{udd}"
+        browser, err = launcher.launch_chromium(key, executable=str(parent), user_data_dir=str(udd),
+                                                ephemeral=False, headed=False, env=dict(os.environ), timeout=3)
+        assert browser is None and err is not None
+        assert "no replacement browser process belonging to this launch" in err
+        assert human_proc.poll() is None, "the launcher claimed and stopped the unrelated human browser"
+        assert (udd / "DevToolsActivePort").exists()
+        launcher.stop_browser(key)
+        assert human_proc.poll() is None
+    finally:
+        human_proc.kill()
+        human_proc.wait(timeout=10)
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass  # the fake parent/replacement are ours to stop if a leg failed
+def test_a_port_seen_before_the_launcher_exits_registers_the_handoff_replacement(tmp_path):
+    """P1: DevToolsActivePort can appear while the original Popen is still alive; do not register its PID."""
+    child = tmp_path / "replacement.py"
+    child.write_text(textwrap.dedent('''\
+        import os, sys, time
+        udd = next(a.split("=", 1)[1] for a in sys.argv if a.startswith("--user-data-dir="))
+        while True:
+            time.sleep(0.1)
+    '''))
+    parent = tmp_path / "chromium"
+    parent.write_text(textwrap.dedent(f'''\
+        #!{sys.executable}
+        import os, subprocess, sys, time
+        udd = next(a.split("=", 1)[1] for a in sys.argv if a.startswith("--user-data-dir="))
+        with open({str(tmp_path / "launcher.pid")!r}, "w") as f:
+            f.write(str(os.getpid()))
+        child = subprocess.Popen([sys.executable, {str(child)!r}] + sys.argv[1:], start_new_session=True,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        with open({str(tmp_path / "replacement.pid")!r}, "w") as f:
+            f.write(str(child.pid))
+        with open(os.path.join(udd, "DevToolsActivePort"), "w") as f:
+            f.write("45680\\n/devtools/browser/race\\n")
+        time.sleep(1.0)  # the port is visible while this launcher is still alive
+    '''))
+    parent.chmod(0o755)
+    key = "race-handoff"
+    browser = None
+    replacement_pid = None
+    try:
+        browser, err = launcher.launch_chromium(key, executable=str(parent), headed=False,
+                                                env=dict(os.environ), timeout=10)
+        replacement_pid = int((tmp_path / "replacement.pid").read_text())
+        assert err is None
+        assert browser is not None and browser.pid == replacement_pid
+        from tests.waiting import wait_until
+        launcher_pid = int((tmp_path / "launcher.pid").read_text())
+        wait_until(lambda: not launcher._pid_alive(launcher_pid), timeout=10,
+                   what="the exit-0 launcher process to exit")
+        assert launcher.get_browser(key) is browser
+        from hermes_constants import hermes_home_key
+        udd_actual = Path(launcher._default_user_data_dir(key, hermes_home_key()))
+        assert udd_actual.is_dir() and (udd_actual / "DevToolsActivePort").exists()
+    finally:
+        launcher.stop_browser(key)
+        if replacement_pid and launcher._pid_alive(replacement_pid):
+            _kill_fake(replacement_pid, child)
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass  # the fake parent is ours to stop if a leg failed
+def test_exit_zero_without_a_replacement_fails_within_a_short_grace(tmp_path, monkeypatch):
+    """P2: an exit-0 launcher with no port must not consume the 120 s first-launch deadline."""
+    monkeypatch.setattr(launcher, "_HANDOFF_PORT_GRACE_S", 0.4)
+    parent = tmp_path / "chromium"
+    parent.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(0)\n")
+    parent.chmod(0o755)
+    started = time.monotonic()
+    browser, err = launcher.launch_chromium("exit-zero-no-port", executable=str(parent), headed=False,
+                                            env=dict(os.environ), timeout=None)
+    elapsed = time.monotonic() - started
+    assert browser is None and err is not None
+    assert "no replacement browser exposed" in err
+    assert elapsed < 10, f"exit-0 no-port launch took {elapsed:.1f}s"
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.live_system_guard_bypass  # the fake browser is ours to stop if a leg failed
+def test_a_launch_without_a_readable_start_time_is_refused_not_registered(tmp_path, monkeypatch):
+    """P2: a PID without a birth fingerprint is never stored as an owned browser."""
+    parent = tmp_path / "chromium"
+    parent.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(60)\n")
+    parent.chmod(0o755)
+    monkeypatch.setattr(launcher, "_start_time", lambda pid: None)
+    browser, err = launcher.launch_chromium("no-birth", executable=str(parent), headed=False,
+                                            env=dict(os.environ), timeout=5)
+    assert browser is None and err is not None
+    assert "start time" in err
+    assert launcher.get_browser("no-birth") is None
+
+
+def test_abandon_keeps_ephemeral_profile_with_live_devtools_when_cmdline_unreadable(tmp_path, monkeypatch):
+    """A live handoff's argv can be unreadable; the profile must not be removed just because the PID scan misses it."""
+    udd = tmp_path / "live-profile"
+    udd.mkdir()
+    (udd / "DevToolsActivePort").write_text("45678\n/devtools/browser/live\n")
+    starting = launcher._make_browser("live", 0, "", pid=123, start_time=1,
+                                      user_data_dir=str(udd), owned=True, ephemeral=True, home_key=str(tmp_path))
+
+    class Exited:
+        pid = 123
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(launcher, "_remove_record", lambda _browser: None)
+    monkeypatch.setattr(launcher, "_pid_naming_dir", lambda _udd: None)
+    monkeypatch.setattr(launcher, "_devtools_endpoint_live", lambda _port, _path: True)
+    launcher._abandon_launch(cast(subprocess.Popen, Exited()), starting)
+    assert udd.is_dir() and (udd / "DevToolsActivePort").is_file()
+
+
+def test_get_browser_keeps_ephemeral_profile_if_birth_time_becomes_unreadable(tmp_path, monkeypatch):
+    """A live endpoint must survive loss of the process birth-time probe during lookup."""
+    udd = tmp_path / "running-profile"
+    udd.mkdir()
+    (udd / "DevToolsActivePort").write_text("45678\n/devtools/browser/live\n")
+    browser = launcher._make_browser("unreadable-birth", 45678, "/devtools/browser/live", pid=987,
+                                     start_time=12, user_data_dir=str(udd), owned=True,
+                                     ephemeral=True, home_key=str(tmp_path))
+    monkeypatch.setattr(launcher, "_pid_alive", lambda _pid: True)
+    monkeypatch.setattr(launcher, "_start_time", lambda _pid: None)
+    monkeypatch.setattr(launcher, "_pid_naming_dir", lambda _udd: None)
+    monkeypatch.setattr(launcher, "_devtools_endpoint_live", lambda _port, _path: True)
+    monkeypatch.setattr(launcher, "_remove_record", lambda _browser: None)
+    with launcher._lock:
+        launcher._browsers[browser.key] = browser
+    try:
+        assert launcher.get_browser(browser.key) is None
+        assert udd.is_dir() and (udd / "DevToolsActivePort").is_file()
+    finally:
+        with launcher._lock:
+            launcher._browsers.pop(browser.key, None)
+
+
+def test_handoff_does_not_claim_recycled_descendant_pid(monkeypatch):
+    """A remembered child PID is no ownership proof once that PID's birth time changes."""
+    class Exited:
+        pid = 101
+
+    argv = ["/bin/chrome", "--user-data-dir=/isolated/profile"]
+    monkeypatch.setattr(launcher, "_profile_browser_pids", lambda _udd, **_kw: [202])
+    monkeypatch.setattr(launcher, "_process_argv", lambda _pid: argv)
+    monkeypatch.setattr(launcher, "_same_user_process", lambda _pid: True)
+    monkeypatch.setattr(launcher, "_process_ppid", lambda _pid: 1)
+    monkeypatch.setattr(launcher, "_start_time", lambda _pid: 300)
+    verified, unverified = launcher._find_handoff_replacement(
+        cast(subprocess.Popen, Exited()), "/bin/chrome", "/isolated/profile", "launch-token",
+        {202: 200}, launcher_start=100)
+    assert verified == []
+    assert unverified == []
+
+
+@pytest.mark.platforms("posix")
+def test_terminate_refuses_a_bare_pid_without_a_verified_start_time():
+    """P2: a dead browser's recycled PID must never be signalled from a bare record."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        launcher._terminate(proc.pid, None, None)
+        assert proc.poll() is None, "terminated a PID without a verified start time"
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)

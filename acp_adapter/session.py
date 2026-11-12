@@ -633,7 +633,8 @@ class SessionManager:
         # only as the bare kind (``custom``): _persist stores it so a resume re-resolves the
         # same named entry instead of a credentialless bare kind (#139908). A recovered
         # identity (#142714) is the route too, so the next persist stores it back named.
+        # Only the bare kind is lossy: ``auto`` or an alias must persist what it resolved to.
         route = str(requested or config_provider or "").strip()
-        if route:
+        if route and kwargs.get("provider") == "custom":
             agent.provider_route = route
         return agent

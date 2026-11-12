@@ -211,3 +211,46 @@ def test_make_agent_keeps_a_same_origin_recorded_endpoint(monkeypatch, tmp_path)
     manager._make_agent(session_id="s-same", cwd=str(tmp_path), requested_provider="custom:gw",
                         base_url="https://gw.test:443/openai/v1")
     assert built[-1]["base_url"] == "https://gw.test:443/openai/v1"
+
+
+@pytest.mark.parametrize("configured,resolved", [("auto", "openrouter"), ("claude", "anthropic")])
+def test_persist_keeps_the_resolved_built_in_provider(monkeypatch, tmp_path, configured, resolved):
+    """Only the bare ``custom`` kind loses its entry name. Persisting ``auto`` or an alias instead
+    of the provider the agent resolved makes a resume re-run detection and move the session."""
+    _patch_resolution(monkeypatch, runtime={
+        "provider": resolved, "api_mode": "chat_completions", "base_url": "https://api.test/v1",
+        "api_key": "k", "credential_pool": None, "command": None, "args": []})
+    monkeypatch.setattr("hermes_cli.config.load_config",
+                        lambda: {"model": {"default": "some-model", "provider": configured}, "agent": {}})
+    monkeypatch.setattr("run_agent.AIAgent", lambda **kw: _agent(provider=kw["provider"], base_url=kw["base_url"]))
+    db = SessionDB(tmp_path / "state.db")
+    manager = SessionManager(db=db, agent_factory=None)
+    state = manager.create_session(cwd=str(tmp_path))
+    state.history.append({"role": "user", "content": "turn 1"})
+    manager.save_session(state.session_id)
+    assert json.loads(db.get_session(state.session_id)["model_config"])["provider"] == resolved
+    db.close()
+
+
+def test_switch_model_compares_an_alias_session_by_its_resolved_provider(monkeypatch, tmp_path):
+    """A ``claude`` session runs on ``anthropic``: /model must seed switch_model with that, or
+    ``keep_endpoint`` never matches switch_model's canonical target."""
+    from acp_adapter.server import HermesACPAgent
+
+    _patch_resolution(monkeypatch, runtime={
+        "provider": "anthropic", "api_mode": "anthropic_messages", "base_url": "https://api.test",
+        "api_key": "k", "credential_pool": None, "command": None, "args": []})
+    monkeypatch.setattr("run_agent.AIAgent", lambda **kw: _agent(provider=kw["provider"], base_url=kw["base_url"]))
+    manager = SessionManager(db=SessionDB(tmp_path / "state.db"), agent_factory=None)
+    live = manager._make_agent(session_id="s-alias", cwd=str(tmp_path), requested_provider="claude")
+    seen: dict = {}
+
+    def _switch(**kw):
+        seen.update(kw)
+        raise RuntimeError("stop after seeding")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch)
+    state = SimpleNamespace(session_id="s-alias", cwd=".", model="some-model", agent=live)
+    with pytest.raises(RuntimeError, match="stop after seeding"):
+        HermesACPAgent(session_manager=manager)._switch_model(state, "other-model", keep_endpoint=True)
+    assert seen["current_provider"] == "anthropic"

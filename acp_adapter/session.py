@@ -250,6 +250,21 @@ class SessionManager:
         path = Path(self._db_instance.db_path) if self._db_instance is not None else get_hermes_home() / "state.db"
         return read_catalog_rows(path)
 
+    def display_history(self, session_id: str) -> Optional[list[dict[str, Any]]]:
+        """The DURABLE DISPLAY projection for a session (``include_compacted``): what a reopened
+        editor should show, which is a SUPERSET of the active-only model history. In particular it
+        keeps a safety-refused turn's retained ``content_refused`` row, which the model context
+        dropped (``active = 0``). ``None`` when the DB is unavailable (e.g. a test agent factory),
+        so callers fall back to the in-memory model history."""
+        db = self._get_db()
+        if db is None:
+            return None
+        try:
+            return db.get_messages_as_conversation(session_id, include_compacted=True)
+        except Exception:
+            logger.debug("Failed to load ACP display history for %s", session_id, exc_info=True)
+            return None
+
     def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
         """Update the working directory for a session and its tool overrides."""
         cwd = _translate_acp_cwd(cwd)

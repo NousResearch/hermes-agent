@@ -99,6 +99,9 @@ function mergeInstalled(
         ...entry,
         id: installed.id,
         version: installed.version || entry.version,
+        locked: installed.locked,
+        usage: installed.usage,
+        updateAvailable: installed.updateAvailable,
         search: `${entry.search} ${installed.search}`
       }
     ]
@@ -152,6 +155,7 @@ function CatalogSortSelect({
 
   const sortLabels: Record<CatalogSort, string> = {
     discover: c.featured,
+    usage: c.mostUsed,
     stars: c.mostStarred,
     newest: c.newest,
     updated: c.recentlyUpdated,
@@ -261,12 +265,12 @@ const detailRelated = (entries: CatalogEntry[], selected: CatalogEntry | undefin
   selected && shown ? relatedEntries(entries, selected, RELATED_COUNT) : []
 
 /** Discovery shelves show only while browsing everything. */
-/** Shelves (not a flat grid) while nothing narrows the catalog, and also
+/** Shelves (not a flat grid) while nothing narrows or ranks by use the catalog, and also
  *  while only tiers (plugins) or several categories do: Official / Verified
  *  stay their own shelves, Community and multi-category picks keep their
  *  category shelves. One category is a drill-in, so it stays a flat grid. */
-const isDiscoverView = (facets: CatalogFacets, query: string, kind: CatalogKind) =>
-  (kind === 'plugins' || !facets.sources.length) && facets.categories.length !== 1 && !facets.tags.length && !query && !facets.installedOnly
+const isDiscoverView = (facets: CatalogFacets, query: string, kind: CatalogKind, sort: CatalogSort) =>
+  sort !== 'usage' && (kind === 'plugins' || !facets.sources.length) && facets.categories.length !== 1 && !facets.tags.length && !query && !facets.installedOnly && !facets.updatesOnly
 
 function CatalogLoadState({ error, onRetry }: { error: Error | null; onRetry: () => void }) {
   const { t } = useI18n()
@@ -386,8 +390,9 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const categories = useMemo(() => catalogCategories(visible), [visible])
   const sources = useMemo(() => catalogSources(visible, kind), [visible, kind])
   const tags = useMemo(() => catalogTags(visible, facets.tags, TAG_LIMIT), [visible, facets.tags])
+  const updateCount = useMemo(() => visible.filter(entry => entry.updateAvailable).length, [visible])
 
-  const discover = isDiscoverView(facets, deferredQuery, kind)
+  const discover = isDiscoverView(facets, deferredQuery, kind, sort)
   const pageOrder = filtered
 
   const selected = visible.find(entry => entry.id === selectedId) ?? filtered[0]
@@ -490,10 +495,12 @@ export const CatalogBrowser = memo(function CatalogBrowser({
             onInstalled={filters.toggleInstalled}
             onSource={filters.toggleSource}
             onTag={filters.toggleTag}
+            onUpdates={filters.toggleUpdates}
             resultCount={filtered.length}
             sortControl={sortControl}
             sources={sources}
             tags={tags}
+            updateCount={updateCount}
           />
           {notice}
           {error && entries.length > 0 && (
@@ -512,7 +519,7 @@ export const CatalogBrowser = memo(function CatalogBrowser({
                   <div
                     className="capabilities-scroll"
                     data-catalog-scroll
-                    key={`${filterKey}:${sort}:${deferredQuery}:${facets.installedOnly}`}
+                    key={`${filterKey}:${sort}:${deferredQuery}:${facets.installedOnly}:${facets.updatesOnly}`}
                   >
                     {discover ? (
                       <CatalogDiscovery actions={actions} byCategory={facets.categories.length > 1} card={card} entries={filtered} kind={kind} narrowed={facets.sources.length > 0 || facets.categories.length > 1} onCategory={filters.chooseCategory} />

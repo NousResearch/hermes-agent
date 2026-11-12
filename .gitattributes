@@ -1,5 +1,7 @@
 # Auto-generated files — collapse diffs and exclude from language stats
-web/package-lock.json linguist-generated=true
+pnpm-lock.yaml linguist-generated=true
+**/package-lock.json linguist-generated=true
+nix/node-gyp-11-4-0-package-lock.json linguist-generated=true
 uv.lock text eol=lf
 
 # Enforce LF for scripts that run inside Linux containers.
@@ -9,6 +11,9 @@ uv.lock text eol=lf
 Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
+
+# Every file git detects as text is stored with LF; the rules below also pin the checkout.
+* text=auto
 
 # Enforce LF for all source/text files. Windows editors and tools default to
 # CRLF; without normalization a Windows contributor's edit turns into a

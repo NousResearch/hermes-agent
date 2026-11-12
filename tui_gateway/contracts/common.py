@@ -293,6 +293,8 @@ class PlanUsage(Result):
     gauges: list[PlanUsageGauge] = Field(default_factory=list)
     # Ids the gateway labels ``top_tier`` (Large).
     top_tier_model_ids: list[str] = Field(default_factory=list)
+    # Ids billed to a subscription the account holds: ``free`` in ``usage_levels`` (never dimmed), no "Free" tag.
+    subscription_model_ids: list[str] = Field(default_factory=list)
     featured_model_ids: list[str] = Field(default_factory=list)
     paused_reason: str | None = None
     # Past a full allowance, top-up credits pay (pay as you go): Keep going on credits on + a balance.
@@ -306,3 +308,11 @@ __all__ = [
     "ProfileParams", "ProjectRef", "SessionLiveInfo", "SessionOwner", "SessionParams", "StatusResult", "StoredSessionRow",
     "SubagentStatus", "ToolLabel", "ToolLabelKind", "TranscriptMessage", "Usage",
 ]
+
+
+class UndoRollbackHint(Result):
+    """``/undo``'s line naming the files the undone turns changed and pointing at ``/rollback``: ``files`` are
+    the changed paths, ``text`` is the rendered line in the backend's language."""
+
+    files: list[str] = Field(default_factory=list)
+    text: str

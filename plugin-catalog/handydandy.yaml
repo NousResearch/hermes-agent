@@ -1,0 +1,23 @@
+name: handydandy
+title: HandyDandy
+repo: https://github.com/percyhendrux123-prog/hermes-handydandy
+sha: 3c085a5e21f312800ada2650db2a462462b5fa49
+description: "Session-size notices and structured handoffs for long Hermes sessions. Disclosure — writes state.json, state.lock, events.log and short-lived atomic-save temp files under <HERMES_HOME>/plugin-data/handydandy/ (profile and session ids, paths, thresholds and error details; no conversation text); asks the agent to write handoff files to handoff_dir (default <HERMES_HOME>/handoffs/), which may hold work details from the conversation; optionally appends one row per completed handoff to a session_log_csv the owner sets (off by default). Reads its own state, the first byte and modification time of recorded handoff files, plugin settings via ctx.get_config, and HERMES_HOME plus deprecated HANDYDANDY_<KEY> fallback environment variables. No network calls, no shell commands, no background processes, no stored credentials, no telemetry; it does not auto-approve tools or change safety settings."
+maintainer: Deploy Axiom
+tier: community
+category: automation
+requires_hermes: ">=0.22.2"
+version: "0.4.1"
+readme: true
+platforms: [macos, linux]
+known_issues:
+  - Automatic carryover (reset into a fresh session) was removed in 0.4.1 until Hermes offers a public session-reset hook (NousResearch/hermes-agent#149633). A saved carryover setting runs as handoff.
+  - Handoff writing uses a normal agent turn and tool approvals; the user starts the fresh session from the handoff.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_api_request
+    - transform_llm_output
+    - pre_llm_call
+  provides_middleware: []
+  requires_env: []

@@ -150,6 +150,67 @@ def _is_truncated(entry: dict) -> bool:
     return bool(entry.get("truncated") or entry.get("exit_reason") == "max_iterations")
 
 
+# A stop the parent or user asked for is not a failure the parent has to recover from.
+_STOPPED = frozenset({"interrupted", "cancelled"})
+
+
+def delegation_wakes_parent(evt: dict) -> bool:
+    """True for an async delegation's FINAL result with a failed child (any status other than done or a
+    requested stop). Its unviewed local parent runs it as a turn rather than a note
+    (gateway/session_completion_notes.py), so the parent can re-dispatch or report. The early per-task
+    notice is a diagnostic: the final result that follows it is the one that wakes."""
+    if evt.get("type") != "async_delegation" or evt.get("task_failure_notice"):
+        return False
+    if evt.get("_sibling_failed"):
+        return True
+    if evt.get("role") == "cron_run":
+        return False  # a manual cron run's outcome is finished text, like a scheduled one's: a note
+    raw = evt.get("results")
+    # No child results (a single child's event, or a crashed batch's ``results=[]``): the unit's own
+    # status decides. Otherwise the children do, so an interrupted-only batch's aggregate error stays asleep.
+    results = [r for r in raw if isinstance(r, dict)] if isinstance(raw, list) else []
+    results = results or [evt]
+    # The stall monitor stops a stuck unit with the same cooperative stop a user's does; its stall
+    # context on the event is what tells the two apart (``async_delegation._finalize``).
+    stopped = () if evt.get("stalled_after_quiet_seconds") is not None else _STOPPED
+    return any(
+        (r.get("status") or ("failed" if r.get("error") else "completed")) not in (*_DONE, *stopped)
+        for r in results)
+
+
+def completion_resumes_parent(evt: dict) -> bool:
+    """True for a result the parent asked to hear about and carries on from: an async delegation's
+    final result (not the early per-task notice, not a manual cron run's finished text) or a background
+    process's exit, whatever its exit code. Its unviewed local parent runs it as a turn, as a watched one
+    does, so the work goes on while no client is connected (a laptop asleep, a closed tab).
+    ``delegation_wakes_parent`` is the failed-delegation subset, whose wakes are bounded
+    (gateway/session_completion_notes.py); a process exit is never in it."""
+    if evt.get("type") == "async_delegation":
+        if evt.get("task_failure_notice"):
+            return False
+        return bool(evt.get("_sibling_resumes")) or evt.get("role") != "cron_run"
+    return evt.get("type") == "completion"
+
+
+_CONTENT_POLICY_RECOVERY = (
+    "This model's provider refused the task (content_policy_blocked). The refusal is deterministic for "
+    "that model, so do not re-dispatch it unchanged: re-dispatch it with delegate_task on a different "
+    "model (another option/model), or tell the user it was refused.")
+
+
+def _failure_recovery_lines(r: dict) -> list[str]:
+    """What the parent should do about a failed child, when its classified reason names a remedy."""
+    from agent.error_surface import _NON_RETRYABLE_REASONS
+    reason = r.get("failure_reason")
+    if reason == "content_policy_blocked":
+        return [_CONTENT_POLICY_RECOVERY]
+    if reason in _NON_RETRYABLE_REASONS and reason != "interpreter_shutdown":
+        return [f"This failure ({reason}) repeats for the same task on the same model and provider, so do not "
+                "re-dispatch it unchanged: re-dispatch it with delegate_task on a different model or provider "
+                "only if that avoids the cause, otherwise tell the user what failed."]
+    return []
+
+
 def _notice_lines(results) -> list[str]:
     """Blank + model_not_found notice block, or [] when the notice does not apply."""
     notice = _delegation_model_not_found_notice(results)
@@ -169,7 +230,7 @@ def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_go
         lines.append(f"Context you provided: {evt['context']}")
     if evt.get("toolsets"):
         lines.append(f"Toolsets: {', '.join(evt['toolsets'])}")
-    lines.append(f"Role: {evt.get('role') or 'leaf'}   Model: {evt.get('model') or '?'}")
+    lines.append(f"Role: {evt.get('role') or 'leaf'}" + (f"   Model: {evt['model']}" if evt.get("model") else ""))
     return lines
 
 
@@ -226,6 +287,9 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
     lines += _recovery_lines(evt)
+    if evt.get("stalled_after_quiet_seconds") is not None and any(r.get("status") in _STOPPED for r in results):
+        lines.append(f"The stall monitor stopped this unit after {evt['stalled_after_quiet_seconds']:g}s without "
+                     "progress: an interrupted task below was stuck, not stopped by you or the user.")
     if evt.get("error") and not results:
         lines += ["--- ERROR ---", f"The batch did not complete successfully: {evt['error']}"]
         return "\n".join(lines)
@@ -252,6 +316,8 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
             lines += ["Partial output:", r_summary]
         else:
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
+        if r_status not in _DONE:
+            lines += _failure_recovery_lines(r)
         if r.get("live_transcript"):
             lines.append(f"Full live transcript (complete tool/assistant trace): {r['live_transcript']}")
         lines += _process_accounting_lines(r)
@@ -297,7 +363,8 @@ def _format_async_delegation(evt: dict) -> str:
         "you can act on the result or re-dispatch if things have changed.",
         completed_at, with_goal=True)
     lines += _notice_lines([evt]) + [
-        f"Status: {status}   API calls: {evt.get('api_calls', 0)}   Duration: {evt.get('duration_seconds', '?')}s"
+        f"Status: {status}" + (f"   API calls: {evt['api_calls']}" if evt.get("api_calls") is not None else "")
+        + f"   Duration: {evt.get('duration_seconds', '?')}s"
         + (" [TRUNCATED: hit max_iterations — work may be incomplete]" if truncated else ""),
         "--- RESULT ---"]
     if status in _DONE and summary:

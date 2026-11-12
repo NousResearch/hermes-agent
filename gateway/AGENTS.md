@@ -8,8 +8,7 @@ New platform adapter: follow `gateway/platforms/ADDING_A_PLATFORM.md` step by st
 `gateway/run.py` is the facade; phases live in `run_*.py` (startup, adapters, inbound, turn, busy,
 goals, notifications, shutdown, ...), sessions in `session*.py`, slash handlers in
 `slash_commands_*.py` mixins, authorization in `authz_mixin.py`, adapters in `platforms/<name>.py`
-over `platforms/base.py`. `builtin_hooks/` is the extension point for always-registered gateway
-hooks (none shipped). The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
+over `platforms/base.py`. The gateway reads user YAML **raw** (`run.py` + `config.py`), not through
 `DEFAULT_CONFIG` — a key the CLI sees but the gateway doesn't means you're on the wrong loader
 (`hermes_cli/AGENTS.md`). Each adapter picks a base toolset (Telegram → `"messaging"`).
 
@@ -163,7 +162,7 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   fallback-after-miss leak); import the shared one. `tests/gateway/test_shared_platform_boilerplate.py`
   asserts every plugin's `_env_enablement` reads only through it.
 - **Scope is bound per profile activity, not per turn.** `run.py::_profile_runtime_scope(home)`
-  wraps a routed turn (`run_turn.py::_profile_scope_for_source`); the same binding wraps every path
+  (one `Scope`: `agent/runtime_scope.py`, HX016) wraps a routed turn (`run_turn.py::_profile_scope_for_source`); the same binding wraps every path
   that touches a session's home, secrets or terminal scope with no turn on the stack: release and
   eviction (`run_agent_cache.py::_run_release_in_profile_scope` — TTL, LRU and memory-pressure
   eviction all route through it so `on_session_end`/memory flush hit the OWNING profile's provider),
@@ -171,8 +170,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   (`platforms/base.py::_media_delivery_scope`), deferred callbacks (pickers, reactions — capture the
   routed home at command time, re-enter the scope in the callback), notifiers and outbound webhooks.
   Resolve the owning home from the session record (`profile_home`, `agent:<profile>:` key), never
-  from `os.environ`, which holds the launch profile. Why: eviction that flushed under the launch scope
-  wrote a secondary profile's memories into the default profile's store, silently.
+  from `os.environ`, which holds the launch profile. Why: eviction under the launch scope wrote a
+  secondary profile's memories into the default profile's store.
 - **`api_server` rebuilds the agent per request but not the memory provider.** The adapter bypasses
   `TurnRunner` and the agent cache (per-request callbacks, model route, ephemeral prompt), so
   `platforms/api_server_memory_sessions.py` parks each session's initialised `MemoryManager` between
@@ -188,8 +187,8 @@ gateway under the backend, and do NOT "fix" update locks by widening the tree-ki
   profile's OWN scope through `run_turn.py::_standalone_launch_scope` — `.env` over the env frozen at
   activation, never a `.env`-only rebuild (systemd / `op run` keys have no file) and never live
   `os.environ`. Gate a new standalone path on that helper, not on the config flag (#112878).
-- **Hooks and observers register per served profile.** `builtin_hooks/`, `agent/shell_hooks.py::
-  register_from_config` and lifecycle observers are prepared under each profile's scope at startup
+- **Hooks and observers register per served profile.** `agent/shell_hooks.py::register_from_config`
+  and lifecycle observers are prepared under each profile's scope at startup
   and on profile add/remove; idempotence keys include the profile, and `hooks/` paths resolve at call
   time (a module constant freezes to the first importer). Shell hooks are also re-synced (added AND
   unregistered) on every local session create/resume via `session_policy.refresh_profile_hooks` ->

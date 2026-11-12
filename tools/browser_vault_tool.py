@@ -13,7 +13,8 @@ paid per request) and available wherever a browser is. Its actions:
   resolved locally, the page origin must EXACTLY match the item's bound
   origin (pre-checked AND re-asserted synchronously inside the fill script),
   the field is chosen by the ported login-control classifier, injection runs
-  exclusively over the supervisor CDP WebSocket (never argv), and the tool
+  exclusively over the supervisor CDP WebSocket (never argv) — or, for a plugin browser with no CDP
+  endpoint, through its registered ``BrowserPageBackend`` (Camofox's REST evaluate) — and the tool
   result reports only ``{filled_fields, kind, origin, success}`` — the
   password never appears in tool results, logs, or the session DB, and its
   exact bytes are registered with the browser-result redaction boundary so
@@ -46,18 +47,53 @@ def _check_vault_available() -> bool:
     """Schema-gate: the vault rides with the browser. An empty vault still needs save_login so the
     agent can offer to remember a login the first time it meets a form; hiding the tool until an item
     exists meant nobody ever discovered the feature. Deferral keeps that presence nearly free."""
+    from agent.browser_page_registry import list_providers
     from tools.browser_session_cdp import get_cdp_override_raw
     from tools.browser_use_cli import browser_exec_available
-    return bool(browser_exec_available() or get_cdp_override_raw())
+    return bool(browser_exec_available() or get_cdp_override_raw() or list_providers())
 
 
 # ---------------------------------------------------------------------------
 # JS evaluation plumbing (server-side; results never carry secret values)
 # ---------------------------------------------------------------------------
 
+# A secret-bearing script runs inside this wrapper on a page backend, so a page exception is answered
+# in-page and its message (which may quote the script) never reaches the backend's error path or logs.
+_PAGE_FILL_FAILED = {"hermes_vault_eval_failed": True}
+
+
+def _page_backend(task_id: str):
+    """The page this operation runs on when it is not the task's CDP session: the Desktop in-app browser
+    page pinned for a ``target='preview'`` operation, else the plugin browser holding this task's live page
+    (e.g. Camofox), else None."""
+    from agent.browser_page_registry import backend_for_task
+    from tools.browser_vault_preview import active_page
+    return active_page() or backend_for_task(task_id)
+
+
+def _page_eval(backend: Any, task_id: str, expression: str, *, secret: bool) -> dict[str, Any]:
+    """Evaluate on a plugin page backend. On the secret path every failure gets fixed text."""
+    if secret:
+        expression = ("(() => { try { return (" + expression + "); } catch (_) { return "
+                      + json.dumps(_PAGE_FILL_FAILED) + "; } })()")
+    try:
+        result = backend.evaluate(task_id, expression, secret=secret)
+    except Exception as exc:  # health: allow BLE001 -- plugin failure becomes a typed refusal
+        detail = "" if secret else f": {str(exc)[:200]}"
+        return {"success": False, "error_type": "eval_failed",
+                "error": f"The {backend.name} browser could not run the vault script{detail}"}
+    if secret and _parse_json_result(result) == _PAGE_FILL_FAILED:
+        return {"success": False, "error_type": "eval_failed",
+                "error": f"The {backend.name} browser could not run the vault script"}
+    return {"success": True, "result": result}
+
+
 def _eval_js(task_id: str, expression: str) -> dict[str, Any]:
-    """Evaluate NON-SECRET JS on the current page (inspection, origin reads) over the task's CDP
-    supervisor. There is no other path: without a supervisor the call reports it."""
+    """Evaluate NON-SECRET JS on the current page (inspection, origin reads): on the plugin browser
+    holding the task's page, else over the task's CDP supervisor. Without either the call reports it."""
+    page = _page_backend(task_id)
+    if page is not None:
+        return _page_eval(page, task_id, expression, secret=False)
     supervisor = _ensure_supervisor(task_id)
     if supervisor is None:
         return {"success": False, "error": "no supervised browser session for this task; open the page with "
@@ -99,15 +135,18 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     place the expression — and therefore the credential bytes — in argv,
     visible to any process listing. When no supervisor session is available
     the caller gets a typed refusal (``error_type='supervisor_required'``) and
-    nothing is written.
+    nothing is written. A plugin browser holding the task's page (no CDP endpoint) carries the
+    expression over its own transport instead; see ``agent.browser_page_backend``.
     """
-    try:
-        supervisor = _ensure_supervisor(task_id)
-    except Exception as exc:
-        logger.debug("vault fill: supervisor unavailable (%s)", exc)
-        supervisor = None
+    page = _page_backend(task_id)
+    supervisor = None
+    if page is None:
+        try:
+            supervisor = _ensure_supervisor(task_id)
+        except Exception as exc:
+            logger.debug("vault fill: supervisor unavailable (%s)", exc)
 
-    if supervisor is None:
+    if page is None and supervisor is None:
         return {
             "success": False,
             "error_type": "supervisor_required",
@@ -122,13 +161,16 @@ def _eval_js_secret(task_id: str, expression: str) -> dict[str, Any]:
     # human-length prompt (enter_code waits for the user's code); a takeover during that wait must
     # refuse here, before the credential lands in a page the human is now typing into. The outer
     # epoch check only discards the result, and a fill is a side effect, not a result.
-    if _bot_desktop_browser_session(task_id):
+    from tools.browser_vault_preview import active_page
+    if active_page() is None and _bot_desktop_browser_session(task_id):
         from tools.bot_desktop import lease as _bd_lease
         try:
             _bd_lease.assert_agent_may_act()
         except _bd_lease.HumanHasControl as exc:
             return {"success": False, "error_type": "human_has_control", "error": str(exc)}
 
+    if page is not None:
+        return _page_eval(page, task_id, expression, secret=True)
     sup = supervisor.evaluate_runtime(expression)
     if sup.get("ok"):
         return {"success": True, "result": sup.get("result")}
@@ -165,18 +207,28 @@ def _current_page_origin(task_id: str) -> Optional[str]:
         return None
 
 
+def _deep_probe(selector: str) -> str:
+    """A JS expression truthy when ``selector`` matches in the document or any open shadow root (the
+    inspection and fill scripts reach shadow-root forms, so tab selection must too)."""
+    return ("((s) => { const w = (r) => r.querySelector(s) || Array.from(r.querySelectorAll('*'))"
+            ".some((e) => e.shadowRoot && w(e.shadowRoot)); return !!w(document); })(" + json.dumps(selector) + ")")
+
+
 # Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
 _TAB_PROBES = {
-    "login": "!!document.querySelector('input[type=password]')",
-    "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
-    "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
+    "login": _deep_probe("input[type=password]"),
+    "payment": _deep_probe("input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]"),
+    "address": _deep_probe("input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]"),
 }
 
 
 def _focus_bound_origin(task_id: str, origin: str, kind: str) -> Optional[str]:
     """Point the supervisor's page session at the open tab on ``origin`` that holds a ``kind`` form
     (browser_exec sessions open their own tabs, so the tab the supervisor attached to first is rarely the
-    login page). Returns the origin when a tab was focused, else None (caller falls back to the current page)."""
+    login page). Returns the origin when a tab was focused, else None (caller falls back to the current page).
+    A plugin page backend's current page IS the tab the agent drove, so there is nothing to focus."""
+    if _page_backend(task_id) is not None:
+        return None
     try:
         supervisor = _ensure_supervisor(task_id)
     except Exception:
@@ -326,8 +378,8 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                       ensure_ascii=False)
 
 
-_TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
-                      "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
+_TAB_PROBES["otp"] = _deep_probe("input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
+                                  "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]")
 
 
 def _saved_login(handle: str) -> tuple[Any, Any]:
@@ -415,7 +467,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
 
 @plugin_errors_as_refusal
-def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
+def browser_vault_fill(handle: str, task_id: Optional[str] = None, *, with_identifier: bool = False) -> str:
     """Fill the current page's password field from a vault handle.
 
     Password-only: the identifier is agent-visible metadata (see
@@ -461,12 +513,26 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         refusal = snapshot_refusal(backend, handle, meta, page_origin)
         if refusal is not None:
             return json.dumps(refusal)
-        return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id)
+        return _fill_bound_page(backend, handle, meta, page_origin, effective_task_id, with_identifier)
 
 
-def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, effective_task_id: str) -> str:
+def _identifier_fill(classified: list, password_fill: list[dict[str, Any]], identifier: str) -> list[dict[str, Any]]:
+    """The username/email/phone control for a user-chosen login (the Desktop key button fills both fields;
+    the agent types the identifier itself). Prefers a control in the password field's form; on an
+    identifier-only step (no password field yet) it is the whole fill."""
+    fields = [c for c in classified if c.token in ("username", "email", "tel")]
+    if not identifier or not fields:
+        return []
+    anchor = password_fill[0]["index"] if password_fill else None
+    form = next((c.control.form_index for c in classified if c.control.index == anchor), None)
+    best = min(fields, key=lambda c: (c.control.form_index != form, -c.score, c.control.index))
+    return [{"index": best.control.index, "token": best.token, "value": identifier}]
+
+
+def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, effective_task_id: str,
+                     with_identifier: bool = False) -> str:
     """Inspect the page, resolve the item's secret and write it; runs inside the backend's fill_context
-    after the origin guard passed."""
+    after the origin guard passed. ``with_identifier`` also writes the login's (non-secret) identifier."""
     from agent.redact import register_vault_redaction_value
     from agent.vault_login_classifier import (
         ClassifiedLoginControl,
@@ -510,6 +576,8 @@ def _fill_bound_page(backend: Any, handle: str, meta: Any, page_origin: str, eff
         if meta.kind == "login":
             secret = {"password": backend.resolve_password(handle)}
             fills = select_password_fill(classified, secret["password"])
+            if with_identifier:
+                fills += _identifier_fill(classified, fills, str(meta.identifier or ""))
         else:
             secret = backend.resolve_secret(handle)
             fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
@@ -610,6 +678,9 @@ BROWSER_VAULT_SCHEMA = {
             "handle": {"type": "string", "description": "fill / enter_code: a handle from list."},
             "backend": {"type": "string", "enum": ["onepassword", "bitwarden"], "description": "unlock only."},
             "label": {"type": "string", "description": "save_login only: short site name (default: the host)."},
+            "target": {"type": "string", "enum": ["browser", "preview"],
+                       "description": "fill / save_login / enter_code: 'preview' = the Desktop in-app browser "
+                                      "page beside the chat, 'browser' = the managed automation browser."},
         },
         "required": ["action"],
     },
@@ -647,6 +718,15 @@ def _handle_vault(args: dict[str, Any], **kwargs) -> str:
     if action not in page_ops:
         return json.dumps({"success": False, "error": f"Unknown action {action!r}; use list, fill, save_login, "
                                                        "enter_code or unlock."})
+    target = args.get("target") or "browser"
+    if target == "preview":
+        # The in-app browser is not the Bot Desktop browser; its window owns the page and refuses a
+        # changed tab or document itself. Never retried on another browser.
+        from tools.browser_vault_preview import run_preview_vault
+        return run_preview_vault(kwargs.get("preview_callback"), page_ops[action])
+    if target != "browser":
+        return json.dumps({"success": False, "error_type": "invalid_target",
+                           "error": "target must be 'browser' or 'preview'."})
     return _fenced_page_op(tid, page_ops[action])
 
 

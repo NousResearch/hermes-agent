@@ -118,6 +118,38 @@ SKILL_SAFETY_RULE = (
 )
 
 
+def native_anthropic_tail_prices(compressor: Any):
+    """Tail prices ``messages -> [tokens per row]`` on a preserved-thinking native Anthropic route, else
+    None. That route replays exactly the projected carriers minus this session's rejected signatures —
+    what the preflight estimate prices — never the canonical ``reasoning`` keys. Priced over the whole
+    list: whether a row's signed thinking survives conversion depends on its neighbours."""
+    from agent.anthropic_thinking_policy import native_anthropic_preserves_prior_thinking
+
+    if (getattr(compressor, "api_mode", "") or "") != "anthropic_messages" or not native_anthropic_preserves_prior_thinking(
+        getattr(compressor, "base_url", ""), getattr(compressor, "model", "")
+    ):
+        return None
+    from agent.anthropic_thinking_replay import session_rejected_thinking, strip_rejected_thinking
+    from agent.context_compressor import _estimate_msg_budget_tokens
+    from agent.message_sanitization import native_anthropic_row_costs
+
+    rejected = session_rejected_thinking(
+        compressor, getattr(compressor, "_session_db", None), getattr(compressor, "_session_id", "")
+    )
+
+    def prices(messages: list[dict[str, Any]]) -> list[int]:
+        request_copies = [dict(m) if isinstance(m, dict) else m for m in messages]
+        if rejected:
+            for copy in request_copies:
+                strip_rejected_thinking(copy, rejected)
+        return [
+            _estimate_msg_budget_tokens(shadow) + thinking if isinstance(shadow, dict) else 0
+            for shadow, thinking in native_anthropic_row_costs(request_copies)
+        ]
+
+    return prices
+
+
 def tail_cut_pricer(compressor: Any, messages: list[dict[str, Any]], head_end: int):
     """Tail-cut walk price ``index -> tokens`` in which rows at or before the newest handoff cost nothing.
 
@@ -130,6 +162,27 @@ def tail_cut_pricer(compressor: Any, messages: list[dict[str, Any]], head_end: i
         (i for i in range(len(messages) - 1, head_end - 1, -1) if compressor._is_context_summary_message(messages[i])), -1,
     )
     return price if newest < 0 else (lambda i: 0 if i <= newest else price(i))
+
+
+def tail_cut_progress_floor(compressor: Any, messages: list[dict[str, Any]], head_end: int, cut_idx: int) -> int:
+    """Lowest tail cut that leaves the summary window a row the handoff scan keeps.
+
+    The scan drops standalone handoff rows from the window, so when every row before the cut (and up to the newest
+    handoff) is a handoff, the planned window is empty and compress() no-ops with ``empty_post_handoff_window``. That
+    happens when the cut lands inside the tool group right after the handoff and is aligned back onto the group's
+    assistant. The floor then moves past that group, unless doing so would take the newest row or the active user
+    request out of the tail; those cases keep the old ``head_end + 1`` floor. ``_compress_window``'s
+    assistant/tool bridge before the active request obeys the same floor, so the two never disagree: when the floor
+    sits on the active request, the summary merges into that row instead of the bridge emptying the window."""
+    floor = head_end + 1
+    newest = next(
+        (i for i in range(len(messages) - 1, head_end - 1, -1) if compressor._is_context_summary_message(messages[i])), -1,
+    )
+    if newest < 0 or not all(map(compressor._is_context_summary_message, messages[head_end:max(cut_idx, newest + 1)])):
+        return floor
+    raised = compressor._align_boundary_forward(messages, newest + 2)
+    last_user = compressor._find_last_user_message_idx(messages, newest + 1)
+    return floor if raised >= len(messages) or 0 <= last_user < raised else raised
 
 
 def with_skill_safety_rule(

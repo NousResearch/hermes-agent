@@ -7,6 +7,8 @@ export interface GatewayHostTranslations {
   unavailableDesc: string
   webappHostTitle: string
   webappHostDesc: string
+  /** Finishing a saved gateway's sign-in from the address a browser on another machine landed on. */
+  webappOauthPaste: { title: string; description: string; placeholder: string; finish: string; failed: string }
   webAccess: WebAccessTranslations
 }
 
@@ -30,8 +32,14 @@ export interface WebAccessTranslations {
   unavailableDetail: (reason: string) => string
   restartBusy: string
   restartFailed: string
+  /** A restart that exited without replacing the gateway, with the last line it wrote. */
+  restartFailedBecause: (reason: string) => string
   startTimedOut: string
   stopTimedOut: string
+  /** What a Start in flight is doing: `preparing` until the backend names a step. */
+  startStages: Record<'building' | 'preparing' | 'registering' | 'restarting', string>
+  /** How long the Start has run, already formatted (`45s`, `1:23`). */
+  startElapsed: (time: string) => string
   start: string
   stop: string
   restartGateway: string

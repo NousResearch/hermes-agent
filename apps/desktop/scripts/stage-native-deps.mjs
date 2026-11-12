@@ -478,10 +478,9 @@ export function openWindowsSync() {
 `
 
 function resolveGetWindowsRoot(appRoot = projectRoot) {
-  // get-windows is an optionalDependency (its node-pre-gyp install script has
-  // no Linux or Windows ARM64 prebuilt and its node-gyp fallback may fail, so
-  // `npm ci` can skip it entirely on those targets). Return null when it is
-  // absent; the caller decides whether that is fatal per platform and arch.
+  // get-windows is a regular dependency whose install script is not run
+  // (pnpm-workspace.yaml allowBuilds); an interrupted install can still leave it
+  // unresolvable (#90829). Return null when it is absent; the caller degrades.
   try {
     // get-windows' exports map doesn't expose ./package.json; resolve the entry
     // (index.js sits at the package root) and take its directory.
@@ -499,9 +498,10 @@ function resolveGetWindowsRoot(appRoot = projectRoot) {
  *
  * Per-platform native payload: macOS ships the `main` Swift helper binary
  * (universal, present in every published tarball), Windows the node-pre-gyp
- * prebuilt under lib/binding (downloaded by the package's install script on
- * a Windows host — cross-platform packs already can't happen, see
- * stageNodePtyInto), Linux nothing (it shells out to xprop at runtime).
+ * prebuilt under lib/binding (fetched by `install`, which runs node-pre-gyp on
+ * a Windows host since the install skips the package's own script —
+ * cross-platform packs already can't happen, see stageNodePtyInto), Linux
+ * nothing (it shells out to xprop at runtime).
  */
 const GET_WINDOWS_VERSION = '9.3.0'
 
@@ -564,24 +564,13 @@ export function stageGetWindowsInto(
     // the target platform; the classify gate below still catches a dir that
     // claims win32 but holds a foreign binary.
     const bindingRoot = join(srcRoot, 'lib', 'binding')
-    const scanBindingDirs = () =>
-      existsSync(bindingRoot)
-        ? readdirSync(bindingRoot).filter(
-            (dir) =>
-              dir.includes(`-${platform}-`) &&
-              dir.endsWith(`-${arch}`) &&
-              existsSync(join(bindingRoot, dir, 'node-get-windows.node'))
-          )
-        : []
+    const scanBindingDirs = () => getWindowsBindingDirs(srcRoot, platform, arch)
     let bindingDirs = scanBindingDirs()
     let installAttempted = false
     if (bindingDirs.length === 0 && arch !== 'arm64' && typeof install === 'function') {
-      // A plain `npm install` won't re-run an install script for a package
-      // that is already on disk, so every checkout that installed while
-      // get-windows was missing from allowScripts stays bricked even after
-      // the allowlist is fixed. Invoke node-pre-gyp directly: npm treats this
-      // optional dependency's failed lifecycle as non-fatal and can report a
-      // successful rebuild without producing the Windows binding.
+      // The install does not run get-windows' script (pnpm-workspace.yaml
+      // allowBuilds: a failed fallback build of a regular dependency would fail
+      // the whole install), so invoke node-pre-gyp directly and degrade here.
       console.log(
         '[stage-native-deps] get-windows has no win32 binding; running its native installer...'
       )
@@ -628,9 +617,63 @@ export function stageGetWindowsInto(
   return destRoot
 }
 
+/** The lib/binding dirs of an installed get-windows that hold a binding named for platform-arch. */
+function getWindowsBindingDirs(srcRoot, platform, arch) {
+  const bindingRoot = join(srcRoot, 'lib', 'binding')
+  if (!existsSync(bindingRoot)) return []
+  return readdirSync(bindingRoot).filter(
+    (dir) =>
+      dir.includes(`-${platform}-`) &&
+      dir.endsWith(`-${arch}`) &&
+      existsSync(join(bindingRoot, dir, 'node-get-windows.node'))
+  )
+}
+
+/**
+ * `pnpm run dev` loads get-windows from node_modules, and the install never runs its script
+ * (pnpm-workspace.yaml allowBuilds), so a fresh Windows checkout has no binding there and
+ * upstream's lib/windows.js hands back stubs. Fetch it once into the installed package, the way
+ * stageGetWindows does for builds, and restage a dist copy an earlier build left without one. Fail soft: dev runs without window enumeration rather than
+ * not at all. node-pre-gyp's download has no timeout of its own, so on a network that drops
+ * packets the run is bounded here instead of waiting out the OS TCP timeout on every dev start.
+ */
+export const DEV_GET_WINDOWS_TIMEOUT_MS = 120_000
+
+export function ensureDevGetWindowsBinding(
+  {
+    platform = process.platform,
+    arch = process.arch,
+    resolveRoot = () => resolveGetWindowsRoot(),
+    install = installGetWindowsNativeBinding,
+    timeoutMs = DEV_GET_WINDOWS_TIMEOUT_MS,
+    staged = join(projectRoot, 'dist', 'node_modules', 'get-windows')
+  } = {}
+) {
+  if (platform !== 'win32' || arch === 'arm64') return
+  const srcRoot = resolveRoot()
+  if (!srcRoot) return
+  const hasBinding = (root) => getWindowsBindingDirs(root, platform, arch).length > 0
+  try {
+    if (!hasBinding(srcRoot)) {
+      console.log('[dev] get-windows has no win32 binding; running its native installer...')
+      install(srcRoot, { timeoutMs })
+    }
+    // window-below.ts loads the staged dist copy first, so one left without a binding by an
+    // earlier build whose fetch failed would shadow the binding node_modules now has.
+    if (existsSync(staged) && !hasBinding(staged) && hasBinding(srcRoot)) {
+      stageGetWindowsInto(srcRoot, staged, { platform, arch })
+    }
+  } catch (error) {
+    console.warn(
+      `[dev] ${error instanceof Error ? error.message : String(error)}; ` +
+        'read_window_below will be unavailable in this dev run'
+    )
+  }
+}
+
 export function installGetWindowsNativeBinding(
   srcRoot,
-  { resolveInstaller, spawn = spawnSync } = {}
+  { resolveInstaller, spawn = spawnSync, timeoutMs } = {}
 ) {
   let installerPath
   try {
@@ -646,10 +689,23 @@ export function installGetWindowsNativeBinding(
     throw new Error(`[stage-native-deps] cannot resolve get-windows native installer: ${detail}`)
   }
 
+  // node-pre-gyp 1.0.11 reads the mirror as npm_config_node_get-windows_binary_host_mirror (it
+  // turns only the first '-' of node-get-windows into '_'), but npm and source_build.py export
+  // the npmrc key with every '-' as '_'. Hand it the name it reads.
+  const mirror = process.env.npm_config_node_get_windows_binary_host_mirror
+  const bridged = 'npm_config_node_get-windows_binary_host_mirror'
+  const env = mirror && !process.env[bridged] ? { ...process.env, [bridged]: mirror } : undefined
   const result = spawn(process.execPath, [installerPath, 'install', '--fallback-to-build'], {
     cwd: srcRoot,
-    stdio: 'inherit'
+    stdio: 'inherit',
+    ...(env ? { env } : {}),
+    ...(timeoutMs ? { timeout: timeoutMs } : {})
   })
+  if (result.error?.code === 'ETIMEDOUT') {
+    throw new Error(
+      `[stage-native-deps] get-windows native installer timed out after ${timeoutMs / 1000}s`
+    )
+  }
   if (result.error) {
     throw new Error(
       `[stage-native-deps] get-windows native installer could not start: ${result.error.message}`
@@ -662,12 +718,12 @@ export function installGetWindowsNativeBinding(
 
 /**
  * A get-windows directory that exists but does not resolve as a package: an
- * `npm install` interrupted by a running Desktop/gateway holding files open
+ * install interrupted by a running Desktop/gateway holding files open
  * (TAR_ENTRY_ERROR on Windows) leaves the binding on disk without
- * package.json, and npm never revisits a directory that already exists, so the
- * tree stays broken across every later update. Walks the same
- * `node_modules` ancestors `require.resolve` does (the workspace root hoist or
- * the app-local copy).
+ * package.json, and the package manager trusts a directory that already
+ * exists, so the tree stays broken until it is reinstalled. Walks the same
+ * `node_modules` ancestors `require.resolve` does (the app-local link into
+ * pnpm's store, then the repo root).
  */
 export function findHalfInstalledGetWindowsDir(startDir = projectRoot) {
   for (let dir = startDir; ; dir = dirname(dir)) {
@@ -680,15 +736,15 @@ export function findHalfInstalledGetWindowsDir(startDir = projectRoot) {
 /** The warning printed when get-windows cannot be staged. */
 export function missingGetWindowsWarning({ platform, arch, halfInstalledDir }) {
   const lines = [
-    `[stage-native-deps] get-windows not installed (optional dep skipped for ${platform}-${arch}); ` +
+    `[stage-native-deps] get-windows not installed (for ${platform}-${arch}); ` +
       'read_window_below will be unavailable in this build'
   ]
   if (halfInstalledDir) {
     lines.push(
       `[stage-native-deps] ${halfInstalledDir} exists but is not a loadable package — an ` +
-        'interrupted npm install left it half-extracted (look for TAR_ENTRY_ERROR in the install log). ' +
+        'interrupted install left it half-extracted (look for TAR_ENTRY_ERROR in the install log). ' +
         'To restore read_window_below: close every Hermes window and gateway so the extract is not ' +
-        'interrupted again, then run `hermes desktop --force-build` — it removes the stale dir before npm.'
+        'interrupted again, then run `hermes desktop --force-build` — it reinstalls the dependency tree.'
     )
   }
   return lines.join('\n')
@@ -708,8 +764,7 @@ export function stageGetWindows(
   const destRoot = join(out, 'get-windows')
 
   if (!srcRoot) {
-    // npm may omit an optional dependency whose install script fails, or an in-place
-    // update may fail to extract it due to file locks (#90829). The runtime import
+    // An in-place update may fail to extract it due to file locks (#90829). The runtime import
     // already fails soft, so we disable only window enumeration instead of failing
     // the entire Desktop build (which would strand users on an old version).
     console.warn(
@@ -718,7 +773,8 @@ export function stageGetWindows(
     return undefined
   }
 
-  // Only a win32 host can produce the win32 binding, so a cross-platform pack
+  // The install never runs get-windows' own script (pnpm-workspace.yaml allowBuilds), so the win32
+  // binding comes from here. Only a win32 host can produce it, so a cross-platform pack
   // has nothing to gain from the native installer.
   const install =
     platform === 'win32' && process.platform === 'win32'

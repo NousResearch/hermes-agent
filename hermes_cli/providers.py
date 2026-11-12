@@ -256,10 +256,33 @@ def _overlay_pdef(canonical, ov: HermesOverlay, name, env_vars, base_url, doc, s
                        source=source)
 
 
+def _plugin_alias_owner(canonical: str) -> str:
+    """The plugin profile's id when *canonical* is only one of its ``aliases``, else *canonical*.
+
+    A plugin alias that is also a models.dev provider id (``meta`` -> ``meta-ai``, ``azure`` ->
+    ``azure-foundry``) otherwise resolved to the bare models.dev entry whenever the catalog
+    loaded and to the plugin when it did not, so ``--provider meta`` persisted a different
+    provider depending on the network. ``hermes_cli.auth.resolve_provider`` already answers the
+    plugin id. Built-in ids and overlay profiles keep what ``normalize_provider`` gave them.
+    The owner comes from the registry's own lookup, so the bound home's plugin claiming the alias
+    wins over a bundled one, exactly as ``get_provider_profile`` would pick it."""
+    if not canonical or _is_static_canonical(canonical):
+        return canonical
+    from providers import get_provider_profile, list_providers
+    profiles = list_providers()
+    if any(prof.name == canonical for prof in profiles) or not any(
+            canonical in prof.aliases for prof in profiles):
+        return canonical
+    owner = get_provider_profile(canonical)
+    if owner is None or canonical not in owner.aliases or owner.provider_overlay:
+        return canonical
+    return owner.name
+
+
 def get_provider(name: str, *, allow_network: bool = True) -> Optional[ProviderDef]:
     """Look up a built-in provider by id or alias: models.dev catalog merged with the Hermes overlay;
     Hermes-only overlay (nous, openai-codex, …); plugin provider profiles with a concrete endpoint."""
-    canonical = normalize_provider(name)
+    canonical = _plugin_alias_owner(normalize_provider(name))
     from hermes_cli.left_core_migration import provider_left_core
     if provider_left_core(canonical):  # its plugin is not loaded: models.dev must not stand in for it
         return None
@@ -477,7 +500,14 @@ def resolve_user_provider(name: str, user_config: dict[str, Any]) -> Optional[Pr
     the built-in's real transport/base_url/auth_type with an empty ``openai_chat``/``api_key``
     stub, routing e.g. AWS Bedrock through the generic custom-endpoint ``/models`` probe (#110402).
     """
-    entry = user_config.get(name) if isinstance(user_config, dict) and user_config else None
+    if not isinstance(user_config, dict) or not user_config:
+        return None
+    # Callers lowercase the requested name; the config key keeps the user's case (``Axonhub``).
+    # The pdef id is the config key so later ``user_config[target_provider]`` reads still hit.
+    if name not in user_config:
+        wanted = str(name or "").strip().lower()
+        name = next((k for k in user_config if isinstance(k, str) and k.strip().lower() == wanted), name)
+    entry = user_config.get(name)
     if not isinstance(entry, dict):
         return None
     base_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""

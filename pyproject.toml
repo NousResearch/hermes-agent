@@ -50,7 +50,6 @@ dependencies = [
   "fire==0.7.1; python_version >= '3.14'",
   "httpx[socks]==0.28.1; python_version >= '3.14'",
   "rich==14.3.4; python_version >= '3.14'",
-  "tenacity==9.2.1; python_version >= '3.14'",
   "tomli-w==1.2.0; python_version >= '3.14'",  # Preserve relative dependency paths in staged plugin metadata.
   # 0.18.17 requires ruamel.yaml.clib on 3.14, which has no Windows ARM64 wheel.
   "ruamel.yaml==0.18.16; python_version >= '3.14'",
@@ -206,7 +205,7 @@ dependencies = [
   # Hence the ``sys_platform == 'win32'`` marker: the dep (and its portalocker
   # / pywin32 tree) ships only where it's actually used.
   "concurrent-log-handler==0.9.30; sys_platform == 'win32' and python_version >= '3.14'",
-  # First-party lifecycle and shared-metrics runtime. Relay 0.10 is the supported
+  # First-party lifecycle and shared-metrics runtime. Relay 0.11 is the supported
   # native runtime and provider-codec baseline. Managed calls pass request and
   # response data through this native module in-process; shared metrics installs
   # no network exporter and consumes only its bounded projection. This marker
@@ -220,7 +219,7 @@ dependencies = [
   # 738 CPython reports sys_platform == 'android' and never matched.) Pre-GKI
   # devices can still slip through; they get the same resolution failure as
   # before, worked around by installing with `--no-deps` or an older release.
-  "nemo-relay>=0.10,<0.11; ((sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')) and python_version >= '3.14'",]
+  "nemo-relay>=0.11,<0.12; ((sys_platform == 'darwin' and platform_machine == 'arm64') or (sys_platform == 'linux' and platform_machine == 'x86_64' and 'android' not in platform_release) or (sys_platform == 'linux' and platform_machine == 'aarch64' and 'android' not in platform_release) or (sys_platform == 'win32' and platform_machine == 'AMD64') or (sys_platform == 'win32' and platform_machine == 'ARM64')) and python_version >= '3.14'",]
 
 [project.optional-dependencies]
 # High-performance event loop — uvloop replaces the stdlib asyncio loop with
@@ -310,6 +309,11 @@ voice = [
   # onnxruntime has no darwin-x64 wheel/sdist (darwin-x64). Gate the local
   # STT path off both; sounddevice/numpy still ship.
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
+  # faster-whisper 1.2.1 passes `metadata_errors` to av.open(), a kwarg PyAV 19
+  # removed, so every local transcription dies with a TypeError (#135245). The fix
+  # (SYSTRAN/faster-whisper#1495) is unreleased and faster-whisper declares only
+  # av>=11, so pin av until a faster-whisper release carries it.
+  "av==18.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
   "sounddevice==0.5.6",
   "numpy==2.5.4",
 ]
@@ -343,6 +347,8 @@ discord = ["discord.py[voice]==2.7.1"]
 # stt-whisper + audio-io compose [voice] (faster-whisper / sounddevice / numpy).
 stt-whisper = [
   "faster-whisper==1.2.1; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
+  # Same av pin as [voice]: PyAV 19 breaks faster-whisper 1.2.1 (#135245).
+  "av==18.1.0; (platform_machine != 'ARM64' or sys_platform != 'win32') and (platform_machine != 'x86_64' or platform_system != 'Darwin') and sys_platform != 'android'",
 ]
 audio-io = ["sounddevice==0.5.6", "numpy==2.5.4"]
 # WeChat voice decode (tools/transcription_tools.py self-heal path).
@@ -373,6 +379,24 @@ google-chat = [
 # bundles firecrawl-anydoc==0.2.4; the extra exists so a lean/broken install
 # can re-sync exactly the pin from core.
 doc-extract = ["firecrawl-anydoc==0.2.4"]
+# Office/PDF authoring libraries for skills/productivity/{docx,xlsx,powerpoint,pdf}.
+# Baked into the Docker image (Dockerfile `--extra documents`), whose sealed
+# venv has no pip and whose root fs resets on restart; ~25 MB there. Not in
+# [all]: plain installs keep the skills' persistent side environment instead.
+documents = [
+  "python-docx==1.2.0",
+  "openpyxl==3.1.5",
+  "python-pptx==1.0.2",
+  "reportlab==5.1.0",
+  "pypdf==6.21.4",
+]
+# PDF text extraction and rasterization for skills/productivity/pdf. Only in
+# the skills' side environment (`hermes pm environment documents --extra
+# documents --extra documents-pdf`), never baked: ~17 MB of pdfminer/pdfium.
+documents-pdf = [
+  "pdfplumber==0.11.10",
+  "pypdfium2==5.14.0",
+]
 trace-upload = ["huggingface-hub==1.33.0"]
 # Cloud memory providers are opt-in PM extras. They stay outside [all]
 # so a quarantined release cannot break fresh installs.
@@ -480,9 +504,9 @@ google = [
   # The Google SDKs permit older vulnerable transitives, so unlocked installs
   # must carry the same fixed floors as uv.lock and the runtime installers:
   # httplib2 0.32.0 (GHSA-j5g9-f88f-gfj3 decompression bomb DoS),
-  # pyasn1 0.6.4, google-auth 2.55.1.
+  # pyasn1 0.6.5, google-auth 2.55.1.
   "httplib2==0.32.0",
-  "pyasn1==0.6.4",
+  "pyasn1==0.6.5",
 ]
 youtube = [
   # Required by skills/media/youtube-content and
@@ -547,8 +571,8 @@ dev = [
   "starlette==1.9.0",
   "ty==0.0.89",
   "ruff==0.15.22",
-  "setuptools==83.0.0",
-] # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
+  "setuptools==84.1.0",
+] # starlette: CVE-2026-48710; setuptools: 84.1.0 (GHSA-xmj3-9gf7-h52w; torch >=2.13 requires setuptools 83+)
 # Native launcher and provider-catalog E2E dependencies belong in the test
 # environment, not the core runtime. Keep the Anthropic SDK at the same
 # reviewed version as the optional runtime extra above.
@@ -562,7 +586,7 @@ test = [
 # PEP 517 isolated builds. Without wheel in
 # requires, the isolation sandbox only gets setuptools and the build
 # fails with ModuleNotFoundError: wheel.cli (#96488).
-requires = ["setuptools==83.0.0", "wheel"]
+requires = ["setuptools==84.1.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
@@ -576,6 +600,19 @@ hermes-acp = "acp_adapter.entry:main"
 # closures never ship. KittenTTS pulls torch, transformers and spaCy through
 # misaki[en]: installed when the user picks it, not preinstalled.
 opt-in-extras = ["kittentts"]
+
+# What `hermes update` compiles before it moves the checkout to this tree, and again after: the
+# launcher and `hermes_bootstrap` import closure plus the CLI entry modules. Every file listed here
+# must exist; an update to a tree that lacks one is refused. A change that moves one of these
+# files updates its path here.
+update-startup-files = [
+  "hermes_bootstrap.py", "hermes_cli/_parser.py", "hermes_cli/_launchers.py",
+  "hermes_cli/_early_recovery.py", "hermes_cli/update_lock.py", "hermes_cli/update_custody.py",
+  "hermes_cli/update_handoff.py", "hermes_cli/venv_sync.py", "pm/__init__.py", "pm/environments.py",
+  "hermes_cli/main.py", "hermes_cli/config.py", "hermes_cli/__init__.py",
+  "hermes_cli/web_server.py", "cli.py", "run_agent.py", "model_tools.py", "toolsets.py",
+  "hermes_constants.py",
+]
 
 # Per-extra platform gates (settled 2026-09-02): an extra listed here is
 # only installable on platforms matching the marker. pm consults this
@@ -688,6 +725,8 @@ include = [
   "providers.*",
   "hermes_platform",
   "hermes_platform.*",
+  "hermes_agent",
+  "hermes_agent.*",
   "pm",
   "pm.*",
   "tools",
@@ -699,6 +738,7 @@ hermes_cli = [
   "observability/schemas/*.json",
   "data/*.json",
   "local_runtime/*.json",
+  "process_supervisor.sh",
 ]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
@@ -709,7 +749,9 @@ gateway = ["assets/**/*"]
 # Bundled plugin discovery reads these manifests at runtime. Keep them in
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.
-plugins = ["**/plugin.yaml", "**/plugin.yml"]
+# The remote config backend checks its vendored config-plane conformance fixtures (secret-key
+# list) at runtime: plugins/config_backends/remote/values.py.
+plugins = ["**/plugin.yaml", "**/plugin.yml", "config_backends/remote/vendor/**/*"]
 # pm/lock.json is the runtime pin table (uv/python/tool versions + sha256s).
 # Without it a sealed wheel installs the pm package but has no pins to
 # realize — the pm store would be empty.

@@ -2,11 +2,14 @@
 import asyncio
 import logging
 from contextvars import ContextVar
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import replace
 
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, ProcessingOutcome
 from gateway.session_envelope import restore_native
+from gateway.session_producer_lifecycle import close_producer_turn, producer_turn
+from hermes_cli.observability.shared_metrics_busy import (
+    busy_turn_started, note_busy_admitted, note_busy_parked, settle_busy_arrival)
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -25,6 +28,7 @@ busy_commit = ContextVar('busy_commit', default=None)
 _CONTENT_CLAUSES = frozenset({
     'text', 'auto_skill', 'channel_prompt', 'channel_context', 'reply_expected',
     'media_urls', 'media_types', 'media_text_inlined', 'media_types_length', 'media_text_inlined_length',
+    'media_filenames', 'media_filenames_length',
 })
 
 # Nothing was committed (main's busy-queue cap); /retry answers it before rewriting (#139257).
@@ -73,6 +77,7 @@ async def admit_message(authority, event):
     from hermes_state_runtime import get_session_admission
     row = get_session_admission(authority.db, admission_id=receipt.admission_id)
     status = 'terminal' if row is None else row['status']  # None: deleted with its chat, nothing owed
+    note_busy_admitted(event, receipt.admission_id, status, None if row is None else row.get('outcome'))
     if status in ('terminal', 'unknown'):
         authority.native_waiters.discard(receipt.admission_id)
         if authority.waiters.get(receipt.admission_id) is waiter:
@@ -90,6 +95,8 @@ async def admit_message(authority, event):
             # The drain refused this head (``_refuse_head``): cancelled, not saved behind a pause.
             return (f'⚠️ Hermes did not answer this message ({exc.reason}): the conversation it was '
                     'queued for moved, so it was dropped. Send it again to continue.')
+        if row is not None:
+            note_busy_parked(event)  # still queued (saved): answered after the pause, not dropped
         return pause_notice(authority, receipt.ref, exc.reason)
     finally:
         if adopters.get(receipt.admission_id) is event:
@@ -183,6 +190,45 @@ async def deliver_resolved(authority, admission_id, *, owed):
     await deliver_settled(authority, admission_id)
 
 
+def _take_post_delivery(authority, admission_id, source, route):
+    """Move the turn's post-delivery slot off its adapter onto this admission. A native waiter (the
+    messaging adapter task that sends the reply) runs it after its own send instead. A runner or
+    adapter without the seam (a webhook sink, a bare test double) holds none."""
+    resolve = getattr(authority.runner, '_adapter_for_source', None)
+    native = admission_id in authority.native_waiters
+    slots = getattr(resolve(source), '_post_delivery_callbacks', None) if resolve and source and not native else None
+    entry = slots.pop(route, None) if slots is not None else None
+    if entry is not None:
+        _registry(authority, 'post_delivery')[admission_id] = (slots, route, entry)
+
+
+def _hand_back_post_delivery(authority, admission_id):
+    """A native waiter registered after the turn started: its adapter task sends the reply and then
+    runs the slot, which goes back unless a newer turn's already took it."""
+    taken = _registry(authority, 'post_delivery').pop(admission_id, None)
+    if taken is not None:
+        slots, route, entry = taken
+        slots.setdefault(route, entry)
+
+
+async def fire_post_delivery(authority, admission_id):
+    """Run a settled turn's post-delivery callbacks (background-review release, temp-bubble cleanup,
+    a deferred /goal or /loop verdict) after its reply was sent, as ``_process_message_background``
+    does after a messaging reply. Never run, they also pinned the whole turn (its agent, history
+    and result) in the adapter's slot until restart."""
+    if admission_id in authority.native_waiters:
+        _hand_back_post_delivery(authority, admission_id)
+        return
+    taken = _registry(authority, 'post_delivery').pop(admission_id, None)
+    if taken is None:
+        return
+    from gateway.platforms.base import _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS, _split_post_delivery_entry
+    from gateway.platforms.base_post_delivery import run_post_delivery_callback
+    callback = _split_post_delivery_entry(taken[2])[1]
+    with await _execution_scope(authority, None):  # off-turn: the owning profile's scope
+        await run_post_delivery_callback(callback, _POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS)
+
+
 async def _release_turn_marker(authority, event):
     if getattr(event, '_gateway_active_turn_token', None):
         await authority.runner._clear_durable_active_turn(event)
@@ -229,6 +275,7 @@ def row_turn_author(policy, row):
 
 
 async def execute_admission(authority, ref, row):
+    busy_turn_started(row['admission_id'])
     from gateway.session_completion_notes import note_if_unviewed
     noted = await note_if_unviewed(authority, ref, row)  # #134889 LC-7: no viewer, no turn
     if noted is not None:
@@ -244,6 +291,8 @@ async def execute_admission(authority, ref, row):
     if policy is not None:
         return await admit_managed(authority, ref, row, policy)
     live = authority.sessions[ref.session_id]
+    # The key the turn registers its post-delivery slot under; a rebind mid-turn must not move the take.
+    route = live.route
     native = row['admission_id'] in authority.native_waiters
     authority.native_waiters.discard(row['admission_id'])
     if 'native_text_v1' in row['payload']:
@@ -255,6 +304,10 @@ async def execute_admission(authority, ref, row):
         if 'local_automation_v1' in row['payload']:
             from gateway.session_automation import restore_local_automation
             event = restore_local_automation(authority, ref, row)
+    # The claim passed the admission gate, which refuses once a drain begins: a wake claimed here was
+    # receipted before any drain and is never re-sent, so a drain starting now runs it rather than
+    # answering it with the drain notice and settling it completed unrun (#138123, authority route).
+    event._admitted_before_drain = event.internal is True
     if event.internal and 'gateway_session_id' in event.metadata:
         # Main's ownership proof (802fd5782f3): the session the pre-claim check just validated, so the
         # turn's resolver never re-reads (and on a transient failure drops) an admitted completion.
@@ -285,7 +338,7 @@ async def execute_admission(authority, ref, row):
     event._turn_marker_handoff = True
     handed = False
     try:
-        with await _execution_scope(authority, home):
+        async with _admission_scope(authority, ref, home, row, event, captured):
             if is_api:
                 # Committed media resolves under the owning profile's home, like admission did.
                 prepared = prepare_api_execution(authority, ref, row['payload'])
@@ -331,6 +384,10 @@ async def execute_admission(authority, ref, row):
             await _hand_over_turn_marker(authority, row['admission_id'], event)
             return response
     finally:
+        if not native:
+            # No adapter task awaits this turn to run its post-delivery callbacks: the drain runs them
+            # once the turn settled and its reply went out (``fire_post_delivery``).
+            _take_post_delivery(authority, row['admission_id'], event.source, route)
         if not handed:
             await _release_turn_marker(authority, event)
         executing_admission.reset(token)
@@ -351,6 +408,16 @@ def _launch_body_if_launch_owner(authority):
         return nullcontext()
     from tui_gateway.launch_profile_policy import launch_body
     return launch_body()
+
+
+@asynccontextmanager
+async def _admission_scope(authority, ref, home, row, event, captured):
+    """The execution scope, inside the adapter lifecycle the executor owns for a producer-admitted
+    turn (``session_producer_lifecycle``; a no-op for every other admission)."""
+    from agent.runtime_scope import bind_turn, claim_fence
+    async with producer_turn(authority, row, event, captured):
+        with await _execution_scope(authority, home), bind_turn(ref.session_id, row['admission_id'], claim_fence(row)):
+            yield
 
 
 async def _execution_scope(authority, home):
@@ -384,6 +451,7 @@ async def deliver_settled(authority, admission_id):
         # ``admit_message`` registered its delivery waiter after this turn started: the drain
         # hands that waiter the reply and its adapter lifecycle sends it, so this send is not owed.
         authority.native_waiters.discard(admission_id)
+        _hand_back_post_delivery(authority, admission_id)
         authority.pending_deliveries.pop(admission_id)
         adopter = _marker_adopters(authority).get(admission_id)
         if held is not None and adopter is not None:
@@ -394,11 +462,14 @@ async def deliver_settled(authority, admission_id):
         if held is not None:
             # Fenced unknown: no answer is owed, so no later boot may deliver one either.
             await _release_turn_marker(authority, held)
+        # Settled with nothing (left) to send: its reply streamed, or it had none.
+        await close_producer_turn(authority, admission_id, ProcessingOutcome.SUCCESS)
         return
     adapter, event, session_key, response, home = delivery
+    delivered = False
     try:
         with await _execution_scope(authority, home):
-            await deliver_response(adapter, event, session_key, response)
+            delivered = await deliver_response(adapter, event, session_key, response)
     except Exception:
         logger.exception('Delivery of settled admission %s failed', admission_id)
     finally:
@@ -406,13 +477,17 @@ async def deliver_settled(authority, admission_id):
         authority.pending_deliveries.pop(admission_id, None)
         # The ledgered send already released the marker; an empty or failed send owes no more.
         await _release_turn_marker(authority, event)
+        await close_producer_turn(
+            authority, admission_id, ProcessingOutcome.SUCCESS if delivered else ProcessingOutcome.FAILURE)
 
 
 async def deliver_response(adapter, event, session_key, response):
+    """Send a turn's reply; whether it was delivered (``_process_message_background``'s verdict:
+    nothing to send, or at least one send that succeeded)."""
     from gateway.platforms.base import _thread_metadata_for_event, _mark_notify_metadata
     text, ttl = adapter._unwrap_ephemeral(response)
     if not text:
-        return
+        return True
     extracted = await adapter._extract_response_content(text, event, session_key, is_ephemeral_response=ttl > 0)
     metadata = _mark_notify_metadata(_thread_metadata_for_event(event))
     results = []
@@ -421,6 +496,7 @@ async def deliver_response(adapter, event, session_key, response):
                                        metadata, ttl > 0, ttl, results.append)
     await adapter._deliver_attachments(event, extracted, metadata, anything_sent=bool(results),
                                        record_delivery=results.append)
+    return any(getattr(result, 'success', False) for result in results if result is not None)
 
 
 async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
@@ -453,6 +529,7 @@ async def dispatch_shared_busy(adapter, event, session_key, *, durable=False):
             logger.error('[%s] Queued busy follow-up failed: %s', adapter.name, exc, exc_info=True)
             await adapter._notify_turn_error(delivery_event, exc)
         finally:
+            settle_busy_arrival(event)
             # Clears the marker if no ledgered send did, then wakes the drain's bounded wait,
             # which listens on the adopter (``event``).
             await adapter._release_turn_marker(delivery_event)

@@ -75,7 +75,7 @@ def zip_update(tmp_path, monkeypatch, isolated_source_completion):
     monkeypatch.setattr(update_cmd, "_source_update_channel", lambda args: "main")
     monkeypatch.setattr(update_cmd, "_sweep_bytecode_after_update", lambda branch: None)
 
-    def prepare(selected, *, desktop):
+    def prepare(selected, *, desktop, after_dependencies=None):
         assert selected == root and desktop is False
         assert (root / "payload.txt").read_text() == "new"
         events.append("prepare")
@@ -143,7 +143,8 @@ def test_zip_command_migrates_profiles_recovers_snapshot_and_verifies_fleet(
         config = hermes_yaml.safe_load((profile / "config.yaml").read_text())
         assert config["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert config["model"]["default"] == "retained-model"
-    assert (state.sibling / ".env").read_bytes() == (state.active / ".env").read_bytes()
+    # The backfill seeds the placeholder, never a copy of the default's secrets.
+    assert b"EXAMPLE_TOKEN" not in (state.sibling / ".env").read_bytes()
     assert json.loads(state.jobs.read_text()) == state.original_jobs
     assert (state.root / "payload.txt").read_text() == "new"
     for name in ("tools/code.py", "apps/desktop/source.js", "new-entry/data"):
@@ -433,7 +434,7 @@ def test_installed_app_without_a_checkout_build_is_still_rebuilt(zip_update, mon
     monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path / "default-home")
     built = []
     monkeypatch.setattr("hermes_cli.source_build.build_update_products",
-                        lambda selected, *, desktop: built.append(desktop))
+                        lambda selected, *, desktop, after_dependencies=None: built.append(desktop))
     monkeypatch.setattr(update_cmd, "_prepare_git_command", lambda **_: (True, ["git"], False))
     monkeypatch.setattr(main, "_warn_orphaned_update_autostashes", lambda *args: None)
 

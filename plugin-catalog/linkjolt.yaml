@@ -1,0 +1,19 @@
+name: linkjolt
+title: LinkJolt
+repo: https://github.com/Efesop/linkjolt-claude-plugin
+sha: 9db46b04f582257a2cf8a32dc35438c838f4d58f
+version: "1.0.4"
+description: "Run a LinkJolt affiliate program from Hermes through LinkJolt's hosted MCP server (https://www.linkjolt.io/api/mcp, OAuth sign-in with the user's LinkJolt account, no keys in config): add affiliate tracking to a SaaS or web app's code for Stripe, Paddle, Polar, Creem, Lemon Squeezy or Gumroad, check that tracking works, review sales, commissions, clicks and top affiliates, go through pending commissions, see who is owed what, find out why a sale did not track, and manage affiliate coupon codes. Bundles six workflow skills. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure: every tool call goes to LinkJolt's hosted server (www.linkjolt.io) and acts on the user's LinkJolt account for the brand picked at sign-in; LinkJolt logs each tool call by tool name (not its arguments) and each change the connector makes; the tool set is served by that server at runtime and is not covered by the pinned sha. Sign-in runs the pinned mcp-remote@0.1.49 through npx (Node.js 20.18.1+ and npm required) with a header that asks LinkJolt to sign in while connecting; it opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth. The write tools save business details, create or change campaigns, email an invitation to an affiliate, approve or reject an affiliate, record or change a sale, and add an affiliate coupon code (created in the merchant's own Stripe, Polar or Creem account when asked); none sends money. The package marks the server untrusted, so Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
+maintainer: LinkJolt
+tier: community
+category: tools
+docs_url: https://github.com/Efesop/linkjolt-claude-plugin#install-in-hermes-agent
+requires_hermes: ">=0.23.0"
+readme: true
+image: https://raw.githubusercontent.com/Efesop/linkjolt-claude-plugin/9db46b04f582257a2cf8a32dc35438c838f4d58f/assets/icon.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

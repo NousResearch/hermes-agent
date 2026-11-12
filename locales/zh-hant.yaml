@@ -66,6 +66,9 @@ gateway:
     usage_switch_model: "`/model <name>` — 切換模型"
     usage_switch_provider: "`/model <name> --provider <slug>` — 切換提供方"
     usage_persist: "`/model <name> --global` — 永久儲存"
+    usage_reset: "`/model reset` — 清除本工作階段的模型覆寫"
+    reset_done: "已清除本工作階段的模型覆寫 — 現在使用 `{model}`（頻道/全域預設）。對話歷史已保留。"
+    reset_none: "本工作階段沒有啟用的模型覆寫 — 已在使用 `{model}`（頻道/全域預設）。"
     err_skew: "此閘道執行的程式碼版本為 {boot_rev}，但磁碟上的檢出版本已是 {disk_rev}。此時切換模型可能因模組過時而崩潰 — 請重新啟動閘道以載入新程式碼：hermes gateway restart"
     err_switch_failed: "切換模型至 {model} 失敗（{error}）；維持使用 {current}。"
     err_config_not_updated: "config.yaml 未更新（{error}）"
@@ -484,8 +487,6 @@ gateway:
     root_new: "若要開始新的平行 Hermes 聊天，請開啟此 bot 介面頂端的「All Messages」話題並在那裡傳送任意訊息。Telegram 會為它建立新話題。\n\n每個話題都是獨立的 Hermes 工作階段。只有在想取代某個話題目前的工作階段時，才在既有話題內使用 /new。"
     new_header: "已在此話題中開始新的 Hermes 工作階段。\n\n提示：若要平行作業，請開啟「All Messages」並在那裡傳送訊息以建立另一個話題，而不是在這裡使用 /new。/new 會取代目前話題所綁定的工作階段。"
     help: "/topic — 啟用多工作階段私訊模式（一個 bot，多個平行聊天）\n\n用法：\n  /topic             啟用話題模式；若已開啟則顯示狀態\n  /topic help        顯示此訊息\n  /topic off         停用話題模式並清除話題綁定\n  /topic <id>        在話題內：依 ID 恢復先前的工作階段\n\n運作方式：\n1. 在此私訊中執行一次 /topic — Hermes 會檢查 BotFather 的\n   Threads Settings 是否已啟用，並開啟多工作階段模式。\n2. 點選 bot 頂端的「All Messages」並傳送任意訊息。\n   Telegram 會為該訊息建立新話題；每個話題都是\n   獨立的 Hermes 工作階段（全新的歷史與上下文）。\n3. 根私訊成為系統大廳 — 在那裡傳送 /topic、/status、\n   /help、/usage。一般提示請在話題內傳送。\n4. 在話題內使用 /new 只會重設該話題的工作階段。\n5. 在話題內使用 /topic <id> 可將舊的工作階段恢復到該話題。"
-    system_topic_name: "系統"
-    system_topic_intro: "用於 Hermes 指令與狀態的系統話題。"
     setup_image_caption: "BotFather → Bot Settings → Threads Settings"
     no_chat_id: "無法判斷聊天 ID。"
     mode_not_enabled: "此聊天目前未啟用多工作階段話題模式。"
@@ -513,6 +514,7 @@ gateway:
     not_git_repo: "✗ 不是 git 儲存庫 — 無法更新。"
     hermes_cmd_not_found: "✗ 找不到 `hermes` 指令。Hermes 正在執行，但更新指令無法在 PATH 上或透過目前的 Python 解譯器找到執行檔。請嘗試在終端機中手動執行 `hermes update`。"
     start_failed: "✗ 啟動更新失敗：{error}"
+    already_running: "⏳ 已有更新正在進行；只有啟動它的人可以回答它的提問。請等它完成後再試一次 /update。"
     starting: "☤ 正在啟動 Hermes 更新…… 進度將在此處顯示。"
     reply_failed: "✗ 無法將回應送至更新程序：{error}"
     reply_sent: "✓ 已將 `{label}` 送至更新程序。"
@@ -622,6 +624,8 @@ gateway:
     action_always: "永久允許"
     action_deny: "拒絕"
     deadline: "若你在 {window} 內未回應，指令將「不會」執行。"
+    not_requester: "只有 {requester} 可以回應此核准請求。"
+    not_requester_admins_only: "只有管理員或列出的核准者可以回應此核准請求。"
     text_choice_once: "回覆 `{prefix}approve` 執行一次"
     text_choice_session: "`{prefix}approve session` 在本次工作階段內允許此模式"
     text_choice_always: "`{prefix}approve always` 永久允許"
@@ -629,6 +633,9 @@ gateway:
     text_choice_joiner: ", "
     text_choice_last: "，或 {choice}。\n"
     text_body: "{heading}\n```\n{command}\n```\n{reason_label}：{reason}\n\n"
+    truncated_full_above: "預覽已截斷：完整指令（{total} 個字元）在上方的訊息中。"
+    truncated_deny_only: "預覽已截斷（{total} 個字元），且無法在此顯示完整指令，因此只提供拒絕。請在 CLI 或桌面應用程式中查看。"
+    text_prompt_deny_only: "完整的核准提示對此平台而言過長，因此只提供拒絕。請在 CLI 或桌面應用程式中查看。"
   notify:
     media_kind:
       audio: "音訊"
@@ -971,9 +978,6 @@ platform:
     approved: "✅ 已批准。"
     denied: "❌ 已拒絕。"
     approval_expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）。"
-  yuanbao:
-    slow_response_notice: "這個任務比較複雜 — 仍在處理中，請稍候..."
-    owner_command_denied: "⚠️ {command} 僅限建立者在私聊模式下使用"
   shared:
     truncated_suffix: "\n...（已截斷）"
     unknown: "未知"
@@ -1005,6 +1009,8 @@ platform:
       confirm_title: "確認"
       already_resolved: "這個批准請求已處理過～"
       expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）"
+      no_longer_pending: "⌛ 這個批准請求已不再等待（已逾時或已在其他地方回應）"
+      click_failed: "⚠️ 無法記錄你的選擇。請再按一次，或用 /approve 或 /deny 回覆。"
       by_user: "{label}（由 {user} 操作）"
       resolved_once: "已批准一次"
       resolved_session: "已批准（本工作階段）"
@@ -1366,6 +1372,12 @@ platform:
       unauthorized: "只有已授權的 Matrix 使用者可以使用這些控制項。"
       not_requester: "只有提出此操作的使用者可以使用這些控制項。"
   feishu:
+    clarify:
+      title: "Hermes 需要你的輸入"
+      other: "✏️ 其他（輸入答案）"
+      awaiting_typed: "等待 {user} 輸入回應…"
+    picker:
+      apply_error: "套用選擇時發生錯誤：{error}"
     approval:
       action_session: "本次工作階段"
       action_always: "永久"
@@ -1469,6 +1481,8 @@ platform:
     prompt_other: "✏️ 其他（輸入答案）"
     prompt_expired: ⌛ 該提示已不再等待回答。請以一般訊息傳送您的回覆。
 slash:
+  rewind:
+    description: "回溯至先前的提示以編輯並重新傳送,或從該處分支 (Esc Esc)"
   approve:
     description: "批准待處理的危險指令"
   bg:
@@ -1696,6 +1710,20 @@ slash:
   quit:
     description: "離開 CLI（加上 --delete 同時移除工作階段歷史）"
 cli:
+  backtrack:
+    title: "↺ 對話紀錄 — 選擇要編輯的提示"
+    keys_hint: "瀏覽對話紀錄 · ↑↓/jk 捲動 · ←→/hl 提示 · ↵ 編輯 · f 分支 · esc 返回"
+    prime_hint: "再按一次 esc 以編輯上一則訊息"
+    no_previous: "沒有可編輯的上一則訊息。"
+    editing_hint: "↺ 正在編輯提示 {number} — Enter 回溯至此並傳送 · Esc Esc 取消"
+    edit_cancelled: "↺ 已取消回溯;未移除任何內容。"
+    rewound: "↺ 已回溯至提示 {number}(已封存 {count} 則訊息);正在傳送編輯內容。"
+    forked: "⑂ 已在提示 {number} 之前建立分支;原始工作階段 {parent} 未變更。請編輯下方提示,然後按 Enter 傳送。"
+    nothing: "(._.) 沒有可回溯的先前提示。"
+    target_changed: "(x_x) 自你選擇提示 {number} 後工作階段已變更;未移除任何內容。你的編輯已放回輸入框。"
+    invalid: "(._.) 沒有提示 {value} — 請選擇 1 至 {total}。"
+    usage: "用法:/rewind [N | fork N]"
+    rewind_failed: "(x_x) 回溯失敗;歷史記錄未變更:{error}"
   modern:
     thought_for: "思考了 {seconds} 秒"
     thought: "思考"
@@ -2007,6 +2035,8 @@ cli:
     usage_switch_reasoning: "切換並設定推理強度"
     usage_switch_provider: "切換提供方"
     usage_refresh: "重新擷取即時模型清單"
+    reset_none: "已在使用設定的預設模型（{model}）— 無需重設。"
+    reset_no_default: "config.yaml 中沒有 model.default — 無可重設的目標。"
     choice_switch_anyway: "仍要切換"
     desc_switch_anyway: "在目前的 Hermes 工作階段使用此模型。"
     choice_cancel: "取消"
@@ -2157,6 +2187,7 @@ cli:
     images_attached_other: "📎 已附加 {count} 張圖片"
     command_interrupted: "指令已中斷。"
     welcome: "歡迎使用 Hermes Agent！輸入訊息開始，或輸入 /help 查看指令。"
+    vscode_images_hint: "VS Code 可以在這裡以完整解析度顯示圖片：請在設定中開啟 terminal.integrated.enableImages。"
     activated_skills_label: "已啟用的技能："
     redaction_disabled_title: "⚠  機密遮蔽已停用"
     redaction_disabled_body: "（HERMES_REDACT_SECRETS={value}）。API 金鑰與 token 可能會原文出現在聊天輸出、工作階段 JSON 和日誌中。在 config.yaml 中設定 {setting} 可重新啟用。"
@@ -2611,6 +2642,7 @@ cli:
     goal_turns: "⊙ 目標 {used}/{max}"
     goal: "⊙ 目標"
     ctx_pinned: " 已釘選"
+    ctx_fallback: " 預設值"
     ctx_unknown: "ctx --"
     yolo_badge: "⚠ YOLO"
     stash_header_one: "📌 暫存（{count} 項）"
@@ -3950,3 +3982,8 @@ plan_usage:
   large_notice_limit: "大型模型：已達{name}上限（{resets}）。"
   large_notice_limit_stops: "大型模型：已達{name}上限（{resets}），在此之前無法執行。"
   large_notice_percent: "大型模型：每則訊息消耗更多方案用量。每月大型模型上限：已用 {percent}。"
+shared:
+  # /undo's line naming the files the undone turns changed (tools/checkpoint_undo_hint.py).
+  undo_rollback:
+    list: "↶ 已復原回合中變更的檔案：{files}。執行 /rollback 列出檢查點並還原其中一個。"
+    more: "另外 {count} 個"

@@ -115,8 +115,9 @@ def _github_compare_behind(current_rev: str, target_rev: str, repository: str = 
 def _request(url: str, accept: str = "application/vnd.github+json") -> str:
     """GET an api.github.com resource with the credential ladder in hermes_cli.github_api.
 
-    A token GitHub rejects (401) drops this request to anonymous rather than
-    failing the check on a stale credential.
+    A token GitHub rejects drops this request to anonymous rather than failing the
+    check on a stale credential: 401, or a 403 that is not a spent rate limit (a
+    suspended or restricted account's token, still printed by ``gh auth token``, #134335).
     """
     from hermes_cli.github_api import github_token
 
@@ -124,7 +125,8 @@ def _request(url: str, accept: str = "application/vnd.github+json") -> str:
     try:
         return _request_with(url, accept, token)
     except urllib.error.HTTPError as exc:
-        if token is None or exc.code != 401:
+        spent = exc.headers is not None and exc.headers.get("x-ratelimit-remaining") == "0"
+        if token is None or exc.code not in (401, 403) or spent:
             exc.hermes_authenticated = token is not None  # which quota a 403/429 spent
             raise
         logger.debug("GitHub rejected the configured token; retrying anonymously")
@@ -289,6 +291,31 @@ def _write_cache(cache_file: Path, identity: dict, now: float, result: dict) -> 
         logger.debug("Could not cache source check: %s", exc)
 
 
+def _list_directory(directory: str, listed: dict, root_listing, listing) -> bool:
+    """Fill ``listed[path]`` for *directory* and each parent, root first, by walking tree entries by
+    name. False when a listing could not be read (no claim either way); a directory this tree does
+    not have is simply not listed."""
+    if "" not in listed:
+        entries = root_listing()
+        if entries is None:
+            return False
+        listed[""] = entries
+    here = ""
+    for part in filter(None, directory.split("/")):
+        child = f"{here}/{part}".lstrip("/")
+        if child not in listed:
+            sub = next((e.get("sha") for e in listed[here] if isinstance(e, dict) and e.get("path") == part
+                        and e.get("type") == "tree" and isinstance(e.get("sha"), str)), None)
+            if sub is None:
+                return True
+            entries = listing(sub)
+            if entries is None:
+                return False
+            listed[child] = entries
+        here = child
+    return True
+
+
 def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
     """Read the tree and at most four schema blobs at once, within one lookup deadline."""
     from contextvars import copy_context
@@ -316,14 +343,22 @@ def _read_runtime_verdict(repository: str, sha: str) -> Optional[bool]:
             raise Empty
         return replies.get(timeout=remaining)
 
-    launch(f"https://api.github.com/repos/{repository}/git/trees/{sha}", api=True)
-    try:
+    def listing(ref: str) -> Optional[list]:
+        launch(f"https://api.github.com/repos/{repository}/git/trees/{ref}", api=True)
         tree = _quiet(lambda: json.loads(receive() or ""))
         entries = tree.get("tree") if isinstance(tree, dict) and not tree.get("truncated") else None
-        if not isinstance(entries, list):
-            return None
-        paths = [e["path"] for e in entries if isinstance(e, dict) and e.get("type") == "blob"
-                 and isinstance(e.get("path"), str) and fnmatchcase(e["path"], STATE_MODULES)]
+        return entries if isinstance(entries, list) else None
+
+    try:
+        # Only the directories STATE_MODULES names, one small listing each (a recursive listing of a
+        # release is several MiB): the root today, src/hermes_agent/ and its hermes_state/ after the move.
+        listed: dict[str, list] = {}
+        for directory in dict.fromkeys(pattern.rpartition("/")[0] for pattern in STATE_MODULES):
+            if not _list_directory(directory, listed, lambda: listing(sha), listing):
+                return None
+        paths = [f"{prefix}/{e['path']}".lstrip("/") for prefix, entries in listed.items() for e in entries
+                 if isinstance(e, dict) and e.get("type") == "blob" and isinstance(e.get("path"), str)]
+        paths = [path for path in paths if any(fnmatchcase(path, p) for p in STATE_MODULES)]
         if not paths:
             return None  # not a recognised Hermes tree: no claim either way
         urls = iter(f"https://raw.githubusercontent.com/{repository}/{sha}/{quote(path)}" for path in paths)

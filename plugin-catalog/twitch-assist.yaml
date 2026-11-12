@@ -1,0 +1,33 @@
+name: twitch-assist
+repo: https://github.com/Techkeyy/twitch-assist
+sha: ca59b45749c29a53fd8e9b4c16608748adaf6c26
+subdir: twitch_assist
+title: Twitch Assist
+description: "Put your Hermes in your Twitch chat as a co-host: viewers type !ask (or @mention the bot) and get a real agent answer in chat, and the broadcaster or a mod can run Backseat Mode, a chat vote whose winner becomes Hermes's next task. Stdlib only (asyncio IRC over TLS). Disclosure — network calls go only to irc.chat.twitch.tv:6697 (TLS IRC) and https://id.twitch.tv/oauth2/validate; the Twitch token is read through Hermes's secret scope; private by default (broadcaster and TWITCH_ALLOWED_USERS ids only), and opening it to every viewer needs TWITCH_ALLOW_ALL_USERS=true, after which non-broadcaster requests are dropped unless both memory flags are off and platform_toolsets.twitch is pinned; viewer turns are limited to web search by a pre_tool_call guard; Hermes injects the owner's SOUL.md persona into every gateway session (skip_context_files does not remove it on 0.23.x) and MEMORY.md/USER.md unless the memory flags are off, and allowlisted viewers are served even then, so run the bot in a dedicated Hermes profile with an empty SOUL.md and memory off."
+maintainer: Techkeyy
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/Techkeyy/twitch-assist#readme
+version: "0.3.0"
+screenshots:
+  - https://raw.githubusercontent.com/Techkeyy/twitch-assist/ca59b45749c29a53fd8e9b4c16608748adaf6c26/docs/chat-proof.jpg
+platforms: []
+known_issues:
+  - Needs a Twitch chat OAuth token with chat:read and chat:edit (a dedicated bot account is recommended).
+  - platform_toolsets.twitch is REQUIRED to be pinned to [search, no_mcp] in config.yaml. A plugin cannot change the platform default toolset, so an unresolved adapter would otherwise fall back to the full default (a pre_tool_call guard still blocks every tool except web_search, and a warning is logged at connect).
+  - Hermes injects the owner's SOUL.md persona into every gateway session prompt, and skip_context_files does NOT remove it on Hermes 0.23.x; MEMORY.md and USER.md are removed only by memory.memory_enabled and memory.user_profile_enabled set to false. A plugin cannot switch this off, so run the Twitch bot in its own Hermes profile (hermes profile create) with an empty SOUL.md and no memory. An external memory provider may also record Twitch turns.
+  - "Private by default: only the broadcaster and TWITCH_ALLOWED_USERS ids can use the bot. TWITCH_ALLOW_ALL_USERS=true is an explicit opt-in and fails closed: non-broadcaster requests are dropped unless both memory flags are false and platform_toolsets.twitch is pinned (the reason is logged once)."
+  - Toolsets registered by other plugins are added by Hermes to any platform list (no no-plugins setting); their calls are blocked in Twitch sessions by the guard, but their schemas may still be shown to the model.
+  - The first answer after a gateway start can take up to a minute (Hermes cold start); later answers take seconds.
+  - In-turn gateway notices are matched by English text; outside a pending turn nothing is posted in any language.
+  - A running Backseat vote is lost if the connection drops or the gateway restarts.
+  - Reconnect after a real network drop is proven only against a local fake IRC server.
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_tool_call
+  provides_middleware: []
+  requires_env:
+    - TWITCH_TOKEN
+    - TWITCH_CHANNEL

@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
@@ -79,6 +80,11 @@ def _sql_literal(text: str) -> str:
 # is exactly what distinguishes a never-drained accept row from a dispatched-then-interrupted
 # turn's row (which #123532 deliberately keeps active).
 QUEUED_PROMPT_METADATA_KEY = "_queued_prompt"
+
+
+# ``display_metadata = <this>`` merges a JSON object parameter into the column (its keys win, a null value
+# removes a key): a row-addressed rewrite must not wipe a key another writer added meanwhile (a reaction).
+_MERGE_DISPLAY_META = "json_patch(CASE WHEN json_valid(display_metadata) THEN display_metadata ELSE '{}' END, COALESCE(?, '{}'))"
 
 
 def _sql_json_extract(expression: str, path: str) -> str:
@@ -286,7 +292,8 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
 # (schema_read_probe_statements), never by this number, and its catch-up is the declarative
 # executescript(SCHEMA_SQL) + _reconcile_columns() every writable open already runs (additive,
 # idempotent). The bump only records that the declared shape changed; a new table or column needs no bump.
-SCHEMA_VERSION = 32
+# v33: data-only — re-tag delegate subagent rows that lost ``_delegate_from`` (see _run_data_migrations).
+SCHEMA_VERSION = 33
 
 # Auto-maintenance VACUUMs only above this freelist fraction; below it a rewrite costs more I/O than it returns.
 # Auto-maintenance only VACUUMs when at least this fraction of the database file is reclaimable (``PRAGMA
@@ -794,6 +801,15 @@ BEGIN
     -- cache keys on (conversation_revision). Whoever wrote the row, old builds included.
     UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
 END;
+DROP TRIGGER IF EXISTS messages_display_revision_update;
+CREATE TRIGGER IF NOT EXISTS messages_display_revision_update
+AFTER UPDATE OF codex_reasoning_items, codex_message_items, display_kind, display_metadata ON messages
+BEGIN
+    -- A reaction, a display rewrite or checkpoint pruning: a transcript poller's cursor
+    -- (transcript_cursor_state) keys on these too. Its own name, so an older build's open, which
+    -- recreates the trigger above with that build's column list, leaves this one in place.
+    UPDATE sessions SET transcript_revision = transcript_revision + 1 WHERE id = new.session_id;
+END;
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_display_page
@@ -1126,12 +1142,6 @@ BEGIN
                   WHERE id = new.session_id AND {FTS_TRIGRAM_SESSION_SQL});
 END;
 """
-
-_FTS_CJK_TRIGGERS = ("messages_fts_cjk_insert", "messages_fts_cjk_delete", "messages_fts_cjk_update")
-
-# Set when a tokenizer-less process dropped the cjk triggers to keep writes alive: the cjk index is missing rows
-# and must not serve reads until `hermes sessions optimize-storage` rebuilds it on a capable host.
-FTS_CJK_STALE_KEY = "fts_cjk_stale"
 
 # Set when a base/trigram FTS index was detached after runtime corruption; startup must rebuild the complete
 # index before reinstalling sync triggers (rows written while they were absent leave an unknown gap).
@@ -1494,3 +1504,14 @@ def _json_or(raw: Any, fallback: Any, warning: str) -> Any:
     except (json.JSONDecodeError, TypeError):
         logger.warning(warning)
         return fallback
+
+
+def path_is_under(path: Path, root: Path) -> bool:
+    """True when *path* is *root* or a file inside it (normcase, resolved)."""
+    try:
+        path_key = os.path.normcase(str(path.resolve()))
+        root_key = os.path.normcase(str(root.resolve()))
+    except OSError:
+        path_key = os.path.normcase(str(path))
+        root_key = os.path.normcase(str(root))
+    return path_key == root_key or path_key.startswith(root_key + os.sep)

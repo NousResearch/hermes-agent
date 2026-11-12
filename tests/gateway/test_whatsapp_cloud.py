@@ -1199,6 +1199,7 @@ class TestDispatchInteractiveReplyApproval:
     async def test_approve_tap_calls_resolver_and_confirms(self, monkeypatch):
         adapter = _make_adapter()
         adapter._exec_approval_state["app1"] = "sess-app-1"
+        adapter._approval_request_ids()["app1"] = "req-1"
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1207,7 +1208,7 @@ class TestDispatchInteractiveReplyApproval:
         calls = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            lambda session_key, choice, request_id=None: calls.append((session_key, choice)) or 1,
         )
 
         raw = {
@@ -1283,6 +1284,7 @@ class TestDispatchInteractiveReplyAuthorization:
             _allow_from={"15551234567"},
         )
         adapter._exec_approval_state["app1"] = "sess-app-1"
+        adapter._approval_request_ids()["app1"] = "req-1"
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1290,7 +1292,7 @@ class TestDispatchInteractiveReplyAuthorization:
         calls = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            lambda session_key, choice, request_id=None: calls.append((session_key, choice)) or 1,
         )
 
         raw = {

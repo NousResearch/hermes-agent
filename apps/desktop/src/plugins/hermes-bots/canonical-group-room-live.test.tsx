@@ -71,6 +71,24 @@ it('starts a new thread after a refused reply is cancelled', async () => {
   expect(sends[1][2].event_id).not.toBe(sends[0][2].event_id)
 })
 
+it('puts the caret in the composer, after the seeded mention, when Reply is pressed', async () => {
+  const binding = { connectionId: 'remote', profile: 'team', roomId: 'reply-focus' }
+
+  const events = [{ seq: 1, room_id: binding.roomId, event_id: 'm1', kind: 'message.member', actor: { kind: 'member', id: 'ops' },
+    payload: { text: 'Deploy is green.', thread_id: 'thread-ops' } }]
+
+  request.mockImplementation(async (_route, method) => method === 'groups.state'
+    ? { room: { name: 'Room', members }, driver_status: {} }
+    : method === 'groups.log' ? { events } : {})
+  render(<CanonicalGroupWorkspace binding={binding} />)
+  const input = screen.getByRole('textbox') as HTMLTextAreaElement
+  await waitFor(() => expect(input.disabled).toBe(false))
+  fireEvent.click(await screen.findByRole('button', { name: 'Reply to Ops' }))
+  await waitFor(() => expect(window.document.activeElement).toBe(input))
+  expect(input.value).toBe('@ops ')
+  expect(input.selectionStart).toBe(input.value.length)
+})
+
 it('drops a closed room’s Bots-list state, which nothing polls any more', async () => {
   const binding = { connectionId: 'local', profile: 'team', roomId: 'closing' }
   request.mockImplementation(async (_route, method) => method === 'groups.state'

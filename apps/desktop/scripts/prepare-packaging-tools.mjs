@@ -9,6 +9,7 @@ import { isMain } from './utils.mjs'
 import { publishPackagingInputs } from './prepared-packaging.mjs'
 import { ensureWindowsBundleTools } from './windows-bundle-tools.mjs'
 import { prepareDmgbuild } from './prepare-dmgbuild.mjs'
+import { prepareElectronRuntime } from '../../../scripts/build/electron-runtime.mjs'
 
 /** @param {string} source @param {string} name @returns {string} */
 export function pinnedPackageRoot(source, name) {
@@ -35,6 +36,15 @@ export function packagingTargetArch(target) {
   if (target === `${process.platform}-x64`) return 'x64'
   if (target === `${process.platform}-arm64`) return 'arm64'
   throw new Error(`Packaging preparation requires a same-OS x64/arm64 target, got ${target}`)
+}
+
+/**
+ * The unpacked host Electron, refused unless it is the desktop lock's version and complete.
+ * @param {string} source @returns {string}
+ */
+function installedElectronDist(source) {
+  prepareElectronRuntime({ source, install: false })
+  return path.join(pinnedPackageRoot(source, 'electron'), 'dist')
 }
 
 /** @param {string} from @param {string} to @returns {string} */
@@ -87,17 +97,23 @@ async function acquirePackagingTools({ source, out, cache, target, formats, buil
     load('util/electronGet.js'), load('toolsets/7zip.js'), load('toolsets/icons.js'),
   ])
   const resourcesDir = path.join(source, 'apps/desktop', config.directories?.buildResources || 'build')
+  // An unpacked (dir) build neither archives nor converts icons (the committed .icns/.ico pass
+  // through), and on the host arch it can use the lock-verified runtime install.js already unpacked.
+  // Fetching those GitHub release assets anyway failed `--dir` whenever one of them 504'd.
+  const unpackedOnly = formats.every(format => format === 'dir')
+  const hostRuntime = unpackedOnly && packagingTargetArch(target) === process.arch
   const [archive, archiveTool, iconTools] = await Promise.all([
-    electronGet.downloadElectronArtifactZip({ version: config.electronVersion, platformName: process.platform, arch: packagingTargetArch(target),
-      artifactName: 'electron', cacheDir: path.join(cache, 'electron') }),
-    sevenZip.getPath7za(), icons.getIconsToolsetPath(config.toolsets?.icons, resourcesDir),
+    hostRuntime ? null : electronGet.downloadElectronArtifactZip({ version: config.electronVersion, platformName: process.platform,
+      arch: packagingTargetArch(target), artifactName: 'electron', cacheDir: path.join(cache, 'electron') }),
+    unpackedOnly ? null : sevenZip.getPath7za(),
+    unpackedOnly ? null : icons.getIconsToolsetPath(config.toolsets?.icons, resourcesDir),
   ])
-  const electron = copyTool(archive, path.join(out, 'electron.zip'))
+  const electron = hostRuntime ? copyTool(installedElectronDist(source), path.join(out, 'electron'))
+    : copyTool(/** @type {string} */ (archive), path.join(out, 'electron.zip'))
   /** @type {import('./prepared-packaging.mjs').PackagingToolsets} */
-  const toolsets = {
-    sevenZip: copyTool(path.dirname(path.dirname(archiveTool)), path.join(out, 'sevenZip')),
-    icons: copyTool(iconTools, path.join(out, 'icons')),
-  }
+  const toolsets = {}
+  if (archiveTool) toolsets.sevenZip = copyTool(path.dirname(path.dirname(archiveTool)), path.join(out, 'sevenZip'))
+  if (iconTools) toolsets.icons = copyTool(iconTools, path.join(out, 'icons'))
   let windows = null
   if (process.platform === 'win32') {
     const builder = await load('toolsets/winCodeSign.js')

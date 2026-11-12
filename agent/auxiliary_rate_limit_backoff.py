@@ -10,7 +10,7 @@ and async ladder drivers sleep it, so both caller kinds share one schedule.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from agent import retry_utils
 
@@ -46,26 +46,26 @@ def rate_limit_wait(exc: Exception, attempt: int) -> Optional[float]:
         attempt, base_delay=RATE_LIMIT_BACKOFF_BASE, max_delay=RATE_LIMIT_BACKOFF_CAP)
 
 
-def rate_limit_retry_rungs(first_err: Exception, client: Any, kwargs: dict[str, Any], label: str):
-    """Ladder rungs: wait, then re-send on the same client, up to ``RATE_LIMIT_RETRIES`` times while
-    the refusal stays a rate limit. Returns ``(response, None)`` or ``(None, last_err)``."""
-    from agent.auxiliary_client import (
-        _LadderStep, _credential_rung_accepts, _is_payment_error, _is_rate_limit_error, _rung,
-    )
+def rate_limit_retry_rungs(failure: Any, route: Any, kwargs: dict[str, Any], accept: Optional[Callable[[Any], bool]] = None):
+    """Ladder rungs: wait, then re-send on the route's client, up to ``RATE_LIMIT_RETRIES`` times while
+    the refusal stays a per-key rate limit. ``accept``: the caller's acceptance (a parameter rung may already have
+    been spent on ``kwargs``). Returns ``(response, None)`` or ``(None, last_failure)``."""
+    from agent import auxiliary_error_policy as aux_errors
+    from agent.auxiliary_client import _LadderStep, _rung
 
-    err = first_err
+    label = f"{route.task or 'call'}{route.tag}"
     for attempt in range(1, RATE_LIMIT_RETRIES + 1):
-        wait = rate_limit_wait(err, attempt)
+        wait = rate_limit_wait(failure.error, attempt)
         if wait is None:
             logger.info("Auxiliary %s: provider asked for a %.0fs cooldown; not waiting it out",
-                        label, rate_limit_retry_after(err) or 0.0)
+                        label, rate_limit_retry_after(failure.error) or 0.0)
             break
         logger.info("Auxiliary %s: rate limited (attempt %d/%d); retrying after %.2fs",
                     label, attempt, RATE_LIMIT_RETRIES, wait)
         yield _LadderStep("wait", (wait,))
-        resp, err = yield from _rung(_LadderStep("call", (client, kwargs)), _credential_rung_accepts)
-        if err is None:
+        resp, failure = yield from _rung(_LadderStep("call", (route.client, kwargs)), accept or aux_errors.ladder_accepts, route)
+        if failure is None:
             return resp, None
-        if not _is_rate_limit_error(err) or _is_payment_error(err):
+        if not aux_errors.same_key_retry(failure.verdict):
             break
-    return None, err
+    return None, failure

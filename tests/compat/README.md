@@ -9,6 +9,14 @@ not imports introduced on the unshipped migration branch or in the working tree.
 `old_updater_surface.json` retains an existing history-plus-tree superset; keep
 every frozen name, without continually adding new PM updater imports.
 
+One exception grows the list: updaters from v0.21.6 on still import from the
+new tree after the swap (a Ctrl-C after the commit point, a lost completion,
+the parent restarting the gateways it paused, a shallow-checkout count). The
+names those post-swap paths reach in each shipped release are added here, so a
+rename cannot break an update halfway. They come from a call-graph walk of
+each release tag from its post-swap entry points, not from the history audit
+above.
+
 Regeneration audits history only and requires a full clone and an explicit
 pre-PM cutoff. Use the existing JSON's `stats.history.history_ref` (or
 `stats.history_ref` in history-only output), not a later `origin/main`:

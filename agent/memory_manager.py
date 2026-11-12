@@ -633,7 +633,13 @@ class MemoryManager:
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         if self._fork_turn_hooks_suppressed() or not self._owner_allows("on_turn_start"):
             return
-        message = _redact_for_provider(message)
+        # previous_message is earlier user text, so it is scrubbed with the message (one learned-token set). The rest
+        # are identity/runtime values, raw as in sync_all: masking a phone-number author_id merges two senders.
+        if "previous_message" in kwargs:
+            message, previous = _redact_for_provider(message, kwargs["previous_message"])
+            kwargs = {**kwargs, "previous_message": previous}
+        else:
+            message = _redact_for_provider(message)
 
         def _tick(p: MemoryProvider) -> None:
             # A provider written before the author kwargs declares (turn_number, message) only; it still gets its tick.

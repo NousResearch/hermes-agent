@@ -10,7 +10,7 @@
 try:
     import hermes_bootstrap
 except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
-    if exc.name != "hermes_bootstrap":
+    if exc.name != "hermes_bootstrap" and not "hermes_bootstrap".startswith(f"{exc.name}."):
         raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import sys
@@ -292,8 +292,9 @@ class AIAgent(
         advertised ``session_search`` tool stays usable."""
         # Persistence-isolated forks (background review) must not lazily open the canonical state DB —
         # that would re-arm the flush to write the fork's harness turn into the user's real session.
-        if getattr(self, "_persist_disabled", False):
-            return None
+        from tools.hosted_tool_policy import host_feature_enabled
+        if getattr(self, "_persist_disabled", False) or not host_feature_enabled("session_recall"):
+            return None  # hosted: the profile's state.db is not the agent's recall store
         if self._session_db is not None:
             return self._session_db
         try:
@@ -342,6 +343,13 @@ class AIAgent(
                 origin_json=_gateway_origin_json(self), parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source), profile_name=profile_for_session,
             )
+            if getattr(self, "_session_db_reserved", False) is True:
+                # A reserved child row already exists, and first-turn writers (prompt-refresh epoch,
+                # usage anchor) may have patched its model_config before this create, so the
+                # keep-existing upsert dropped the constructor config. Merge it beside them.
+                patch = {k: v for k, v in (self._session_row_model_config() or {}).items() if v is not None}
+                if patch:
+                    self._session_db.patch_session_model_config(self.session_id, patch)
             self._session_db_created = True
         except Exception as e:
             # Transient failure (e.g. SQLite lock): _session_db_created stays False so the next turn retries.
@@ -758,6 +766,9 @@ class AIAgent(
         (/refine, with or without focus) is user-initiated: it bypasses the automatic-only delegate,
         ``enabled`` and idle-defer gates (#87250: ``enabled: false`` stops only automatic forks).
         """
+        from tools.hosted_tool_policy import host_feature_enabled
+        if not host_feature_enabled("background_review"):
+            return  # hosted: the review fork writes the profile's memory and skills on this host
         # Automatic-review gates run at enqueue/spawn time; the idle dispatcher re-checks `enabled` at dispatch time.
         if not explicit and focus is None and getattr(self, "_delegate_depth", 0) > 0:
             return

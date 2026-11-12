@@ -393,8 +393,8 @@ onboards Telegram/Discord/etc. users to a paired gateway. Full parity with
 Connect Hermes to any messaging platform from the browser — full parity with
 `hermes setup gateway`. The page lists every supported channel (Telegram,
 Discord, Slack, Matrix, Mattermost, WhatsApp, Signal, BlueBubbles/iMessage,
-Email, SMS/Twilio, DingTalk, Feishu/Lark, WeCom, WeChat, QQ Bot, Yuanbao, plus
-the API server and webhook endpoints) with its live connection status.
+Email, SMS/Twilio, DingTalk, Feishu/Lark, WeCom, WeChat, QQ Bot, plus
+the API server and webhook endpoints) with its live connection status; platforms from installed plugins (Yuanbao, Home Assistant, ...) appear too.
 
 - **Configure** — open a per-platform form with exactly the fields that channel needs (bot token, app token, server URL, allowlist, etc.). Secrets render as password inputs and are stored redacted; leaving a field blank keeps the existing value. Required fields are marked and validated. A "Setup guide" link points to the platform's credential docs.
 - **Enable / disable** — toggle a channel on or off. The credential stays on disk; only the active state changes.
@@ -430,6 +430,29 @@ Creating a shell hook (note the consent checkbox and the run-arbitrary-commands 
 :::warning Security
 The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine, with no login required. Binding to any non-loopback address (including `0.0.0.0`) engages the [auth gate](#authentication-gated-mode): the server refuses to start until an auth provider (username/password or OAuth) is configured.
 :::
+
+## Reporting dashboard background services
+
+Hermes never installs a service for `hermes dashboard` or `hermes serve`, so any that run in the
+background were set up by hand: a systemd unit copied from this page, a launchd plist, the Nix
+`hermes-backend` unit, the Docker image's `dashboard` slot or Compose sidecar, or a Desktop SSH
+backend. To list them and their current ownership:
+
+```bash
+hermes gateway migrate --backends --dry-run          # human-readable report
+hermes gateway migrate --backends --dry-run --json   # the same report as JSON
+```
+
+For each backend the report shows its supervisor (systemd unit name, scope and unit file; launchd
+label and plist; Nix-managed; s6 slot; container; Desktop; detached process; or unknown), the
+`HERMES_HOME` it serves, and its ownership. Backend migration is not available yet. The report never
+stops, restarts or kills anything, never edits or writes a service file, unit, plist or ledger, and opens no network
+connection; it exits 0 even when a scan fails. Normal Hermes startup still runs first, as for any
+`hermes` command: it creates the `HERMES_HOME` layout and a default `SOUL.md` if missing, records the
+install under `HERMES_HOME/installs/`, opens `logs/agent.log` and `logs/errors.log`, and prunes
+`cache/scratch`. Running backends are found by what they run, whatever the unit is called; units
+that are enabled but not running are listed only when they are named `hermes-serve*`,
+`hermes-dashboard*` or `hermes-backend*`.
 
 ## `/reload` Slash Command
 
@@ -1154,6 +1177,27 @@ Alongside interactive human login (session cookies + refresh), the `DashboardAut
 The bundled first consumer is the **drain** provider (`plugins/dashboard_auth/drain`): `nous-account-service` provisions a per-agent secret via `HERMES_DASHBOARD_DRAIN_SECRET`, and the provider verifies inbound bearer tokens against it with a constant-time compare, registering `/api/gateway/drain` as token-authable. It **fails closed** — a weak/short secret (< 256 bits) is rejected at registration and the endpoint stays disabled; it's a no-op when the env var is unset. Behavioural knobs (`scope`, `min_secret_chars`) live under `dashboard.drain_auth` in `config.yaml`.
 
 Custom providers can implement `supports_token`/`verify_token` the same way to expose their own machine-authable endpoints.
+
+### Peer passes (`/api/peer`)
+
+A provider can also accept **peer passes** (`supports_peer_pass = True` + `verify_peer_pass(token=...)`): short-lived tokens minted for one agent that let another Hermes agent call this agent's API server through the dashboard, without the agent's `API_SERVER_KEY`.
+
+- `/api/peer/<path>` forwards to the gateway API server on loopback and adds the API server key on the way; `/api/peer/p/<profile>/<path>` reaches one profile, named as the API server's `/p/<profile>/` prefix names it (`hermes` is the default profile unless a profile has that name).
+- Each path needs a permission the pass carries.
+  `agents:message` covers what `hermes peer` uses, in the agent's Bot Chat only (the one session every peer message lands in): health, capabilities, finding and creating the Bot Chat, reading it, chat turns (plain and streaming), runs in it (start, status, events, stop).
+  Each turn runs with the agent's tools, terminal included, so a messaging pass lets its holder have the agent carry out tasks.
+  A messaging turn carries only its message (and, for a run, the Bot Chat's session id); choosing the model, the system prompt or the history needs `agents:control`.
+  `agents:control` includes messaging in any session and adds the rest of the user-facing API: run approvals, clarify, steer and resolve-unknown; session listing, fork, messages, model, rename and delete; scheduled jobs, which keep running after the pass expires; models, skills and toolsets; chat completions and responses.
+  Only `agents:control` may set or receive `X-Hermes-Session-Key`, which picks the API server's memory scope.
+- Every chat turn and run is credited to the pass holder: the turn author's id is set to the verified holder, whatever the request body says.
+- Any other path is never forwarded, including `/api/cron/fire`, platform event intake, RoomLink grants and `/health/detailed`.
+- A gateway that is asleep or restarting answers 503 with `Retry-After`. A request the gateway dropped after receiving it answers 502 `peer_gateway_dropped` with no retry hint, because it may have run.
+- Only a peer pass opens `/api/peer`. It is checked apart from `verify_token`, so a pass never authorises another provider's token routes, and a pass without the dashboard scope never opens a dashboard session.
+- `/api/status` reports `peer_access`: the peer-pass contract this agent takes (currently `1`), or `0` when no registered provider takes peer passes. A pass issuer should mint passes only for agents that report it, because an agent without `/api/peer` reads a pass as a dashboard sign-in.
+- Control actions are written to `logs/dashboard-auth.log` as `peer_control` events with the pass holder, and jobs created through the route record the holder as `peer_principal` in their origin.
+
+The bundled Nous provider verifies peer passes with the same Portal keys and audience as dashboard sign-ins; dashboard sign-ins carry `agent_dashboard:access`, peer passes carry only the peer permissions.
+A Portal token without `agent_dashboard:access`, including one with no `scope` claim at all, never opens a dashboard session.
 
 ### Verifying the gate is on
 

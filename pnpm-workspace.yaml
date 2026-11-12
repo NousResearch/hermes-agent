@@ -7,9 +7,11 @@ packages:
 
 engineStrict: true
 
-# The pinned pnpm (root package.json devEngines, kept equal to pm/lock.json) is enforced by
-# scripts/build/node-deps.mjs. Recording the pin in pnpm-lock.yaml would prepend a second YAML
-# document that lockfile scanners (osv-scanner) do not read past.
+# The pnpm pin lives in pm/lock.json. The root preinstall and scripts/build/node-deps.mjs refuse
+# any other pnpm; root engines.pnpm (^12) makes pnpm <= 11 refuse even without scripts. A re-pin
+# to another pnpm major must move that range too (tests-js/pnpm-pin-guard.test.mjs fails until
+# it does). A pin pnpm recorded in pnpm-lock.yaml would prepend a second YAML document that
+# lockfile scanners (osv-scanner) do not read past.
 pmOnFail: ignore
 
 # `pnpm run` never installs: installs belong to scripts/build/node-deps.mjs (and CI's explicit steps).
@@ -25,76 +27,13 @@ strictDepBuilds: true
 # Minutes (14 days). Checked whenever the lockfile is resolved; user-machine installs trust the
 # already-checked lockfile (--trust-lockfile).
 minimumReleaseAge: 20160
+# Exemptions are exact `name@version` entries, one per line with the reason it cannot wait as an
+# inline comment (`- name@1.2.3  # why`). `hermes pm update --pnpm` drops an entry once the lockfile
+# no longer holds that version, so none needs a removal date. pnpm's own
+# minimumReleaseAgeExcludePrune stays off: it would run on every install and rewrite this tracked
+# file on users' machines.
 minimumReleaseAgeExclude:
-  # allow assistant-ui packages & a couple specific deps since they update a LOT.
-  # remove this when we stabilize (or we haven't updated in 2 wks)
-  - '@assistant-ui/*'
-  - assistant-cloud
-  - assistant-stream
-  - '@radix-ui/*'
-  - radix-ui
-  - safe-content-frame
-
-  # react-router 8.3.0 includes fixes for vulns. remove this when 8.3.0 is > 2wks old.
-  - react-router
-
-  # eslint 10.8.0 includes fixes for vulns. remove this when 10.8.0 is > 2wks old.
-  - eslint
-  - '@eslint/*'
-
-  # tar 7.5.21 includes fixes for vulns. remove this when 7.5.21 is > 2wks  old
-  - tar
-
-  # concurrently 10.0.4 includes fixes for vulns. remove this when 10.0.4 is > 2wks  old
-  - concurrently
-
-  # fast-uri 3.1.4 includes fixes for vulns. remove this when 3.1.4 is > 2wks  old
-  - fast-uri
-
-  # minimatch 10.2.6 includes fixes for vulns. remove this when 10.2.6 is > 2wks  old
-  - minimatch
-
-  # brace-expansion 5.0.9 includes fixes for vulns. remove this when 5.0.9 is > 2wks  old
-  - brace-expansion
-
-  # js-yaml 4.3.1 includes fixes for GHSA-5p4m-2wfm-xmqj. remove when > 2wks old (rel 2026-07-31)
-  - js-yaml
-
-  # nanoid 3.3.17 includes fixes for GHSA-2v37-7h3g-55p8. remove when > 2wks old (rel 2026-08-03)
-  - nanoid
-
-  # dompurify 3.4.17 fixes GHSA-55q2-fjhq-7xh7 follow-ups (low). remove when 3.4.17 is > 2wks old (rel 2026-10-12)
-  - dompurify
-
-  # ink needs
-  - lightningcss
-  - postcss
-
-  # source-map-js 1.2.2 fixes GHSA-68fv-2mgg-jv7q (high, event-loop DoS). remove when 1.2.2 is > 2wks old (rel 2026-09-30)
-  - source-map-js
-
-  # http-cache-semantics 4.3.0 fixes GHSA-ch52-4w7c-c8xp (high, cross-user cached data disclosure).
-  # remove when 4.3.0 is > 2wks old (rel 2026-10-04)
-  - http-cache-semantics
-
-  # ip-address 10.7.4 fixes GHSA-8xj3-p8x2-m3c7-family alerts (medium). remove when 10.7.4 is > 2wks old (rel 2026-10-11)
-  - ip-address
-
-  # sanitize-html 2.18.1 fixes GHSA-c9rx-x947-fp3h (medium), introduced by 2.18.0 which fixes
-  # GHSA-x3q4-9hxx-gx8m/GHSA-cv27-6wvh-8x7j/GHSA-374f-7chj-9948. remove when 2.18.1 is > 2wks old (rel 2026-10-14)
-  - sanitize-html
-
-  # vitest 4.1.12 is a patch bump (4.1.11 -> 4.1.12). remove when 4.1.12 is > 2wks old (rel 2026-10-15)
-  - vitest
-  - '@vitest/*'
-
-  # electron 44.9.3 backports upstream Chromium/V8 security fixes, and 44.9.1+ carries the
-  # eMudhra root distrust per #142533. remove when 44.9.3 is > 2wks old (rel 2026-10-21)
-  - electron
-
-  # pele 1.13.0 is the release the desktop diagram swap was measured and parity-checked on (math
-  # labels need 1.8.0+). remove when 1.13.0 is > 2wks old (rel 2026-10-31)
-  - pele
+  - pele@1.13.0  # the desktop diagram swap was parity-checked on it (math labels need 1.8.0+)
 
 overrides:
   '@electron/osx-sign>isbinaryfile': 5.0.7
@@ -123,5 +62,11 @@ allowBuilds:
   node-pty@1.1.0: true
   electron-winstaller@5.4.0: true
   fsevents@2.3.3: true
-  get-windows@9.3.0: true
+  # get-windows is a regular dependency because pnpm >= 11.6 infers os: [win32] from the name of an
+  # optional one and skips it on macOS and Linux (pnpm/pnpm#17774). Its install script only fetches the
+  # win32 binding, falling back to a node-gyp build that fails where no prebuilt exists (win32-arm64,
+  # Linux without a compiler) and, for a regular dependency, fails the whole install.
+  # stage-native-deps.mjs runs that installer itself on win32 and degrades when it fails (dev runs:
+  # apps/desktop/scripts/dev-get-windows.mjs). Keyed by name: the denial holds for every version.
+  get-windows: false
   lefthook@2.2.1: true

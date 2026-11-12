@@ -8,12 +8,9 @@ const semver: { valid(version: string): string | null; satisfies(version: string
 import { test } from 'vitest'
 
 interface Engines { node?: string }
-interface Manifest {
-  engines?: Engines
-  devEngines?: { packageManager?: { name?: string; version?: string; onFail?: string } }
-}
+interface Manifest { engines?: Engines }
 interface Lockfile { packages?: Record<string, Manifest> }
-interface PmLock { packages: { node: { version: string }; pnpm: { version: string } } }
+interface PmLock { packages: { node: { version: string } } }
 
 function read(relativePath: string): string {
   return fs.readFileSync(path.resolve(__dirname, '..', relativePath), 'utf8')
@@ -51,9 +48,4 @@ test('exact independently managed Node satisfies all declared lockfile engines',
       assert.ok(semver.satisfies(pins.node.version, range), `${name}: pinned node ${pins.node.version} violates ${range}`)
     }
   }
-})
-
-test('the managed pnpm is exactly the one the repository requires, and any other fails', (): void => {
-  assert.ok(semver.valid(pins.pnpm.version), 'pnpm must be an exact pin')
-  assert.deepEqual(root.devEngines?.packageManager, { name: 'pnpm', version: pins.pnpm.version, onFail: 'warn' })
 })

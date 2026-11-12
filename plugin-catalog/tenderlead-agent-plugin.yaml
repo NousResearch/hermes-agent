@@ -1,0 +1,18 @@
+name: tenderlead-agent-plugin
+title: TenderLead bid review
+repo: https://github.com/jlucwright/tenderlead-agent-plugin
+sha: e91c1543beb54171faa78e53d5a2674cb23f2a93
+version: "1.0.0"
+description: "Review supplied UK tender documents against a supplier profile before a BID or SKIP decision. Agent Plugins v1 package with one local skill; it does not fetch live tenders or submit bids. Disclosure: the skill reads only material the user supplies to Hermes; no plugin code, install scripts, network calls, credentials, background processes or telemetry. Material supplied to Hermes remains subject to the user's Hermes and model-service settings."
+maintainer: Studea Limited
+tier: community
+category: tools
+docs_url: https://github.com/jlucwright/tenderlead-agent-plugin#readme
+requires_hermes: ">=0.21.5"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

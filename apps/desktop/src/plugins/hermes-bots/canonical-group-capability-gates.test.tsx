@@ -9,6 +9,7 @@ import { CANONICAL_GROUP_LOCALES } from './canonical-group-locales'
 import { $canonicalGroupBindings } from './canonical-group-registry'
 import { canonicalGroupCreateError } from './canonical-groups'
 import { CreateGroupChatDialog } from './create-dialog'
+import { CROSS_GATEWAY_GROUP_LOCALES } from './cross-gateway-locales'
 import { $botMeta } from './data'
 import { $groupChats, $groupChatWorkspace, updateGroupChat } from './group-chat'
 import type * as GroupChatModule from './group-chat'
@@ -151,6 +152,12 @@ function answer(capabilities: unknown) {
   })
 }
 
+/** The room record an older build saved for "Existing": a name with no record is a new group chat. */
+function existingRoom() {
+  updateGroupChat('Existing', room => ({ ...room, members: roster }))
+  vi.mocked(updateGroupChat).mockClear()
+}
+
 async function submitDialog() {
   const onCreated = vi.fn()
   const onClose = vi.fn()
@@ -159,7 +166,7 @@ async function submitDialog() {
   for (const checkbox of screen.getAllByRole('checkbox').slice(0, 3)) {fireEvent.click(checkbox)}
   await waitFor(() => expect(request.mock.calls.map(call => call[1])).toContain('groups.capabilities'))
   await act(async () => {})
-  const submit = screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement
+  const submit = screen.getByRole('button', { name: 'Create group (2)' }) as HTMLButtonElement
 
   if (!submit.disabled) {
     await act(async () => { fireEvent.click(submit) })
@@ -206,7 +213,7 @@ it.each(refused)('classifies %j as unavailable on both surfaces: no legacy rende
 
   const { onCreated, onClose } = await submitDialog()
   expect(screen.getByRole('status').textContent).toBe(unavailable)
-  expect((screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByRole('button', { name: 'Create group (2)' }) as HTMLButtonElement).disabled).toBe(true)
   expect(notify).not.toHaveBeenCalled()
   expect(onCreated).not.toHaveBeenCalled()
   expect(onClose).not.toHaveBeenCalled()
@@ -215,13 +222,15 @@ it.each(refused)('classifies %j as unavailable on both surfaces: no legacy rende
   expect(request.mock.calls.map(call => call[1])).toEqual(['groups.capabilities', 'groups.capabilities'])
 })
 
-it('keeps positive classifications working: legacy renders and creates locally, canonical creates a gateway room', async () => {
+it('keeps positive classifications working: legacy renders its existing rooms but never creates one, canonical creates a gateway room', async () => {
   answer(legacy)
+  existingRoom()
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
   expect(screen.getByRole('textbox')).toBeTruthy()
   cleanup()
-  expect((await submitDialog()).onCreated).toHaveBeenCalledOnce()
-  expect(updateGroupChat).toHaveBeenCalledOnce()
+  expect((await submitDialog()).onCreated).not.toHaveBeenCalled()
+  expect(screen.getByRole('note').textContent).toBe(CROSS_GATEWAY_GROUP_LOCALES.en.ownerUpdateRequired('This device'))
+  expect(updateGroupChat).not.toHaveBeenCalled()
   cleanup()
 
   answer({ driver: true, persistent_process: true })
@@ -229,12 +238,13 @@ it('keeps positive classifications working: legacy renders and creates locally, 
   expect(onCreated).toHaveBeenCalledOnce()
   expect(Object.values($canonicalGroupBindings.get())).toHaveLength(1)
   expect(updateGroupChat).toHaveBeenCalledOnce()
+  expect(vi.mocked(updateGroupChat).mock.calls[0][1]({ log: [], watermarks: {} }).engine).toMatchObject({ kind: 'gateway', connectionId: 'local' })
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(1)
 })
 
-// A bot on another connection is offered again: a selection spanning connections
-// becomes a Desktop-driven room (cross-gateway-group-creation.test.tsx). A row
-// whose route disagrees with its own connection is still never offered.
+// A bot on another connection is offered: its own gateway seats it in the group chat
+// (cross-gateway-group-creation.test.tsx). A row whose route disagrees with its own
+// connection is still never offered.
 it('canonical creation offers this connection and reachable other-connection bots, never a contradictory row', async () => {
   answer({ driver: true, persistent_process: true })
   const { baseElement } = render(<CreateGroupChatDialog onClose={vi.fn()} open roster={mixedRoster} />)
@@ -247,7 +257,7 @@ it('canonical creation offers this connection and reachable other-connection bot
   })
 
   for (const checkbox of screen.getAllByRole('checkbox').slice(0, 2)) {fireEvent.click(checkbox)}
-  const submit = screen.getByRole('button', { name: 'Create Group (2)' }) as HTMLButtonElement
+  const submit = screen.getByRole('button', { name: 'Create group (2)' }) as HTMLButtonElement
   await waitFor(() => expect(submit.disabled).toBe(false))
   expect(baseElement.querySelector('[data-bot-face="remote"]')).not.toBeNull()
   expect(baseElement.querySelector('[data-bot-face="spoofed"]')).toBeNull()
@@ -268,40 +278,33 @@ it('canonical creation offers only the bots the authority says this caller can s
   expect(screen.getAllByRole('checkbox')).toHaveLength(2)
 })
 
-it('rechecks the current mode before creating after a mixed legacy selection', async () => {
+it('never offers Create for a mixed selection on a legacy gateway, and finds a gateway that can run it on Retry', async () => {
   let capabilityReads = 0
-  const onCreated = vi.fn()
-  const onClose = vi.fn()
-  request.mockImplementation(async (_route, method, params) => {
+  request.mockImplementation(async (_route, method) => {
     if (method === 'groups.capabilities') {
       capabilityReads += 1
 
       return capabilityReads === 1 ? legacy : { driver: true, persistent_process: true }
     }
 
-    if (method === 'groups.create') {
-      return { room: { room_id: params.room_id, name: params.name, members: params.members } }
-    }
-
     throw new Error(`Unexpected RPC: ${method}`)
   })
 
-  const { baseElement } = render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={mixedRoster} />)
+  const { baseElement } = render(<CreateGroupChatDialog onClose={vi.fn()} open roster={mixedRoster} />)
   await waitFor(() => expect(capabilityReads).toBe(1))
-  await waitFor(() => {
-    expect(baseElement.querySelector('[data-bot-face="remote"]')).not.toBeNull()
-    expect(baseElement.querySelector('[data-bot-face="spoofed"]')).not.toBeNull()
-  })
+  await waitFor(() => expect(baseElement.querySelector('[data-bot-face="remote"]')).not.toBeNull())
 
   for (const checkbox of screen.getAllByRole('checkbox').slice(0, 3)) {fireEvent.click(checkbox)}
-  const submit = screen.getByRole('button', { name: 'Create Group (3)' })
-  expect((submit as HTMLButtonElement).disabled).toBe(false)
+  const submit = screen.getByRole('button', { name: 'Create group (3)' }) as HTMLButtonElement
+  expect(submit.disabled).toBe(true)
+  expect(screen.getByRole('note').textContent).toBe(CROSS_GATEWAY_GROUP_LOCALES.en.ownerUpdateRequired('This device'))
 
-  await act(async () => { fireEvent.click(submit) })
-  await waitFor(() => expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable }))
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+  await waitFor(() => expect(capabilityReads).toBe(2))
+  await waitFor(() => expect(screen.getByRole('note').textContent).toBe(CROSS_GATEWAY_GROUP_LOCALES.en.ownerCannotSeatPeers('This device')))
+  expect(submit.disabled).toBe(true)
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
-  expect(onCreated).not.toHaveBeenCalled()
-  expect(onClose).not.toHaveBeenCalled()
+  expect($groupChats.get()).toEqual({})
 })
 
 it.each(['profile', 'gateway', 'same-route-activation'] as const)('rejects a %s change queued after fresh capability validation', async kind => {
@@ -330,7 +333,7 @@ it.each(['profile', 'gateway', 'same-route-activation'] as const)('rejects a %s 
   await waitFor(() => expect(capabilityReads).toBe(1))
 
   for (const checkbox of screen.getAllByRole('checkbox').slice(0, 2)) {fireEvent.click(checkbox)}
-  const submit = screen.getByRole('button', { name: 'Create Group (2)' })
+  const submit = screen.getByRole('button', { name: 'Create group (2)' })
   await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
 
   await act(async () => { fireEvent.click(submit) })
@@ -338,46 +341,6 @@ it.each(['profile', 'gateway', 'same-route-activation'] as const)('rejects a %s 
   await waitFor(() => expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable }))
   expect(request.mock.calls.filter(call => call[1] === 'groups.create')).toHaveLength(0)
   expect(updateGroupChat).not.toHaveBeenCalled()
-  expect(onCreated).not.toHaveBeenCalled()
-  expect(onClose).not.toHaveBeenCalled()
-})
-
-it.each(['profile', 'gateway', 'same-route-activation'] as const)('does not persist a legacy group after a %s change queued after fresh capability validation', async kind => {
-  let capabilityReads = 0
-  const onCreated = vi.fn()
-  const onClose = vi.fn()
-  request.mockImplementation(async (_route, method, params) => {
-    if (method === 'groups.capabilities') {
-      capabilityReads += 1
-
-      if (capabilityReads === 2) {
-        queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => moveSource(kind)))))
-      }
-
-      return legacy
-    }
-
-    if (method === 'profiles.configure') {return {}}
-
-    if (method === 'groups.create') {
-      return { room: { room_id: params.room_id, name: params.name, members: params.members } }
-    }
-
-    throw new Error(`Unexpected RPC: ${method}`)
-  })
-
-  render(<CreateGroupChatDialog onClose={onClose} onCreated={onCreated} open roster={roster} />)
-  await waitFor(() => expect(capabilityReads).toBe(1))
-
-  for (const checkbox of screen.getAllByRole('checkbox').slice(0, 2)) {fireEvent.click(checkbox)}
-  const submit = screen.getByRole('button', { name: 'Create Group (2)' })
-  await waitFor(() => expect((submit as HTMLButtonElement).disabled).toBe(false))
-
-  await act(async () => { fireEvent.click(submit) })
-  await act(async () => {})
-  expect(request.mock.calls.filter(call => call[1] === 'profiles.configure')).toHaveLength(0)
-  expect(updateGroupChat).not.toHaveBeenCalled()
-  expect(notify).toHaveBeenCalledWith({ kind: 'error', message: unavailable })
   expect(onCreated).not.toHaveBeenCalled()
   expect(onClose).not.toHaveBeenCalled()
 })
@@ -536,6 +499,7 @@ it('reads the group driver again on Retry after a failed capability read', async
 
     throw new Error(`Unexpected RPC: ${method}`)
   })
+  existingRoom()
   await act(async () => { render(<GroupChatWorkspace group="Existing" members={roster} />) })
   // A transient failure: couldn't reach the gateway, what to check, Retry; nothing is lost.
   expect(screen.getByText(CANONICAL_GROUP_LOCALES.en.groupsUnreachable)).toBeTruthy()

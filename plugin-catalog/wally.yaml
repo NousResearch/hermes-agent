@@ -1,0 +1,28 @@
+name: wally
+title: Wally
+repo: https://github.com/RunanywhereAI/hermes-wally-provider
+sha: 8a9a0dc157c057ba6ded84454d874a96e3b08a63
+subdir: wally
+description: >-
+  Wally by RunAnywhere as a Hermes model provider: open-weight models (DeepSeek, GLM, Kimi,
+  MiniMax) on an OpenAI-compatible API, each with its context window, tool support and image
+  input declared, and reasoning effort sent as Wally's top-level reasoning_effort, clamped to the
+  levels each model accepts. Pick Wally in `hermes model` or use `--provider wally`.
+  Disclosure — registers one model provider at import and nothing else (no tools, hooks,
+  middleware, commands, background work or file access); chat requests (prompts, tool schemas
+  and results, images for image-capable models) and the model list go to
+  https://inference.runanywhere.ai/v1 (or WALLY_BASE_URL) through Hermes's own client with
+  WALLY_API_KEY, which Hermes reads; usage is billed to your Wally account; the plugin itself
+  opens no connections.
+maintainer: RunanywhereAI
+tier: community
+category: models
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/RunanywhereAI/hermes-wally-provider/tree/8a9a0dc157c057ba6ded84454d874a96e3b08a63/wally#readme
+version: "0.1.0"
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - WALLY_API_KEY

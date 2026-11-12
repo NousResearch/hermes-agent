@@ -143,6 +143,36 @@ test('desktop compiler consumes explicit immutable inputs, replaces variants, an
   expect(files(input.source).some(([name]) => name.includes('.vite') || name.endsWith('tsbuildinfo'))).toBe(false)
 }, 60000)
 
+// validateNativeTree checks get-windows only for darwin; run that branch on every host by giving the
+// fixture's host node-pty bindings a Mach-O header.
+function asDarwin(input) {
+  const pty = join(input.nativeDeps, 'node-pty')
+  for (const name of readdirSync(pty, { recursive: true }).filter(name => String(name).endsWith('.node'))) {
+    writeFileSync(join(pty, name), Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0]))
+  }
+  return { ...input, platform: 'darwin' }
+}
+
+test('desktop compiler ships a native tree without get-windows, as stage-native-deps degrades it', async () => {
+  // An interrupted install can leave get-windows absent (#90829), as pnpm's name-based skip of
+  // the optional declaration did (#149861); staging then leaves it out and the app ships
+  // without read_window_below instead of failing the build.
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = asDarwin(fixture())
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  await buildDesktop(input)
+  expect(existsSync(join(input.out, 'electron-main.mjs'))).toBe(true)
+  expect(existsSync(join(input.out, 'node_modules/get-windows'))).toBe(false)
+}, 60000)
+
+test('desktop compiler refuses a staged get-windows without its macOS helper', async () => {
+  const { buildDesktop } = await import('../scripts/build/desktop.mjs')
+  const input = asDarwin(fixture())
+  rmSync(join(input.nativeDeps, 'get-windows'), { recursive: true, force: true })
+  put(join(input.nativeDeps, 'get-windows/package.json'), '{"name":"get-windows"}')
+  await expect(buildDesktop(input)).rejects.toThrow(/missing its macOS helper/)
+}, 60000)
+
 test('desktop output cannot overlap a source directory symlinked outside the checkout', async () => {
   const { buildDesktop } = await import('../scripts/build/desktop.mjs')
   const root = mkdtempSync(join(tmpdir(), 'desktop symlinked source-'))

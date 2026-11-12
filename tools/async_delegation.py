@@ -183,9 +183,17 @@ def _persist_dispatch(record: dict[str, Any]) -> None:
         owner_started_at = get_process_start_time(os.getpid())
     except Exception:
         owner_started_at = None
+    # Only owner-side execution binds this context; worker payloads never supply it.
+    from gateway.session_ingress import _dispatch_admission
+    bound = _dispatch_admission.get()
+    record.pop('_origin_admission', None)
+    record.pop('_origin_owner', None)
+    if bound:
+        record['_origin_admission'] = bound[1]
+        record['_origin_owner'] = bound[0]
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", "_origin_admission", "_origin_owner", *_ROUTING_KEYS)
         if key in record}
     try:  # where the children's terminals started; lets recovery add a git-state hint
         task_payload["owner_cwd"] = os.getcwd()

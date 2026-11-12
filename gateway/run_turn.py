@@ -24,7 +24,7 @@ from contextvars import copy_context
 from gateway.bot_peer_notices import automatic_notices_allowed
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, ProcessingOutcome, describe_proxy_error, safe_proxy_url_for_log
-from gateway.platforms.event import MessageEvent
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.helpers import typing_metadata_for_turn
 from gateway.response_filters import (
     display_kind_for_event, display_metadata_for_event, is_machinery_display_kind, persisted_user_metadata_for_event,
@@ -244,6 +244,12 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
                 _terminal_inbound = agent_result.get("queued_terminal_inbound_id")
                 if _terminal_inbound:
                     event.ledger_message_id = str(_terminal_inbound)
+                terminal_voice_event = agent_result.pop("_queued_terminal_voice_event", None)
+                if terminal_voice_event is not None:
+                    event._terminal_voice_event = terminal_voice_event
+                if "queued_terminal_voice_origin" in agent_result:
+                    # Final response belongs to the last queued event, not the opener.
+                    event._terminal_voice_origin = agent_result["queued_terminal_voice_origin"]
                 if "queued_terminal_notification_category" in agent_result:
                     event.metadata["notification_category"] = agent_result["queued_terminal_notification_category"]
                 if isinstance(agent_result.get("_notification_reply_muted"), bool):
@@ -1774,8 +1780,11 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # (the helper's own ``except Exception`` does not catch cancellation).
         try:
             await self._refresh_agent_cache_message_count(session_key, session_id)
+            # The in-band follow-up has no independently authority-bound admission. Never let
+            # dispatches inherit the opener's provenance (including event-less steer turns).
+            from gateway.session_ingress import dispatch_admission_scope
             # The follow-up is its own sender's turn: approvals it raises name that sender, not the opener.
-            with scoped_turn_actor(pending_event, self._session_state(session_key).turn) if pending_event is not None else nullcontext():
+            with dispatch_admission_scope(None, None), scoped_turn_actor(pending_event, self._session_state(session_key).turn) if pending_event is not None else nullcontext():
                 followup_result = await self._run_agent(
                     message=next_message, context_prompt=turn_ctx.context_prompt, history=updated_history,
                     source=next_source, session_id=session_id, session_key=next_session_key,
@@ -1804,9 +1813,13 @@ class GatewayTurnMixin(GatewayBackgroundMixin, GatewayTurnPrepareMixin, GatewayT
         # control) has its outstanding row replaced and marked delivered by an identical-text
         # terminal reply, and is never redelivered. A deeper recursion has already set its own id,
         # so only fill the key while it is still absent: the innermost turn wins.
-        if isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
+        if pending_event is not None and isinstance(merged, dict) and "queued_terminal_inbound_id" not in merged:
             merged = {
                 **merged,
+                "_queued_terminal_voice_event": pending_event,
+                "queued_terminal_voice_origin": bool(
+                    pending_event.message_type == MessageType.VOICE or
+                    (pending_event.source.platform == Platform.TELEGRAM and pending_event.internal and getattr(pending_event, "_trusted_voice_origin", False) is True)),
                 "queued_terminal_inbound_id": next_inbound_id,
                 "queued_terminal_display_kind": next_display_kind,
                 "queued_terminal_reply_expected": next_reply_expected,

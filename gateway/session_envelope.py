@@ -316,6 +316,8 @@ def restore_native(payload, runner=None):
                         **deepcopy(envelope['event']))
     if 'automation' in envelope:
         event.internal = True
+        if source.platform.value == 'telegram' and source.chat_type == 'dm' and envelope['automation'].get('voice_origin') is True:
+            event._trusted_voice_origin = True
         if envelope['automation'].get('heartbeat'):
             event._heartbeat_session_id = envelope['automation']['heartbeat']
         event.metadata = {'gateway_session_key': envelope['route'],

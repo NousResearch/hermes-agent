@@ -22,6 +22,42 @@ from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
 
 
+def _recording_threads(threads: list):
+    """A ``threading.Thread`` stand-in that records constructions into *threads*.
+
+    Workers are captured, never run: ``start()`` is a no-op and ``is_alive()``
+    reports True so callers that wait on the handle proceed. Construction order
+    says nothing about which worker belongs to the method under test (see
+    ``_prompt_submit_threads``), so callers select by name.
+    """
+
+    class _RecordedThread:
+        def __init__(self, target=None, daemon=None, name=None, **_thread_options):
+            self.target = target
+            self.name = name
+            threads.append(self)
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    return _RecordedThread
+
+def _prompt_submit_threads(threads: list) -> list:
+    """The prompt-submit workers among the threads a test recorded.
+
+    ``server.threading`` is the ``threading`` module itself, so patching it
+    captures every thread the process constructs while the request runs --
+    including unrelated background workers. On Darwin the deleted-WAL holder
+    scan starts its own thread (``hermes_state_dbfile``), and it lands first,
+    so construction order says nothing about which thread belongs to the
+    method under test. Identify the worker by the name ``prompt.submit`` gives
+    it (``prompt-submit-<sid>``).
+    """
+    return [thread for thread in threads if (thread.name or "").startswith("prompt-submit-")]
+
 def _dispatch_sync(req: dict, transport=None) -> dict | None:
     """Run one RPC to completion synchronously, regardless of pool routing.
 
@@ -14438,16 +14474,7 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
     threads = []
     calls = {"run_prompt": 0}
 
-    class _FakeThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self.target = target
-            threads.append(self)
-
-        def start(self):
-            return None
-
-        def is_alive(self):
-            return True
+    _FakeThread = _recording_threads(threads)
 
     session = _session()
     session["agent"] = None
@@ -14477,14 +14504,14 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
         )
         assert submit.get("result"), f"got error: {submit.get('error')}"
         assert session["running"] is True
-        assert len(threads) == 1
+        assert len(_prompt_submit_threads(threads)) == 1
 
         stop = server.handle_request(
             {"id": "2", "method": "session.interrupt", "params": {"session_id": "sid"}}
         )
         assert stop.get("result"), f"got error: {stop.get('error')}"
 
-        threads[0].target()
+        _prompt_submit_threads(threads)[0].target()
 
         assert calls["run_prompt"] == 0
         assert session["running"] is False
@@ -14508,16 +14535,7 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
     emitted = []
     calls = {"run_prompt": 0}
 
-    class _FakeThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self.target = target
-            threads.append(self)
-
-        def start(self):
-            return None
-
-        def is_alive(self):
-            return True
+    _FakeThread = _recording_threads(threads)
 
     session = _session()
     session["agent"] = None
@@ -14557,7 +14575,7 @@ def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
 
         # The deferred run thread now wakes up; without the emit it would bail
         # silently and the Desktop would never learn the turn was dropped.
-        threads[0].target()
+        _prompt_submit_threads(threads)[0].target()
 
         assert calls["run_prompt"] == 0
         assert session["running"] is False
@@ -14580,16 +14598,7 @@ def test_session_not_running_before_agent_ready_emits_error_event(monkeypatch):
     emitted = []
     calls = {"run_prompt": 0}
 
-    class _FakeThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self.target = target
-            threads.append(self)
-
-        def start(self):
-            return None
-
-        def is_alive(self):
-            return True
+    _FakeThread = _recording_threads(threads)
 
     session = _session()
     session["agent"] = None
@@ -14625,7 +14634,7 @@ def test_session_not_running_before_agent_ready_emits_error_event(monkeypatch):
         with session["history_lock"]:
             session["running"] = False
 
-        threads[0].target()
+        _prompt_submit_threads(threads)[0].target()
 
         assert calls["run_prompt"] == 0
         assert session.get("inflight_turn") is None
@@ -14646,16 +14655,7 @@ def test_slow_agent_build_delivers_prompt_instead_of_timing_out(monkeypatch):
     emitted = []
     calls = {"run_prompt": 0}
 
-    class _FakeThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self.target = target
-            threads.append(self)
-
-        def start(self):
-            return None
-
-        def is_alive(self):
-            return True
+    _FakeThread = _recording_threads(threads)
 
     ready = threading.Event()
     session = _session(agent_ready=ready)
@@ -14704,7 +14704,7 @@ def test_slow_agent_build_delivers_prompt_instead_of_timing_out(monkeypatch):
         )
         assert submit.get("result"), f"got error: {submit.get('error')}"
 
-        threads[0].target()
+        _prompt_submit_threads(threads)[0].target()
 
         # The message was DELIVERED, not dropped, and no error event fired.
         assert calls["run_prompt"] == 1
@@ -14722,16 +14722,7 @@ def test_slow_agent_build_emits_keyed_progress_notice(monkeypatch):
     emitted = []
     calls = {"run_prompt": 0}
 
-    class _FakeThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self.target = target
-            threads.append(self)
-
-        def start(self):
-            return None
-
-        def is_alive(self):
-            return True
+    _FakeThread = _recording_threads(threads)
 
     ready = threading.Event()
     session = _session(agent_ready=ready)
@@ -14779,7 +14770,7 @@ def test_slow_agent_build_emits_keyed_progress_notice(monkeypatch):
         )
         assert submit.get("result"), f"got error: {submit.get('error')}"
 
-        threads[0].target()
+        _prompt_submit_threads(threads)[0].target()
 
         assert calls["run_prompt"] == 1
         shows = [e for e in emitted if e and e[0] == "notification.show" and e[1] == "sid"]
@@ -14806,16 +14797,7 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
     emitted = []
     calls = {"run_prompt": 0}
 
-    class _FakeThread:
-        def __init__(self, target=None, daemon=None, **_thread_options):
-            self.target = target
-            threads.append(self)
-
-        def start(self):
-            return None
-
-        def is_alive(self):
-            return True
+    _FakeThread = _recording_threads(threads)
 
     ready = threading.Event()
     ready.set()  # build finished...
@@ -14851,7 +14833,7 @@ def test_agent_build_failure_surfaces_error_and_drops_turn(monkeypatch):
         )
         assert submit.get("result"), f"got error: {submit.get('error')}"
 
-        threads[0].target()
+        _prompt_submit_threads(threads)[0].target()
 
         assert calls["run_prompt"] == 0
         assert session["running"] is False

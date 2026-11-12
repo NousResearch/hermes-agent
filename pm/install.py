@@ -20,7 +20,8 @@ from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
 from pm.registry import get_package, walk
-from pm.store import Store, current_target, digest_matches, fetch_entry_name, merge_tree, tree_digest
+from pm.store import (Store, current_target, digest_matches, entry_component, fetch_entry_name, merge_tree,
+                      tree_digest)
 
 LOG = logging.getLogger(__name__)
 
@@ -233,7 +234,7 @@ def _remove_entry(store: Store, entry_name: str, *, attempts: int = 5) -> None:
     """
     import time
 
-    entry = store.entry(entry_name)
+    entry = store.entry(entry_component(entry_name))
     for attempt in range(attempts):
         try:
             if entry.is_symlink() or not entry.is_dir():
@@ -460,6 +461,7 @@ def _install(
     entry = store.entry(entry_name)
     if getattr(package, "pin_only", False):
         return entry
+    entry_component(entry_name)
     artifacts = lockfile.artifacts(package.name, target)
     pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
 

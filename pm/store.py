@@ -379,6 +379,16 @@ def _tree_digest(root: Path, *, skip_metadata: bool) -> str:
     return digest.hexdigest()
 
 
+def entry_component(name: str) -> str:
+    """A store entry name built from lock fields (package name, version,
+    target) that is removed or published must be exactly one component, or
+    the rmtree/rename aims outside the store root (#138359)."""
+    if (not isinstance(name, str) or name in ("", ".", "..") or "/" in name or "\\" in name
+            or Path(name).name != name):
+        raise ValueError(f"store entry name is not a single path component: {name!r}")
+    return name
+
+
 def fetch_entry_name(digest: str) -> str:
     """Fetch-cache entries are keyed `fetch-<sha256>` and the digest becomes
     a path component under the store root, so anything off the 64-hex shape
@@ -429,7 +439,10 @@ class Store:
             else:
                 if entry.exists():
                     shutil.rmtree(entry)
-                destination = scratch / entry_name / url.rsplit("/", 1)[-1]
+                filename = url.rsplit("/", 1)[-1]
+                if filename in ("", ".", "..") or "\\" in filename or Path(filename).name != filename:
+                    raise ValueError(f"artifact url does not end in a file name: {url}")
+                destination = scratch / entry_name / filename
             sources.append(pinned_source(url, destination, digest))
 
         # Progress keeps the lockfile URL even when the transport is a mirror (#123132).

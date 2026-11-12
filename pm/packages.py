@@ -803,6 +803,7 @@ class Pnpm(BinaryPackage):
     flatten = False
     # pnpm names its Termux build after the OS, not the libc: a bionic-linked executable.
     exe_platforms = {"linux-arm64-bionic": "android-arm64"}
+    on_demand = {"linux-arm64-bionic": "the Termux .deb ships a prebuilt TUI; `hermes dashboard` fetches pnpm to build the web UI"}
 
     def fetch_urls(self, version: str, target: str) -> list[str]:
         exe = self.exe_platforms.get(target, target)

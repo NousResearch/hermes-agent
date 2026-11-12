@@ -57,3 +57,14 @@ def test_bionic_facts_and_agent_keep_fixed_prefix_and_tui_only(tmp_path):
     facts = Facts(payload / "tools/facts.json", strict=True)
     assert all(facts.get(name)["target"] == TARGET for name in PAYLOAD_TOOLS)
 
+
+def test_the_installed_payload_has_every_tool_pm_requires_on_bionic(tmp_path, monkeypatch):
+    """The installed .deb runs ``pm.check()`` at every launch: a required tool the payload never
+    records is reported as drift that only a rebuilt artifact can fix."""
+    import pm.install
+
+    payload, _ = _assembled_payload(tmp_path)
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(payload / "tools"))
+    monkeypatch.setattr(pm.install, "current_target", lambda: TARGET)
+
+    assert pm.install.check(include_venv=False) == []

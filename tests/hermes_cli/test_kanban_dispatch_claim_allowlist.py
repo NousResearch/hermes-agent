@@ -106,6 +106,16 @@ def test_profiles_import_failure_without_allowlist_keeps_gate_disabled(kanban_ho
     assert res.skipped_nonspawnable == []
 
 
+def test_profiles_import_failure_without_allowlist_diagnostics_matches_dispatch(kanban_home, monkeypatch):
+    """If imports fail without an allowlist, diagnostics must say 'any', not
+    'fail-closed': the dispatcher still claims ready cards in this state."""
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="local card", assignee="default")
+        monkeypatch.setitem(sys.modules, "hermes_cli.profiles", None)
+        assert kbd.has_spawnable_ready(conn) is True
+        assert kbd.dispatch_profile_allowlist_summary() == "any"
+
+
 @pytest.mark.parametrize("value", ["", None], ids=["empty_string", "bare_key"])
 def test_present_blank_or_null_allowlist_skips_all_cards(
     kanban_home, all_assignees_spawnable, value, caplog,

@@ -1778,6 +1778,9 @@ def dispatch_profile_allowlist_summary() -> str:
     try:
         from hermes_cli.profiles import normalize_profile_name
     except Exception as exc:
+        # Match the dispatcher's gate-disabled semantics when no allowlist exists.
+        if _dispatch_profile_allowlist(str) is None:
+            return "any"
         return f"none (fail-closed: profiles unavailable: {exc})"
     allowlist = _dispatch_profile_allowlist(normalize_profile_name)
     if allowlist is None:

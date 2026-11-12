@@ -132,6 +132,7 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
 // OAuth / external providers are intentionally excluded here — they go through
 // the OAuth picker / sign-in flow, not a pasted key.
 function useApiKeyCatalog(scope: OnboardingContext['scope']): ApiKeyOption[] {
+  const { t } = useI18n()
   const [rows, setRows] = useState<ModelOptionProvider[]>([])
 
   useEffect(() => {
@@ -157,7 +158,9 @@ function useApiKeyCatalog(scope: OnboardingContext['scope']): ApiKeyOption[] {
   }, [scope])
 
   return useMemo(() => {
-    const curatedByEnv = new Map(API_KEY_OPTIONS.map(o => [o.envKey, o]))
+    // The custom endpoint is the one curated entry named by a description, not a brand.
+    const curated = API_KEY_OPTIONS.map(o => (o.id === 'local' ? { ...o, name: t.onboarding.customEndpointName } : o))
+    const curatedByEnv = new Map(curated.map(o => [o.envKey, o]))
     const derived: ApiKeyOption[] = []
     const seenEnv = new Set<string>(API_KEY_OPTIONS.map(o => o.envKey))
 
@@ -179,7 +182,7 @@ function useApiKeyCatalog(scope: OnboardingContext['scope']): ApiKeyOption[] {
         id: row.slug,
         name: row.name,
         envKey,
-        description: `Direct API access to ${row.name}.`,
+        description: t.onboarding.directApiAccess(row.name),
         docsUrl: ''
       })
     }
@@ -188,8 +191,8 @@ function useApiKeyCatalog(scope: OnboardingContext['scope']): ApiKeyOption[] {
     // long tail is scannable.
     derived.sort((a, b) => a.name.localeCompare(b.name))
 
-    return [...API_KEY_OPTIONS.filter(o => curatedByEnv.has(o.envKey)), ...derived]
-  }, [rows])
+    return [...curated.filter(o => curatedByEnv.has(o.envKey)), ...derived]
+  }, [rows, t])
 }
 
 // Exit choreography, mirroring the gateway "connecting" overlay's timing:

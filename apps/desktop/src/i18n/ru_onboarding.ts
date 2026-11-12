@@ -80,5 +80,7 @@ export const ruOnboarding: TranslationOverrides['onboarding'] = {
     anthropic: 'Аккаунт Anthropic',
     'claude-code': 'Anthropic OAuth: для подписки нужны кредиты Extra Usage',
     'openai-codex': 'Подписка ChatGPT или Codex'
-  }
+  },
+  customEndpointName: 'Локальная или своя конечная точка',
+  directApiAccess: provider => `Прямой доступ к API ${provider}.`
 }

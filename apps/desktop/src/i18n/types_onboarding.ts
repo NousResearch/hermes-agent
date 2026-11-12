@@ -63,4 +63,8 @@ export interface OnboardingTranslations {
   /** Descriptive provider titles keyed by provider id (`anthropic`, `openai-codex`…);
    *  bare brand names (Nous Portal, xAI Grok) stay in `PROVIDER_DISPLAY_NAMES`. */
   providerNames: Record<string, string>
+  /** The API-key picker's self-hosted entry (vLLM, llama.cpp, Ollama…). */
+  customEndpointName: string
+  /** Description for an API-key provider the backend lists without curated copy. */
+  directApiAccess: (provider: string) => string
 }

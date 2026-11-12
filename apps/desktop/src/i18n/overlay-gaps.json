@@ -1060,6 +1060,8 @@
   "notifications.voice.liveUnavailable": ["ar","ja","ru","zh-hant"],
   "onboarding.apiKeyOptions.fireworks.description": ["ar"],
   "onboarding.apiKeyOptions.fireworks.short": ["ar"],
+  "onboarding.customEndpointName": ["ar","de","es","fr","ja","zh","zh-hant"],
+  "onboarding.directApiAccess": ["ar","de","es","fr","ja","zh","zh-hant"],
   "onboarding.errorDetails": ["ar","ja","ru","zh","zh-hant"],
   "onboarding.localApiKeyPlaceholder": ["ja","zh-hant"],
   "onboarding.localModelNamePlaceholder": ["ar","ja","ru","zh-hant"],

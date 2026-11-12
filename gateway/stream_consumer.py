@@ -913,8 +913,8 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
             # rich-text pass now.  is_turn_final=False: a split head is not the
             # answer, so fresh-final must not mark the turn delivered on it.
             ok = await self._send_or_edit(chunk, finalize=True, is_turn_final=False)
-            if self._fallback_final_send or not ok:
-                break  # keep the full text intact for the fallback final send
+            if self._fallback_final_send or not ok or self._ceiling_capped_seal(split_at):
+                break  # keep the full text intact for the fallback final send, or the reply was cut
             self._accumulated = self._accumulated[split_at:].lstrip("\n")
             self._message_id = None
             self._last_sent_text = ""

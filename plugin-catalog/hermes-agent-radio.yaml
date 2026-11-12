@@ -1,8 +1,8 @@
 name: hermes-agent-radio
 repo: https://github.com/Sahil-SS9/hermes-agent-radio-plugin
-sha: "155e4ee96900b64621486f9e6025ae59fca33fe3"
+sha: "47740b4c3b474a86be4a912eefb998d5f0fbb038"
 title: Hermes Agent Radio
-version: "1.0.0"
+version: "1.0.1"
 maintainer: Sahil-SS9
 tier: community
 category: desktop
@@ -18,8 +18,10 @@ description: >-
   chart and send the hosts a question, topic or roast; a human producer reads every one before anything
   airs. Disclosure: the tools make HTTPS calls only to the configured station (default
   hermesagentradio.com; plain http is refused except for localhost) and send what the agent submits plus
-  an optional sender name. The Desktop half embeds the station's own player page and audio stream through
-  the public Desktop SDK. The one file written is an anonymous listener id in the plugin's data folder,
+  an optional sender name. The Desktop half shows the station's own player page in the Desktop SDK's
+  SandboxedFrame (opaque origin, scripts only, no autoplay or other permission delegated) and opens the
+  pop-out only at an address it builds itself; a self-hosted station address is kept in the plugin's own
+  Desktop storage (Settings, Plugins). The one file written is an anonymous listener id in the plugin's data folder,
   used to count one chart vote per listener. No hooks, context injection, shell commands, background
   work, credentials, telemetry or self-updater; Python standard library only.
 capabilities:

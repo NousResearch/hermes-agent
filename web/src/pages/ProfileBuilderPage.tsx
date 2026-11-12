@@ -24,19 +24,13 @@ import {
 } from "@/lib/mcp-server-create";
 import { cn } from "@/lib/utils";
 import { errorMessage } from "@/lib/api-error";
+import { en } from "@/i18n/en";
+import { useI18n } from "@/i18n";
 
 // Profile name rule mirrors the backend (`^[a-z0-9][a-z0-9_-]{0,63}$`).
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 type StepId = "identity" | "model" | "skills" | "mcp" | "review";
-
-const STEPS: { id: StepId; label: string }[] = [
-  { id: "identity", label: "Identity" },
-  { id: "model", label: "Model" },
-  { id: "skills", label: "Skills" },
-  { id: "mcp", label: "MCPs" },
-  { id: "review", label: "Review" },
-];
 
 interface ModelChoice {
   provider: string;
@@ -61,6 +55,15 @@ interface ModelChoice {
 export default function ProfileBuilderPage() {
   const navigate = useNavigate();
   const { toast, showToast } = useToast();
+  const { t } = useI18n();
+  const profileBuilderUi = t.profileBuilderUi ?? en.profileBuilderUi!;
+  const steps: { id: StepId; label: string }[] = [
+    { id: "identity", label: profileBuilderUi.steps.identity },
+    { id: "model", label: profileBuilderUi.steps.model },
+    { id: "skills", label: profileBuilderUi.steps.skills },
+    { id: "mcp", label: profileBuilderUi.steps.mcp },
+    { id: "review", label: profileBuilderUi.steps.review },
+  ];
 
   const [step, setStep] = useState<StepId>("identity");
 
@@ -176,7 +179,7 @@ export default function ProfileBuilderPage() {
       entry = buildMcpServerCreate(mcpDraft);
     } catch (error) {
       showToast(
-        error instanceof Error ? error.message : "Invalid MCP server",
+        error instanceof Error ? error.message : t.mcpUi?.invalidServer ?? en.mcpUi!.invalidServer,
         "error",
       );
       return;
@@ -244,7 +247,7 @@ export default function ProfileBuilderPage() {
   const handleCreate = async () => {
     const n = name.trim();
     if (!PROFILE_NAME_RE.test(n)) {
-      showToast("Invalid profile name (lowercase, digits, - and _)", "error");
+      showToast(profileBuilderUi.invalidName, "error");
       setStep("identity");
       return;
     }
@@ -265,25 +268,28 @@ export default function ProfileBuilderPage() {
       const pending = (res.hub_installs ?? []).filter((h) => h.pid).length;
       showToast(
         pending
-          ? `Profile "${n}" created — ${pending} hub skill${pending === 1 ? "" : "s"} installing`
-          : `Profile "${n}" created`,
+          ? profileBuilderUi.createdInstalling
+              .replace("{name}", n)
+              .replace("{count}", String(pending))
+              .replace("{suffix}", pending === 1 ? "" : "s")
+          : profileBuilderUi.created.replace("{name}", n),
         "success",
       );
       navigate("/profiles");
     } catch (e) {
-      showToast(`Create failed: ${errorMessage(e)}`, "error");
+      showToast(profileBuilderUi.createFailed.replace("{detail}", errorMessage(e)), "error");
     } finally {
       setCreating(false);
     }
   };
 
-  const stepIndex = STEPS.findIndex((s) => s.id === step);
+  const stepIndex = steps.findIndex((s) => s.id === step);
   const canAdvance = step !== "identity" || nameValid;
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 p-4">
       <div className="flex items-center justify-between">
-        <H2>New profile</H2>
+        <H2>{profileBuilderUi.newProfile}</H2>
         <Button ghost onClick={() => navigate("/profiles")}>
           Cancel
         </Button>
@@ -291,7 +297,7 @@ export default function ProfileBuilderPage() {
 
       {/* Stepper */}
       <div className="flex items-center gap-2 text-sm">
-        {STEPS.map((s, i) => (
+        {steps.map((s, i) => (
           <button
             key={s.id}
             // Identity must be valid before jumping ahead.
@@ -317,7 +323,7 @@ export default function ProfileBuilderPage() {
           {step === "identity" && (
             <div className="space-y-4">
               <div className="space-y-1.5">
-                <Label htmlFor="pb-name">Profile name</Label>
+                <Label htmlFor="pb-name">{profileBuilderUi.profileName}</Label>
                 <Input
                   id="pb-name"
                   placeholder="coder"
@@ -328,16 +334,15 @@ export default function ProfileBuilderPage() {
                 />
                 {name && !nameValid && (
                   <p className="text-xs text-destructive">
-                    Lowercase letters, digits, hyphens and underscores; must
-                    start with a letter or digit.
+                    {profileBuilderUi.nameRule}
                   </p>
                 )}
               </div>
               <div className="space-y-1.5">
-                <Label htmlFor="pb-desc">Description (optional)</Label>
+                <Label htmlFor="pb-desc">{profileBuilderUi.descriptionOptional}</Label>
                 <Input
                   id="pb-desc"
-                  placeholder="What this agent profile is for"
+                  placeholder={profileBuilderUi.descriptionPlaceholder}
                   value={description}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                     setDescription(e.target.value)
@@ -350,18 +355,17 @@ export default function ProfileBuilderPage() {
           {step === "model" && (
             <div className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Pick the model+provider for this profile. Skip to use the
-                default.
+                {profileBuilderUi.modelHint}
               </p>
               <Input
-                placeholder="Filter models…"
+                placeholder={profileBuilderUi.filterModels}
                 value={modelFilter}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                   setModelFilter(e.target.value)
                 }
               />
               {modelChoices === null ? (
-                <p className="text-sm text-muted-foreground">Loading models…</p>
+                <p className="text-sm text-muted-foreground">{profileBuilderUi.loadingModels}</p>
               ) : (
                 <div className="max-h-72 space-y-1 overflow-y-auto">
                   <button
@@ -371,7 +375,7 @@ export default function ProfileBuilderPage() {
                       modelChoice === "" ? "bg-primary/10" : "hover:bg-muted",
                     )}
                   >
-                    Use default (set later)
+                    {profileBuilderUi.useDefault}
                   </button>
                   {filteredModels.map((c) => {
                     const key = `${c.provider}\u0000${c.model}`;
@@ -402,16 +406,15 @@ export default function ProfileBuilderPage() {
                   checked={keepAll}
                   onCheckedChange={(v) => setKeepAll(Boolean(v))}
                 />
-                Start from the full default skill bundle (recommended)
+                {profileBuilderUi.fullBundle}
               </label>
               {!keepAll && (
                 <div className="space-y-2">
                   <p className="text-xs text-muted-foreground">
-                    Choose which built-in / optional skills to keep active.
-                    Unchecked skills are disabled in the new profile.
+                    {profileBuilderUi.keepSkillsHint}
                   </p>
                   <Input
-                    placeholder="Filter skills…"
+                    placeholder={profileBuilderUi.filterSkills}
                     value={skillFilter}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                       setSkillFilter(e.target.value)
@@ -419,7 +422,7 @@ export default function ProfileBuilderPage() {
                   />
                   {skills === null ? (
                     <p className="text-sm text-muted-foreground">
-                      Loading skills…
+                      {profileBuilderUi.loadingSkills}
                     </p>
                   ) : (
                     <div className="max-h-56 space-y-1 overflow-y-auto">
@@ -454,10 +457,10 @@ export default function ProfileBuilderPage() {
 
               {/* Skills hub */}
               <div className="space-y-2 border-t pt-4">
-                <Label>Add from the skills hub</Label>
+                <Label>{profileBuilderUi.addFromHub}</Label>
                 <div className="flex gap-2">
                   <Input
-                    placeholder="Search the hub (e.g. linear, hyperliquid)…"
+                    placeholder={profileBuilderUi.searchHub}
                     value={hubQuery}
                     onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                       setHubQuery(e.target.value)
@@ -471,7 +474,7 @@ export default function ProfileBuilderPage() {
                     onClick={runHubSearch}
                     disabled={hubSearching}
                   >
-                    {hubSearching ? "Searching…" : "Search"}
+                    {hubSearching ? profileBuilderUi.searching : t.common.search}
                   </Button>
                 </div>
                 {hubResults.length > 0 && (
@@ -493,7 +496,7 @@ export default function ProfileBuilderPage() {
                           )}
                         </span>
                         <Button size="sm" ghost onClick={() => addHubSkill(r)}>
-                          Add
+                          {profileBuilderUi.add}
                         </Button>
                       </div>
                     ))}
@@ -507,7 +510,7 @@ export default function ProfileBuilderPage() {
                         <button
                           className="ml-1 text-xs"
                           onClick={() => removeHubSkill(r.identifier)}
-                          aria-label={`Remove ${r.name}`}
+                          aria-label={profileBuilderUi.removeNamed.replace("{name}", r.name)}
                         >
                           ×
                         </button>
@@ -524,30 +527,29 @@ export default function ProfileBuilderPage() {
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
                   <h3 className="font-expanded text-base font-bold tracking-[0.04em]">
-                    MCP servers
+                    {profileBuilderUi.mcpServers}
                   </h3>
                   <p className="text-sm text-muted-foreground">
-                    Add MCP servers to give this profile access to external
-                    tools and data.
+                    {profileBuilderUi.mcpHint}
                   </p>
                 </div>
                 <span
                   className="text-xs text-muted-foreground"
                   aria-live="polite"
                 >
-                  {mcpServers.length} configured
+                  {profileBuilderUi.configured.replace("{count}", String(mcpServers.length))}
                 </span>
               </div>
 
               <div className="space-y-4 border border-border bg-background/20 p-4 md:p-5">
-                <h4 className="font-medium">Add server</h4>
+                <h4 className="font-medium">{profileBuilderUi.addServer}</h4>
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="grid gap-1.5">
-                    <Label htmlFor="pb-mcp-name">Server name</Label>
+                    <Label htmlFor="pb-mcp-name">{profileBuilderUi.serverName}</Label>
                     <Input
                       id="pb-mcp-name"
-                      placeholder="Enter server name"
+                      placeholder={profileBuilderUi.serverNamePlaceholder}
                       value={mcpDraft.name}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                         setMcpDraft({ ...mcpDraft, name: e.target.value })
@@ -555,11 +557,11 @@ export default function ProfileBuilderPage() {
                     />
                   </div>
                   <div className="grid gap-1.5">
-                    <Label>Transport</Label>
+                    <Label>{profileBuilderUi.transport}</Label>
                     <div
                       className="grid grid-cols-2 border border-border bg-background/30 p-0.5"
                       role="group"
-                      aria-label="MCP transport"
+                      aria-label={profileBuilderUi.transport}
                     >
                       {(
                         [
@@ -600,15 +602,15 @@ export default function ProfileBuilderPage() {
                       />
                     </div>
                     <div className="grid gap-1.5">
-                      <Label>Authentication</Label>
+                      <Label>{profileBuilderUi.authentication}</Label>
                       <div
                         className="grid grid-cols-3 border border-border bg-background/30 p-0.5 md:max-w-md"
                         role="group"
-                        aria-label="HTTP authentication"
+                        aria-label={profileBuilderUi.authentication}
                       >
                         {(
                           [
-                            ["none", "None"],
+                            ["none", profileBuilderUi.none],
                             ["header", "Bearer token"],
                             ["oauth", "OAuth"],
                           ] as const
@@ -633,13 +635,13 @@ export default function ProfileBuilderPage() {
                     {mcpDraft.httpAuth === "header" && (
                       <div className="grid gap-1.5">
                         <Label htmlFor="pb-mcp-bearer-token">
-                          Bearer token
+                          {profileBuilderUi.bearerToken}
                         </Label>
                         <Input
                           id="pb-mcp-bearer-token"
                           type="password"
                           autoComplete="new-password"
-                          placeholder="Token or Bearer token"
+                          placeholder={profileBuilderUi.tokenPlaceholder}
                           value={mcpDraft.bearerToken}
                           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                             setMcpDraft({
@@ -649,15 +651,13 @@ export default function ProfileBuilderPage() {
                           }
                         />
                         <p className="text-xs text-muted-foreground">
-                          Stored in the new profile&apos;s .env; config.yaml
-                          keeps only an environment-variable reference.
+                          {profileBuilderUi.tokenHint}
                         </p>
                       </div>
                     )}
                     {mcpDraft.httpAuth === "oauth" && (
                       <p className="text-xs text-muted-foreground">
-                        After creating the profile, open its MCP page and use
-                        Authenticate to complete OAuth.
+                        {profileBuilderUi.oauthHint}
                       </p>
                     )}
                   </>
@@ -665,7 +665,7 @@ export default function ProfileBuilderPage() {
                   <>
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="grid gap-1.5">
-                        <Label htmlFor="pb-mcp-command">Command</Label>
+                        <Label htmlFor="pb-mcp-command">{profileBuilderUi.command}</Label>
                         <Input
                           id="pb-mcp-command"
                           placeholder="npx"
@@ -679,7 +679,7 @@ export default function ProfileBuilderPage() {
                         />
                       </div>
                       <div className="grid gap-1.5">
-                        <Label htmlFor="pb-mcp-args">Arguments</Label>
+                        <Label htmlFor="pb-mcp-args">{profileBuilderUi.arguments}</Label>
                         <Input
                           id="pb-mcp-args"
                           placeholder="-y @modelcontextprotocol/server"
@@ -692,7 +692,7 @@ export default function ProfileBuilderPage() {
                     </div>
                     <div className="grid gap-1.5">
                       <Label htmlFor="pb-mcp-env">
-                        Environment (KEY=VALUE per line)
+                        {profileBuilderUi.environment}
                       </Label>
                       <textarea
                         id="pb-mcp-env"
@@ -708,7 +708,7 @@ export default function ProfileBuilderPage() {
                 )}
 
                 <div className="flex justify-end">
-                  <Button onClick={addMcpDraft}>Add server</Button>
+                  <Button onClick={addMcpDraft}>{profileBuilderUi.addServer}</Button>
                 </div>
               </div>
 
@@ -742,7 +742,7 @@ export default function ProfileBuilderPage() {
                         className="shrink-0"
                         onClick={() => removeMcp(s.name)}
                       >
-                        Remove
+                        {profileBuilderUi.remove}
                       </Button>
                     </div>
                   ))}
@@ -752,21 +752,21 @@ export default function ProfileBuilderPage() {
           )}
           {step === "review" && (
             <div className="space-y-3 text-sm">
-              <ReviewRow label="Name" value={name.trim() || "—"} />
+              <ReviewRow label={profileBuilderUi.reviewLabels.name} value={name.trim() || "—"} />
               <ReviewRow
-                label="Description"
+                label={profileBuilderUi.reviewLabels.description}
                 value={description.trim() || "—"}
               />
               <ReviewRow
-                label="Model"
-                value={pickedModel ? pickedModel.label : "Default (set later)"}
+                label={profileBuilderUi.reviewLabels.model}
+                value={pickedModel ? pickedModel.label : profileBuilderUi.defaultSetLater}
               />
               <ReviewRow
-                label="Skills"
+                label={profileBuilderUi.reviewLabels.skills}
                 value={
                   keepAll
-                    ? "Full default bundle"
-                    : `${keptSkills.size} built-in/optional kept` +
+                    ? profileBuilderUi.fullBundleSummary
+                    : profileBuilderUi.keptSkills.replace("{count}", String(keptSkills.size)) +
                       (hubSkills.length ? ` + ${hubSkills.length} hub` : "")
                 }
               />
@@ -777,16 +777,16 @@ export default function ProfileBuilderPage() {
               )}
               {keepAll && hubSkills.length > 0 && (
                 <ReviewRow
-                  label="Hub skills"
+                  label={profileBuilderUi.reviewLabels.hubSkills}
                   value={hubSkills.map((s) => s.name).join(", ")}
                 />
               )}
               <ReviewRow
-                label="MCP servers"
+                label={profileBuilderUi.reviewLabels.mcpServers}
                 value={
                   mcpServers.length
                     ? mcpServers.map((s) => s.name).join(", ")
-                    : "None"
+                    : profileBuilderUi.noMcpServers
                 }
               />
             </div>
@@ -799,22 +799,22 @@ export default function ProfileBuilderPage() {
         <Button
           ghost
           disabled={stepIndex === 0}
-          onClick={() => setStep(STEPS[Math.max(0, stepIndex - 1)].id)}
+          onClick={() => setStep(steps[Math.max(0, stepIndex - 1)].id)}
         >
-          Back
+          {profileBuilderUi.back}
         </Button>
         {step === "review" ? (
           <Button onClick={handleCreate} disabled={creating || !nameValid}>
-            {creating ? "Creating…" : "Create profile"}
+            {creating ? profileBuilderUi.creating : profileBuilderUi.createProfile}
           </Button>
         ) : (
           <Button
             disabled={!canAdvance}
             onClick={() =>
-              setStep(STEPS[Math.min(STEPS.length - 1, stepIndex + 1)].id)
+              setStep(steps[Math.min(steps.length - 1, stepIndex + 1)].id)
             }
           >
-            Next
+            {profileBuilderUi.next}
           </Button>
         )}
       </div>

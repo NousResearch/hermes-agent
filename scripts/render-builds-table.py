@@ -53,7 +53,7 @@ from urllib.parse import quote
 # Direct-script invocation starts with scripts/, not the repository root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.releases import handoff, r2, semver, stable, versioning
+from scripts.releases import handoff, job_groups, r2, semver, stable, versioning
 from scripts.releases.desktop_targets import TARGETS as DESKTOP_TARGETS
 
 MARKER = "<!-- HERMES_BUILDS_TABLE -->"
@@ -340,7 +340,8 @@ def incomplete_release_jobs(release_needs_json: str | None) -> list[str]:
     """Tag pages may describe failures; channel pointers require successful jobs.
 
     Unlike a commit summary, skipped release prerequisites are incomplete too.
-    Standalone invocations without workflow results retain their existing behavior.
+    Diagnostic builds never are. Standalone invocations without workflow
+    results retain their existing behavior.
     """
     if release_needs_json is None:
         return []
@@ -348,8 +349,8 @@ def incomplete_release_jobs(release_needs_json: str | None) -> list[str]:
         needs = json.loads(release_needs_json)
         if not isinstance(needs, dict) or not needs:
             raise ValueError("missing workflow results")
-        return [f"{name} ({info.get('result', 'unknown')})" for name, info in sorted(needs.items())
-                if info.get("result") != "success"]
+        return [f"{name} ({needs[name].get('result', 'unknown')})"
+                for name in sorted(job_groups.gating_jobs(needs)) if needs[name].get("result") != "success"]
     except (ValueError, TypeError, AttributeError):
         return ["workflow results unavailable"]
 

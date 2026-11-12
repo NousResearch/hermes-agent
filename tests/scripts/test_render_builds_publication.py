@@ -129,6 +129,30 @@ def test_incomplete_tag_keeps_channel_and_links_diagnostics(monkeypatch, r2_serv
     assert r2_server.store['releases/canary/index.html'][0] == b'previous good page'
 
 
+def test_failed_linux_builds_still_advance_the_channel_page(monkeypatch, r2_server, release_body):  # health: allow F811 -- pytest injects the imported r2_server fixture by parameter name
+    tag = 'v1.2.3+canary.20260818T101010Z'
+    base = f'http://127.0.0.1:{r2_server.server_port}/hermes-releases'
+    key = f'releases/tag/{tag}/HermesBundled-{tag[1:]}-win-x64.msix'
+    r2_server.store[key] = (b'transport fixture', '"e"')
+    r2_server.store['releases/canary/index.html'] = (b'previous good page', '"e"')
+    monkeypatch.setenv('RELEASE_NEEDS', json.dumps({
+        'build-win32-x64': {'result': 'success'}, 'termux-deb': {'result': 'success'},
+        'build-linux-x64': {'result': 'failure'}, 'build-linux-arm64': {'result': 'skipped'}}))
+    monkeypatch.setattr(sys, 'argv', ['renderer', '--tag', tag, '--r2-base-url', base])
+    assert rbt.main() == 0
+    page = r2_server.store['releases/canary/index.html'][0].decode()
+    for output in (page, release_body['body']):
+        assert 'Build incomplete' not in output and 'build-linux' not in output
+        assert rbt.r2.public_url_for(base, key) in output
+
+    monkeypatch.setenv('RELEASE_NEEDS', json.dumps({
+        'termux-deb': {'result': 'failure'}, 'build-linux-x64': {'result': 'failure'}}))
+    r2_server.store['releases/canary/index.html'] = (b'previous good page', '"e"')
+    assert rbt.main() == 0
+    assert r2_server.store['releases/canary/index.html'][0] == b'previous good page'
+    assert 'termux-deb (failure)' in release_body['body'] and 'build-linux' not in release_body['body']
+
+
 def test_attempt_page_warns_and_canary_page_does_not():
     base = 'https://cdn.example'
     sentence = ('Attempt builds are not upgrade-safe: every attempt of 1.2.3 has the same '

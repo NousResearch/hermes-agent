@@ -6,6 +6,7 @@ import sys
 import pytest
 
 from scripts.releases import r2
+from scripts.releases.job_groups import DIAGNOSTIC_JOBS
 from tests.ci.desktop_release_roles import (
     CANARY_TAG, DOWNLOADABLE_DISPATCHES, admitted, gate, needs_of, selection_gates, tag_summary, termux_builder,
     updater_publishers,
@@ -109,3 +110,25 @@ def test_admitted_failure_publishes_tag_info_without_promoting_channel(tmp_path,
             "RELEASE_NEEDS": json.dumps(needs),
         })
         assert (checked.returncode == 0) is (state == "success"), checked.stdout + checked.stderr
+
+
+def test_linux_builds_are_reported_to_the_table_but_never_block_its_release_gate(tmp_path, r2_server):  # health: allow F811 -- pytest injects the imported r2_server fixture by parameter name
+    jobs = _workflow()["jobs"]
+    table = tag_summary(jobs)
+    termux = termux_builder(jobs)
+    needs = {name: {"result": "success"} for name in needs_of(jobs[table])}
+    assert DIAGNOSTIC_JOBS <= set(needs)
+    for state in ("failure", "skipped", "cancelled"):
+        for name in DIAGNOSTIC_JOBS:
+            needs[name]["result"] = state
+        checked = shell_step(tmp_path, r2_server, table, "Preserve release success gate", {
+            "RELEASE_NEEDS": json.dumps(needs),
+        })
+        assert checked.returncode == 0, checked.stdout + checked.stderr
+    needs[termux]["result"] = "failure"
+    checked = shell_step(tmp_path, r2_server, table, "Preserve release success gate", {
+        "RELEASE_NEEDS": json.dumps(needs),
+    })
+    assert checked.returncode != 0
+    assert f"Release blocked: {termux}=failure" in checked.stderr
+    assert "build-linux" not in checked.stderr

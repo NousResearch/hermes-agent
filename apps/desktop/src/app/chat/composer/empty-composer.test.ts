@@ -4,6 +4,7 @@ import {
   beginComposerComposition,
   composerPlainText,
   deleteChipBeforeCaret,
+  insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
   renderComposerContents,
   RICH_INPUT_SLOT
@@ -204,6 +205,46 @@ function caretAt(node: Node, offset: number) {
   selection?.removeAllRanges()
   selection?.addRange(range)
 }
+
+describe('an explicit newline survives editor normalization', () => {
+  it('persists exactly one newline in an empty normalized editor', () => {
+    const el = editor()
+
+    normalizeComposerEditorDom(el)
+    caretAt(el, el.childNodes.length)
+    insertComposerContentsAtCaret(el, '\n')
+    normalizeComposerEditorDom(el)
+
+    expect(composerPlainText(el)).toBe('\n')
+    expect(window.getSelection()?.anchorNode).toBe(el)
+    expect(window.getSelection()?.anchorOffset).toBe(1)
+  })
+
+  it('persists exactly one newline immediately after a file chip', () => {
+    const el = editor()
+    const ref = chip()
+
+    ref.dataset.refText = '@file:`src/a.ts`'
+    el.append(ref)
+    normalizeComposerEditorDom(el)
+    caretAt(el, el.childNodes.length)
+    insertComposerContentsAtCaret(el, '\n')
+    normalizeComposerEditorDom(el)
+
+    expect(composerPlainText(el)).toBe('@file:`src/a.ts`\n')
+    expect(window.getSelection()?.anchorNode).toBe(el)
+    expect(window.getSelection()?.anchorOffset).toBe(2)
+  })
+
+  it.each(['\n', '@file:`src/a.ts`\n'])('round-trips the draft %j through render and normalization', draft => {
+    const el = editor()
+
+    renderComposerContents(el, draft)
+    normalizeComposerEditorDom(el)
+
+    expect(composerPlainText(el)).toBe(draft)
+  })
+})
 
 /** Committing a completion empties the typed token's text node instead of
  *  removing it, and `Range.insertNode` splits the line around the caret — so a

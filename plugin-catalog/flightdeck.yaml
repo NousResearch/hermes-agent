@@ -2,7 +2,7 @@ name: flightdeck
 title: Flightdeck
 repo: https://github.com/freemanconsulting/hermes-flightdeck
 sha: 399b080430f6871d42c1c8d8837f2a05efb63c3e
-description: Live air-traffic control for your agents and model servers — which agent holds which local GPU slot, who's queued, plan usage on cloud lanes, and opt-in capacity-aware subagent placement.
+description: "Live air-traffic control for your agents and model servers — which agent holds which local GPU slot, who's queued, plan usage on cloud lanes, and opt-in capacity-aware subagent placement. Disclosure — records LLM request metadata (ids, profile, session, model, provider, base_url, timings, token counts, finish/error status, a clipped error message and a subagent's goal text; no prompts, message text, tool arguments or credentials) from every profile into one machine-wide SQLite file at <hermes root>/plugin-data/flightdeck/requests.db; reads every profile's config.yaml (provider base URLs, model names and its own settings only; the files can contain api_key values, which it never extracts, stores or sends) and every profile's state.db (session titles, read-only); sends GET-only metrics probes to declared model servers or to auto-discovered private/loopback provider URLs on each poll; the Desktop page reads plan usage through Hermes's model.options RPC; opt-in capacity routing (off by default) changes which local server delegate_task subagents run on."
 maintainer: freemanconsulting
 tier: community
 category: desktop

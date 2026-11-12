@@ -1,0 +1,57 @@
+name: whiplash
+title: Whiplash
+repo: https://github.com/hejijunhao/whiplash
+sha: "3f4f883346167dfcb31e06d0fc5ac3cf57e0f1dd"
+description: "Let Hermes jam live on an Elektron Digitakt II over USB MIDI: genre/mood beats with MIDI clock, routed onto a session kit map of what each track holds (tracks 1-16), in any key with chord progressions, arranged into song sections (whiplash_arrange: intro, build, drop, outro on bar lines), written melodies and rhythms, bar-quantized pattern switches with DJ-style transitions (filter swap, drop swap, riser), track levels and pan with saved mixes (whiplash_mix), listening to the unit's real output over USB audio (whiplash_listen: loudness, clipping, band balance, timing and kick offsets as numbers, never audio) with a loudness guard that refuses level increases after clipping, a kit scan (whiplash_scan_kit: with the beat stopped, one note per track, heard and classified into proposed kit-map labels that are never applied without the user's yes), play along (whiplash_play_along / whiplash_follow: reads the unit's MIDI input to show the user's knob moves, stop a ramp on a knob they grab, and answer phrases they play in key on another track; whiplash_undo reverts the last part, mix or arrangement change), named sound parameters, clock-synced parameter ramps, live fills/drops/density/swing/humanize, switching a track among samples already in the project pool, mutes and tempo. Disclosure — controls MIDI hardware (MIDI Start also starts the unit's own sequencer; a clock-only mode is available), can change which already-loaded sample a track plays, runs a background sequencer thread while a pattern plays, and opens a virtual MIDI port named \"Whiplash\" when no Digitakt is connected. Optional visualiser (whiplash_open_view): an unauthenticated read-only local web page served on 127.0.0.1 from a background thread, opened in the default browser, showing the beat and the live Hermes conversation including tool calls and results (taken from in-memory observer hooks; nothing is stored), readable by any local process while it is open. whiplash_listen opens an audio input (the Digitakt's USB audio by default, or WHIPLASH_AUDIO_INPUT or any input named in the tool call, which can be a microphone) only for the length of one call (at most 24 s), through the optional numpy/sounddevice extra, which needs microphone permission on macOS; the audio is analysed in memory and dropped. whiplash_scan_kit does the same for at most about 35 s and sends only note-on/off. whiplash_play_along and whiplash_follow open the Digitakt's MIDI input (never another device) on a background reader thread that only reads; what it hears is never sent back, and the session (notes and CCs sent and heard) is kept in memory only, at most 65,536 events, never written to disk. Never sends SysEx or program changes; no file transfer, project writes, shell or credentials, and no network beyond that localhost page."
+maintainer: pgbouncer
+tier: community
+category: tools
+requires_hermes: ">=0.19"
+version: "0.8.0"
+readme: true
+platforms: [linux, macos]
+known_issues:
+  - Needs an Elektron Digitakt II (or any MIDI device/DAW) on USB MIDI to be heard.
+  - With no device connected, Whiplash plays into a virtual MIDI port, which is silent unless a DAW or soft synth listens to it. Every tool result says so.
+  - Windows has no virtual MIDI ports, so the fallback is unavailable there.
+  - On Linux, python-rtmidi needs the ALSA runtime (libasound2).
+  - MIDI Start also starts the Digitakt's own sequencer; select an empty pattern on the unit or use send_transport=false (clock only).
+  - Sample select picks a slot in the unit's current sample bank and can't list or preview samples.
+  - whiplash_listen needs the optional [listen] extra (numpy, sounddevice/PortAudio), USB CONFIG = USB AUDIO/MIDI on the unit, and microphone permission on macOS; without them it returns an error with the fix and every other tool works.
+capabilities:
+  provides_tools:
+    - whiplash_list_midi_ports
+    - whiplash_list_params
+    - whiplash_play_pattern
+    - whiplash_set_param
+    - whiplash_select_sample
+    - whiplash_label_tracks
+    - whiplash_transpose
+    - whiplash_write_part
+    - whiplash_set_progression
+    - whiplash_arrange
+    - whiplash_mix
+    - whiplash_ramp_param
+    - whiplash_mutate
+    - whiplash_mute_track
+    - whiplash_unmute_track
+    - whiplash_set_tempo
+    - whiplash_stop
+    - whiplash_status
+    - whiplash_listen
+    - whiplash_scan_kit
+    - whiplash_play_along
+    - whiplash_follow
+    - whiplash_undo
+    - whiplash_open_view
+    - whiplash_close_view
+  provides_hooks:
+    - pre_llm_call
+    - on_stream_start
+    - on_stream_delta
+    - on_stream_end
+    - pre_tool_call
+    - post_tool_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

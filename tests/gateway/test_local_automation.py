@@ -19,8 +19,8 @@ def _probe(tmp_path, source):
 
 
 @pytest.mark.parametrize('source', ['cli', 'tui', 'gui'])
-def test_local_completion_without_an_observer_is_a_note_the_next_turn_sees(tmp_path, source):
-    _probe(tmp_path, source)  # #134889 LC-7: no unattended turn
+def test_local_completion_without_an_observer_resumes_the_parent(tmp_path, source):
+    _probe(tmp_path, source)  # a process exit runs one turn with no viewer; the next turn sees it
 
 
 def test_local_watch_match_without_an_observer_is_a_note(tmp_path):

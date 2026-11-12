@@ -169,6 +169,13 @@ meaningful:
    record (never a file inside the plugin). Local-directory, Git URL, `--ref`,
    `--allow-removed`, project and pip installs are refused, and no setting
    relaxes it.
+19. **No plugins built to reach infringing content.** A plugin whose main
+   purpose is to find, stream or download copyrighted films, shows, music, books,
+   games or software from sources that are not licensed to distribute them
+   (piracy aggregators, unofficial mirrors, cracked-release indexes) is declined,
+   however clean its code. A general-purpose tool such as a browser, downloader
+   or media player is fine; one that ships with those sources built in, or whose
+   description points users at them, is not.
 <!-- admission-rules:end -->
 
 The step-by-step submission guide, with the same rules and what reviewers check,

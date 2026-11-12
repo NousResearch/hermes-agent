@@ -44,7 +44,7 @@ from gateway.platforms._shared import config_connected_extra
 from agent.i18n import t
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult, transcode_to_ogg_opus
 from gateway.platforms.base_exec_approval import ea_header_text
-from gateway.platforms.helpers import bounded_put
+from gateway.platforms.helpers import bounded_put, caption_is_command
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin, _get_wsecret
 from gateway.platforms.access_policy_mixin import OPTIN_TRUTHY as _OPTIN_TRUTHY
@@ -1060,7 +1060,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         media_urls, media_types, media_text_inlined = [], [], []
         if msg_type_str in _INBOUND_MEDIA_KINDS:
             media_urls, media_types, body = await self._collect_inbound_media(msg_type_str, raw_message, body)
-            if msg_type_str == "document" and media_urls:
+            if msg_type_str == "document" and media_urls and not caption_is_command(body):
                 body, media_text_inlined = self._inject_document_text(media_urls, body)
         # Meta's ``context`` gives only the quoted message's id (+ author), never its text or
         # bytes; resolve both from rich_sent_store so run.py can build "[Replying to: ...]" and

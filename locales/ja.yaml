@@ -332,6 +332,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — タイトルなしでセッションを開始しました。"
     title_empty_untitled: "\n⚠️ クリーンアップ後にタイトルが空になりました — タイトルなしでセッションを開始しました。"
     tip: "\n✦ ヒント: {tip}"
+    paused_left: "\n⚠️ 前の会話が一時停止中に送った {count} 件のメッセージは、前の会話に保存されたまま未回答です。実行するには: /resume {session_id} の後に {discard}。"
   restart:
     in_progress: "⏳ ゲートウェイの再起動はすでに進行中です..."
     restarting: "♻ ゲートウェイを再起動しています。60 秒以内に通知が届かない場合は、コンソールで `hermes gateway restart` を実行してください。"
@@ -746,6 +747,8 @@ gateway:
     reject_loop: "エージェントが実行中です — 実行中は /loop status / pause / stop を使うか、新しいループを設定する前に /stop してください。"
     draining_maintenance: "⏳ このエージェントはメンテナンス操作のためドレイン中で、現在は新しいターンを受け付けていません。まもなく復帰しますので、少し待ってから再送信してください。"
     another_turn_running: "⏳ このセッションでは別のターンがまだ実行中です。トランスクリプトを保護するため、このメッセージは処理されませんでした。アクティブなターンの完了を待ってから再送信してください。"
+    setup_timeout: "⏳ ターンの準備がエージェントの動作なしで停止したため、キャンセルしました。メッセージを再送信してください。"
+    setup_waiting: "⏳ このターンはまだ開始中です（{minutes} 分、エージェントの動作はまだありません）。メッセージはキューに入っています。/stop でこのターンとキュー内のすべてをキャンセルできます。"
     behavior_queue_short: "次のターンにキュー"
     behavior_queue_long: "Hermes がビジー状態の間、メッセージは次のターンにキューされます。"
     behavior_steer_short: "現在の実行にステア (次のツール呼び出し後)"

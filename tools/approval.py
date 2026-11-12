@@ -133,12 +133,18 @@ def register_gateway_notify(session_key: str, cb) -> None:
 
 
 def unregister_gateway_notify(session_key: str) -> None:
-    """Unregister the callback and wake ALL blocked threads for this session so
-    they don't hang forever (agent run finished or interrupted)."""
+    """Withdraw foreground waits when the turn ends. Dispatch-owned background
+    waits survive until their worker ends or the session is cleared."""
     with _lock:
         _gateway_notify_cbs.pop(session_key, None)
-        for entry in _gateway_queues.pop(session_key, []):
-            entry.event.set()
+        queue = _gateway_queues.get(session_key, [])
+        for entry in list(queue):
+            # A background child's wait stays answerable when its lease can still deliver prompts.
+            if entry.owner is None or entry.owner.callback is None:
+                queue.remove(entry)
+                entry.event.set()
+        if not queue:
+            _gateway_queues.pop(session_key, None)
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -358,6 +364,8 @@ def clear_session(session_key: str) -> None:
         _session_yolo.discard(session_key)
         _launch_yolo_applied.discard(session_key)
         _pending.pop(session_key, None)
+        from tools.approval_notify_lease import revoke_session_locked
+        revoke_session_locked(session_key)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
             # the prompt was withdrawn, nobody denied it.
@@ -635,16 +643,24 @@ def _user_approved(session_key: str, description: str) -> dict:
 
 
 def _gateway_notify_cb(session_key: str):
+    from tools.approval_notify_lease import current
+    lease = current(session_key)
+    if lease is not None:
+        return lease.notify if lease.deliverable() else None
     with _lock:
         return _gateway_notify_cbs.get(session_key)
 
 
 def _pending_result(spec, session_key: str, *, command: str, description: str,
                     pattern_key: str, pattern_keys: list[str], body: str | None,
-                    smart_denied: bool) -> dict:
+                    smart_denied: bool, gateway: bool = False) -> dict:
     """Queue an approval nobody can answer right now (no gateway notifier, no CLI panel) for
     ``/approve`` / ``/deny`` review. Command/code gates return the backward-compatible
-    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``."""
+    ``pending_approval`` shape (``pattern_keys`` + STOP text); the action gate ``approval_required``.
+    A gateway background child that no chat can show a prompt to fails closed instead (#133514)."""
+    from tools.approval_notify_lease import stranded_denial
+    if (denied := stranded_denial(session_key, gateway, spec.noun, pattern_key, description)) is not None:
+        return denied
     pending = {"command": command, "pattern_key": pattern_key}
     if spec.pending_keys:
         pending["pattern_keys"] = pattern_keys
@@ -1020,7 +1036,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
                 display_command, display_description = command, description
             return _pending_result(
                 spec, session_key, command=display_command, description=display_description, pattern_key=pattern_key,
-                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied,
+                pattern_keys=pattern_keys, body=pending_body, smart_denied=smart_denied, gateway=is_gateway,
             )
 
     # CLI interactive: single combined prompt, wrapped in the pre/post plugin hooks.

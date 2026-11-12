@@ -5,17 +5,18 @@ public URL 302 to loopback/metadata and uploads the response into the chat.
 """
 import asyncio
 import socket
+from pathlib import Path
 
+import aiohttp
 import pytest
+from aiohttp import web
+from aiohttp.abc import AbstractResolver
 
-aiohttp = pytest.importorskip("aiohttp")
-from aiohttp import web  # noqa: E402
-from aiohttp.abc import AbstractResolver  # noqa: E402
-
-import tools.url_safety as url_safety  # noqa: E402
-from gateway.config import PlatformConfig  # noqa: E402
+from gateway.config import PlatformConfig
+from tools import url_safety
 
 PUBLIC_HOST = "redirector.test"
+WEIXIN_CDN_HOST = "novac2c.cdn.weixin.qq.com"
 INTERNAL_BODY = b"internal-only-body"
 
 
@@ -53,20 +54,32 @@ async def _mattermost_fetch(session, url):
 
 
 async def _weixin_fetch(session, url):
-    from gateway.platforms.weixin import WeixinAdapter
+    from plugins.platforms.weixin.adapter import WeixinAdapter
     adapter = WeixinAdapter(PlatformConfig(enabled=True, token="t", extra={}))
     adapter._send_session = session
     try:
         path = await adapter._download_remote_media(url)
     except ValueError:
         return []
-    with open(path, "rb") as fh:
-        return [fh.read()]
+    return [await asyncio.to_thread(Path(path).read_bytes)]
+
+
+async def _weixin_cdn_fetch(session, url):
+    """Inbound media: ``full_url`` passes the CDN host allowlist, then the CDN answers 302."""
+    from plugins.platforms.weixin import adapter as weixin
+    try:
+        return [await weixin._download_and_decrypt_media(
+            session, cdn_base_url=weixin.WEIXIN_CDN_BASE_URL, encrypted_query_param=None, aes_key_b64=None,
+            full_url=url, timeout_seconds=30)]
+    except ValueError:
+        return []
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fetch", [_mattermost_fetch, _weixin_fetch], ids=["mattermost", "weixin"])
-async def test_redirect_to_private_address_is_not_followed(fetch, monkeypatch):
+@pytest.mark.parametrize(("fetch", "public_host"), [
+    (_mattermost_fetch, PUBLIC_HOST), (_weixin_fetch, PUBLIC_HOST), (_weixin_cdn_fetch, WEIXIN_CDN_HOST),
+], ids=["mattermost", "weixin", "weixin-cdn"])
+async def test_redirect_to_private_address_is_not_followed(fetch, public_host, monkeypatch):
     internal_hits = []
 
     async def internal(_request):
@@ -92,14 +105,14 @@ async def test_redirect_to_private_address_is_not_followed(fetch, monkeypatch):
     real_getaddrinfo = url_safety._getaddrinfo
 
     def getaddrinfo(host, port=None):
-        if host == PUBLIC_HOST:  # the first hop looks public to the pre-flight check
+        if host == public_host:  # the first hop looks public to the pre-flight check
             return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", port or 0))]
         return real_getaddrinfo(host, port)
     monkeypatch.setattr(url_safety, "_getaddrinfo", getaddrinfo)
 
     session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(resolver=_LoopbackResolver()))
     try:
-        fetched = await fetch(session, f"http://{PUBLIC_HOST}:{redirector_port}/image.png")
+        fetched = await fetch(session, f"http://{public_host}:{redirector_port}/image.png")
     finally:
         await session.close()
         for runner in runners:
@@ -113,7 +126,7 @@ async def test_redirect_to_private_address_is_not_followed(fetch, monkeypatch):
 async def test_timeout_total_covers_the_whole_redirect_chain(monkeypatch):
     """aiohttp's own redirect loop spends one ``total``; following hops by hand must not reset it."""
     async def slow_hop(request):
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(0.6)  # health: allow HX013 -- per-hop latency IS the behaviour: the chain must outlast one total
         if request.path == "/first":
             raise web.HTTPFound("/second")
         return web.Response(body=b"done")
@@ -132,9 +145,9 @@ async def test_timeout_total_covers_the_whole_redirect_chain(monkeypatch):
 
     try:
         async with aiohttp.ClientSession() as session:
-            with pytest.raises(asyncio.TimeoutError):  # each hop alone fits in 2.5 s, the chain does not
+            with pytest.raises(asyncio.TimeoutError):  # each hop alone fits in 1 s, the chain does not
                 async with url_safety.ssrf_checked_aiohttp_get(
-                        session, f"http://127.0.0.1:{port}/first", timeout=aiohttp.ClientTimeout(total=2.5)) as resp:
+                        session, f"http://127.0.0.1:{port}/first", timeout=aiohttp.ClientTimeout(total=1.0)) as resp:
                     await resp.read()
     finally:
         await runner.cleanup()

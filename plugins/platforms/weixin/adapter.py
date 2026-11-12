@@ -354,9 +354,11 @@ async def _upload_ciphertext(session: aiohttp.ClientSession, *, ciphertext: byte
 
 async def _download_bytes(session: aiohttp.ClientSession, *, url: str, timeout_seconds: float = 60.0) -> bytes:
     from gateway.platforms.base import read_httpx_body_with_limit
+    from tools.url_safety import ssrf_checked_aiohttp_get
 
     async def _do() -> bytes:
-        async with session.get(url) as response:
+        # Every hop is re-checked: an allowlisted CDN URL or a pre-checked reply URL can 302 anywhere.
+        async with ssrf_checked_aiohttp_get(session, url) as response:
             response.raise_for_status()
             return await read_httpx_body_with_limit(
                 response, media_type="media", body=response.content.iter_chunked(65536))
@@ -1141,13 +1143,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
         assert self._send_session is not None
-        from tools.url_safety import ssrf_checked_aiohttp_get
-
-        async def _fetch() -> bytes:
-            async with ssrf_checked_aiohttp_get(self._send_session, url) as response:
-                response.raise_for_status()
-                return await response.read()
-        data = await asyncio.wait_for(_fetch(), timeout=30)
+        data = await _download_bytes(self._send_session, url=url, timeout_seconds=30)
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(url.split("?", 1)[0]).suffix or ".bin") as handle:
             handle.write(data)
             return handle.name

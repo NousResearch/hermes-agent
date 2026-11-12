@@ -1446,8 +1446,10 @@ def _saved_entry_on_other_origin(name: str, base_url: str) -> bool:
     from hermes_cli.config import load_config
 
     saved = (load_config().get("providers") or {}).get(name)
-    old_url = str(saved.get("base_url") or "") if isinstance(saved, dict) else ""
-    return bool(old_url) and not same_base_url_origin(old_url, base_url)
+    if not isinstance(saved, dict):
+        return False
+    old_urls = (str(saved.get(field) or "").strip() for field in ("base_url", "url", "api"))
+    return any(url and not same_base_url_origin(url, base_url) for url in old_urls)
 
 
 def _extra_headers_from_config(entry: Any) -> dict[str, str]:

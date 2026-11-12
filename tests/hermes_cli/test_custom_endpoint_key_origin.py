@@ -151,3 +151,57 @@ class TestDesktopEndpointEdit:
         assert entry["base_url"] == "https://llm.new.example/v1"
         assert "extra_headers" not in entry and "key_cmd" not in entry
         assert get_env_value(entry["key_env"]) == "sk-new-origin-fixture"
+
+
+@pytest.mark.parametrize("address_field", ["api", "url"])
+def test_desktop_move_of_an_entry_addressed_by_api_or_url_drops_its_key(_isolate_hermes_home, address_field):
+    """Migrated v12 entries store the address under ``api`` (hand-written ones may use ``url``)."""
+    from starlette.testclient import TestClient
+
+    from hermes_cli.config import load_config, save_config, save_env_value
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+
+    cfg = load_config()
+    cfg["providers"] = {"myep": {"name": "myep", address_field: "https://llm.old.example/v1", "model": "m",
+                                 "key_env": "MYEP_KEY", "models": {"m": {}}}}
+    save_config(cfg)
+    save_env_value("MYEP_KEY", "sk-old...ture")
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    body = {"id": "myep", "name": "myep", "base_url": "https://llm.new.example/v1", "model": "m",
+            "make_default": False}
+
+    assert client.post("/api/providers/custom-endpoints", json=body).status_code == 400
+    assert client.post("/api/providers/custom-endpoints", json={**body, "api_key": ""}).status_code == 200
+
+    entry = load_config()["providers"]["myep"]
+    assert entry["base_url"] == "https://llm.new.example/v1"
+    assert not ({"api", "url", "key_env", "api_key"} & entry.keys())
+    runtime = resolve_runtime_provider(requested="myep")
+    assert runtime["base_url"] == "https://llm.new.example/v1"
+    assert runtime.get("api_key") != "sk-old...ture"
+
+
+def test_desktop_move_of_a_legacy_custom_providers_row_keeps_its_key_home(_isolate_hermes_home):
+    from starlette.testclient import TestClient
+
+    from hermes_cli.config import get_env_path, load_config, save_config
+    from hermes_cli.web_server import _SESSION_HEADER_NAME, _SESSION_TOKEN, app
+
+    cfg = load_config()
+    cfg.pop("providers", None)
+    cfg["custom_providers"] = [{"name": "legacyep", "base_url": "https://llm.old.example/v1",
+                                "api_key": "sk-leg...ture", "model": "m"}]
+    save_config(cfg)
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    response = client.post("/api/providers/custom-endpoints", json={
+        "id": "legacyep", "name": "legacyep", "base_url": "https://llm.new.example/v1", "model": "m",
+        "make_default": False})
+
+    assert response.status_code == 400
+    assert "sk-leg...ture" not in (get_env_path().read_text(encoding="utf-8-sig")
+                                   if get_env_path().exists() else "")
+    assert not (load_config().get("providers") or {}).get("legacyep")

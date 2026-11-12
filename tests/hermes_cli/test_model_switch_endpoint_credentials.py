@@ -98,3 +98,18 @@ def test_stored_key_follows_the_endpoint_it_was_entered_for(monkeypatch, switch,
         sent = _key_sent_next_launch()
 
     assert (sent == A_SECRET) is keeps_a_key, f"{switch}: next launch sends {sent!r}"
+
+
+@pytest.mark.parametrize("address_field", ["base_url", "url", "api"])
+def test_switch_probe_treats_a_saved_entry_on_another_origin_as_moved(address_field):
+    """The /model probe must not reload the saved key when the saved copy (under any address field)
+    points at another host than the edited entry."""
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.model_switch_providers import _saved_entry_on_other_origin
+
+    cfg = load_config()
+    cfg["providers"] = {"myep": {"name": "myep", address_field: A_URL, "key_env": "MYEP_KEY"}}
+    save_config(cfg)
+
+    assert _saved_entry_on_other_origin("myep", B_URL)
+    assert not _saved_entry_on_other_origin("myep", "https://a.example.com/v2")

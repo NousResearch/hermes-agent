@@ -1,6 +1,6 @@
 name: openrouter-balance
 repo: https://github.com/maeinomatic/hermes-plugin-openrouter-balance
-sha: 91f15203deb273a42d8c90b9790082d6a37e1f27
+sha: ba9f24929ef80f19487a50dcc05bcd61201fc8ce
 description: >-
   Live OpenRouter credit balance in the Hermes desktop status bar — "OR $12.34 left", with
   total/used/remaining on hover, amber below 15% remaining, click to refetch. Polls every 5
@@ -17,7 +17,7 @@ description: >-
 maintainer: maeinomatic
 tier: community
 category: desktop
-version: "1.0.2"
+version: "1.0.3"
 platforms: []
 capabilities:
   provides_tools: []

@@ -1,7 +1,7 @@
 name: spoonmaster
 title: Spoonmaster
 repo: https://github.com/gueysito/spoonmaster
-sha: 4ef303a5082f0428806423a42174642be02489e9
+sha: 20d0b1178321f4ef357b514f2ec757a6e6962dec
 description: Compare restaurants using local recommendations, venue facts, and optional private tastes.
 maintainer: gueysito
 tier: community

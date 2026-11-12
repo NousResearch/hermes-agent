@@ -29,6 +29,7 @@ def test_served_profile_commands_see_their_own_scope(monkeypatch):
 
 def test_single_profile_keeps_the_process_env(monkeypatch):
     monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: False)
+    monkeypatch.setattr("agent.secret_scope.current_secret_scope", lambda: {"MYAPP_AGENT_ID": "from-p2"})
     monkeypatch.setenv("MYAPP_AGENT_ID", "from-p1")
     env = _make_run_env({})
     assert env["MYAPP_AGENT_ID"] == "from-p1"
@@ -48,6 +49,14 @@ def test_scope_values_pass_the_same_credential_scrub(monkeypatch):
     # The overlay rides along only names the scrub already allows: a provider credential
     # stays out whether it came from the launch env or the routed profile's scope.
     assert _PROVIDER_KEY not in env
+
+
+def test_first_party_context_values_keep_the_process_value(monkeypatch):
+    monkeypatch.setenv("BUZZ_MANAGED_AGENT", "1")  # the Buzz context entitles BUZZ_* names
+    monkeypatch.setenv("BUZZ_WORKSPACE_ID", "from-context")
+    _multiplex(monkeypatch, {"BUZZ_WORKSPACE_ID": "from-routed-dotenv"})
+    env = _make_run_env({})
+    assert env["BUZZ_WORKSPACE_ID"] == "from-context"
 
 
 def test_managed_policy_keys_beat_the_routed_scope(monkeypatch):

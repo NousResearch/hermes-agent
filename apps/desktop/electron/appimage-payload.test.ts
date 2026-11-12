@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { afterEach, test } from 'vitest'
+import { afterEach, test, vi } from 'vitest'
 
 import {
   collectStalePayloadCopies,
@@ -241,6 +241,31 @@ posix('when the AppImage cannot unpack itself, the payload is copied from the mo
   assert.deepEqual(await tallyTree(path.join(build, 'agent-payload')), await tallyTree(host.plan.source))
   assert.deepEqual(fs.readdirSync(build).sort(), ['agent-payload', 'complete.json'])
   assert.match(lines.join('\n'), /could not unpack its payload .*exited 3/)
+})
+
+posix('a failed unpack is cleared before the payload is copied from the mount', async (): Promise<void> => {
+  const root: string = scratch()
+  const resources: string = mountedResources(root)
+  const host: PayloadCopyHost = copyHost(root, resources)
+  // The runtime wrote the whole payload, then failed.
+  host.plan.appimage = fakeAppImage(root, resources, 'exit 3')
+  const cp = fs.promises.cp
+  const leftovers: string[][] = []
+
+  const spy = vi.spyOn(fs.promises, 'cp').mockImplementation(async (from, to, options) => {
+    const unpacked: string = path.join(path.dirname(String(to)), 'squashfs-root')
+    leftovers.push(fs.existsSync(unpacked) ? fs.readdirSync(unpacked) : [])
+
+    return cp(from, to, options)
+  })
+
+  try {
+    assert.equal(await preparePayloadCopy(host), path.join(host.plan.root, host.plan.key))
+  } finally {
+    spy.mockRestore()
+  }
+
+  assert.deepEqual(leftovers, [[]])
 })
 
 posix('a short or altered copy is never used and leaves no build behind', async (): Promise<void> => {

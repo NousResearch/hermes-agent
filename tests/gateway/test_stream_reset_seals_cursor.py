@@ -146,3 +146,42 @@ async def test_a_reset_during_an_overflow_head_send_sends_no_more_chunks():
 
     assert state["after_reset"] == 0
     assert consumer.final_response_sent is False
+
+
+
+@pytest.mark.asyncio
+async def test_a_reset_during_the_seal_of_a_visible_preview_sends_no_overflow_chunk():
+    """A preview is on screen when a long remainder arrives; /new lands during the edit that seals it."""
+    state = {"current": True, "after_reset": 0}
+
+    class _Adapter:
+        MAX_MESSAGE_LENGTH = 4096
+        SUPPORTS_MESSAGE_EDITING = True
+
+        def __init__(self):
+            self._next = 100
+
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            if not state["current"]:
+                state["after_reset"] += 1
+            self._next += 1
+            return SimpleNamespace(success=True, message_id=str(self._next), raw_response=None)
+
+        async def edit_message(self, chat_id, message_id, content, *, finalize=False, metadata=None):
+            if len(content) > 1000:
+                state["current"] = False  # the reset lands while the sealing edit is in flight
+            return SimpleNamespace(success=True, message_id=message_id, raw_response=None)
+
+    adapter = _Adapter()
+    consumer = GatewayStreamConsumer(
+        adapter, "-100123", run_still_current=lambda: state["current"],
+        config=StreamConsumerConfig(cursor=" ▉", edit_interval=0.01, buffer_threshold=1))
+    task = asyncio.create_task(consumer.run())
+    consumer.on_delta("begin ")
+    await async_wait_until(lambda: adapter._next > 100, what="first preview sent")
+    consumer.on_delta("word " * 2000)
+    consumer.finish()
+    await asyncio.wait_for(task, 10)
+
+    assert state["current"] is False  # the seal edit ran
+    assert state["after_reset"] == 0

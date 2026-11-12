@@ -632,3 +632,43 @@ async def test_formatted_reply_fallback_supplies_quote_without_parent_fetch():
         "Continue", "Earlier text", False,
     )
     adapter._client.get_event.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("during_check", ["second-resolve", "redaction"])
+async def test_cached_reply_target_stays_consistent_while_its_media_file_is_checked(monkeypatch, during_check):
+    """The cached media file is checked off the event loop, so another resolve or a redaction can
+    land meanwhile: neither may raise, and a redaction always wins."""
+    import threading
+
+    from plugins.platforms.matrix import reply_context
+    from plugins.platforms.matrix.reply_context import MatrixEventContext, MatrixEventContextCache
+
+    checking, release = threading.Event(), threading.Event()
+
+    class _SlowPath:
+        def __init__(self, path):
+            self.path = path
+
+        def is_file(self):
+            checking.set()
+            release.wait(timeout=5)
+            return during_check == "redaction"  # gone in the race case, so both resolves drop the entry
+
+    monkeypatch.setattr(reply_context, "Path", _SlowPath)
+    room_id, event_id = "!room:example.org", "$image"
+    cache = MatrixEventContextCache()
+    cache.store(room_id, event_id, MatrixEventContext(
+        "@alice:example.org", "photo", media_path="/cache/photo.png", is_image=True))
+
+    first = asyncio.create_task(cache.resolve(None, room_id, event_id))
+    await asyncio.to_thread(checking.wait, 5)
+    if during_check == "second-resolve":
+        second = asyncio.create_task(cache.resolve(None, room_id, event_id))
+        await asyncio.sleep(0)
+    elif during_check == "redaction":
+        cache.redact(room_id, event_id)
+    release.set()
+    results = [await first] + ([await second] if during_check == "second-resolve" else [])
+
+    assert results == [None] * len(results)

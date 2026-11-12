@@ -255,17 +255,19 @@ class MatrixEventContextCache:
     ) -> MatrixEventContext | None:
         key = room_id, event_id
         cached = None
+        entry = self._entries.get(key)
+        if entry is not None and entry.media_path and not await asyncio.to_thread(Path(entry.media_path).is_file):
+            if self._entries.get(key) is entry:  # a concurrent resolve may have dropped it already
+                self._entries.pop(key)
+        # Read the entry again: a store or redaction can land while the file check runs.
         if key in self._entries:
             self._entries.move_to_end(key)
             entry = self._entries[key]
             if entry.redacted:
                 return None
-            if entry.media_path and not await asyncio.to_thread(Path(entry.media_path).is_file):
-                self._entries.pop(key)
-            else:
-                cached = entry
-                if not entry.is_image or entry.media_path or image_loader is None:
-                    return entry if entry.text or entry.media_path else None
+            cached = entry
+            if not entry.is_image or entry.media_path or image_loader is None:
+                return entry if entry.text or entry.media_path else None
         if client is None:
             return cached
 

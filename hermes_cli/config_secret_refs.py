@@ -45,7 +45,10 @@ def aux_api_key_env(task: str) -> str:
     ``HERMES_DELEGATION_API_KEY``."""
     if task == "delegation":
         return "HERMES_DELEGATION_API_KEY"
-    return f"AUXILIARY_{_env_slug(task) or 'TASK'}_API_KEY"
+    # Plugin task keys may contain repeated underscores; the gateway bridge preserves them.
+    # Collapsing them here makes two distinct tasks load the same credential.
+    slug = re.sub(r"[^A-Z0-9_]+", "_", str(task or "").upper()).strip("_")
+    return f"AUXILIARY_{slug or 'TASK'}_API_KEY"
 
 
 def _digest(text: str) -> str:

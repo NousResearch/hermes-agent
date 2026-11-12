@@ -139,6 +139,24 @@ def test_new_custom_provider_entry_stores_key_env(home):
     assert resolve_runtime_provider(requested="custom:example")["api_key"] == SECRET
 
 
+def test_plugin_aux_task_keys_with_distinct_underscores_keep_distinct_credentials(home):
+    """Two valid plugin task keys must not share the env variable after either is saved."""
+    from hermes_cli.config import load_config, read_raw_config
+    from hermes_cli.main_provider_setup import _save_aux_choice
+
+    for task, host, key in (
+        ("my_task", "one.example", "KEY-ONE"),
+        ("my__task", "two.example", "KEY-TWO"),
+    ):
+        _save_aux_choice(task, provider="custom", model="m", base_url=f"https://{host}/v1", api_key=key)
+
+    raw = read_raw_config()["auxiliary"]
+    resolved = load_config()["auxiliary"]
+    assert raw["my_task"]["api_key"] != raw["my__task"]["api_key"]
+    assert resolved["my_task"]["api_key"] == "KEY-ONE"
+    assert resolved["my__task"]["api_key"] == "KEY-TWO"
+
+
 def test_endpoint_names_separate_gateways_behind_one_host():
     from hermes_cli.config_secret_refs import endpoint_api_key_env
 

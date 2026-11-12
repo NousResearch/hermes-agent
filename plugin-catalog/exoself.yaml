@@ -1,6 +1,6 @@
 name: exoself
 repo: https://github.com/cYoren/exoself
-sha: c52b9d47af7b8c6d25212dcb389b1cac4745aafe
+sha: ed36bae5bb995c0ee1bfc4bfcf8d1b3f82bdd46b
 subdir: hermes
 description: >-
   An unchosen temperament for every Hermes profile: on the first load it draws one seed into

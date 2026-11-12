@@ -892,6 +892,12 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
     must not appear or the model keeps trying it. ``mode`` (None → config) picks the cwd sentence."""
     if enabled_sandbox_tools is None:
         enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    # Native search executes at the Responses endpoint, not through Python RPC.
+    # Advertising the RPC helper makes models bypass the transport's native swap.
+    from tools.web_tools import _get_search_backend
+    native_search = _get_search_backend() == "openai-native"
+    if native_search:
+        enabled_sandbox_tools = set(enabled_sandbox_tools) - {"web_search"}
     if mode is None:
         mode = _get_execution_mode()
     tool_lines = "\n".join(doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools)
@@ -932,6 +938,11 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
         "json.loads for terminal() output; shell_quote(s) — shlex.quote for "
         "dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential backoff."
     )
+    if native_search:
+        description += (
+            "\n\nWeb search uses the provider's server-side web_search tool. "
+            "Call that tool directly; hermes_tools.web_search cannot execute native search."
+        )
     return {
         "name": "execute_code",
         "description": description,

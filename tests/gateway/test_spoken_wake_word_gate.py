@@ -586,3 +586,40 @@ async def test_a_photon_caf_sent_as_octet_stream_is_transcribed_as_the_voice_it_
     event = adapter.handle_message.await_args.args[0]
     _images, stt_paths, _audio_files, _videos = GatewayInboundMixin._classify_inbound_media(event, False)
     assert stt_paths == event.media_urls and len(stt_paths) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_threaded_reply_stop_never_waits_on_an_earlier_voice_check(tmp_path, monkeypatch):
+    """A ``/stop`` sent as an iMessage threaded reply is still an escape hatch: it is dispatched while
+    an earlier voice note in the same group is at gate STT, not queued behind it."""
+    import asyncio
+    import base64
+    import json
+    import threading
+    from plugins.platforms.photon.adapter import PhotonAdapter
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "p")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "s")
+    adapter = PhotonAdapter(PlatformConfig(enabled=True, token="", extra={
+        "require_mention": True, "mention_patterns": PATTERNS, "voice_mention_patterns": True}))
+    seen = []
+    adapter.handle_message = AsyncMock(side_effect=lambda e: seen.append(e.message_id))
+    release = threading.Event()
+
+    def slow(path, _model=None, _source=None):
+        release.wait(10)
+        return {"success": True, "transcript": "hermes, what is on today", "provider": "fake"}
+
+    def line(mid, content):
+        return json.dumps({"messageId": mid, "space": {"id": "group-guid", "type": "group", "phone": None},
+                           "sender": {"id": "+15551234567"}, "timestamp": "2026-05-14T19:06:32.000Z", "content": content})
+    voice = {"type": "voice", "name": "v.ogg", "mimeType": "audio/ogg", "data": base64.b64encode(OGG).decode()}
+    stop = {"type": "reply", "targetMessageId": "old", "content": {"type": "text", "text": "/stop hermes"}}
+    try:
+        with patch("tools.transcription_tools.transcribe_audio", side_effect=slow):
+            await asyncio.wait_for(adapter._on_inbound_line(line("v1", voice)), 2)
+            await asyncio.wait_for(adapter._on_inbound_line(line("s1", stop)), 2)
+            assert seen == ["s1"]
+    finally:
+        release.set()
+

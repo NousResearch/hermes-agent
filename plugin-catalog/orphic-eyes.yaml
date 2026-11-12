@@ -1,7 +1,7 @@
 name: orphic-eyes
 title: Orphic Eyes
 repo: https://github.com/Ilham-Musyafa/Orphic-Eyes
-sha: "ff0bf652fa69ed42b9b623670c323e6f2ccd4b47"
+sha: "083befac2d3b919d3099ba01f1cb3e2503c9e976"
 description: >-
   Pixel-only screenshot review for Hermes: capture URL pairs, inspect changed
   zones, prepare coding-agent requests and run bounded follow-up review rounds.

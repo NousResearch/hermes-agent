@@ -116,6 +116,19 @@ class TestNormalizeWorkdir:
         with pytest.raises(ValueError, match="not a directory"):
             _normalize_workdir(str(f))
 
+    def test_symlink_requires_an_existing_directory_target(self, tmp_path):
+        from cron.jobs import _normalize_workdir
+        current = tmp_path / "current"
+        current.symlink_to(tmp_path / "missing", target_is_directory=True)
+        with pytest.raises(ValueError, match="does not exist"):
+            _normalize_workdir(str(current))
+        current.unlink()
+        target = tmp_path / "file"
+        target.write_text("not a directory")
+        current.symlink_to(target, target_is_directory=True)
+        with pytest.raises(ValueError, match="not a directory"):
+            _normalize_workdir(str(current))
+
 
 # ---------------------------------------------------------------------------
 # jobs.create_job and update_job
@@ -131,6 +144,26 @@ class TestCreateJobWorkdir:
         )
         stored = get_job(job["id"])
         assert stored["workdir"] == str(tmp_cron_dir.resolve())
+
+    def test_persisted_symlink_survives_release_retarget_and_edit(self, tmp_cron_dir):
+        from cron.jobs import create_job, get_job, update_job
+        releases = tmp_cron_dir / "releases"
+        releases.mkdir()
+        first = releases / "first"
+        second = releases / "second"
+        first.mkdir()
+        second.mkdir()
+        current = tmp_cron_dir / "current"
+        current.symlink_to(first, target_is_directory=True)
+
+        job = create_job(prompt="hello", schedule="every 1h", workdir=str(current))
+        assert get_job(job["id"])["workdir"] == str(current)
+
+        current.unlink()
+        current.symlink_to(second, target_is_directory=True)
+        assert get_job(job["id"])["workdir"] == str(current)
+        update_job(job["id"], {"workdir": str(current)})
+        assert get_job(job["id"])["workdir"] == str(current)
 
 
     def test_create_rejects_invalid_workdir(self, tmp_cron_dir):

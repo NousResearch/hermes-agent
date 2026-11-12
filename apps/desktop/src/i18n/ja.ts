@@ -3176,6 +3176,8 @@ export const jaOverrides = {
     noInlineTitle: 'インラインプレビューなし',
     noInlineBody: mimeType => `${mimeType || 'このファイルタイプ'} はコンテキストとして添付できます。`,
     edit: '編集',
+    copyDocument: 'ドキュメント全体をコピー',
+    copyDocumentTruncated: length => `${length} 文字中の最初の 4,000 文字を表示しています。全文はクリップボードにコピーされています。`,
     editing: '編集中',
     unsavedChanges: '未保存の変更',
     saveFailed: message => `保存できませんでした：${message}`,

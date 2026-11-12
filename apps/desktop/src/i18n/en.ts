@@ -4340,6 +4340,8 @@ export const en: Translations = {
     noInlineBody: mimeType => `${mimeType || 'This file type'} can still be attached as context.`,
     edit: 'Edit',
     editing: 'Editing',
+    copyDocument: 'Copy entire document',
+    copyDocumentTruncated: length => `Showing the first 4,000 characters of ${length}. The full document is in the clipboard.`,
     unsavedChanges: 'Unsaved changes',
     saveFailed: message => `Couldn't save: ${message}`,
     saveScopeChanged: 'Switch back to the original connection and profile to save this draft.',

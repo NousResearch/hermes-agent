@@ -4774,6 +4774,8 @@ export const frOverrides = {
     noInlineTitle: 'Aucun aperçu en ligne',
     noInlineBody: mimeType => `${mimeType || 'Ce type de fichier'} peut tout de même être joint en tant que contexte.`,
     edit: 'Modifier',
+    copyDocument: 'Copier le document entier',
+    copyDocumentTruncated: length => `Affichage des 4 000 premiers caractères sur ${length}. Le document complet est dans le presse-papiers.`,
     editing: 'Modification',
     unsavedChanges: 'Modifications non enregistrées',
     saveFailed: message => `Impossible d'enregistrer : ${message}`,

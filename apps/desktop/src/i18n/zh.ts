@@ -4180,6 +4180,8 @@ export const zhOverrides = {
     noInlineTitle: '没有内联预览',
     noInlineBody: mimeType => `${mimeType || '此文件类型'} 仍可作为上下文附件。`,
     edit: '编辑',
+    copyDocument: '复制整个文档',
+    copyDocumentTruncated: length => `显示 ${length} 个字符中的前 4,000 个字符。完整文档已复制到剪贴板。`,
     editing: '编辑中',
     unsavedChanges: '未保存的更改',
     saveFailed: message => `无法保存：${message}`,

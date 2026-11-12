@@ -4764,6 +4764,8 @@ export const deOverrides = {
     noInlineTitle: 'Keine Inline-Vorschau',
     noInlineBody: mimeType => `${mimeType || 'Dieser Dateityp'} kann trotzdem als Kontext angehängt werden.`,
     edit: 'Bearbeiten',
+    copyDocument: 'Gesamtes Dokument kopieren',
+    copyDocumentTruncated: length => `Zeige die ersten 4.000 Zeichen von ${length}. Das vollständige Dokument ist in der Zwischenablage.`,
     editing: 'Wird bearbeitet',
     unsavedChanges: 'Nicht gespeicherte Änderungen',
     saveFailed: message => `Speichern fehlgeschlagen: ${message}`,

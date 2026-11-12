@@ -35,6 +35,8 @@ interface PreviewBrowserBarProps {
   commentCount?: number
   consoleOpen: boolean
   devToolsOpen: boolean
+  /** True while the host window is fullscreen — flips the fullscreen glyph. */
+  fullscreen?: boolean
   loading: boolean
   onBack: () => void
   /** The pane's Close — the one visible way out of a full-width Browser. */
@@ -46,6 +48,12 @@ interface PreviewBrowserBarProps {
   onPopIn?: () => void
   onPopOut?: () => void
   onReload: () => void
+  /** Toggle the host window's OS fullscreen. Omitted = no control. */
+  onToggleFullscreen?: () => void
+  /** Toggle the phone-adaptive viewport. Omitted = no control. */
+  onTogglePhoneView?: () => void
+  /** True while the phone-adaptive viewport is active. */
+  phoneView?: boolean
   onToggleAnnotate?: () => void
   onToggleConsole: () => void
   onToggleDevTools: () => void
@@ -113,6 +121,7 @@ export function PreviewBrowserBar({
   commentCount = 0,
   consoleOpen,
   devToolsOpen,
+  fullscreen = false,
   loading,
   onBack,
   onClose,
@@ -123,6 +132,9 @@ export function PreviewBrowserBar({
   onPopIn,
   onPopOut,
   onReload,
+  onToggleFullscreen,
+  onTogglePhoneView,
+  phoneView = false,
   onToggleAnnotate,
   onToggleConsole,
   onToggleDevTools,
@@ -178,6 +190,22 @@ export function PreviewBrowserBar({
         label={copy.reload}
         onSelect={onReload}
       />
+      {onToggleFullscreen ? (
+        <PaneStripGlyph
+          active={fullscreen}
+          icon={<Codicon name={fullscreen ? 'screen-normal' : 'screen-full'} size="0.8125rem" />}
+          label={fullscreen ? copy.exitFullscreen : copy.fullscreen}
+          onSelect={onToggleFullscreen}
+        />
+      ) : null}
+      {onTogglePhoneView ? (
+        <PaneStripGlyph
+          active={phoneView}
+          icon={<Codicon name="device-mobile" size="0.8125rem" />}
+          label={phoneView ? copy.exitPhoneView : copy.phoneView}
+          onSelect={onTogglePhoneView}
+        />
+      ) : null}
       {/* The copy control lives INSIDE the field, on its right edge — the
           same pre-faded inline icon code blocks use, not a toolbar button.
           It copies what the field shows: on a remote gateway, that is the

@@ -7,6 +7,7 @@ import { customWindowControlsEnabled, performWindowControl, registerWindowContro
 class FakeWindow {
   closed = false
   focusCalls = 0
+  fullscreen = false
   maximized = false
   minimized = false
 
@@ -22,6 +23,10 @@ class FakeWindow {
     return false
   }
 
+  isFullScreen() {
+    return this.fullscreen
+  }
+
   isMaximized() {
     return this.maximized
   }
@@ -32,6 +37,10 @@ class FakeWindow {
 
   minimize() {
     this.minimized = true
+  }
+
+  setFullScreen(value: boolean) {
+    this.fullscreen = value
   }
 
   unmaximize() {
@@ -72,6 +81,16 @@ describe('performWindowControl', () => {
 
     assert.equal(performWindowControl(win, 'close'), true)
     assert.equal(win.closed, true)
+  })
+
+  test('toggles fullscreen and restore', () => {
+    const win = new FakeWindow()
+
+    assert.equal(performWindowControl(win, 'toggle-fullscreen'), true)
+    assert.equal(win.fullscreen, true)
+
+    assert.equal(performWindowControl(win, 'toggle-fullscreen'), true)
+    assert.equal(win.fullscreen, false)
   })
 
   test('rejects unknown actions and destroyed windows', () => {

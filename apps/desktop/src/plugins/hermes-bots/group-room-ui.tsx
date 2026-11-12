@@ -58,13 +58,14 @@ export interface RoomStatusLabels extends GroupReasonMessages {
 type ShownStatus = Exclude<MemberStatus, BusyMember> | ReturnType<typeof busyAt>
 type ShownKind = ShownStatus['kind']
 
-// One 1 s clock for every busy chip, typing row and details row: they redraw in the same commit, so a member's
-// chip and its details row never show different seconds, and the room around them never re-renders.
-const clock = { second: 0, listeners: new Set<() => void>(), timer: undefined as ReturnType<typeof setInterval> | undefined }
+// One 1 s clock for every busy chip, typing row and details row. React rechecks the seconds snapshot before
+// committing, so views that render across a second boundary cannot commit different clock readings.
+const clock = { listeners: new Set<() => void>(), timer: undefined as ReturnType<typeof setInterval> | undefined }
+const clockSeconds = () => Math.floor(Date.now() / 1000)
 
 const subscribeClock = (listener: () => void) => {
   clock.listeners.add(listener)
-  clock.timer ??= setInterval(() => { clock.second++; clock.listeners.forEach(notify => notify()) }, 1000)
+  clock.timer ??= setInterval(() => { clock.listeners.forEach(notify => notify()) }, 1000)
 
   return () => {
     clock.listeners.delete(listener)
@@ -75,12 +76,9 @@ const subscribeClock = (listener: () => void) => {
 
 const noClock = () => () => undefined
 
-/** Seconds since the epoch, read on every render; while `live` the shared clock redraws the caller each
- *  second. A hook, so the time is a reactive value (a bare `Date.now()` at the call site is memoised away). */
+/** Whole seconds since the epoch: fresh on the first busy render, then consistent across subscribers. */
 function useClockSeconds(live: boolean): number {
-  useSyncExternalStore(live ? subscribeClock : noClock, () => clock.second)
-
-  return Date.now() / 1000
+  return useSyncExternalStore(live ? subscribeClock : noClock, clockSeconds)
 }
 
 /** `status` as its chip shows it now. A chip that just turned busy reads the time fresh, never a stale one. */

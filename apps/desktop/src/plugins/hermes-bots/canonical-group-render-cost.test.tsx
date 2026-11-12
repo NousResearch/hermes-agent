@@ -222,13 +222,36 @@ it('shows a chip that turns busy with its real elapsed time on its first busy re
 it('turns a requested Stop into stopped when the state confirms it, with the same log and no live rows', async () => {
   const { renderHook } = await import('@testing-library/react')
   const { useCanonicalRoomLive } = await import('./canonical-group-activity')
+
   const events = [
     { seq: 1, event_id: 'd', kind: 'message.user', payload: { text: 'go' } },
     { seq: 2, kind: 'room.stop_requested', payload: {} }
-  ] as never[]
+  ] satisfies History.CanonicalGroupEvent[]
+
   const driver = (stopping: number) => ({ working: false, member_activity: [], pending_actions: [], counts: { stopping } })
   const room = renderHook(({ state }) => useCanonicalRoomLive(events, state, []), { initialProps: { state: driver(1) } })
   expect(room.result.current.cycle).toEqual({ kind: 'stopRequested' })
   room.rerender({ state: driver(0) })  // the memo's inputs (log, live rows, focus) are unchanged
   expect(room.result.current.cycle).toEqual({ kind: 'stopped' })
+})
+
+
+it('commits a consistent clock snapshot when busy views render across the stall boundary', async () => {
+  const { useShownStatus } = await import('./group-room-ui')
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+  const start = 5_000_000
+  vi.setSystemTime(new Date((start + 119.9) * 1000))
+  let crossed = false
+
+  function Probe({ cross = false }: { cross?: boolean }) {
+    const shown = useShownStatus({ kind: 'working', startedAt: start, lastSignAt: start })
+
+    // Simulate the wall clock crossing the threshold during the render, before the second view reads it.
+    if (cross && !crossed) { crossed = true; vi.setSystemTime(new Date((start + 120.1) * 1000)) }
+
+    return <span data-clock-view="">{shown.kind}</span>
+  }
+
+  const view = render(<><Probe cross /><Probe /></>)
+  expect([...view.container.querySelectorAll('[data-clock-view]')].map(node => node.textContent)).toEqual(['stalled', 'stalled'])
 })

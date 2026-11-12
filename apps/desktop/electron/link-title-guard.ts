@@ -98,20 +98,21 @@ function parseIpv6(host: string): bigint | null {
   }
 
   const left = parseGroups(sections[0])
-  const right = sections.length === 2 ? parseGroups(sections[1]) : null
+  // Without '::' every group is written out (2a03:2880:f32e:3:face:b00c:0:25de).
+  const right = sections.length === 2 ? parseGroups(sections[1]) : []
 
   if (left === null || right === null) {
     return null
   }
 
   const v4Groups = v4 ? [((v4[0] << 8) | v4[1]) & 0xffff, ((v4[2] << 8) | v4[3]) & 0xffff] : []
-  const fill = 8 - left.length - (right?.length ?? 0) - v4Groups.length
+  const fill = 8 - left.length - right.length - v4Groups.length
 
-  if (sections.length === 2 ? fill < 0 : left.length !== 8) {
+  if (sections.length === 2 ? fill < 0 : fill !== 0) {
     return null
   }
 
-  const groups = [...left, ...new Array(Math.max(fill, 0)).fill(0), ...(right ?? []), ...v4Groups]
+  const groups = [...left, ...new Array(fill).fill(0), ...right, ...v4Groups]
 
   return groups.reduce((acc, group) => (acc << 16n) | BigInt(group), 0n)
 }

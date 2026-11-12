@@ -58,10 +58,19 @@ describe('literalTitleBlockReason', () => {
       '::ffff:127.0.0.1',
       '::ffff:0:10.0.0.1',
       'fd00:ec2::254',
-      'fe80::1%en0'
+      'fe80::1%en0',
+      // Uncompressed spellings of the same addresses must classify identically.
+      '0:0:0:0:0:0:0:1',
+      '0:0:0:0:0:ffff:127.0.0.1',
+      '0:0:0:0:0:ffff:7f00:1'
     ]) {
       assert.ok(literalTitleBlockReason(host), host)
     }
+  })
+
+  test('classifies uncompressed IPv6 spellings like their compressed forms', () => {
+    assert.equal(literalTitleBlockReason('0:0:0:0:0:0:0:1'), 'loopback')
+    assert.equal(literalTitleBlockReason('0:0:0:0:0:ffff:127.0.0.1'), 'loopback')
   })
 
   test('admits public literals and ordinary hostnames', () => {
@@ -72,6 +81,8 @@ describe('literalTitleBlockReason', () => {
       '172.32.0.1',
       '100.128.0.1',
       '2606:4700::1111',
+      // No zero run to compress (inet_ntop keeps a single 0 group): facebook.com's AAAA.
+      '2a03:2880:f32e:3:face:b00c:0:25de',
       'Example.COM.'
     ]) {
       assert.equal(literalTitleBlockReason(host), null, host)
@@ -136,6 +147,10 @@ afterEach(() => {
 describe('isSafeTitleFetchTarget', () => {
   test('admits a public name resolving to public space', async () => {
     assert.equal(await isSafeTitleFetchTarget('https://example.com/docs', fakeLookup(['93.184.216.34'])), true)
+    assert.equal(
+      await isSafeTitleFetchTarget('https://facebook.com/', fakeLookup(['2a03:2880:f32e:3:face:b00c:0:25de'])),
+      true
+    )
   })
 
   test('refuses literal private destinations without any DNS call', async () => {

@@ -1,6 +1,6 @@
 name: defuzz-componentize
 repo: https://github.com/defuzzr/defuzz-componentize
-sha: 3502651dc1d5d6f96d0037387416892dfe1a9b06
+sha: 8162bf6551a6755f2e0fbd198b555134a5c10a7d
 description: >-
   Optional Defuzz companion for turning Python scripts into reusable components
   checked against saved baseline output, with 14 declarative project kits,

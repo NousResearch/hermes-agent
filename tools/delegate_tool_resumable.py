@@ -288,6 +288,10 @@ def record_start(run: Any) -> None:
     _note_repo(durable["baselines"], durable["start_main"], cwd)
 
     def _do(conn):
+        if origin == "auto":  # the parent's last word: a stop, /stop or replacement since the claim cancels it here
+            from tools.delegate_tool_auto_resume import admit_start
+            if cancelled := admit_start(conn, sid):
+                return cancelled
         prev = _row(conn, sid) or {}
         with _active_subagents_lock:
             owners.update((_recent_subagents.get(sid) or {}).get("ancestor_owner_session_ids") or ())
@@ -302,14 +306,19 @@ def record_start(run: Any) -> None:
                   or run.worktree_info, "outcome": "running", "resume_mode": None,
                   # Kept across continues: a tree the child made in an earlier run is still its own.
                   "worktrees_at_start": prev.get("worktrees_at_start") or start_trees,
-                  "run_origin": origin, "run_started_at": time.time(), **auto}
+                  # A promise belongs to one stop: this run's own stop (or boot recovery) makes it afresh.
+                  "run_origin": origin, "run_started_at": time.time(), "auto_promised": False, **auto}
         record["repo_baselines"] = durable["baselines"]
         # A running record pins too (its paths are resolved at sweep time): a crash before boot recovery ran must
         # not hand its tree to the sweep. Bounded by the same TTL.
         _upsert(conn, sid, record, state="running", pinned=True, expires_at=time.time() + _settings()[0] * 3600)
         return True
 
-    durable["pending"] = None if _write(path, _do) else _do
+    outcome = _write(path, _do)
+    if isinstance(outcome, str):  # cancelled by the parent before it ran: no run record, the child does not start
+        child._delegate_auto_cancelled = outcome
+        return
+    durable["pending"] = None if outcome else _do
     child._delegate_durable = durable
 
 

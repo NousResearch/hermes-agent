@@ -284,10 +284,10 @@ def take_claim(path: Any, sid: str) -> Optional[dict[str, Any]]:
 
 
 def confirm_start(path: Any, sid: str) -> Optional[str]:
-    """Right before the continued child is dispatched: the final eligibility check, in one write transaction. While
-    the parent has not cancelled it (stop, /stop, /new, a replacement in the same repository) the claim stops being
-    cancellable as unstarted (from here the parent stops it like any running child) and None is returned; else
-    the reason, with the row left as the parent's decision put it (or moved to ``superseded``)."""
+    """Right before the continued child is dispatched: the eligibility check, in one write transaction. None while
+    the parent has not cancelled it (stop, /stop, /new, a replacement in the same repository), else the reason, with
+    the row left as the parent's decision put it (or moved to ``superseded``). The claim stays cancellable as
+    unstarted until the run records itself: :func:`admit_start` gives the parent the last word there."""
     from tools.delegate_tool_resumable import _begin_immediate, _row, _write as write
 
     def do(conn):
@@ -298,10 +298,29 @@ def confirm_start(path: Any, sid: str) -> Optional[str]:
         if reason := superseded_reason(conn, row, str(row["auto_claim"])):
             _note(conn, sid, state=SUPERSEDED, note=reason, from_states=(), unstarted_claim=True)
             return f"{CANCELLED}: {reason}"
-        conn.execute("UPDATE resumable_subagents SET record_json=json_remove(record_json, '$.auto_claim') "
-                     "WHERE subagent_id=?", (sid,))
         return None
     return write(path, do) if path is not None else CANCELLED
+
+
+def admit_start(conn, sid: str) -> Optional[str]:
+    """Inside ``record_start``'s write transaction for a run the scheduler started: None while this process's claim
+    still stands and nothing superseded it, else why the parent cancelled it. The parent's decision stays on the row
+    and the attempt is refunded; a stop that lands after this point meets a registered, running child."""
+    from tools.delegate_tool_resumable import _begin_immediate, _row
+    _begin_immediate(conn)
+    row = _row(conn, sid) or {}
+    if row.get("state") == "claimed" and row.get("auto_claim") and row.get("owner_pid") == os.getpid():
+        reason = superseded_reason(conn, row, str(row["auto_claim"]))
+        if not reason:
+            return None
+        _note(conn, sid, state=SUPERSEDED, note=reason, from_states=(), unstarted_claim=True)
+    elif row.get("state") in ("stopped", SUPERSEDED):
+        reason = row.get("auto_note") or "its parent stopped it"
+    else:
+        return f"{CANCELLED}: the record moved ({row.get('state') or 'gone'})"
+    conn.execute("UPDATE resumable_subagents SET record_json=json_set(record_json, '$.auto_attempts', "
+                 "MAX(COALESCE(json_extract(record_json, '$.auto_attempts'), 1) - 1, 0)) WHERE subagent_id=?", (sid,))
+    return f"{CANCELLED}: {reason}"
 
 
 def _settle_refusal(sid: str, attempts: int, error: str) -> None:

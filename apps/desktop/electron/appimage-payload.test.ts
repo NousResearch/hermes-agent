@@ -411,6 +411,36 @@ posix(
   }
 )
 
+posix('cleanup reads a unit path the way systemd quoting spells it', async (): Promise<void> => {
+  const root: string = scratch()
+  const host: PayloadCopyHost = copyHost(root, mountedResources(root))
+  // XDG_DATA_HOME=<root>/data 100%$"q\b; _systemd_command writes it as data 100%%$$\"q\\b.
+  const plan = { ...host.plan, root: path.join(root, 'data 100%$"q\\b', 'hermes', 'bundles') }
+  const older: string = path.join(plan.root, 'older')
+  fs.mkdirSync(path.join(older, 'agent-payload'), { recursive: true })
+  fs.writeFileSync(path.join(older, 'complete.json'), JSON.stringify({ key: 'older' }))
+  const units: string = path.join(root, 'units')
+  fs.mkdirSync(units)
+
+  const python: string = path.join(
+    root,
+    'data 100%%$$\\"q\\\\b',
+    'hermes',
+    'bundles',
+    'older',
+    'agent-payload',
+    'python3'
+  )
+
+  fs.writeFileSync(
+    path.join(units, 'hermes-gateway.service'),
+    `[Service]\nExecStart="${python}" -m hermes_cli.main gateway run\n`
+  )
+
+  assert.deepEqual(await collectStalePayloadCopies({ ...host, plan, serviceUnitDirs: [units] }, false), [])
+  assert.ok(fs.existsSync(older))
+})
+
 linux('cleanup keeps every build an open Desktop selected, even when short of space', async (): Promise<void> => {
   const root: string = scratch()
   // No livePaths stub: cleanup reads this process's /proc entries, as another launch would.

@@ -137,7 +137,7 @@ def build_ptb_requests(request_cls, *, fallback_ips: list[str], proxy_url: Optio
                                max_keepalive_connections=getupdates_keepalive_connections(),
                                keepalive_expiry=base.keepalive_expiry)
     transport_kwargs = {"socket_options": tcp_keepalive_socket_options(), "verify": verify,
-                        "connect_budget": _WALK_CONNECT_BUDGET_S, "proxy": proxy_url}
+                        "connect_budget": _WALK_CONNECT_BUDGET_S, "proxy": classic_proxy(proxy_url, verify)}
     extra = {"proxy": proxy_url} if proxy_url else {}
 
     def request(limits) -> object:
@@ -194,6 +194,17 @@ def telegram_verify(extra: Optional[dict], default):
 _CLASSIC_CONTEXTS: dict[int, ssl.SSLContext] = {}
 
 
+def classic_proxy(proxy_url, verify):
+    """``proxy_url`` for an httpx client verifying with ``verify``. An ``https://`` proxy has its own
+    outer TLS handshake, which httpx runs with the proxy's ``ssl_context``, never the client's
+    ``verify``; with the classic key exchange on, that outer hello would still be the large one the
+    path resets, so the proxy leg gets the same classic context. Anything else passes unchanged."""
+    if (isinstance(proxy_url, str) and proxy_url.strip().lower().startswith("https://")
+            and any(verify is ctx for ctx in _CLASSIC_CONTEXTS.values())):
+        return httpx.Proxy(proxy_url, ssl_context=verify)
+    return proxy_url
+
+
 def _classic_key_exchange_context() -> ssl.SSLContext:
     """A context with ``platform_ssl_context()``'s trust (platform store plus ``SSL_CERT_FILE``)
     offering only the classic X25519 share: a ~0.5 KB ClientHello instead of the ~1.5 KB
@@ -239,7 +250,7 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
         if "proxy" not in transport_kwargs:
             proxy_url = _resolve_proxy_url(target_hosts=[_TELEGRAM_API_HOST, *self._fallback_ips])
             if proxy_url:
-                transport_kwargs["proxy"] = proxy_url
+                transport_kwargs["proxy"] = classic_proxy(proxy_url, transport_kwargs.get("verify"))
         transport_kwargs.setdefault("limits", self._POOL_LIMITS)
         transport_kwargs.setdefault("socket_options", tcp_keepalive_socket_options())
         self._transport_kwargs = transport_kwargs
@@ -459,7 +470,7 @@ async def _query_doh_provider(client: httpx.AsyncClient, provider: dict) -> list
         return []
 
 
-async def discover_fallback_ips() -> list[str]:
+async def discover_fallback_ips(verify=None) -> list[str]:
     """Resolve api.telegram.org via Google + Cloudflare DoH; unique A records, in order. IPs matching the
     system resolver are deliberately KEPT (often the most reliable path); ``SEED_FALLBACK_IPS`` always
     form the tail, so a one-record DoH answer cannot make one edge the fallback path's single point of
@@ -468,8 +479,10 @@ async def discover_fallback_ips() -> list[str]:
     IPs that match the local system resolver are kept rather than excluded: in many networks the system-DNS
     IP is the most reliable path to api.telegram.org and a transient primary-path failure should be retried
     against the same address via the IP-rewrite path before the seed list is consulted (#14520).
+    ``verify`` is the Telegram client's TLS context (``telegram_verify``), default the platform one.
     """
-    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT), verify=platform_ssl_context()) as client:
+    verify = platform_ssl_context() if verify is None else verify
+    async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT), verify=verify) as client:
         system_dns_task = asyncio.ensure_future(asyncio.to_thread(_resolve_system_dns))
         results = await asyncio.gather(*[_query_doh_provider(client, p) for p in _DOH_PROVIDERS], return_exceptions=True)
     # The getaddrinfo leg has no timeout of its own and only feeds the log line below — bound it.

@@ -9,6 +9,7 @@ an empty ``ConnectError`` in a loop (#147179). A local TLS server here resets an
 from __future__ import annotations
 
 import json
+import select
 import socket
 import ssl
 import struct
@@ -111,6 +112,50 @@ class _HelloSizeEdge:
         self._sock.close()
 
 
+class _HelloSizeProxy(_HelloSizeEdge):
+    """HTTPS CONNECT proxy on 127.0.0.1 with the same reset rule for ITS OWN TLS hello, serving
+    ``edge``'s certificate (one trusted cert for both legs), then tunnelling to the target."""
+
+    def __init__(self, tmp_path, edge: _HelloSizeEdge) -> None:
+        proxy_dir = tmp_path / "proxy"
+        proxy_dir.mkdir()
+        super().__init__(proxy_dir)
+        self._ctx.load_cert_chain(edge.cert_path, edge.cert_path.with_name("edge.key"))
+
+    def _serve(self, conn: socket.socket) -> None:
+        try:
+            conn.settimeout(5)
+            header = conn.recv(5, socket.MSG_PEEK)
+            size = struct.unpack("!H", header[3:5])[0] if len(header) == 5 else 0
+            self.hello_sizes.append(size)
+            if size > _RESET_ABOVE:
+                conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+                return
+            tls = self._ctx.wrap_socket(conn, server_side=True)
+            request = b""
+            while b"\r\n\r\n" not in request:
+                chunk = tls.recv(65536)
+                if not chunk:
+                    return
+                request += chunk
+            host, port = request.split(b" ")[1].decode().rsplit(":", 1)
+            with socket.create_connection((host, int(port)), timeout=5) as remote:
+                tls.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                while True:
+                    ready, _, _ = select.select([tls, remote], [], [], 5)
+                    if not ready:
+                        return
+                    for current in ready:
+                        data = current.recv(65536)
+                        if not data:
+                            return
+                        (remote if current is tls else tls).sendall(data)
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+
 async def _get_me_through_adapter(edge: _HelloSizeEdge, monkeypatch, extra: dict):
     for key in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "TELEGRAM_PROXY"):
         monkeypatch.delenv(key, raising=False)
@@ -157,4 +202,21 @@ async def test_unrecognised_setting_keeps_the_default_handshake(tmp_path, monkey
         assert min(edge.hello_sizes) > _RESET_ABOVE
         assert "tls_classic_key_exchange" in caplog.text and "expected true or false" in caplog.text
     finally:
+        edge.close()
+
+
+@pytest.mark.asyncio
+async def test_classic_key_exchange_reaches_the_https_proxy_handshake(tmp_path, monkeypatch):
+    """An ``https://`` proxy has its own outer TLS handshake; the opt-in covers it too, so both the
+    proxy's and the Bot API's hello stay small and ``get_me`` goes through the tunnel."""
+    edge = _HelloSizeEdge(tmp_path)
+    proxy = _HelloSizeProxy(tmp_path, edge)
+    try:
+        me = await _get_me_through_adapter(edge, monkeypatch, {
+            "tls_classic_key_exchange": True, "proxy_url": f"https://127.0.0.1:{proxy.port}"})
+        assert me.username == "edge_bot"
+        assert proxy.hello_sizes and max(proxy.hello_sizes) <= _RESET_ABOVE
+        assert edge.answered == 1 and max(edge.hello_sizes) <= _RESET_ABOVE
+    finally:
+        proxy.close()
         edge.close()

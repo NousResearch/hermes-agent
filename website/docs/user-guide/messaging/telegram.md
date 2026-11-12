@@ -1469,7 +1469,9 @@ platforms:
 ```
 
 This covers both Bot API requests and long polling, including proxy and
-fallback-IP connections, and one-shot sends (cron, `send_message`). TLS 1.3,
+fallback-IP connections, the TLS handshake with an `https://` proxy itself,
+DNS-over-HTTPS fallback-IP discovery, and one-shot sends (cron,
+`send_message`). TLS 1.3,
 hostname checks, and certificate verification remain enabled; the platform
 trust store and `SSL_CERT_FILE` are still used. The tradeoff is opting out of
 post-quantum key exchange for Telegram. Other platforms and model-provider

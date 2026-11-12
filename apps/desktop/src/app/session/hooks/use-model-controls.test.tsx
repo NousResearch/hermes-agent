@@ -2,6 +2,7 @@ import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, render, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PRIMARY_SESSION_VIEW } from '@/app/chat/session-view'
 import { getGlobalModelInfo } from '@/hermes'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -962,5 +963,100 @@ describe('useModelControls', () => {
     // A provider-class pick can never be shadowed by a custom:<key> default, so
     // the sticky path must not pay for a /api/model/info round trip.
     expect(getGlobalModelInfo).not.toHaveBeenCalled()
+  })
+})
+
+// #142037: switching the model on a LIVE primary session updated only the global
+// `$currentModel` draft atom. The composer pill reads the per-session view's
+// `$model`, which for a live session is `primaryField(state => state.model,
+// $currentModel)` — i.e. the SESSION STATE's model, refreshed only when
+// session.info arrives. So the label kept showing the previous model until the
+// session was left and re-entered (a re-read). The focused-tile path already
+// paints its session state optimistically; the primary path must too.
+describe('useModelControls primary session paint (#142037)', () => {
+  beforeEach(() => {
+    SessionStates.$sessionStates.set({})
+    $activeSessionId.set(null)
+    $currentModel.set('')
+    $currentProvider.set('')
+    setCurrentModelSource('')
+    tile.delegate = null
+  })
+
+  afterEach(() => {
+    tile.delegate = null
+    SessionStates.$sessionStates.set({})
+    $activeSessionId.set(null)
+  })
+
+  it('paints the primary session state on switch so the composer pill follows', async () => {
+    SessionStates.$sessionStates.set({
+      'runtime-a': { model: 'old-model', provider: 'openai', reasoningEffortWire: 'high' }
+    } as never)
+    $activeSessionId.set('runtime-a')
+    setCurrentModel('old-model')
+    setCurrentProvider('openai')
+
+    const painted: Record<string, unknown>[] = []
+    tile.delegate = {
+      updateSession: (_id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
+        const state = (SessionStates.$sessionStates.get()[_id] ?? {}) as unknown as Record<string, unknown>
+        painted.push(update(state))
+      }
+    }
+
+    const { result } = renderHook(() =>
+      useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn(async () => ({}) as never) })
+    )
+
+    await act(() => result.current.selectModel({ model: 'new-model', provider: 'openai' }))
+
+    // The session state the pill reads must carry the new model, not the old one.
+    expect(painted.at(-1)).toMatchObject({ model: 'new-model' })
+  })
+
+  it('restores the live session model, not the sticky draft, when a primary switch fails (#150119)', async () => {
+    $activeSessionId.set('runtime-a')
+    setCurrentModel('draft-default')
+    setCurrentProvider('draft-route')
+    setCurrentReasoningEffortWire('low')
+    SessionStates.$sessionStates.set({
+      'runtime-a': { model: 'live-model', provider: 'live-route', reasoningEffortWire: 'high' }
+    } as never)
+
+    tile.delegate = {
+      updateSession: (id: string, update: (state: Record<string, unknown>) => Record<string, unknown>) => {
+        const states = SessionStates.$sessionStates.get()
+        const before = states[id] as unknown as Record<string, unknown>
+        const next = update(before)
+
+        SessionStates.$sessionStates.set({ ...states, [id]: next } as never)
+
+        return next
+      }
+    }
+
+    const queryClient = new QueryClient()
+    const requestGateway = vi.fn(async () => {
+      throw new Error('model unavailable')
+    })
+    const { result } = renderHook(() => useModelControls({ queryClient, requestGateway }))
+
+    await expect(result.current.selectModel({ model: 'unavailable', provider: 'wrong-route' })).resolves.toBe(false)
+
+    expect(PRIMARY_SESSION_VIEW.$model.get()).toBe('live-model')
+    expect(PRIMARY_SESSION_VIEW.$provider.get()).toBe('live-route')
+    expect(SessionStates.$sessionStates.get()['runtime-a']).toMatchObject({
+      model: 'live-model',
+      provider: 'live-route',
+      reasoningEffortWire: 'high'
+    })
+    expect(queryClient.getQueryData(modelOptionsQueryKey('default', 'runtime-a'))).toMatchObject({
+      model: 'live-model',
+      provider: 'live-route'
+    })
+    expect($currentModel.get()).toBe('draft-default')
+    expect($currentProvider.get()).toBe('draft-route')
+    expect($currentReasoningEffortWire.get()).toBe('low')
   })
 })

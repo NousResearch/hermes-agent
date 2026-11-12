@@ -1,7 +1,7 @@
 name: soloknuckle
 title: Soloknuckle
 repo: https://github.com/z99wE/soloknucklefXrhermes
-sha: "3768c5bf008a05826f1e078d366cc41684077008"
+sha: "ef9f7565b63d2b3350095d0b953c1b6ea9c61a69"
 version: "5.2.0"
 description: >-
   Deterministic local guardrails for Hermes and dev workflows. Three invocable
@@ -20,9 +20,9 @@ readme: true
 platforms: []
 capabilities:
   provides_tools:
-    - soloknuckle.secrets
-    - soloknuckle.intercept
-    - soloknuckle.health
+    - soloknuckle_secrets
+    - soloknuckle_intercept
+    - soloknuckle_health
   provides_hooks: []
   provides_middleware: []
   requires_env: []

@@ -10,15 +10,8 @@ export function preparedPayloadSource({ config, projectDir }) {
   return mapping?.from ? path.resolve(projectDir, mapping.from) : null
 }
 
-// afterPack's signing rewrites binaries on macOS and Windows, and codesign seals bundles on macOS.
-export const PACKED_PAYLOAD_CHANGES = {
-  linux: { sizes: true, added: () => false },
-  darwin: { sizes: false, added: (/** @type {string} */ name) => name.split('/').includes('_CodeSignature') },
-  win32: { sizes: false, added: () => false }
-}
-
-/** @param {string} root @param {boolean} sizes */
-function entryKinds(root, sizes) {
+/** @param {string} root */
+function entryKinds(root) {
   /** @type {Map<string, string>} */
   const kinds = new Map()
   /** @param {string} relative */
@@ -31,7 +24,7 @@ function entryKinds(root, sizes) {
       } else if (entry.isSymbolicLink()) {
         kinds.set(name, 'symlink')
       } else if (entry.isFile()) {
-        kinds.set(name, sizes ? `file of ${fs.lstatSync(path.join(root, name)).size} bytes` : 'file')
+        kinds.set(name, `file of ${fs.lstatSync(path.join(root, name)).size} bytes`)
       } else {
         kinds.set(name, 'special file')
       }
@@ -44,12 +37,11 @@ function entryKinds(root, sizes) {
 /**
  * @param {string} prepared
  * @param {string} packaged
- * @param {{ sizes: boolean, added: (name: string) => boolean }} changes
  * @returns {string[]}
  */
-export function payloadDifferences(prepared, packaged, { sizes, added }) {
-  const expected = entryKinds(prepared, sizes)
-  const actual = entryKinds(packaged, sizes)
+function payloadDifferences(prepared, packaged) {
+  const expected = entryKinds(prepared)
+  const actual = entryKinds(packaged)
   const differences = []
   for (const [name, kind] of expected) {
     const found = actual.get(name)
@@ -57,20 +49,16 @@ export function payloadDifferences(prepared, packaged, { sizes, added }) {
     else if (found !== kind) differences.push(`${name}: ${kind} became ${found}`)
   }
   for (const [name, kind] of actual) {
-    if (!expected.has(name) && !added(name)) differences.push(`unexpected ${kind}: ${name}`)
+    if (!expected.has(name)) differences.push(`unexpected ${kind}: ${name}`)
   }
   return differences.sort()
 }
 
 const SHOWN_DIFFERENCES = 40
 
-/**
- * @param {string} prepared
- * @param {string} packaged
- * @param {keyof typeof PACKED_PAYLOAD_CHANGES} platform
- */
-export function assertPackagedPayload(prepared, packaged, platform) {
-  const differences = payloadDifferences(prepared, packaged, PACKED_PAYLOAD_CHANGES[platform])
+/** @param {string} prepared @param {string} packaged */
+export function assertPackagedPayload(prepared, packaged) {
+  const differences = payloadDifferences(prepared, packaged)
   if (differences.length === 0) return
   const hidden = differences.length - SHOWN_DIFFERENCES
   throw new Error(

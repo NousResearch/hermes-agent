@@ -75,11 +75,12 @@ export default async function afterPack(context) {
     : path.join(context.appOutDir, 'resources')
   const payload = path.join(resources, 'agent-payload')
   const prepared = fs.existsSync(payload) ? preparedPayloadSource(context.packager) : null
-  await packPlatform(context, payload)
+  // Check the copy before relocation, framework repairs and signing change it on purpose.
   if (prepared) {
-    assertPackagedPayload(prepared, payload, platform)
+    assertPackagedPayload(prepared, payload)
     console.log(`[after-pack] packaged payload matches the prepared payload ${prepared}`)
   }
+  await packPlatform(context, payload)
 }
 
 async function packPlatform(context, payload) {

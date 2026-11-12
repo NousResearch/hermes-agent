@@ -1435,6 +1435,8 @@ platform:
       not_requester: "Only the user who requested this action can use these controls."
 
   feishu:
+    topic:
+      opened: "Got it, working on it…"
     clarify:
       title: "Hermes needs your input"
       other: "✏️ Other (type answer)"

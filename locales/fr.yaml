@@ -1596,6 +1596,8 @@ platform:
       unauthorized: "Seul un utilisateur Matrix autorisé peut utiliser ces contrôles."
       not_requester: "Seul l'utilisateur à l'origine de cette action peut utiliser ces contrôles."
   feishu:
+    topic:
+      opened: "Bien reçu, je m'en occupe…"
     clarify:
       title: "Hermes a besoin de votre réponse"
       other: "✏️ Autre (saisir)"

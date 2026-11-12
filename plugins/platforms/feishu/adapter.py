@@ -95,6 +95,7 @@ from gateway.platforms.base import (
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.platforms.helpers import caption_is_command, prompt_id_counter, send_chunks
 from plugins.platforms.feishu.adapter_choice_cards import FeishuChoiceCardsMixin
+from plugins.platforms.feishu.feishu_topic_follow import FeishuTopicFollowMixin
 from gateway.status import acquire_scoped_lock
 from gateway.status_scoped_locks import release_scoped_lock
 from hermes_constants import get_hermes_home
@@ -1287,7 +1288,7 @@ def _sdk_build(request_cls: Any, **fields: Any) -> Any:
     return builder.build()
 
 
-class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
+class FeishuAdapter(FeishuChoiceCardsMixin, FeishuTopicFollowMixin, BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
     # Answers /p/<profile>/... on the default listener for a served secondary (shared_ingress).
     serves_profile_prefix: bool = True
@@ -1348,6 +1349,7 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         self._update_prompt_state: dict[int, dict[str, str]] = {}
         self._update_prompt_counter = prompt_id_counter()
         self._init_choice_card_state()
+        self._init_topic_follow_state()
         # Reaction deletion needs the opaque reaction_id from create, cached per message_id.
         self._pending_processing_reactions: OrderedDict[str, str] = OrderedDict()
         self._load_seen_message_ids()
@@ -2127,6 +2129,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             logger.debug("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
             return
         reason = self._admit(sender, message)
+        if reason == "group_policy_rejected" and await self._topic_follow_admits(sender, message):
+            reason = None
         if reason is not None:
             logger.debug("[Feishu] dropping inbound event: %s", reason)
             if reason == "group_policy_rejected":
@@ -2679,6 +2683,8 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
             or getattr(sender_id, "union_id", None) or "<unknown>"
         )
         chat_id = getattr(message, "chat_id", "") or ""
+        if not thread_id and chat_type != "p2p":
+            thread_id = await self._open_reply_topic(chat_id, message_id)
         logger.info(
             "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
             "dm" if chat_type == "p2p" else "group", message_id, inbound_type.value, chat_id,
@@ -3766,22 +3772,6 @@ class FeishuAdapter(FeishuChoiceCardsMixin, BasePlatformAdapter):
         return await self._feishu_send_with_retry(
             chat_id=chat_id, msg_type=msg_type, payload=payload, reply_to=reply_to, metadata=metadata,
         )
-
-    async def _fetch_last_message_in_thread(self, thread_id: str) -> Optional[str]:
-        """Fetch the last message_id in a thread for reply-based routing."""
-        if not self._client or not thread_id:
-            return None
-        try:
-            from lark_oapi.api.im.v1 import ListMessageRequest
-            request = ListMessageRequest.builder().container_id_type("thread").container_id(thread_id).page_size(1).build()
-            response = await self._run_blocking(self._client.im.v1.message.list, request)
-            if self._response_succeeded(response):
-                items = getattr(getattr(response, "data", None), "items", None)
-                if items and len(items) > 0:
-                    return getattr(items[0], "message_id", None)
-        except Exception as exc:
-            logger.debug("[Feishu] Failed to fetch last message in thread %s: %s", thread_id, exc)
-        return None
 
     async def _send_raw_message(
         self, *, chat_id: str, msg_type: str, payload: str, reply_to: Optional[str], metadata: Optional[dict[str, Any]],

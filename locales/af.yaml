@@ -1375,6 +1375,8 @@ platform:
       unauthorized: "Slegs 'n gemagtigde Matrix-gebruiker kan hierdie kontroles gebruik."
       not_requester: "Slegs die gebruiker wat hierdie aksie aangevra het, kan hierdie kontroles gebruik."
   feishu:
+    topic:
+      opened: "Ontvang, besig…"
     clarify:
       title: "Hermes het jou insette nodig"
       other: "✏️ Ander (tik antwoord)"

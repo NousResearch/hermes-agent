@@ -1375,6 +1375,8 @@ platform:
       unauthorized: "只有已授权的 Matrix 用户才能使用这些控件。"
       not_requester: "只有发起此操作的用户才能使用这些控件。"
   feishu:
+    topic:
+      opened: "收到，处理中…"
     clarify:
       title: "Hermes 需要你的输入"
       other: "✏️ 其他（输入回答）"

@@ -252,6 +252,28 @@ FEISHU_REQUIRE_MENTION=false
 
 For per-chat control, set `require_mention` on a `group_rules` entry — see [Per-Group Access Control](#per-group-access-control) below.
 
+### Topic replies and follow-ups without @mention
+
+Two opt-in switches in `config.yaml` turn a group @mention into a topic (话题) conversation:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      thread_reply: true    # answer a top-level group @mention in a new topic
+      thread_follow: true   # inside a topic, follow-ups need no @mention (true = last_active)
+```
+
+- With `thread_reply`, Hermes first posts a short acknowledgement in a new topic on the triggering message, then runs the turn inside that topic, so the whole topic is one session.
+- With `thread_follow`, a follow-up without an @mention is answered by the bot the topic currently belongs to; a message that @mentions someone else (a colleague or another bot) is left to them. Two modes decide who that is:
+  - `last_active` (also what `true` means): the bot triggered last. The newest message that was written by a bot or @mentions one decides, so a bot @mentioned mid-topic takes the topic over at once, even before its reply lands, and a bot message that @mentions another bot hands the topic to it. A person @mentioning someone else (Hermes cannot tell a colleague from a bot) leaves the topic quiet until a bot answers or is @mentioned again. Only the newest 20 messages are read, so a long stretch of un-@ chatter also leaves the topic quiet.
+  - `owner`: the bot that replied in the topic first keeps it. A bot @mentioned once in another bot's topic answers that message only.
+
+  Either way the decision is read from the topic itself, so it survives gateway restarts, and every Hermes bot in the chat reaches the same answer from the same history. A bot that does not run this feature never answers un-@ follow-ups, even when it was triggered last.
+- The group policy still applies to every follow-up.
+- Both keys can be set per chat on a `group_rules` entry, which overrides the global value.
+- `thread_follow` needs the `im:message.group_msg` scope (read all group messages) on the Feishu app; without it Feishu only delivers @mentions.
+
 ### Bot Identity
 
 Hermes auto-detects the bot's `open_id` and display name on startup. You only need to set these manually when auto-detection cannot reach the Feishu API, or when your app uses tenant-scoped user IDs:
@@ -530,6 +552,8 @@ platforms:
         "oc_free_chat":
           policy: "open"
           require_mention: false       # overrides FEISHU_REQUIRE_MENTION for this chat
+          thread_reply: true           # overrides platforms.feishu.extra.thread_reply
+          thread_follow: owner         # overrides platforms.feishu.extra.thread_follow (true | last_active | owner | false)
 ```
 
 | Policy | Description |

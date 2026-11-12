@@ -1392,6 +1392,8 @@ platform:
       unauthorized: "Ezeket a vezérlőket csak jogosult Matrix-felhasználó használhatja."
       not_requester: "Ezeket a vezérlőket csak az a felhasználó használhatja, aki a műveletet kérte."
   feishu:
+    topic:
+      opened: "Megkaptam, dolgozom rajta…"
     clarify:
       title: "A Hermes a válaszodra vár"
       other: "✏️ Egyéb (írd be a választ)"

@@ -1375,6 +1375,8 @@ platform:
       unauthorized: "Bu kontrolleri yalnızca yetkili bir Matrix kullanıcısı kullanabilir."
       not_requester: "Bu kontrolleri yalnızca bu işlemi isteyen kullanıcı kullanabilir."
   feishu:
+    topic:
+      opened: "Alındı, üzerinde çalışıyorum…"
     clarify:
       title: "Hermes girdinize ihtiyaç duyuyor"
       other: "✏️ Diğer (yanıt yazın)"

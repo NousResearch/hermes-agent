@@ -1375,6 +1375,8 @@ platform:
       unauthorized: "これらの操作は、認可された Matrix ユーザーのみが使用できます。"
       not_requester: "これらの操作は、このアクションをリクエストしたユーザーのみが使用できます。"
   feishu:
+    topic:
+      opened: "受け付けました。処理中…"
     clarify:
       title: "Hermes が入力を求めています"
       other: "✏️ その他（回答を入力）"

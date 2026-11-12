@@ -419,6 +419,18 @@ class TestScanFile:
         flag = next(fi for fi in findings if fi.pattern_id == "nul_byte")
         assert (flag.severity, flag.line) == ("high", 2)
 
+    def test_triple_quoted_prose_does_not_hide_same_line_live_environ(self, tmp_path):
+        """A valid Python statement after one-line triple-quoted prose is still executable (#132192)."""
+        f = tmp_path / "mixed.py"
+        f.write_text(
+            '"""os.environ is documentation"""; snapshot = dict(os.environ)\n'
+            '"""os.environ only in documentation"""\n',
+            encoding="utf-8",
+        )
+        hits = [finding.line for finding in scan_file(f, "mixed.py")
+                if finding.pattern_id == "python_os_environ"]
+        assert hits == [1]
+
     def test_unbalanced_triple_quote_cannot_hide_payload_lines(self, tmp_path):
         """A lone opening triple quote used to toggle the quote counter and mark every later line as
         docstring prose; the lexer now fails closed and the payload lines are scanned."""

@@ -775,13 +775,19 @@ def _scan_text(text: str, rel_path: str, suffix: str, skill: bool) -> list[Findi
     traversal_lines = _mask_prose_link_destinations(lines) if suffix == ".md" else lines
     owners = _statement_owners(lines)  # per-file context for the demotion
     patterns = _COMPILED_THREAT_PATTERNS + (SKILL_ONLY_PATTERNS if skill else [])
-    views = code_views(lines) if skill and suffix == ".py" else None  # tokenized: code vs comment/string
+    views = code_views(lines) if suffix == ".py" and (skill or docstring_lines) else None
     for pattern, pid, severity, category, description in patterns:
         for i, line in enumerate(lines, start=1):
             if pid in _DOCSTRING_EXEMPT_PATTERN_IDS and i in docstring_lines:
-                continue
-            scan_line = (traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS
-                         else views[0][i - 1] if views and pid == "hermes_env_dotenv" else line)
+                if suffix != ".py":
+                    continue
+                # A triple-quoted token exempts its own columns, not executable code on the same line.
+                # Fall back to raw text on a lexer failure (fail closed).
+                scan_line = ("".join(" " if masked else char for char, masked in zip(line, views[1][i - 1]))
+                             if views else line)
+            else:
+                scan_line = (traversal_lines[i - 1] if pid in _PATH_TRAVERSAL_PATTERN_IDS
+                             else views[0][i - 1] if views and pid == "hermes_env_dotenv" else line)
             if pattern.search(scan_line):
                 text = line.strip()
                 line_severity, line_description = _demote_inert_path_reference(

@@ -1,19 +1,7 @@
 name: bnb-airdrop-autopilot
 repo: https://github.com/sawi57003-ops/bnb-airdrop-autopilot
 sha: 6d8e54791dc81e5cec6cb7b59852ad769e16ffcb
-description: >-
-  A complete system for BSC airdrops & free mints: scan for newly listed BSC
-  tokens (Dexscreener, no login), safety-audit a contract (owner, proxy,
-  approval selectors in bytecode, Sourcify verification, DEX liquidity, risk
-  rating), preview a claim via the baw CLI (preview only; the user runs the
-  execute command themselves in their own terminal), and report BSC gas with
-  a cheapest-claim recommendation. Four tools: bnb_scan_airdrops,
-  bnb_check_contract, bnb_prepare_claim, bnb_gas_report. Read-only except the
-  simulates. Disclosure — network calls go to public BSC/Ethereum/Base/Arbitrum
-  RPCs, the Dexscreener public API and Sourcify; no API keys, no credentials.
-  The safety check is an automated on-chain read, not a full audit; it cannot
-  detect honeypots or hidden taxes. It is not financial advice. Never approve
-  a contract you do not trust.
+description: "A complete system for BSC airdrops & free mints: scan for newly listed BSC tokens (Dexscreener, no login), safety-audit a contract (owner, proxy, approval selectors in bytecode, Sourcify verification, DEX liquidity, risk rating), preview a claim via the baw CLI (preview only; the user runs the execute command themselves in their own terminal), and report BSC gas with a cheapest-claim recommendation. Four tools: bnb_scan_airdrops, bnb_check_contract, bnb_prepare_claim, bnb_gas_report. Read-only except the simulates. Disclosure — crypto (BNB Chain): network calls go to public BSC/Ethereum/Base/Arbitrum RPCs, the Dexscreener public API and Sourcify; no API keys, no credentials. bnb_prepare_claim runs the user's installed Binance Agentic Wallet CLI (`baw contract-call preview`) to simulate a claim and creates a pending wallet request; nothing is signed or broadcast by the plugin, and the user runs the execute command themselves. The safety check is an automated on-chain read, not a full audit; it cannot detect honeypots or hidden taxes. It is not financial advice. Never approve a contract you do not trust."
 maintainer: sawi57003-ops
 tier: community
 category: tools

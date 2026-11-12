@@ -8,6 +8,7 @@ imported late here, never at module level).
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import threading
@@ -338,6 +339,13 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     if not git_exe:
         return False, "git is not installed or not in PATH."
     try:
+        top = _pc()._run_plugin_git(git_exe, target, "rev-parse", "--show-toplevel")
+        if top.returncode != 0 or os.path.normcase(os.path.realpath(top.stdout.strip())) != os.path.normcase(
+                os.path.realpath(target)):
+            # A damaged plugin .git makes git walk up to an enclosing repo (a git-managed home);
+            # stashing and resetting there would act on the user's files, not the plugin (#146032).
+            return False, (f"{target} is not its own git checkout (git resolves it to "
+                           f"{top.stdout.strip() or 'no repository'}); reinstall the plugin from its source.")
         stash_sha, err = _autostash_dirty_tree(git_exe, target)
         if err:
             return False, err

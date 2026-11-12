@@ -1,0 +1,25 @@
+name: dramatis
+title: Dramatis
+repo: https://github.com/kaizen-builds/dramatis
+sha: 506418bb44641df502cb4eb7fe3d52900d0aeed6
+description: "Spoiler-safe reading companion: open a local EPUB, remember how far you have read, and ask who someone is or what happened. Answers come only from text at or before that position, with a short quote. Native Python plugin (plugin.yaml + __init__.py). Disclosure — reads EPUB files from paths you supply; stores extracted chapter text, reading progress, and character cards in Hermes plugin storage (plugin-data/dramatis/ and the dramatis plugin_db); no network calls, no extra API keys, no shell, no telemetry, and it does not read .env files or Hermes credential stores. Ships an original fixture EPUB at fixtures/the-glass-archive.epub (reviewable XHTML inside a standard EPUB zip, not a compiled binary). Cannot stop the host model from using pretrained knowledge about well-known books."
+maintainer: kaizen-builds
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/kaizen-builds/dramatis/blob/506418bb44641df502cb4eb7fe3d52900d0aeed6/README.md
+version: "1.0.0"
+readme: true
+platforms: []
+known_issues:
+  - "Cannot stop the host model from using pretrained knowledge about well-known books."
+capabilities:
+  provides_tools:
+    - open_book
+    - set_progress
+    - who_is
+    - ask_book
+    - list_cast
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

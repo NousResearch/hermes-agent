@@ -1,0 +1,232 @@
+"""Tests for the gateway interactive choice picker (/reasoning, /fast).
+
+The picker mirrors the /model picker architecture: the gateway gates on the
+adapter *type* exposing ``send_choice_picker``, sends a flat choice list, and
+falls back to the text status card when the platform has no picker or the
+send fails. Selection flows through the same application path as the typed
+command, so picker and typed arguments can never diverge.
+"""
+
+import asyncio
+import types
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+import hermes_yaml as yaml
+
+import gateway.run as gateway_run
+from gateway.config import Platform
+from gateway.platforms.base import SendResult
+from gateway.platforms.event import MessageEvent
+from gateway.session import SessionSource
+from gateway.session_state import SERVICE_TIER_UNSET
+
+
+def _make_event(text="/reasoning", platform=Platform.TELEGRAM, user_id="12345", chat_id="67890"):
+    source = SessionSource(
+        platform=platform,
+        user_id=user_id,
+        chat_id=chat_id,
+        user_name="testuser",
+    )
+    return MessageEvent(text=text, source=source)
+
+
+class _PickerAdapter:
+    """Adapter whose *type* exposes ``send_choice_picker`` (the gate the
+    handler checks via ``getattr(type(adapter), 'send_choice_picker', None)``)."""
+
+    def __init__(self, success=True):
+        self.calls = []
+        self._success = success
+
+    async def send_choice_picker(self, **kwargs):
+        self.calls.append(kwargs)
+        return SendResult(success=self._success, message_id="m1")
+
+
+class _NoPickerAdapter:
+    """Adapter with no choice-picker capability."""
+
+
+def _make_runner(adapter=None):
+    runner = object.__new__(gateway_run.GatewayRunner)
+    runner.adapters = {}
+    runner._ephemeral_system_prompt = ""
+    runner._prefill_messages = []
+    runner._reasoning_config = None
+    runner._show_reasoning = False
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._running_agents = {}
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+    runner.hooks.loaded_hooks = []
+    runner._session_db = None
+    runner._delivery_adapter_for = lambda source: adapter
+    runner._thread_metadata_for_source = lambda source, anchor=None: {}
+    runner._reply_anchor_for_event = lambda event: None
+    return runner
+
+
+class TestReasoningChoicePicker:
+    @pytest.mark.asyncio
+    async def test_bare_reasoning_sends_picker_when_adapter_supports_it(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+
+        result = await runner._handle_reasoning_command(_make_event("/reasoning"))
+
+        assert result is None  # picker sent — adapter owns the response
+        assert len(adapter.calls) == 1
+        call = adapter.calls[0]
+        values = [c["value"] for c in call["choices"]]
+        # Full canonical ladder + none + subcommands, in order
+        from hermes_constants import VALID_REASONING_EFFORTS
+        assert values[0] == "none"
+        assert values[1:1 + len(VALID_REASONING_EFFORTS)] == list(VALID_REASONING_EFFORTS)
+        assert values[-3:] == ["reset", "show", "hide"]
+
+
+    @pytest.mark.asyncio
+    async def test_picker_selection_applies_same_as_typed(self, tmp_path, monkeypatch):
+        """The picker's on_choice_selected must produce the identical state
+        change as typing the argument (single application path)."""
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        event = _make_event("/reasoning")
+        session_key = runner._session_key_for_source(event.source)
+
+        await runner._handle_reasoning_command(event)
+        on_choice = adapter.calls[0]["on_choice_selected"]
+
+        reply = await on_choice(event.source.chat_id, "ultra")
+
+        assert "ultra" in reply
+        override = runner._session_state(session_key).conversation.reasoning_override
+        assert override == {"enabled": True, "effort": "ultra"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/reasoning --global", "/reasoning —global"])
+    async def test_reasoning_picker_global_flag_persists_effort(
+        self, tmp_path, monkeypatch, command
+    ):
+        """A flag-only global invocation opens the picker and persists its choice."""
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        event = _make_event(command)
+        session_key = runner._session_key_for_source(event.source)
+        runner._set_session_reasoning_override(session_key, {"enabled": True, "effort": "low"})
+
+        result = await runner._handle_reasoning_command(event)
+
+        assert result is None
+        # Every button the global picker offers works under --global (a session reset would be refused).
+        assert "reset" not in [c["value"] for c in adapter.calls[0]["choices"]]
+        on_choice = adapter.calls[0]["on_choice_selected"]
+        reply = await on_choice(event.source.chat_id, "ultra")
+
+        assert "ultra" in reply
+        saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert saved["agent"]["reasoning_effort"] == "ultra"
+        state = runner._peek_session_state(session_key)
+        assert state is None or state.conversation.reasoning_override is None  # global wins
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command", ["/reasoning --global", "/reasoning —global"])
+    async def test_multiplex_global_picker_persists_only_named_profile(
+        self, tmp_path, monkeypatch, command
+    ):
+        """A delayed picker tap must retain its originating profile scope."""
+        from agent.secret_scope import set_multiplex_active
+
+        default_home = tmp_path / "default"
+        named_home = tmp_path / "profiles" / "named"
+        default_home.mkdir(parents=True)
+        named_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        default_cfg = {"marker": "default"}
+        named_cfg = {"marker": "named"}
+        (default_home / "config.yaml").write_text(
+            yaml.safe_dump(default_cfg), encoding="utf-8"
+        )
+        (named_home / "config.yaml").write_text(
+            yaml.safe_dump(named_cfg), encoding="utf-8"
+        )
+
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        runner.config = types.SimpleNamespace(multiplex_profiles=True)
+        runner._resolve_profile_home_for_source = lambda source: named_home
+        monkeypatch.setattr(gateway_run, "_hermes_home", default_home)
+        event = _make_event(command)
+        event.source.profile = "named"
+        session_key = runner._session_key_for_source(event.source)
+        runner._set_session_reasoning_override(session_key, {"enabled": True, "effort": "low"})
+
+        set_multiplex_active(True)
+        try:
+            with gateway_run._profile_runtime_scope(named_home):
+                result = await runner._handle_reasoning_command(event)
+            assert result is None
+            on_choice = adapter.calls[0]["on_choice_selected"]
+            reply = await on_choice(event.source.chat_id, "ultra")
+        finally:
+            set_multiplex_active(False)
+
+        assert "ultra" in reply
+        assert yaml.safe_load(
+            (default_home / "config.yaml").read_text(encoding="utf-8")
+        ) == default_cfg
+        saved = yaml.safe_load((named_home / "config.yaml").read_text(encoding="utf-8"))
+        assert saved["marker"] == "named"
+        assert saved["agent"]["reasoning_effort"] == "ultra"
+        state = runner._peek_session_state(session_key)
+        assert state is None or state.conversation.reasoning_override is None  # global wins
+
+
+class TestFastChoicePicker:
+    def _patch_fast_support(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
+        monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda cfg=None: "gpt-5.6")
+        # ``/fast`` now resolves the effective session model through
+        # ``_resolve_session_agent_runtime``; with no session override that path
+        # calls runtime provider resolution, so stub it (no real credentials in CI).
+        monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", dict)
+        import hermes_cli.models as models_mod
+        monkeypatch.setattr(models_mod, "model_supports_fast_mode", lambda m: True)
+
+    @pytest.mark.asyncio
+    async def test_bare_fast_sends_picker_when_adapter_supports_it(self, tmp_path, monkeypatch):
+        self._patch_fast_support(monkeypatch, tmp_path)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+
+        result = await runner._handle_fast_command(_make_event("/fast"))
+
+        assert result is None
+        values = [c["value"] for c in adapter.calls[0]["choices"]]
+        assert {"fast", "normal"} <= set(values)
+
+    @pytest.mark.asyncio
+    async def test_fast_picker_selection_is_session_scoped(self, tmp_path, monkeypatch):
+        """A bare /fast picker tap applies a session override, not a config write."""
+        self._patch_fast_support(monkeypatch, tmp_path)
+        adapter = _PickerAdapter()
+        runner = _make_runner(adapter)
+        event = _make_event("/fast")
+
+        await runner._handle_fast_command(event)
+        on_choice = adapter.calls[0]["on_choice_selected"]
+        await on_choice(event.source.chat_id, "fast")
+
+        assert runner._service_tier == "priority"
+        assert any(st.conversation.service_tier_override is not SERVICE_TIER_UNSET
+                   for st in runner._sessions_map().values())
+        assert not (tmp_path / "config.yaml").exists()

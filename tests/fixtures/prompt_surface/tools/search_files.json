@@ -1,0 +1,68 @@
+{
+  "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.",
+  "name": "search_files",
+  "parameters": {
+    "properties": {
+      "context": {
+        "default": 0,
+        "description": "Content search only: lines of context before and after each match.",
+        "type": "integer"
+      },
+      "file_glob": {
+        "description": "Content search only: filter files by pattern (e.g. '*.py').",
+        "type": "string"
+      },
+      "limit": {
+        "default": 50,
+        "description": "Maximum number of results.",
+        "type": "integer"
+      },
+      "offset": {
+        "default": 0,
+        "description": "Skip first N results for pagination.",
+        "type": "integer"
+      },
+      "order": {
+        "default": "discovery",
+        "description": "File search only: 'discovery' is fast bounded traversal order; 'modified' is exact global newest-first and may scan the full tree.",
+        "enum": [
+          "discovery",
+          "modified"
+        ],
+        "type": "string"
+      },
+      "output_mode": {
+        "default": "content",
+        "description": "Content search only: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file.",
+        "enum": [
+          "content",
+          "files_only",
+          "count"
+        ],
+        "type": "string"
+      },
+      "path": {
+        "default": ".",
+        "description": "Directory or file to search in.",
+        "type": "string"
+      },
+      "pattern": {
+        "description": "Regex for content search; glob (e.g. '*.py', '*config*') for file search.",
+        "type": "string"
+      },
+      "target": {
+        "default": "content",
+        "description": "'content' searches inside files, 'files' finds files by name.",
+        "enum": [
+          "content",
+          "files"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "pattern"
+    ],
+    "type": "object"
+  }
+}

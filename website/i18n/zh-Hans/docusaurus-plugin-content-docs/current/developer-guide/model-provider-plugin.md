@@ -1,0 +1,379 @@
+---
+sidebar_position: 10
+title: "模型提供商插件"
+description: "如何为 Hermes Agent 构建模型提供商（推理后端）插件"
+---
+
+# 构建模型提供商插件
+
+模型提供商插件声明一个推理后端——兼容 OpenAI 的端点、Anthropic Messages 服务器、Codex 风格的 Responses API，或 Bedrock 原生接口——Hermes 可通过这些后端路由 `AIAgent` 调用。每个内置提供商（OpenRouter、Anthropic、GMI、DeepSeek、Nvidia……）都以此类插件形式提供。第三方可通过在 `$HERMES_HOME/plugins/model-providers/` 下放置一个目录来添加自己的提供商，无需对仓库做任何修改。
+
+:::tip
+模型提供商插件是**提供商插件**的第三种类型。其他两种分别是 [Memory Provider 插件](./memory-provider-plugin.md)（跨会话知识）和 [Context Engine 插件](./context-engine-plugin.md)（上下文压缩策略）。三者均遵循相同的"放入目录、声明 profile、无需编辑仓库"模式。
+:::
+
+## 发现机制
+
+`providers/__init__.py._discover_providers()` 在任何代码首次调用 `get_provider_profile()` 或 `list_providers()` 时懒加载执行。发现顺序：
+
+1. **内置插件** — `<repo>/plugins/model-providers/<name>/` — 随 Hermes 一同发布
+2. **用户插件** — `$HERMES_HOME/plugins/model-providers/<name>/` — 放入任意目录；后续会话无需重启即可生效
+3. **旧版单文件** — `<repo>/providers/<name>.py` — 为树外可编辑安装提供向后兼容
+
+**同名用户插件会覆盖内置插件**，因为 `register_provider()` 采用后写者优先策略。放入 `$HERMES_HOME/plugins/model-providers/gmi/` 目录即可替换内置 GMI profile，无需修改仓库。
+
+## 目录结构
+
+```
+plugins/model-providers/my-provider/
+├── __init__.py       # 在模块级别调用 register_provider(profile)
+├── plugin.yaml       # kind: model-provider + 元数据（可选但推荐）
+└── README.md         # 安装说明（可选）
+```
+
+唯一必需的文件是 `__init__.py`。`plugin.yaml` 供 `hermes plugins` 用于自省，以及供通用 PluginManager 将插件路由到正确的加载器；若缺少该文件，通用加载器会回退到源码文本启发式检测。
+
+## 最简示例——一个简单的 API key 提供商
+
+```python
+# plugins/model-providers/acme-inference/__init__.py
+from providers import register_provider
+from providers.base import ProviderProfile
+
+acme = ProviderProfile(
+    name="acme-inference",
+    aliases=("acme",),
+    display_name="Acme Inference",
+    description="Acme — OpenAI-compatible direct API",
+    signup_url="https://acme.example.com/keys",
+    env_vars=("ACME_API_KEY", "ACME_BASE_URL"),
+    base_url="https://api.acme.example.com/v1",
+    auth_type="api_key",
+    default_aux_model="acme-small-fast",
+    fallback_models=(
+        "acme-large-v3",
+        "acme-medium-v3",
+        "acme-small-fast",
+    ),
+)
+
+register_provider(acme)
+```
+
+```yaml
+# plugins/model-providers/acme-inference/plugin.yaml
+name: acme-inference
+kind: model-provider
+version: 1.0.0
+description: Acme Inference — OpenAI-compatible direct API
+author: Your Name
+```
+
+就这些。放入这两个文件后，以下集成**自动生效**，无需其他任何修改：
+
+| 集成点 | 位置 | 获得的能力 |
+|---|---|---|
+| 凭据解析 | `hermes_cli/auth.py` | `PROVIDER_REGISTRY["acme-inference"]` 从 profile 填充 |
+| `--provider` CLI 标志 | `hermes_cli/main.py` | 接受 `acme-inference` |
+| `hermes model` 选择器 | `hermes_cli/models.py` | 出现在 `CANONICAL_PROVIDERS` 中，从 `{base_url}/models` 获取模型列表 |
+| `hermes doctor` | `hermes_cli/doctor.py` | 对 `ACME_API_KEY` 及 `{base_url}/models` 进行健康检查 |
+| `hermes setup` | `hermes_cli/config.py` | `ACME_API_KEY` 出现在 `OPTIONAL_ENV_VARS` 和设置向导中 |
+| URL 反向映射 | `agent/model_metadata.py` | 主机名 → 提供商名称，用于自动检测 |
+| 辅助模型 | `agent/auxiliary_client.py` | 使用 `default_aux_model` 进行压缩/摘要 |
+| 运行时解析 | `hermes_cli/runtime_provider.py` | 返回正确的 `base_url`、`api_key`、`api_mode` |
+| 传输层 | `agent/transports/chat_completions.py` | Profile 路径通过 `prepare_messages` / `build_extra_body` / `build_api_kwargs_extras` 生成 kwargs |
+
+## ProviderProfile 字段
+
+完整定义见 `providers/base.py`。最常用的字段：
+
+| 字段 | 类型 | 用途 |
+|---|---|---|
+| `name` | str | 规范 ID——与 `config.yaml` 中的 `model.provider` 及 `--provider` 标志匹配 |
+| `aliases` | `tuple[str, ...]` | 由 `get_provider_profile()` 解析的别名（如 `grok` → `xai`） |
+| `api_mode` | str | `chat_completions` \| `codex_responses` \| `anthropic_messages` \| `bedrock_converse` |
+| `display_name` | str | 在 `hermes model` 选择器中显示的人类可读标签 |
+| `description` | str | 选择器副标题 |
+| `signup_url` | str | 首次运行设置时显示（"在此获取 API key"） |
+| `env_vars` | `tuple[str, ...]` | 按优先级排列的 API key 环境变量；最后一个 `*_BASE_URL` 条目用作用户 base URL 覆盖 |
+| `base_url` | str | 默认推理端点 |
+| `models_url` | str | 显式目录 URL（回退到 `{base_url}/models`） |
+| `auth_type` | str | `api_key` \| `oauth_device_code` \| `oauth_external` \| `aws_sdk` \| `external_process` \| 任意插件自定义值（此时登录由提供商自行负责） |
+| `fallback_models` | `tuple[str, ...]` | 实时目录获取失败时显示的精选列表 |
+| `default_headers` | `dict[str, str]` | 随每个请求发送（如 IDE 订阅类 API 要求的 `Editor-Version` 请求头） |
+| `fixed_temperature` | Any | `None` = 使用调用方的值；`OMIT_TEMPERATURE` 哨兵值 = 完全不发送 temperature（Kimi） |
+| `default_max_tokens` | `int \| None` | 提供商级别的 max_tokens 上限（Nvidia：16384） |
+| `default_aux_model` | str | 用于辅助任务（压缩、视觉、摘要）的廉价模型 |
+
+## 可覆盖的 hook
+
+对于非常规的特殊需求，可子类化 `ProviderProfile`：
+
+```python
+from typing import Any
+from providers.base import ProviderProfile
+
+class AcmeProfile(ProviderProfile):
+    def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """提供商特定的消息预处理。在 codex 清理之后、developer-role 替换之前运行。
+        默认：直接透传。"""
+        # 示例：Qwen 将纯文本内容规范化为 list-of-parts 数组并注入 cache_control；
+        # Kimi 重写 tool-call JSON
+        return messages
+
+    def build_extra_body(self, *, session_id=None, **context) -> dict:
+        """提供商特定的 extra_body 字段，合并到 API 调用中。
+        context 包含：session_id、provider_preferences、model、base_url、
+        reasoning_config。默认：空 dict。"""
+        # 示例：OpenRouter 的 provider-preferences 块，
+        # Gemini 的 thinking_config 转换。
+        return {}
+
+    def build_api_kwargs_extras(self, *, reasoning_config=None, **context):
+        """返回 (extra_body_additions, top_level_kwargs)。当某些字段需要放在顶层
+        （Kimi 的 reasoning_effort）而另一些放在 extra_body（OpenRouter 的 reasoning dict）
+        时需要此方法。默认：({}, {})。"""
+        return {}, {}
+
+    def fetch_models(self, *, api_key=None, timeout=8.0) -> list[str] | None:
+        """实时目录获取。默认使用 Bearer 认证访问 {models_url or base_url}/models。
+        以下情况需覆盖：自定义认证（Anthropic）、无 REST 端点（Bedrock → None），
+        或公开/无认证目录（OpenRouter）。"""
+        return super().fetch_models(api_key=api_key, timeout=timeout)
+```
+
+## ProviderProfile fields and hooks
+
+`providers/base.py` 声明的全部字段与 hook，按声明顺序排列（下表保留英文原文）。名称以 `()` 结尾的是需在子类中覆盖的方法，其余为 dataclass 字段（其中少数，如 `picker_catalog` 和设备码登录相关字段，接收可调用对象）。按端点区分的 hook（`client_headers`、`request_headers`、`max_tokens_param`）接收请求的 `base_url`，对不属于你的端点返回 `None` / `{}`；`responses_*`、`message_carrier_*` 字段及推理回放 hook 仅作用于 profile 在 `hostnames` 中声明的主机。热路径 hook 必须是纯函数且开销低（无 I/O），除非说明中另有注明。
+
+| Name | Meaning | Default |
+|---|---|---|
+| `name` | Canonical provider id (`model.provider`, `--provider`) | required |
+| `api_mode` | Static wire protocol; `api_mode_for_model()` can vary it per model | `"chat_completions"` |
+| `aliases` | Alternative names `get_provider_profile()` resolves | `()` |
+| `display_name` | Human label in pickers | `""` |
+| `description` | Picker subtitle | `""` |
+| `signup_url` | Shown during setup | `""` |
+| `hidden` | Pre-release: kept off discovery surfaces until `listed()` is true; resolution by name still works | `False` |
+| `env_vars` | API-key env vars in priority order; a final `*_BASE_URL` entry is the base-URL override | `()` |
+| `base_url` | Default inference endpoint | `""` |
+| `models_url` | Explicit models endpoint (else `{base_url}/models`) | `""` |
+| `auth_type` | `api_key` \| `oauth_device_code` \| `oauth_external` \| `external_process` \| `aws_sdk` \| plugin-defined | `"api_key"` |
+| `supports_streaming` | `None` keeps transport defaults, `True` opts a process client into streaming, `False` disables it | `None` |
+| `supports_health_check` | `False`: `hermes doctor` skips the `/models` probe | `True` |
+| `supports_model_listing` | `False`: `fetch_models()` returns `None` without a network call | `True` |
+| `auth_handler` | Provider-owned `hermes auth add\|status\|logout\|refresh <name>`; truthy return = handled | `None` |
+| `refresh_credential` | Rotates a pooled OAuth row and returns the rotated fields | `None` |
+| `classify_api_error` | Error classification for this provider's failures, before the built-in pipeline | `None` |
+| `supports_vision` | API accepts images inside tool-result messages | `False` |
+| `supports_vision_tool_messages` | API accepts list-type (multipart) tool message content | `True` |
+| `supports_prompt_cache_key` | Chat Completions endpoint documents `prompt_cache_key` | `False` |
+| `native_reasoning_details_type` | Namespaced `<provider>.native_assistant` reasoning carrier only this profile receives | `None` |
+| `process_command` | External-process default binary | `""` |
+| `process_args` | External-process default argv tail | `()` |
+| `process_command_env_vars` | Env vars overriding the binary, in priority order | `()` |
+| `process_args_env_var` | Env var overriding argv (shlex-split) | `""` |
+| `fallback_models` | Curated picker list when the live fetch fails | `()` |
+| `model_aliases` | Short name → model id; `/model <alias>` resolves here first | `{}` |
+| `hostname` | Base hostname for URL → provider reverse mapping (derived from `base_url` when empty) | `""` |
+| `default_headers` | Headers on every request and on the default catalog fetch | `{}` |
+| `fixed_temperature` | `None` = caller's value; `OMIT_TEMPERATURE` = never send temperature | `None` |
+| `default_max_tokens` | Provider-level max_tokens cap | `None` |
+| `unsupported_response_formats` | `response_format` types auxiliary requests omit | `()` |
+| `default_aux_model` | Cheap model for auxiliary tasks; empty = main model | `""` |
+| `model_capabilities` | Per-model metadata in the `model_overrides` schema | `{}` |
+| `account_card` | Accounts-tab card overrides `{name, flow, cli_command, docs_url}` (Desktop/dashboard) | `{}` |
+| `account_status` | Live status for that card; subprocess- and network-free | `None` (`auth.get_auth_status(name)`) |
+| `start_device_login` | In-app device-code sign-in: returns `{user_code, verification_url, expires_in, interval, state}` | `None` |
+| `poll_device_login` | One poll of that login: `{status, interval?, credential?, message?}` | `None` |
+| `save_device_login` | Persists the approved credential (core calls it in the session's profile scope) | `None` |
+| `model_setup_flow` | The provider's own `hermes model` step (credential prompt, catalog, persist) | `None` (generic flow for `auth_type`) |
+| `setup_reasoning_efforts` | Effort levels the setup picker offers for a model; `()` = no reasoning control | `None` (generic ladder) |
+| `fetch_account_usage()` | `/usage` snapshot when no built-in usage fetcher owns the provider | `None` |
+| `resolve_aux_model()` | Live cheap-model id for auxiliary tasks; cached, never raises | `""` (use `default_aux_model`) |
+| `get_hostname()` | Provider hostname for URL detection | `hostname`, else from `base_url` |
+| `prepare_messages()` | Message preprocessing after codex sanitization, before the developer-role swap | pass-through |
+| `build_extra_body()` | Provider-specific `extra_body` fields | `{}` |
+| `default_reasoning_config()` | Reasoning config sent when `agent.reasoning_effort` is unset | `None` |
+| `build_api_kwargs_extras()` | `(extra_body_additions, top_level_kwargs)` split | `({}, {})` |
+| `build_client_kwargs_extras()` | OpenAI-client kwargs defaults (explicit settings win; no I/O) | `{}` |
+| `default_vision_model()` | Provider's default vision model id | `None` |
+| `get_model_context_length()` | Provider-qualified context bound; explicit user overrides win | `None` |
+| `get_usage_cost()` | `CostResult` from canonical usage (estimates are never `actual`) | `None` |
+| `get_max_tokens()` | Per-model max_tokens cap when the user set none | `default_max_tokens` |
+| `supported_reasoning_efforts()` | Effort vocabulary for a model: `None` unknown, `()` none, tuple = clamp; no I/O | `None` |
+| `api_mode_for_model()` | Wire this provider serves a model on; `api_key` given only at resolution time | `None` (static `api_mode`) |
+| `client_headers()` | Default headers for a client built for `base_url` (`has_images` for image requests) | `None` (static `default_headers`) |
+| `request_headers()` | Per-request `extra_headers` for `base_url`; `user_initiated` on a turn's first call | `{}` |
+| `max_tokens_param()` | `"max_completion_tokens"` or `"max_tokens"` for `base_url` | `None` (core heuristic) |
+| `listed()` | Whether discovery surfaces may offer the provider | `True` unless `hidden` with no pool row |
+| `create_client()` | Provider-specific client object (ACP shim, native SDK) | `None` (standard client) |
+| `setup_status()` | External-process login state `{available, logged_in, plan, detail, login_command}` | `None` |
+| `discover_models()` | External-process live picker `[{id, label, note}]` without inference | `None` (`fallback_models`) |
+| `fetch_models()` | Live model ids | GET `{models_url or base_url}/models` |
+| `hostnames` | Hosts (and subdomains) serving this API, so a `custom` endpoint or aux client there is recognised | `()` |
+| `metadata_hostnames` | Hosts identifying this catalog for model metadata only (other credentials) | `()` |
+| `models_dev_id` | models.dev provider id when it differs from `name` | `""` |
+| `live_context_length()` | Context window from the live, credentialed catalog; after the persistent cache | `None` |
+| `normalize_model_id()` | Provider-native id for a model (aliases, catalog repair) | `None` (generic normalization) |
+| `ambient_credentials` | Credentials are ambient: never auto-detected; aux fallback skips unless configured | `False` |
+| `resolve_api_key_secret()` | Provider-owned `(runtime_api_key, source)` | `None` (env/pool ladder) |
+| `runtime_base_url()` | Base URL derived from the credential | `None` (env or default) |
+| `prepare_pool_entry()` | Turns the selected pool row's secret into the runtime key | the secret as-is |
+| `seed_pool_credentials(suppressed_sources, explicitly_configured)` | Pool rows `{source, access_token, base_url, label}` the provider seeds itself, skipping sources in `suppressed_sources` | `None` (generic env seeding) |
+| `remove_credential_source()` | `hermes auth remove`: `(sources_to_suppress, hints)` | `None` (generic removal) |
+| `refresh_runtime_credentials()` | Re-mints `(api_key, base_url)` on `unauthorized` \| `stale` \| `auxiliary_unauthorized`; error path only | `None` |
+| `is_stale_credential_error()` | A non-auth error really means the credential went stale (pure) | `False` |
+| `credential_refresh_notice()` | Status line after a successful runtime refresh | `""` (generic wording) |
+| `request_rejection_hint()` | User-facing lines for an endpoint's hard rejection of any route | `()` |
+| `external_auth_evidence()` | Subprocess-free `(verified, source)` login evidence for an external CLI | `None` (binary resolves) |
+| `responses_replay_item_ids` | Replayed Responses `message` items keep their `id` | `True` |
+| `responses_prompt_cache_key` | The Responses body carries `prompt_cache_key` | `True` |
+| `responses_issuer_kind` | Persisted issuer stamp for encrypted reasoning minted here | `""` (URL-derived) |
+| `responses_trusts_completed_status` | `False`: a reasoning-only `completed` response continues | `True` |
+| `responses_native_compaction` | `False`: never send `context_management` | `True` |
+| `responses_profile_reasoning` | `True`: `reasoning` = `reasoning_payload()` + summary, no `include` | `False` |
+| `message_carrier_opaque` | Top-level assistant key of an opaque reasoning blob (latest streamed wins) | `""` |
+| `message_carrier_text` | Top-level assistant key of readable reasoning text (streamed parts concatenate) | `""` |
+| `replays_tool_call_signatures` | Tool calls keep Gemini `extra_content` signatures | `False` |
+| `reasoning_payload()` | Verbatim `reasoning` object for a model (catalog-clamped) | `None` |
+| `replay_message_carriers()` | Captured `message_carrier_*` values to put back on a replayed assistant message | `{}` |
+| `replays_function_thought_signature()` | Replayed tool calls keep `function.thought_signature` | `False` |
+| `picker_catalog` | `(force_refresh) -> list`: the provider's own model-picker catalog, tried before the generic fetch | `None` |
+| `static_models` | Curated ids registered as this provider's row of the static catalog | `()` |
+| `catalog_credential_files` | Credential files whose mtime joins every cached catalog's fingerprint | `()` |
+| `probe_models()` | `(ids or None, probed_url, resolved_base_url)` for a `/models` probe this provider answers | `None` (generic HTTP probe) |
+| `invalidate_catalog_cache()` | Drops in-process catalog memos (`/model --refresh`) | no-op |
+| `picker_after` | Provider slug this row follows in the provider list | `""` (appended) |
+| `picker_group` | `(group_id, label, description)`: folds same-group rows in interactive pickers | `()` |
+| `catalog_aliases` | `aliases` also normalize in the model catalog | `False` |
+| `aggregator` | Catalog re-exposes many vendors' models | `False` |
+| `provider_overlay` | HermesOverlay fields for the models.dev-keyed definition | `{}` |
+| `overlay_aliases` | Extra names normalizing to the `provider_overlay` definition | `()` |
+| `registry_auth_type` | Auth-registry row `auth_type` when credential resolution differs from the setup flow | `""` (`auth_type`) |
+| `base_url_env_var` | Env var overriding `base_url` on the registry row when not in `env_vars` | `""` |
+| `registry_after` | Registry id this row follows in priority-ordered scans | `""` (appended) |
+
+## Hook 参考示例
+
+参考以下内置插件了解常用写法：
+
+| 插件 | 参考原因 |
+|---|---|
+| `plugins/model-providers/openrouter/` | 带 provider preferences 的聚合器，公开模型目录 |
+| `plugins/model-providers/gemini/` | `thinking_config` 转换（原生 + OpenAI 兼容嵌套形式） |
+| `plugins/model-providers/kimi-coding/` | `OMIT_TEMPERATURE`、`extra_body.thinking`、顶层 `reasoning_effort` |
+| `plugins/model-providers/qwen-oauth/` | 消息规范化、`cache_control` 注入、VL 高分辨率 |
+| `plugins/model-providers/nous/` | 归因标签、"禁用时省略 reasoning" |
+| `plugins/model-providers/custom/` | Ollama 的 `num_ctx` + `think: false` 特殊处理 |
+| `plugins/model-providers/bedrock/` | `api_mode="bedrock_converse"`，`fetch_models` 返回 None（无 REST 端点） |
+
+## 用户覆盖——不修改仓库替换内置提供商
+
+假设你想将 `gmi` 指向私有测试端点进行测试。创建 `~/.hermes/plugins/model-providers/gmi/__init__.py`：
+
+```python
+from providers import register_provider
+from providers.base import ProviderProfile
+
+register_provider(ProviderProfile(
+    name="gmi",
+    aliases=("gmi-cloud", "gmicloud"),
+    env_vars=("GMI_API_KEY",),
+    base_url="https://gmi-staging.internal.example.com/v1",
+    auth_type="api_key",
+    default_aux_model="google/gemini-3.1-flash-lite-preview",
+))
+```
+
+下次会话时，`get_provider_profile("gmi").base_url` 将返回测试 URL。无需打补丁，无需重新构建。由于用户插件在内置插件之后被发现，用户的 `register_provider()` 调用会胜出。
+
+## api_mode 选择
+
+系统识别四个值。Hermes 的选择依据：
+
+1. 用户显式覆盖（`config.yaml` 中设置了 `model.api_mode`）
+2. OpenCode 的按模型分发（Zen 和 Go 的 `opencode_model_api_mode`）
+3. URL 自动检测——`/anthropic` 后缀 → `anthropic_messages`，`api.openai.com` → `codex_responses`，`api.x.ai` → `codex_responses`，Kimi 域名上的 `/coding` → `chat_completions`
+4. **Profile 的 `api_mode`** 作为 URL 检测无结果时的回退
+5. 默认 `chat_completions`
+
+将 `profile.api_mode` 设置为你的提供商默认使用的值——它作为提示使用。用户 URL 覆盖仍然优先。
+
+## 认证类型
+
+| `auth_type` | 含义 | 使用者 |
+|---|---|---|
+| `api_key` | 单个环境变量携带静态 API key | 大多数提供商 |
+| `oauth_device_code` | 设备码 OAuth 流程 | — |
+| `oauth_external` | 用户在其他地方登录，token 存入 `auth.json` | Anthropic OAuth、MiniMax OAuth、Qwen Portal、Nous Portal |
+| *插件自定义* | 其他任意值：登录与刷新由提供商自行负责（`auth_handler`、`refresh_credential` 及凭据 hook）；若认证注册表行不同，用 `registry_auth_type` 指定 | 例如 [`github-copilot` labs 插件](https://github.com/NousResearch/hermes-labs-plugins/tree/main/github-copilot) 中的 `copilot` |
+| `aws_sdk` | AWS SDK 凭据链（IAM role、profile、env） | 仅 `bedrock` 插件 |
+| `external_process` | 认证由 agent 启动的子进程处理 | 树外 ACP 插件（例如 `github-copilot` labs 插件中的 `copilot-acp`） |
+
+`auth_type` 控制哪些代码路径将你的提供商视为"简单 api-key 提供商"——若不是 `api_key`，PluginManager 仍会记录 manifest，但 Hermes CLI 层面的自动化（doctor 检查、`--provider` 标志、设置向导委托）可能会跳过它。
+
+## 发现时机
+
+提供商发现是**懒加载**的——由进程中首次调用 `get_provider_profile()` 或 `list_providers()` 触发。实际上这在启动早期就会发生（`auth.py` 模块加载时会主动扩展 `PROVIDER_REGISTRY`）。若需验证插件是否已加载，运行：
+
+```bash
+hermes doctor
+```
+
+——成功的 `auth_type="api_key"` profile 会出现在 Provider Connectivity 部分，并附带 `/models` 探测结果。
+
+编程方式检查：
+
+```python
+from providers import list_providers
+for p in list_providers():
+    print(p.name, p.base_url, p.api_mode)
+```
+
+## 测试你的插件
+
+将 `HERMES_HOME` 指向临时目录，避免污染真实配置：
+
+```bash
+export HERMES_HOME=/tmp/hermes-plugin-test
+mkdir -p $HERMES_HOME/plugins/model-providers/my-provider
+cat > $HERMES_HOME/plugins/model-providers/my-provider/__init__.py <<'EOF'
+from providers import register_provider
+from providers.base import ProviderProfile
+register_provider(ProviderProfile(
+    name="my-provider",
+    env_vars=("MY_API_KEY",),
+    base_url="https://api.my-provider.example.com/v1",
+    auth_type="api_key",
+))
+EOF
+
+export MY_API_KEY=your-test-key
+hermes -z "hello" --provider my-provider -m some-model
+```
+
+## 通用 PluginManager 集成
+
+通用 `PluginManager`（即 `hermes plugins` 操作的对象）**能看到**模型提供商插件，但不会导入它们——`providers/__init__.py` 负责管理其生命周期。Manager 记录 manifest 用于自省，并按 `kind: model-provider` 分类。当你将一个未标记的用户插件放入 `$HERMES_HOME/plugins/`，而该插件恰好调用了带 `ProviderProfile` 的 `register_provider`，Manager 会通过源码文本启发式检测自动将其归类为 `kind: model-provider`——因此即使没有 `plugin.yaml`，插件仍能正确路由。
+
+## 通过 pip 分发
+
+与所有 Hermes 插件一样，模型提供商可以作为 pip 包发布。在你的 `pyproject.toml` 中添加入口点：
+
+```toml
+[project.entry-points."hermes_agent.plugins"]
+acme-inference = "acme_hermes_plugin:register"
+```
+
+……其中 `acme_hermes_plugin:register` 是一个调用 `register_provider(profile)` 的函数。通用 PluginManager 在 `discover_and_load()` 期间会拾取入口点插件。对于 `kind: model-provider` 的 pip 插件，你仍需在 manifest 中声明 kind（或依赖源码文本启发式检测）。
+
+完整的入口点设置请参阅 [构建 Hermes 插件](./plugins/index.md#distribute-via-pip)。
+
+## 相关页面
+
+- [Provider Runtime](./provider-runtime.md) — 解析优先级及各层读取 profile 的位置
+- [添加提供商](./adding-providers.md) — 新推理后端的端到端检查清单（涵盖快速插件路径和完整 CLI/auth 集成）
+- [Memory Provider 插件](./memory-provider-plugin.md)
+- [Context Engine 插件](./context-engine-plugin.md)
+- [构建 Hermes 插件](./plugins/index.md) — 通用插件编写指南

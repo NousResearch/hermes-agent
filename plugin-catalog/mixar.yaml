@@ -1,0 +1,33 @@
+name: mixar
+repo: https://github.com/Mixar-AI/hermes-mixar
+sha: 246e46f084f560cbdde10fe01bff8b6e598ff297
+version: "0.2.0"
+title: Mixar
+maintainer: Mixar-AI
+tier: community
+category: tools
+requires_hermes: ">=0.22.3"
+docs_url: https://github.com/Mixar-AI/hermes-mixar#readme
+platforms: [macos, windows, linux]
+description: >-
+  Mixar's own desktop MCP server over stdio, with a Mixar workflow skill: build and edit 3D scenes,
+  generate models, textures, rigs and animation with AI, render, and export game-ready assets for
+  Unity, Unreal and Godot. Requires Mixar 4.2.1+ on macOS, Windows or Linux, signed in with Connect
+  MCP turned on, on the same computer as Hermes. Disclosure — runs the launcher the installed Mixar
+  app writes at ~/.mixar/connector/mixar-mcp (%USERPROFILE%\.mixar\connector\mixar-mcp.cmd on
+  Windows), which reads Mixar's own files under ~/.mixar/; tools execute arbitrary Python inside
+  Mixar with your privileges; a tool call can start the installed Mixar app, which stays open after
+  Hermes exits; calls go over loopback to Mixar, which forwards them to api.mixar.app under the
+  signed-in account; generation prompts and reference images go to the AI provider running the
+  chosen model; Mixar's backend keeps diagnostic records of MCP tool calls (inputs and results) and
+  deletes them within 30 days; AI generation and create_layered_material spend Mixar credits, declared to Hermes as cost ranges with a 500-credit spend limit per chat; the
+  plugin stores no credentials, ships no binaries, sends no telemetry and never updates itself; the
+  optional MIXAR_MCP_LAUNCHER variable makes it run the program it names; at install Hermes looks
+  for Mixar (macOS: Mixar.app in /Applications and ~/Applications; Windows: the installed-apps entry
+  or %ProgramFiles%\Mixar; Linux: a mixar command on PATH or Mixar's launcher) and refuses the
+  install when it is missing or, on macOS and Windows, older than 4.2.1.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

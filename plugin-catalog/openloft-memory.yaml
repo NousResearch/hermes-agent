@@ -1,0 +1,28 @@
+name: openloft-memory
+repo: https://github.com/blok-hamster/hermes-plugin-openloft-memory
+sha: 8edd526d822f6514dc2f8f4a97d960d0fe7d9e55
+version: "0.1.0"
+description: "OpenLoft Memory — persistent graph-backed long-term memory for any Hermes agent. Recall before every turn, ingest after every turn, loft_* memory tools. Works with the hosted OpenLoft service or a self-hosted backend. Zero Python dependencies. Disclosure — while openloft-memory is the active memory provider, each turn's user message, assistant reply and the core-redacted transcript slice (tool outputs included) are sent to the OpenLoft memory service (default https://api.openloft.xyz/api/memory, or the base_url you set) for storage and server-side LLM extraction, and each user message is sent there as a recall query; transcript archiving before compression, MEMORY.md/USER.md mirroring and backfill are off by default; loft_forget stops retrieval but the service retains the data (not erasure)."
+maintainer: blok-hamster
+tier: community
+category: memory
+capabilities:
+  provides_tools:
+    - loft_recall
+    - loft_remember
+    - loft_forget
+    - loft_stats
+    - loft_search
+  provides_hooks:
+    - prefetch
+    - queue_prefetch
+    - sync_turn
+    - system_prompt_block
+    - on_session_end
+    - shutdown
+    - on_pre_compress
+    - on_memory_write
+  provides_middleware: []
+  requires_env:
+    - OPENLOFT_MEMORY_API_KEY
+requires_hermes: ">=0.19.0"

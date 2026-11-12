@@ -1,0 +1,29 @@
+name: lightkeeper
+repo: https://github.com/Light5566/claude-lightkeeper
+sha: 5126b570feb4a4365e9b3308bcb1029e4822f972
+description: "An Obsidian-compatible map of how your codebase works (modules, flows, integrations, platform traps, decisions), kept outside the repo and kept honest by hooks: a primer on the first turn, pointers to the notes that own what you are asking about or editing, and a reminder through the verify gate when code moved but the map did not. Eight lightkeeper:* skills carry the procedures (init, seed, tidy, trace, release, knowledge-vault, vault-sync, vault-tidy); the vault CLI (find, check, sync, status, log, export) works from any shell. Not a memory provider. Disclosure — each hook runs python3 on the plugin's own scripts as a synchronous subprocess with a 10 s timeout (on every user message, after every write_file and patch, at the verify step and at session end), and those scripts run read-only git commands (rev-parse, remote get-url, worktree list, ls-tree, status, log) in the session's checkout and in the vault folder; the session primer and prompt hints put text from the vault's notes into the model's context; the hooks read the vault registry ~/.claude/vaults and the vault folders it lists, and write only inside the vault (_meta/index.json), a small per-session state file in the system temporary directory ($TMPDIR), and the plugin's own data directory; the init, seed, sync, tidy, trace and release procedures run the vault CLI through the terminal and commit to the vault's own git repository, and vault init appends the vault to ~/.claude/vaults and, only when you pass its opt-in flags, copies a vault launcher to ~/.local/bin (--install-cli), installs report-only post-merge and pre-push hooks in your code checkouts (--git-hook), or adds a post-commit hook that pushes every vault commit to the remote you name (--backup-remote); vault export writes an HTML map that loads d3 7.9.0 from cdnjs.cloudflare.com when opened; no other network calls, no telemetry, no credentials, no dependencies beyond Python 3.9 and git. Silent until a vault covers the session's working directory."
+maintainer: Light5566
+tier: community
+category: tools
+requires_hermes: ">=0.22.0"
+docs_url: https://github.com/Light5566/claude-lightkeeper#hermes-agent
+version: "2.4.4"
+title: Lightkeeper
+image: https://raw.githubusercontent.com/Light5566/claude-lightkeeper/3d107f02e570c20d11196683a1608d2fc70f1749/docs/assets/social.png
+screenshots:
+  - https://raw.githubusercontent.com/Light5566/claude-lightkeeper/3d107f02e570c20d11196683a1608d2fc70f1749/docs/assets/map.png
+  - https://raw.githubusercontent.com/Light5566/claude-lightkeeper/3d107f02e570c20d11196683a1608d2fc70f1749/docs/assets/gallery/lightkeeper.png
+  - https://raw.githubusercontent.com/Light5566/claude-lightkeeper/3d107f02e570c20d11196683a1608d2fc70f1749/docs/assets/gallery/bookstack.png
+platforms: [linux, macos]
+known_issues:
+  - "Verified with a real model on Hermes stable 0.22.2 in hermes chat -q mode: patch and write_file, the edit pointer, the verify-gate reminder, the note update and the session-end notice. Not yet verified: the messaging gateways, interactive multi-turn sessions, turns after a context compaction, concurrent sessions on one gateway, and host-unified main builds."
+  - "Does nothing until a vault covers the session's working directory: create one with python3 ~/.hermes/plugins/lightkeeper/bin/vault init <vault folder> --name <name> --repo <checkout> (README, Hermes Agent section). Needs the local terminal backend."
+capabilities:
+  provides_tools: []
+  provides_hooks:
+    - pre_llm_call
+    - transform_tool_result
+    - pre_verify
+    - on_session_finalize
+  provides_middleware: []
+  requires_env: []

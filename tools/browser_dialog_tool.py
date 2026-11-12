@@ -1,0 +1,104 @@
+"""Agent-facing tool: respond to a native JS dialog captured by the CDP supervisor.
+
+Response-only: the agent calls ``browser_dialog(action=...)`` for a dialog the
+supervisor holds; with several queued, the error names the candidate ids. Gated on ``_browser_cdp_check`` so it
+appears together with ``browser_cdp``. Design: ``website/docs/developer-guide/browser-supervisor.md``.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, Optional
+
+from tools.browser_supervisor import SUPERVISOR_REGISTRY
+from tools.registry import registry
+
+BROWSER_DIALOG_SCHEMA: dict[str, Any] = {
+    "name": "browser_dialog",
+    "description": (
+        "Accept or dismiss a native JS dialog (alert/confirm/prompt) blocking the page.\n\n"
+        "**Workflow:** when a page is blocked by a native dialog the CDP "
+        "supervisor captured, call this tool with ``action='accept'`` or "
+        "``action='dismiss'``.\n\n"
+        "**Prompt dialogs:** pass ``prompt_text`` to supply the response "
+        "string. Ignored for alert/confirm/beforeunload.\n\n"
+        "**Multiple dialogs:** if more than one dialog is queued (rare — "
+        "happens when a second dialog fires while the first is still open), "
+        "pass ``dialog_id`` (the error lists the candidates) to disambiguate.\n\n"
+        "**Availability:** only present when a CDP endpoint is attached — "
+        "a local Chromium-family browser via ``/browser connect``, or "
+        "``browser.cdp_url`` in config.yaml."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["accept", "dismiss"],
+                "description": (
+                    "'accept' clicks OK / returns the prompt text. "
+                    "'dismiss' clicks Cancel / returns null from prompt(). "
+                    "For ``beforeunload`` dialogs: 'accept' allows the "
+                    "navigation, 'dismiss' keeps the page."
+                ),
+            },
+            "prompt_text": {
+                "type": "string",
+                "description": (
+                    "Response string for a ``prompt()`` dialog. Ignored for "
+                    "other dialog types. Defaults to empty string."
+                ),
+            },
+            "dialog_id": {
+                "type": "string",
+                "description": (
+                    "Specific dialog to respond to, from "
+                    "the candidate ids a previous call listed. Required "
+                    "only when multiple dialogs are queued."
+                ),
+            },
+        },
+        "required": ["action"],
+    },
+}
+
+
+def browser_dialog(
+    action: str,
+    prompt_text: Optional[str] = None,
+    dialog_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Respond to a pending dialog on the active task's CDP supervisor."""
+    supervisor = SUPERVISOR_REGISTRY.get(task_id or "default")
+    if supervisor is None:
+        return json.dumps({
+            "success": False,
+            "error": (
+                "No CDP supervisor is attached to this task: no browser "
+                "session has been started yet. Call browser_exec or "
+                "/browser connect first."
+            ),
+        })
+    result = supervisor.respond_to_dialog(action=action, prompt_text=prompt_text, dialog_id=dialog_id)
+    if result.get("ok"):
+        return json.dumps({"success": True, "action": action, "dialog": result.get("dialog", {})})
+    return json.dumps({"success": False, "error": result.get("error", "unknown error")})
+
+
+def _browser_dialog_check() -> bool:
+    """Gate: same as ``browser_cdp`` so the two tools appear/disappear together."""
+    from tools.browser_cdp_tool import _browser_cdp_check
+
+    return _browser_cdp_check()
+
+
+registry.register(
+    name="browser_dialog",
+    toolset="browser-cdp",
+    schema=BROWSER_DIALOG_SCHEMA,
+    handler=lambda args, **kw: browser_dialog(action=args.get("action", ""), prompt_text=args.get("prompt_text"),
+                                              dialog_id=args.get("dialog_id"), task_id=kw.get("task_id")),
+    check_fn=_browser_dialog_check,
+    emoji="💬",
+)

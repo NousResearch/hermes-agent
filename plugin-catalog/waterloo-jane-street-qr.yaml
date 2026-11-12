@@ -1,0 +1,30 @@
+name: waterloo-jane-street-qr
+version: "1.0.0"
+description: "Offline quant toolkit: option pricing, EV puzzles, game solver, market-making/execution/portfolio maths, plus a trading-desk answer persona. Disclosure — adds a \"quant trading desk\" persona to the system prompt and a reminder to every turn that tell the model to end EVERY answer, in every chat, with a [TAKE]/[PASS]/[HEDGE] trade verdict and sizing; with the default `enforcement: strict` it also appends a \"Desk compliance … no position should be taken on it\" footer to any reply without an explicit EV and verdict (set `plugins.entries.waterloo-jane-street-qr.settings.enforcement` to `reminder` or `off` to stop it). Tools are offline calculators: no network calls, no shell commands, no credentials; it gives no financial advice you should act on."
+repo: "https://github.com/georgxzh/hermes-agent-plugin-hackathon"
+subdir: "waterloo-jane-street-qr"
+sha: "d250ec79de260eeed96c9f1a5b167eb06cca7c5a"
+maintainer: georgxzh
+category: tools
+tier: community
+capabilities:
+  provides_tools:
+  - black_scholes
+  - binomial_tree_american
+  - heston_price
+  - monte_carlo_engine
+  - longstaff_schwartz_american
+  - ev_calculator
+  - optimal_stopping
+  - matrix_game_solver
+  - order_book_metrics
+  - avellaneda_stoikov_quotes
+  - order_flow_toxicity
+  - almgren_chriss_liquidation
+  - black_litterman_optimizer
+  - jane_street_ev_trainer
+  provides_hooks:
+  - pre_llm_call
+  - transform_llm_output
+  provides_middleware: []
+  requires_env: []

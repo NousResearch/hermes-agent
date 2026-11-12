@@ -1,0 +1,101 @@
+import { describe, expect, it } from 'vitest'
+
+import type { ChatMessage } from '@/lib/chat-messages'
+
+import {
+  composerStaysMounted,
+  lastVisibleMessageIsUser,
+  routedSessionIsLoading,
+  threadLoadingState
+} from './thread-loading'
+
+function message(id: string, role: ChatMessage['role'], hidden = false): ChatMessage {
+  return {
+    id,
+    role,
+    parts: [{ type: 'text', text: `${role}:${id}` }],
+    hidden
+  }
+}
+
+describe('thread loading state', () => {
+  it('returns session when routed session is still hydrating', () => {
+    expect(threadLoadingState(true, true, true, false)).toBe('session')
+  })
+
+  it('returns response while awaiting an assistant reply to the last visible user message', () => {
+    const messages = [message('u1', 'user'), message('a1', 'assistant', true)]
+
+    expect(lastVisibleMessageIsUser(messages)).toBe(true)
+    expect(threadLoadingState(false, true, true, lastVisibleMessageIsUser(messages))).toBe('response')
+  })
+
+  it('does not show response loading when the last visible message is not user-authored', () => {
+    const messages = [message('u1', 'user'), message('a1', 'assistant')]
+
+    expect(lastVisibleMessageIsUser(messages)).toBe(false)
+    expect(threadLoadingState(false, true, true, lastVisibleMessageIsUser(messages))).toBeUndefined()
+  })
+})
+
+describe('routedSessionIsLoading', () => {
+  const base = {
+    activeSessionId: 'runtime-1' as string | null,
+    knownHistory: false,
+    messagesEmpty: false,
+    resumeExhausted: false,
+    routeSessionMismatch: false,
+    routedSessionView: true
+  }
+
+  it('keeps the session loader up when known history is held off the view', () => {
+    expect(
+      routedSessionIsLoading({
+        ...base,
+        knownHistory: true,
+        messagesEmpty: true
+      })
+    ).toBe(true)
+  })
+
+  it('does not treat a brand-new empty routed draft as still loading', () => {
+    expect(
+      routedSessionIsLoading({
+        ...base,
+        messagesEmpty: true
+      })
+    ).toBe(false)
+  })
+})
+
+describe('composerStaysMounted', () => {
+  it('keeps the composer mounted through a transient loader on the settled route', () => {
+    expect(
+      composerStaysMounted({
+        hideComposer: false,
+        loadingSession: true,
+        routedSessionId: 'stored-1',
+        settledRoutedSessionId: 'stored-1'
+      })
+    ).toBe(true)
+  })
+
+  it('hides the composer while a different route is still loading', () => {
+    expect(
+      composerStaysMounted({
+        hideComposer: false,
+        loadingSession: true,
+        routedSessionId: 'stored-2',
+        settledRoutedSessionId: 'stored-1'
+      })
+    ).toBe(false)
+    expect(
+      composerStaysMounted({
+        hideComposer: true,
+        loadingSession: false,
+        routedSessionId: 'stored-1',
+        settledRoutedSessionId: 'stored-1'
+      })
+    ).toBe(false)
+  })
+})

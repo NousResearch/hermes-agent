@@ -1,0 +1,40 @@
+name: grimoire
+repo: https://github.com/bettersandeep/grimoire
+sha: 4824773040b131f3179e5896d71d1435908758a7
+title: Grimoire
+description: "Ask about your CSV, JSON, Parquet and SQLite files in plain words: DuckDB answers with one SQL query, every number in the reply is checked against the query results, and a Data page gives charts, pivots, drill-down, data health and learning cards with no model tokens. Disclosure — reads only the data files you or the model name (CSV, JSON, Parquet, SQLite; files a message mentions are attached automatically), read-only, refusing files under ~/.hermes, ~/.ssh, ~/.gnupg, ~/.aws, ~/.config, ~/.kube, ~/.docker and ~/Library unless allow_private_folders is set, with DuckDB's network, extension and other file access locked; copies SQLite files to a system temp folder as CSV; a pre_tool_call hook blocks raw reads of large data files by other tools; no network calls, shell commands, background processes, credentials or telemetry; stores saved queries, settings and HTML reports in its plugin data; installs the duckdb Python package."
+maintainer: bettersandeep
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/bettersandeep/grimoire#readme
+version: "0.26.0"
+image: https://raw.githubusercontent.com/bettersandeep/grimoire/4824773040b131f3179e5896d71d1435908758a7/assets/banner.jpg
+screenshots:
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/4824773040b131f3179e5896d71d1435908758a7/assets/screenshots/race.png
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/4824773040b131f3179e5896d71d1435908758a7/assets/screenshots/chat-check.png
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/4824773040b131f3179e5896d71d1435908758a7/assets/screenshots/data-page.png
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/4824773040b131f3179e5896d71d1435908758a7/assets/screenshots/charts.png
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/4824773040b131f3179e5896d71d1435908758a7/assets/screenshots/learning-card.png
+  - https://raw.githubusercontent.com/bettersandeep/grimoire/4824773040b131f3179e5896d71d1435908758a7/assets/screenshots/data-health.png
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - grimoire_attach
+    - grimoire_profile
+    - grimoire_query
+    - grimoire_drivers
+    - grimoire_compare
+    - grimoire_note
+    - grimoire_merge
+    - grimoire_catalog
+  provides_hooks:
+    - pre_tool_call
+    - pre_llm_call
+    - post_tool_call
+    - pre_api_request
+    - post_api_request
+    - transform_llm_output
+  provides_middleware: []
+  requires_env: []

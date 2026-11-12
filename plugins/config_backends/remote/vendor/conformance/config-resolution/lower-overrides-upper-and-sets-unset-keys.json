@@ -1,0 +1,72 @@
+{
+  "fixtureVersion": 1,
+  "name": "lower-overrides-upper-and-sets-unset-keys",
+  "description": "Proves rule-2: On unlocked keys a lower level overrides an upper value and may set keys no upper level sets.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "model": {
+          "default": "hermes-3",
+          "provider": "auto"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {
+        "model": {
+          "default": "hermes-4-405b"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "model": {
+          "default": "hermes-4-70b",
+          "base_url": "https://inference.example"
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "model": {
+        "default": "hermes-4-70b",
+        "provider": "auto",
+        "base_url": "https://inference.example"
+      }
+    },
+    "provenance": {
+      "model.default": "profile",
+      "model.provider": "global",
+      "model.base_url": "profile"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "model.provider",
+      "value": "nous",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

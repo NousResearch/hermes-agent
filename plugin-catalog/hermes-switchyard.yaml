@@ -1,0 +1,37 @@
+name: hermes-switchyard
+repo: https://github.com/bgrablin/hermes-switchyard
+sha: 895c101d4228f12cbb7e56194f94d0e555256339
+subdir: ""
+description: "Jev-powered Hermes plugin for skill/model routing, typed assess, DOM/Cua computer use, adaptive reasoning effort with a per-turn receipt line, and FTS rerank. Disclosure: the default-on adaptive llm_request sends up to 1,200 characters of the current user message to TypeSafe/OpenRouter after Hermes redact_for_egress (no history or tool output); greetings and thanks are decided locally with no call; without the Hermes redactor it sends metadata only (disable via adaptive_reasoning_effort false). Separate default-on hosted skill routing sends up to 4,000 characters of the current user turn after Hermes redact_for_egress, plus skill names, to the same provider; without the redactor it stays local (opt down to local_only); light turns (greetings, closed acknowledgements, and read-only listings) skip that hosted call by default. Model routing remains advisory. Disclosure — By default, adaptive effort sends up to 1,200 characters of the current user message, and hosted skill routing sends up to 4,000 characters plus skill names, to TypeSafe/OpenRouter Jev after Hermes redact_for_egress (greetings and light turns stay local). The jev_session_search_rerank and jev_computer_use DOM tools send query/card and public-page text using the plugin's own masking. Off unless enabled: evidence prefetch sends source files the user names under evidence_finder_root (up to 80 KB), cross-tool stuck advice sends redacted error excerpts, and the switchyard-approvals provider, once selected for auxiliary.approval, sends flagged shell commands and your approval policy to OpenRouter Jev, whose confident verdict can auto-approve them (any failure falls back to a human prompt). /switchyard effort receipt saves the plugin's own setting to config.yaml."
+maintainer: bgrablin
+tier: community
+category: tools
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/bgrablin/hermes-switchyard/blob/895c101d4228f12cbb7e56194f94d0e555256339/docs/SETUP.md
+version: "0.6.0"
+image: https://raw.githubusercontent.com/bgrablin/hermes-switchyard/895c101d4228f12cbb7e56194f94d0e555256339/docs/assets/hermes-switchyard-overview.png
+readme: true
+platforms:
+- linux
+- macos
+- windows
+capabilities:
+  provides_tools:
+  - jev_assess
+  - jev_computer_use
+  - jev_skill_select
+  - jev_skill_select_many
+  - jev_model_route
+  - jev_model_route_approved
+  - jev_session_search_rerank
+  provides_hooks:
+  - pre_tool_call
+  - transform_tool_result
+  - pre_llm_call
+  - post_llm_call
+  - post_tool_call
+  - transform_llm_output
+  - post_api_request
+  provides_middleware:
+  - llm_request
+  requires_env: []

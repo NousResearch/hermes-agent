@@ -313,6 +313,13 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
+    with kbc.connect_closing() as conn:
+        if conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'decomposed' LIMIT 1",
+            (task_id,),
+        ).fetchone():
+            return DecomposeOutcome(task_id, False, "task already decomposed")
+
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
@@ -337,7 +344,14 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
+    """Return task ids currently in the triage column that have not already been decomposed."""
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+        if not rows:
+            return []
+        decomposed = {
+            r[0] for r in conn.execute(
+                "SELECT DISTINCT task_id FROM task_events WHERE kind = 'decomposed'"
+            ).fetchall()
+        }
+    return [row.id for row in rows if row.id not in decomposed]

@@ -131,6 +131,27 @@ def test_restore_puts_the_agents_callbacks_back(window):
     assert local_desktop_ui._turns == {}
 
 
+def test_a_mid_turn_compression_rotation_keeps_the_window_route(window):
+    """Automatic compression re-points ``HERMES_SESSION_ID`` mid-turn; the turn's window route follows it."""
+    local_viewer_events.wire(window.turn, window.agent)
+    # The production rotation seam: what compression calls right after minting the child session.
+    from agent.conversation_compression import _rebind_session_context
+
+    _rebind_session_context("phys-child")
+    assert json.loads(_emit("preview.open", {"url": "https://example.com/after"})) == {"success": True}
+    assert window.published[-1] == ("preview.open", {"url": "https://example.com/after"})
+
+
+def test_a_released_turn_drops_every_route_the_rotation_left_behind(window):
+    sinks = local_viewer_events.wire(window.turn, window.agent)
+    from agent.conversation_compression import _rebind_session_context
+
+    _rebind_session_context("phys-child")
+    local_viewer_events.restore(window.agent, sinks)
+    assert local_desktop_ui._turns == {}
+    assert "failed: " in _emit("preview.open", {"url": "https://example.com/late"})
+
+
 def test_the_connection_card_opens_and_updates_on_the_owning_session(window, monkeypatch):
     from tools.connectors import live
     from tools.connectors.contract import Actor, TargetState

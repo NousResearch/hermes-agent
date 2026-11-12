@@ -5,10 +5,13 @@ Replaces the old ``os.environ``-based ``HERMES_SESSION_*`` state with task-local
 other's routing ids.  ``get_session_env`` is a drop-in for ``os.getenv``.
 """
 
+import logging
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
+
+logger = logging.getLogger(__name__)
 
 # "Never set here" (falls back to os.environ for CLI/cron) vs "" = explicitly cleared (no fallback).
 _UNSET: Any = object()
@@ -76,6 +79,26 @@ _VAR_MAP = {var.name: var for var in (
     _CRON_AUTO_DELIVER_THREAD_ID,
 )}
 
+# Callbacks fired when this process re-points a live turn's durable session id (automatic compression
+# rotates it mid-turn). State keyed by the id — a turn's desktop window route, for one — must follow
+# it, and every re-point funnels through ``set_current_session_id``, so this is the one seam that sees
+# them all. Empty outside a gateway process.
+_ID_REBIND_HOOKS: list[Callable[[str, str], None]] = []
+
+
+def register_id_rebind_hook(hook: Callable[[str, str], None]) -> None:
+    """Register ``hook(previous_id, session_id)`` for session-id re-points; idempotent per callable."""
+    if hook not in _ID_REBIND_HOOKS:
+        _ID_REBIND_HOOKS.append(hook)
+
+
+def _notify_id_rebind(previous_id: str, session_id: str) -> None:
+    for hook in tuple(_ID_REBIND_HOOKS):
+        try:
+            hook(previous_id, session_id)
+        except Exception:  # health: allow BLE001 -- a hook must never break the rebind it observes
+            logger.debug("session id rebind hook raised", exc_info=True)
+
 
 def _runtime_cwd(func: str, *args: Any) -> None:
     """Best-effort call of ``agent.runtime_cwd.<func>``; import/runtime failures are ignored."""
@@ -89,8 +112,12 @@ def _runtime_cwd(func: str, *args: Any) -> None:
 def set_current_session_id(session_id: str) -> None:
     """Synchronize ``HERMES_SESSION_ID`` across ContextVar and ``os.environ`` (tools read it
     with an os.environ fallback).  Delegated subagent children (built in the parent process)
-    get ONLY the task-local write, or they would clobber the parent's id."""
+    get ONLY the task-local write, or they would clobber the parent's id.  A re-point of an
+    already bound id (automatic compression rotation) notifies ``register_id_rebind_hook`` holders."""
+    previous = _SESSION_ID.get()
     _SESSION_ID.set(session_id)
+    if previous is not _UNSET and previous and previous != session_id:
+        _notify_id_rebind(str(previous), session_id)
     try:
         from agent.delegation_context import is_delegated_child_context
         if is_delegated_child_context():

@@ -1,0 +1,58 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: worksignal
+description: >-
+  Post roles, review candidates, and run AI voice screens through WorkSignal.
+source: https://worksignal.com/docs/mcp
+
+# Vendor-hosted remote MCP (Streamable HTTP + native OAuth 2.1 with Dynamic
+# Client Registration). Hermes handles discovery, PKCE, token exchange and
+# refresh - there is nothing to install locally.
+transport:
+  type: http
+  url: https://worksignal.com/mcp
+
+auth:
+  type: oauth
+
+# Read surface plus the reversible writes most users want. Irreversible hiring
+# actions are still callable, but they are queued for human approval inside
+# WorkSignal and never run unattended.
+tools:
+  default_enabled:
+    - list_roles
+    - get_role
+    - get_role_stats
+    - list_candidates
+    - get_candidate
+    - list_applications
+    - get_application
+    - list_voice_screens
+    - get_voice_screen
+    - list_job_postings
+    - get_organization
+    - quick_post
+    - advance_candidate
+    - trigger_voice_screen
+    - reject_candidate
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - worksignal
+    - voice screen
+    - phone screen
+    - hiring pipeline
+  hosts:
+    - worksignal.com
+
+post_install: |
+  On first connection Hermes opens a browser to authorize with WorkSignal
+  (or run `hermes mcp login worksignal`). Approve access, then start a new
+  session so the WorkSignal tools load.
+
+  Irreversible actions - rejecting a candidate, triggering a voice screen,
+  scheduling an interview, sending email, posting to X - are queued for
+  approval in WorkSignal and never run unattended.

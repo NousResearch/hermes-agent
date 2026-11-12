@@ -1,14 +1,14 @@
 name: memory-ferry
 title: Memory Ferry
 repo: https://github.com/gnanam1990/hermes-memory-ferry
-sha: 962bf81f8a7f5ad7aa035298922d6795f91d837b
+sha: 28438fc3fb540ad5e0e255c8a26cca9100445a77
 version: "0.1.0"
-description: "Migrates built-in Hermes MEMORY.md and USER.md records into a profile-local SQLite memory provider with an integrity-checked dry run, idempotent recovery, deterministic retrieval-parity evidence and migration-scoped rollback. Disclosure — reads the active profile's MEMORY.md and USER.md; writes plaintext memories and full mode-0600 plan/export artifacts under $HERMES_HOME/plugin-data/memory-ferry (policy-blocked records remain in planning artifacts but are not imported or recalled); recalled snippets reach the user's configured model provider. No network calls, shell commands, credentials, telemetry or background process."
+description: "Migrates built-in Hermes MEMORY.md and USER.md records into a profile-local SQLite memory provider with an integrity-checked dry run, idempotent recovery, deterministic retrieval-parity evidence and migration-scoped rollback. Disclosure — reads the active profile's memories/MEMORY.md and memories/USER.md; writes plaintext memories and full mode-0600 plan/export artifacts under $HERMES_HOME/plugin-data/memory-ferry (policy-blocked records remain in planning artifacts but are not imported or recalled); recalled snippets reach the user's configured model provider. No network calls, shell commands, credentials, telemetry or background process."
 maintainer: gnanam1990
 tier: community
 category: memory
 requires_hermes: ">=0.23.1"
-docs_url: https://github.com/gnanam1990/hermes-memory-ferry/blob/962bf81f8a7f5ad7aa035298922d6795f91d837b/README.md
+docs_url: https://github.com/gnanam1990/hermes-memory-ferry/blob/28438fc3fb540ad5e0e255c8a26cca9100445a77/README.md
 readme: true
 known_issues:
   - "Only built-in MEMORY.md and USER.md are supported as migration sources; arbitrary external-provider export is unavailable through Hermes's public API."

@@ -569,3 +569,32 @@ def test_unscoped_multiplexed_read_degrades_to_canonical_like_the_pooled_route(m
     _write_pool(home, OPAQUE)
     assert (singleton, resolve_codex_runtime_credentials(read_only=True)["base_url"]) == (
         CHATGPT, CHATGPT)
+
+
+def test_singleton_credential_respects_config_only_codex_gateway(monkeypatch):
+    """With model.base_url but no scoped .env override, a singleton must use the
+    same gateway host as a pooled Codex credential, even under multiplexing.
+
+    Otherwise a routed profile sends its singleton token directly to chatgpt.com
+    while the pool route correctly uses its configured gateway (#121486).
+    """
+    from agent import secret_scope
+    from agent.secret_scope import reset_secret_scope, set_secret_scope
+    from hermes_cli.auth_codex import resolve_codex_runtime_credentials
+
+    home = _home(monkeypatch)
+    _write_config(home, base_url=GW)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", OTHER_GW)  # launch sibling, not the active profile
+
+    scope = set_secret_scope({})  # routed profile has no .env override; only model.base_url
+    try:
+        _write_singleton(home, JWT)
+        singleton = resolve_codex_runtime_credentials(read_only=True)
+        _write_pool(home, OPAQUE)
+        pooled = resolve_codex_runtime_credentials(read_only=True)
+    finally:
+        reset_secret_scope(scope)
+
+    assert (singleton["api_key"], singleton["base_url"]) == (JWT, GW)
+    assert (pooled["api_key"], pooled["base_url"]) == (OPAQUE, GW)

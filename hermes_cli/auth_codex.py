@@ -112,7 +112,8 @@ def _codex_pool_route_base_url(entry_base_url: Optional[str] = "") -> str:
 def _codex_runtime_result(
     api_key: str, *, source: str, last_refresh: Optional[str], base_url: Optional[str] = None) -> dict[str, Any]:
     return {
-        "provider": "openai-codex", "base_url": base_url or _codex_base_url(), "api_key": api_key,
+        "provider": "openai-codex",
+        "base_url": base_url or _codex_pool_route_base_url(DEFAULT_CODEX_BASE_URL), "api_key": api_key,
         "source": source, "last_refresh": last_refresh, "auth_mode": "chatgpt"}
 
 

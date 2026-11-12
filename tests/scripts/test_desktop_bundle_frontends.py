@@ -3,6 +3,8 @@ the dashboard: the payload has no sources to build one from, so `hermes webapp` 
 from __future__ import annotations
 
 import contextlib
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,3 +59,33 @@ def test_every_payload_bundle_plants_the_prebuilt_webapp(tmp_path, monkeypatch, 
     assert (payload / "apps/desktop/dist-webapp/index.html").read_text(encoding="utf-8") == "webapp.mjs"
     assert (payload / "hermes_cli/web_dist/index.html").read_text(encoding="utf-8") == "web.mjs"
     assert (payload / "hermes_cli/tui_dist/entry.js").read_text(encoding="utf-8") == "tui.mjs"
+
+
+def test_source_bundle_staging_plants_the_prebuilt_webapp(tmp_path, monkeypatch):
+    """`pnpm run dist:bundled` stages through scripts/bundles/stage.py, whose native child parses its own argv."""
+    from scripts.build.agent import plant_surfaces
+    from scripts.bundles import native, stage
+
+    payload = tmp_path / "out" / "hermes-agent"
+
+    def staged(args):
+        plant_surfaces(payload, args.frontends)
+        return 0
+
+    def run(argv, **kwargs):
+        if argv[0] == "/prepared/node":
+            return _compile(argv, **kwargs)
+        assert argv[1:4] == ["-B", "-m", "scripts.bundles.native"]
+        monkeypatch.setattr(sys, "argv", ["native", *argv[4:]])
+        return subprocess.CompletedProcess(argv, native.main())
+
+    monkeypatch.setattr(stage.shutil, "which", lambda _name: "/prepared/node")
+    monkeypatch.setattr("scripts.bundles.payload.snapshot", lambda _root, _ref, destination: destination.mkdir())
+    monkeypatch.setattr("scripts.build.icon_environment.prepare_icon_environment", lambda *_a: sys.executable)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(native, "_stage_native", staged)
+
+    assert stage.main(["--out", str(tmp_path / "out")]) == 0
+
+    assert (payload / "apps/desktop/dist-webapp/index.html").read_text(encoding="utf-8") == "webapp.mjs"
+    assert (payload / "hermes_cli/web_dist/index.html").read_text(encoding="utf-8") == "web.mjs"

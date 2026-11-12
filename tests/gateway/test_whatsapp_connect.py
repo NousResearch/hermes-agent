@@ -160,6 +160,34 @@ class TestFileHandleClosedOnError:
         assert adapter._bridge_log_fh is None
 
 
+class TestBridgeTokenOffLoop:
+    @pytest.mark.asyncio
+    async def test_token_minting_never_blocks_the_event_loop(self):
+        """The token is minted under a blocking flock a cron sender may hold; on the loop thread that
+        wait would stall every other platform on the gateway."""
+        adapter = _make_adapter()
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+        on_loop = []
+
+        def mint(session_path, *, rotate=False):
+            try:
+                asyncio.get_running_loop()
+                on_loop.append(True)
+            except RuntimeError:
+                on_loop.append(False)
+            return "t" * 43
+
+        patches = _connect_patches(mock_proc, MagicMock())
+        patches[6] = patch("plugins.platforms.whatsapp.adapter._load_or_create_bridge_token", side_effect=mint)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patches[5], patches[6], patches[7], patches[8]:
+            await adapter.connect()
+
+        assert len(on_loop) == 2 and not any(on_loop), on_loop  # first use, then the per-spawn rotation
+
+
 class TestConnectCleanup:
     """Verify failure paths release the scoped session lock."""
 

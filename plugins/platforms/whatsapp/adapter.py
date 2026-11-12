@@ -888,7 +888,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return False
             # The session holds the account's keys and bridge.log its QR pairing payloads (#80090).
             store_umask = ensure_private_store(self._session_path, home=self._profile_home)
-            self._bridge_token = _load_or_create_bridge_token(self._session_path)
+            # flock blocks until a concurrent minter (a cron send) releases it: never on the event loop.
+            self._bridge_token = await asyncio.to_thread(_load_or_create_bridge_token, self._session_path)
             _tighten_bridge_log(self._session_path.parent / "bridge.log", private=store_umask >= 0)
             # A secondary adopts or reaps only a bridge its own pidfile identifies; the default keeps
             # its historical adopt-or-clear-the-port path. A bridge this version started dies with
@@ -923,7 +924,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # A secondary that skipped the kills found the port free, so this returns at once on that path.
             if not await self._wait_bridge_port_free():
                 return False
-            self._bridge_token = _load_or_create_bridge_token(self._session_path, rotate=True)
+            self._bridge_token = await asyncio.to_thread(_load_or_create_bridge_token, self._session_path, rotate=True)
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
             self._bridge_log_fh = bridge_log_fh = _open_bridge_log(self._bridge_log, private=store_umask >= 0)

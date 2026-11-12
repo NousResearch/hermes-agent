@@ -79,7 +79,7 @@ function composerScopeForConnection(connection: HermesConnection | null): string
   return connectionScopeSuffix(connection)
 }
 
-function composerSelectionKey(base: string): string | null {
+export function composerSelectionKey(base: string): string | null {
   return composerSelectionScope === null ? null : `${base}${composerSelectionScope}`
 }
 

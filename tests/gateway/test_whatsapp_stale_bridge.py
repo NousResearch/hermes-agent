@@ -503,6 +503,28 @@ class TestConfigFingerprintAdoption:
         assert "Running bridge is stale (config changed), restarting" in capsys.readouterr().out
 
     @pytest.mark.asyncio
+    async def test_restarts_bridge_when_reply_prefix_goes_from_unset_to_empty(self, tmp_path, monkeypatch, capsys):
+        """bridge.js sends its default prefix when WHATSAPP_REPLY_PREFIX is unset and none when it is "",
+        so a bridge spawned without the key must not be adopted once config sets ``reply_prefix: ""``."""
+        monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
+        from plugins.platforms.whatsapp.adapter import _bridge_source_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+        )
+        self._record_fingerprint(adapter, adapter._bridge_env())  # spawned with reply_prefix unset
+        adapter._reply_prefix = ""
+
+        with patch("aiohttp.ClientSession", _mock_health(
+            {"status": "connected", "scriptHash": _bridge_source_hash(bridge_dir / "bridge.js"),
+             "sendReadReceipts": False})):
+            assert await self._reuse(adapter, bridge_dir / "bridge.js") is False
+
+        assert "Running bridge is stale (config changed), restarting" in capsys.readouterr().out
+
+    @pytest.mark.asyncio
     async def test_missing_fingerprint_file_is_stale(self, tmp_path):
         """A bridge from before the fingerprint existed (or a lost file) is never adopted."""
         from plugins.platforms.whatsapp.adapter import _bridge_source_hash

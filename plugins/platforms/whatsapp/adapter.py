@@ -290,8 +290,12 @@ def _bridge_config_fingerprint(bridge_env: dict, package_hash: str = "") -> str:
     digest.update(b"package.json\x00" + package_hash.encode("utf-8") + b"\x00")
     for key in _BRIDGE_CONSUMED_ENV:
         digest.update(key.encode("utf-8"))
-        digest.update(b"\x00")
-        digest.update(str(bridge_env.get(key, "")).encode("utf-8"))
+        # Presence marker: bridge.js treats an unset key differently from "" (an unset
+        # WHATSAPP_REPLY_PREFIX means the default prefix, "" means none).
+        if key in bridge_env:
+            digest.update(b"\x01" + str(bridge_env[key]).encode("utf-8"))
+        else:
+            digest.update(b"\x00")
         digest.update(b"\x00")
     return digest.hexdigest()[:16]
 

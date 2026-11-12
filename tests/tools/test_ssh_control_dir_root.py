@@ -171,3 +171,20 @@ def test_private_xdg_runtime_dir_is_preferred_over_the_shared_root(shared_root, 
     assert control_dir == xdg / "hermes-ssh"
     assert _mode(control_dir) == 0o700
     assert not any(shared_root.iterdir())
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("mode", [0o755, 0o1777])
+def test_shared_xdg_runtime_dir_is_not_trusted(shared_root, tmp_path, monkeypatch, make_env, mode):
+    """A mis-set ``$XDG_RUNTIME_DIR`` naming a group/world-accessible dir (sudo -E, a shared /run
+    path) is skipped like the gateway's control socket skips it: other users can see or pre-create
+    names in it, so it is no stronger than the shared root it would otherwise outrank."""
+    xdg = tmp_path / "shared-run"
+    xdg.mkdir()
+    xdg.chmod(mode)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(xdg))
+
+    control_dir = make_env().control_dir
+
+    assert not (xdg / "hermes-ssh").exists()
+    assert control_dir == shared_root / f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — posix-only test

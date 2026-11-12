@@ -969,7 +969,7 @@ def _nowait_plugin_set(cache_field: str, live: Callable[[PluginManager], set[str
             if isinstance(values, list) and all(isinstance(v, str) for v in values):
                 return set(values)
     discover_plugins()
-    return live(manager)
+    return live(get_plugin_manager())
 
 
 def get_plugin_toolset_keys_nowait() -> set[str]:

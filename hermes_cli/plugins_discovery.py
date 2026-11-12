@@ -118,9 +118,9 @@ def _delivery_manager():
     from hermes_cli import plugins
 
     global _delivery_join_abandoned
-    manager = plugins.get_plugin_manager()
     if not _delivery_join_abandoned:
         _delivery_join_abandoned = join_background_discovery()
+    manager = plugins.get_plugin_manager()
     if not getattr(manager, "_discovered", True):
         manager.discover_and_load()
     return manager

@@ -26,6 +26,30 @@ interface SessionPicks {
 
 let pickSequence = 0
 const picksBySession = new Map<string, SessionPicks>()
+// The primary pick each session queued for its next turn: the one saved as the next chat's launch pick, so
+// only its refusal may release that (deferred-pick.ts). Every settled pick rewrites it: a tile's pick, or one
+// that applied at once, retires it.
+const queuedLaunchPicks = new Map<string, string>()
+
+export function noteQueuedLaunchPick(sessionId: string, model: null | string): void {
+  if (model === null) {
+    queuedLaunchPicks.delete(sessionId)
+  } else {
+    queuedLaunchPicks.set(sessionId, model)
+  }
+}
+
+/** Whether `model` is the session's queued launch pick; a refused pick is spent either way. */
+export function takeQueuedLaunchPick(sessionId: string, model: unknown): boolean {
+  if (queuedLaunchPicks.get(sessionId) !== model) {
+    return false
+  }
+
+  queuedLaunchPicks.delete(sessionId)
+
+  return true
+}
+
 // Newest pick per session while it is unsettled; a settled newest pick leaves no entry.
 const latestPickBySession = new Map<string, number>()
 

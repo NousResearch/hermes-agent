@@ -33,7 +33,13 @@ import {
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 
-import { beginModelPick, isPickSuperseded, type ModelPickSnapshot, settleModelPick } from './model-pick-ledger'
+import {
+  beginModelPick,
+  isPickSuperseded,
+  type ModelPickSnapshot,
+  noteQueuedLaunchPick,
+  settleModelPick
+} from './model-pick-ledger'
 
 interface ModelControlsOptions {
   cacheOwnerConnectionId?: string
@@ -370,6 +376,8 @@ export function useModelControls({
         })
 
       const finishSwitch = (result: ModelSwitchResponse | undefined) => {
+        noteQueuedLaunchPick(liveSessionId, touchesPrimary && result?.deferred ? selection.model : null)
+
         // A pick made DURING a turn is queued by the gateway and applied at the
         // next turn start (`deferred`). Re-fetching now would answer with the
         // model still running and repaint the old name over the user's choice —

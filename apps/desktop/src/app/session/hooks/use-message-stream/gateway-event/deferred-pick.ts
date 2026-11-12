@@ -3,7 +3,17 @@ import { surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { activeGatewayConnectionId, requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $currentModel, $currentProvider, setCurrentModelTransient, setCurrentProviderTransient } from '@/store/session'
+import {
+  $currentModel,
+  $currentProvider,
+  getComposerModelSelection,
+  getComposerSelectionScope,
+  setCurrentModelSource,
+  setCurrentModelTransient,
+  setCurrentProviderTransient
+} from '@/store/session'
+
+import { takeQueuedLaunchPick } from '../../model-pick-ledger'
 
 import type { GatewayEventContext } from './types'
 
@@ -33,6 +43,22 @@ function repaintCommitted(
   }
 }
 
+/** A primary pick made during a turn was saved at once as the next chat's launch pick. Once it is refused,
+ *  hand the launch back to the Settings default rather than guess which earlier pick to restore. Only for the
+ *  owner whose composer saved it, and only while the saved pick is still the refused one. */
+function releaseRefusedLaunchPick(sessionId: string, target: unknown, scope: null | string) {
+  const saved = getComposerModelSelection()
+
+  if (
+    takeQueuedLaunchPick(sessionId, target) &&
+    getComposerSelectionScope() === scope &&
+    saved.source === 'manual' &&
+    saved.model === target
+  ) {
+    setCurrentModelSource('default')
+  }
+}
+
 export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, sessionId, fromActiveSource } = ctx
   const update = payload as Record<string, unknown> | undefined
@@ -46,9 +72,14 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
   const ownSource = fromActiveSource()
   const profile = event.profile ?? deps.activeGatewayProfile
   const invalidate = () => void deps.queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(profile, sessionId) })
+  const scope = getComposerSelectionScope()
 
   if (update.status === 'refused') {
     const model = typeof update.model === 'string' ? update.model : ''
+
+    if (ownSource) {
+      releaseRefusedLaunchPick(sessionId, update.target_model, scope)
+    }
 
     if (model && ownSource) {
       repaintCommitted(ctx, update.target_model, model, typeof update.provider === 'string' ? update.provider : '')
@@ -79,6 +110,10 @@ export function handleDeferredPickEvent(ctx: GatewayEventContext): boolean {
         requestGatewayForAgent(connectionId, profile, 'session.model', { confirm: update.confirm, payload: pick, session_id: sessionId }),
       finish: invalidate
     }).then(applied => {
+      if (!applied && ownSource) {
+        releaseRefusedLaunchPick(sessionId, target, scope)
+      }
+
       // Declined, or the confirmed resend failed: the committed model is still the session's.
       if (!applied && committed && ownSource) {
         repaintCommitted(ctx, target, committed, typeof update.committed_provider === 'string' ? update.committed_provider : '')

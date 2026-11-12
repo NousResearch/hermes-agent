@@ -820,6 +820,11 @@ from hermes_cli.main_web_build import (  # frozen updater surface: update_cmd*.p
     _record_bytecode_fingerprint,
     _run_npm_install_deterministic,
 )
+from hermes_cli.main_launch_env import (
+    _apply_append_system_prompt,
+    _apply_safe_mode,
+    _apply_user_config_bypass,
+)
 from hermes_cli.main_tui_launch import (
     _bypass_chat_launch,
     _launch_tui,
@@ -2765,6 +2770,7 @@ def _prepare_agent_startup(args) -> None:
     # See #7994.
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
+    _apply_append_system_prompt(args)  # before any client_env snapshot, the bypass launch's included
     if args.command in {None, "chat"} and _bypass_chat_launch(args):
         # Bypass launches are frozen by the gateway owner and executed out of process. This
         # client is a transport: no env mutation (it would ride into an authority spawn),
@@ -2837,20 +2843,6 @@ def _prepare_agent_startup(args) -> None:
             "shell-hook registration failed at CLI startup",
             exc_info=True,
         )
-
-
-def _apply_safe_mode(args) -> None:
-    if not getattr(args, "safe_mode", False):
-        return
-    os.environ["HERMES_SAFE_MODE"] = "1"
-    os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
-    os.environ["HERMES_IGNORE_RULES"] = "1"
-
-
-def _apply_user_config_bypass(args) -> None:
-    """Apply the explicit config bypass before any startup config reads."""
-    if getattr(args, "ignore_user_config", False):
-        os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
 
 
 def _guard_noninteractive_user_config(args) -> None:

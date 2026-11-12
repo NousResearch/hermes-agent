@@ -21,7 +21,7 @@ from tools.code_execution_env import is_secret_env_name
 
 # What main's CLI read per process and the gateway otherwise reads daemon-wide.
 BEHAVIOUR_ENV = ('HERMES_EPHEMERAL_SYSTEM_PROMPT', 'HERMES_PREFILL_MESSAGES_FILE', 'HERMES_INFERENCE_PROVIDER',
-                 'HERMES_ENABLE_PROJECT_PLUGINS')
+                 'HERMES_ENABLE_PROJECT_PLUGINS', 'HERMES_APPEND_SYSTEM_PROMPT')
 # Behaviour values that name the client's host: a path, or the opt-in that inspects the client's folder.
 HOST_BEHAVIOUR = ('HERMES_PREFILL_MESSAGES_FILE', 'HERMES_ENABLE_PROJECT_PLUGINS')
 TOOL_ENV = ('PATH', 'VIRTUAL_ENV', 'GOPATH', 'GOROOT', 'CARGO_HOME', 'RUSTUP_HOME', 'JAVA_HOME')

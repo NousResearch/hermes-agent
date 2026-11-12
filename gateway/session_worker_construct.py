@@ -44,7 +44,15 @@ def _ephemeral_prompt(authority, policy, chat_id):
         from gateway.config import Platform
         with policy.client_env_scope():
             configured = resolve(Platform.LOCAL, chat_id or '')
-    return '\n\n'.join(p for p in (configured, policy.skills_prompt) if p) or None
+    return '\n\n'.join(p for p in (configured, policy.skills_prompt, launch_append_prompt(policy)) if p) or None
+
+
+def launch_append_prompt(policy):
+    """``--append-system-prompt[-file]`` text the creating client sent in its ``client_env``: a launch
+    addition, so a bypass session keeps it too, and it always comes last (after the profile overlay and
+    the ``-s`` skills), never inside the cached system prefix."""
+    env = policy.client_env() if policy is not None else None
+    return (env or {}).get('HERMES_APPEND_SYSTEM_PROMPT', '').strip() or None
 
 
 def session_routing(authority, policy):

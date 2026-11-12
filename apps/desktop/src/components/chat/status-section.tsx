@@ -3,6 +3,8 @@ import './status-stack.css'
 import { type ReactNode, useState } from 'react'
 
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { useStoreSelector } from '@/lib/use-session-slice'
+import { $statusSectionCollapsedByKey, setStatusSectionCollapsed } from '@/store/status-section-collapse'
 
 interface StatusSectionProps {
   /** Optional right-aligned actions (text links / micro buttons). Pass
@@ -12,11 +14,15 @@ interface StatusSectionProps {
   /** Optional inline status next to the label (running spinner, etc). */
   collapsedIndicator?: ReactNode
   defaultCollapsed?: boolean
-  /** Compact live content stays visible while the full roster is collapsed. */
-  preview?: ReactNode
   /** Optional glyph between the caret and the label (e.g. a `Codicon`). */
   icon?: ReactNode
   label: ReactNode
+  /** Stable identity (e.g. `<sessionId>:todo`) under which this section's
+   *  collapse outlives remounts, read from / written to the session-keyed
+   *  store. Omitted sections keep plain local state. */
+  persistKey?: string
+  /** Compact live content stays visible while the full roster is collapsed. */
+  preview?: ReactNode
 }
 
 /**
@@ -32,9 +38,29 @@ export function StatusSection({
   defaultCollapsed = true,
   icon,
   label,
+  persistKey,
   preview
 }: StatusSectionProps) {
-  const [collapsed, setCollapsed] = useState(defaultCollapsed)
+  // The stack's lane remounts on store-driven renders, so a keyed section
+  // reads its collapse from the session store instead of local state — the
+  // user's choice survives; an untouched section falls back to its default.
+  const [localCollapsed, setLocalCollapsed] = useState(defaultCollapsed)
+
+  const storedCollapsed = useStoreSelector($statusSectionCollapsedByKey, map =>
+    persistKey === undefined ? undefined : map[persistKey]
+  )
+
+  const collapsed = persistKey === undefined ? localCollapsed : (storedCollapsed ?? defaultCollapsed)
+
+  const toggleCollapsed = () => {
+    if (persistKey === undefined) {
+      setLocalCollapsed(open => !open)
+
+      return
+    }
+
+    setStatusSectionCollapsed(persistKey, !collapsed)
+  }
 
   return (
     <div data-slot="status-section">
@@ -42,7 +68,7 @@ export function StatusSection({
         <button
           aria-expanded={!collapsed}
           className="status-section-trigger flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left text-xs font-normal text-muted-foreground/92 transition-colors hover:text-foreground/90"
-          onClick={() => setCollapsed(open => !open)}
+          onClick={toggleCollapsed}
           type="button"
         >
           <DisclosureCaret className="shrink-0" open={!collapsed} size="1em" />

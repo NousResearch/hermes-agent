@@ -25,7 +25,7 @@ import { NotificationStack } from '@/components/notifications'
 import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { firstRunIntro } from '@/components/onboarding/first-run/kickoff'
 import { OnboardingEnd } from '@/components/onboarding/onboarding-end'
-import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shell/tree/store'
+import { registerPaneCloser } from '@/components/pane-shell/tree/store'
 import { setWorkspaceScope } from '@/components/pane-shell/workspace-scope'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
@@ -174,6 +174,7 @@ import { PreviewSigninsBoot } from './hooks/use-preview-signins-boot'
 import { useQuickEntryBridge } from './hooks/use-quick-entry-bridge'
 import { useSessionTileDelegate } from './hooks/use-session-tile-delegate'
 import { McpInstallDeepLinkDialog } from './mcp-install-deeplink-dialog'
+import { useNewSessionTabActionRegistration } from './new-session-tab-registration'
 import { useTitlebarToolContributions } from './panes'
 import { type AmbientGatewayRequest, createSessionRpcDispatcher } from './session-rpc-dispatcher'
 import { ChatRoutesSurface, SidebarSurface, StatusbarSurface, TerminalSurface } from './surfaces'
@@ -1023,13 +1024,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     toggleSelectedPin
   })
 
-  // Register the tab-strip "+" action (the generic renderer stays
-  // session-agnostic; null until wired hides the glyph).
-  useEffect(() => {
-    $newSessionTabAction.set(openNewSessionTab)
-
-    return () => $newSessionTabAction.set(null)
-  }, [openNewSessionTab])
+  // The tab-strip "+" action; null until wired hides the glyph.
+  useNewSessionTabActionRegistration(openNewSessionTab)
 
   // The MAIN tab's Close. The workspace pane can't leave the tree, so its
   // closer empties it instead: the next stacked session shifts in, else main

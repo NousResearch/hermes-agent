@@ -587,14 +587,14 @@ def _pooled_keys_left_on(old_url: str, new_url: str, pool_keys: tuple[str, ...])
     while the entry pointed there), then report whether any manual row stays bound to another
     origin than *new_url*. Those rows never serve the new address (``entry_scoped_pool``)."""
     from agent.credential_pool import _is_manual_source, load_pool
-    from agent.custom_entry_pool import bind_unrecorded_rows
+    from agent.custom_entry_pool import bind_unrecorded_rows, recorded_address
     from utils import same_base_url_origin
 
     left = False
     for key in dict.fromkeys(k for k in pool_keys if k):
         pool = load_pool(key)
         bind_unrecorded_rows(pool, old_url)
-        left |= any(_is_manual_source(str(row.source or "")) and not same_base_url_origin(str(row.base_url or ""), new_url)
+        left |= any(_is_manual_source(str(row.source or "")) and not same_base_url_origin(recorded_address(row, key), new_url)
                     for row in pool.entries())
     return left
 

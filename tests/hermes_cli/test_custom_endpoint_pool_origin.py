@@ -147,3 +147,99 @@ def test_builtin_seeded_row_never_follows_a_credential_less_moved_entry(client, 
     assert _move(client, "deepseek", api_key="").status_code == 200
     assert BUILTIN not in {_main_key("custom:deepseek"), _aux_key("custom:deepseek")}
     assert BUILTIN not in _child_pool_keys(NEW, "custom:deepseek") | _restore_pool_keys(NEW, "custom:deepseek")
+
+
+def _add_row(key="myep", base_url=OLD):
+    from agent.credential_pool import AUTH_TYPE_API_KEY, SOURCE_MANUAL, PooledCredential, load_pool
+    load_pool(key).add_entry(PooledCredential(
+        provider=key, id="row001", label="k", auth_type=AUTH_TYPE_API_KEY, priority=0,
+        source=SOURCE_MANUAL, access_token=POOLED, base_url=base_url))
+
+
+def _set(**sections):
+    from hermes_cli.config import load_config, save_config
+    cfg = load_config()
+    cfg.update(sections)
+    save_config(cfg)
+
+
+def _cached_aux_client(task="compression"):
+    from agent import auxiliary_client as ac
+    ac._client_cache.clear()
+    provider, model, base_url, api_key, api_mode = ac._resolve_task_provider_model(task)
+    client, _ = ac._get_cached_client(provider, model, base_url=base_url, api_key=api_key, api_mode=api_mode)
+    return str(client.base_url).rstrip("/"), str(client.api_key)
+
+
+@pytest.mark.parametrize("main_provider,task_provider", [("myep", "main"), ("custom", "myep"), ("myep", "myep")])
+def test_bare_slug_identity_never_takes_the_old_origin_key_after_a_move(client, main_provider, task_provider):
+    """Desktop's activate writes ``model.provider: <key>``; an aux task or a fallback may name the
+    slug too. Every one of them is the entry's identity, bound like ``custom:<name>``."""
+    _entry()
+    _add_row()
+    assert _move(client, api_key="").status_code == 200
+    _set(model={"provider": main_provider, "default": "m", "base_url": NEW},
+         auxiliary={"compression": {"provider": task_provider, "model": "m"}})
+
+    assert _cached_aux_client() == (NEW, "no-key-required")
+
+
+def test_bare_slug_fallback_switch_and_cron_pools_drop_the_old_origin_row(client):
+    from types import SimpleNamespace
+
+    from agent.chat_completion_helpers import _rebind_fallback_credential_pool
+    from agent.custom_entry_pool import load_route_pool, pool_for_aux_provider
+    from agent.credential_pool import load_pool
+    _entry()
+    _add_row()
+    # Positive control: on its own origin the slug still rotates through the pooled key.
+    assert POOLED in {e.access_token for e in load_route_pool("myep", OLD).entries()}
+    assert _move(client, api_key="").status_code == 200
+
+    agent = SimpleNamespace(_credential_pool=None, _credential_pool_entry_id=None, base_url=NEW, provider="myep")
+    _rebind_fallback_credential_pool(agent, "myep", "m")
+    assert agent._credential_pool is None
+    assert load_route_pool("myep", NEW) is None
+    assert pool_for_aux_provider("myep", "myep", load_pool) is None
+    # A delegated child on ``delegation.provider: myep`` (provider id kept as the bare slug).
+    from tools.delegate_tool_config import _resolve_child_credential_pool
+    parent = SimpleNamespace(provider="openrouter", requested_provider="openrouter", base_url="", _credential_pool=None)
+    child = _resolve_child_credential_pool("myep", parent, NEW, "myep")
+    assert child is None or POOLED not in {e.access_token for e in child.entries()}
+
+
+@pytest.mark.parametrize("provider", ["custom:myep", "myep"])
+def test_aux_task_base_url_override_never_receives_the_entry_origin_key(_isolate_hermes_home, provider):
+    from agent.credential_pool import load_pool
+    from agent.custom_entry_pool import pool_for_aux_provider
+    _entry()
+    _add_row()
+    _set(auxiliary={"compression": {"provider": provider, "model": "m", "base_url": NEW}})
+
+    assert _cached_aux_client() == (NEW, "no-key-required")
+    # Credential recovery for a request sent to NEW rotates nothing bound to OLD.
+    assert pool_for_aux_provider(provider, "myep", load_pool, NEW) is None
+    assert POOLED in {e.access_token for e in pool_for_aux_provider(provider, "myep", load_pool, OLD).entries()}
+
+
+def test_resolving_a_same_named_entry_never_moves_the_builtin_pool_to_the_entry_host(_isolate_hermes_home, monkeypatch):
+    """A built-in's manual row with no recorded address belongs to the built-in's own address: a
+    ``providers.deepseek`` proxy entry neither stamps it with the proxy URL nor sends it there."""
+    from hermes_constants import get_hermes_home
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    proxy = "https://proxy.example/v1"
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    (get_hermes_home() / "auth.json").write_text(json.dumps({"version": 1, "providers": {}, "credential_pool": {
+        "deepseek": [{"id": "dash01", "label": "dash", "auth_type": "api_key", "priority": 0,
+                      "source": "manual", "access_token": BUILTIN}]}}), encoding="utf-8")
+    builtin = resolve_runtime_provider(requested="deepseek")
+    assert (builtin["base_url"], builtin["api_key"]) == ("https://api.deepseek.com/v1", BUILTIN)
+
+    _entry("deepseek", base_url=proxy)
+    entry = resolve_runtime_provider(requested="custom:deepseek")
+    assert (entry["base_url"], entry["api_key"]) == (proxy, "no-key-required")
+    assert [r.get("base_url") for r in _stored_rows("deepseek")] == [None]
+
+    _set(providers={})
+    after = resolve_runtime_provider(requested="deepseek")
+    assert (after["base_url"], after["api_key"]) == ("https://api.deepseek.com/v1", BUILTIN)

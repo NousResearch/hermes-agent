@@ -44,8 +44,9 @@ def entry_scoped_pool(pool: Any, pool_key: str, entry: Optional[dict[str, Any]],
     re-seeds from its current config (``env:<its key_env>``, ``config:<its name>``,
     ``model_config``) or it recorded the same origin (scheme/host/port) as ``base_url``, so no key
     entered for one host, nor a built-in's seeded account, follows the entry to another host. A
-    manual row that recorded no address is bound to the entry's current one first (see
-    ``bind_unrecorded_rows``); any other row without one is dropped.
+    manual row that recorded no address is bound to the entry's current one first when the pool is
+    the entry's alone (see ``bind_unrecorded_rows``); in a built-in's pool it keeps the built-in's
+    own address (``recorded_address``); any other row without one is dropped.
 
     The pool itself when every row is kept, else a view sharing its rows and token baselines
     (persisting it merges into the stored pool under its lock), None when nothing is left.
@@ -58,7 +59,8 @@ def entry_scoped_pool(pool: Any, pool_key: str, entry: Optional[dict[str, Any]],
     whole = str(pool_key or "").startswith(CUSTOM_POOL_PREFIX) or not entry_declares_credential(entry)
     own = _own_seeded_sources(entry)
     rows = pool.entries()
-    kept = [row for row in rows if (whole or row_owned_by_entry(row, entry)) and _row_serves(row, own, target)]
+    kept = [row for row in rows if (whole or row_owned_by_entry(row, entry))
+            and _row_serves(row, own, target, pool.provider)]
     if len(kept) == len(rows):
         return pool
     if not kept:
@@ -75,23 +77,47 @@ def _own_seeded_sources(entry: dict[str, Any]) -> set[str]:
     return envs | {f"config:{str(entry.get('name') or '').strip()}", "model_config"}
 
 
-def _row_serves(row: Any, own_sources: set[str], target: str) -> bool:
+def _row_serves(row: Any, own_sources: set[str], target: str, pool_key: str) -> bool:
     from utils import same_base_url_origin
     if str(getattr(row, "source", "") or "").strip() in own_sources:
         return True
-    url = str(getattr(row, "base_url", "") or "").strip()
+    url = recorded_address(row, pool_key)
     return bool(url and target) and same_base_url_origin(url, target)
+
+
+def builtin_pool_address(pool_key: Optional[str]) -> Optional[str]:
+    """The built-in provider's own address when ``pool_key`` is a built-in's pool id, which a
+    same-keyed ``providers:`` entry shares (``""`` when the built-in has none); None when the pool
+    belongs to a custom entry alone (``custom:<name>``, or a slug no built-in owns)."""
+    from agent.credential_pool import CUSTOM_POOL_PREFIX
+    key = str(pool_key or "").strip().lower()
+    if not key or key.startswith(CUSTOM_POOL_PREFIX):
+        return None
+    if key == "openrouter":
+        from hermes_constants import OPENROUTER_BASE_URL
+        return OPENROUTER_BASE_URL
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    pconfig = PROVIDER_REGISTRY.get(key)
+    return str(pconfig.inference_base_url or "") if pconfig else None
+
+
+def recorded_address(row: Any, pool_key: Optional[str]) -> str:
+    """The address ``row``'s key was entered for: its recorded ``base_url``, else, in a built-in's
+    pool, the built-in's own address (where the built-in route sends an unrecorded row)."""
+    return str(getattr(row, "base_url", "") or "").strip() or (builtin_pool_address(pool_key) or "")
 
 
 def bind_unrecorded_rows(pool: Any, base_url: str) -> list[Any]:
     """Record ``base_url`` on the pool's manual rows that recorded no address (``hermes auth add``
     and dashboard rows written before writers recorded one): the key was entered while the entry
     pointed there. Persisted once when the active store owns the rows, so a later edit of the
-    entry's address leaves them behind. Returns the rows it bound."""
+    entry's address leaves them behind. Only a pool the entry owns alone is bound: a built-in's
+    pool (shared with a same-keyed entry) keeps the built-in's address for its rows, or the
+    built-in route would follow the entry's host. Returns the rows it bound."""
     from dataclasses import replace
 
     from agent.credential_pool import CredentialPool, _is_manual_source, _profile_owns_pool_provider
-    if not isinstance(pool, CredentialPool) or not base_url:
+    if not isinstance(pool, CredentialPool) or not base_url or builtin_pool_address(pool.provider) is not None:
         return []
     unbound = [row for row in pool.entries()
                if _is_manual_source(str(row.source or "")) and not str(row.base_url or "").strip()]
@@ -125,30 +151,70 @@ def named_custom_entry(provider_name: Optional[str], config: Optional[dict] = No
     return next(((n, e) for n, e in cp._iter_custom_providers(config) if aliases & cp._custom_entry_name_aliases(n, e)), None) if aliases else None
 
 
-def pool_for_aux_provider(provider: Optional[str], pool_key: str, load: Callable[[str], Any]) -> Any:
-    """``load(pool_key)`` for an auxiliary pool read (the key peek, credential recovery). A pinned
-    ``custom:<name>`` normalizes to its entry's slug, which may also be a same-named built-in's pool,
-    so it gets the entry-scoped view; a bare built-in name keeps its whole pool."""
+def custom_entry_for_identity(provider: Optional[str], config: Optional[dict] = None) -> Optional[tuple[str, dict[str, Any]]]:
+    """``(normalized_name, entry)`` of the configured custom endpoint a provider identity names, the
+    way the runtime resolves it: ``custom:<name>``, or a bare slug (Desktop's activate writes
+    ``model.provider: <key>``; ``auxiliary.<task>.provider`` and fallbacks take one too). A canonical
+    built-in name means its same-keyed entry only when the resolver routes it there (#151775).
+    None for a built-in, bare ``custom`` and ``auto``: the one test of "is this a custom entry's
+    identity" for every pool acquisition, never a name prefix."""
+    from agent.credential_pool import CUSTOM_POOL_PREFIX, _iter_custom_providers, _load_config_safe, _normalize_custom_pool_name
+    name = str(provider or "").strip().lower()
+    if not name or name in {"auto", "custom", "main"}:
+        return None
+    if config is None:
+        config = _load_config_safe() or {}
+    if name.startswith(CUSTOM_POOL_PREFIX):
+        return named_custom_entry(name, config)
+    from hermes_cli.runtime_provider_custom import named_custom_provider_config_path
+    path = named_custom_provider_config_path(name, config)
+    if path is None or path[0] != "providers":
+        return None if path is None else named_custom_entry(name, config)
+    key = _normalize_custom_pool_name(str(path[1]))
+    return next(((n, e) for n, e in _iter_custom_providers(config)
+                 if _normalize_custom_pool_name(str(e.get("provider_key") or "")) == key), None)
+
+
+def pool_for_aux_provider(provider: Optional[str], pool_key: str, load: Callable[[str], Any],
+                          base_url: Optional[str] = None) -> Any:
+    """``load(pool_key)`` for an auxiliary pool read (the key peek, credential recovery). A custom
+    entry's identity (``custom:<name>`` or its bare slug, also as the ``main`` provider's name) loads
+    a slug that may also be a same-named built-in's pool, so it gets the entry-scoped view, bound to
+    ``base_url``, the address actually called (default: the entry's); a built-in keeps its whole pool."""
     pool = load(pool_key)
-    if pool is None or not str(provider or "").strip().lower().startswith("custom:"):
+    if pool is None:
         return pool
-    match = named_custom_entry(provider)
-    return entry_scoped_pool(pool, pool_key, match[1] if match else None)
+    match = custom_entry_for_identity(provider) or custom_entry_for_identity(pool_key)
+    if match is None:
+        return pool
+    return entry_scoped_pool(pool, pool_key, match[1], str(base_url or "").strip() or None)
 
 
-def _custom_identity(provider: Optional[str], requested_provider: Optional[str]) -> tuple[bool, Optional[str]]:
-    """``(is_custom, custom:<name> or None)`` for a runtime's provider / requested_provider pair."""
+def _custom_identity(provider: Optional[str], requested_provider: Optional[str],
+                     base_url: Optional[str]) -> tuple[bool, Optional[str]]:
+    """``(is_custom, the entry's identity or None)`` for a runtime's provider / requested_provider
+    pair: bare ``custom`` (matched by URL), ``custom:<name>``, or a bare slug
+    ``custom_entry_for_identity`` resolves to a configured entry. A slug that is also a built-in's id
+    names the entry only on the entry's address; elsewhere it is the built-in's own runtime."""
     from agent.credential_pool import CUSTOM_POOL_PREFIX
     identities = [str(v or "").strip().lower() for v in (provider, requested_provider)]
-    custom = any(v == "custom" or v.startswith(CUSTOM_POOL_PREFIX) for v in identities)
-    return custom, next((v for v in identities if v.startswith(CUSTOM_POOL_PREFIX)), None)
+
+    def _names_entry(v: str) -> bool:
+        if custom_entry_for_identity(v) is None:
+            return False
+        return builtin_pool_address(v) is None or custom_entry_for_endpoint(base_url, v) is not None
+
+    # ``custom:<name>`` is custom even with no entry left: it then has no pool to borrow (fail closed).
+    name = next((v for v in identities if v.startswith(CUSTOM_POOL_PREFIX)), None) or next(
+        (v for v in identities if _names_entry(v)), None)
+    return bool(name) or "custom" in identities, name
 
 
 def runtime_entry_owner(provider: Optional[str], requested_provider: Optional[str], base_url: Optional[str]) -> Optional[dict[str, Any]]:
     """Credential provenance of the entry that owns a custom runtime, for its ``_primary_runtime``
     snapshot: matched in the config the route runs on (the frozen scope, else the profile's), the way
     resolution matched it. Names only, never a secret. None for a built-in or an unowned endpoint."""
-    custom, name = _custom_identity(provider, requested_provider)
+    custom, name = _custom_identity(provider, requested_provider, base_url)
     if not custom or (match := custom_entry_for_endpoint(base_url, name)) is None:
         return None
     norm_name, entry = match
@@ -160,16 +226,16 @@ def load_runtime_pool(
     provider: Optional[str], base_url: Optional[str], requested_provider: Optional[str] = None,
     snapshot: Optional[dict[str, Any]] = None,
 ) -> Any:
-    """The pool for a runtime snapshot's identity. A custom runtime (``custom`` or ``custom:<name>``)
-    is the entry's, so it gets the entry-scoped view; a built-in identity loads its whole pool.
+    """The pool for a runtime snapshot's identity. A custom runtime (``custom``, or a name that
+    ``custom_entry_for_identity`` resolves) is the entry's, so it gets the entry-scoped view; a built-in identity loads its whole pool.
     Ownership and the pool key come from the runtime identity, never from the pool slug, which both
-    share: a ``custom:<name>`` identity keys on its own entry, not the first entry on its URL.
+    share: a named identity keys on its own entry, not the first entry on its URL.
 
     ``snapshot`` is the ``_primary_runtime`` being restored: the owner it recorded wins over live
     config, so an edit can't reassign the endpoint or drop the entry's declared credential. A named
     identity whose snapshot recorded no owner gets None and keeps the snapshot's own credential."""
     from agent.credential_pool import _pool_keys_for_custom_entry, load_pool, resolve_runtime_pool_key
-    custom, name = _custom_identity(provider, requested_provider)
+    custom, name = _custom_identity(provider, requested_provider, base_url)
     if not custom:
         key = resolve_runtime_pool_key(provider, base_url)
         return load_pool(key) if key else None
@@ -187,6 +253,6 @@ def load_route_pool(provider: Optional[str], base_url: Optional[str], requested_
     """The pool to attach when a live agent moves onto a route (fallback activation, ``/model``): a
     custom identity gets its entry's origin-bound view (``load_runtime_pool``), a built-in its own pool."""
     from agent.credential_pool import load_pool
-    if _custom_identity(provider, requested_provider)[0]:
+    if _custom_identity(provider, requested_provider, base_url)[0]:
         return load_runtime_pool(provider, base_url, requested_provider)
     return load_pool(str(provider or "").strip().lower())

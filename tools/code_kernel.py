@@ -803,8 +803,8 @@ def stale_modules_warning(payload: dict[str, Any]) -> str:
     # Redacted like the cell's stdout: a module name is cell-chosen text.
     shown = redact_sensitive_text(", ".join(names[:8]), code_file=True) + (
         f" and {len(names) - 8} more" if len(names) > 8 else "")
-    return (f"Edited on disk after this kernel imported it: {shown}. Unless this cell reloaded it, "
-            "the cell ran the OLD code. Run importlib.reload(<module>) (and re-import any names "
+    return (f"Edited on disk after this kernel imported it: {shown}. If this cell used it without "
+            "reloading, it ran the OLD code. Run importlib.reload(<module>) (and re-import any names "
             "taken from it), or call again with reset=true to start from fresh imports.")
 
 

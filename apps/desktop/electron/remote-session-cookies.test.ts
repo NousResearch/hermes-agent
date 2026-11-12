@@ -18,7 +18,8 @@ describe('parseSetCookie', () => {
       name: 'hermes_session',
       value: 'abc123',
       path: '/',
-      expired: false
+      expired: false,
+      attributes: { secure: false, httpOnly: true, sameSite: 'lax' }
     })
     expect(parseSetCookie('hermes_session=abc; Path=/gw-a; HttpOnly')?.path).toBe('/gw-a')
     // A missing or non-absolute Path falls back to "/".

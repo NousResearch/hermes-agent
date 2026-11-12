@@ -39,6 +39,18 @@ export interface ParsedCookie {
   path: string
   /** True when the header asks the client to delete the cookie. */
   expired: boolean
+  /** The remaining attributes, read in the same walk so deletion and expiry never disagree. */
+  attributes: CookieAttributes
+}
+
+export interface CookieAttributes {
+  secure: boolean
+  httpOnly: boolean
+  domain?: string
+  /** Lower-cased `SameSite` value as sent. */
+  sameSite?: string
+  maxAgeSeconds?: number
+  expiresMs?: number
 }
 
 interface MirroredCookie {
@@ -75,8 +87,7 @@ export function parseSetCookie(header: string): ParsedCookie | null {
   }
 
   let path: string | undefined
-  // An empty value is how some servers clear a cookie; treat it as deletion.
-  let expired = !value
+  const parsed: CookieAttributes = { secure: false, httpOnly: false }
 
   for (const attribute of attributes) {
     const attrEq = attribute.indexOf('=')
@@ -85,22 +96,28 @@ export function parseSetCookie(header: string): ParsedCookie | null {
 
     if (attrName === 'path') {
       path = attrValue
-    } else if (attrName === 'max-age') {
-      const seconds = Number(attrValue)
-
-      if (Number.isFinite(seconds) && seconds <= 0) {
-        expired = true
-      }
-    } else if (attrName === 'expires') {
-      const at = Date.parse(attrValue)
-
-      if (Number.isFinite(at) && at <= Date.now()) {
-        expired = true
-      }
+    } else if (attrName === 'secure') {
+      parsed.secure = true
+    } else if (attrName === 'httponly') {
+      parsed.httpOnly = true
+    } else if (attrName === 'domain' && attrValue) {
+      parsed.domain = attrValue
+    } else if (attrName === 'samesite') {
+      parsed.sameSite = attrValue.toLowerCase()
+    } else if (attrName === 'max-age' && Number.isFinite(Number(attrValue))) {
+      parsed.maxAgeSeconds = Number(attrValue)
+    } else if (attrName === 'expires' && Number.isFinite(Date.parse(attrValue))) {
+      parsed.expiresMs = Date.parse(attrValue)
     }
   }
 
-  return { name, value, path: normalizeCookiePath(path), expired }
+  // An empty value is how some servers clear a cookie; so are Max-Age<=0 and a past Expires.
+  const expired =
+    !value ||
+    (parsed.maxAgeSeconds !== undefined && parsed.maxAgeSeconds <= 0) ||
+    (parsed.expiresMs !== undefined && parsed.expiresMs <= Date.now())
+
+  return { name, value, path: normalizeCookiePath(path), expired, attributes: parsed }
 }
 
 /** `protocol//host` origin key for a request URL; null when not http(s). */
@@ -184,36 +201,16 @@ export function jarWriteFromSetCookie(url: string, header: string, nowMs: number
     return { kind: 'remove', name: parsed.name }
   }
 
-  const details: JarCookieDetails = {
-    url,
-    name: parsed.name,
-    value: parsed.value,
-    path: parsed.path,
-    secure: false,
-    httpOnly: false
+  const { secure, httpOnly, domain, sameSite, maxAgeSeconds, expiresMs } = parsed.attributes
+  const details: JarCookieDetails = { url, name: parsed.name, value: parsed.value, path: parsed.path, secure, httpOnly }
+
+  // Chromium refuses a `__Host-` cookie that carries a Domain; a failed write there is the jar being right.
+  if (domain) {
+    details.domain = domain
   }
 
-  let maxAgeSeconds: number | undefined
-  let expiresMs: number | undefined
-
-  for (const attribute of header.split(';').slice(1)) {
-    const eq = attribute.indexOf('=')
-    const name = (eq >= 0 ? attribute.slice(0, eq) : attribute).trim().toLowerCase()
-    const value = eq >= 0 ? attribute.slice(eq + 1).trim() : ''
-
-    if (name === 'secure') {
-      details.secure = true
-    } else if (name === 'httponly') {
-      details.httpOnly = true
-    } else if (name === 'domain' && value) {
-      details.domain = value
-    } else if (name === 'samesite') {
-      details.sameSite = SAME_SITE[value.toLowerCase()]
-    } else if (name === 'max-age' && Number.isFinite(Number(value))) {
-      maxAgeSeconds = Number(value)
-    } else if (name === 'expires' && Number.isFinite(Date.parse(value))) {
-      expiresMs = Date.parse(value)
-    }
+  if (sameSite) {
+    details.sameSite = SAME_SITE[sameSite]
   }
 
   // RFC 6265 §5.3: Max-Age wins over Expires.

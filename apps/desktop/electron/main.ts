@@ -6989,6 +6989,8 @@ function warmOauthCookieStore(url?) {
 // it, so whichever lagged replayed the previous token, and the portal revokes
 // the whole session on a replay. Follow every jar write into the mirror here;
 // fetchJsonViaOauthSession writes the mirror's Set-Cookies into the jar.
+// Install once per session object: both constructors cache theirs and never
+// evict, and a second listener would only rewrite the same value.
 function keepMirrorInStepWithJar(sess, partition) {
   sess.cookies.on('changed', (_event, cookie, _cause, removed) => {
     if (!removed) {
@@ -7306,6 +7308,8 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
           reject,
           onSetCookies: setCookie => {
             remoteSessionCookies.record(partition, url, setCookie)
+            // Fire-and-forget: the mirror, updated synchronously above, is what
+            // the next mirrored request sends; the jar catches up for its own readers.
             void writeSetCookiesIntoJar(sess, url, setCookie)
           }
         })

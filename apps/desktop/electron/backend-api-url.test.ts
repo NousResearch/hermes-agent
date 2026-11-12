@@ -82,7 +82,7 @@ test('routed renderer paths never leave the backend origin once joined', async (
 test('joinBackendApiUrl keeps gateway file download URLs on the backend origin', async () => {
   const { gatewayFileRequestPaths } = await import('./gateway-file-download')
 
-  for (const filePath of ['/home/u/report.pdf', '@evil.example/x', '//evil.example/x', 'http://evil.example/']) {
+  for (const filePath of ['/home/u/r&d #1.pdf', '@evil.example/x', '//evil.example/x', 'http://evil.example/']) {
     for (const sessionId of [undefined, 's1', '@evil.example/', '#@evil.example']) {
       const { download } = gatewayFileRequestPaths(filePath, path => path, sessionId)
       const joined = new URL(joinBackendApiUrl(`${REMOTE}/`, download))
@@ -90,6 +90,7 @@ test('joinBackendApiUrl keeps gateway file download URLs on the backend origin',
       assert.equal(joined.origin, REMOTE)
       assert.equal(joined.pathname, '/api/fs/download')
       assert.equal(joined.searchParams.get('path'), filePath)
+      assert.equal(joined.searchParams.get('session_id'), sessionId ?? null)
     }
   }
 })

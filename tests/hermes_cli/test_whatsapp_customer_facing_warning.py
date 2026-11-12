@@ -38,7 +38,11 @@ def _run_wizard() -> str:
     return buf.getvalue()
 
 
-@pytest.mark.parametrize("allow_env", [("WHATSAPP_ALLOWED_USERS", "*"), ("WHATSAPP_ALLOW_ALL_USERS", "true")])
+@pytest.mark.parametrize("allow_env", [
+    ("WHATSAPP_ALLOWED_USERS", "*"),
+    ("WHATSAPP_ALLOWED_USERS", "15551234567, *"),
+    ("WHATSAPP_ALLOW_ALL_USERS", "true"),
+])
 def test_open_bot_without_home_channel_warns_once(isolated_home, monkeypatch, allow_env):
     monkeypatch.setenv("WHATSAPP_MODE", "bot")
     monkeypatch.setenv(*allow_env)

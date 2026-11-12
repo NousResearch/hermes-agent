@@ -394,6 +394,8 @@ platforms:
     extra:
       allow_admin_from:                 # only these senders may run admin slash commands
         - "15551234567@s.whatsapp.net"
+      group_allow_admin_from:           # same, for group chats (DM admins are not group admins)
+        - "15551234567@s.whatsapp.net"
       # user_allowed_commands: [new]    # optional: commands customers may still run
 ```
 
@@ -401,7 +403,7 @@ platforms:
 - **`interim_assistant_messages`** defaults to `true`, so customers see the agent's mid-turn commentary.
 - **Home channel:** without one, the first sender gets a one-time "type /sethome" prompt, and
   any sender who runs `/sethome` takes over cron and notification delivery. Set it to your own chat.
-- **`allow_admin_from`** turns on [slash-command access control](../../reference/slash-commands.md#permissions-and-admin-user-split):
+- **`allow_admin_from`** (DMs) and **`group_allow_admin_from`** (groups) turn on [slash-command access control](../../reference/slash-commands.md#permissions-and-adminuser-split):
   customers keep only `/help` and `/whoami` (plus anything in `user_allowed_commands`), can't run
   `/sethome`, and never get the `/sethome` prompt. Send `/whoami` from your own phone to get the
   exact ID to list.

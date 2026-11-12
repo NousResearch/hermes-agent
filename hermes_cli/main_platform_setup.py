@@ -100,7 +100,8 @@ def _whatsapp_warn_customer_facing(wa_mode: str, get_env_value) -> None:
     from gateway.config import Platform, load_gateway_config
     from utils import is_truthy_value
 
-    allow_all = "*" in (get_env_value("WHATSAPP_ALLOWED_USERS") or "").split(",") or is_truthy_value(
+    allowed = (get_env_value("WHATSAPP_ALLOWED_USERS") or "").split(",")
+    allow_all = "*" in (entry.strip() for entry in allowed) or is_truthy_value(
         get_env_value("WHATSAPP_ALLOW_ALL_USERS"))
     if wa_mode != "bot" or not allow_all:
         return

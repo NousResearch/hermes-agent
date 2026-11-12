@@ -220,6 +220,8 @@ platforms:
     extra:
       allow_admin_from:                 # 只有这些发送者可以运行管理类斜杠命令
         - "15551234567@s.whatsapp.net"
+      group_allow_admin_from:           # 同上，用于群聊（私聊管理员不是群管理员）
+        - "15551234567@s.whatsapp.net"
       # user_allowed_commands: [new]    # 可选：客户仍可运行的命令
 ```
 
@@ -227,7 +229,7 @@ platforms:
 - **`interim_assistant_messages`** 默认为 `true`，客户会看到 Agent 轮次中的中间评论。
 - **主频道：** 未设置时，第一个发送者会收到一次性的"输入 /sethome"提示，任何运行 `/sethome`
   的发送者都会接管定时任务和通知的投递。请将其设为你自己的聊天。
-- **`allow_admin_from`** 会启用[斜杠命令访问控制](../../reference/slash-commands.md#权限与管理员用户分级)：
+- **`allow_admin_from`**（私聊）和 **`group_allow_admin_from`**（群聊）会启用[斜杠命令访问控制](../../reference/slash-commands.md#权限与管理员用户分级)：
   客户只保留 `/help` 和 `/whoami`（以及 `user_allowed_commands` 中列出的命令），无法运行 `/sethome`，
   也不会收到 `/sethome` 提示。用你自己的手机发送 `/whoami` 获取要填写的准确 ID。
 

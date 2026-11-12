@@ -267,7 +267,7 @@ _ENV_ASSIGN_RE = re.compile(rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0
 _QUOTED_FLAG_VALUE = (r"\"(?:\\[\s\S]|[^\"\\]){1,512}+\"|'(?:'\\''|[^']){1,512}+'"
                       r"|[\"'][^\n]*+|\S+")
 _CLI_SECRET_FLAG_RE = re.compile(
-    r"(?P<flag>(?<![\w-])--?(?:password|passwd|passphrase|pass|token|api[-_]?key|apikey"
+    r"(?P<flag>(?:(?<=^)|(?<=[\s'\"`]))--?(?:password|passwd|passphrase|pass|token|api[-_]?key|apikey"
     r"|client[-_]?secret|access[-_]?key|account[-_]?key|auth[-_]?token|session[-_]?token|secret|bearer"
     r"|credential)s?)"
     r"(?P<sep>\s*=|\s+)"

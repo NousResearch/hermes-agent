@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from hermes_cli.plugins import get_bundled_plugins_dir
 from providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
@@ -109,9 +110,7 @@ _COLLECT: ContextVar[list | None] = ContextVar("_provider_collect", default=None
 _REGISTRATION_ONLY: ContextVar[frozenset[str] | None] = ContextVar("_provider_registration_only", default=None)
 
 # Repo-root ``plugins/model-providers/`` — populated at discovery time.
-_BUNDLED_PLUGINS_DIR = (
-    Path(__file__).resolve().parent.parent / "plugins" / "model-providers"
-)
+_BUNDLED_PLUGINS_DIR = get_bundled_plugins_dir() / "model-providers"
 
 
 def _sync_auth_registry() -> None:

@@ -1,0 +1,25 @@
+name: retouch
+title: Retouch
+repo: https://github.com/Lyfae/hermes-retouch
+sha: 1a5ac4346b991754a25a5dc14745f533341c8c95
+description: "Mark the parts of any image that need work in a Hermes Desktop pane, leave a note on each, and Hermes fixes only those areas. Each mark has its own thread; every edit is a new version, checked pixel by pixel and refused if anything outside its mark changed; only you can accept a mark. Tonal and privacy edits need no image provider, removals and replacements use the image_generate provider you configured. Saves new files, never the original. Disclosure — images you open are copied into this profile's plugin-data/retouch folder. Send starts hidden Hermes sessions, one per group of overlapping marks and up to three at a time, with your usual tools, settings and approvals; they use model credits and stay in your session history. Your chat model's provider, or that of the model picked beside Send, receives a downscaled overview of the image, a close-up of each mark and before/after strips. The generate method sends a crop around the mark to your image_generate provider and downloads the result (https only, public addresses only, at most 40 MB). Text inside a picture is treated as picture content by instruction, which is not a barrier, so treat an untrusted picture of text like pasted text. Untouched pasted scratch projects are deleted about a day later. The plugin itself makes no other network calls, runs no shell commands, stores no credentials and sends no telemetry; exports strip GPS and embedded text metadata."
+maintainer: Lyfae
+tier: community
+category: desktop
+requires_hermes: ">=0.22.7"
+docs_url: https://github.com/Lyfae/hermes-retouch#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Lyfae/hermes-retouch/1a5ac4346b991754a25a5dc14745f533341c8c95/assets/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/Lyfae/hermes-retouch/1a5ac4346b991754a25a5dc14745f533341c8c95/assets/shot-1-mark.png
+  - https://raw.githubusercontent.com/Lyfae/hermes-retouch/1a5ac4346b991754a25a5dc14745f533341c8c95/assets/shot-2-working.png
+  - https://raw.githubusercontent.com/Lyfae/hermes-retouch/1a5ac4346b991754a25a5dc14745f533341c8c95/assets/shot-3-thread.png
+  - https://raw.githubusercontent.com/Lyfae/hermes-retouch/1a5ac4346b991754a25a5dc14745f533341c8c95/assets/shot-4-still-visible.png
+  - https://raw.githubusercontent.com/Lyfae/hermes-retouch/1a5ac4346b991754a25a5dc14745f533341c8c95/assets/shot-5-edge-check.png
+  - https://raw.githubusercontent.com/Lyfae/hermes-retouch/1a5ac4346b991754a25a5dc14745f533341c8c95/assets/shot-6-accepted.png
+platforms: []
+capabilities:
+  provides_tools: [retouch_get, retouch_edit, retouch_reply, retouch_export]
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

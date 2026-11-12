@@ -77,4 +77,4 @@ registry.register(
     name="show_tip", toolset="desktop_ui", schema=TIP_SCHEMA, check_fn=check_tips_enabled,
     handler=lambda args, **kw: tip_tool(
         **{k: args.get(k, "") for k in ("text", "selector", "title", "side")}),
-    emoji="💡")
+    emoji="💡", self_checked_args=("text", "selector"))

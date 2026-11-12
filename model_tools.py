@@ -289,11 +289,13 @@ def _tool_defs_cache_key(
         cfg_fp = config_version(get_config_path())
     except (FileNotFoundError, OSError, ImportError):
         cfg_fp = None
+    from tools.environments.sandbox_scope import hosted_scope
     return (
         registry.current_scope_key(), frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
         frozenset(disabled_toolsets) if disabled_toolsets else None, registry._generation, cfg_fp,
         bool(os.environ.get("HERMES_KANBAN_TASK")), bool(skip_tool_search_assembly),
         _is_delegated_child_context(), _is_dispatcher_owned_worker(), profile_scope, check_fn_cache_epoch(),
+        hosted_scope() is not None,
     )
 
 
@@ -560,7 +562,10 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
     except Exception as e:  # pragma: no cover — never break tool loading
         logger.warning("Tool search assembly skipped: %s", e)
 
-    return filtered_tools
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    # A hosted scope runs only its allowlist (the tool_search bridge included): advertising the
+    # rest would only earn refusals.
+    return [tool for tool in filtered_tools if hosted_tool_refusal(tool["function"]["name"]) is None]
 
 
 def _active_model_config() -> tuple[str, dict[str, Any]]:
@@ -918,6 +923,11 @@ def handle_function_call(
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id)
     start = time.monotonic()
+    from tools.hosted_tool_policy import hosted_tool_refusal
+    if refusal := hosted_tool_refusal(function_name):
+        # Callers outside the agent loop (execute_code RPC, the session kernel, the MCP bridge,
+        # connector batches) meet the same allowlist before bridges, connectors or the registry.
+        return tool_error(refusal)
 
     def _emit(result: Any, **extra: Any) -> Any:
         """Emit post_tool_call with this call's identity fields; returns *result*."""

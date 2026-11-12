@@ -15,6 +15,23 @@ from hermes_cli.colors import Colors, color
 _AUX_KEY_FIELDS = ("api_key", "key_env", "api_key_env")
 
 
+def _route_of(provider: Any, base_url: Any) -> tuple[str, str]:
+    p = str(provider or "").strip().lower()
+    return ("" if p == "auto" else p), str(base_url or "").strip().rstrip("/")
+
+
+def clear_aux_credentials_on_route_change(entry: dict, provider: Any, base_url: Any = "") -> bool:
+    """Every writer that re-points an aux/delegation block calls this BEFORE writing the new
+    provider/base_url: when the route changes, the block's api_key/key_env/api_key_env/api_mode
+    belong to the old endpoint, and the aux resolver would hand them to the new one (#141832).
+    Returns True when credentials were cleared."""
+    if _route_of(entry.get("provider"), entry.get("base_url")) == _route_of(provider, base_url):
+        return False
+    from hermes_cli.config import clear_model_endpoint_credentials
+    clear_model_endpoint_credentials(entry)
+    return True
+
+
 def _safe(value: Any) -> str:
     """A route value fit for the terminal: userinfo and credential query params masked."""
     from agent.redact import redact_sensitive_text
@@ -52,14 +69,16 @@ def stale_route_notice(user_config: dict, dotted_key: str, value: Any) -> str:
     popped, unverified = drop_stale_model_route(block, value, user_config)
     prefix = ".".join(parts[:-1])
     dropped_keys: list[str] = []
-    # From an unset/auto provider with no route to drop, there is no old endpoint: a key the
-    # user just set (``config set ….api_key K`` then ``….provider P``) belongs to P.
+    # From an unset/auto provider with no route to drop, an inline api_key is one the user just
+    # set (``config set ….api_key K`` then ``….provider P``) and belongs to P. A key_env pointer is
+    # never kept that way: auto writers can leave one from an earlier route behind.
     no_old_endpoint = not popped and raw_old.lower() in ("", "auto")
-    if parts[0].lower() == "auxiliary" and not unverified and not no_old_endpoint and not block.get("base_url"):
+    if parts[0].lower() == "auxiliary" and not unverified and not block.get("base_url"):
         # The aux resolver hands a block's api_key/key_env to whatever provider it names, so with
         # the old route gone the old endpoint's key would go to the new provider. Names only:
         # the values are secrets.
-        dropped_keys = [k for k in _AUX_KEY_FIELDS if block.get(k) not in (None, "")]
+        fields = _AUX_KEY_FIELDS[1:] if no_old_endpoint else _AUX_KEY_FIELDS
+        dropped_keys = [k for k in fields if block.get(k) not in (None, "")]
         for k in dropped_keys:
             block.pop(k)
     if popped or dropped_keys:

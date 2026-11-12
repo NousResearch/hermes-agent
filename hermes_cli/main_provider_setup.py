@@ -164,12 +164,8 @@ def _save_aux_choice(task: str, *, provider: str, model: str = "", base_url: str
         provider = "" if provider == "auto" else provider
     else:
         entry = _ensure_dict_section(_ensure_dict_section(cfg, "auxiliary"), task)
-    prev_route = (str(entry.get("provider") or "").strip().lower(), str(entry.get("base_url") or "").strip())
-    if prev_route != (provider.strip().lower(), (base_url or "").strip()):
-        # A new route must not inherit the old one's key_env/api_key_env/api_mode: the aux
-        # resolver hands them to whatever provider/base_url the block now names (#141832).
-        from hermes_cli.config import clear_model_endpoint_credentials
-        clear_model_endpoint_credentials(entry)
+    from hermes_cli.config_route_guard import clear_aux_credentials_on_route_change
+    clear_aux_credentials_on_route_change(entry, provider, base_url)
     entry["provider"] = provider
     entry["model"] = model or ""
     entry["base_url"] = base_url or ""
@@ -217,6 +213,11 @@ def _reset_aux_to_auto() -> int:
         if entry.get("provider") not in {None, "", auto}:
             entry["provider"] = auto
             changed = True
+        # The reset route's key pointers must not wait in the block for the next provider pick,
+        # which would hand them to that provider (#141832). api_key is reset with the fields below.
+        for field in ("key_env", "api_key_env", "api_mode"):
+            if entry.pop(field, None):
+                changed = True
         for field in ("model", "base_url", "api_key", "reasoning_effort"):
             # Reset = the shipped default: "" everywhere except a slot that ships one (voice_chat: none).
             default = str((defaults.get(task) or {}).get(field) or "") if isinstance(defaults.get(task), dict) else ""

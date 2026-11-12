@@ -89,6 +89,9 @@ def _normalize_path(raw: str) -> str:
         if m:
             path = f"{m.group(2)}:\\{m.group(3)}"
         path = path.replace("/", "\\")
+    from tools.environments.sandbox_scope import sandbox_lexical_path
+    if (lexical := sandbox_lexical_path(path)) is not None:
+        return lexical  # a hosted agent's sandbox path: never resolved against this host
     try:
         return os.path.normcase(os.path.realpath(os.path.normpath(path)))
     except Exception:

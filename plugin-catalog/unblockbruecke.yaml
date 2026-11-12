@@ -2,9 +2,7 @@ name: unblockbruecke
 title: Unblockbrücke
 repo: https://github.com/studioluftbruecke/hermes-unblockbruecke
 sha: f11471187d1aa25b81e4644da08a22148035841a
-description: >-
-  Cards to unblock yourself or your agent, drawn by you when you are stuck and by Hermes when its
-  tool calls keep failing.
+description: "Cards to unblock yourself or your agent, drawn by you when you are stuck and by Hermes when its tool calls keep failing. Disclosure — With auto-draw switched on (off by default), adds one card's text to a failing tool result after several failed calls in a row, so the model reads it; the agent's deck tool can import a deck from any file path and export a .yaml deck file to any folder you name (attended chats only, never overwriting a non-deck file)."
 maintainer: studioluftbruecke
 tier: community
 category: desktop

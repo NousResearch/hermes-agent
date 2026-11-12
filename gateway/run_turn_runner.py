@@ -125,7 +125,9 @@ def _settle_api_runtime_lock(agent, result, captured):
     ``_finish_turn_result``): the served runtime rides the usage, a mismatch fails the turn."""
     from gateway.session_api_turn import api_runtime_locked
     api = api_runtime_locked()
-    if api is None or not isinstance(result, dict):
+    if api is None or not isinstance(result, dict) or result.get('failed'):
+        # A turn that already failed keeps its own error (e.g. "endpoint refused the connection"),
+        # not a runtime-mismatch message that hides the cause.
         return
     settings = api['settings']
     try:

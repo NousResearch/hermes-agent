@@ -16,6 +16,7 @@ category: tools
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/salch-cred/language-lock
 version: "0.1.1"
+image: https://raw.githubusercontent.com/salch-cred/language-lock/eea0f3eb2a085270a457f1016cc2819e39c89565/docs/assets/catalog.jpg
 
 capabilities:
   provides_tools: []

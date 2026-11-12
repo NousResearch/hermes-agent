@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
@@ -27,9 +27,9 @@ class _Receiver:
     redirect = steer
 
 
-async def _inject(route, source, tmp_path, monkeypatch):
+async def _inject(route, source, tmp_path, monkeypatch, config=None):
     monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-    runner = GatewayRunner(config=GatewayConfig(group_sessions_per_user=False))
+    runner = GatewayRunner(config=config or GatewayConfig(group_sessions_per_user=False))
     event = MessageEvent(text="/steer check the logs" if route == "explicit" else "check the logs",
                          source=source, message_id="m2")
     receiver = _Receiver()
@@ -62,3 +62,18 @@ async def test_mid_turn_message_in_a_private_chat_stays_unlabelled(tmp_path, mon
     payload = await _inject("normal", dm, tmp_path, monkeypatch)
     assert payload.endswith("\n\ncheck the logs") and "[Ana]" not in payload
     assert "from_bot" not in json.loads(payload.splitlines()[1])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("global_per_user,platform_per_user", [(True, False), (False, True)])
+async def test_mid_turn_sender_label_honors_platform_override(
+    global_per_user, platform_per_user, tmp_path, monkeypatch,
+):
+    source = SessionSource(platform=Platform.WHATSAPP, chat_id="group@g.us", chat_type="group",
+                           user_id="alice@lid", user_name="Alice")
+    config = GatewayConfig(group_sessions_per_user=global_per_user, platforms={
+        Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"group_sessions_per_user": platform_per_user}),
+    })
+    payload = await _inject("normal", source, tmp_path, monkeypatch, config)
+    expected = "check the logs" if platform_per_user else "[Alice] check the logs"
+    assert payload.endswith("\n\n" + expected), payload

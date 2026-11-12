@@ -219,7 +219,7 @@ def split_raw_carrying_emphasis(content: str, max_length: int, truncate, len_fn,
     in ``chunks`` so ``format_message`` pairs them instead of escaping a lone marker into literal
     text; ``raw_chunks`` are the uncarried cuts (what the visible prefix is built from).
     ``formatted_len`` measures a chunk once formatted: escaping can grow a raw chunk past
-    *max_length*, so such a split is re-cut with the overshoot taken off the budget."""
+    *max_length*, so such a split is re-cut with the raw budget scaled by the escape ratio."""
     def carry(chunks: list[str]) -> list[str]:
         if len(chunks) <= 1:
             return chunks
@@ -227,11 +227,11 @@ def split_raw_carrying_emphasis(content: str, max_length: int, truncate, len_fn,
         plan = _raw_carry_plan(pieces, _cut_whitespace(content, pieces))
         return _carry(chunks, lambda index, _body: plan[index], " (%s/%s)", raw=True)
 
-    def overshoot(chunks: list[str]) -> int:
+    def worst_formatted(chunks: list[str]) -> int:
         if formatted_len is None:
             return 0
         # Escaping adds at most one unit per special character, so most chunks fit without formatting.
-        return max((formatted_len(c) - max_length for c in chunks
+        return max((formatted_len(c) for c in chunks
                     if len_fn(c) + len(_MDV2_SPECIAL_RE.findall(c)) > max_length), default=0)
 
     raw = truncate(content, max_length, len_fn=len_fn)
@@ -241,8 +241,11 @@ def split_raw_carrying_emphasis(content: str, max_length: int, truncate, len_fn,
         if budget != max_length:
             raw = truncate(content, budget, len_fn=len_fn)
             carried = carry(raw)
-        over = overshoot(carried)
-        if over <= 0:
+        formatted = worst_formatted(carried)
+        if formatted <= max_length:
             break
-        budget -= over + ENTITY_CARRY_RESERVE
+        # The overshoot is in FORMATTED units and the budget in raw ones: subtracting one from the other
+        # took 4096 down to 4 on dense punctuation (each "." escapes to "\\."), splitting a reply into
+        # thousands of parts. Scale the raw budget by the escape ratio instead.
+        budget = max(1, min(budget - 1, budget * (max_length - ENTITY_CARRY_RESERVE) // formatted))
     return raw, carried

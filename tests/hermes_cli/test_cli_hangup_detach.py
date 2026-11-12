@@ -64,6 +64,20 @@ def test_hangup_at_an_idle_prompt_does_not_close_the_gateway_session(_hook, cli_
     cli._session_db.delete_session.assert_not_called()
 
 
+@pytest.mark.parametrize("delete", [False, True])
+@patch("hermes_cli.lifecycle.invoke_hook")
+def test_a_signal_after_an_explicit_exit_keeps_the_close_and_delete(_hook, cli_mod, delete):
+    """/exit (or Ctrl+D) already asked to close; a SIGTERM landing while the app unwinds stays a close."""
+    cli = cli_mod.HermesCLI()
+    cli._session_db = MagicMock(spec=GatewaySessionStore)
+    cli.agent = GatewayAgent(connection=MagicMock(), session_id="gw-session")
+    cli._agent_running = False
+    cli._should_exit, cli._delete_session_on_exit = True, delete
+    _hang_up(cli_mod, cli, "SIGTERM")
+    cli._session_db.end_session.assert_called_once_with("gw-session", "cli_close")
+    assert cli._session_db.delete_session.called is delete
+
+
 @patch("hermes_cli.lifecycle.invoke_hook")
 def test_hangup_in_cli_local_mode_still_interrupts_and_ends_the_session(_hook, cli_mod):
     """No gateway owns a CLI-local session: a lost terminal still stops and closes it."""

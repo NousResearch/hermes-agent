@@ -89,51 +89,54 @@ def _take_gate_transcript(path: str) -> Optional[str]:
         return _GATE_TRANSCRIPTS.pop(key, None)
 
 
-# Clips a busy follow-up already transcribed AND echoed before native admission, by the MESSAGE that
-# carried them (profile, platform, chat, message id) and clip content: the FIFO turn restores a fresh
-# event (a re-captured clip, no ``_gateway_pending_stt_*``) but keeps the chat and message id, so
-# without this its preprocessing echoed the transcript a second time (#152457). The same clip
-# forwarded into another chat is another message and echoes there as usual.
-_ECHOED_CLIPS: OrderedDict[tuple, None] = OrderedDict()
+# Clips a busy follow-up already transcribed before native admission, by the MESSAGE that carried
+# them (profile, platform, chat, message id) and clip content → (transcript, whether the chat was
+# shown its echo). The FIFO turn restores a fresh event (a re-captured clip, no
+# ``_gateway_pending_stt_*``) but keeps the chat and message id, so it reuses that transcript and
+# skips a shown echo (#152457). The same clip forwarded into another chat is another message: it is
+# transcribed and echoed there as usual and never consumes this one's record.
+_HANDED_OFF: OrderedDict[tuple, tuple[str, bool]] = OrderedDict()
 
 
 def _echo_key(event, path: str) -> Optional[tuple]:
     source = getattr(event, "source", None)
     message_id = getattr(event, "message_id", None)
     if source is None or not message_id or (key := _gate_key(path)) is None:
-        return None  # no message identity: never suppress another turn's echo
+        return None  # no message identity: never hand a transcript or an echo to another turn
     platform = getattr(getattr(source, "platform", None), "value", None)
     return (key[0], platform, str(source.chat_id), str(message_id), key[1])
 
 
 def hand_prepared_voice_to_turn(event) -> None:
     """Hand a busy follow-up's per-clip transcripts (``_gateway_pending_stt_clips``) to the turn
-    native admission restores from the same clip bytes, noting whether the chat was shown them."""
+    native admission restores for the same message, noting whether the chat was shown each."""
     clip_memo = getattr(event, "_gateway_pending_stt_clips", None) or {}
     done = [(path, transcript) for path, (transcript, _note) in clip_memo.items() if transcript is not None]
     # Transcript indices whose busy echo the platform accepted (``done`` follows the transcripts' order).
     shown = getattr(event, "_gateway_pending_stt_shown", None) or ()
-    for index, (path, transcript) in enumerate(done):
-        remember_gate_transcript(path, transcript)
-        if index in shown and (key := _echo_key(event, path)) is not None:
-            with _GATE_TRANSCRIPTS_LOCK:
-                _ECHOED_CLIPS[key] = None
-                while len(_ECHOED_CLIPS) > _GATE_TRANSCRIPTS_MAX:
-                    _ECHOED_CLIPS.popitem(last=False)
+    records = [(key, (transcript, index in shown)) for index, (path, transcript) in enumerate(done)
+               if (key := _echo_key(event, path)) is not None]
+    with _GATE_TRANSCRIPTS_LOCK:
+        for key, record in records:
+            _HANDED_OFF[key] = record
+            while len(_HANDED_OFF) > _GATE_TRANSCRIPTS_MAX:
+                _HANDED_OFF.popitem(last=False)
 
 
-def take_echoed_clips(event, paths: list[str]) -> set[str]:
-    """The *paths* of *event* whose transcript the chat was already shown (consumed: one turn skips the echo)."""
-    if not _ECHOED_CLIPS:
-        return set()
+def take_handed_off_clips(event, paths: list[str]) -> dict[str, tuple[str, bool]]:
+    """The *paths* of *event* its busy pass already transcribed → ``(transcript, echo shown)``
+    (consumed: one turn reuses them)."""
+    if not _HANDED_OFF:
+        return {}
     keys = {path: _echo_key(event, path) for path in paths}
-    shown = set()
+    found = {}
     with _GATE_TRANSCRIPTS_LOCK:
         for path, key in keys.items():
-            if key is not None and key in _ECHOED_CLIPS:
-                del _ECHOED_CLIPS[key]
-                shown.add(path)
-    return shown
+            if key is not None and key in _HANDED_OFF:
+                found[path] = _HANDED_OFF[key]
+        for path in found:
+            _HANDED_OFF.pop(keys[path], None)
+    return found
 
 
 def transcript_note(transcript: str, path: str) -> str:
@@ -205,8 +208,9 @@ class GatewayInboundTranscriptionMixin:
     async def _enrich_inbound_voice(
         self, event, source, message_text: str, audio_paths: list[str]
     ) -> str:
-        shown = await asyncio.to_thread(take_echoed_clips, event, audio_paths)  # echoed when it arrived busy
-        clips: dict = {}
+        handed = await asyncio.to_thread(take_handed_off_clips, event, audio_paths)  # paid when it arrived busy
+        shown = {path for path, (_transcript, was_shown) in handed.items() if was_shown}
+        clips: dict = {path: (transcript, transcript_note(transcript, path)) for path, (transcript, _s) in handed.items()}
         message_text, _ = await self._enrich_message_with_transcription(message_text, audio_paths, clips)
         # ``clips`` holds each clip once, in order (enrichment dedupes repeated paths and bytes).
         _successful_transcripts = [transcript for path, (transcript, _note) in clips.items()
@@ -244,8 +248,9 @@ class GatewayInboundTranscriptionMixin:
         # Per-clip results outlive the merged-event cache below (a merge drops only that), so every
         # re-run — this loop's or the drain path's — transcribes just the newly merged clips.
         clip_memo = getattr(event, "_gateway_pending_stt_clips", None)
-        if clip_memo is None:
-            clip_memo = {}
+        if clip_memo is None:  # a restored turn that lands on a busy session again reuses its hand-off
+            handed = await asyncio.to_thread(take_handed_off_clips, event, audio_paths)
+            clip_memo = {path: (tx, transcript_note(tx, path)) for path, (tx, _shown) in handed.items()}
             event._gateway_pending_stt_clips = clip_memo
         enriched_text, successful_transcripts = await self._enrich_message_with_transcription(text, audio_paths, clip_memo)
         # A voice note merged in during the await dropped a cache that did not exist yet; re-run on

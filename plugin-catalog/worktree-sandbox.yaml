@@ -1,8 +1,8 @@
 name: worktree-sandbox
 repo: https://github.com/mahammadbakr/hermes-worktree-sandbox
-sha: c4517138b5fc7f8082e3aee1149ce2c7e7e962ba
+sha: 2225f99562207be6ae680716c746148df46adee0
 subdir: plugin
-version: "0.1.3"
+version: "0.1.4"
 title: Worktree Sandbox
 description: >-
   Transactional Git-worktree terminal backend and speculative execution arena: every
@@ -34,6 +34,7 @@ capabilities:
     - worktree_promote
     - worktree_race
   provides_hooks:
+    - pre_tool_call
     - on_session_start
     - post_tool_call
     - pre_verify

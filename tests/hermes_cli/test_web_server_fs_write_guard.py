@@ -165,3 +165,14 @@ def test_write_text_judges_a_named_profile_save_by_that_profiles_protected_state
     saved = _save(client, notes, "kept", profile="work")
     assert saved.status_code == 200, saved.text
     assert notes.read_text() == "kept"
+
+
+def test_write_text_refuses_the_approval_gated_ssh_config(client, tmp_path, monkeypatch):
+    """The file tools gate ~/.ssh/config on an approval prompt; the editor save has none."""
+    home = tmp_path / "user"
+    (home / ".ssh").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    config = home / ".ssh" / "config"
+
+    assert _save(client, config, "Host *\n  ProxyCommand sh -c id\n").status_code == 403
+    assert not config.exists()

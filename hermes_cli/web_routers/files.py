@@ -27,7 +27,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from agent.file_safety import get_write_denied_error
+from agent.file_safety import get_write_denied_error, is_write_approval_required
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.home_data_layout import SECRET_CACHE_STORES
@@ -1173,9 +1173,10 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     cwd = (session or {}).get("cwd") or "" if payload.session_id is not None else os.getcwd()
     _refuse_sensitive_write(target, payload.path, Path(cwd))
     # The agent's own write denylist (SSH keys, cloud credential dirs, the runtime's venv) applies here too,
-    # under the requested profile's scope so its own state.db / sessions/ count as protected.
+    # under the requested profile's scope so its own state.db / sessions/ count as protected. A save has
+    # no approval channel, so a path the file tools gate on approval (~/.ssh/config) fails closed.
     with _config_profile_scope(profile):
-        denied = get_write_denied_error(str(target))
+        denied = get_write_denied_error(str(target)) or is_write_approval_required(str(target))
     if denied:
         raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
     if not await asyncio.to_thread(_is_host_file, str(target), profile):

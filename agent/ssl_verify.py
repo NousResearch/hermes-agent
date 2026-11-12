@@ -21,9 +21,11 @@ statements about one endpoint, not an ambient guess about the machine.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import ssl
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -93,6 +95,26 @@ def _stdlib_ssl_context_class() -> type[ssl.SSLContext]:
     return _original_SSLContext
 
 
+def _new_client_context(ca_path: str | None, union: bool = False) -> ssl.SSLContext:
+    """A FRESH client context — never a shared one.
+
+    Anything that loads a client certificate onto a context mutates it for every
+    client holding the same object, so certificate-bearing contexts are built
+    here and cached under their own key by :func:`mtls_context`.
+    """
+    if ca_path is not None and not union:
+        # PROTOCOL_TLS_CLIENT sets hostname checking and CERT_REQUIRED;
+        # assigning the original class's properties after injection recurses.
+        ctx = _stdlib_ssl_context_class()(ssl.PROTOCOL_TLS_CLIENT)
+    else:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        if not _installed:
+            ctx.load_default_certs()
+    if ca_path is not None:
+        ctx.load_verify_locations(cafile=ca_path)
+    return ctx
+
+
 def _shared_context(ca_path: str | None, union: bool = False) -> ssl.SSLContext:
     """A stable context identity lets clients reuse the existing transport pool.
 
@@ -102,16 +124,7 @@ def _shared_context(ca_path: str | None, union: bool = False) -> ssl.SSLContext:
     with _CA_CONTEXTS_LOCK:
         ctx = _CA_CONTEXTS.get((ca_path, union))
         if ctx is None:
-            if ca_path is not None and not union:
-                # PROTOCOL_TLS_CLIENT sets hostname checking and CERT_REQUIRED;
-                # assigning the original class's properties after injection recurses.
-                ctx = _stdlib_ssl_context_class()(ssl.PROTOCOL_TLS_CLIENT)
-            else:
-                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                if not _installed:
-                    ctx.load_default_certs()
-            if ca_path is not None:
-                ctx.load_verify_locations(cafile=ca_path)
+            ctx = _new_client_context(ca_path, union)
             _CA_CONTEXTS[(ca_path, union)] = ctx
         return ctx
 
@@ -297,11 +310,304 @@ def _default_verify() -> bool | ssl.SSLContext:
     return True if certifi_bundle_path() else _shared_context(None)
 
 
+# ---------------------------------------------------------------------------
+# Mutual TLS — client certificates (``agent.mtls``)
+# ---------------------------------------------------------------------------
+
+ClientCert = tuple[str, Optional[str], Optional[str]]  # (cert path, key path, password)
+
+
+class MtlsConfigError(RuntimeError):
+    """``agent.mtls`` is configured but cannot be honoured."""
+
+
+_MTLS_CONTEXTS: dict[tuple, ssl.SSLContext] = {}
+_MTLS_WARNED: set[str] = set()
+
+
+def _warn_once(key: str, message: str, *args: Any) -> None:
+    if key in _MTLS_WARNED:
+        return
+    _MTLS_WARNED.add(key)
+    logger.warning(message, *args)
+
+
+def mtls_settings() -> dict[str, Any]:
+    """The ``agent.mtls`` block; ``{}`` when absent or unreadable.
+
+    Read through the config cache (no disk hit after the first load), so a config
+    edit needs a restart to take effect — same contract as every other TLS setting.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        block = (load_config_readonly().get("agent") or {}).get("mtls")
+    except Exception:
+        logger.debug("agent.mtls settings unreadable", exc_info=True)
+        return {}
+    return block if isinstance(block, dict) else {}
+
+
+def _expand_mtls_path(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    return str(Path(value.strip()).expanduser().resolve())
+
+
+def _mtls_password(block: dict[str, Any]) -> Optional[str]:
+    """The passphrase, read from the env var named by ``password_env``.
+
+    Never from a config value: config.yaml is copied into backups and bug reports.
+    """
+    env_name = block.get("password_env")
+    if not isinstance(env_name, str) or not env_name.strip():
+        return None
+    return os.environ.get(env_name.strip()) or None
+
+
+def _is_pkcs12(path: str) -> bool:
+    return Path(path).suffix.lower() in {".p12", ".pfx", ".pkcs12"}
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        handle.write(data)
+    os.chmod(str(path), 0o600)
+
+
+def _pkcs12_pem_paths(p12_path: str, password: Optional[str]) -> tuple[str, str]:
+    """Unwrap a PKCS#12 bundle into a private PEM pair and return their paths.
+
+    ``ssl.SSLContext.load_cert_chain`` reads files only, so a bundle has to touch
+    disk. The pair lands under ``HERMES_HOME/cache/mtls`` (dir 0700, files 0600),
+    keyed by the bundle's path/size/mtime, so rotating the bundle re-extracts it.
+    """
+    bundle = Path(p12_path)
+    try:
+        stat = bundle.stat()
+    except OSError as exc:
+        raise MtlsConfigError(f"agent.mtls.cert_file is not readable: {p12_path!r} ({exc})") from exc
+    stamp = f"{p12_path}:{stat.st_size}:{stat.st_mtime_ns}:{bool(password)}"
+    digest = hashlib.sha256(stamp.encode("utf-8", "surrogateescape")).hexdigest()[:32]
+    try:
+        from hermes_constants import get_hermes_home
+
+        out_dir = Path(get_hermes_home()) / "cache" / "mtls"
+    except Exception:  # no HERMES_HOME resolvable: keep the pair process-local
+        out_dir = Path(tempfile.mkdtemp(prefix="hermes-mtls-"))
+    cert_out, key_out = out_dir / f"{digest}-cert.pem", out_dir / f"{digest}-key.pem"
+    if cert_out.is_file() and key_out.is_file():
+        return str(cert_out), str(key_out)
+
+    try:
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding, NoEncryption, PrivateFormat, pkcs12,
+        )
+    except ImportError as exc:  # cryptography is a core pin; a stripped install may lack it
+        raise MtlsConfigError(
+            f"PKCS#12 client certificate {p12_path!r} needs the 'cryptography' package: {exc}"
+        ) from exc
+    try:
+        key, cert, extra = pkcs12.load_key_and_certificates(
+            bundle.read_bytes(), password.encode("utf-8") if password else None
+        )
+    except Exception as exc:
+        raise MtlsConfigError(
+            f"PKCS#12 bundle {p12_path!r} could not be opened ({exc}); set the passphrase "
+            "env var named by agent.mtls.password_env"
+        ) from exc
+    if key is None or cert is None:
+        raise MtlsConfigError(
+            f"PKCS#12 bundle {p12_path!r} holds no client certificate + private key pair"
+        )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(out_dir, 0o700)
+    except OSError:
+        pass
+    _write_private(key_out, key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()))
+    chain = cert.public_bytes(Encoding.PEM) + b"".join(
+        item.public_bytes(Encoding.PEM) for item in (extra or ())
+    )
+    _write_private(cert_out, chain)
+    return str(cert_out), str(key_out)
+
+
+def client_cert_spec(block: Optional[dict[str, Any]] = None) -> Optional[ClientCert]:
+    """Resolve ``agent.mtls`` into ``(cert, key, password)``; None when unconfigured.
+
+    PEM, combined PEM (cert + key in one file) and PKCS#12 bundles are all accepted.
+    Raises :class:`MtlsConfigError` when the block IS configured but unusable — the
+    caller decides whether that is fatal (MCP per-server) or a warning (global).
+    """
+    settings = mtls_settings() if block is None else block
+    cert = _expand_mtls_path(settings.get("cert_file"))
+    if not cert:
+        return None
+    if not Path(cert).is_file():
+        raise MtlsConfigError(f"agent.mtls.cert_file does not exist: {cert!r}")
+    password = _mtls_password(settings)
+    if _is_pkcs12(cert):
+        cert_pem, key_pem = _pkcs12_pem_paths(cert, password)
+        return (cert_pem, key_pem, None)
+    key = _expand_mtls_path(settings.get("key_file"))
+    if key and not Path(key).is_file():
+        raise MtlsConfigError(f"agent.mtls.key_file does not exist: {key!r}")
+    return (cert, key or None, password)
+
+
+def _coerce_cert_spec(
+    client_cert: Any, client_key: Any, client_password: Any, base_url: str
+) -> Optional[ClientCert]:
+    """An endpoint's own ``cert=`` shape (path, or 2/3-tuple) → a normalised spec."""
+    if not client_cert:
+        return None
+    if isinstance(client_cert, (tuple, list)):
+        parts = list(client_cert)
+        if len(parts) not in (2, 3):
+            raise MtlsConfigError(
+                f"{base_url or 'endpoint'}: client_cert list form must have 2 or 3 elements"
+            )
+        cert, key = _expand_mtls_path(parts[0]), _expand_mtls_path(parts[1])
+        password = parts[2] if len(parts) == 3 else None
+    else:
+        cert = _expand_mtls_path(client_cert)
+        key = _expand_mtls_path(client_key) if client_key else ""
+        password = client_password or None
+    if not cert or not Path(cert).is_file():
+        raise MtlsConfigError(f"{base_url or 'endpoint'}: client_cert not found at {cert!r}")
+    if key and not Path(key).is_file():
+        raise MtlsConfigError(f"{base_url or 'endpoint'}: client_key not found at {key!r}")
+    return (cert, key or None, password)
+
+
+def _global_cert_spec(base_url: str) -> Optional[ClientCert]:
+    """Global ``agent.mtls`` certificate, warned-and-skipped when unusable.
+
+    A broken global identity must not take the agent down: every provider would
+    fail to build a client. The warning names the setting, and connections carry
+    on without a client certificate.
+    """
+    try:
+        return client_cert_spec()
+    except MtlsConfigError as exc:
+        _warn_once(
+            "mtls-unusable",
+            "mTLS client certificate unusable (%s) — connecting to %s WITHOUT a "
+            "client certificate. Fix agent.mtls (or `hermes config check`).",
+            exc,
+            base_url or "provider endpoints",
+        )
+        return None
+
+
+def _global_ca_path(base_url: str) -> Optional[str]:
+    """``agent.mtls.ca_cert`` — the fallback trust root for mTLS endpoints."""
+    block = mtls_settings()
+    ca = _expand_mtls_path(block.get("ca_cert"))
+    if not ca:
+        return None
+    if not Path(ca).is_file():
+        _warn_once(
+            "mtls-ca-missing",
+            "agent.mtls.ca_cert does not exist: %s — trusting the OS store for %s",
+            ca,
+            base_url or "provider endpoints",
+        )
+        return None
+    return ca
+
+
+def _resolve_ca_path(ca_bundle: Optional[str]) -> Optional[str]:
+    """The explicit CA bundle's path, or None when unset/unreadable.
+
+    Only an EXPLICIT bundle is resolved here. The ambient ``SSL_CERT_FILE`` contract is
+    the trust-only path's business (``resolve_httpx_verify`` keeps handing httpx the
+    platform context instead), and a certificate-bearing context must not quietly pick
+    up a different trust root than the same client would without mTLS.
+    """
+    effective = (ca_bundle or "").strip()
+    if not effective:
+        return None
+    path = Path(effective).expanduser()
+    if path.is_file():
+        return str(path.resolve())
+    logger.warning(
+        "ssl_ca_cert path does not exist: %s — using the OS trust store instead",
+        effective,
+    )
+    return None
+
+
+def mtls_context(
+    cert: ClientCert,
+    *,
+    ca_path: Optional[str] = None,
+    union: bool = False,
+    insecure: bool = False,
+) -> ssl.SSLContext:
+    """A client context carrying ``cert``, cached by identity so pools stay stable.
+
+    Certificate-bearing contexts are NEVER the shared trust contexts: adding a
+    chain to one of those would present this client's identity on every other
+    connection that already holds it.
+    """
+    key = ("mtls", ca_path, union, insecure, cert)
+    with _CA_CONTEXTS_LOCK:
+        ctx = _MTLS_CONTEXTS.get(key)
+        if ctx is None:
+            if insecure:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            else:
+                ctx = _new_client_context(ca_path, union)
+            cert_path, key_path, password = cert
+            try:
+                ctx.load_cert_chain(cert_path, key_path, password)
+            except Exception as exc:
+                raise MtlsConfigError(
+                    f"client certificate {cert_path!r} could not be loaded ({exc})"
+                ) from exc
+            _MTLS_CONTEXTS[key] = ctx
+        return ctx
+
+
+def mtls_verify_for(base_url: str = "", *, ca_bundle: Optional[str] = None) -> Optional[ssl.SSLContext]:
+    """The global mTLS ``verify`` context for an endpoint, or None when unconfigured.
+
+    For stacks that take ``verify`` and ``cert`` as separate arguments (httpx
+    transports, MCP): the certificate rides on the context, so a caller that also
+    passes ``cert=`` gets the same identity twice — harmless, but prefer
+    :func:`client_cert_spec` alongside a trust-only context in that case.
+    """
+    spec = _global_cert_spec(base_url)
+    if spec is None:
+        return None
+    ca_path = _resolve_ca_path(ca_bundle) or _global_ca_path(base_url)
+    return mtls_context(spec, ca_path=ca_path)
+
+
+def ca_verify_for(label: str = "") -> Optional[ssl.SSLContext]:
+    """Trust-only context for ``agent.mtls.ca_cert``, or None when unset.
+
+    Nothing about a client identity here: this is what an endpoint that passes
+    ``cert=`` separately (httpx ``AsyncHTTPTransport``, MCP) needs for a private
+    signer without every server repeating the bundle path.
+    """
+    ca_path = _global_ca_path(label)
+    return _shared_context(ca_path) if ca_path else None
+
+
 def resolve_httpx_verify(
     *,
     ca_bundle: Optional[str] = None,
     ssl_verify: Any = None,
     base_url: str = "",
+    client_cert: Any = None,
+    client_key: Any = None,
+    client_password: Any = None,
 ) -> bool | ssl.SSLContext:
     """Resolve ``verify`` for an HTTP client.
 
@@ -313,11 +619,38 @@ def resolve_httpx_verify(
        platform context when the certifi bundle this process resolved at
        import no longer exists (a replaced install environment)
 
+    When a client certificate is configured — per endpoint (``client_cert``, an
+    httpx ``cert=`` shape) or globally under ``agent.mtls`` — the returned
+    context also presents it, because ``verify`` is the only TLS object every
+    client stack here (OpenAI SDK, Gemini native, auxiliary, Anthropic,
+    model-metadata, MCP) agrees on. ``ca_bundle`` still wins over the global
+    ``agent.mtls.ca_cert``: an endpoint's own trust statement is more specific
+    than the machine-wide one.
+
     ``base_url`` only labels the insecure-mode warning.
     """
     install_truststore()
 
-    if _coerce_insecure(ssl_verify):
+    insecure = _coerce_insecure(ssl_verify)
+    cert = _coerce_cert_spec(client_cert, client_key, client_password, base_url)
+    global_spec = _global_cert_spec(base_url) if cert is None else None
+    if cert is None:
+        cert = global_spec
+
+    ca_path = _resolve_ca_path(ca_bundle)
+    if cert is not None:
+        if ca_path is None and global_spec is not None:
+            ca_path = _global_ca_path(base_url)
+        if insecure:
+            logger.warning(
+                "mTLS client certificate configured but TLS verification is DISABLED "
+                "for %s — presenting the certificate without verifying the server. "
+                "This is intended for local development only.",
+                base_url or "a custom endpoint",
+            )
+        return mtls_context(cert, ca_path=ca_path, insecure=insecure)
+
+    if insecure:
         logger.warning(
             "TLS certificate verification DISABLED (ssl_verify: false) for %s — "
             "this is intended for local development only and is unsafe on any "
@@ -326,15 +659,8 @@ def resolve_httpx_verify(
         )
         return False
 
-    effective_ca = (ca_bundle or "").strip()
-    if effective_ca:
-        path = Path(effective_ca).expanduser()
-        if path.is_file():
-            return _shared_context(str(path.resolve()))
-        logger.warning(
-            "ssl_ca_cert path does not exist: %s — using the OS trust store instead",
-            effective_ca,
-        )
+    if ca_path:
+        return _shared_context(ca_path)
     # HTTPX reads CA env vars before the injected verifier gets control. Pass
     # the platform context directly so stale paths cannot break construction;
     # proxy environment handling remains enabled.

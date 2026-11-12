@@ -460,6 +460,8 @@ mcp_servers:
 
 You can also keep the cert and key fully separate via `client_cert` (combined PEM) plus an explicit `client_key`. Paths support `~` expansion; a missing file raises a clear, server-scoped error rather than an opaque TLS handshake failure.
 
+A server that configures nothing inherits the machine-wide [`agent.mtls`](../security.md#mutual-tls) block: its certificate is presented to every remote server without a `client_cert` of its own, and `agent.mtls.ca_cert` is the fallback trust root for servers without an explicit `ssl_verify`. Per-server settings always win, so one mTLS-required server never changes how the others authenticate. PKCS#12 bundles (`.p12` / `.pfx`) are accepted in `agent.mtls.cert_file`, with the passphrase read from the environment variable named by `agent.mtls.password_env`.
+
 ## Per-user identity header
 
 Remote HTTP/SSE MCP servers that key behavior on a caller identity (per-user rate limits, audit trails, multi-tenant routing) can be sent an identity header on every request via `identity_header`:

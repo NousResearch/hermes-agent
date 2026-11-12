@@ -17,6 +17,54 @@ def _validate_voice(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
                "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)")
 
 
+def _validate_mtls(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
+    """``agent.mtls`` paths must exist and agree with each other.
+
+    A missing certificate is not fatal at runtime (the client logs a warning and
+    connects without one), which is exactly why it needs to be visible here: the
+    endpoint's TLS error would otherwise be the only signal.
+    """
+    from pathlib import Path
+
+    agent_cfg = config.get("agent")
+    block = agent_cfg.get("mtls") if isinstance(agent_cfg, dict) else None
+    if block is None:
+        return
+    if not isinstance(block, dict):
+        _issue(issues, "error", f"agent.mtls must be a mapping, got {type(block).__name__}",
+               "Use: agent:\n  mtls:\n    cert_file: /path/client.pem\n    key_file: /path/client-key.pem")
+        return
+
+    def _path(field: str) -> str:
+        raw = block.get(field)
+        if not isinstance(raw, str) or not raw.strip():
+            return ""
+        return str(Path(raw.strip()).expanduser())
+
+    cert, key, ca = _path("cert_file"), _path("key_file"), _path("ca_cert")
+    hint = ("Set agent.mtls.cert_file / key_file to the client certificate and key "
+            "(PKCS#12 bundles are accepted as cert_file), or clear the block to disable mTLS.")
+    if cert and not Path(cert).is_file():
+        _issue(issues, "error", f"agent.mtls.cert_file does not exist: {cert}", hint)
+    if key:
+        if not cert:
+            _issue(issues, "error", "agent.mtls.key_file is set without agent.mtls.cert_file",
+                   "Add the matching cert_file, or remove key_file.")
+        elif not Path(key).is_file():
+            _issue(issues, "error", f"agent.mtls.key_file does not exist: {key}", hint)
+    if ca and not Path(ca).is_file():
+        _issue(issues, "error", f"agent.mtls.ca_cert does not exist: {ca}",
+               "Point ca_cert at the signing bundle for your private PKI, or clear it to use the OS store.")
+    password_env = block.get("password_env")
+    if isinstance(password_env, str) and password_env.strip():
+        import os
+
+        if not os.environ.get(password_env.strip()):
+            _issue(issues, "warning",
+                   f"agent.mtls.password_env names '{password_env.strip()}', which is not set",
+                   "Add it to ~/.hermes/.env, or clear password_env when the key is unencrypted.")
+
+
 def _validate_timezone(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
     """``timezone`` must be an IANA name the runtime can load.
 

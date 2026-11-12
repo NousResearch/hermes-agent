@@ -290,7 +290,7 @@ class MCPServerRunMixin:
                     and not self._ready.is_set() and self._auth_type != "oauth"):
                 await self._preflight_content_type(
                     config["url"], headers=dict(config.get("headers") or {}),
-                    ssl_verify=config.get("ssl_verify", True),
+                    ssl_verify=_errors._resolve_ssl_verify(self.name, config),
                     client_cert=_errors._resolve_client_cert(self.name, config),
                     strict_redirect_headers=bool(config.get("strict_redirect_headers")))
         except (_errors.InvalidMcpUrlError, _errors.NonMcpEndpointError) as exc:

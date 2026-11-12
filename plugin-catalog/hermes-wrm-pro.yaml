@@ -9,7 +9,7 @@ description: >-
   servers through the configured MCP connection.
 maintainer: vedranius
 tier: community
-category: infrastructure
+category: automation
 requires_hermes: ">=0.22.0"
 docs_url: https://github.com/vedranius/hermes-wrm-pro/blob/e1e11aaf4601eec0bf5b55d90df77decdacb8f71/README.md
 platforms: [linux, macos, windows]

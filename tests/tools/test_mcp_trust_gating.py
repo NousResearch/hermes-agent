@@ -294,7 +294,7 @@ class TestTrustGateApprovalRouting:
         if single_query:
             monkeypatch.setattr(approval_prompt._ctx, "_is_single_query_approval_context", lambda: True)
         try:
-            assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "decline"
+            assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "cancel"
         finally:
             approval.unregister_gateway_notify(session_key)
             reset_current_session_key(key_token)
@@ -307,7 +307,7 @@ class TestTrustGateApprovalRouting:
     @pytest.mark.parametrize("context", ["single_query", "cron", "webhook"])
     def test_cli_panel_callback_is_never_asked_without_a_user(self, monkeypatch, context):
         """`hermes chat -q`, cron and unattended platforms can keep the CLI panel callback registered, but
-        nobody answers it: consent declines at once instead of waiting the approval timeout (the e2e
+        nobody answers it: consent cancels at once instead of waiting the approval timeout (the e2e
         hang after ef1faa4cf8)."""
         from gateway.session_context import clear_session_vars, set_session_vars
         from tools import approval_prompt
@@ -323,7 +323,7 @@ class TestTrustGateApprovalRouting:
         asked = []
         set_approval_callback(lambda *args, **kwargs: asked.append(args) or "once")
         try:
-            assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "decline"
+            assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "cancel"
         finally:
             set_approval_callback(None)
             clear_session_vars(tokens)

@@ -154,6 +154,11 @@ def _start(
     from tools.delegation_live_log import create_live_transcripts
 
     route = spec["route"]
+    if run_origin == "auto":  # the scheduler has no turn to join a result into: it only ever detaches
+        from tools.delegate_tool_dispatch import _resolve_async_wake_sid
+        origin = _capture_origin()
+        if _resolve_async_wake_sid(origin[0], origin[4]) is None:
+            return None, "Not continued: this session cannot receive a detached result."
     with _transcript_store(parent_agent) as db:
         session_id = _segment_tip(db, sid, spec["session_id"])
         history = db.get_messages_as_conversation(session_id, repair_alternation=True) if db is not None else []
@@ -187,6 +192,7 @@ def _start(
     batch = _Batch(
         task_list, [(0, task_list[0], children[0][2])], parent_agent, route.creds, None, "leaf",
         _get_max_concurrent_children(), live_id, writers, paths, *origin, time.monotonic(), live_home=live_home,
+        detached_only=run_origin == "auto",
     )
     return _run_batch(batch, background), None
 

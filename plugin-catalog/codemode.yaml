@@ -3,7 +3,7 @@ repo: https://github.com/junbo-hh/hermes-codemode
 sha: 6ab8e447294e80e8a9942b87329091d53455cf48
 version: "0.2.0"
 title: Codemode
-description: "Code-as-Orchestration: the model writes one JavaScript snippet that calls your MCP tools (plus web_search/web_extract) in a QuickJS sandbox, loops and filters there, and returns only the answer. Tool schemas are found on demand with BM25 searchTools(). Disclosure — every run starts a short-lived local Python child process hosting QuickJS (minimal env, no API keys, no fs/network access, killed on finish or timeout); tool calls go through ctx.dispatch_tool with Hermes' normal approvals; no network calls of its own, no telemetry, no stored credentials."
+description: "Code-as-Orchestration: the model writes one JavaScript snippet that calls your MCP tools (plus web_search/web_extract) in a QuickJS sandbox, loops and filters there, and returns only the answer. Tool schemas are found on demand with BM25 searchTools(). Disclosure — every run starts a short-lived local Python child process hosting QuickJS (minimal env, no API keys, no fs/network access, killed on finish or timeout); scripts can call every connected MCP tool plus web_search/web_extract (more via the `extra_tools` setting) through ctx.dispatch_tool, which keeps per-tool approvals such as MCP trust prompts and spend limits but does not run other plugins' pre_tool_call hooks or tool middleware on those inner calls and does not apply per-platform toolset limits to them; no network calls of its own, no telemetry, no stored credentials."
 maintainer: junbo-hh
 tier: community
 category: tools

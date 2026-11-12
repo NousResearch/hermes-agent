@@ -1,0 +1,97 @@
+# hermes-cost-meter
+
+A live session-cost meter for the Hermes CLI, as a **wrapper CLI**. No edits to the
+Hermes source tree, no fork, nothing to re-apply after `hermes update`.
+
+```
+ ~$0.0029 · turn ~$0.0004 · /cost
+ ☤ deepseek-v4-1-flash-101... │ 20.5K/200K │ 10% │ ◎ 83.5% │ 42m │ ✓ 2s
+```
+
+## Why this shape (the research)
+
+`display.show_cost` looks like the answer and is not: it is defined in
+`hermes_cli/config_defaults.py` and documented in
+`website/docs/user-guide/configuration.md`, but **nothing reads it**. Upstream knows —
+issue [#93951](https://github.com/NousResearch/hermes-agent/issues/93951) ("show_cost is a
+dead config in 0.20.4") is open, and the two PRs that wire it up
+([#99649](https://github.com/NousResearch/hermes-agent/pull/99649),
+[#75487](https://github.com/NousResearch/hermes-agent/pull/75465)) are open and unmerged.
+So there is no `hermes update` that turns the meter on.
+
+Patching core was the wrong shape for three reasons:
+
+1. Hermes' own contributing guide rejects "plugins that touch core files" — the core is a
+   narrow waist, capability lives at the edges.
+2. A git-install does **not** run `~/.hermes/hermes-agent`. Each pm environment generation
+   runs its own copy at `~/.hermes/installs/<id>/environments/<env>/workspace/`, and the
+   venv's editable finder maps `agent`, `cli`, `hermes_cli` there. Editing the checkout
+   looks like it works and changes nothing (`_layout_digest` only hashes
+   `pyproject.toml`/`setup.py`, so a `.py` edit never triggers a rebuild).
+3. Every `hermes update` would autostash and re-apply the patch — a permanent conflict
+   surface for a display feature.
+
+The sanctioned extension point is documented at
+[developer-guide/extending-the-cli](https://hermes-agent.nousresearch.com/docs/developer-guide/extending-the-cli):
+`HermesCLI` exposes five protected hooks, two of which are all this needs —
+`_get_extra_tui_widgets()` (inject a prompt_toolkit widget between the transcript and the
+status bar) and `process_command()` (add `/cost`).
+
+## Run it
+
+```sh
+~/projects/hermes-cost-meter/tool/hermes-cost              # fresh session
+~/projects/hermes-cost-meter/tool/hermes-cost --continue   # resume, flags pass through
+```
+
+Optional alias:
+
+```sh
+alias hc='~/projects/hermes-cost-meter/tool/hermes-cost'
+```
+
+## How it stays working across updates
+
+`hermes --print-runtime-command` prints the exact argv the launcher would exec for the
+current environment generation (right python, right bootstrap). `tool/_launch.py` reuses
+that argv and only swaps the module it runs (`hermes_cli.main` → `hermes_cost_cli`). No
+venv path is hardcoded, so an `hermes update` or a rebuilt environment is picked up
+automatically.
+
+## What the number is
+
+Session-to-date spend, computed from the session's own token counters times the model's
+rate card — the same `agent.usage_pricing` helpers `/usage` and `state.db` use. It is a
+**lower bound**: only main-agent responses carry usage, so auxiliary calls, retries and
+cache-write overhead are missed. `/cost` prints the breakdown.
+
+OpenRouter `@preset/<slug>` names have no row in `/api/v1/models`, so they price out as
+"unknown". `_resolve_preset()` reads the routed model from
+`GET /api/v1/presets/<slug>` (`data.designated_version.config.model`) and caches it in
+`~/.hermes/cache/cost_meter_presets.json` for 7 days. When a route still has no price row
+the meter says so instead of rendering a reassuring `$0.00`.
+
+## Files
+
+| File | Role |
+|---|---|
+| `tool/hermes_cost_cli.py` | the wrapper CLI: widget, `/cost`, preset resolution, pricing |
+| `tool/_launch.py` | re-execs the current Hermes runtime with the wrapper module |
+| `tool/hermes-cost` | the entry point you run |
+
+## Desktop / TUI alternatives
+
+- **Desktop app**: status-bar items are a first-class registry surface in the
+  [Desktop Plugin SDK](https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk)
+  — one ESM file in `~/.hermes/desktop-plugins/<id>/plugin.js`, hot-reloads.
+- **Marketplace plugins** meter spend but do not put a number in the status bar:
+  `costguard` (per-call metering + a budget brake), `hermes-telemetry` (`/stats`,
+  `/budget`; note its default *enforce* mode writes a $5/day, $100/month budget and starts
+  blocking tool calls), `hermes-call-ledger`, `session-dashboard` (desktop analytics).
+
+## Status
+
+Verified live in a pty against the real runtime: the meter renders
+(`~$0.0001 · /cost`) and `/cost` prints the breakdown, on an `@preset/...` model.
+Core-patch alternative kept on branch `reference/core-patch` (not applied) for the case
+where upstream wants PR #99649 finished instead.

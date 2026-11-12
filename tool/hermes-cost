@@ -1,0 +1,11 @@
+#!/bin/sh
+# hermes-cost — Hermes with a live session-cost meter. No core edits.
+#
+# Runs the *current* Hermes runtime (whatever pm environment generation the launcher
+# selected) with a wrapper module instead of hermes_cli.main, so this keeps working
+# across `hermes update` and environment rebuilds.
+#
+# Usage:  ./hermes-cost [any hermes flags]      e.g. ./hermes-cost --continue
+set -eu
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec python3 "$DIR/_launch.py" "$@"

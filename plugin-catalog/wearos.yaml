@@ -1,6 +1,6 @@
 name: wearos
 repo: https://github.com/borealBytes/hermes-wearos-plugin
-sha: ab9087aa27c41f9f2ca7fb089bc002fb1f0109fe
+sha: 1ed6302c938ebf85cabeca51f4c376c1f093d254
 subdir: ""
 description: >-
   The whole Hermes gateway on a Wear OS watch: the watch enrolls its own tailnet node, pairs with
@@ -19,13 +19,13 @@ tier: community
 category: voice
 requires_hermes: ">=0.23.0"
 docs_url: https://github.com/borealBytes/hermes-wearos#readme
-version: "0.3.7"
-image: "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/ab9087aa27c41f9f2ca7fb089bc002fb1f0109fe/docs/banner.png"
+version: "0.3.8"
+image: "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1ed6302c938ebf85cabeca51f4c376c1f093d254/docs/banner.png"
 screenshots:
-  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/ab9087aa27c41f9f2ca7fb089bc002fb1f0109fe/docs/screenshots/66-wearkit-pane.png"
-  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/ab9087aa27c41f9f2ca7fb089bc002fb1f0109fe/docs/screenshots/33-approval-card.png"
-  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/ab9087aa27c41f9f2ca7fb089bc002fb1f0109fe/docs/screenshots/48-media-cards.png"
-  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/ab9087aa27c41f9f2ca7fb089bc002fb1f0109fe/docs/screenshots/42-gateways-multi.png"
+  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1ed6302c938ebf85cabeca51f4c376c1f093d254/docs/screenshots/66-wearkit-pane.png"
+  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1ed6302c938ebf85cabeca51f4c376c1f093d254/docs/screenshots/33-approval-card.png"
+  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1ed6302c938ebf85cabeca51f4c376c1f093d254/docs/screenshots/48-media-cards.png"
+  - "https://raw.githubusercontent.com/borealBytes/hermes-wearos-plugin/1ed6302c938ebf85cabeca51f4c376c1f093d254/docs/screenshots/42-gateways-multi.png"
 readme: true
 platforms: []
 capabilities:

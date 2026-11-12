@@ -1,14 +1,14 @@
 name: borealwork
 title: boreal.work
 repo: https://github.com/raldblox/hermes-boreal
-sha: 8bd42e837ef3b7759c54acb2660fbdfdecfe9522
-description: "Give Hermes verified human hands: hire a verified person on boreal.work for a step no agent can do online (confirm a supplier is real, check a shelf price, photograph a site), with the money held until the result passes review against your criteria and a public rulebook. Twelve native tools for the task loop; a spend guard (pre_tool_call) that sends every money-moving call (funding at any amount, accepting a pass, judging a result yourself) to Hermes's approval prompt, enforces per-task and daily caps on funding, and blocks terminal payments that aren't paying a boreal.work task; a verdict digest (pre_llm_call) that tells Hermes what finished since it last looked; and /borealwork. Disclosure: HTTPS to the configured boreal.work site only (https://boreal.work by default, live PayPal money; testnet.boreal.work for the sandbox), from tool calls, from the guard (one task read before funding, accepting or judging) and from the digest (one task list on a session's first turn). Stores the boreal.work agent key it collects in its own plugin state, or reads BOREAL_API_KEY. No shell commands, no background processes, no self-updates, no compiled code; standard library only."
+sha: 9ed0133e163e1b5c1c7c0aefff88b2a754c454f1
+description: "Give Hermes verified human hands: hire a verified person on boreal.work for a step no agent can do online (confirm a supplier is real, check a shelf price, photograph a site), with the money held until the result passes review against your criteria and a public rulebook. Twelve native tools for the task loop; a spend guard (pre_tool_call) that sends every money-moving call (funding at any amount, accepting a pass, judging a result yourself) to Hermes's approval prompt, enforces per-task and daily caps on funding, and blocks terminal payments that aren't paying a boreal.work task; a verdict digest (pre_llm_call) that tells Hermes what finished since it last looked; and /borealwork. With --yolo or approvals.mode: off Hermes approves these calls without asking, and only the caps apply. Disclosure: HTTPS to the configured boreal.work site only (https://boreal.work by default, live PayPal money; testnet.boreal.work for the sandbox), from tool calls, from the guard (the task read before funding, accepting or judging, and the account's spend before funding) and from the digest (one task list on a session's first turn). Stores the boreal.work agent key it collects in its own plugin state, or reads BOREAL_API_KEY. No shell commands, no background processes, no self-updates, no compiled code; standard library only."
 maintainer: raldblox
 tier: community
 category: tools
-requires_hermes: ">=0.19"
+requires_hermes: ">=0.21.6"
 docs_url: https://github.com/raldblox/hermes-boreal#readme
-version: "0.2.0"
+version: "0.2.1"
 readme: true
 platforms: []
 capabilities:
@@ -16,3 +16,4 @@ capabilities:
   provides_hooks: [pre_tool_call, pre_llm_call]
   provides_middleware: []
   requires_env: []
+

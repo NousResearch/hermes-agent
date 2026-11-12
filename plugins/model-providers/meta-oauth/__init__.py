@@ -23,8 +23,12 @@ from providers.base import ProviderProfile
 class MetaOAuthProfile(ProviderProfile):
     """Meta Model API via Muse subscription — top-level reasoning_effort."""
 
-    # Non-chat model prefixes excluded from the agent picker (see meta-ai).
-    _NON_CHAT_PREFIXES = ("muse-image-", "muse-voice-")
+    # Non-chat model prefixes excluded from the agent picker (see meta-ai):
+    # image generation, transcription and SAM segmentation are not chat.
+    _NON_CHAT_PREFIXES = ("muse-image-", "muse-voice-", "sam-")
+    # ``max`` reasoning is supported only by these IDs (dev.meta.ai/docs/reasoning);
+    # every other Muse model (incl. -contributor) tops out at ``xhigh``.
+    _MAX_EFFORT_MODELS = frozenset({"muse-wonder-1.0", "muse-spark-1.3", "muse-ember-1.0"})
 
     def fetch_models(
         self,
@@ -52,6 +56,8 @@ class MetaOAuthProfile(ProviderProfile):
         effort = str(rc.get("effort") or "").strip().lower()
         if rc.get("enabled") is False or effort == "none":
             mapped = "minimal"
+        elif effort == "max" and str(context.get("model") or "").strip().lower().rsplit("/", 1)[-1] in self._MAX_EFFORT_MODELS:
+            mapped = "max"
         else:
             clamped = clamp_effort(effort, META_AI_EFFORTS)
             mapped = clamped if clamped in META_AI_EFFORTS else "medium"
@@ -61,7 +67,7 @@ class MetaOAuthProfile(ProviderProfile):
 meta_oauth = MetaOAuthProfile(
     name="meta-oauth", aliases=("meta-subscription", "muse-subscription", "muse-code-subscription"),
     display_name="Meta (Muse subscription)",
-    description="Meta Muse Spark billed to a Muse Code subscription (OAuth sign-in)",
+    description="Meta Muse Wonder, Spark and Ember billed to a Muse Code subscription (OAuth sign-in)",
     signup_url="https://developer.meta.com/ai/",
     env_vars=(),  # OAuth subscription — no API key; login lives in hermes_cli/auth_meta.py
     base_url="https://api.meta.ai/v1", auth_type="oauth_external",
@@ -76,7 +82,10 @@ meta_oauth = MetaOAuthProfile(
     default_max_tokens=16384,
     # Mirror of the static ``_PROVIDER_MODELS["meta-oauth"]`` rows, shown when
     # no live catalog is available; a test keeps the two in sync.
-    fallback_models=("muse-spark-1.3", "muse-spark-1.3-contributor"),
+    fallback_models=(
+        "muse-spark-1.3", "muse-wonder-1.0", "muse-ember-1.0",
+        "muse-spark-1.3-contributor", "muse-spark-1.2", "muse-spark-1.2-contributor",
+    ),
 )
 
 register_provider(meta_oauth)

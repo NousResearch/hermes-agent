@@ -321,7 +321,12 @@ def test_meta_catalog_lists_subscription():
     models = provider_model_ids("meta-oauth")
     assert "muse-spark-1.3" in models
     assert "muse-spark-1.3-contributor" in models
-    assert "muse-spark-1.2" not in models
+    # Latest subscription models (Wonder/Ember/Spark 1.2) are offered;
+    # Spark 1.1 is Model-API-only and stays out.
+    assert "muse-wonder-1.0" in models
+    assert "muse-ember-1.0" in models
+    assert "muse-spark-1.2" in models
+    assert "muse-spark-1.1" not in models
 
 
 def _seed_meta_auth_store(hermes_home, tokens=None, last_refresh="2026-09-20T00:00:00Z"):

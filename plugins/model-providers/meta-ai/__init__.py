@@ -18,9 +18,12 @@ class MetaAIProfile(ProviderProfile):
     """Meta Model API — top-level reasoning_effort, self-contained."""
 
     # Non-chat model prefixes excluded from the agent picker.  The live
-    # /v1/models catalog includes image-generation and transcription models
-    # that are not suitable for agentic chat.
-    _NON_CHAT_PREFIXES = ("muse-image-", "muse-voice-")
+    # /v1/models catalog includes image-generation, transcription and SAM
+    # segmentation models that are not suitable for agentic chat.
+    _NON_CHAT_PREFIXES = ("muse-image-", "muse-voice-", "sam-")
+    # ``max`` reasoning is supported only by these IDs (dev.meta.ai/docs/reasoning);
+    # every other Muse model (incl. -contributor) tops out at ``xhigh``.
+    _MAX_EFFORT_MODELS = frozenset({"muse-wonder-1.0", "muse-spark-1.3", "muse-ember-1.0"})
 
     def fetch_models(
         self,
@@ -48,6 +51,8 @@ class MetaAIProfile(ProviderProfile):
         effort = str(rc.get("effort") or "").strip().lower()
         if rc.get("enabled") is False or effort == "none":
             mapped = "minimal"
+        elif effort == "max" and str(context.get("model") or "").strip().lower().rsplit("/", 1)[-1] in self._MAX_EFFORT_MODELS:
+            mapped = "max"
         else:
             clamped = clamp_effort(effort, META_AI_EFFORTS)
             mapped = clamped if clamped in META_AI_EFFORTS else "medium"

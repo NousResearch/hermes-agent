@@ -47,6 +47,20 @@ hermes
 
 After the first login, credentials are stored under `~/.hermes/auth.json`. The minted Model API key lasts 24 hours; Hermes re-mints it automatically (starting 6 hours before expiry), so you stay signed in until you log out or revoke access.
 
+## Models
+
+The picker offers the live `api.meta.ai/v1/models` catalog when you are signed in, and this curated list otherwise. Both carry every chat model a Muse Code subscription can use ([Meta models](https://dev.meta.ai/docs/models), [subscriptions](https://dev.meta.ai/docs/muse-code/subscriptions)):
+
+| Model | Notes |
+|-------|-------|
+| `muse-spark-1.3` | Default; recommended for new work, 1M context |
+| `muse-wonder-1.0` | Most capable; long-horizon agentic work, 1M context |
+| `muse-ember-1.0` | Efficient execution; sub-agent and high-volume work, 1M context |
+| `muse-spark-1.3-contributor` | Contributor mode (content may train future models) |
+| `muse-spark-1.2`, `muse-spark-1.2-contributor` | Previous Spark version |
+
+Not offered: `muse-spark-1.1` (Model API pay-as-you-go only, not in Muse Code), `muse-image-*`, `muse-voice-*` and `sam-*` (non-chat endpoints, filtered from the live catalog), and the self-hosted Muse Spark Open / Muse Glimmer weights (no Model API endpoint). Muse Wonder Full has no separate model ID — it is selected inside Muse Code itself, so it cannot be offered here.
+
 ## Logging In Manually
 
 You can trigger a login without going through the model picker:

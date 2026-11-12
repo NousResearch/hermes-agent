@@ -43,6 +43,7 @@ class TestMetaAIProfile:
                 "muse-voice-transcribe-1.0",
                 "muse-spark-latest",
                 "muse-image-1.0-eval",
+                "sam-3.1",
                 "muse-nova-test",
             ]
 
@@ -67,6 +68,20 @@ class TestReasoningEffort:
         assert _effort({"enabled": False}) == "minimal"  # disabled -> minimal
         # Meta 400s on "none" — must map to "minimal"
         assert _effort({"effort": "none"}) == "minimal"
+
+    def test_max_only_on_max_capable_models(self):
+        """``max`` is a real level only on wonder-1.0 / spark-1.3 / ember-1.0
+        (dev.meta.ai/docs/reasoning); contributor and older Spark clamp down."""
+        def effort_for(model):
+            _eb, top = _profile().build_api_kwargs_extras(
+                reasoning_config={"enabled": True, "effort": "max"}, model=model)
+            return top.get("reasoning_effort")
+
+        assert effort_for("muse-wonder-1.0") == "max"
+        assert effort_for("muse-spark-1.3") == "max"
+        assert effort_for("muse-ember-1.0") == "max"
+        assert effort_for("muse-spark-1.3-contributor") == "xhigh"
+        assert effort_for("muse-spark-1.2") == "xhigh"
 
     def test_never_uses_extra_body(self):
         """The dial must be top-level, not extra_body.reasoning (core-gated path)."""
@@ -110,10 +125,23 @@ class TestMetaOAuthProfile:
         p = _oauth_profile()
 
         def fake_fetch_models(_self, **_kwargs):
-            return ["muse-voice-transcribe-1.0", "muse-spark-latest", "muse-image-1.0-eval"]
+            return ["muse-voice-transcribe-1.0", "muse-spark-latest", "muse-image-1.0-eval", "sam-3.1"]
 
         monkeypatch.setattr(ProviderProfile, "fetch_models", fake_fetch_models)
         assert p.fetch_models() == ["muse-spark-latest"]
+
+    def test_curated_catalog_covers_latest_subscription_models(self):
+        """Every subscription-eligible chat model on dev.meta.ai/docs/models
+        is offered; Model-API-only Spark 1.1 and non-chat lines are not."""
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
+
+        rows = _PROVIDER_MODELS["meta-oauth"]
+        assert rows[0] == "muse-spark-1.3"  # recommended default stays on top
+        for model in ("muse-wonder-1.0", "muse-ember-1.0", "muse-spark-1.3-contributor",
+                      "muse-spark-1.2", "muse-spark-1.2-contributor"):
+            assert model in rows
+        assert "muse-spark-1.1" not in rows  # not available in Muse Code
+        assert not any(r.startswith(("muse-image-", "muse-voice-", "sam-")) for r in rows)
 
     def test_fallback_models_mirror_static_catalog(self):
         """Profile fallbacks and the static picker rows are two spellings of

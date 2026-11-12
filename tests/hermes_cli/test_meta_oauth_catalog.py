@@ -48,3 +48,9 @@ def test_picker_falls_back_to_curated_rows_without_credential(monkeypatch):
     rows = provider_model_ids("meta-oauth", force_refresh=True)
     assert "muse-spark-1.3" in rows
     assert "muse-spark-1.3-contributor" in rows
+    # Latest subscription models ride the curated fallback too.
+    assert "muse-wonder-1.0" in rows
+    assert "muse-ember-1.0" in rows
+    assert "muse-spark-1.2" in rows
+    assert "muse-spark-1.2-contributor" in rows
+    assert "muse-spark-1.1" not in rows

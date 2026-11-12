@@ -1,8 +1,8 @@
 name: meeting-ai
 title: Meeting.ai
 repo: https://github.com/meeting-ai/skills
-sha: 847f617ae090c389bf1b5a74207f082cacb68eb9
-version: "1.0.3"
+sha: 4d15bfa198065ca69c27e0f84840e099d29c5765
+version: "1.0.4"
 description: "Record meetings, read and edit notes and transcripts, recap meetings and create Visual Notes through Meeting.ai's hosted MCP server (Streamable HTTP at https://mcp.meeting.ai/mcp, OAuth sign-in, no keys in config): send the Meeting.ai notetaker to Zoom, Google Meet and Microsoft Teams calls, transcribe Google Drive recordings, search and read transcripts, edit and rename notes, export to Drive, share PIN-protected links, and generate Visual Notes, images and audio. Bundles five workflow skills. Agent Plugins v1 package (plugin.json + mcp.json + skills/), configuration only. Disclosure — every tool call goes to Meeting.ai's hosted server (mcp.meeting.ai) and acts on the user's Meeting.ai account with their own workspace role; the tool set is served by that server at runtime and is not covered by the pinned sha. Recording, Visual Notes and image and audio generation spend the user's Meeting.ai coins or subscription; generation sends the supplied text to third-party AI providers. The package sends no telemetry, but the Meeting.ai server records each MCP call (tool, outcome, user, workspace and client identifiers) for product analytics; this is part of the hosted service. The notetaker joins live calls as a visible participant, and a share link shows the notes and, by default, the transcript. Sign-in runs the pinned mcp-remote@0.15.2 through npx (Node.js 20.18.1+ and npm required), which opens a browser and a local callback port on first use and stores OAuth tokens under ~/.mcp-auth; the sign-in must finish within about 55 seconds. The package marks the server untrusted, so by default Hermes asks before every tool the server does not mark read-only and refuses them in unattended runs."
 maintainer: Meeting.ai
 tier: community

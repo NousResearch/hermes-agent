@@ -17,7 +17,7 @@ import signal
 import sys
 import types
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -82,6 +82,61 @@ def _connect_patches(mock_proc, mock_fh):
         patch("plugins.platforms.whatsapp.adapter.asyncio.create_task"),
     ]
     return base
+
+
+# ---------------------------------------------------------------------------
+# Windows bridge spawn fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.platforms("windows")
+def test_bridge_spawn_retries_without_breakaway_when_job_refuses(monkeypatch):
+    from hermes_cli._subprocess_compat import (
+        windows_detach_flags,
+        windows_detach_flags_without_breakaway,
+    )
+    from plugins.platforms.whatsapp import adapter as whatsapp_adapter
+
+    denied = PermissionError(13, "breakaway denied")
+    denied.winerror = 5
+    proc = MagicMock()
+    spawn = MagicMock(side_effect=[denied, proc])
+    monkeypatch.setattr(whatsapp_adapter, "spawn_owned", spawn)
+    log_fh = MagicMock()
+    env = {"TEST_MARKER": "1"}
+
+    assert whatsapp_adapter._spawn_bridge_process(["node", "bridge.js"], log_fh, env) is proc
+
+    common = {
+        "purpose": "whatsapp-bridge",
+        "stdin": whatsapp_adapter.subprocess.DEVNULL,
+        "stdout": log_fh,
+        "stderr": log_fh,
+        "env": env,
+    }
+    assert spawn.call_args_list == [
+        call(["node", "bridge.js"], **common, creationflags=windows_detach_flags()),
+        call(
+            ["node", "bridge.js"],
+            **common,
+            creationflags=windows_detach_flags_without_breakaway(),
+        ),
+    ]
+
+
+@pytest.mark.platforms("windows")
+def test_bridge_spawn_does_not_retry_unrelated_permission_error(monkeypatch):
+    from plugins.platforms.whatsapp import adapter as whatsapp_adapter
+
+    denied = PermissionError(13, "different denial")
+    denied.winerror = 32
+    spawn = MagicMock(side_effect=denied)
+    monkeypatch.setattr(whatsapp_adapter, "spawn_owned", spawn)
+
+    with pytest.raises(PermissionError, match="different denial"):
+        whatsapp_adapter._spawn_bridge_process(["node", "bridge.js"], MagicMock(), {})
+
+    spawn.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

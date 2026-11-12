@@ -1,7 +1,7 @@
 name: motion-studio
 title: Motion Studio
 repo: https://github.com/gregoryhorn/motion-studio
-sha: c9d9c5ca62616331e50a32b76587087d656f1627
+sha: 009ca90832941a8e8657faf1acc915c119398444
 version: "0.1.0"
 description: "Creation-first media studio for Hermes Desktop. Quick Create turns a chat request into sound effects, images, voice or video takes you can play, compare, keep and download; Production collects chosen takes and imported files into a project and exports them. Image, voice and video come from Hermes' own image_gen, tts and video_gen tools; sound effects generation is unavailable outside the author's pinned Stable Audio setup; imported sound effects remain supported for review and export. Disclosure — downloads finished media only from the provider URLs those Hermes tools return (x.ai, openai.com, oaiusercontent.com, fal.media, fal.run, deepinfra.com, krea.ai; no proxies, cookies or credentials, same-host redirects only); runs ffmpeg/ffprobe to check imported and generated media, nvidia-smi to report GPU use, and the author's pinned local audio engine, each with a minimal fixed environment (no inherited credentials or provider keys); reads Hermes' generator output cache read-only (secret and hidden files refused); stores projects and takes under the Motion Studio profile's data directory. Saved takes are kept, not deleted. No telemetry."
 maintainer: gregoryhorn

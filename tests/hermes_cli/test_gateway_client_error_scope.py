@@ -76,3 +76,51 @@ def test_timeout_after_websocket_opens_is_not_misclassified():
         assert connection.exit_exception_type is TimeoutError
 
     asyncio.run(run())
+
+
+
+def test_session_resume_rpc_timeout_is_not_a_handshake_error(monkeypatch):
+    """A timed-out RPC through connect_gateway must not look like a failed dial."""
+    from websockets.asyncio import client as websockets_client
+    from websockets.protocol import State
+
+    from hermes_cli.gateway_client import connect_gateway
+
+    class SilentSocket:
+        state = State.OPEN
+        subprotocol = None
+
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, frame):
+            self.sent.append(frame)
+
+        async def __aiter__(self):
+            await asyncio.Future()
+            yield ""
+
+    socket = SilentSocket()
+
+    class SilentConnection(FakeWebSocketConnection):
+        async def __aenter__(self):
+            return socket
+
+    connection = SilentConnection()
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_URL", "ws://127.0.0.1:12345/api/ws")
+    monkeypatch.setattr(
+        websockets_client,
+        "connect",
+        lambda *args, **kwargs: connection,
+    )
+
+    async def run():
+        with pytest.raises(TimeoutError):
+            async with connect_gateway() as client:
+                await client.rpc("session.resume", _timeout=0)
+
+        assert len(socket.sent) == 1
+        assert '"method": "session.resume"' in socket.sent[0]
+        assert connection.exit_exception_type is TimeoutError
+
+    asyncio.run(run())

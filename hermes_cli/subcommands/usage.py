@@ -35,6 +35,26 @@ def usage_snapshot_document(snapshot) -> dict:
     }
 
 
+def usage_failure_document(provider: str, kind: str, detail: str) -> dict:
+    """``hermes usage --json`` when nothing could be fetched. Keys are stable; ``error`` is one of
+    ``no_credential``, ``no_usage_endpoint`` or ``fetch_failed``."""
+    return {"provider": provider, "error": kind, "detail": detail}
+
+
+def _usage_failure(provider: str, failures: list[BaseException]) -> tuple[str, str]:
+    """``(kind, detail)`` for an empty fetch: keep the fetch exception when there is one, otherwise
+    name the missing prerequisite."""
+    if failures:
+        from agent.redact import redact_sensitive_text
+        exc = failures[0]
+        return "fetch_failed", (f"the fetch failed: {type(exc).__name__}: "
+                                f"{redact_sensitive_text(str(exc), force=True)}")
+    from agent.account_usage_cache import has_account_usage
+    if not has_account_usage(provider):
+        return "no_usage_endpoint", "the provider has no usage endpoint"
+    return "no_credential", "no credential is configured for it"
+
+
 def cmd_usage(args: argparse.Namespace) -> int:
     """Print the configured (or ``--provider``) account's usage windows; exit 1 when nothing could be fetched."""
     from agent.account_usage import fetch_account_usage, render_account_usage_lines
@@ -43,13 +63,13 @@ def cmd_usage(args: argparse.Namespace) -> int:
     provider = resolve_requested_provider(getattr(args, "provider", None))
     # No explicit key: the fetcher resolves the credential exactly as a session without a live agent
     # would (singleton store, then credential pool) — it never adopts or refreshes anything else.
-    snapshot = fetch_account_usage(provider)
+    failures: list[BaseException] = []
+    snapshot = fetch_account_usage(provider, on_error=failures.append)
     if snapshot is None:
-        print(
-            f"No account usage available for provider '{provider}': no credential is configured for it, "
-            "the provider has no usage endpoint, or the fetch failed.",
-            file=sys.stderr,
-        )
+        kind, detail = _usage_failure(provider, failures)
+        if getattr(args, "json", False):
+            print(json.dumps(usage_failure_document(provider, kind, detail), indent=2))
+        print(f"No account usage available for provider '{provider}': {detail}.", file=sys.stderr)
         return 1
     if getattr(args, "json", False):
         print(json.dumps(usage_snapshot_document(snapshot), indent=2))

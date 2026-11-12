@@ -55,10 +55,37 @@ def test_hermes_usage_json_is_one_stable_document(capsys):
     assert set(doc) == {"provider", "source", "title", "plan", "fetched_at", "windows", "details", "unavailable_reason"}
 
 
-def test_hermes_usage_without_credential_exits_nonzero_with_one_stderr_line(capsys):
-    # fetch_account_usage returns None when no credential resolves (or the fetch fails) — script-friendly failure.
+def test_hermes_usage_without_credential_reports_the_kind(capsys):
+    # A None fetch with no exception means the provider can report usage but no credential resolved.
     assert _run(["usage", "--json", "--provider", "openai-codex"], lambda provider, **kw: None) == 1
     out, err = capsys.readouterr()
-    assert out == ""
+    doc = json.loads(out)
+    assert doc["provider"] == "openai-codex"
+    assert doc["error"] == "no_credential"
+    assert "no credential is configured" in doc["detail"]
     assert err.count("\n") == 1 and "openai-codex" in err
+
+
+def test_hermes_usage_names_a_failed_fetch_instead_of_the_generic_line(capsys):
+    class _Boom(Exception):
+        pass
+
+    def fetch(provider, **kwargs):
+        kwargs["on_error"](_Boom("HTTP 401 Unauthorized"))
+
+    assert _run(["usage", "--json", "--provider", "anthropic"], fetch) == 1
+    out, err = capsys.readouterr()
+    doc = json.loads(out)
+    assert doc["error"] == "fetch_failed"
+    assert "_Boom" in doc["detail"] and "HTTP 401" in doc["detail"]
+    assert "HTTP 401" in err and err.count("\n") == 1
+
+
+def test_hermes_usage_reports_a_provider_without_a_usage_endpoint(capsys):
+    with patch("agent.account_usage_cache.has_account_usage", return_value=False):
+        assert _run(["usage", "--json", "--provider", "openai-codex"], lambda provider, **kw: None) == 1
+    out, err = capsys.readouterr()
+    doc = json.loads(out)
+    assert doc["error"] == "no_usage_endpoint"
+    assert "no usage endpoint" in err
 

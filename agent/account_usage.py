@@ -944,7 +944,11 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
     read_only: bool = False, identity_id: Optional[str] = None,
+    on_error: Optional[Callable[[BaseException], None]] = None,
 ) -> Optional[AccountUsageSnapshot]:
+    """Snapshot for *provider*, or None: no credential, no usage endpoint, or an exception from
+    the fetch (fail-open — ``/usage`` shows nothing rather than breaking a turn). ``on_error``
+    receives that exception so a CLI surface can name the cause; it never changes the return."""
     from agent.account_usage_cache import remember_account_usage
 
     slug = str(provider or "").strip().lower()
@@ -964,7 +968,15 @@ def fetch_account_usage(
 
             profile = get_provider_profile(slug)
             snapshot = _call_plugin_usage_hook(profile, base_url, api_key) if profile else None
-    except Exception:
+    except Exception as exc:
+        # Redacted, no traceback: the exception text is all a diagnostic needs, and a plugin
+        # hook's message must not carry a token into the log.
+        from agent.redact import redact_sensitive_text
+        logger.warning("Account usage fetch failed for provider %r: %s: %s",
+                       slug or "<configured>", type(exc).__name__,
+                       redact_sensitive_text(str(exc), force=True))
+        if on_error is not None:
+            on_error(exc)
         return None
     # Every fetch (``/usage``, the per-turn ``session.usage``) keeps the picker's cache current.
     # A per-credential fetch is remembered under its account slot only; the provider-wide fetch

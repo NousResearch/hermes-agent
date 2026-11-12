@@ -145,6 +145,24 @@ def test_fetch_account_usage_reaches_registered_plugin_profile_and_fails_open(mo
     assert fetch_account_usage("plugin-broken") is None
 
 
+def test_fetch_account_usage_reports_the_failure_to_the_caller_and_the_log(monkeypatch, caplog):
+    """#154150: a raising fetch still fails open, but the cause reaches the caller and the log."""
+    from agent import account_usage
+
+    class _Boom(Exception):
+        pass
+
+    def raising(_base_url, _api_key):
+        raise _Boom("HTTP 401 Unauthorized")
+
+    monkeypatch.setitem(account_usage._USAGE_FETCHERS, "openrouter", raising)
+    failures = []
+    with caplog.at_level("WARNING", logger="agent.account_usage"):
+        assert account_usage.fetch_account_usage("openrouter", on_error=failures.append) is None
+    assert [type(exc) for exc in failures] == [_Boom]
+    assert any("HTTP 401" in record.getMessage() for record in caplog.records)
+
+
 def test_fetch_account_usage_prefers_builtin_fetcher_over_profile(monkeypatch):
     builtin = AccountUsageSnapshot(
         provider="openrouter", source="builtin", fetched_at=datetime.now(UTC),

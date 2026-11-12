@@ -740,8 +740,9 @@ hermes usage --json                   # one JSON document on stdout
 
 Credentials resolve exactly as they do for `/usage` in a session with no live agent (the auth store, then
 the credential pool); the command never adds or refreshes a credential it would not use for chat. Exit code
-`0` on success; `1` with a single stderr line when no credential is configured for the provider, the provider
-has no usage endpoint, or the fetch fails (stdout stays empty).
+`0` on success; `1` with a single stderr line when nothing could be fetched. The line names the cause:
+`no credential is configured for it`, `the provider has no usage endpoint`, or `the fetch failed: <error
+type>: <detail>` (for example an HTTP 401 or a connect error). A failed fetch is also logged to `agent.log`.
 
 `--json` schema (keys are stable; new keys may be added):
 
@@ -763,6 +764,20 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
 
 `used_percent` is `null` when the provider did not report the window; `resets_at` is ISO-8601 UTC or `null`
 (some windows carry a free-text `detail` instead); `plan` is `null` when unknown.
+
+When nothing could be fetched, `--json` prints an error document instead of the snapshot (still exit `1`, and
+the same cause goes to stderr):
+
+```json
+{
+  "provider": "anthropic",
+  "error": "fetch_failed",
+  "detail": "the fetch failed: HTTPStatusError: Client error '401 Unauthorized' for url 'https://api.anthropic.com/api/oauth/usage'"
+}
+```
+
+`error` is one of `no_credential` (no login for the provider), `no_usage_endpoint` (the provider reports no
+usage windows), or `fetch_failed` (the request ran and failed — `detail` carries the redacted cause).
 
 ## `hermes status`
 

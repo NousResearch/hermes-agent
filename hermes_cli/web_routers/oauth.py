@@ -17,6 +17,7 @@ from datetime import datetime, timezone, UTC
 from typing import Any, Callable, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
 
 from hermes_cli.auth_constants import _codex_err
 from hermes_cli.web_deps import LateState, late
@@ -996,3 +997,62 @@ async def cancel_oauth_session(session_id: str, request: Request, profile: Optio
     from hermes_cli.observability.shared_metrics_setup import settle_oauth_setup
     await asyncio.to_thread(settle_oauth_setup, sess)
     return {"ok": True, "session_id": session_id}
+
+
+class ClerkTokenBody(BaseModel):
+    token: str
+
+
+@router.post("/api/providers/oauth/unitalk/submit-token")
+async def submit_clerk_token(body: ClerkTokenBody, request: Request, profile: Optional[str] = None):
+    """Submit a Clerk SSO session token obtained from the Desktop's localhost
+    callback flow. Validates the JWT against Clerk's JWKS, then persists it
+    in the auth store so the 'unitalk' provider is recognized as authenticated.
+
+    Unlike device_code flows (which go through start → poll → submit_code), the
+    Clerk flow is driven entirely by the Desktop: it opens the browser, Clerk
+    redirects to the localhost callback, and the Desktop sends the captured
+    token here for validation and storage."""
+    _require_token(request)
+    token = (body.token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Missing Clerk token")
+
+    # Validate the JWT against Clerk's published JWKS
+    try:
+        from agent.clerk_auth import validate_clerk_token
+        user_info = validate_clerk_token(token)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Could not validate Clerk token: {exc}")
+
+    if user_info is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired Clerk token")
+
+    # Persist in the auth store under providers.unitalk
+    try:
+        from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            providers = auth_store.setdefault("providers", {})
+            if not isinstance(providers, dict):
+                providers = auth_store["providers"] = {}
+            providers["unitalk"] = {
+                "access_token": token,
+                "source": "clerk_oauth",
+                "user_id": user_info.user_id,
+                "email": user_info.email,
+                "first_name": user_info.first_name,
+                "last_name": user_info.last_name,
+                "full_name": user_info.full_name,
+            }
+            _save_auth_store(auth_store)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Could not persist token: {exc}")
+
+    return {
+        "ok": True,
+        "provider": "unitalk",
+        "email": user_info.email,
+        "user_id": user_info.user_id,
+        "name": user_info.full_name or f"{user_info.first_name or ''} {user_info.last_name or ''}".strip() or None,
+    }

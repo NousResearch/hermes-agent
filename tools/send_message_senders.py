@@ -73,9 +73,11 @@ def _adapter_media_method(ext, voice, force_document=False):
     return ("send_voice", "audio") if voice else ("send_document", "document")
 
 
-class SharedBotTargetRefused(Exception):
+class SharedBotTargetRefused(PermissionError):
     """``_live_adapter`` refused a shared-bot satellite a target no route maps to it. Raised, not
-    ``None``: ``None`` means "no live adapter" and sends the caller to a standalone fallback."""
+    ``None``: ``None`` means "no live adapter" and sends the caller to a standalone fallback.
+    A ``PermissionError`` so bundled platform plugins catch it by the builtin type without
+    importing a core name outside the published plugin API."""
 
 
 def _live_adapter(platform, chat_id=None, thread_id=None, *, lookup_failed_warning=None):

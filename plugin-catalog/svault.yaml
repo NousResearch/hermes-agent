@@ -6,7 +6,7 @@ description: >-
   single value only with human approval. Disclosure: reads/writes the files
   you point it at; stores agent private keys in ~/.svault/agents/.
 repo: https://github.com/Nifemi0/svault
-sha: effc85ffe434c4e9e8f71151d1db352bb59d4bc8
+sha: 04e4f37d446d0c8d382a08b799799fddccfb1b8d
 tier: community
 category: tools
 maintainer: Sky

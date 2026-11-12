@@ -1,34 +1,45 @@
 name: ligis
 repo: https://github.com/sneldao/ligis
-sha: 695335709f9930aa008cc7e7f1747752ec261e73
+sha: b7f80a38fd20616650e6de8e6cbcab3f97a3de3a
 subdir: hermes-plugin
 title: Ligis — Counterparty Credentials
 description: >-
   Verify that a payee holds a live, third-party-issued, revocable on-chain
-  capability credential before your agent pays them. Hermes agents pay other
-  agents, and the destination address comes from the HTTP answer asking for
-  the money — nothing in the x402 flow ties that address to anything the
-  payee has proven about itself, which is the gap ERC-8478 states in spec
-  form. ligis reads the credential registry directly over read-only
-  JSON-RPC and answers the question the payment flow leaves open: is this
-  counterparty entitled to this? Four tools (ligis_check_capability,
-  ligis_capability_hash, ligis_verify_payee, ligis_chains) plus a
-  pre_tool_call gate that intercepts payment-shaped tool calls and
-  escalates to Hermes's approval prompt when the payee cannot be
-  credentialed. A capability is indexed by the keccak-256 hash of its name,
-  so the same capability resolves to the same bytes on every chain and a
-  credential minted on one chain is found on another. No key, no hosted
-  service, no secret scope: verifying a credential is a read, so the only
-  thing trusted is the chain. Disclosure — makes read-only HTTPS JSON-RPC
-  eth_call requests to the configured RPC endpoint (default
+  capability credential before your agent pays them. Hermes agents pay
+  other agents, and the destination address comes from the HTTP answer
+  asking for the money — nothing in the x402 flow ties that address to
+  anything the payee has proven about itself, which is the gap ERC-8478
+  states in spec form. ligis reads the credential registry directly over
+  read-only JSON-RPC and answers the question the payment flow leaves
+  open: is this counterparty entitled to this? Five tools
+  (ligis_check_capability, ligis_capability_hash, ligis_verify_payee,
+  ligis_verify_payment, ligis_chains) plus two surfaces: a pre_tool_call
+  gate that intercepts payment-shaped tool calls and escalates to
+  Hermes's approval prompt when the payee cannot be credentialed, and a
+  transform_tool_result hook that annotates an x402 402 challenge with
+  the payee's credential verdict before the agent signs. The registry
+  lets anyone issue a credential for any subject, so a live credential
+  only counts when a trusted issuer signed it: the operator's
+  trusted_issuers setting is the sole root of trust — tool arguments can
+  narrow it, never widen it — verified on-chain with isCapableFromIssuer.
+  Before its first read the plugin probes eth_chainId and eth_getCode on
+  the registry address, so an endpoint serving the wrong chain or an
+  address with no contract reads as unknown rather than an answer. A
+  capability is indexed by the keccak-256 hash of its name, so the same
+  capability resolves to the same bytes on every chain. No key, no hosted
+  service, no secret scope. Disclosure — makes read-only HTTPS JSON-RPC
+  calls to the configured RPC endpoint (default
   https://testnet-rpc.monad.xyz for monad-testnet and
   https://atlantic.dplabs-internal.com for pharos-atlantic); the RPC
   operator sees the caller's IP address and the queried registry and
   subject addresses; it holds no keys, signs nothing, sends no
-  transactions, reads no files outside its own plugin data directory, runs
-  no background processes, and has no telemetry. The pre_tool_call hook
-  escalates to Hermes's approval prompt, which unattended surfaces (cron,
-  --yolo, approvals off) refuse rather than auto-approve.
+  transactions, reads no files outside its own plugin data directory,
+  runs no background processes, and has no telemetry. The pre_tool_call
+  hook escalates to Hermes's approval prompt — what that prompt does is
+  Hermes's approvals policy, not the plugin's: --yolo and
+  approvals.mode: off auto-approve plugin escalations, and cron follows
+  approvals.cron_mode; set mode: enforce to block the call outright
+  regardless.
 maintainer: sneldao
 tier: community
 category: tools
@@ -42,8 +53,10 @@ capabilities:
     - ligis_check_capability
     - ligis_capability_hash
     - ligis_verify_payee
+    - ligis_verify_payment
     - ligis_chains
   provides_hooks:
     - pre_tool_call
+    - transform_tool_result
   provides_middleware: []
   requires_env: []

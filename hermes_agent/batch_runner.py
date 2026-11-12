@@ -32,7 +32,7 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn
 from agent.conversation_compression_checkpoint import checkpoint_required_from_config
 from model_tools import TOOL_TO_TOOLSET_MAP
 from run_agent import AIAgent
-from toolset_distributions import (
+from hermes_agent.toolset_distributions import (
     list_distributions,
     sample_toolsets_from_distribution,
     validate_distribution,
@@ -923,27 +923,27 @@ def main(
         
     Examples:
         # Basic usage
-        python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run
+        python hermes_agent/batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run
         
         # Resume interrupted run
-        python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run --resume
+        python hermes_agent/batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run --resume
         
         # Use specific distribution
-        python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=image_test --distribution=image_gen
+        python hermes_agent/batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=image_test --distribution=image_gen
         
         # With disabled reasoning
-        python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
+        python hermes_agent/batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
                                --reasoning_disabled
         
         # With prefill messages from file
-        python batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
+        python hermes_agent/batch_runner.py --dataset_file=data.jsonl --batch_size=10 --run_name=my_run \\
                                --prefill_messages_file=configs/prefill_opus.json
         
         # List available distributions
-        python batch_runner.py --list_distributions
+        python hermes_agent/batch_runner.py --list_distributions
     """
     if list_distributions:
-        from toolset_distributions import print_distribution_info
+        from hermes_agent.toolset_distributions import print_distribution_info
         print("📊 Available Toolset Distributions")
         print("=" * 70)
         all_dists = list_distributions()

@@ -10,13 +10,13 @@ description: "大规模生成 agent 轨迹——并行处理、断点续跑与�
 
 ## 概述
 
-批量运行器（`batch_runner.py`）处理一个由 prompt 组成的 JSONL 数据集，将每条 prompt 通过完整的 agent 会话（含工具访问权限）运行一遍。每条 prompt 都拥有独立隔离的环境。输出为结构化轨迹数据，包含完整对话历史、工具调用统计信息以及推理覆盖率指标。
+批量运行器（`hermes_agent/batch_runner.py`）处理一个由 prompt 组成的 JSONL 数据集，将每条 prompt 通过完整的 agent 会话（含工具访问权限）运行一遍。每条 prompt 都拥有独立隔离的环境。输出为结构化轨迹数据，包含完整对话历史、工具调用统计信息以及推理覆盖率指标。
 
 ## 快速开始
 
 ```bash
 # 基本批量运行
-python batch_runner.py \
+python hermes_agent/batch_runner.py \
     --dataset_file=data/prompts.jsonl \
     --batch_size=10 \
     --run_name=my_first_run \
@@ -24,14 +24,14 @@ python batch_runner.py \
     --num_workers=4
 
 # 恢复中断的运行
-python batch_runner.py \
+python hermes_agent/batch_runner.py \
     --dataset_file=data/prompts.jsonl \
     --batch_size=10 \
     --run_name=my_first_run \
     --resume
 
 # 列出可用的工具集分布
-python batch_runner.py --list_distributions
+python hermes_agent/batch_runner.py --list_distributions
 ```
 
 :::tip 大规模运行下的可预测成本
@@ -192,7 +192,7 @@ data/my_run/
 生成多样化的工具使用轨迹用于微调：
 
 ```bash
-python batch_runner.py \
+python hermes_agent/batch_runner.py \
     --dataset_file=data/coding_prompts.jsonl \
     --batch_size=20 \
     --run_name=coding_v1 \
@@ -207,7 +207,7 @@ python batch_runner.py \
 在标准化 prompt 集上评估模型的工具使用能力：
 
 ```bash
-python batch_runner.py \
+python hermes_agent/batch_runner.py \
     --dataset_file=data/eval_suite.jsonl \
     --batch_size=10 \
     --run_name=eval_gpt4 \

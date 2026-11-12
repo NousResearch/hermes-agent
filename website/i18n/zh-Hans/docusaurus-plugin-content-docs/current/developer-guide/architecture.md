@@ -270,7 +270,7 @@ tools/*.py  （每个文件在导入时调用 registry.register()）
        ↑
 model_tools.py  （导入 tools/registry 并触发工具发现）
        ↑
-run_agent.py, cli.py, batch_runner.py, environments/
+run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
 这条依赖链意味着工具注册发生在导入时，早于任何 agent 实例的创建。任何在顶层调用 `registry.register()` 的 `tools/*.py` 文件都会被自动发现——无需手动维护导入列表。

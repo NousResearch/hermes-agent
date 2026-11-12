@@ -100,7 +100,7 @@ class TestArceeURLMapping:
 
 
     def test_trajectory_compressor_detects_arcee(self):
-        import trajectory_compressor as tc
+        import hermes_agent.trajectory_compressor as tc
         comp = tc.TrajectoryCompressor.__new__(tc.TrajectoryCompressor)
         comp.config = types.SimpleNamespace(base_url="https://api.arcee.ai/api/v1")
         assert comp._detect_provider() == "arcee"

@@ -277,7 +277,7 @@ tools/*.py  (each calls registry.register() at import time)
        ↑
 model_tools.py  (imports tools/registry + triggers tool discovery)
        ↑
-run_agent.py, cli.py, batch_runner.py, environments/
+run_agent.py, cli.py, hermes_agent/batch_runner.py, environments/
 ```
 
 This chain means tool registration happens at import time, before any agent instance is created. Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.

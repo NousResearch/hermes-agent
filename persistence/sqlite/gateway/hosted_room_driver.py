@@ -47,7 +47,7 @@ from session_rules.hosted_tasks import (
 )
 
 from .._backend import SQLiteStore, register_repository, translated
-from ._hosted_rooms_common import fenced_update, table_columns
+from ._hosted_rooms_common import fenced_update, table_columns, table_exists
 from ._hosted_rooms_schema import ROOMS_STEP
 from ._hosted_store import HostedFiles, SchemaStep
 from ._hosted_work import capture_transition_locked
@@ -370,6 +370,8 @@ class SQLiteHostedRoomDriverRepository:
     def __init__(self, store: SQLiteStore) -> None:
         self._files = HostedFiles(store, (DRIVER_STEP,))
         self._room_files = HostedFiles(store, (ROOMS_STEP,))
+        self._bare_files = HostedFiles(store)
+        self._read_only = store.read_only
 
     def _transition(
         self, placement: HostedPlacement, identity: HostedTaskIdentity, *, sql: str, set_params: tuple[Any, ...],
@@ -875,6 +877,13 @@ class SQLiteHostedRoomDriverRepository:
                         next_seq, revision, tuple(sorted(tuple(row) for row in conn.execute(query, (room_id, *statuses)))))
                     for room_id, next_seq, revision in rooms}
         with translated():
+            if self._read_only:
+                # A reader sets nothing up: a shared file that does not exist and a file without the rooms table hold
+                # no rooms, as main's read of either answers; a rooms table that is there must be current.
+                if placement == "shared" and not self._bare_files.path(placement).is_file():
+                    return {}
+                if not self._bare_files._hosted_read(placement, lambda conn: table_exists(conn, "hosted_rooms")):
+                    return {}
             return self._room_files._hosted_read(placement, _read)
 
     # The task bound to this thread and turn, or None.

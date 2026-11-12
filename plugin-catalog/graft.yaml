@@ -1,7 +1,7 @@
 name: graft
 repo: https://github.com/Nawf23/graft-hermes
 sha: dc1d3e442c8c0b701168aa1181e8f5a5a1ea6419
-description: Persistent in-app features for Kanboard, with live data and reviewed task actions.
+description: "Persistent in-app features for Kanboard, with live data and reviewed task actions. Disclosure — Graft's Desktop half injects its own fixed renderer script into the Kanboard page open in Hermes' Browser pane (after you allow it for that origin), and the graft_data tool sends a sample of your Kanboard task titles, projects and owners to the conversation's model; task changes are applied to Kanboard only after you confirm each one in the Graft pane."
 maintainer: Nawf23
 tier: community
 category: desktop

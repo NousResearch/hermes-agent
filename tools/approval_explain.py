@@ -118,11 +118,16 @@ _STATIC_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
 
 
 def _mode() -> str:
-    """``approvals.explain``: ``off`` | ``static`` (default) | ``aux``."""
+    """``approvals.explain``: ``off`` | ``static`` (default) | ``aux``.
+
+    YAML 1.1 reads a bare ``off``/``no``/``on``/``yes`` as a bool before this code ever sees it
+    (the same quirk ``_normalize_approval_mode`` handles for ``approvals.mode``), so a bool is
+    the operator's intent, not a malformed value: ``False`` means off.
+    """
     raw = _ctx._get_approval_config().get("explain", "static")
-    mode = str(raw).strip().lower() if isinstance(raw, (str, bool)) else ""
-    if mode in ("true", "on", "yes"):
-        mode = "static"
+    if isinstance(raw, bool):
+        return "static" if raw else "off"
+    mode = str(raw).strip().lower() if isinstance(raw, str) else ""
     if mode in _MODES:
         return mode
     logger.warning("approvals.explain=%r is not one of %s; using 'static'", raw, "/".join(_MODES))

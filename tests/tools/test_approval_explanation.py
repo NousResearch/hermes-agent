@@ -160,3 +160,75 @@ def test_desktop_payload_carries_the_explanation():
     })
 
     assert payload["explanation"] == "Permanently deletes files and folders."
+
+
+# --- E2E: the config key reaches the producer through the REAL loader
+# AGENTS.md / contributing guide: anything touching config propagation or a security boundary
+# exercises the real path with real imports against a temp HERMES_HOME, not a mock of the seam.
+
+def _write_home(tmp_path, name: str, *, explain: str, timeout: int = 5):
+    """One disposable HERMES_HOME whose config.yaml is the only thing driving the producer."""
+    import hermes_cli.config as hc
+    from hermes_constants import reset_hermes_home_key_cache
+
+    home = tmp_path / name
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n  default: test-model\n"
+        f"approvals:\n  mode: manual\n  explain: {explain}\n  explain_timeout: {timeout}\n"
+        "command_allowlist: []\n"
+    )
+    hc._LOAD_CONFIG_CACHE.clear()
+    reset_hermes_home_key_cache()
+    return home
+
+
+def _use_home(monkeypatch, home):
+    """Point the process at *home* and drop every config cache that a prior phase warmed."""
+    import hermes_cli.config as hc
+    from hermes_constants import reset_hermes_home_key_cache
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    hc._LOAD_CONFIG_CACHE.clear()
+    reset_hermes_home_key_cache()
+
+
+def test_config_drives_the_producer_through_the_real_loader(tmp_path, monkeypatch):
+    """A -> B -> A across two real HERMES_HOMEs: the same loader that a live gate uses must flip
+    ``approvals.explain`` between static (a line, no model) and off (no line, no model)."""
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", _model_explodes)
+    command, label = "rm -rf /tmp/hermes-explain-demo", "recursive delete"
+
+    _use_home(monkeypatch, _write_home(tmp_path, "home-a", explain="static", timeout=4))
+    assert approval_explain._mode() == "static"
+    assert approval_explain._timeout_seconds() == 4.0
+    line = approval._explanation_for(command, label, label, "e2e-session")
+    assert line and "delete" in line.lower()
+
+    _use_home(monkeypatch, _write_home(tmp_path, "home-b", explain="off"))
+    assert approval_explain._mode() == "off"
+    assert approval._explanation_for(command, label, label, "e2e-session") is None
+
+    _use_home(monkeypatch, _write_home(tmp_path, "home-c", explain="aux", timeout=3))
+    monkeypatch.setattr("agent.auxiliary_client.call_llm", _model_says("Deletes the demo folder."))
+    assert approval_explain._mode() == "aux"
+    assert approval_explain._timeout_seconds() == 3.0
+    assert approval._explanation_for(command, label, label, "e2e-session") == "Deletes the demo folder."
+
+def test_unquoted_off_in_yaml_means_off(tmp_path, monkeypatch):
+    """YAML 1.1 turns a bare ``off`` into ``False``; the producer must read that as the operator's
+    intent (off), not as a malformed value that falls back to on."""
+    import hermes_cli.config as hc
+    from hermes_constants import reset_hermes_home_key_cache
+
+    home = tmp_path / "unquoted"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "model:\n  default: test-model\napprovals:\n  mode: manual\n  explain: off\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    reset_hermes_home_key_cache()
+    hc._LOAD_CONFIG_CACHE.clear()
+    assert hc.load_config_readonly()["approvals"]["explain"] is False  # the YAML quirk, pinned
+    assert approval_explain._mode() == "off"
+    assert approval._explanation_for("rm -rf /tmp/x", "recursive delete", "recursive delete", "s") is None

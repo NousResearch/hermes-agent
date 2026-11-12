@@ -1,6 +1,5 @@
 """An independent local route, transcript and frozen policy in one receipt commit."""
 import json
-import uuid
 
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_local_lineage import validate_local_lineage
@@ -49,7 +48,18 @@ def _child_policy(policy, child, prepared):
             'config_secret_ref': prepared['config_secret_ref']}
 
 
-def branch_in_transaction(db, conn, session_id, payload, prepared=None):
+def resolved_branch_title(conn, parent_title, payload):
+    """Discovery and publication must choose exactly the same title."""
+    title = payload.get('title')
+    if title:
+        return title
+    try:
+        return lineage_title_on_conn(conn, parent_title or 'branch')
+    except ValueError as exc:
+        raise RuntimeStoreError('invalid_params', field='title', detail=str(exc)) from exc
+
+
+def branch_in_transaction(db, conn, session_id, payload, prepared=None, *, reserved=None):
     row = conn.execute('SELECT value FROM state_meta WHERE key=?',
                        (POLICY_PREFIX + session_id,)).fetchone()
     if row is None:
@@ -61,7 +71,7 @@ def branch_in_transaction(db, conn, session_id, payload, prepared=None):
     from gateway.session import SessionEntry, SessionSource
     from gateway.config import Platform
     from hermes_state_keys import local_identity, profile_from_session_key
-    request_id = prepared['request_id'] if prepared else 'branch:' + uuid.uuid4().hex
+    request_id = prepared['request_id'] if prepared else reserved['request_id']
     child = local_identity(saved['profile_id'], saved['principal_id'], request_id)
     policy = _child_policy(saved['policy'], child, prepared)
     # The child keeps the parent's owning profile: a served secondary's origin names it
@@ -85,13 +95,9 @@ def branch_in_transaction(db, conn, session_id, payload, prepared=None):
         [target, _branch_boundary(conn, target, payload.get('through_message_id'))])
     db._clone_message_rows(conn, ids, session_id=child)
     conn.execute('UPDATE sessions SET message_count=?,tool_call_count=? WHERE id=?', (len(ids), tools, child))
-    if payload.get('title'):
-        db._set_session_title_in_transaction(conn, child, payload['title'], source=db.TITLE_SOURCE_USER)
-    else:
-        # Untitled branch: the next name in the parent's lineage ("my session" → "my session #2"),
-        # same rule as the legacy TUI /branch, so the child is its own titled sidebar row.
-        db._set_session_title_in_transaction(conn, child, lineage_title_on_conn(conn, parent['title'] or 'branch'),
-                                             source=db.TITLE_SOURCE_DERIVED)
+    title = resolved_branch_title(conn, parent['title'], payload)
+    source = db.TITLE_SOURCE_USER if payload.get('title') else db.TITLE_SOURCE_DERIVED
+    db._set_session_title_in_transaction(conn, child, title, source=source)
     receipt = dict(profile_id=saved['profile_id'], principal_id=saved['principal_id'],
                    request_id=request_id, session_id=child, route=route, entry=entry.to_dict(), policy=policy)
     # The copied policy holds the parent's picks; the child's refresh must keep them as picks, not defaults.

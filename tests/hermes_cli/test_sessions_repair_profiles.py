@@ -157,10 +157,21 @@ def test_dry_run_names_every_crossing_and_changes_nothing(homes, capsys):
 def test_apply_settles_every_repairable_crossing_and_is_idempotent(homes, monkeypatch, capsys):
     _seed_crossings(homes)
     snapshots = []
+    import hermes_state_lineage as lineage
+    real_import = SessionDB.import_moved_session
+    observed_locked_imports = []
+
+    def assert_move_lock(self, *args, **kwargs):
+        assert getattr(lineage._THREAD_LOCKS, "active", {}), "profile move imported outside its lineage lock"
+        observed_locked_imports.append(True)
+        return real_import(self, *args, **kwargs)
+
+    monkeypatch.setattr(SessionDB, "import_moved_session", assert_move_lock)
     monkeypatch.setattr("hermes_cli.sessions_cmd_repair_profiles.default_snapshot",
                         lambda store: snapshots.append(store.profile) or f"snap-{store.profile}")
 
     assert _run(apply=True) == 0
+    assert observed_locked_imports
     assert set(snapshots) == {"default", "acme", "beta"}
 
     root = SessionDB(homes["default"] / "state.db")
@@ -318,22 +329,28 @@ def test_a_failing_row_moves_alone_and_its_lineage_waits_with_it(homes, monkeypa
             assert acme.get_session("kid") is None and acme.get_session("par") is None
             assert root.get_session("kid")["parent_session_id"] == "par"
             assert root.get_session("par")["parent_session_id"] == "gp"
+            assert acme.get_session("gp") is None
+            root.append_message("gp", "user", "usable after handled failure")
     finally:
         root.close()
         acme.close()
 
     monkeypatch.setattr(SessionDB, method, real)
     assert _run(apply=True) == 0
+    capsys.readouterr()
     root = SessionDB(homes["default"] / "state.db")
     acme = SessionDB(homes["acme"] / "state.db")
     try:
+        # The failed attempt compensated its newly imported grandparent. A fresh
+        # CLI run can move the original component without adjudicating a duplicate.
         assert all(root.get_session(sid) is None for sid in ("gp", "par", "kid", "lone"))
         assert acme.get_session("par")["parent_session_id"] == "gp"
         assert acme.get_session("kid")["parent_session_id"] == "par"
     finally:
         root.close()
         acme.close()
-    assert not any(f["kind"] == "wrong_store" for f in _report()["findings"])
+    assert _run(apply=True) == 0
+    assert not _report()["findings"]
 
 
 def _admit(path: Path, sid: str, status: str) -> None:

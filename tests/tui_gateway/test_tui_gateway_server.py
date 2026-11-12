@@ -3993,8 +3993,8 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         def get_session(self, _target):
             return {"id": target, "cwd": str(profile_cwd)}
 
-        def get_session_by_title(self, _target):
-            return None
+        def _read_ctx(self):
+            return contextlib.nullcontext(Mock(execute=lambda *_: Mock(fetchone=lambda: None)))
 
         def reopen_session(self, _target):
             captured["reopened"] = _target
@@ -16273,7 +16273,6 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     profile_home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     seen: dict = {"msgs": []}
-
     class LaunchDB:
         def get_session_title(self, _key):
             seen["launch"] = True
@@ -16287,7 +16286,6 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
 
         def set_session_title(self, *a, **k):
             return True
-
     class ProfileDB:
         def __init__(self, db_path=None):
             seen["db_path"] = db_path
@@ -16300,7 +16298,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         def get_next_title_in_lineage(self, current):
             return f"{current} (branch)"
 
-        def create_session(self, new_key, **kwargs):
+        def _create_fresh_session(self, new_key, **kwargs):
             seen["created"] = new_key
             seen["parent"] = kwargs.get("parent_session_id")
             seen["profile_name"] = kwargs.get("profile_name")
@@ -16325,12 +16323,10 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
 
         def close(self):
             seen["closed"] = True
-
     class FakeAgent:
         def __init__(self):
             self.model = "test-model"
             self.session_id = None
-
     parent = {
         "session_key": "parent-key",
         "history": [{"role": "user", "content": "hi"}],
@@ -16348,12 +16344,10 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
-
     def _fake_make_agent(*a, **k):
         seen["agent_session_db"] = k.get("session_db")
         seen["agent_cwd"] = k.get("cwd_override")
         return FakeAgent()
-
     monkeypatch.setattr(server, "_make_agent", _fake_make_agent)
     monkeypatch.setattr(server, "_set_session_context", lambda *a, **k: {})
     monkeypatch.setattr(server, "_clear_session_context", lambda *a, **k: None)
@@ -16408,8 +16402,10 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
             self.model = "test-model"
 
     seen: dict = {}
-
     class _FakeDB:
+        def _assert_fresh_session_id(self, key):
+            return None
+
         def get_session_title(self, key):
             seen["parent_title"] = key
             return "My Parent Session"
@@ -16417,7 +16413,7 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
         def get_next_title_in_lineage(self, current):
             return f"{current} #2"
 
-        def create_session(self, key, **kwargs):
+        def _create_fresh_session(self, key, **kwargs):
             seen["created"] = key
             seen["parent"] = kwargs.get("parent_session_id")
             seen["branched_from"] = (kwargs.get("model_config") or {}).get("_branched_from")
@@ -16429,7 +16425,6 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
             seen["title"] = title
             seen["title_source"] = source
             return True
-
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
     monkeypatch.setattr(server, "_SlashWorker", lambda *a, **k: None)
@@ -16437,17 +16432,13 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
     monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
-
     import tools.approval as _approval
-
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
-
     seeded = [
         {"role": "user", "content": "hello from parent"},
         {"role": "assistant", "content": "parent reply"},
     ]
-
     resp = server.handle_request(
         {
             "id": "1",
@@ -16460,10 +16451,8 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
             },
         }
     )
-
     assert "result" in resp, resp
     key = resp["result"]["stored_session_id"]
-
     # Row persisted up front with lineage linkage and a lineage title —
     # not deferred to the first prompt.
     assert seen.get("created") == key
@@ -16471,16 +16460,13 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert seen.get("branched_from") == "20260823_084113_6de211"
     assert seen.get("title") == "My Parent Session #2"
     assert seen.get("title_source") == "derived"
-
     # Seeded transcript copied into the durable row so REST prefetch and
     # defer_history hydration both find it immediately.
     assert len(seen.get("messages") or []) == 2
     assert seen["messages"][0]["content"] == "hello from parent"
-
     # The live record no longer queues the title — the DB already holds it.
     runtime_sid = resp["result"]["session_id"]
     assert server._sessions[runtime_sid]["pending_title"] is None
-
     server._sessions.pop(runtime_sid, None)
 
 
@@ -16596,13 +16582,16 @@ def test_session_create_seed_failure_after_row_compensates(monkeypatch):
     seen: dict = {}
 
     class _FakeDB:
+        def _assert_fresh_session_id(self, key):
+            return None
+
         def get_session_title(self, key):
             return "Parent"
 
         def get_next_title_in_lineage(self, current):
             return f"{current} #2"
 
-        def create_session(self, key, **kwargs):
+        def _create_fresh_session(self, key, **kwargs):
             seen["created"] = key
 
         def append_messages_batch(self, session_id, messages, **kwargs):
@@ -16661,18 +16650,28 @@ def test_session_create_seed_disk_full_keeps_row_for_retry(monkeypatch):
         def __init__(self):
             self.model = "test-model"
 
+    calls = {"birth": 0, "append": 0, "discard": 0}
+
     class _FakeDB:
+        def _assert_fresh_session_id(self, key):
+            return None
+
         def get_session_title(self, key):
             return "Parent"
 
         def get_next_title_in_lineage(self, current):
             return f"{current} #2"
 
-        def create_session(self, key, **kwargs):
-            pass
+        def _create_fresh_session(self, key, **kwargs):
+            calls["birth"] += 1
 
         def append_messages_batch(self, session_id, messages, **kwargs):
+            calls["append"] += 1
             raise OSError(28, "No space left on device")
+
+        def discard_unadmitted_session(self, session_id):
+            calls["discard"] += 1
+            return True
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
     monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_db=None, **_kw: _FakeAgent())
@@ -16715,6 +16714,7 @@ def test_session_create_seed_disk_full_keeps_row_for_retry(monkeypatch):
     # The failure surfaced at WARNING (observable), not buried at debug.
     warnings = [r for r in records if r.levelno >= _logging.WARNING]
     assert warnings
+    assert calls == {"birth": 1, "append": 1, "discard": 0}
 
     server._sessions.pop(resp["result"]["stored_session_id"], None)
 
@@ -16787,7 +16787,7 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
         def get_next_title_in_lineage(self, current):
             return f"{current} (branch)"
 
-        def create_session(self, new_key, **kwargs):
+        def _create_fresh_session(self, new_key, **kwargs):
             seen["created"] = new_key
 
         def append_message(self, **kwargs):
@@ -16900,7 +16900,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
                 display_history,
             )
 
-        def create_session(self, _new_key, **_kwargs):
+        def _create_fresh_session(self, _new_key, **_kwargs):
             return None
 
         def append_message(self, **kwargs):

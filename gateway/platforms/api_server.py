@@ -115,6 +115,7 @@ from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
+from gateway.platforms.api_server_session_errors import lineage_response as _session_lineage_response
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.api_server_bot_chat import reset_local_title_owner
 from gateway.platforms.base import (
@@ -175,6 +176,9 @@ API_SERVER_HEARTBEAT_SECONDS = 30.0
 API_SERVER_LATENCY_SAMPLE_LIMIT = 512
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+from gateway.platforms.api_server_request import (
+    _cap_list, _cap_text, _clean_request_string, _invalid_request,
+)
 RESPONSES_AUTO_TRUNCATION_HISTORY_LIMIT = 100
 
 
@@ -226,11 +230,6 @@ _REQUEST_OPTION_MISSING = object()
 _REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"})
 _RUNTIME_AGENT_OVERRIDE_KEYS = (
     "api_key", "base_url", "provider", "api_mode", "command", "args", "credential_pool")
-
-
-def _clean_request_string(value: Any) -> Optional[str]:
-    """Return a stripped request string, or None for absent/non-string values."""
-    return (value.strip() or None) if isinstance(value, str) else None
 
 
 # model_options decoding lives in the topical sibling (line-cap offset);
@@ -352,14 +351,6 @@ def _auto_truncate_response_history(
             if remaining <= 0:
                 break
     return [conversation_history[index] for index in sorted(kept_indices)]
-
-
-def _cap_text(text: str) -> str:
-    return text[:MAX_NORMALIZED_TEXT_LENGTH] if len(text) > MAX_NORMALIZED_TEXT_LENGTH else text
-
-
-def _cap_list(items: list) -> list:
-    return items[:MAX_CONTENT_LIST_SIZE] if len(items) > MAX_CONTENT_LIST_SIZE else items
 
 
 def _normalize_chat_content(content: Any, *, _max_depth: int = 10, _depth: int = 0) -> str:
@@ -749,11 +740,6 @@ def _error_response(
 ) -> web.Response:
     """``web.json_response(_openai_error(...), status=...)`` in one call."""
     return web.json_response(_openai_error(message, err_type, param, code), status=status, headers=headers)
-
-
-def _invalid_request(message: str) -> web.Response:
-    """400 with the bare ``{message, type}`` envelope the OpenAI-compatible validators use."""
-    return web.json_response({"error": {"message": message, "type": "invalid_request_error"}}, status=400)
 
 
 _api_agent_request_reservation: ContextVar[Optional[dict[str, bool]]] = ContextVar(
@@ -1915,6 +1901,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         db = self._ensure_session_db()
         if db is None:
             return False
+        from hermes_state_lineage import SessionLineageError
         try:
             db.update_session_runtime_lock(
                 session_id, model=model or None, provider=provider or None,
@@ -1922,6 +1909,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 route_source=runtime_request.get("route_source") or "",
                 confirmed=bool(runtime_request.get("require_model_lock")))
             return True
+        except SessionLineageError:
+            raise
         except Exception:
             logger.warning("[%s] failed to persist session runtime lock for %s", self.name, session_id, exc_info=True)
             return False
@@ -2611,6 +2600,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "confirmed": bool(runtime_request.get("require_model_lock")),
                 "updated_at": time.time()}}
         title = body.get("title")
+        if title is not None:
+            try:
+                title = db.sanitize_title(str(title))
+            except ValueError as exc:
+                return _error_response(str(exc), 400, code="invalid_title")
 
         def _atomic(conn):
             from hermes_state_mutation_retirement import create_conflict
@@ -2623,7 +2617,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 (session_id, source, model_name, json.dumps(model_config) if model_config else None,
                  system_prompt, time.time()))
             if title is not None:
-                clean_title = db.sanitize_title(str(title))
+                clean_title = title
                 if clean_title:
                     try:
                         db._resolve_title_conflict(conn, session_id, clean_title)
@@ -2634,7 +2628,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             session_row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
             return (dict(session_row) if session_row else {
                 "id": session_id, "source": source, "model": model_name, "title": title}), None
-        session, err = await asyncio.to_thread(db._execute_write, _atomic)
+        from hermes_state_lineage import SessionLineageError, guarded_discovered_session_write
+        from hermes_state_mutation_ownership import mutation_write_ids
+        def discover(conn):
+            return ({session_id} if title is None else mutation_write_ids(
+                db, conn, session_id, 'rename', {'title': str(title)}))
+        try:
+            session, err = await asyncio.to_thread(
+                guarded_discovered_session_write, db, (session_id,), discover, _atomic)
+        except SessionLineageError as exc:
+            return _session_lineage_response(exc, _error_response)
         if isinstance(err, tuple):  # a live row, or a deleted id's fence: refused now, not on every turn
             return _error_response(f"{err[1]}: {session_id}", 409, code=err[0])
         if err and err.startswith("title:"):
@@ -2670,22 +2673,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         db = await self._ensure_session_db_async()
         if db is None:
             return self._session_db_unavailable()
-        if "title" in body:
-            try:
-                await asyncio.to_thread(
-                    db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
-            except ValueError as exc:
-                return _error_response(str(exc), 400, code="invalid_title")
-        # Pinned last: set_session_pinned clears hidden, so a pin in the same request
-        # wins over an explicit hidden (same order as the dashboard's _RENAME_FLAG_SETTERS).
-        for flag, setter in (("archived", db.set_session_archived), ("hidden", db.set_session_hidden),
-                             ("pinned", db.set_session_pinned)):
-            if flag in body:
-                await asyncio.to_thread(setter, session_id, body[flag])
-        if "unread" in body:
-            await asyncio.to_thread(db.set_session_read, session_id, read=not body["unread"])
-        if body.get("end_reason"):
-            await asyncio.to_thread(db.end_session, session_id, str(body["end_reason"]))
+        from hermes_state_api_patch import patch_session_metadata
+        from hermes_state_lineage import SessionLineageError
+        from hermes_state_runtime import RuntimeStoreError
+        try:
+            await asyncio.to_thread(patch_session_metadata, db, session_id, body)
+        except SessionLineageError as exc:
+            return _session_lineage_response(exc, _error_response)
+        except RuntimeStoreError as exc:
+            if exc.reason == 'not_found':
+                return _error_response('Session not found.', 404, code='session_not_found')
+            return _error_response(str(exc), 409, code=exc.reason)
+        except ValueError as exc:
+            return _error_response(str(exc), 400, code='invalid_title')
         session = await asyncio.to_thread(db.get_session, session_id) or session
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
@@ -2707,9 +2707,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             sessions_dir = Path(get_hermes_home()) / "sessions"
         except Exception:
             logger.debug("sessions dir unavailable for delete of %s", session_id, exc_info=True)
+        from hermes_state_lineage import SessionLineageError
         try:
             deleted = await asyncio.to_thread(
                 db.delete_session, session_id, sessions_dir=sessions_dir, exclude_active_write_guards=True)
+        except SessionLineageError as exc:
+            return _session_lineage_response(exc, _error_response)
         except SessionActiveWriteGuardError as exc:
             return _error_response(str(exc), 409, code="session_active_turn")
         if deleted:
@@ -2766,7 +2769,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _handle_fork_session(self, request: web.Request) -> web.Response:
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
         source_id = request.match_info["session_id"]
-        source, err = await self._get_existing_session_or_404(source_id)
+        _source, err = await self._get_existing_session_or_404(source_id)
         if err:
             return err
         body, err = await self._read_json_body(request)
@@ -2776,29 +2779,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         fork_id = str(body.get("id") or body.get("session_id") or f"api_{int(time.time())}_{uuid.uuid4().hex[:8]}").strip()
         if not fork_id or re.search(r'[\r\n\x00]', fork_id):
             return _error_response("Invalid session ID", 400, code="invalid_session_id")
-        if await asyncio.to_thread(db.get_session, fork_id):
-            return _error_response(f"Session already exists: {fork_id}", 409, code="session_exists")
-
-        # CLI /branch semantics: create the child, then end the original as branched (child first, so
-        # a failed create never leaves the source ended with no fork, #11030).
-        # ``_branched_from`` is the durable branch marker (same as CLI /branch): with the child created
-        # first, the timestamp fallback in _BRANCH_CHILD_SQL (child.started_at >= parent.ended_at) no
-        # longer holds, and an unmarked child would vanish from default session listings.
-        await asyncio.to_thread(
-            db.create_session, fork_id, "api_server", model=source.get("model"),
-            system_prompt=source.get("system_prompt"), parent_session_id=source_id,
-            model_config={"_branched_from": source_id})
-        await asyncio.to_thread(db.end_session, source_id, "branched")
-        messages = await asyncio.to_thread(db.get_messages, source_id)
-        await asyncio.to_thread(db.replace_messages, fork_id, messages)
-        title = body.get("title")
-        if title is None:
-            base = source.get("title") or "fork"
-            title = f"{base} fork"
-            with suppress(Exception):
-                title = await asyncio.to_thread(db.get_next_title_in_lineage, base)
+        from hermes_state_api_fork import fork_api_session
+        from hermes_state_lineage import SessionLineageError
+        from hermes_state_runtime import RuntimeStoreError
         try:
-            await asyncio.to_thread(db.set_session_title, fork_id, str(title))
+            await asyncio.to_thread(fork_api_session, db, source_id, fork_id, body.get('title'))
+        except SessionLineageError as exc:
+            return _session_lineage_response(exc, _error_response)
+        except RuntimeStoreError as exc:
+            status = 404 if exc.reason == 'not_found' else 409
+            return _error_response(str(exc), status, code=exc.reason)
         except ValueError as exc:
             return _error_response(str(exc), 400, code="invalid_title")
         fork = await asyncio.to_thread(db.get_session, fork_id) or {"id": fork_id, "parent_session_id": source_id}
@@ -2834,7 +2824,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
             return None, lock_error
-        if not await asyncio.to_thread(self._persist_session_runtime_lock, session_id, runtime_request):
+        from hermes_state_lineage import SessionLineageError
+        try:
+            persisted = await asyncio.to_thread(self._persist_session_runtime_lock, session_id, runtime_request)
+        except SessionLineageError as exc:
+            return None, _session_lineage_response(exc, _error_response)
+        if not persisted:
             return None, _error_response(
                 "Could not persist the requested session model lock", 500, code="model_lock_persistence_failed")
         lock_active = bool(runtime_request.get("require_model_lock"))
@@ -3257,7 +3252,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         lock_error = self._runtime_lock_error(runtime_request)
         if lock_error is not None:
             return lock_error
-        if not await asyncio.to_thread(self._persist_session_runtime_lock, session_id, runtime_request):
+        from hermes_state_lineage import SessionLineageError
+        try:
+            persisted = await asyncio.to_thread(self._persist_session_runtime_lock, session_id, runtime_request)
+        except SessionLineageError as exc:
+            return _session_lineage_response(exc, _error_response)
+        if not persisted:
             return _error_response(
                 "Could not persist the requested session model lock", 500, code="model_lock_persistence_failed")
         requested = runtime_request.get("requested") or {}

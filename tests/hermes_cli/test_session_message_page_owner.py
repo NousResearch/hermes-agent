@@ -21,11 +21,16 @@ def test_message_pages_identify_the_serving_profile(tmp_path, monkeypatch, servi
     for home, count in ((default_home, 1), (work_home, 199)):
         db = SessionDB(db_path=home / "state.db")
         try:
-            db.create_session(session_id="same-id", source="desktop")
-            db.append_messages_batch("same-id", [
-                {"role": "user", "content": f"message-{index}"}
-                for index in range(count)
-            ])
+            # Model legacy duplicate ownership; ordinary session writes now fence it.
+            db._write_sql(
+                "INSERT INTO sessions (id, source, started_at, message_count) VALUES (?, ?, ?, ?)",
+                ("same-id", "desktop", 1, count),
+            )
+            for index in range(count):
+                db._write_sql(
+                    "INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
+                    ("same-id", "user", f"message-{index}", index + 1),
+                )
         finally:
             db.close()
 

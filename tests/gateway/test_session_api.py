@@ -160,10 +160,11 @@ async def test_forked_session_stays_listable_and_parent_survives_failed_fork(ada
         assert {"parent", "child"} <= ids, ids
 
         session_db.create_session("solo", "api_server")
-        with patch.object(session_db, "create_session", side_effect=RuntimeError("boom")):
+        with patch('hermes_state_api_fork.insert_session_row_in_transaction', side_effect=RuntimeError("boom")):
             resp = await cli.post("/api/sessions/solo/fork", json={"id": "never"})
         assert resp.status >= 500
     assert session_db.get_session("solo")["end_reason"] is None
+    assert session_db.get_session("never") is None
 
 
 @pytest.mark.asyncio
@@ -771,6 +772,29 @@ async def test_create_session_respects_browser_source_and_model_lock(adapter, se
     assert model_config["browser_model_lock"]["confirmed"] is True
     assert row["title"] == "Browser lock"
     assert session_db.get_session("ghost")["title"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_session_refuses_sibling_profile_owner(adapter, session_db, monkeypatch):
+    from pathlib import Path
+
+    root = Path(session_db.db_path).parent
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    profile_home = root / "profiles" / "science"
+    profile_home.mkdir(parents=True)
+    profile_db = SessionDB(profile_home / "state.db")
+    try:
+        profile_db.create_session("api-dual-owned", "tui")
+        app = _create_session_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post("/api/sessions", json={"id": "api-dual-owned"})
+            assert response.status == 409, await response.text()
+            payload = await response.json()
+            assert payload["error"]["code"] == "session_id_owned_elsewhere"
+        assert session_db.get_session("api-dual-owned") is None
+        assert profile_db.get_session("api-dual-owned") is not None
+    finally:
+        profile_db.close()
 
 
 @pytest.mark.asyncio

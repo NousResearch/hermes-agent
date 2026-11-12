@@ -118,11 +118,12 @@ def _install_borrowed_lease(sid: str, session: dict, frame: dict) -> None:
         surface=str(frame.get("source") or "desktop"), enabled=False)
 
 
-def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
+def _ensure_active_session_slot(sid: str, session: dict, allow_takeover: bool = True) -> str | None:
     """Claim this session's cap slot on its first real turn; None when ok. session.create/resume deliberately
     do NOT claim: tile paints, reconnect-resumes and abandoned drafts would hold invisible slots (no DB row)
     that starve the messaging gateway sharing the cap. Anything holding a slot must be user-visible. An
-    inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream."""
+    inert borrowed token (see _install_borrowed_lease) also lands here: present = slot held upstream.
+    A recheck under submit admission disables takeover, which may interrupt another runtime."""
     if (canonical := _canonical_ledger_refusal(session)) is not None:
         return canonical
     if session.get("active_session_lease") is not None:
@@ -134,7 +135,8 @@ def _ensure_active_session_slot(sid: str, session: dict) -> str | None:
         _attach_lease(session, lease)
         return None
     from hermes_cli.active_sessions import SESSION_NOT_OWNED
-    if getattr(limit_message, "reason", None) == SESSION_NOT_OWNED and _take_over_detached_runtime_lease(sid, session, key):
+    if (allow_takeover and getattr(limit_message, "reason", None) == SESSION_NOT_OWNED
+            and _take_over_detached_runtime_lease(sid, session, key)):
         return None
     return limit_message
 

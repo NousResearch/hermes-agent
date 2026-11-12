@@ -186,3 +186,344 @@ def test_a_child_store_closed_before_any_turn_finishes_its_execution_and_ends_it
         assert db.get_session(child.reserved_session_id)['end_reason'] == 'agent_close'
     finally:
         parent.close()
+
+
+def test_fresh_child_reservation_refuses_existing_local_history(ledger):
+    db, epoch = ledger
+    db.append_message('other', 'user', 'preserve unrelated history')
+    before = [tuple(row) for row in db._conn.execute("SELECT * FROM sessions WHERE id='other'")]
+    messages = [tuple(row) for row in db._conn.execute("SELECT * FROM messages WHERE session_id='other'")]
+    handler = partial(reserve_child_execution, epoch=epoch, execution_id='worker',
+                      identity={'profile_id': 'home', 'pid': os.getpid(), 'birth': worker_birth(psutil.Process())},
+                      principal='local', limits=(2, 1), refused=None, reserved_session_id='other')
+    args = dict(epoch=epoch, execution_id='worker', session_id='parent', generation=0,
+                sequence=1, operation='child.reserve', payload={'secret': 'child-secret-00000001'},
+                handlers={'child.reserve': handler}, lineage_ids=('other',))
+    result = rt.apply_worker_receipt(db, **args)
+    assert result == {'refused': 'session_id_collision'}
+    assert rt.apply_worker_receipt(db, **args) == result
+    assert [tuple(row) for row in db._conn.execute("SELECT * FROM sessions WHERE id='other'")] == before
+    assert [tuple(row) for row in db._conn.execute("SELECT * FROM messages WHERE session_id='other'")] == messages
+    assert db._conn.execute("SELECT COUNT(*) FROM worker_executions WHERE kind='child'").fetchone()[0] == 0
+
+
+@pytest.fixture
+def managed_finish(tmp_path, monkeypatch):
+    from pathlib import Path
+    from functools import partial
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    home = tmp_path / '.hermes'
+    profile = home / 'profiles' / 'science'
+    profile.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    local, sibling = SessionDB(home / 'state.db'), SessionDB(profile / 'state.db')
+    local.create_session('parent', 'cli')
+    epoch = rt.begin_runtime_epoch(local, instance_id='finish-fixture')
+    scope = dict(epoch=epoch, execution_id='worker', session_id='parent', generation=0)
+    rt.register_worker_execution(local, **scope, kind='compute', adoption_secret='fixture')
+    def reserve(sid, seq):
+        handler = partial(reserve_child_execution, epoch=epoch, execution_id='worker',
+                          identity={'profile_id': 'default', 'pid': 1, 'birth': 'fixture'},
+                          principal='local', limits=(4, 1), refused=None, reserved_session_id=sid)
+        return rt.apply_worker_receipt(local, **scope, sequence=seq, operation='child.reserve',
+            payload={'secret': f'child-secret-{seq:08d}'}, handlers={'child.reserve': handler}, lineage_ids=(sid,))
+    yield local, sibling, scope, reserve
+    local.close()
+    sibling.close()
+
+
+def _finish_snapshot(db):
+    return {table: [tuple(row) for row in db._conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')]
+            for table in ('sessions', 'messages', 'worker_executions', 'worker_receipts')}
+
+
+def test_finish_refuses_foreign_owned_active_child(managed_finish):
+    from hermes_state_lineage import SessionLineageAmbiguousError
+    local, sibling, scope, reserve = managed_finish
+    assert reserve('child', 1)['child']['session_id'] == 'child'
+    sibling._conn.execute("INSERT INTO sessions(id,source,started_at) VALUES ('child','cli',1)")
+    sibling._conn.commit()
+    before = _finish_snapshot(local), _finish_snapshot(sibling)
+    with pytest.raises(SessionLineageAmbiguousError):
+        rt.mutate_worker_execution(local, **scope, sequence=2, operation='execution.finish', payload={})
+    assert (_finish_snapshot(local), _finish_snapshot(sibling)) == before
+
+
+def test_finish_multi_child_and_exact_receipt_replay(managed_finish):
+    local, sibling, scope, reserve = managed_finish
+    reserve('one', 1)
+    reserve('two', 2)
+    args = dict(scope, sequence=3, operation='execution.finish', payload={})
+    assert rt.mutate_worker_execution(local, **args) == {'status': 'terminal'}
+    assert all(local.get_session(sid)['end_reason'] == 'agent_close' for sid in ('one', 'two'))
+    before = _finish_snapshot(local), _finish_snapshot(sibling)
+    # A foreign copy appearing after the committed result cannot invalidate exact replay.
+    sibling._conn.execute("INSERT INTO sessions(id,source,started_at) VALUES ('one','cli',1)")
+    sibling._conn.commit()
+    after_external = _finish_snapshot(local), _finish_snapshot(sibling)
+    assert rt.mutate_worker_execution(local, **args) == {'status': 'terminal'}
+    assert (_finish_snapshot(local), _finish_snapshot(sibling)) == after_external
+    assert before[0] == after_external[0]
+
+
+def test_finish_rolls_back_all_children_and_receipt_on_failure(managed_finish):
+    import sqlite3
+    local, sibling, scope, reserve = managed_finish
+    reserve('one', 1)
+    reserve('two', 2)
+    local._conn.execute("CREATE TRIGGER fail_child_end BEFORE UPDATE OF ended_at ON sessions "
+                        "WHEN NEW.id='two' BEGIN SELECT RAISE(ABORT, 'child end fault'); END")
+    local._conn.commit()
+    before = _finish_snapshot(local), _finish_snapshot(sibling)
+    with pytest.raises(sqlite3.IntegrityError, match='child end fault'):
+        rt.mutate_worker_execution(local, **scope, sequence=3, operation='execution.finish', payload={})
+    assert (_finish_snapshot(local), _finish_snapshot(sibling)) == before
+
+
+def test_finish_rechecks_newly_active_descendant_before_any_write(managed_finish, monkeypatch):
+    from hermes_state_lineage import SessionLineageAmbiguousError
+    local, sibling, scope, reserve = managed_finish
+    reserve('one', 1)
+    second = reserve('two', 2)['child']['execution_id']
+    local._conn.execute("UPDATE worker_executions SET status='terminal' WHERE execution_id=?", (second,))
+    local._conn.commit()
+    sibling._conn.execute("INSERT INTO sessions(id,source,started_at) VALUES ('two','cli',1)")
+    sibling._conn.commit()
+    original = local._execute_write
+    calls = []
+    def make_late_active(fn, **kwargs):
+        if not calls:
+            local._conn.execute("UPDATE worker_executions SET status='running' WHERE execution_id=?", (second,))
+            local._conn.commit()
+        calls.append(True)
+        return original(fn, **kwargs)
+    monkeypatch.setattr(local, '_execute_write', make_late_active)
+    with pytest.raises(SessionLineageAmbiguousError):
+        rt.mutate_worker_execution(local, **scope, sequence=3, operation='execution.finish', payload={})
+    assert local.get_session('one')['ended_at'] is None
+    assert local.get_session('two')['ended_at'] is None
+    assert local._conn.execute("SELECT count(*) FROM worker_receipts WHERE execution_id='worker'").fetchone()[0] == 2
+    assert local._conn.execute("SELECT status FROM worker_executions WHERE execution_id='worker'").fetchone()[0] == 'running'
+
+
+@pytest.fixture
+def admitted_finish(tmp_path, monkeypatch):
+    from pathlib import Path
+    from functools import partial
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    home = tmp_path / '.hermes'
+    profile = home / 'profiles' / 'science'
+    profile.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    local, sibling = SessionDB(home / 'state.db'), SessionDB(profile / 'state.db')
+    local.create_session('parent', 'cli')
+    epoch = rt.begin_runtime_epoch(local, instance_id='admission-owner')
+    rt.admit_session_input(local, epoch=epoch, principal_id='owner', session_id='parent',
+                           request_id='input', payload={'text': 'hello'})
+    admission = rt.claim_session_input(local, epoch=epoch, session_id='parent')
+    execution = 'admission-worker:' + admission['admission_id']
+    scope = dict(epoch=epoch, execution_id=execution, session_id='parent', generation=admission['generation'])
+    rt.register_worker_execution(local, **scope, kind='compute', adoption_secret='fixture')
+    handler = partial(reserve_child_execution, epoch=epoch, execution_id=execution,
+                      identity={'profile_id': 'default', 'pid': 1, 'birth': 'fixture'},
+                      principal='local', limits=(4, 1), refused=None, reserved_session_id='admitted-child')
+    assert rt.apply_worker_receipt(local, **scope, sequence=1, operation='child.reserve',
+        payload={'secret': 'child-secret-00000001'}, handlers={'child.reserve': handler},
+        lineage_ids=('admitted-child',))['child']['session_id'] == 'admitted-child'
+    sibling._conn.execute("INSERT INTO sessions(id,source,started_at) VALUES ('admitted-child','cli',1)")
+    sibling._conn.commit()
+    yield local, sibling, scope, admission
+    local.close()
+    sibling.close()
+
+
+def _full_finish_snapshot(db):
+    return {table: [tuple(row) for row in db._conn.execute('SELECT * FROM ' + table + ' ORDER BY rowid')]
+            for table in ('sessions', 'messages', 'worker_executions', 'worker_receipts', 'session_admissions', 'state_meta')}
+
+
+@pytest.mark.parametrize('action', ['settle', 'resolve_unknown', 'lose'])
+def test_admission_terminal_paths_fence_descendant(admitted_finish, action):
+    from types import SimpleNamespace
+    from hermes_state_lineage import SessionLineageAmbiguousError
+    from gateway.session_worker_reservation import lose_admission_worker
+    local, sibling, scope, admission = admitted_finish
+    if action == 'resolve_unknown':
+        local._conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (admission['admission_id'],))
+        local._conn.commit()
+    before = _full_finish_snapshot(local), _full_finish_snapshot(sibling)
+    with pytest.raises(SessionLineageAmbiguousError):
+        if action == 'settle':
+            rt.settle_session_input(local, epoch=scope['epoch'], admission_id=admission['admission_id'],
+                                    generation=scope['generation'], outcome='completed')
+        elif action == 'resolve_unknown':
+            rt.resolve_unknown_session_input(local, epoch=scope['epoch'], admission_id=admission['admission_id'],
+                                             generation=scope['generation'])
+        else:
+            lose_admission_worker(SimpleNamespace(db=local), admission, scope)
+    assert (_full_finish_snapshot(local), _full_finish_snapshot(sibling)) == before
+
+
+def test_restart_recovery_fences_foreign_duplicate_stale_child(managed_finish):
+    from hermes_state_lineage import SessionLineageAmbiguousError
+    local, sibling, _scope, reserve = managed_finish
+    reserve('restart-child', 1)
+    sibling._conn.execute("INSERT INTO sessions(id,source,started_at) VALUES ('restart-child','cli',1)")
+    sibling._conn.commit()
+    next_epoch = rt.begin_runtime_epoch(local, instance_id='replacement')
+    before = _full_finish_snapshot(local), _full_finish_snapshot(sibling)
+    with pytest.raises(SessionLineageAmbiguousError):
+        rt.recover_session_inputs(local, epoch=next_epoch)
+    assert (_full_finish_snapshot(local), _full_finish_snapshot(sibling)) == before
+
+
+@pytest.mark.parametrize('foreign_owner', [True, False])
+def test_reset_fences_foreign_duplicate_orphan_descendant(tmp_path, monkeypatch, foreign_owner):
+    from pathlib import Path
+    from functools import partial
+    from hermes_state_lineage import SessionLineageAmbiguousError
+    from tests.gateway.test_unknown_resolution_physical_worker import _local_reset
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    home = tmp_path / '.hermes'
+    profile = home / 'profiles' / 'science'
+    profile.mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    with SessionDB(home / 'state.db') as local, SessionDB(profile / 'state.db') as sibling:
+        epoch = rt.begin_runtime_epoch(local, instance_id='reset-owner')
+        logical = _local_reset(local, epoch, 'logical', 'physical')
+        generation = local.get_session(logical)['runtime_generation']
+        scope = dict(epoch=epoch, execution_id='worker', session_id=logical, generation=generation)
+        rt.register_worker_execution(local, **scope, kind='compute', adoption_secret='fixture')
+        handler = partial(reserve_child_execution, epoch=epoch, execution_id='worker',
+                          identity={'profile_id': 'default', 'pid': 1, 'birth': 'fixture'},
+                          principal='local', limits=(4, 1), refused=None, reserved_session_id='reset-child')
+        rt.apply_worker_receipt(local, **scope, sequence=1, operation='child.reserve',
+            payload={'secret': 'child-secret-00000001'}, handlers={'child.reserve': handler}, lineage_ids=('reset-child',))
+        local._conn.execute("UPDATE worker_executions SET status='unknown' WHERE execution_id='worker'")
+        local._conn.commit()
+        if foreign_owner:
+            sibling._conn.execute("INSERT INTO sessions(id,source,started_at) VALUES ('reset-child','cli',1)")
+            sibling._conn.commit()
+        before = _full_finish_snapshot(local), _full_finish_snapshot(sibling)
+        row = local.get_session(logical)
+        args = dict(epoch=epoch, principal_id='human', session_id=logical, request_id='reset-second',
+                    expected_revision=row['runtime_revision'], expected_generation=row['runtime_generation'],
+                    operation='reset', payload={})
+        if foreign_owner:
+            with pytest.raises(SessionLineageAmbiguousError):
+                rt.mutate_runtime_session(local, **args)
+            assert (_full_finish_snapshot(local), _full_finish_snapshot(sibling)) == before
+        else:
+            result = rt.mutate_runtime_session(local, **args)
+            assert result['operation'] == 'reset'
+            assert local.get_session('reset-child')['end_reason'] == 'agent_close'
+            assert rt.mutate_runtime_session(local, **args) == result
+            assert _full_finish_snapshot(sibling) == before[1]
+
+
+@pytest.mark.parametrize('action', ['finish', 'recover'])
+def test_terminal_paths_allow_already_ended_local_child(managed_finish, action):
+    local, sibling, scope, reserve = managed_finish
+    reserve('ended-child', 1)
+    local._conn.execute("UPDATE sessions SET ended_at=10,end_reason='adopted_by_profile' WHERE id='ended-child'")
+    local._conn.commit()
+    sibling._conn.execute("INSERT INTO sessions(id,source,started_at) VALUES ('ended-child','cli',1)")
+    sibling._conn.commit()
+    before = tuple(local._conn.execute("SELECT * FROM sessions WHERE id='ended-child'").fetchone())
+    foreign_before = _full_finish_snapshot(sibling)
+    if action == 'finish':
+        assert rt.mutate_worker_execution(local, **scope, sequence=2, operation='execution.finish', payload={}) == {'status': 'terminal'}
+    else:
+        next_epoch = rt.begin_runtime_epoch(local, instance_id='replacement')
+        assert rt.recover_session_inputs(local, epoch=next_epoch) == 0
+    assert tuple(local._conn.execute("SELECT * FROM sessions WHERE id='ended-child'").fetchone()) == before
+    assert _full_finish_snapshot(sibling) == foreign_before
+    assert local._conn.execute("SELECT status FROM worker_executions WHERE session_id='ended-child'").fetchone()[0] == 'terminal'
+
+
+@pytest.mark.parametrize('action', ['settle', 'resolve_unknown', 'lose'])
+def test_admission_terminal_paths_allow_already_ended_local_child(admitted_finish, action):
+    from types import SimpleNamespace
+    from gateway.session_worker_reservation import lose_admission_worker
+    local, sibling, scope, admission = admitted_finish
+    local._conn.execute("UPDATE sessions SET ended_at=10,end_reason='adopted_by_profile' WHERE id='admitted-child'")
+    if action == 'resolve_unknown':
+        local._conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (admission['admission_id'],))
+    local._conn.commit()
+    before = tuple(local._conn.execute("SELECT * FROM sessions WHERE id='admitted-child'").fetchone())
+    foreign_before = _full_finish_snapshot(sibling)
+    if action == 'settle':
+        result = rt.settle_session_input(local, epoch=scope['epoch'], admission_id=admission['admission_id'],
+                                         generation=scope['generation'], outcome='completed')
+        assert result['status'] == 'terminal'
+    elif action == 'resolve_unknown':
+        result = rt.resolve_unknown_session_input(local, epoch=scope['epoch'], admission_id=admission['admission_id'],
+                                                  generation=scope['generation'])
+        assert result['status'] == 'terminal'
+    else:
+        lose_admission_worker(SimpleNamespace(db=local), admission, scope)
+    assert tuple(local._conn.execute("SELECT * FROM sessions WHERE id='admitted-child'").fetchone()) == before
+    assert _full_finish_snapshot(sibling) == foreign_before
+    assert local._conn.execute("SELECT status FROM worker_executions WHERE session_id='admitted-child'").fetchone()[0] == 'terminal'
+
+
+@pytest.mark.parametrize('action', ['settle', 'resolve_unknown', 'lose'])
+def test_admission_terminal_paths_retire_owned_live_child(admitted_finish, action):
+    from types import SimpleNamespace
+    from gateway.session_worker_reservation import lose_admission_worker
+    local, sibling, scope, admission = admitted_finish
+    sibling._conn.execute("DELETE FROM sessions WHERE id='admitted-child'")
+    sibling._conn.commit()
+    if action == 'resolve_unknown':
+        local._conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (admission['admission_id'],))
+        local._conn.commit()
+    if action == 'settle':
+        result = rt.settle_session_input(local, epoch=scope['epoch'], admission_id=admission['admission_id'],
+                                         generation=scope['generation'], outcome='completed')
+        assert result['status'] == 'terminal'
+    elif action == 'resolve_unknown':
+        result = rt.resolve_unknown_session_input(local, epoch=scope['epoch'], admission_id=admission['admission_id'],
+                                                  generation=scope['generation'])
+        assert result['status'] == 'terminal'
+        # Replay of the committed resolution does not rediscover the retired child.
+        sibling._conn.execute("INSERT INTO sessions(id,source,started_at) VALUES ('admitted-child','cli',1)")
+        sibling._conn.execute("INSERT INTO sessions(id,source,started_at) VALUES ('parent','cli',1)")
+        sibling._conn.commit()
+        before = _full_finish_snapshot(local), _full_finish_snapshot(sibling)
+        assert rt.resolve_unknown_session_input(local, epoch=scope['epoch'], admission_id=admission['admission_id'],
+                                                generation=scope['generation']) == result
+        assert (_full_finish_snapshot(local), _full_finish_snapshot(sibling)) == before
+    else:
+        lose_admission_worker(SimpleNamespace(db=local), admission, scope)
+    assert local.get_session('admitted-child')['end_reason'] == 'agent_close'
+    assert local._conn.execute("SELECT status FROM worker_executions WHERE session_id='admitted-child'").fetchone()[0] == 'terminal'
+
+
+@pytest.mark.parametrize('action', ['settle', 'resolve_unknown', 'lose'])
+def test_terminal_stale_generation_precedes_foreign_descendant_discovery(admitted_finish, action):
+    from types import SimpleNamespace
+    from gateway.session_worker_reservation import lose_admission_worker
+    local, sibling, scope, admission = admitted_finish
+    if action == 'resolve_unknown':
+        local._conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (admission['admission_id'],))
+        local._conn.commit()
+    before = _full_finish_snapshot(local), _full_finish_snapshot(sibling)
+    with pytest.raises(rt.RuntimeStoreError, match='stale_generation'):
+        if action == 'settle':
+            rt.settle_session_input(local, epoch=scope['epoch'], admission_id=admission['admission_id'],
+                                    generation=scope['generation'] + 1, outcome='completed')
+        elif action == 'resolve_unknown':
+            rt.resolve_unknown_session_input(local, epoch=scope['epoch'], admission_id=admission['admission_id'],
+                                             generation=scope['generation'] + 1)
+        else:
+            lose_admission_worker(SimpleNamespace(db=local), admission, scope | {'generation': scope['generation'] + 1})
+    assert (_full_finish_snapshot(local), _full_finish_snapshot(sibling)) == before
+
+
+def test_restart_recovery_retires_owned_live_child(managed_finish):
+    local, _sibling, _scope, reserve = managed_finish
+    reserve('restart-child', 1)
+    next_epoch = rt.begin_runtime_epoch(local, instance_id='replacement')
+    assert rt.recover_session_inputs(local, epoch=next_epoch) == 0
+    assert local.get_session('restart-child')['end_reason'] == 'agent_close'
+    assert local._conn.execute("SELECT status FROM worker_executions WHERE execution_id='worker'").fetchone()[0] == 'unknown'

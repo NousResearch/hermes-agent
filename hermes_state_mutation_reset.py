@@ -1,6 +1,5 @@
 """Prepare and publish a local reset inside the mutation receipt transaction."""
 import json
-import uuid
 import time
 
 from hermes_state_local import POLICY_PREFIX
@@ -9,7 +8,7 @@ from hermes_state_mutation_guards import require_target_advanceable
 from hermes_state_runtime import RuntimeStoreError
 
 
-def reset_in_transaction(db, conn, session_id, payload):
+def reset_in_transaction(db, conn, session_id, payload, *, reserved=None):
     saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
                          (POLICY_PREFIX + session_id,)).fetchone()
     if saved is None:
@@ -25,7 +24,7 @@ def reset_in_transaction(db, conn, session_id, payload):
     previous = SessionEntry.from_dict(receipt['entry'])
     from gateway.session_lifecycle import _now
     now = _now()
-    child_id = uuid.uuid4().hex
+    child_id = reserved['child']
     entry = SessionEntry(previous.session_key, child_id, now, now,
         origin=previous.origin, platform=previous.platform, chat_type=previous.chat_type,
         display_name=previous.display_name, is_fresh_reset=True)

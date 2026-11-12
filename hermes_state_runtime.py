@@ -12,6 +12,7 @@ from agent.message_metadata import (
     CANONICAL_ROW, DATA_USE, DB_ROW_SNAPSHOT, MESSAGE_UID, PERSISTENCE_ONLY_MESSAGE_FIELDS, TOOL_CALL_UID, TOOL_CALL_UIDS,
 )
 from hermes_state_keys import admission_fingerprint
+from hermes_state_lineage import session_lineage_guard
 
 
 class SessionGoneEvent(NamedTuple):
@@ -86,18 +87,34 @@ def _admission(conn, admission_id):
     return row
 
 
+def _admission_workers(conn, row, owner_epoch):
+    """Exact worker selector used by both ownership discovery and retirement."""
+    lineage = json.loads(row['lineage_json'])
+    targets = list({row['target_session_id'], lineage[-1] if lineage else row['target_session_id']})
+    return conn.execute(
+        f"SELECT execution_id,session_id FROM worker_executions WHERE session_id IN ({','.join('?' * len(targets))}) "
+        "AND generation=? AND owner_epoch=? AND status!='terminal'",
+        (*targets, row['generation'], owner_epoch)).fetchall()
+
+
+def _admission_retirement_ids(conn, row, owner_epoch, include_terminal_target=False):
+    from hermes_state_runtime_workers import terminal_execution_session_ids
+    ids = {row['target_session_id']}
+    for execution_id, _worker_session_id in _admission_workers(conn, row, owner_epoch):
+        ids.update(terminal_execution_session_ids(conn, execution_id))
+    if include_terminal_target:
+        from hermes_state_local_lineage import local_physical_target
+        ids.add(_canonical_chain(conn, local_physical_target(conn, row['target_session_id']))[-1])
+    return ids
+
+
 def _retire_admission_workers(conn, row, owner_epoch):
-    """Retire the worker rows this admission's generation owns on BOTH the logical
-    FIFO owner and its current physical transcript (reset/compression move the private
-    worker assignment to the child while target_session_id stays the logical ID)."""
+    from hermes_state_runtime_workers import compact_terminal_receipts
+    for execution_id, _session_id in _admission_workers(conn, row, owner_epoch):
+        compact_terminal_receipts(conn, execution_id)
     lineage = json.loads(row['lineage_json'])
     targets = list({row['target_session_id'], lineage[-1] if lineage else row['target_session_id']})
     scope = f"session_id IN ({','.join('?' * len(targets))}) AND generation=? AND owner_epoch=?"
-    # Settlement closes an execution that never wrote execution.finish: its read copies go too.
-    from hermes_state_runtime_workers import compact_terminal_receipts
-    for (execution_id,) in conn.execute(f"SELECT execution_id FROM worker_executions WHERE {scope} "
-                                        "AND status!='terminal'", (*targets, row['generation'], owner_epoch)).fetchall():
-        compact_terminal_receipts(conn, execution_id)
     conn.execute(f"UPDATE worker_executions SET status='terminal' WHERE {scope}",
                  (*targets, row['generation'], owner_epoch))
 
@@ -271,7 +288,16 @@ def settle_session_input(db, *, epoch: int, admission_id: str, generation: int, 
         settle_steer_transfers(conn, epoch=epoch, generation=generation, transfers=_transfers, outcome=outcome)
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
         return _row(_admission(conn, admission_id))
-    return db._execute_write(write)
+    from hermes_state_lineage import guarded_discovered_session_write
+    def discover(conn):
+        _epoch(conn, epoch)
+        row = _admission(conn, admission_id)
+        session = _session(conn, row['target_session_id'])
+        if (row['status'] != 'started' or row['owner_epoch'] != epoch or type(generation) is not int
+                or row['generation'] != generation or session['runtime_generation'] != generation):
+            return set()
+        return _admission_retirement_ids(conn, row, epoch, include_terminal_target=_terminal_write is not None)
+    return guarded_discovered_session_write(db, (), discover, write)
 
 
 _CANCEL_QUEUED = "UPDATE session_admissions SET status='terminal',outcome='cancelled' WHERE admission_id=?"
@@ -461,7 +487,12 @@ def recover_session_inputs(db, *, epoch: int) -> int:
         conn.execute("UPDATE session_admissions SET outcome='interrupted' WHERE status='terminal' AND outcome=? "
                      "AND owner_epoch!=?", (STEERING, epoch))
         return conn.execute("UPDATE session_admissions SET status='unknown' WHERE status='started' AND owner_epoch!=?", (epoch,)).rowcount
-    return db._execute_write(write)
+    from hermes_state_lineage import guarded_discovered_session_write
+    from hermes_state_runtime_workers import live_session_ids, stale_child_executions
+    def discover(conn):
+        _epoch(conn, epoch)
+        return live_session_ids(conn, stale_child_executions(conn, epoch))
+    return guarded_discovered_session_write(db, (), discover, write)
 
 
 def mutation_receipt_key(principal_id, session_id, request_id, *, operation, payload, expected_revision,
@@ -475,15 +506,32 @@ def mutation_receipt_key(principal_id, session_id, request_id, *, operation, pay
     return key, admission_fingerprint(canonical_target=session_id, payload=fingerprint)
 
 
+def _mutation_receipt_result(raw, digest):
+    receipt = json.loads(raw)
+    if receipt['digest'] != digest:
+        raise RuntimeStoreError('admission_conflict')
+    result = receipt['result']
+    if not isinstance(result, dict):
+        raise ValueError('Invalid mutation receipt result')
+    return result
+
+
 def replay_mutation_receipt(conn, key, digest):
     """The stored result of an exact retry, ``None`` when unseen; a different request refuses."""
     old = conn.execute('SELECT value FROM state_meta WHERE key=?', (key,)).fetchone()
-    if old is None:
-        return None
-    receipt = json.loads(old[0])
-    if receipt['digest'] != digest:
-        raise RuntimeStoreError('admission_conflict')
-    return receipt['result']
+    return _mutation_receipt_result(old[0], digest) if old is not None else None
+
+
+def _read_mutation_receipt(db, epoch, key, digest):
+    # One statement gives the epoch and receipt the same SQLite read snapshot.
+    with db._read_ctx() as conn:
+        row = conn.execute(
+            'SELECT runtime_epoch.epoch, receipt.key, receipt.value FROM runtime_epoch '
+            'LEFT JOIN state_meta AS receipt ON receipt.key=? WHERE runtime_epoch.singleton=1',
+            (key,)).fetchone()
+        if type(epoch) is not int or row is None or row[0] != epoch:
+            raise RuntimeStoreError('stale_epoch')
+        return _mutation_receipt_result(row[2], digest) if row[1] is not None else None
 
 
 def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str,
@@ -500,16 +548,21 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
         _text(value)
     if type(expected_revision) is not int or expected_revision < 0:
         raise RuntimeStoreError('invalid_params')
-    from hermes_state_mutations import validate_action, apply_action
+    from hermes_state_mutations import validate_action, validate_runtime_action, apply_action
+    # Preserve caller container types before JSON can normalize them.
     validate_action(operation, payload)
+    # Validate the same immutable snapshot ownership discovery and the writer use.
+    payload = json.loads(_json(payload))
+    validate_runtime_action(db, operation, payload)
     if expected_generation is not None and (type(expected_generation) is not int or expected_generation < 0):
         raise RuntimeStoreError('invalid_params')
     if operation in {'delete', 'rewind', 'reset', 'branch', 'model', 'compress'} and expected_generation is None:
         raise RuntimeStoreError('invalid_params')
-    # Snapshot caller data before waiting for the writer lock.
-    payload = json.loads(_json(payload))
     key, digest = mutation_receipt_key(principal_id, session_id, request_id, operation=operation, payload=payload,
                                        expected_revision=expected_revision, expected_generation=expected_generation)
+    # Generated targets must stay fixed across ownership discovery, expansion and SQLite retries.
+    reserved = ({'child': uuid.uuid4().hex} if operation in {'reset', 'compress'} else
+                {'request_id': 'branch:' + uuid.uuid4().hex} if operation == 'branch' and not _prepared else {})
 
     def write(conn) -> tuple[dict, Optional[SessionGoneEvent]]:
         """The receipt result plus the on_session_delete event this commit owes (None on replay)."""
@@ -539,7 +592,8 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
                 from hermes_state_mutation_guards import require_idle
                 require_idle(db, conn, list({session_id, snapshot['target']}))
             return {'snapshot': snapshot}, None
-        affected, projection = apply_action(db, conn, session_id, operation, payload, prepared=_prepared)
+        affected, projection = apply_action(db, conn, session_id, operation, payload,
+                                            prepared=_prepared, reserved=reserved)
         event = None
         if operation == 'delete':
             event = SessionGoneEvent(tuple(projection.get('deleted_ids') or (session_id,)), 'delete')
@@ -554,7 +608,25 @@ def mutate_runtime_session(db, *, epoch: int, principal_id: str, session_id: str
         conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
                      (key, _json({'digest': digest, 'result': result})))
         return result, event
-    result, event = db._execute_write(write)
+    if _prepare_only:
+        result, event = db._execute_write(write)
+    else:
+        # A completed retry changes no rows; current write targets cannot invalidate its receipt.
+        replay = _read_mutation_receipt(db, epoch, key, digest)
+        if replay is not None:
+            return replay
+        from hermes_state_lineage import SessionLineageError, guarded_discovered_session_write
+        from hermes_state_mutation_ownership import mutation_write_ids
+        try:
+            result, event = guarded_discovered_session_write(
+                db, (session_id,), lambda conn: mutation_write_ids(
+                    db, conn, session_id, operation, payload, prepared=_prepared, reserved=reserved), write)
+        except SessionLineageError:
+            # Another writer may have completed this exact request after the first read.
+            replay = _read_mutation_receipt(db, epoch, key, digest)
+            if replay is None:
+                raise
+            return replay
     if event is not None:
         from hermes_state_common import emit_session_deleted
         emit_session_deleted(db, event.session_ids, reason=event.reason, primary=session_id)
@@ -691,7 +763,32 @@ def resolve_unknown_session_input(db, *, epoch: int, admission_id: str, generati
                      (outcome, admission_id))
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (row['target_session_id'],))
         return _row(_admission(conn, admission_id))
-    return db._execute_write(write)
+    def cached_result():
+        with db._read_ctx() as conn:
+            _epoch(conn, epoch)
+            row = _admission(conn, admission_id)
+            if (type(generation) is int and row['generation'] == generation and row['status'] == 'terminal'
+                    and (row['outcome'] == 'interrupted' or conn.execute(
+                        'SELECT 1 FROM state_meta WHERE key=?', (RESULT_PREFIX + admission_id,)).fetchone())):
+                return _row(row)
+        return None
+    cached = cached_result()
+    if cached is not None:
+        return cached
+    from hermes_state_lineage import SessionLineageError, guarded_discovered_session_write
+    def discover(conn):
+        _epoch(conn, epoch)
+        row = _admission(conn, admission_id)
+        if type(generation) is not int or row['status'] != 'unknown' or row['generation'] != generation:
+            return set()
+        return _admission_retirement_ids(conn, row, row['owner_epoch'], include_terminal_target=_terminal_write is not None)
+    try:
+        return guarded_discovered_session_write(db, (), discover, write)
+    except SessionLineageError:
+        cached = cached_result()
+        if cached is not None:
+            return cached
+        raise
 
 
 def _worker_public(row):
@@ -922,6 +1019,13 @@ def _worker_finish(db, conn, session_id, payload):
     return {'status': 'terminal'}
 
 
+def _worker_receipt_lineage_ids(operation, payload) -> tuple[str, ...]:
+    if operation != "compression.publish" or not isinstance(payload, dict):
+        return ()
+    child = payload.get("child_session_id")
+    return (child,) if isinstance(child, str) and 0 < len(child) <= 1024 else ()
+
+
 def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
                             sequence, operation, payload):
     """One closed durable mutation and receipt; never call a self-committing API here."""
@@ -947,11 +1051,36 @@ def mutate_worker_execution(db, *, epoch, execution_id, session_id, generation,
     }
     return apply_worker_receipt(db, epoch=epoch, execution_id=execution_id, session_id=session_id,
                                 generation=generation, sequence=sequence, operation=operation,
-                                payload=payload, handlers=handlers)
+                                payload=payload, handlers=handlers,
+                                lineage_ids=_worker_receipt_lineage_ids(operation, payload))
+
+
+def _read_worker_receipt(db, epoch, execution_id, session_id, generation, sequence, digest):
+    """Return (found, result), validating a worker receipt on one read snapshot."""
+    from hermes_state_worker_compression import worker_receipt_assignment
+    from hermes_state_runtime_workers import retired_receipt
+    with db._read_ctx() as conn:
+        conn.execute('SAVEPOINT worker_receipt_replay')
+        try:
+            _epoch(conn, epoch)
+            old = conn.execute('SELECT * FROM worker_receipts WHERE execution_id=? AND sequence=?',
+                               (execution_id, sequence)).fetchone()
+            if old is None:
+                return False, None
+            row = worker_receipt_assignment(conn, execution_id, session_id, generation, sequence, digest)
+            if row['owner_epoch'] != epoch:
+                raise RuntimeStoreError('stale_epoch')
+            if old['payload_digest'] != digest:
+                raise RuntimeStoreError('admission_conflict')
+            if retired_receipt(old['result_json']):
+                raise RuntimeStoreError('stale_generation')
+            return True, json.loads(old['result_json'])
+        finally:
+            conn.execute('RELEASE SAVEPOINT worker_receipt_replay')
 
 
 def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, sequence,
-                         operation, payload, handlers):
+                         operation, payload, handlers, lineage_ids=()):
     """The one worker receipt transaction every ``worker.persist`` family shares.
 
     An exact (execution, sequence, digest) retry returns the stored result; otherwise the
@@ -1002,4 +1131,21 @@ def apply_worker_receipt(db, *, epoch, execution_id, session_id, generation, seq
             from hermes_state_runtime_workers import compact_terminal_receipts
             compact_terminal_receipts(conn, execution_id)
         return result
-    return db._execute_write(write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
+    def cached_receipt():
+        return _read_worker_receipt(db, epoch, execution_id, session_id, generation, sequence, digest)
+
+    found, result = cached_receipt()
+    if found:
+        return result
+    from hermes_state_lineage import SessionLineageError, guarded_discovered_session_write
+    from hermes_state_mutation_ownership import worker_receipt_write_ids
+    try:
+        return guarded_discovered_session_write(
+            db, (session_id, *lineage_ids),
+            lambda conn: worker_receipt_write_ids(db, conn, session_id, operation, json.loads(encoded), execution_id),
+            write, patience_s=db._TRANSCRIPT_WRITE_PATIENCE_S)
+    except SessionLineageError:
+        found, result = cached_receipt()
+        if found:
+            return result
+        raise

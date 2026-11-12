@@ -131,4 +131,18 @@ def lose_admission_worker(authority, row, scope):
         compact_terminal_receipts(conn, scope['execution_id'])
         conn.execute("UPDATE session_admissions SET status='unknown' WHERE admission_id=?", (row['admission_id'],))
         conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?', (current['target_session_id'],))
-    authority.db._execute_write(write)
+    from hermes_state_lineage import guarded_discovered_session_write
+    from hermes_state_runtime_workers import terminal_execution_session_ids
+    def discover(conn):
+        _epoch(conn, scope['epoch'])
+        current = _admission(conn, row['admission_id'])
+        worker = conn.execute('SELECT * FROM worker_executions WHERE execution_id=?',
+                              (scope['execution_id'],)).fetchone()
+        if (current['status'] != 'started' or current['owner_epoch'] != scope['epoch']
+                or current['generation'] != scope['generation'] or worker is None
+                or worker['generation'] != scope['generation'] or worker['owner_epoch'] != scope['epoch']):
+            return set()
+        ids = {current['target_session_id']}
+        ids.update(terminal_execution_session_ids(conn, scope['execution_id']))
+        return ids
+    guarded_discovered_session_write(authority.db, (), discover, write)

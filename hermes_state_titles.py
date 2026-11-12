@@ -33,19 +33,58 @@ _TITLE_INVISIBLE_RE = re.compile(r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufef
 _NUMBERED_TITLE_RE = re.compile(r'^(.*?) #(\d+)$')
 
 
+def _clean_title(title):
+    cleaned = _TITLE_INVISIBLE_RE.sub('', _TITLE_CONTROL_RE.sub('', _sanitize_surrogates(title)))
+    return re.sub(r'\s+', ' ', cleaned).strip()
+
+
 def next_title_in_lineage(conn, base_title: str) -> str:
-    """Next title in a lineage ("my session" -> "my session #2") as seen by *conn*: strip any
-    " #N" suffix, then increment the highest existing number."""
-    match = _NUMBERED_TITLE_RE.match(base_title)
-    base = match.group(1) if match else base_title
-    rows = conn.execute(
-        "SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
-        (base, f"{_escape_like(base)} #%")).fetchall()
-    if not rows:
-        return base
-    # The unnumbered original counts as #1.
-    numbers = [int(m.group(2)) for m in (_NUMBERED_TITLE_RE.match(row[0]) for row in rows) if m]
-    return f"{base} #{max([1, *numbers]) + 1}"
+    """Choose a bounded, unique title while preserving the lineage's numeric suffix."""
+    from hermes_state import SessionDB
+    limit = SessionDB.MAX_TITLE_LENGTH
+    cleaned = _clean_title(base_title)
+    match = _NUMBERED_TITLE_RE.match(cleaned)
+    base = match.group(1) if match else cleaned
+    if not base:
+        raise ValueError("Cannot derive a title from an empty name")
+    # The first character is a stable prefix even when a growing suffix shortens the stem.
+    rows = conn.execute("SELECT title FROM sessions WHERE title LIKE ? ESCAPE '\\'",
+                        (f"{_escape_like(base[0])}%",)).fetchall()
+    titles = {row[0] for row in rows}
+    unnumbered = base[:limit].rstrip()
+    def numbered(number):
+        suffix = f" #{number}"
+        if len(suffix) >= limit:
+            raise ValueError("Cannot derive a title within the length limit")
+        return base[:limit - len(suffix)].rstrip() + suffix
+
+    # Preserve the established prefix selection (including SQLite's ASCII case folding)
+    # while also finding bounded names whose stem shortens as the suffix grows.
+    legacy = conn.execute("SELECT title FROM sessions WHERE title = ? OR title LIKE ? ESCAPE '\\'",
+                          (base, f"{_escape_like(base)} #%")).fetchall()
+    highest = 1
+    numbered_seen = bool(legacy)
+    for (title,) in legacy:
+        match = _NUMBERED_TITLE_RE.match(title)
+        if match and len(match.group(2)) + 2 < limit:
+            highest = max(highest, int(match.group(2)))
+    for title in titles:
+        match = _NUMBERED_TITLE_RE.match(title)
+        if match:
+            digits = match.group(2)
+            if len(digits) + 2 >= limit:
+                continue
+            number = int(digits)
+            if match.group(1) == numbered(number).rsplit(' #', 1)[0]:
+                numbered_seen = True
+                highest = max(highest, number)
+    if base == unnumbered and unnumbered not in titles and not numbered_seen:
+        return unnumbered
+    candidate = numbered(highest + 1)
+    while candidate in titles:
+        highest += 1
+        candidate = numbered(highest + 1)
+    return candidate
 
 
 class SessionTitlesMixin:
@@ -65,8 +104,7 @@ class SessionTitlesMixin:
         from hermes_state import SessionDB
         if not title:
             return None
-        cleaned = _TITLE_INVISIBLE_RE.sub('', _TITLE_CONTROL_RE.sub('', _sanitize_surrogates(title)))
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = _clean_title(title)
         if not cleaned:
             return None
         if len(cleaned) > SessionDB.MAX_TITLE_LENGTH:
@@ -100,9 +138,12 @@ class SessionTitlesMixin:
         re-running the titler on an llm row is a no-op). No writer may move a hidden
         canonical Bot Chat off its title. Read and write are one compare-and-swap
         transaction, so a manual ``/title`` racing an in-flight generation is not clobbered."""
-        return bool(self._execute_write(
-            lambda conn: self._set_session_title_in_transaction(conn, session_id, title, source=source)
-        ))
+        from hermes_state_lineage import guarded_discovered_session_write
+        from hermes_state_mutation_ownership import mutation_write_ids
+        return bool(guarded_discovered_session_write(
+            self, (session_id,), lambda conn: mutation_write_ids(
+                self, conn, session_id, 'rename', {'title': title}),
+            lambda conn: self._set_session_title_in_transaction(conn, session_id, title, source=source)))
 
     def _set_session_title_in_transaction(self, conn, session_id: str, title: str, *, source: str):
         """Reuse title rules within an authority-owned transaction; never commit here."""
@@ -204,9 +245,11 @@ class SessionTitlesMixin:
         compression rotation keeps the original's authority)."""
         if source not in self._TITLE_SOURCE_RANK:
             raise ValueError(f"invalid title source: {source!r}")
-        return self._write_rowcount(
-            "UPDATE sessions SET title_source = ? WHERE id = ? AND title IS NOT NULL", (source, session_id)
-        ) > 0
+        from hermes_state_lineage import session_lineage_guard
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
+            return self._write_rowcount(
+                "UPDATE sessions SET title_source = ? WHERE id = ? AND title IS NOT NULL", (source, session_id)
+            ) > 0
 
     def _retire_canonical_bot_chat_in_transaction(self, conn, session_id: str) -> list[str]:
         """A DELIBERATE archive (user, CLI, API, Desktop's sidebar mutation) of the canonical

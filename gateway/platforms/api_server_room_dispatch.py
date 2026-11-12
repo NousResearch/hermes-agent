@@ -59,10 +59,21 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
             (session_id, clean_title, time.time()))
         return session_id
 
-    return await asyncio.to_thread(db._execute_write, atomic)
+    from hermes_state_lineage import guarded_session_write
+    return await asyncio.to_thread(guarded_session_write, db, session_id, atomic)
 
 
 def _room_dispatch_error(exc: Exception, *, _openai_error) -> web.Response:
+    from hermes_state_lineage import SessionLineageError, SessionLineageInventoryError
+
+    if isinstance(exc, SessionLineageInventoryError):
+        return _json_error(
+            _openai_error, "Session ownership could not be verified; retry later.",
+            code=getattr(exc, "code", "session_lineage_unverifiable"), status=503)
+    if isinstance(exc, SessionLineageError):
+        return _json_error(
+            _openai_error, "Room session ID is already owned or has conflicting owners.",
+            code=getattr(exc, "code", "session_lineage_conflict"), status=409)
     message, code = str(exc), "invalid_room_dispatch"
     lowered = message.lower()
     if "execution policy" in lowered or "remote room execution requires" in lowered:

@@ -7,9 +7,11 @@ Must never import hermes_state (cycle); shared constants live in hermes_state_co
 import logging
 import json
 import math
+import sqlite3
 import time
 from collections import Counter
 from datetime import datetime, timezone, UTC
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import AUTO_LOAD_SCAFFOLD_SQL_LIKE, SKILL_SCAFFOLD_SQL_LIKE
@@ -22,7 +24,9 @@ from hermes_state_keys import (
 )
 from hermes_state_local import POLICY_PREFIX
 from hermes_state_common import SCHEMA_SQL, _shape_preview, _sql_preview_raw, _sql_session_last_active
-from hermes_state_messages import _parse_tool_calls, _tool_calls_count
+from hermes_state_messages import _parse_tool_calls
+from hermes_state_messages_text import _tool_calls_count
+from hermes_state_lineage import session_lineage_guard
 import itertools
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -73,6 +77,186 @@ _IMPORT_INT_COLS = (
 _IMPORT_FLOAT_COLS = ("ended_at", "estimated_cost_usd", "actual_cost_usd")
 # Flags a restore must keep: pinned/hidden/auto_archived drive the prune, listings and resume-unarchive.
 _IMPORT_FLAG_COLS = ("archived", "auto_archived", "pinned", "hidden")
+
+
+def import_session_id(raw: Any) -> str:
+    """Canonical persisted identity shared by import validation, fences and writes."""
+    return str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
+
+
+# Physical row/display indexes are rebuilt on import; every other stored field can carry
+# history or sidecars. Legacy rows without logical UIDs may acquire them on import.
+_ADOPTION_PHYSICAL_FIELDS = {"id", "session_id", "display_identity", "display_order"}
+_ADOPTION_OPTIONAL_UID_FIELDS = {"message_uid", "absorbed_message_uids", "tool_call_uids", "tool_call_uid"}
+_ADOPTION_JSON_FIELDS = {"tool_calls", "reasoning_details", "codex_reasoning_items", "codex_message_items",
+                         "display_metadata", "absorbed_message_uids", "tool_call_uids"}
+
+
+def _adoption_value(field, value):
+    json_text = value
+    structured_content = field == "content" and isinstance(value, str) and value.startswith("\x00json:")
+    if structured_content:
+        json_text = value[len("\x00json:"):]
+    if (field in _ADOPTION_JSON_FIELDS or structured_content) and isinstance(json_text, str):
+        try:
+            decoded = json.loads(json_text)
+        except (ValueError, TypeError):
+            return value  # Malformed stored bytes must still compare exactly.
+        if field == "tool_calls" and decoded == []:
+            return None
+        # Canonical JSON retains type distinctions such as true versus 1.
+        return ("json", json.dumps(decoded, sort_keys=True, ensure_ascii=True, separators=(",", ":")))
+    return value
+
+
+def _adoption_history_covers(donor_conn, target_conn, session_id, *, retired_witness=None):
+    """Does the target retain every donor row in storage order, regardless of physical row ids?"""
+    if (donor_conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone() is None
+            or target_conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone() is None):
+        return False
+    donor = donor_conn.execute("SELECT * FROM messages WHERE session_id=? ORDER BY id", (session_id,)).fetchall()
+    target = target_conn.execute("SELECT * FROM messages WHERE session_id=? ORDER BY id", (session_id,)).fetchall()
+    if len(donor) > len(target):
+        return False
+    allowed_retired_rows = set()
+    if retired_witness is not None:
+        from hermes_state_adoption_records import AdoptionConflict, activity_digest
+        from hermes_state_common import _sql_json_extract, QUEUED_PROMPT_METADATA_KEY
+        source_state = donor_conn.execute(
+            "SELECT ended_at, end_reason, archived FROM sessions WHERE id=?", (session_id,)).fetchone()
+        count = retired_witness.get("source_count")
+        witness = retired_witness.get("target_active_digest")
+        if count is None or witness is None:
+            raise AdoptionConflict("Saved adoption has no activity witness; inspect history before recovery")
+        if count != len(donor) or activity_digest(target_conn, session_id, count) != witness:
+            raise AdoptionConflict("Saved adoption activity witness differs; inspect history before recovery")
+        if (source_state and source_state[0] is not None and source_state[1] == "adopted_by_profile"
+                and source_state[2] in (0, 1)):
+            expression = _sql_json_extract('display_metadata', '$.' + QUEUED_PROMPT_METADATA_KEY)
+            allowed_retired_rows = {row[0] for row in donor_conn.execute(
+                "SELECT id FROM messages WHERE session_id=? AND role='user' AND active=0 "
+                f"AND COALESCE({expression}, 0) = 1", (session_id,))}
+    for source, destination in zip(donor, target):
+        src, dst = dict(source), dict(destination)
+        if src.keys() != dst.keys():
+            return False
+        for field, value in src.items():
+            if field in _ADOPTION_PHYSICAL_FIELDS or (field in _ADOPTION_OPTIONAL_UID_FIELDS and value is None):
+                continue
+            if _adoption_value(field, value) != _adoption_value(field, dst[field]):
+                if (field == "active" and value == 0 and dst[field] == 1
+                        and src["id"] in allowed_retired_rows):
+                    continue
+                return False
+    return True
+
+
+# Accounting is an aggregate rather than an event log. An existing target covers
+# a donor attribution only when the original first_seen witness is retained and
+# every nonnegative cumulative amount and last_seen includes the donor's range.
+_ADOPTION_TOTALS = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+                    "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd", "api_call_count")
+_ADOPTION_USAGE_KEY = ("session_id", "model", "billing_provider", "billing_base_url", "billing_mode", "task")
+_ADOPTION_BILLING_CONTEXT = ("billing_provider", "billing_base_url", "billing_mode",
+                             "cost_status", "cost_source", "pricing_version")
+
+
+def _adoption_context(conn, session_id):
+    row = conn.execute(
+        "SELECT s.*, sp.prompt AS resolved_prompt, tp.prompt AS resolved_tools "
+        "FROM sessions s LEFT JOIN system_prompts sp ON sp.hash=s.system_prompt_hash "
+        "LEFT JOIN system_prompts tp ON tp.hash=s.tool_names WHERE s.id=?", (session_id,)).fetchone()
+    if row is None:
+        return None
+    data = dict(row)
+    if data["system_prompt_hash"] is not None and data["resolved_prompt"] is None:
+        raise ValueError("Donor or target prompt reference cannot be resolved")
+    pin = data["tool_names"]
+    if pin is not None and not isinstance(pin, str):
+        raise ValueError("Donor or target tool pin has an invalid representation")
+    if pin and len(pin) == 64 and all(ch in "0123456789abcdef" for ch in pin) and data["resolved_tools"] is None:
+        raise ValueError("Donor or target tool pin cannot be resolved")
+    data["prompt_body"] = data["resolved_prompt"] if data["system_prompt_hash"] is not None else data["system_prompt"]
+    data["tool_body"] = data["resolved_tools"] if data["resolved_tools"] is not None else pin
+    return data
+
+
+def _adoption_amount_covers(source, target):
+    if source is None:
+        return True
+    if type(source) not in (int, float) or type(target) not in (int, float):
+        return False
+    if not math.isfinite(source) or not math.isfinite(target):
+        return False
+    # A negative total can be a correction/credit; a larger number does not prove it survived.
+    return target == source if source < 0 else target >= source
+
+
+def _adoption_accounting_covers(donor_conn, target_conn, session_id):
+    source, target = _adoption_context(donor_conn, session_id), _adoption_context(target_conn, session_id)
+    if source is None or target is None:
+        return False
+    for field in ("prompt_body", "tool_body", "created_source", *_ADOPTION_BILLING_CONTEXT):
+        if source[field] is not None and source[field] != target[field]:
+            return False
+    # A changed chosen title cannot prove that the donor's title/provenance survived.
+    if source["title"] is not None:
+        if source["title"] != target["title"]:
+            return False
+        # Legacy NULL provenance carries user-level protection, never a derived title.
+        source_title = "user" if source["title_source"] is None else source["title_source"]
+        target_title = "user" if target["title_source"] is None else target["title_source"]
+        if source_title != target_title:
+            return False
+    if any(not _adoption_amount_covers(source[field], target[field]) for field in _ADOPTION_TOTALS):
+        return False
+    source_rows = donor_conn.execute("SELECT * FROM session_model_usage WHERE session_id=?", (session_id,)).fetchall()
+    target_rows = target_conn.execute("SELECT * FROM session_model_usage WHERE session_id=?", (session_id,)).fetchall()
+    by_key = {tuple(row[k] for k in _ADOPTION_USAGE_KEY): dict(row) for row in target_rows}
+    for row in source_rows:
+        donor = dict(row)
+        local = by_key.get(tuple(donor[k] for k in _ADOPTION_USAGE_KEY))
+        if local is None or donor["first_seen"] != local["first_seen"]:
+            return False
+        origin = donor["first_seen"]
+        if origin is not None and (type(origin) not in (int, float) or not math.isfinite(origin)):
+            return False
+        if any(not _adoption_amount_covers(donor[field], local[field]) for field in _ADOPTION_TOTALS):
+            return False
+        # Without an origin witness, larger aggregates cannot prove they extend this donor.
+        if origin is None and any(donor[field] != local[field] for field in _ADOPTION_TOTALS):
+            return False
+        end = donor["last_seen"]
+        if end is not None and not _adoption_amount_covers(end, local["last_seen"]):
+            return False
+        if any(donor[field] is not None and donor[field] != local[field] for field in ("cost_status", "cost_source")):
+            return False
+    return True
+
+
+def _copy_adoption_portable_state(db, donor_conn, target_conn, session_id):
+    """Copy attribution and the resolved tool pin only for a newly inserted target."""
+    context = _adoption_context(donor_conn, session_id)
+    if context is None:
+        raise ValueError("Donor session disappeared during adoption")
+    # These are trusted, guarded donor provenance, not fields accepted from
+    # generic external JSON imports; neither transfers routing or authority.
+    target_conn.execute("UPDATE sessions SET created_source=?,title_source=? WHERE id=?",
+                        (context["created_source"], context["title_source"], session_id))
+    pin = context["tool_body"]
+    if pin is not None:
+        target_conn.execute("UPDATE sessions SET tool_names=? WHERE id=?",
+                            (db._store_system_prompt(target_conn, pin), session_id))
+    source_columns = [row[1] for row in donor_conn.execute("PRAGMA table_info(session_model_usage)")]
+    target_columns = [row[1] for row in target_conn.execute("PRAGMA table_info(session_model_usage)")]
+    if set(source_columns) != set(target_columns):
+        raise ValueError("Usage schemas differ; adoption cannot preserve attribution")
+    columns = ", ".join(source_columns)
+    rows = donor_conn.execute(f"SELECT {columns} FROM session_model_usage WHERE session_id=?", (session_id,)).fetchall()
+    if rows:
+        placeholders = ", ".join("?" for _ in source_columns)
+        target_conn.executemany(f"INSERT INTO session_model_usage({columns}) VALUES ({placeholders})",
+                                [tuple(row) for row in rows])
 
 
 def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Optional[str] = "") -> str:
@@ -185,6 +369,10 @@ class SessionPortabilityMixin:
         Reuse the portability validator and message writer so counters and FTS
         obey the same contract as ordinary transcript imports.
         """
+        from hermes_state_lineage import SessionIdOwnedElsewhereError, SessionLineageAmbiguousError
+        existing = self.find_foreign_import(origin)
+        if existing:
+            return {"session_id": existing, "already_imported": True}
         session_id = new_session_id(hex_len=12)
         normalized, errors = self._validate_import_payload([
             {"id": session_id, "source": origin["tool"], "title": title,
@@ -196,6 +384,8 @@ class SessionPortabilityMixin:
             existing = self._find_foreign_import_on_conn(conn, origin)
             if existing:
                 return {"session_id": existing, "already_imported": True}
+            if conn.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone():
+                raise ValueError("Generated session ID already exists; retry the import")
             # Titles are globally unique within a profile. Preserve a readable
             # title while giving unrelated conversations with the same text room.
             item = normalized[0]
@@ -206,7 +396,13 @@ class SessionPortabilityMixin:
                          (json.dumps({"imported_from": origin}), profile, session_id))
             return {"session_id": session_id, "already_imported": False}
 
-        return self._execute_write(_do)
+        try:
+            with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S) as snapshot:
+                if snapshot is not None and snapshot.rows_by_id.get(session_id):
+                    raise ValueError("Generated session ID already exists; retry the import")
+                return self._execute_write(_do)
+        except (SessionIdOwnedElsewhereError, SessionLineageAmbiguousError) as exc:
+            raise ValueError("Generated session ID already exists; retry the import") from exc
 
     @classmethod
     def _compact_session_cols(cls) -> str:
@@ -398,85 +594,228 @@ class SessionPortabilityMixin:
         return [{**session, "messages": messages_by_session[session["id"]],
                  "timings": _export_timings(messages_by_session[session["id"]], session["id"])} for session in sessions]
 
-    def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> dict[str, Any]:
-        """Adopt *session_id*'s full compression lineage from *donor_db* (stranded-bot-session
-        heal: a profile bot's rows accumulated in the DEFAULT profile's state.db before the
-        desktop routed session RPCs by target session). Pure composition
-        ``donor_db.export_session_lineage()`` -> ``self.import_sessions()``: runtime
-        fields reset, already-present ids skipped (idempotent). Every message row is carried
-        with its archived state, so turns in-place compaction archived stay visible here and
-        stay out of model context. With ``retire_donor`` and a complete adoption, donor rows
-        are ARCHIVED (never deleted) with
-        ``end_reason='adopted_by_profile'`` — deliberately NOT in the recoverable set, so
-        resurrection cannot undo an adoption. Returns the ``import_sessions`` dict plus
-        ``adopted`` and ``donor_retired`` (True only when EVERY segment retired).
+    def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True,
+                                   _pending_only: bool = False) -> dict[str, Any]:
+        """Copy a complete lineage, durably retaining membership for retirement retries.
 
-        Once routing was fixed, the profile backend correctly received the RPCs but had no such session, so
-        the same chat 4001'd for the opposite reason. This method moves the conversation to where routing
-        now looks for it. See #93091, #93296.
+        Copies and immutable membership commit together. Same-home member locks remain
+        held through donor retirement; standalone pairs retain their existing contract.
+        Existing rows are skipped and donor-ahead copies are never retired.
         """
-        # Every row, not just live ones: the retired donor is unrecoverable, so any turn left behind
-        # (compaction-archived history included) would be visible nowhere.
-        payload = donor_db.export_session_lineage(session_id, include_inactive=True)
-        if not payload:
+        from hermes_state_adoption_records import AdoptionConflict
+        # A queued writer may need the same lineage lock. Drain before acquiring it;
+        # a timeout cannot authorize moving a stale accounting snapshot.
+        if not donor_db.flush_token_counts() or not self.flush_token_counts():
+            return {"ok": False, "adopted": False, "donor_retired": False,
+                    "error": "Queued accounting is busy; retry adoption after it settles"}
+        pair_error = self._validate_adoption_store_pair(donor_db.db_path)
+        if pair_error:
+            return {"ok": False, "adopted": False, "donor_retired": False, "error": pair_error}
+        try:
+            for _attempt in range(3):
+                outcome = self._attempt_lineage_adoption(donor_db, session_id, retire_donor=retire_donor, pending_only=_pending_only)
+                if outcome is not None:
+                    return outcome
+        except AdoptionConflict as exc:
+            return {"ok": False, "adopted": False, "donor_retired": False,
+                    "conflict": True, "error": str(exc)}
+        return {"ok": False, "adopted": False, "donor_retired": False,
+                "error": "donor membership kept changing; retry after its lineage stabilizes"}
+
+    def _adoption_segments(self, donor_db: Any, session_id: str, record) -> list[dict[str, Any]]:
+        from hermes_state_adoption_records import AdoptionConflict
+        if record is None:
+            payload = donor_db.export_session_lineage(session_id, include_inactive=True)
+            return (payload.get("segments") or [payload]) if payload else []
+        segments = [donor_db.export_session(mid, include_inactive=True) for mid in record["member_ids"]]
+        if any(segment is None for segment in segments):
+            raise AdoptionConflict("Saved adoption donor member is missing; recover the complete transfer")
+        return segments
+
+    def _attempt_lineage_adoption(self, donor_db: Any, session_id: str, *, retire_donor: bool, pending_only: bool):
+        from hermes_state_adoption_records import find, ownership, validate_fresh, validate_members, validate_handles
+        validate_handles(self, donor_db)
+        record = find(self, session_id, donor_db)
+        if pending_only and (record is None or record["status"] != "pending"):
+            return {"ok": False, "adopted": False, "donor_retired": False, "retry_skipped": True}
+        segments = self._adoption_segments(donor_db, session_id, record)
+        if not segments:
             return {"ok": False, "adopted": False, "donor_retired": False,
                     "error": f"session {session_id!r} not found in donor store"}
-        segments = payload.get("segments") or [payload]
+        ids = tuple(segment["id"] for segment in segments)
+        authority = None
+        if record is not None:
+            validate_members(self, donor_db, record)
+            authority = ownership(record, donor_db.db_path, self.db_path)
+        with session_lineage_guard(self.db_path, ids, transfer_from=donor_db.db_path,
+                                   adoption=authority, timeout_s=self._WRITE_PATIENCE_S) as snapshot:
+            # Never wait under this guard for a writer that may be waiting for it.
+            if donor_db.has_pending_token_counts() or self.has_pending_token_counts():
+                return {"ok": False, "adopted": False, "donor_retired": False,
+                        "error": "Queued accounting is busy; retry adoption after it settles"}
+            # Reload authority under the complete lock set. Returning releases it before
+            # the bounded outer loop discovers/reacquires any expanded membership.
+            validate_handles(self, donor_db)
+            current = find(self, session_id, donor_db)
+            if pending_only and (current is None or current["status"] != "pending"):
+                return {"ok": False, "adopted": False, "donor_retired": False, "retry_skipped": True}
+            if (current is None) != (record is None):
+                return None
+            if current is not None and current["manifest"] != record["manifest"]:
+                return None
+            refreshed = self._adoption_segments(donor_db, session_id, current)
+            if tuple(segment["id"] for segment in refreshed) != ids:
+                return None
+            pair_error = self._validate_adoption_store_pair(donor_db.db_path)
+            if pair_error:
+                return {"ok": False, "adopted": False, "donor_retired": False, "error": pair_error}
+            self._validate_adoption_inventory(snapshot, donor_db.db_path, ids)
+            if current is None:
+                validate_fresh(self, refreshed)
+            else:
+                validate_members(self, donor_db, current)
+            return self._adopt_lineage_segments_locked(
+                donor_db, session_id, refreshed, retire_donor=retire_donor, record=current, pending_only=pending_only)
 
-        # Divergence guard: a segment we will SKIP (already here) may have kept growing in
-        # the donor after a partial adoption; retiring it would strand those messages
-        # behind a non-recoverable archive. Still import, but refuse to retire.
-        donor_ahead = False
-        for seg in segments:
-            seg_id = seg.get("id")
-            if not seg_id or self.get_session(seg_id) is None:
-                continue
-            donor_count = len(seg.get("messages") or [])
-            local_count = len(self.get_messages(seg_id, include_inactive=True))
-            if donor_count > local_count:
-                donor_ahead = True
-                logger.warning("adoption divergence: donor segment %s has %d messages, "
-                               "local copy has %d — donor will NOT be retired", seg_id, donor_count, local_count)
+    def _validate_adoption_inventory(self, snapshot, donor_path, ids) -> None:
+        if snapshot is None:
+            return  # both resolutions positively classified the standalone compatibility path
+        from hermes_state_lineage import SessionLineageAmbiguousError, SessionLineageInventoryError, _same_file
+        for session_id in ids:
+            rows = snapshot.rows_by_id.get(session_id, ())
+            if not any(_same_file(row.store_path, Path(donor_path)) for row in rows):
+                raise SessionLineageInventoryError("Cannot inventory the adoption donor; use a managed profile store")
+            if any(not _same_file(row.store_path, Path(donor_path))
+                   and not _same_file(row.store_path, self.db_path) for row in rows):
+                raise SessionLineageAmbiguousError("Adoption has a third store copy; adjudicate its ownership first")
 
-        result = self.import_sessions([dict(seg) for seg in segments])
-        imported = int(result.get("imported") or 0)
-        skipped = int(result.get("skipped") or 0)
-        adopted = result.get("ok", False) and (imported + skipped) == len(segments)
-        if not adopted:
-            logger.warning("adoption of %s did not complete: imported=%s skipped=%s of %s segment(s); errors=%s",
-                           session_id, imported, skipped, len(segments), result.get("errors"))
+    def _adoption_import_and_record(self, donor_db, segments, record, *, retire_donor, pending_only):
+        from hermes_state_adoption_records import AdoptionConflict, build_manifest, find_in, insert, set_retirement_intent, validate_handles
+        normalized, errors = self._validate_import_payload(segments)
+        if errors:
+            return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}, record
+        first_id = segments[0]["id"]
 
+        def write(conn):
+            validate_handles(self, donor_db)
+            current = find_in(conn, first_id, donor_db, self)
+            if pending_only and (current is None or current["status"] != "pending"):
+                return {"ok": False, "imported": 0, "skipped": 0, "retry_skipped": True}, current
+            if (current is None) != (record is None):
+                raise AdoptionConflict("Adoption record appeared or disappeared; retry with its complete membership")
+            if current is not None and current["manifest"] != record["manifest"]:
+                raise AdoptionConflict("Adoption membership changed; inspect the saved transfer")
+            # Refuse the whole transfer before imports or the adoption journal when an
+            # existing target does not preserve the donor transcript as a prefix.
+            for segment in segments:
+                sid = segment["id"]
+                if conn.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone():
+                    with donor_db._read_ctx() as donor_conn:
+                        if not _adoption_history_covers(donor_conn, conn, sid):
+                            member = next((m for m in current["manifest"]["members"] if m["id"] == sid), None) if current else None
+                            if member is None or not _adoption_history_covers(donor_conn, conn, sid, retired_witness=member):
+                                raise AdoptionConflict("Target transcript differs from donor; recover the history before adoption")
+                        try:
+                            portable = _adoption_accounting_covers(donor_conn, conn, sid)
+                        except ValueError as exc:
+                            raise AdoptionConflict(str(exc)) from exc
+                        if not portable:
+                            raise AdoptionConflict("Target accounting or context differs from donor; inspect before adoption")
+            result = self._import_sessions_locked(conn, normalized)
+            if result.get("ok"):
+                # A fresh import can normalize or omit legacy sidecars; do not commit
+                # a copy that cannot prove it preserves the donor's complete history.
+                with donor_db._read_ctx() as donor_conn:
+                    try:
+                        for sid in result["imported_ids"]:
+                            _copy_adoption_portable_state(self, donor_conn, conn, sid)
+                        members = {m["id"]: m for m in current["manifest"]["members"]} if current else {}
+                        if any(not (_adoption_history_covers(donor_conn, conn, segment["id"])
+                                    or (segment["id"] in members and _adoption_history_covers(
+                                        donor_conn, conn, segment["id"], retired_witness=members[segment["id"]])))
+                               or not _adoption_accounting_covers(donor_conn, conn, segment["id"])
+                               for segment in segments):
+                            raise AdoptionConflict("Imported history or accounting differs from donor; inspect before adoption")
+                    except ValueError as exc:
+                        raise AdoptionConflict(str(exc)) from exc
+                if current is None:
+                    insert(conn, build_manifest(self, donor_db, segments, conn), retire_donor=retire_donor)
+                else:
+                    set_retirement_intent(conn, current, retire_donor)
+                current = find_in(conn, first_id, donor_db, self)
+            return result, current
+
+        return self._execute_write(write)
+
+    def _adopt_lineage_segments_locked(self, donor_db: Any, session_id: str, segments: list[dict[str, Any]],
+                                       *, retire_donor: bool, record=None, pending_only: bool = False) -> dict[str, Any]:
+        from hermes_state_adoption_records import mark_complete
+        members = [segment["id"] for segment in segments]
+        result, saved = self._adoption_import_and_record(donor_db, segments, record, retire_donor=retire_donor, pending_only=pending_only)
+        adopted = result.get("ok", False) and (result.get("imported", 0) + result.get("skipped", 0)) == len(members)
         donor_retired = False
-        if adopted and retire_donor and not donor_ahead:
-            donor_retired = all(self._retire_donor_segment(donor_db, seg["id"]) for seg in segments if seg.get("id"))
-        return {**result, "adopted": adopted, "donor_retired": donor_retired}
+        pending = list(members)
+        if adopted and retire_donor:
+            pending = []
+            for order, member in enumerate(members):
+                existing = donor_db.get_session(member)
+                if existing and existing.get("end_reason") == "adopted_by_profile" and existing.get("archived"):
+                    continue
+                if not self._retire_donor_segment(donor_db, member):
+                    pending = members[order:]
+                    break
+            for member in members:
+                row = donor_db.get_session(member)
+                if (row is None or row.get("end_reason") != "adopted_by_profile" or not row.get("archived")) and member not in pending:
+                    pending.append(member)
+            donor_retired = not pending
+            if donor_retired:
+                mark_complete(self, saved, donor_db)
+        return {**result, "adopted": adopted, "donor_retired": donor_retired,
+                "member_ids": members, "pending_ids": pending}
 
     def _retire_donor_segment(self, donor_db: Any, seg_id: str) -> bool:
-        """Archive one adopted donor segment; False when skipped or failed. TOCTOU close-out:
-        the divergence guard used EXPORT-TIME counts; re-read both stores right before
-        stamping so donor growth never lands behind a non-recoverable archive
-        (equal-count CONTENT divergence is accepted — bytes stay in the donor either way).
-        A retirement failure must not fail the adoption (a later resume retries
-        idempotently), but never claims success it didn't have."""
+        """Retire a copied member atomically while its full history remains on target."""
+        from hermes_state_adoption_records import find_in
         try:
-            donor_now = len(donor_db.get_messages(seg_id, include_inactive=True))
-            local_now = len(self.get_messages(seg_id, include_inactive=True))
-            if donor_now > local_now:
-                logger.warning(
-                    "adoption divergence at retire time: donor segment %s grew to %d messages (local %d) — "
-                    "leaving donor unretired", seg_id, donor_now, local_now,
-                )
-                return False
-            # First end_reason wins in end_session(); reopen so the adoption boundary is
-            # stamped even on ended segments.
-            donor_db.reopen_session(seg_id)
-            donor_db.end_session(seg_id, "adopted_by_profile")
-            # The session lives on in the adopting profile: not a delete for plugins.
-            donor_db.set_session_archived(seg_id, True, notify=False)
-            return True
+            with donor_db._read_ctx() as donor_conn, self._read_ctx() as target_conn:
+                covered = _adoption_history_covers(donor_conn, target_conn, seg_id)
+                if not covered:
+                    # Only an already-validated recorded transfer can explain the
+                    # old two-commit retirement's queued-row activity change.
+                    record = find_in(target_conn, seg_id, donor_db, self)
+                    member = next((m for m in record["manifest"]["members"] if m["id"] == seg_id), None) if record else None
+                    covered = member is not None and _adoption_history_covers(
+                        donor_conn, target_conn, seg_id, retired_witness=member)
+                if not covered or not _adoption_accounting_covers(donor_conn, target_conn, seg_id):
+                    logger.warning("adoption divergence at retirement for segment %s; leaving donor unretired", seg_id)
+                    return False
+
+            def retire(conn):
+                if not donor_db._end_session_as_adopted_conn(conn, seg_id):
+                    return False
+                conn.execute('UPDATE sessions SET archived=1, auto_archived=0 WHERE id=?', (seg_id,))
+                return True
+
+            # The complete transfer guard remains held through this donor commit.
+            return bool(donor_db._execute_write(retire))
         except Exception:
             logger.warning("failed to retire donor segment %s after adoption", seg_id, exc_info=True)
             return False
+
+    def _validate_adoption_store_pair(self, donor_path: Path) -> str | None:
+        from hermes_state_lineage import _managed_root_and_current, _same_file
+        # Resolution errors are unverifiable stores, never standalone permission.
+        donor = _managed_root_and_current(donor_path)
+        target = _managed_root_and_current(self.db_path)
+        if _same_file(Path(donor_path), self.db_path):
+            return "Donor and target are the same database; choose distinct stores"
+        if (donor is None) != (target is None):
+            standalone = "donor" if donor is None else "target"
+            return f"Adoption refuses a mixed managed/standalone pair (standalone {standalone}); use one managed home"
+        if donor is not None and donor[0] != target[0]:
+            return "Adoption requires both stores in the same managed home"
+        return None
 
     # ── Import ─────────────────────────────────────────────────────────────
 
@@ -660,12 +999,16 @@ class SessionPortabilityMixin:
     def _validate_import_payload(self, sessions: list[dict[str, Any]]) -> tuple:
         """Size/shape/type validation of the whole payload; returns ``(normalized_items,
         errors)``. Every rejected entry is reported."""
+        if not isinstance(sessions, list):
+            raise ValueError("sessions must be a list")
+        if len(sessions) > self._IMPORT_MAX_SESSIONS:
+            raise ValueError(f"sessions must contain at most {self._IMPORT_MAX_SESSIONS} entries")
         normalized: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         totals = {"messages": 0, "bytes": 0}
         for index, raw in enumerate(sessions):
-            session_id = str(raw.get("id") or "").strip() if isinstance(raw, dict) else ""
+            session_id = import_session_id(raw)
             try:
                 item = self._validate_import_session(raw, session_id, seen_ids, totals)
             except ValueError as exc:
@@ -786,7 +1129,9 @@ class SessionPortabilityMixin:
                 detached += 1
         return detached
 
-    def import_sessions(self, sessions: list[dict[str, Any]]) -> dict[str, Any]:
+    def import_sessions(
+        self: Any, sessions: list[dict[str, Any]], *, transfer_from: str | Path | None = None,
+    ) -> dict[str, Any]:
         """Import sessions exported by :meth:`export_session` or ``export_all``. Existing ids
         are skipped. A child keeps its parent only when the parent exists or is in the
         same payload; otherwise it is detached so partial imports pass FK validation.
@@ -801,40 +1146,53 @@ class SessionPortabilityMixin:
         regression
         (tests/gateway/test_watchdog_review.py::test_s4_export_includes_activity_import_resets_it).
         """
-        if not isinstance(sessions, list):
-            raise ValueError("sessions must be a list")
-        if len(sessions) > self._IMPORT_MAX_SESSIONS:
-            raise ValueError(f"sessions must contain at most {self._IMPORT_MAX_SESSIONS} entries")
         normalized, errors = self._validate_import_payload(sessions)
         if errors:
             return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": errors}
 
-        def _do(conn):
-            from hermes_state_mutation_retirement import retired_in
-            # A user-deleted id stays fenced for good: its row restored beside the fence would list
-            # fine and refuse every turn, so the import is refused by name and writes nothing.
-            ids = [str(item["session"].get("id") or "").strip() for item in normalized]
-            if deleted := [sid for sid in ids if retired_in(conn, sid)]:
-                return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": [
-                    f"session {sid} was deleted here; a deleted session is not restored" for sid in deleted]}
-            imported_ids: list[str] = []
-            skipped_ids: list[str] = []
-            parent_updates: list[tuple[str, str]] = []
-            for item in normalized:
-                raw = item["session"]
-                session_id = str(raw.get("id") or "").strip()
-                if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone():
-                    skipped_ids.append(session_id)
-                    continue
-                self._import_session_row(conn, raw, item["messages"], session_id)
-                parent_id = str(raw.get("parent_session_id") or "").strip()
-                if parent_id:
-                    parent_updates.append((session_id, parent_id))
-                imported_ids.append(session_id)
-            return {
-                "ok": True, "imported": len(imported_ids), "skipped": len(skipped_ids),
-                "detached": self._attach_import_parents(conn, parent_updates),
-                "imported_ids": imported_ids, "skipped_ids": skipped_ids, "errors": [],
-            }
+        session_ids = tuple(dict.fromkeys(
+            str(item["session"].get("id") or "").strip() for item in normalized
+            if str(item["session"].get("id") or "").strip()
+        ))
 
-        return self._execute_write(_do)
+        def _do(conn):
+            return self._import_sessions_locked(conn, normalized)
+
+        with session_lineage_guard(self.db_path, session_ids, transfer_from=transfer_from, timeout_s=self._WRITE_PATIENCE_S):
+            # Every payload id is guarded, not only the absent ones: an id that was present
+            # when ``present_ids`` was computed can be moved to a sibling store before this
+            # transaction opens, and re-importing it here would recreate it behind the fence
+            # (review finding 2). The guard itself rejects ids owned elsewhere; inside the
+            # write, the per-id presence recheck skips them instead of inserting.
+            return self._execute_write(_do)
+
+    def _import_sessions_locked(self, conn: sqlite3.Connection, normalized: list[dict[str, Any]]) -> dict[str, Any]:
+        """Insert normalized payloads on the CALLER's open transaction (per-id presence
+        recheck inside). Shared by ``import_sessions`` and adoption, which commits the
+        durable transfer record in the SAME transaction as these inserts."""
+        from hermes_state_mutation_retirement import retired_in
+        # A user-deleted id stays fenced for good: its row restored beside the fence would list
+        # fine and refuse every turn, so the import is refused by name and writes nothing.
+        ids = [str(item["session"].get("id") or "").strip() for item in normalized]
+        if deleted := [sid for sid in ids if retired_in(conn, sid)]:
+            return {"ok": False, "imported": 0, "skipped": 0, "detached": 0, "errors": [
+                f"session {sid} was deleted here; a deleted session is not restored" for sid in deleted]}
+        imported_ids: list[str] = []
+        skipped_ids: list[str] = []
+        parent_updates: list[tuple[str, str]] = []
+        for item in normalized:
+            raw = item["session"]
+            session_id = import_session_id(raw)
+            if conn.execute("SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)).fetchone():
+                skipped_ids.append(session_id)
+                continue
+            self._import_session_row(conn, raw, item["messages"], session_id)
+            parent_id = str(raw.get("parent_session_id") or "").strip()
+            if parent_id:
+                parent_updates.append((session_id, parent_id))
+            imported_ids.append(session_id)
+        return {
+            "ok": True, "imported": len(imported_ids), "skipped": len(skipped_ids),
+            "detached": self._attach_import_parents(conn, parent_updates),
+            "imported_ids": imported_ids, "skipped_ids": skipped_ids, "errors": [],
+        }

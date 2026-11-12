@@ -1130,6 +1130,60 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         except Exception:
             logger.debug("Failed to restore thread_id from binding after session split", exc_info=True)
 
+    async def capture_route_sync_fence(self):
+        """Capture only after any in-progress model publication has completed."""
+        from contextlib import nullcontext
+        from gateway.session_authorities import active_authority
+        from gateway.model_publication import publication_lock
+        authority = active_authority(self._runner)
+        try:
+            for _ in range(3):
+                owner = await asyncio.to_thread(authority.logical_owner, self._ctx.session_id) if authority else None
+                live = authority.sessions.get(owner) if authority else None
+                # Wait for this route before taking the global gate, so a pending session
+                # pick cannot make independent routes queue behind this capture.
+                async with live.mutation_lock if live else nullcontext():
+                    route_gate = (publication_lock(self._runner, self._ctx.session_key)
+                                  if self._ctx.session_key is not None else nullcontext())
+                    async with route_gate, publication_lock(self._runner):
+                        current_owner = (await asyncio.to_thread(authority.logical_owner, self._ctx.session_id)
+                                         if authority else None)
+                        current_live = authority.sessions.get(current_owner) if authority else None
+                        if current_owner != owner or current_live is not live:
+                            continue  # mount changed while the gates were being acquired
+                        fence = await asyncio.to_thread(self._capture_route_sync_fence)
+                        if live and fence and fence[0] != owner:
+                            continue
+                        self._route_sync_fence = fence
+                        return
+            self._route_sync_fence = (None, None, None, None, None)
+        except Exception:
+            logger.warning("Cannot capture session route fence", exc_info=True)
+            self._route_sync_fence = (None, None, None, None, None)
+
+    def _capture_route_sync_fence(self):
+        """Capture the messaging mount's revision before resolving this turn's agent."""
+        from gateway.session_authorities import active_authority
+        authority = active_authority(self._runner)
+        try:
+            session_db = self._runner._session_db
+            if session_db is None:
+                return None
+            db = session_db._db
+            if authority and db.db_path.resolve() != authority.db.db_path.resolve():
+                return (None, None, None, None, None)
+            source_id = self._ctx.session_id
+            lineage = db.get_compression_lineage(source_id) if authority is None else None
+            owner = authority.logical_owner(source_id) if authority else (lineage[0] if lineage else source_id)
+            row = db._read_one(
+                "SELECT owner.runtime_revision, owner.runtime_generation, source.model_config "
+                "FROM sessions owner JOIN sessions source ON source.id=? WHERE owner.id=?",
+                (source_id, owner))
+            return (owner, row[0], row[1], source_id, row[2]) if row else (None, None, None, None, None)
+        except Exception:
+            logger.warning("Cannot capture session route fence", exc_info=True)
+            return (None, None, None, None, None)
+
     def _sync_session_after_run(self, agent_history):
         """Sync session_id right after run_conversation(): compression can rotate before a follow-up
         model call fails, and the failure return must still point at the compressed child.
@@ -1182,7 +1236,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         if not cli_turn(ctx.inbound_message_id).get("model_override"):
             # A `/model --once` / `/moa` turn ran another route for this admission only: the row keeps
             # the session's model, or a /resume would come back on the one-turn model.
-            runner._sync_session_model_from_agent(agent_session_id, agent)
+            fence = getattr(self, "_route_sync_fence", None)
+            if fence is None:
+                runner._sync_session_model_from_agent(agent_session_id, agent)
+            else:
+                runner._sync_session_model_from_agent(agent_session_id, agent, expected_fence=fence)
         # history_offset=0 whenever the agent's message list lost the original history prefix
         # (split OR in-place compaction): the returned `messages` is the compacted set, persist all
         # of it; slicing past the pre-compaction length would drop everything.

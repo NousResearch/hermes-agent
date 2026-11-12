@@ -39,12 +39,12 @@ def repo(tmp_path):
     return root
 
 
-def _ledgered_store(home):
+def _ledgered_store(home, session_id="s"):
     home.mkdir(parents=True, exist_ok=True)
     with closing(SessionDB(home / "state.db")) as db:
         epoch = rt.begin_runtime_epoch(db, instance_id="owner")
-        db.create_session("s", source="cli")
-        rt.admit_session_input(db, epoch=epoch, principal_id="p", session_id="s", request_id="r",
+        db.create_session(session_id, source="cli")
+        rt.admit_session_input(db, epoch=epoch, principal_id="p", session_id=session_id, request_id="r",
                                payload={"text": "x"})
 
 

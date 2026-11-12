@@ -146,7 +146,7 @@ def test_multiplexed_maintenance_tick_prunes_every_served_profile_store(two_home
     from hermes_state import SessionDB
 
     homes = two_homes
-    for home in homes:
+    for index, home in enumerate(homes):
         (home / "config.yaml").write_text(
             "model:\n  provider: nous\n"
             "sessions:\n"
@@ -156,8 +156,8 @@ def test_multiplexed_maintenance_tick_prunes_every_served_profile_store(two_home
             "  vacuum_after_prune: false\n",
             encoding="utf-8")
         db = SessionDB(db_path=home / "state.db")
-        db.create_session("old", "cli")
-        db.end_session("old", "done")
+        db.create_session(f"old-{index}", "cli")
+        db.end_session(f"old-{index}", "done")
         db.close()
 
     set_multiplex_active(True)
@@ -166,10 +166,10 @@ def test_multiplexed_maintenance_tick_prunes_every_served_profile_store(two_home
     finally:
         set_multiplex_active(False)
 
-    for home in homes:
+    for index, home in enumerate(homes):
         db = SessionDB(db_path=home / "state.db")
         try:
-            assert db.get_session("old") is None, f"{home.name}'s store was never pruned"
+            assert db.get_session(f"old-{index}") is None, f"{home.name}'s store was never pruned"
         finally:
             db.close()
 
@@ -252,7 +252,7 @@ def test_prune_unlinks_transcripts_under_the_configured_sessions_dir(two_homes, 
     a, b = two_homes
     override = tmp_path / "custom-transcripts"
     override.mkdir()
-    for home, transcripts in ((a, override), (b, b / "sessions")):
+    for index, (home, transcripts) in enumerate(((a, override), (b, b / "sessions"))):
         (home / "config.yaml").write_text(
             "model:\n  provider: nous\n"
             "sessions:\n"
@@ -262,11 +262,11 @@ def test_prune_unlinks_transcripts_under_the_configured_sessions_dir(two_homes, 
             "  vacuum_after_prune: false\n",
             encoding="utf-8")
         db = SessionDB(db_path=home / "state.db")
-        db.create_session("old", "cli")
-        db.end_session("old", "done")
+        db.create_session(f"old-{index}", "cli")
+        db.end_session(f"old-{index}", "done")
         db.close()
         transcripts.mkdir(parents=True, exist_ok=True)
-        (transcripts / "old.jsonl").write_text("{}\n", encoding="utf-8")
+        (transcripts / f"old-{index}.jsonl").write_text("{}\n", encoding="utf-8")
 
     set_multiplex_active(True)
     try:
@@ -275,8 +275,8 @@ def test_prune_unlinks_transcripts_under_the_configured_sessions_dir(two_homes, 
     finally:
         set_multiplex_active(False)
 
-    assert not (override / "old.jsonl").exists(), "launch profile's configured transcript survived"
-    assert not (b / "sessions" / "old.jsonl").exists(), "profile b's transcript survived"
+    assert not (override / "old-0.jsonl").exists(), "launch profile's configured transcript survived"
+    assert not (b / "sessions" / "old-1.jsonl").exists(), "profile b's transcript survived"
 
 
 def test_single_profile_credential_chores_run_once_against_the_process_home(two_homes, monkeypatch):

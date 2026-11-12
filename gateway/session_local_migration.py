@@ -87,10 +87,15 @@ def legacy_launch_params(row):
     from hermes_state_sessions import _parse_model_config
     saved = _parse_model_config(row.get('model_config'))
     from hermes_state_gateway import SessionGatewayMixin
-    route = SessionGatewayMixin.session_gateway_runtime(row)
+    from hermes_state_sessions_model_config import complete_runtime_route
+    snapshot = complete_runtime_route(row)
+    route = snapshot or SessionGatewayMixin.session_gateway_runtime(row)
+    if snapshot:
+        params['model'] = snapshot['model']
     route = {key: value.strip() for key, value in route.items() if isinstance(value, str) and value.strip()}
     billing_base_url = row.get('billing_base_url')
-    if 'base_url' not in route and isinstance(billing_base_url, str) and billing_base_url.strip():
+    if (not snapshot and str(route.get('provider') or '').lower() != 'auto'
+            and 'base_url' not in route and isinstance(billing_base_url, str) and billing_base_url.strip()):
         route['base_url'] = billing_base_url.strip()
         # The reader returns a bare ``custom`` billing provider with its endpoint and drops ``auto``:
         # an endpoint left without a provider is a custom route, never one to pair with the
@@ -101,6 +106,9 @@ def legacy_launch_params(row):
         # A provider's own pseudo-address (process://, moa://) is not an endpoint the session picked,
         # and replayed as a launch override it is refused (#142779, #147676). The provider is the route.
         route.pop('base_url')
+    if str(route.get('provider') or '').lower() == 'auto' and not (route.get('base_url') or route.get('api_mode')):
+        # The saved automatic reset follows the profile route, including its endpoint and wire.
+        route.pop('provider', None)
     if row['source'] == 'acp' and 'cwd' not in params and Path(str(saved.get('cwd') or '')).is_absolute():
         params['cwd'] = saved['cwd']
     params.update({key: route[key] for key in ('provider', 'base_url') if key in route})

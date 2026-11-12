@@ -397,6 +397,11 @@ def _replace_queued_user_row_for_turn(session: dict, queued: dict, is_dispatchin
     return fresh
 
 
+def _submit_admission_lock(session: dict):
+    """Serialize one live session's idle claim and durable acceptance, before history_lock."""
+    return session.setdefault("_submit_admission_lock", threading.Lock())
+
+
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
                         turn_author: dict | None = None, display_kind: str | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
@@ -410,7 +415,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     # follow-up drains when compression finishes — the Discord-gateway contract.
     if mode in ("steer", "interrupt") and _session_compression_in_flight(session):
         mode = "queue"
-    with session["history_lock"]:
+    with _submit_admission_lock(session), session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
         # Typed while the turn ran, in any busy mode: the running turn no longer counts as unattended.
@@ -431,7 +436,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
             return resp
     # Queue before asking the live turn to stop. Never call a provider/compute-host method under history_lock: an
     # interrupt can wait behind the op it cancels.
-    with session["history_lock"]:
+    with _submit_admission_lock(session), session["history_lock"]:
         if not session.get("running"):
             if image_paths:
                 session["attached_images"] = image_paths + list(session.get("attached_images", []))

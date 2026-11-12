@@ -55,6 +55,16 @@ def validate_action(operation, payload):
         raise RuntimeStoreError('invalid_params')
 
 
+def validate_runtime_action(db, operation, payload):
+    """Reject persisted value errors before ownership discovery or receipt preparation."""
+    validate_action(operation, payload)
+    if 'title' in payload:
+        try:
+            db.sanitize_title(payload['title'])
+        except ValueError as exc:
+            raise RuntimeStoreError('invalid_params', field='title', detail=str(exc)) from exc
+
+
 def _valid_branch_payload(payload):
     # ``through_message_id``: the physical row id of the last message the branch keeps (a stable
     # boundary, never a visible-message count); absent means the whole active transcript.
@@ -86,18 +96,20 @@ def _valid_compress_payload(payload):
     return 'keep_last' not in payload or (payload.get('partial') is True and payload['keep_last'] >= 1)
 
 
-def apply_action(db, conn, session_id, operation, payload, *, prepared=None):
+def apply_action(db, conn, session_id, operation, payload, *, prepared=None, reserved=None):
     if operation == 'compress':
         from hermes_state_mutation_compress import compress_in_transaction
-        return compress_in_transaction(db, conn, session_id, payload, prepared)
+        return compress_in_transaction(db, conn, session_id, payload, prepared, reserved=reserved)
     if operation in {'model', 'reasoning', 'workspace', 'editor_mcp', 'edit_policy'}:
         from hermes_state_mutation_prepared import POLICY_HANDLERS
         return POLICY_HANDLERS[operation](db, conn, session_id, payload, prepared)
     if operation == 'branch':
         from hermes_state_mutation_branch import branch_in_transaction
-        return branch_in_transaction(db, conn, session_id, payload, prepared)
+        return branch_in_transaction(db, conn, session_id, payload, prepared, reserved=reserved)
     from hermes_state_mutation_reset import reset_in_transaction
-    handlers = {'delete': _delete, 'import': _import, 'rewind': _rewind, 'reset': reset_in_transaction}
+    handlers = {'delete': _delete, 'import': _import, 'rewind': _rewind}
+    if operation == 'reset':
+        return reset_in_transaction(db, conn, session_id, payload, reserved=reserved)
     if operation in handlers:
         return handlers[operation](db, conn, session_id, payload)
     affected = set()

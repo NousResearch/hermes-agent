@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_state_common import (
-    _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS_SQL, _sql_json_extract,
+    _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS_SQL, _sql_json_extract, _non_continuation_child_sql,
     _sql_session_last_active)
+from hermes_state_lineage import guarded_discovered_session_write, guarded_session_write
 from hermes_state_local import API_BINDING_PREFIX, POLICY_PREFIX, _receipt
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
@@ -32,12 +33,22 @@ _COMPRESSION_LINEAGE_CTE = f"""
                         JOIN sessions child ON child.id = lineage.id
                         JOIN sessions parent ON parent.id = child.parent_session_id
                         WHERE parent.end_reason = 'compression'
-                          AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL
-                          AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL
-                          AND NOT ({_RESET_CHILD_SQL.format(a='child')})
-                          AND COALESCE(child.source, '') != 'tool'
+{_non_continuation_child_sql('child.', 'parent.id')}
                     )
                 """
+
+
+def _compression_peer_ids(conn, session_id):
+    return {row[0] for row in conn.execute(
+        f"{_COMPRESSION_LINEAGE_CTE} SELECT id FROM compression_lineage", (session_id,))}
+
+
+def _peer_write_ids(conn, session_id, source, session_key):
+    from gateway.session_route_recovery import _messaging_platform
+    from hermes_state_local import handoff_write_ids, moved_receipts
+    moved = _compression_peer_ids(conn, session_id)
+    receipts = moved_receipts(conn, moved, session_key=session_key) if _messaging_platform(source) is not None else {}
+    return moved | handoff_write_ids(conn, receipts)
 
 # Projection shared by both peer-recovery queries (exact key, then peer tuple).
 _PEER_SELECT_HEAD = """
@@ -311,26 +322,25 @@ class SessionGatewayMixin:
             session_key, source, user_id, chat_id, chat_type, thread_id, display_name, origin_json,
             transport_profile)
         ancestors = include_compression_ancestors
-        query_params = [session_id, *identity] if ancestors else [*identity, session_id]
         def _do(conn):
+            # source is itself a lineage predicate: freeze membership before changing it.
+            moved = _compression_peer_ids(conn, session_id) if ancestors else {session_id}
+            target = json.dumps(sorted(moved)) if ancestors else session_id
             conn.execute(
-                f"""{_COMPRESSION_LINEAGE_CTE if ancestors else ""}
-                   UPDATE sessions
+                f"""UPDATE sessions
                    SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
                        chat_type = ?, thread_id = ?,
                        display_name = COALESCE(?, display_name),
                        origin_json = COALESCE(?, origin_json),
                        transport_profile = COALESCE(?, transport_profile)
-                   {"WHERE id IN (SELECT id FROM compression_lineage)" if ancestors else "WHERE id = ?"}""",
-                query_params,
+                   {"WHERE id IN (SELECT value FROM json_each(?))" if ancestors else "WHERE id = ?"}""",
+                [*identity, target],
             )
             if ancestors:
                 # An explicit repoint moved these rows to this lane: the local conversation whose receipt
                 # names one of them goes with it in the same write, or it would match neither lane (#143286).
                 from gateway.session_route_recovery import _messaging_platform
                 from hermes_state_local import hand_off_conversations, moved_receipts
-                moved = {row[0] for row in conn.execute(
-                    f"{_COMPRESSION_LINEAGE_CTE} SELECT id FROM compression_lineage", (session_id,))}
                 hand_off_conversations(conn, {owner: found for owner, found in moved_receipts(conn, moved).items()
                                               if _messaging_platform(found[1]) is not None})
                 return
@@ -357,7 +367,11 @@ class SessionGatewayMixin:
                     (session_id, source, source, user_id, session_key, chat_id, chat_type, thread_id, display_name,
                      origin_json, self._own_profile_name(), transport_profile, time.time()),
                 )
-        self._execute_write(_do)
+        if ancestors:
+            guarded_discovered_session_write(
+                self, [session_id], lambda conn: _peer_write_ids(conn, session_id, source, session_key), _do)
+        else:
+            guarded_session_write(self, session_id, _do)
 
     def save_gateway_routing_entry(self, session_key: str, entry_json: str, *, scope: str = "") -> None:
         """Upsert one gateway routing entry (session_key -> SessionEntry JSON); ``scope``

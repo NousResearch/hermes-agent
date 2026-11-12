@@ -7,7 +7,12 @@ import asyncio
 import atexit
 import contextlib
 import logging
+import hashlib
+import os
+import sqlite3
+import stat
 import threading
+import uuid
 import time
 import weakref
 from typing import Any, Dict, List, Optional, Tuple
@@ -80,6 +85,120 @@ _MODEL_USAGE_FIELDS = frozenset((
     "actual_cost_usd", "cost_status", "cost_source", "api_call_count"))
 
 
+def _accounting_marker_identity(db):
+    """Resolve a store's marker identity without creating a marker directory."""
+    from pathlib import Path
+    from hermes_state_lineage import _managed_root_and_current, SessionLineageInventoryError
+    try:
+        st = os.stat(db.db_path, follow_symlinks=False)
+        if (not stat.S_ISREG(st.st_mode) or db._db_file_identity != (st.st_dev, st.st_ino)
+                or db._db_file_was_replaced()):
+            raise SessionLineageInventoryError("Accounting store identity is unavailable or changed")
+        if st.st_nlink != 1:
+            raise SessionLineageInventoryError("Hardlinked accounting stores cannot be inventoried safely")
+        managed = _managed_root_and_current(db.db_path)
+        root = managed[0] if managed else Path(db.db_path).resolve().parent
+        physical = hashlib.sha256(f"{st.st_dev}:{st.st_ino}".encode()).hexdigest()
+        location = hashlib.sha256(str(Path(db.db_path).resolve()).encode()).hexdigest()
+        return root, bool(managed), f"usage-{location}-{physical}-"
+    except OSError as exc:
+        raise SessionLineageInventoryError("Cannot inventory accounting markers") from exc
+
+
+def _legacy_accounting_marker_present(db, prefix):
+    """Read legacy managed-home markers without creating, unlocking or deleting them."""
+    from hermes_state_lineage import _managed_root_and_current, _validate_lineage_parent, SessionLineageInventoryError
+    managed = _managed_root_and_current(db.db_path)
+    if managed is None:
+        return False
+    legacy_root = managed[0] / ".session-lineage-locks"
+    directory = legacy_root / "accounting"
+    try:
+        for path in (legacy_root, directory):
+            try:
+                st = path.lstat()
+            except FileNotFoundError:
+                return False
+            if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+                raise SessionLineageInventoryError("Unsafe legacy accounting marker directory")
+            _validate_lineage_parent(path, st)
+        _, location, physical, _ = prefix.split("-", 3)
+        with os.scandir(directory) as scan:
+            for count, entry in enumerate(scan, 1):
+                if count > 8192:
+                    raise SessionLineageInventoryError("Legacy accounting marker inventory exceeds bound")
+                parts = entry.name.split("-", 3)
+                if len(parts) == 4 and parts[0] == "usage" and (parts[1] == location or parts[2] == physical):
+                    return True
+        return False
+    except OSError as exc:
+        raise SessionLineageInventoryError("Cannot inspect legacy accounting marker inventory") from exc
+
+
+def _require_legacy_accounting_clear(db):
+    from hermes_state_lineage import _managed_root_and_current, SessionLineageInventoryError
+    if _managed_root_and_current(db.db_path) is None:
+        return
+    _, _, prefix = _accounting_marker_identity(db)
+    if _legacy_accounting_marker_present(db, prefix):
+        raise SessionLineageInventoryError("Unresolved legacy accounting marker; inspect before accepting usage")
+
+
+class _TokenBatchInterrupted(BaseException):
+    """A batch stopped with a known unprocessed suffix and possibly unknown current item."""
+    def __init__(self, cause, uncertain, pending):
+        super().__init__(str(cause))
+        self.cause, self.uncertain, self.pending = cause, uncertain, pending
+
+
+class _TokenBatchWriteReceipt:
+    """Per-delta transaction evidence; successful or unknown commits are sticky."""
+    def __init__(self):
+        self._committed = False
+        self._unknown = False
+        self._retryable_error = None
+
+    def transaction_started(self):
+        self._retryable_error = None
+
+    def transaction_not_started(self, error, *, transaction_active):
+        """Bind retry proof to this error only when BEGIN never opened a transaction."""
+        self._retryable_error = None
+        if (self._committed or self._unknown or transaction_active
+                or not isinstance(error, sqlite3.Error)):
+            self._unknown = True
+            return
+        self._retryable_error = error
+
+    def transaction_committed(self):
+        self._committed = True
+        self._retryable_error = None
+
+    def transaction_rolled_back(
+        self, *, commit_attempted, transaction_active, rollback_succeeded, commit_rollback_proven,
+        error=None,
+    ):
+        self._retryable_error = None
+        if (not rollback_succeeded or not transaction_active
+                or (commit_attempted and not commit_rollback_proven)):
+            self._unknown = True
+        elif not self._committed and not self._unknown:
+            # Settlement comes from the active transaction's verified rollback,
+            # not from the exception class raised by its callback.
+            self._retryable_error = error
+
+    def retryable_lock_timeout(self, error):
+        if not self._committed and not self._unknown:
+            self._retryable_error = error
+
+    def has_uncertain_effect(self):
+        return self._committed or self._unknown
+
+    def proves_unapplied(self, error):
+        return (not self._committed and not self._unknown
+                and self._retryable_error is error)
+
+
 class SessionUsageMixin:
     """Coalesced token writer, per-model usage rows, billing route."""
 
@@ -94,7 +213,8 @@ class SessionUsageMixin:
         See #48173, #48248.
         """
         # Barrier against queued token deltas — see update_session_model.
-        self.flush_token_counts()
+        if not self.flush_token_counts():
+            raise TimeoutError("timed out flushing accounting before billing route update")
 
         def _do(conn):
             conn.execute("""UPDATE sessions SET
@@ -102,48 +222,238 @@ class SessionUsageMixin:
                    billing_base_url = ?,
                    billing_mode = COALESCE(?, billing_mode)
                    WHERE id = ?""", (provider, base_url, billing_mode, session_id))
-        self._execute_write(_do)
+        from hermes_state_lineage import guarded_session_write
+        guarded_session_write(self, session_id, _do)
+
+    def _token_marker_prefix(self):
+        """Locate this physical store's cross-process pending-accounting markers."""
+        from hermes_state_lineage import _lineage_lock_directory, SessionLineageInventoryError
+        try:
+            root, managed, prefix = _accounting_marker_identity(self)
+            if managed:
+                lock_root = _lineage_lock_directory(root, create=True)
+            else:
+                lock_root = root / ".session-lineage-locks"
+                lock_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            lst = lock_root.lstat()
+            if not stat.S_ISDIR(lst.st_mode) or stat.S_ISLNK(lst.st_mode):
+                raise SessionLineageInventoryError("Unsafe lineage lock directory")
+            directory = lock_root / "accounting"
+            directory.mkdir(mode=0o700, exist_ok=True)
+            dst = directory.lstat()
+            if not stat.S_ISDIR(dst.st_mode) or stat.S_ISLNK(dst.st_mode):
+                raise SessionLineageInventoryError("Unsafe accounting marker directory")
+            return directory, prefix
+        except SessionLineageInventoryError:
+            raise
+        except OSError as exc:
+            raise SessionLineageInventoryError("Cannot inventory accounting markers") from exc
+
+    def _hold_token_marker(self):
+        """Hold a raw advisory marker before accepting any volatile delta."""
+        from hermes_state_lineage import _advisory_lock_file, SessionLineageInventoryError
+        directory, prefix = self._token_marker_prefix()
+        if _legacy_accounting_marker_present(self, prefix):
+            raise SessionLineageInventoryError("Unresolved legacy accounting marker; inspect before accepting usage")
+        if self._token_pending_marker is not None:
+            if self._token_pending_marker_path is None:
+                raise SessionLineageInventoryError("Accounting marker release is unresolved")
+            if (self._token_pending_marker_path.parent != directory
+                    or not self._token_pending_marker_path.name.startswith(prefix)):
+                raise SessionLineageInventoryError("Accounting marker identity changed")
+            try:
+                held = self._token_pending_marker_path.lstat()
+            except OSError as exc:
+                raise SessionLineageInventoryError("Held accounting marker is unavailable") from exc
+            if (not stat.S_ISREG(held.st_mode) or (held.st_dev, held.st_ino) != self._token_pending_marker_identity):
+                raise SessionLineageInventoryError("Held accounting marker was replaced")
+            return
+        if self._token_pending_marker_path is None:
+            self._token_pending_marker_path = directory / f"{prefix}{os.getpid()}-{uuid.uuid4().hex}.lock"
+        elif (self._token_pending_marker_path.parent != directory
+              or not self._token_pending_marker_path.name.startswith(prefix)):
+            raise SessionLineageInventoryError("Accounting marker identity changed")
+        directory_stat = directory.lstat()
+        marker = _advisory_lock_file(self._token_pending_marker_path, 0)
+        marker_fd = marker.__enter__()
+        try:
+            if (self._token_marker_prefix() != (directory, prefix)
+                    or not os.path.samestat(directory_stat, directory.lstat())):
+                raise SessionLineageInventoryError("Accounting store identity changed while accepting")
+        except Exception:
+            marker.__exit__(None, None, None)
+            raise
+        self._token_pending_marker = marker
+        held = os.fstat(marker_fd)
+        self._token_pending_marker_identity = (held.st_dev, held.st_ino)
+
+    def _release_idle_token_marker(self):
+        """Called under the queue condition only after a known-idle transition."""
+        if (self._token_pending_marker is not None and not self._token_queue
+                and not self._token_writer_busy and not self._token_writer_uncertain):
+            if self._token_pending_marker_path is None:
+                raise RuntimeError("Accounting marker release is unresolved")
+            # Only the owning handle removes its own known-idle marker while still locked.
+            try:
+                held = self._token_pending_marker_path.lstat()
+            except FileNotFoundError:
+                held = None  # no pending work remains; releasing the unlinked lock is safe
+            if held is not None:
+                if (not stat.S_ISREG(held.st_mode)
+                        or (held.st_dev, held.st_ino) != self._token_pending_marker_identity):
+                    raise RuntimeError("Idle accounting marker was replaced")
+                self._token_pending_marker_path.unlink()
+            self._token_pending_marker_path = None
+            self._token_pending_marker.__exit__(None, None, None)
+            self._token_pending_marker = None
+            self._token_pending_marker_identity = None
 
     def queue_token_counts(self, session_id: str, **kwargs) -> None:
         """Enqueue a token/cost delta for the background writer (same kwargs as
         :meth:`update_token_counts`). After close() stopped the writer, falls back to the
         synchronous path and may raise."""
-        with self._token_queue_cond:
-            thread = self._token_writer_thread
-            writer_alive = thread is not None and thread.is_alive()
-            writer_stopped = self._token_writer_stop and not writer_alive
-            if not writer_stopped:
-                self._token_queue.append((session_id, kwargs))
-                if not writer_alive:
-                    # Daemon so exit never hangs on accounting; the atexit hook drains
-                    # leftovers. ``not is_alive()`` respawns a writer that died unexpectedly.
-                    thread = threading.Thread(
-                        target=self._token_writer_loop, name="session-db-token-writer", daemon=True)
-                    self._token_writer_thread = thread
-                    thread.start()
-                    if self._token_atexit_hook is None:
-                        self_ref = weakref.ref(self)
+        from hermes_state_lineage import session_lineage_guard
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._TRANSCRIPT_WRITE_PATIENCE_S):
+            with self._token_queue_cond:
+                thread = self._token_writer_thread
+                writer_alive = thread is not None and thread.is_alive()
+                writer_stopped = self._token_writer_stop and not writer_alive
+                if self._token_writer_uncertain:
+                    # Do not let later work overtake an unknown-effect item.
+                    self._hold_token_marker()
+                    self._token_queue.append((session_id, kwargs))
+                    writer_stopped = False
+                elif writer_stopped and (self._token_queue or self._token_writer_busy):
+                    # A failed close left older deltas pending; never overtake them.
+                    self._hold_token_marker()
+                    self._token_queue.append((session_id, kwargs))
+                    writer_stopped = False
+                elif not writer_stopped:
+                    self._hold_token_marker()
+                    self._token_queue.append((session_id, kwargs))
+                    if not writer_alive:
+                        # Daemon so exit never hangs on accounting; the atexit hook drains
+                        # leftovers. ``not is_alive()`` respawns a writer that died unexpectedly.
+                        thread = threading.Thread(
+                            target=self._token_writer_loop, name="session-db-token-writer", daemon=True)
+                        self._token_writer_thread = thread
+                        thread.start()
+                        if self._token_atexit_hook is None:
+                            self_ref = weakref.ref(self)
 
-                        def _drain_at_exit() -> None:
-                            db = self_ref()
-                            if db is not None:
-                                db._drain_token_queue_at_exit()
+                            def _drain_at_exit() -> None:
+                                db = self_ref()
+                                if db is not None:
+                                    db._drain_token_queue_at_exit()
 
-                        self._token_atexit_hook = _drain_at_exit
-                        atexit.register(_drain_at_exit)
-                self._token_queue_cond.notify_all()
+                            self._token_atexit_hook = _drain_at_exit
+                            atexit.register(_drain_at_exit)
+                    self._token_queue_cond.notify_all()
         if writer_stopped:
             # close() ran: enqueueing would drop the delta silently, so apply inline.
             self.update_token_counts(session_id, **kwargs)
 
-    def _apply_claimed_batch(self, batch) -> None:
-        """Apply a batch whose ``busy`` flag the caller already claimed, then release."""
+    def has_pending_token_counts(self) -> bool:
+        """Nonblocking queue/in-flight check for callers already holding a lineage guard."""
+        with self._token_queue_cond:
+            if (self._token_queue or self._token_writer_busy or self._token_writer_uncertain
+                    or self._token_pending_marker is not None):
+                return True
+        from hermes_state_lineage import _advisory_lock_file
         try:
-            self._apply_token_batch(batch)
+            directory, prefix = self._token_marker_prefix()
+            if _legacy_accounting_marker_present(self, prefix):
+                return True
+            directory_stat = directory.lstat()
+            _, location, physical, _ = prefix.split("-", 3)
+            def inventory():
+                names = []
+                with os.scandir(directory) as scan:
+                    for count, entry in enumerate(scan, 1):
+                        if count > 8192:
+                            raise RuntimeError("Accounting marker inventory exceeds bound")
+                        parts = entry.name.split("-", 3)
+                        if (len(parts) == 4 and parts[0] == "usage"
+                                and (parts[1] == location or parts[2] == physical)):
+                            names.append(entry.name)
+                return sorted(names)
+            names = inventory()
+            for name in names:
+                # Contention, unsafe files, and all IO failures fail closed.
+                with _advisory_lock_file(directory / name, 0, create=False):
+                    pass
+            if (inventory() != names or self._token_marker_prefix() != (directory, prefix)
+                    or not os.path.samestat(directory_stat, directory.lstat())):
+                return True
+            return False
+        except Exception:
+            logger.warning("Cannot verify pending accounting markers", exc_info=True)
+            return True
+
+    def _claim_token_batch_locked(self):
+        """Claim the current queue while its condition is held."""
+        batch = list(self._token_queue)
+        self._token_writer_claim = batch
+        self._token_writer_claim_owner = threading.get_ident()
+        self._token_writer_busy = True
+        self._token_queue.clear()
+        return batch
+
+    def _quarantine_abandoned_claim(self):
+        """A signal at the claim boundary has no reliable per-item progress receipt."""
+        with self._token_queue_cond:
+            if self._token_writer_claim_owner != threading.get_ident():
+                return
+            batch = self._token_writer_claim or []
+            if self._token_writer_busy:
+                # If interrupted before clear(), remove the same objects from the live queue;
+                # otherwise new arrivals remain behind the uncertain claim.
+                if len(self._token_queue) >= len(batch) and all(
+                    self._token_queue[i] is item for i, item in enumerate(batch)
+                ):
+                    for _ in batch:
+                        self._token_queue.popleft()
+                self._token_writer_uncertain.extend(batch)
+                self._token_writer_busy = False
+            self._token_writer_claim = self._token_writer_claim_owner = None
+            self._token_queue_cond.notify_all()
+
+    def _apply_claimed_batch(self, batch) -> bool:
+        """Retain known suffixes and never automatically replay an unknown-effect item."""
+        pending, uncertain, interrupt = [], [], None
+        try:
+            pending = self._apply_token_batch(batch) or []
+        except _TokenBatchInterrupted as stopped:
+            pending, uncertain = stopped.pending, stopped.uncertain
+            if isinstance(stopped.cause, Exception):
+                logger.warning("async token accounting: item outcome unknown; retaining work", exc_info=True)
+            else:
+                interrupt = stopped.cause
+        except BaseException as exc:
+            # The helper escaped without a progress receipt: no prefix is safe to replay.
+            uncertain = batch
+            if isinstance(exc, Exception):
+                logger.warning("async token accounting: batch outcome unknown; retaining work", exc_info=True)
+            else:
+                interrupt = exc
         finally:
             with self._token_queue_cond:
-                self._token_writer_busy = False
-                self._token_queue_cond.notify_all()
+                try:
+                    self._token_writer_uncertain.extend(uncertain)
+                    self._token_queue.extendleft(reversed(pending))
+                finally:
+                    self._token_writer_busy = False
+                    self._token_writer_claim = self._token_writer_claim_owner = None
+                    self._token_queue_cond.notify_all()
+        if interrupt is not None:
+            raise interrupt.with_traceback(interrupt.__traceback__)
+        with self._token_queue_cond:
+            try:
+                self._release_idle_token_marker()
+            except Exception:
+                logger.warning("Cannot release idle accounting marker", exc_info=True)
+                return False
+        return not pending and not uncertain
 
     def flush_for_read(self) -> bool:
         """Read-side token barrier. On a thread running an asyncio loop it never waits: the writer can sit
@@ -158,68 +468,146 @@ class SessionUsageMixin:
 
     def flush_token_counts(self, timeout: float = 5.0) -> bool:
         """Block until every queued token delta has been applied. False on timeout (callers
-        then read totals stale by the queued deltas). Never raises."""
+        then read totals stale by the queued deltas). Process-control interrupts remain visible."""
         # Lock-free fast path: reads queue-then-busy (see ordering notes below).
-        if not self._token_queue and not self._token_writer_busy:
+        if (not self._token_queue and not self._token_writer_busy and not self._token_writer_uncertain
+                and self._token_pending_marker is None):
             return True
-        batch = None
-        with self._token_queue_cond:
-            deadline = time.monotonic() + timeout
-            while self._token_queue or self._token_writer_busy:
-                # A live writer is authoritative even when stop-flagged: draining here would
-                # race its in-flight batch and reorder deltas (breaking last-non-None-wins /
-                # first-accounted-route / COALESCE-backfill fields). Only a dead writer lets
-                # the caller take leftovers; a claimed busy means "wait".
-                thread = self._token_writer_thread
-                if (thread is None or not thread.is_alive()) and not self._token_writer_busy:
-                    self._token_writer_busy = True
-                    batch = list(self._token_queue)
-                    self._token_queue.clear()
-                    break
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
+        # Polling must not claim accepted work or enter a blocking write path.
+        if timeout <= 0:
+            return False
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                if not self._token_queue_cond.acquire(timeout=max(0.0, deadline - time.monotonic())):
                     return False
-                self._token_queue_cond.wait(remaining)
-        if batch:
-            self._apply_claimed_batch(batch)
-        return True
+                try:
+                    batch = self._wait_or_claim_token_batch(deadline)
+                finally:
+                    self._token_queue_cond.release()
+                if batch is None:
+                    return False
+                if not batch:
+                    return True
+                previous_deadline = getattr(self._token_batch_write_context, "deadline", None)
+                self._token_batch_write_context.deadline = deadline
+                try:
+                    if not self._apply_claimed_batch(batch):
+                        return False
+                finally:
+                    self._token_batch_write_context.deadline = previous_deadline
+                # A respawned writer can claim work accepted during our drain. Rejoin
+                # the same deadline-bound barrier rather than snapshotting its busy flag.
+
+        finally:
+            if self._token_writer_claim_owner == threading.get_ident():
+                self._quarantine_abandoned_claim()
+
+    def _wait_or_claim_token_batch(self, deadline):
+        """Under the queue condition, return a claim, [] for settled, or None for failure."""
+        while True:
+            if self._token_writer_uncertain:
+                return None
+            if not self._token_queue and not self._token_writer_busy:
+                try:
+                    self._release_idle_token_marker()
+                except Exception:
+                    logger.warning("Cannot release idle accounting marker", exc_info=True)
+                    return None
+                return []
+            # A live writer is authoritative even when stop-flagged: draining here would
+            # race its in-flight batch and reorder deltas (breaking last-non-None-wins /
+            # first-accounted-route / COALESCE-backfill fields). Only a dead writer lets
+            # the caller take leftovers; a claimed busy means "wait".
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            thread = self._token_writer_thread
+            if (thread is None or not thread.is_alive()) and not self._token_writer_busy:
+                return self._claim_token_batch_locked()
+            self._token_queue_cond.wait(remaining)
 
     def _token_writer_loop(self) -> None:
         while True:
-            with self._token_queue_cond:
-                idle_deadline = time.monotonic() + self._TOKEN_WRITER_IDLE_SECONDS
-                while not self._token_queue and not self._token_writer_stop:
-                    remaining = idle_deadline - time.monotonic()
-                    if remaining <= 0:
-                        # Retire under the lock queue_token_counts() spawns under, so no
-                        # delta strands behind an exiting worker.
+            try:
+                with self._token_queue_cond:
+                    # A respawn may overlap a caller draining the previous writer's
+                    # leftovers. Keep one claim authoritative until its receipt settles.
+                    while self._token_writer_busy:
+                        self._token_queue_cond.wait()
+                    if self._token_writer_uncertain:
                         self._token_writer_thread = None
+                        self._token_queue_cond.notify_all()
                         return
-                    self._token_queue_cond.wait(remaining)
-                if not self._token_queue:
-                    self._token_writer_thread = None
-                    return  # stop requested and fully drained
-                # busy BEFORE clearing the queue: flush's lock-free fast path must never see
-                # "empty and idle" while a popped batch is unapplied.
-                self._token_writer_busy = True
-                batch = list(self._token_queue)
-                self._token_queue.clear()
-            self._apply_claimed_batch(batch)
+                    idle_deadline = time.monotonic() + self._TOKEN_WRITER_IDLE_SECONDS
+                    while not self._token_queue and not self._token_writer_stop:
+                        remaining = idle_deadline - time.monotonic()
+                        if remaining <= 0:
+                            # Retire under the lock queue_token_counts() spawns under, so no
+                            # delta strands behind an exiting worker.
+                            self._token_writer_thread = None
+                            return
+                        self._token_queue_cond.wait(remaining)
+                    if not self._token_queue:
+                        self._token_writer_thread = None
+                        return  # stop requested and fully drained
+                    # busy BEFORE clearing the queue: flush's lock-free fast path must never see
+                    # "empty and idle" while a popped batch is unapplied.
+                    batch = self._claim_token_batch_locked()
+                if not self._apply_claimed_batch(batch):
+                    # Leave rejected work queued without spinning; a later flush may retry.
+                    with self._token_queue_cond:
+                        self._token_writer_thread = None
+                        self._token_queue_cond.notify_all()
+                    return
 
-    def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> None:
-        """Apply queued deltas in order, coalescing where safe. Never raises."""
+            finally:
+                self._quarantine_abandoned_claim()
+
+    def _apply_token_batch(self, batch: list[tuple[str, dict[str, Any]]]) -> list:
+        """Apply in order; retain the failed delta and every unprocessed successor."""
         try:
             coalesced = self._coalesce_token_deltas(batch)
         except Exception as exc:
             # Coalescing must never kill the writer; the merge is only an optimization.
             logger.warning("async token accounting: coalesce failed, applying raw batch: %s", exc)
             coalesced = batch
-        for session_id, kwargs in coalesced:
+        except BaseException as exc:
+            raise _TokenBatchInterrupted(exc, [], batch) from exc
+        from hermes_state_lineage import SessionLineageError
+        for index, (session_id, kwargs) in enumerate(coalesced):
+            deadline = getattr(self._token_batch_write_context, "deadline", None)
+            if deadline is not None and time.monotonic() >= deadline:
+                return coalesced[index:]
+            receipt = _TokenBatchWriteReceipt()
+            previous = getattr(self._token_batch_write_context, "receipt", None)
+            self._token_batch_write_context.receipt = receipt
             try:
-                self.update_token_counts(session_id, **kwargs)
-            except Exception as exc:
-                # Accounting loss is logged, never raised into a turn.
-                logger.warning("async token accounting: apply failed (session=%s): %s", session_id, exc)
+                try:
+                    self.update_token_counts(session_id, **kwargs)
+                except SessionLineageError as exc:
+                    if receipt.has_uncertain_effect():
+                        raise _TokenBatchInterrupted(
+                            exc, [coalesced[index]], coalesced[index + 1:]
+                        ) from exc
+                    logger.warning("async token accounting: apply refused; retaining queued deltas (session=%s): %s",
+                                   session_id, exc)
+                    return coalesced[index:]
+                except BaseException as exc:
+                    if receipt.proves_unapplied(exc):
+                        if not isinstance(exc, Exception):
+                            raise _TokenBatchInterrupted(exc, [], coalesced[index:]) from exc
+                        logger.warning(
+                            "async token accounting: write proven unapplied; "
+                            "retaining the unapplied delta and suffix (session=%s)", session_id)
+                        return coalesced[index:]
+                    # A callback interruption or ambiguous commit may have persisted this item.
+                    raise _TokenBatchInterrupted(
+                        exc, [coalesced[index]], coalesced[index + 1:]
+                    ) from exc
+            finally:
+                self._token_batch_write_context.receipt = previous
+        return []
 
     def _coalesce_token_deltas(self, batch: list[tuple[str, dict[str, Any]]]) -> list[tuple[str, dict[str, Any]]]:
         """Merge adjacent incremental deltas with an identical route, so ordering across
@@ -242,7 +630,7 @@ class SessionUsageMixin:
                 groups.append((key, session_id, dict(kwargs)))
         return [(sid, kw) for _, sid, kw in groups]
 
-    def _stop_token_writer(self, join_timeout: float = 10.0) -> None:
+    def _stop_token_writer(self, join_timeout: float = 10.0) -> bool:
         """Stop the writer thread and drain remaining deltas. Never raises."""
         with self._token_queue_cond:
             self._token_writer_stop = True
@@ -255,28 +643,44 @@ class SessionUsageMixin:
                 logger.warning(
                     "async token accounting: writer did not stop within %.0fs; "
                     "%d queued delta(s) not persisted", join_timeout, len(self._token_queue))
-                return
+                return False
         # Writer gone: apply leftovers synchronously under the same busy protocol. Wait out
         # a flush caller-drain that already claimed busy — close() nulls the connection
         # right after this returns and must not yank it mid-batch.
-        with self._token_queue_cond:
-            deadline = time.monotonic() + join_timeout
-            while self._token_writer_busy:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    logger.warning(
-                        "async token accounting: concurrent drain did not "
-                        "finish within %.0fs; %d queued delta(s) not persisted",
-                        join_timeout, len(self._token_queue))
-                    return
-                self._token_queue_cond.wait(remaining)
-            # busy BEFORE clearing the queue (same ordering as the writer loop).
-            batch = list(self._token_queue)
+        try:
+            with self._token_queue_cond:
+                if self._token_writer_uncertain:
+                    return False
+                deadline = time.monotonic() + join_timeout
+                while self._token_writer_busy:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        logger.warning(
+                            "async token accounting: concurrent drain did not "
+                            "finish within %.0fs; %d queued delta(s) not persisted",
+                            join_timeout, len(self._token_queue))
+                        return False
+                    self._token_queue_cond.wait(remaining)
+                    if self._token_writer_uncertain:
+                        return False
+                # busy BEFORE clearing the queue (same ordering as the writer loop).
+                batch = self._claim_token_batch_locked() if self._token_queue else []
             if batch:
-                self._token_writer_busy = True
-                self._token_queue.clear()
-        if batch:
-            self._apply_claimed_batch(batch)
+                if not self._apply_claimed_batch(batch):
+                    return False
+                with self._token_queue_cond:
+                    return not (self._token_queue or self._token_writer_busy
+                                or self._token_writer_uncertain or self._token_pending_marker is not None)
+            with self._token_queue_cond:
+                try:
+                    self._release_idle_token_marker()
+                except Exception:
+                    logger.warning("Cannot release idle accounting marker", exc_info=True)
+                    return False
+            return True
+
+        finally:
+            self._quarantine_abandoned_claim()
 
     def _drain_token_queue_at_exit(self) -> None:
         with contextlib.suppress(Exception):  # never fatal at interpreter shutdown
@@ -305,8 +709,26 @@ class SessionUsageMixin:
         # writer it must carry the agent's real source: the turn lease treats an existing row as
         # proof the create already happened, so the creator never returns to repair an anonymous
         # ``unknown`` placeholder and the session stays a phantom for life (#111999).
-        self._insert_session_row(session_id, source or "unknown", model=model)
-        self._execute_write(lambda conn: self._update_token_counts_in_transaction(conn, session_id, **values))
+        from hermes_state_lineage import session_lineage_guard, SessionLineageInventoryError, _lineage_inventory_deadline
+        from hermes_state_worker_lifecycle import insert_session_row_in_transaction
+        deadline = getattr(self._token_batch_write_context, "deadline", None)
+        def remaining():
+            if deadline is None:
+                return self._TRANSCRIPT_WRITE_PATIENCE_S
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise SessionLineageInventoryError("Accounting flush deadline expired before write")
+            return min(self._TRANSCRIPT_WRITE_PATIENCE_S, budget)
+        def write(conn):
+            insert_session_row_in_transaction(self, conn, session_id, source or "unknown", model=model)
+            self._update_token_counts_in_transaction(conn, session_id, **values)
+        with _lineage_inventory_deadline(deadline):
+            with session_lineage_guard(self.db_path, session_id, timeout_s=remaining()):
+                # Claimed batches were already accepted behind their marker. Direct
+                # synchronous writes are new admissions and must respect legacy work.
+                if getattr(self._token_batch_write_context, "receipt", None) is None:
+                    _require_legacy_accounting_clear(self)
+                self._execute_write(write, patience_s=remaining())
 
     def _update_token_counts_in_transaction(
         self, conn, session_id: str, input_tokens: int=0, output_tokens: int=0, model: str | None=None, cache_read_tokens: int=0,
@@ -422,7 +844,10 @@ class SessionUsageMixin:
                     "UPDATE sessions SET profile_name=? WHERE id=? AND profile_name IS NULL",
                     (own_profile, session_id))
             self._record_model_usage(conn, session_id, task=task, **usage)
-        self._execute_write(_write, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
+        from hermes_state_lineage import session_lineage_guard
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._TRANSCRIPT_WRITE_PATIENCE_S):
+            _require_legacy_accounting_clear(self)
+            self._execute_write(_write, patience_s=self._TRANSCRIPT_WRITE_PATIENCE_S)
 
     def auxiliary_usage_by_task(self, session_id: str) -> dict[str, dict[str, float]]:
         """Per-task auxiliary usage (``task != ''``: vision, compression, title_generation, ...) summed

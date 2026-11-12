@@ -599,6 +599,8 @@ def _ensure_session_db_row(session: dict) -> bool:
     """
     if not (key := session.get("session_key")):
         return
+    if session.get("_seed_compensation_unverified"):
+        return False
     # Persist into the session's own profile db (global remote mode), not the launch profile's — otherwise the unified
     # list mis-tags the row and resume 404s ("session not found").
     profile_home = session.get("profile_home")
@@ -613,7 +615,8 @@ def _ensure_session_db_row(session: dict) -> bool:
             return _db_error is None
         row_model, model_config = _workdir_row_model_config(session)
         try:
-            db.create_session(
+            create = db._create_fresh_session if session.get("_fresh_generated_key") else db.create_session
+            create(
                 key, source=_session_source(session), model=row_model, model_config=model_config or None,
                 parent_session_id=session.get("parent_session_id") or None, cwd=_persisted_session_cwd(session),
                 # The login this session was opened under, in the same ``<provider>:<id>`` form the agent is
@@ -628,6 +631,7 @@ def _ensure_session_db_row(session: dict) -> bool:
                 # backfill ran stayed NULL forever: profile-keyed matching then drops them from the sidebar
                 # and deep links can't resolve them (#99222).
                 profile_name=profile_name_for_home(profile_home) or _current_profile_name())
+            session["_fresh_generated_key"] = False
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:
@@ -644,9 +648,14 @@ def _ensure_session_db_row(session: dict) -> bool:
                     logger.debug("failed to apply pending archived flag", exc_info=True)
             _schedule_row_git_meta(session, key, db)
         except Exception as exc:
+            from hermes_state_lineage import FreshSessionCollision
+            if isinstance(exc, FreshSessionCollision):
+                raise
             # Disk-full is not a soft failure: swallowed here, prompt.submit returns {"status":"streaming"} and the
             # message vanishes silently.
             _workdir_reraise_disk_full(exc, "failed to persist desktop session row")
+            if session.get("_fresh_generated_key"):
+                return False
     return True
 
 
@@ -690,26 +699,31 @@ def _persist_branch_seed(session: dict) -> None:
         return
     from agent.message_metadata import message_identity
     from agent.transcript_repair import sync_flushed_message_markers
-    with session["history_lock"]:  # message_identity stamps the live dicts
-        live = list(session.get("history") or [])
-        seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
-                 **message_identity(msg)} for msg in live]
-    if not seed:
-        return
-    with _session_db(session) as db:
-        if db is None:
-            return
-        try:
-            # Chunked so each BEGIN IMMEDIATE stays short (a seed can be hundreds of rows); a mid-copy failure leaves a
-            # partial seed with _branch_seed_persisted unset.
-            # Bounded-chunk transactions (see #23254): a branch seed can be hundreds of rows; chunking keeps
-            # each BEGIN IMMEDIATE short so concurrent writers aren't starved.
+    with session["history_lock"]:  # ownership stays held through the write and proof sync
+        if not (key := session.get("session_key")) or not session.get("seeded") or session.get("_branch_seed_persisted"):
+            return  # another seed writer may have completed while this caller waited
+        pending = session.get("_branch_seed_pending")
+        if pending is None:
+            live = list(session.get("history") or [])
+            seed = [{"role": msg.get("role", "user"), **{f: msg.get(f) for f in _WORKDIR_SEED_FIELDS},
+                     **message_identity(msg)} for msg in live]
+            if not seed:
+                return
+            session["_branch_seed_pending"] = (key, live, seed, int(session.get("history_version", 0)))
+        else:
+            pending_key, live, seed, version = pending
+            if pending_key != key or version != int(session.get("history_version", 0)):
+                raise ValueError("Seed session or history changed before persistence completed")
+        with _session_db(session) as db:
+            if db is None:
+                return
+            # Bounded transactions keep large seeds from starving concurrent writers. Retain
+            # pending row proofs on ANY failure and let submit refuse the new user row:
+            # accepting it between committed chunks would reorder the durable transcript.
             db.append_messages_batch(key, seed, chunk_rows=500)
-            with session["history_lock"]:
-                sync_flushed_message_markers(live, seed)
+            sync_flushed_message_markers(live, seed)
+            session.pop("_branch_seed_pending", None)
             session["_branch_seed_persisted"] = True
-        except Exception as exc:
-            _workdir_reraise_disk_full(exc, "branch seed persist failed")
 
 
 def _submit_row_target_key(session: dict) -> str:
@@ -888,6 +902,8 @@ def _rewind_active_session_history(
             outcome = db.rewind_user_turn(
                 session_key, user_ordinal, warm_history=history, require_retryable=require_retryable,
                 adopt_row_ids=True)
+            from .session_seed import finish_seed_replacement
+            finish_seed_replacement(session, session_key)
         installed, live_view, rewound_count = outcome.prefix, outcome.live_view, outcome.rewound_count
     else:
         target_index = user_indices[user_ordinal]

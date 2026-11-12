@@ -15,6 +15,7 @@ from hermes_state_common import (
     _BOUNDARY_END_REASONS, _COMPRESSION_LOCK_ROW_SQL as _LOCK_ROW_SQL, _ENDED_ROW_SQL, _ended_by_compression,
     _RESET_CHILD_SQL, _non_continuation_child_sql, _sql_json_extract, _sql_session_last_active,
     is_automatic_end_reason)
+from hermes_state_lineage import session_lineage_guard
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -182,7 +183,7 @@ class SessionCompressionMixin:
     """Compression lineage, cooldown/streak counters, locks and turn leases."""
 
     def reopen_if_explicitly_closed(
-        self, session_id: str, *, provenance: str, patience_s: Optional[float] = None,
+        self: Any, session_id: str, *, provenance: str, patience_s: Optional[float] = None,
     ) -> Optional[str]:
         """Clear an explicit-close stamp (``tui_close``, ``cli_close``, ``webhook_complete``, ...) from a
         session a HOST has just proven is still routed to it, returning the reason cleared or None (#106459).
@@ -217,7 +218,8 @@ class SessionCompressionMixin:
                 "WHERE id = ? AND ended_at = ? AND end_reason = ?",
                 (session_id, row["ended_at"], reason))
             return str(reason)
-        reason = self._execute_write(_do, patience_s=patience_s)
+        with session_lineage_guard(self.db_path, session_id, timeout_s=(self._WRITE_PATIENCE_S if patience_s is None else patience_s)):
+            reason = self._execute_write(_do, patience_s=patience_s)
         if reason is not None:
             logger.warning(
                 "Session %s carried a stale %r end stamp while %s; cleared so the conversation can "
@@ -266,7 +268,7 @@ class SessionCompressionMixin:
             ).fetchall()
         return self._session_row_dict(rows[0]) if len(rows) == 1 else None
 
-    def reopen_orphaned_compression_session(self, session_id: str) -> bool:
+    def reopen_orphaned_compression_session(self: Any, session_id: str) -> bool:
         """Reopen a compression parent only when no continuation was published (older
         builds could leave a closed parent after an interrupted handoff). Conservative:
         an active lease or any canonical child means another path owns the lineage."""
@@ -321,7 +323,8 @@ class SessionCompressionMixin:
             # rowcount==1 is guaranteed by the parent SELECT in this same txn. A False return added past
             # this point must raise instead: the lease DELETE above commits unless _do raises.
             return updated.rowcount == 1
-        return bool(self._execute_write(_do))
+        with session_lineage_guard(self.db_path, session_id, timeout_s=self._WRITE_PATIENCE_S):
+            return bool(self._execute_write(_do))
 
     def _publish_child_session_row(self, conn, parent, *, parent_session_id, child_session_id, source,
                                    model, model_config, system_prompt, cwd, profile_name) -> None:
@@ -371,7 +374,7 @@ class SessionCompressionMixin:
         )
 
     def publish_compression_child(
-        self, *, parent_session_id: str, child_session_id: str, source: str,
+        self: Any, *, parent_session_id: str, child_session_id: str, source: str,
         messages: list[dict[str, Any]], model: str | None = None, model_config: dict[str, Any] | None = None,
         system_prompt: str | None = None, cwd: str | None = None, profile_name: str | None = None,
         compression_lock_holder: str | None = None, require_compression_lease: bool = True,
@@ -392,12 +395,18 @@ class SessionCompressionMixin:
         See #75316.
         ``None`` = unbounded (no internal flush happened). See #47202.
         """
-        self._execute_transcript_write(lambda conn: self._publish_compression_child_on_conn(
-            conn, parent_session_id=parent_session_id, child_session_id=child_session_id, source=source,
-            messages=messages, model=model, model_config=model_config, system_prompt=system_prompt,
-            cwd=cwd, profile_name=profile_name, compression_lock_holder=compression_lock_holder,
-            require_compression_lease=require_compression_lease, require_lease_refresh=require_lease_refresh,
-            lease_ttl_seconds=lease_ttl_seconds, watermark=watermark, watermark_ceiling=watermark_ceiling), messages)
+        from hermes_state_lineage import guarded_discovered_session_write
+        from hermes_state_mutation_ownership import compression_publication_ids
+        guarded_discovered_session_write(
+            self, (parent_session_id, child_session_id),
+            lambda conn: compression_publication_ids(conn, parent_session_id, child_session_id),
+            lambda conn: self._publish_compression_child_on_conn(
+                conn, parent_session_id=parent_session_id, child_session_id=child_session_id, source=source,
+                messages=messages, model=model, model_config=model_config, system_prompt=system_prompt,
+                cwd=cwd, profile_name=profile_name, compression_lock_holder=compression_lock_holder,
+                require_compression_lease=require_compression_lease, require_lease_refresh=require_lease_refresh,
+                lease_ttl_seconds=lease_ttl_seconds, watermark=watermark, watermark_ceiling=watermark_ceiling),
+            execute_write=lambda write, **kwargs: self._execute_transcript_write(write, messages, **kwargs))
 
     def _publish_compression_child_on_conn(
             self, conn, *, parent_session_id: str, child_session_id: str, source: str,

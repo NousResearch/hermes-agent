@@ -160,8 +160,15 @@ def test_exact_owner_lineage_validation_and_bounded_jump(timeline_store):
     work = home / "profiles" / "work"
     work.mkdir(parents=True)
     with SessionDB(db_path=work / "state.db") as other:
-        other.create_session(session_id=sid, source="desktop")
-        other.append_message(sid, role="user", content="work ask")
+        # Seed legacy duplicate ownership directly; regular writes must reject it.
+        other._write_sql(
+            "INSERT INTO sessions (id, source, profile_name, started_at, message_count) "
+            "VALUES (?, 'desktop', 'work', 1, 1)", (sid,),
+        )
+        other._write_sql(
+            "INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES (?, 'user', 'work ask', 1)", (sid,),
+        )
     for profile, expected in (("default", "tip ask"), ("work", "work ask"), ("default", "tip ask")):
         page = client.get(f"/api/sessions/{sid}/timeline?profile={profile}").json()
         assert page["profile"] == profile

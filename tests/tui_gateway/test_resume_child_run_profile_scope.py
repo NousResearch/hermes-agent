@@ -23,37 +23,6 @@ import pytest
 from tui_gateway import server
 
 
-class _EmptyDB:
-    """Stand-in for ``hermes_state.SessionDB``: the caller's own store, which
-    holds no row for the foreign child id."""
-
-    def __init__(self, db_path=None, **_kwargs):
-        self.db_path = db_path
-        self.closed = 0
-
-    def close(self):
-        self.closed += 1
-
-    def get_session(self, _target):
-        return None
-
-    def get_session_by_title(self, _target):
-        return None
-
-    def resolve_resume_session_id(self, target):
-        return target
-
-    def reopen_session(self, _target):
-        return None
-
-    def get_resume_conversations(self, _target):
-        return ([], [])
-
-    def get_ancestor_display_prefix(self, _target):
-        return []
-
-    def get_messages_as_conversation(self, _target, **_kwargs):
-        return []
 
 
 @pytest.fixture()
@@ -65,7 +34,6 @@ def two_profiles(monkeypatch, tmp_path):
         homes[name] = home
     monkeypatch.setattr(server, "_profile_home", lambda profile: homes.get(profile))
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _home: str(tmp_path))
-    monkeypatch.setattr("hermes_state_registry.acquire", _EmptyDB)
     monkeypatch.setattr(server, "_find_live_session_by_key", lambda _key, *_a, **_k: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)

@@ -147,7 +147,7 @@ def worker_billing_route(db, conn, session_id, payload):
 
 
 def worker_api_content(db, conn, session_id, payload):
-    from hermes_state_messages import _scrub_surrogates
+    from hermes_state_messages_text import _scrub_surrogates
     if set(payload) != {'content', 'api_content'} or not isinstance(payload['api_content'], str):
         raise RuntimeStoreError('invalid_params')
     value = conn.execute(
@@ -166,7 +166,7 @@ def _row_id(payload):
 
 def worker_message_api_content(db, conn, session_id, payload):
     """Row-addressed sidecar backfill, same guards as ``SessionDB.set_message_api_content``."""
-    from hermes_state_messages import _scrub_surrogates
+    from hermes_state_messages_text import _scrub_surrogates
     if set(payload) != {'row_id', 'content', 'api_content'} or not isinstance(payload['api_content'], str):
         raise RuntimeStoreError('invalid_params')
     return {'value': conn.execute(

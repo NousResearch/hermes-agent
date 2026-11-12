@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from agent.i18n import t
 from gateway.platforms.event import MessageEvent
+from gateway.model_publication import publication_lock
 from hermes_cli.config import atomic_config_write
 from utils import base_url_host_matches
 
@@ -210,7 +211,8 @@ class GatewayModelCommandsMixin:
         return None
 
     async def _record_model_switch(
-        self, result, ctx: _ModelSwitchContext, *, source, one_turn: bool, picker: bool
+        self, result, ctx: _ModelSwitchContext, *, source, one_turn: bool, picker: bool,
+        persist_db: bool = True,
     ) -> Optional[str]:
         """Persist a committed switch: session DB, next-turn note, config write-through, override map.
 
@@ -221,7 +223,7 @@ class GatewayModelCommandsMixin:
 
         # Persist the new model to the session DB so the dashboard shows the updated model (#34850).
         _sess_db = getattr(self, "_session_db", None)
-        if _sess_db is not None:  # so the dashboard shows the updated model
+        if _sess_db is not None and persist_db and not one_turn:  # receipt picks use their own transaction
             try:
                 _sess_entry = await self.async_session_store.get_or_create_session(source)
                 # Typed path: consume the auto-reset flag so the next message's cleanup does not
@@ -231,7 +233,7 @@ class GatewayModelCommandsMixin:
                     _sess_entry.was_auto_reset = False
                 await _sess_db.update_session_model(
                     _sess_entry.session_id, result.new_model, provider=result.target_provider,
-                    base_url=result.base_url, api_mode=result.api_mode,
+                    base_url=result.base_url, api_mode=result.api_mode, resolve_tip=True,
                 )
             except Exception as exc:
                 logger.debug("Failed to persist model switch to DB: %s", exc)
@@ -372,7 +374,8 @@ class GatewayModelCommandsMixin:
         Entry for the picker / cost-confirm callbacks, which fire outside ``_handle_model_command``
         and take the switch lock themselves; the typed path already holds it."""
         async with self._model_switch_lock():
-            return await self._commit_model_switch_locked(result, ctx, source=source, picker=picker)
+            async with publication_lock(self, None if ctx.persist_global else ctx.session_key):
+                return await self._commit_model_switch_locked(result, ctx, source=source, picker=picker)
 
     def _channel_override_for(self, source):
         """This chat's ``channel_overrides`` entry (model/provider), or None."""
@@ -509,10 +512,12 @@ class GatewayModelCommandsMixin:
         if adapter is not None and getattr(type(adapter), "send_model_picker", None) is not None:
             async def _picker_switch(model_id: str, provider_slug: str) -> str:
                 # The picker callback binds the raw event source (pre-normalization).
-                result, error = await self._perform_model_switch(ctx, model_id, provider_slug, event.source)
-                if error is not None:
-                    return error
-                return await self._commit_model_switch(result, ctx, source=event.source, picker=True)
+                async with self._model_switch_lock():
+                    async with publication_lock(self, None if ctx.persist_global else ctx.session_key):
+                        result, error = await self._perform_model_switch(ctx, model_id, provider_slug, event.source)
+                        if error is not None:
+                            return error
+                        return await self._commit_model_switch_locked(result, ctx, source=event.source, picker=True)
 
             async def _on_model_selected(_chat_id: str, model_id: str, provider_slug: str) -> str:
                 if profile_home is None:
@@ -621,25 +626,38 @@ class GatewayModelCommandsMixin:
             reasoning_effort=request.reasoning_effort,
             restore_snapshot=self._snapshot_session_model_override(session_key) if request.is_once else None,
         )
-        ctx.read_config()
-        if request.is_reset:
-            return await self._handle_model_reset(event, ctx)
-        # Turn precedence: session /model > channel_overrides > config.yaml.
-        # The channel's full route as the turn resolves it, so a config-backed endpoint (custom) survives.
-        from gateway.session_info_route import channel_override_route
-        _ch_model, _ch_route, _ch_forced = await asyncio.to_thread(channel_override_route, getattr(self, "config", None), source)
-        if _ch_model:
-            ctx.apply_override({"model": _ch_model, **(_ch_route or ({"provider": _ch_forced} if _ch_forced else {}))})
-        ctx.apply_override(self._session_model_overrides.get(session_key, {}))
-        if not request.target and not request.explicit_provider:
+        # Opening a picker publishes nothing; its selection callback takes the gate.
+        if not request.is_reset and not request.target and not request.explicit_provider:
+            ctx.read_config()
+            await self._apply_effective_model_route(ctx, source)
             return await self._model_listing_reply(event, ctx, profile_home)
-        result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
-        if error is not None:
-            return error
-        guard_fired, guard_reply = await self._model_selection_guard_reply(event, ctx, result)
-        if guard_fired:
-            return guard_reply
-        return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
+        # Reset only clears this route, even when ordinary picks persist by default.
+        async with publication_lock(self, None if ctx.persist_global and not request.is_reset else session_key):
+            ctx.read_config()
+            if request.is_reset:
+                return await self._handle_model_reset(event, ctx)
+            await self._apply_effective_model_route(ctx, source)
+            result, error = await self._perform_model_switch(ctx, request.target, request.explicit_provider, source)
+            if error is not None:
+                return error
+            guard_fired, guard_reply = await self._model_selection_guard_reply(event, ctx, result)
+            if guard_fired:
+                return guard_reply
+            return await self._commit_model_switch_locked(result, ctx, source=source, picker=False)
+
+    async def _apply_effective_model_route(self, ctx: _ModelSwitchContext, source) -> None:
+        """Apply the turn's route precedence after config: channel, then session."""
+        from gateway.session_info_route import channel_override_route
+
+        model, route, forced_provider = await asyncio.to_thread(
+            channel_override_route, getattr(self, "config", None), source,
+        )
+        if model or route or forced_provider:
+            ctx.apply_override({
+                "model": model or ctx.current_model,
+                **(route or ({"provider": forced_provider} if forced_provider else {})),
+            })
+        ctx.apply_override(self._session_model_overrides.get(ctx.session_key, {}))
 
     def _channel_default_route(self, source, config_path) -> tuple[str, str]:
         """``(model, provider)`` this chat runs with no session override: channel_overrides, else the
@@ -654,7 +672,8 @@ class GatewayModelCommandsMixin:
             return channel.model, channel.provider or ""
         return _resolve_gateway_model(cfg), "" if provider.lower() == "auto" else provider
 
-    async def _handle_model_reset(self, event: MessageEvent, ctx: _ModelSwitchContext) -> Optional[str]:
+    async def _handle_model_reset(self, event: MessageEvent, ctx: _ModelSwitchContext,
+                                  *, picker: bool = False, persist_db: bool = True) -> Optional[str]:
         """``/model reset``: drop this session's /model override (memory, store and any armed
         ``--once`` restore) so the next turn resolves channel_overrides > config.yaml again. The
         transcript is kept; before this the only way off a persisted override was ``/new``."""
@@ -685,10 +704,11 @@ class GatewayModelCommandsMixin:
             return t("gateway.model.reset_none", model=shown)
         from hermes_cli.model_switch import format_model_for_display
         _sess_db = getattr(self, "_session_db", None)
-        if _sess_db is not None:  # the dashboard's session-model column (#34850)
+        if _sess_db is not None and persist_db:  # receipt-backed resets publish in their transaction
             try:
                 entry = await self.async_session_store.get_or_create_session(source)
-                await _sess_db.update_session_model(entry.session_id, default_model, provider=default_provider or None)
+                await _sess_db.update_session_model(
+                    entry.session_id, default_model, provider=default_provider or "auto", resolve_tip=True)
             except Exception:
                 logger.debug("Failed to persist model reset to DB", exc_info=True)
         if not hasattr(self, "_pending_model_notes"):

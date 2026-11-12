@@ -572,6 +572,8 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
                 db.replace_messages(
                     truncation_key, truncated, active_only=True, archive_dropped=True,
                     reject_active_turn_lease=True)
+                from .session_seed import finish_seed_replacement
+                finish_seed_replacement(session, truncation_key)
             except Exception as exc:
                 logger.error(
                     "prompt.submit: replace_messages failed for session %s (ordinal=%d); refusing "
@@ -638,6 +640,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
                 data=_storage_error_data(failure, _db_error))
         else:
             _persist_branch_seed(session)
+            if session.get("_branch_seed_pending") is not None:
+                raise RuntimeError("Seed transcript could not be persisted before submit")
             # The first real turn reopens a finalized row (#85303): resume is read-only, so
             # an ended_at set at mount time is cleared HERE, before the turn's first write.
             with _session_db(session) as db:
@@ -812,6 +816,65 @@ def _lock_in_submit_turn(
     return None, fields
 
 
+def _claim_idle_submit(
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind, turn_isolation,
+):
+    """Return (error, survivor fields, slot refusal), or None for a busy session."""
+    with _submit_admission_lock(session):
+        with session["history_lock"]:
+            if session.get("running"):
+                return None
+        # A preceding refused submit may have released the lease after this request's
+        # initial check. Reclaim before writes, without interrupting a detached owner.
+        if session.get("active_session_lease") is None:
+            refusal = _ensure_active_session_slot(sid, session, False)
+            if refusal is not None:
+                return None, {}, refusal
+        err, fields = _lock_in_submit_turn(
+            rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+        if err is None and not turn_isolation:
+            err = _persist_session_row_for_submit(rid, session, text, display_kind)
+        return err, fields, None
+
+
+def _admit_prompt_submit(
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+    turn_isolation, internal_hosted_submit, turn_author, transport,
+):
+    """Claim and persist an idle turn, or route a busy/ownership response outside admission."""
+    # Claim the turn against a possibly-running session (busy/queued reply, else fall
+    # through once ``running`` is observed False).  The provider interrupt happens after
+    # history_lock is released (a non-interruptible tool may hold it); if the old turn
+    # finished between the two acquisitions, retry the claim rather than strand this
+    # prompt in a queue whose drain already ran.
+    while True:
+        admission = _claim_idle_submit(
+            rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+            turn_isolation)
+        if admission is not None:
+            err, survivor_fields, slot_refusal = admission
+            break
+        if internal_hosted_submit:
+            return _err(rid, 4091, "hosted room member session is busy"), {}
+        busy_transport = transport or session.get("transport")
+        if has_truncation:
+            # A rewind/edit/restore/regenerate must land as a truncation, never as a
+            # steered correction or a plain follow-up queued to run after the live
+            # turn — either would silently drop the history cut the user asked for.
+            # Signal busy so the caller's own interrupt-then-retry loop (already
+            # built for exactly this race — see desktop's `runRewindSubmit`) waits
+            # for `running` to clear and resubmits with the truncation intact.
+            return _err(rid, 4009, "session busy"), {}
+        busy_response = _handle_busy_submit(
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
+            display_kind=display_kind)
+        if busy_response is not None:
+            return busy_response, {}
+    if slot_refusal is not None:
+        return _slot_refusal(rid, sid, session, text, params, slot_refusal, internal_hosted_submit), {}
+    return err, survivor_fields
+
+
 # Per-turn client surfaces that carry a model-bound note (session_notifications._hud_surface_note);
 # the canonical admission path shares the same set (gateway.session_surface).
 from gateway.session_surface import SURFACES as _CLIENT_SURFACES
@@ -886,37 +949,13 @@ def _(rid, params: dict) -> dict:
             return refusal
         if (t := current_transport()) is not None:
             _rebind_live_transport(sid, session, t)
-    # Claim the turn against a possibly-running session (busy/queued reply, else fall
-    # through once ``running`` is observed False).  The provider interrupt happens after
-    # history_lock is released (a non-interruptible tool may hold it); if the old turn
-    # finished between the two acquisitions, retry the claim rather than strand this
-    # prompt in a queue whose drain already ran.
-    while True:
-        with session["history_lock"]:
-            if not session.get("running"):
-                break
-            if internal_hosted_submit:
-                return _err(rid, 4091, "hosted room member session is busy")
-            busy_transport = t or session.get("transport")
-        if has_truncation:
-            # A rewind/edit/restore/regenerate must land as a truncation, never as a
-            # steered correction or a plain follow-up queued to run after the live
-            # turn — either would silently drop the history cut the user asked for.
-            # Signal busy so the caller's own interrupt-then-retry loop (already
-            # built for exactly this race — see desktop's `runRewindSubmit`) waits
-            # for `running` to clear and resubmits with the truncation intact.
-            return _err(rid, 4009, "session busy")
-        busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
-            display_kind=display_kind)
-        if busy_response is not None:
-            return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
     requested_rebind_ids = (
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
+    err, survivor_fields = _admit_prompt_submit(
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+        turn_isolation, internal_hosted_submit, turn_author, t)
     if err is not None:
         return err
     if turn_isolation:
@@ -953,8 +992,12 @@ def _(rid, params: dict) -> dict:
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s", sid,
             isolated_response["error"].get("message", "unknown error"))
-    if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
-        return err
+    if turn_isolation:
+        # Failed compute dispatch returns to inline ownership. Keep its storage/refusal
+        # boundary atomic with busy acceptance, without locking the compute call itself.
+        with _submit_admission_lock(session):
+            if (err := _persist_session_row_for_submit(rid, session, text, display_kind)) is not None:
+                return err
     # Capture before starting the worker: it consumes the staging dict and may finish before the RPC returns.
     staged_user = session.get("_submit_user_row") or {}
     if isinstance(staged_user.get("_row_id"), int):

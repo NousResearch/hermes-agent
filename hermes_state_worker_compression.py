@@ -363,7 +363,8 @@ def worker_receipt_assignment(conn, execution_id, session_id, generation, sequen
     receipt = conn.execute('SELECT payload_digest,result_json FROM worker_receipts WHERE execution_id=? AND sequence=?',
                            (execution_id, sequence)).fetchone()
     if receipt and receipt['payload_digest'] == digest:
-        assignment = json.loads(receipt['result_json']).get('worker_assignment')
+        result = json.loads(receipt['result_json'])
+        assignment = result.get('worker_assignment') if isinstance(result, dict) else None
         if assignment and assignment['parent'] == session_id:
             current = conn.execute('SELECT session_id FROM worker_executions WHERE execution_id=?', (execution_id,)).fetchone()
             return _worker_assignment(conn, execution_id, current['session_id'], generation)

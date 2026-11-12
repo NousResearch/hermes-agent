@@ -8,6 +8,7 @@ used instead of the ambient config default (#57588-class, #79536).
 
 import json
 
+import pytest
 
 import cli as cli_mod
 from hermes_state import SessionDB
@@ -174,29 +175,16 @@ class _Result:
 
 
 def test_persist_model_switch_writes_model_and_both_route_shapes():
-    written = {}
+    written = []
 
     class _DB:
-        def update_session_model(self, sid, model):
-            written["model"] = (sid, model)
-
-        def patch_session_model_config(self, sid, patch):
-            written["patch"] = (sid, patch)
+        def update_session_model(self, sid, model, **route):
+            written.append((sid, model, route))
 
     stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_Result())
-    assert written["model"] == ("s1", "deepseek-v4-flash-free")
-    _sid, patch = written["patch"]
-    # Nested shape for the CLI reader...
-    assert patch["gateway_runtime"]["provider"] == "custom:opencode-zen"
-    # ...and top-level for the TUI gateway's _stored_session_runtime_overrides.
-    assert patch["provider"] == "custom:opencode-zen"
-    assert patch["base_url"] == "https://oz/v1"
-    # Both shapes use or-None so stale keys are deleted (not merely omitted)
-    # in BOTH gateway_runtime and top-level — the asymmetry that caused the
-    # original stale-key bug.
-    assert patch["gateway_runtime"]["api_mode"] is None
-    assert patch["api_mode"] is None
+    assert written == [("s1", "deepseek-v4-flash-free", {
+        "provider": "custom:opencode-zen", "base_url": "https://oz/v1", "api_mode": None})]
 
 
 def test_persist_model_switch_clears_stale_route_keys(tmp_path, monkeypatch):
@@ -255,16 +243,22 @@ def test_persist_model_switch_swallows_db_errors():
     stub._persist_model_switch_to_session(_Result())  # must not raise
 
 
-def test_persist_model_switch_heals_bare_custom(monkeypatch):
-    """Bare 'custom' is not routable — heal to custom:<name> or drop (C1)."""
+def test_persist_model_switch_heals_bare_custom(tmp_path, monkeypatch):
+    """Name an endpoint's configured owner; preserve an explicit unmatched endpoint."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "model:\n  default: ambient-model\n  provider: openai\n"
+        "providers:\n  myendpoint:\n    base_url: https://my-endpoint/v1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("hermes_cli.local_runtime.endpoint._state_endpoint", lambda: None)
     written = {}
 
     class _DB:
-        def update_session_model(self, sid, model):
+        def update_session_model(self, sid, model, **route):
             written["model"] = model
-
-        def patch_session_model_config(self, sid, patch):
-            written["patch"] = patch
+            written["route"] = route
 
     class _BareResult:
         new_model = "qwen3.6-plus"
@@ -272,21 +266,152 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
         base_url = "https://my-endpoint/v1"
         api_mode = ""
 
-    import hermes_cli.runtime_provider as rp
-    monkeypatch.setattr(rp, "canonical_custom_identity",
-                        lambda base_url=None, model=None: "custom:myendpoint")
     stub = _make_stub(_session_db=_DB(), session_id="s1")
     stub._persist_model_switch_to_session(_BareResult())
-    assert written["patch"]["provider"] == "custom:myendpoint"
+    assert written["route"]["provider"] == "custom:myendpoint"
 
-    # Healing fails -> provider dropped (explicit None deletes any stale
-    # persisted provider), never persisted bare.
-    monkeypatch.setattr(rp, "canonical_custom_identity",
-                        lambda base_url=None, model=None: None)
+    # An explicit unmatched endpoint remains a resumable bare custom route.
+    config.write_text("model:\n  default: ambient-model\n  provider: openai\n", encoding="utf-8")
     written.clear()
     stub._persist_model_switch_to_session(_BareResult())
-    assert written["patch"]["provider"] is None
-    assert written["patch"]["gateway_runtime"]["provider"] is None
+    assert written["route"]["provider"] == "custom"
+    assert written["route"]["base_url"] == "https://my-endpoint/v1"
+
+
+@pytest.mark.parametrize(
+    "resolver_url,resolver_key,expected_key",
+    [
+        ("https://old.example.test/v1", "old-endpoint-key", None),
+        ("https://new-unmatched.example.test/v1", "new-endpoint-key", "new-endpoint-key"),
+    ],
+)
+def test_unmatched_custom_switch_restores_new_endpoint_with_bound_credentials(
+    tmp_path, monkeypatch, resolver_url, resolver_key, expected_key,
+):
+    from hermes_cli import runtime_provider
+    from types import SimpleNamespace
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "custom_providers: []" + chr(10) + "model:" + chr(10)
+        + "  default: old-model" + chr(10) + "  provider: openai" + chr(10),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    old_url = "https://old.example.test/v1"
+    new_url = "https://new-unmatched.example.test/v1"
+    db = SessionDB(db_path=home / "state.db")
+    db.create_session("custom-route", source="cli", model="old-model")
+    db.update_session_model("custom-route", "old-model", provider="openai",
+                            base_url=old_url, api_mode="chat_completions")
+
+    # The resolver must not replace a persisted endpoint with its ambient default.
+    monkeypatch.setattr(
+        runtime_provider, "resolve_runtime_provider",
+        lambda **_kwargs: {"api_key": resolver_key, "base_url": resolver_url,
+                           "api_mode": "chat_completions"},
+    )
+    stub = _make_stub(
+        _session_db=db, session_id="custom-route", model="review-model",
+        provider="custom", requested_provider="custom", base_url=new_url,
+        api_mode="chat_completions", api_key="ambient-secret",
+        _explicit_model_override=False, _explicit_base_url=None,
+    )
+
+    class _UnmatchedCustom:
+        new_model = "review-model"
+        target_provider = "custom"
+        base_url = new_url
+        api_mode = "chat_completions"
+
+    stub._persist_model_switch_to_session(_UnmatchedCustom())
+    row = db.get_session("custom-route")
+    config = json.loads(row["model_config"])
+    runtime = config["gateway_runtime"]
+    assert config["provider"] == runtime["provider"] == "custom"
+    assert config["base_url"] == runtime["base_url"] == new_url
+    assert config["api_mode"] == runtime["api_mode"] == "chat_completions"
+    assert runtime["model"] == "review-model"
+
+    resumed = _make_stub(
+        model="old-model", provider="openai", requested_provider="openai",
+        base_url=old_url, api_mode="chat_completions", api_key="ambient-secret",
+        _explicit_model_override=False, _explicit_base_url=None,
+    )
+    resumed._restore_session_model(row, quiet=True)
+    assert resumed.model == "review-model"
+    assert resumed.provider == "custom"
+    assert resumed.base_url == new_url
+    assert resumed.api_mode == "chat_completions"
+    assert resumed.api_key == expected_key
+
+
+def test_provider_change_same_endpoint_resolver_failure_clears_ambient_credentials(
+    tmp_path, monkeypatch,
+):
+    from hermes_cli import runtime_provider
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "custom_providers: []" + chr(10) + "model:" + chr(10)
+        + "  default: old-model" + chr(10) + "  provider: openai" + chr(10),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    session_id = "same-endpoint-provider-change"
+    endpoint = "https://same.example.test/v1"
+    db = SessionDB(db_path=home / "state.db")
+    db.create_session(session_id, source="cli", model="old-model")
+    db.update_session_model(session_id, "old-model", provider="openai",
+                            base_url=endpoint, api_mode="chat_completions")
+
+    switch = _make_stub(
+        _session_db=db, session_id=session_id, model="new-model",
+        provider="custom", requested_provider="custom", base_url=endpoint,
+        api_mode="chat_completions",
+    )
+
+    class _CustomSwitch:
+        new_model = "new-model"
+        target_provider = "custom"
+        base_url = endpoint
+        api_mode = "chat_completions"
+
+    switch._persist_model_switch_to_session(_CustomSwitch())
+    row = db.get_session(session_id)
+
+    resolver_calls = []
+    def fail_resolve(**kwargs):
+        resolver_calls.append(kwargs)
+        raise RuntimeError("injected credential resolver failure")
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", fail_resolve)
+
+    class _Agent:
+        def __init__(self, owner):
+            self.owner, self.calls = owner, []
+        def switch_model(self, **kwargs):
+            self.calls.append({"kwargs": kwargs, "pool": self.owner._credential_pool})
+
+    resumed = _make_stub(
+        model="old-model", provider="openai", requested_provider="openai",
+        base_url=endpoint, api_mode="chat_completions", api_key="ambient-secret",
+        _explicit_model_override=False, _explicit_base_url=None,
+        _credential_pool="ambient-pool",
+    )
+    resumed.agent = _Agent(resumed)
+    resumed._restore_session_model(row, quiet=True)
+
+    assert resolver_calls and resolver_calls[0]["requested"] == "custom"
+    assert resumed.model == "new-model" and resumed.provider == "custom"
+    assert resumed.base_url == endpoint and resumed.api_mode == "chat_completions"
+    assert resumed.api_key is None and resumed._credential_pool is None
+    assert resumed.agent.calls[0]["kwargs"] == {
+        "new_model": "new-model", "new_provider": "custom", "api_key": "",
+        "base_url": endpoint, "api_mode": "chat_completions",
+    }
+    assert resumed.agent.calls[0]["pool"] is None
 
 
 def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):
@@ -537,6 +662,36 @@ def test_restore_session_model_restores_billing_provider_fallback():
     })
     assert stub.model == "glm-4.7"
     assert stub.provider == "minimax"
+
+
+def test_same_model_provider_restores_saved_endpoint_and_wire(monkeypatch):
+    calls = []
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda **kw: calls.append(kw) or {
+                            "api_key": "resolved", "base_url": "https://saved.invalid/v1"})
+    stub = _make_stub(model="same", provider="custom:feather", requested_provider="custom:feather",
+                      base_url="https://ambient.invalid/v1", api_mode="chat_completions")
+    stub._restore_session_model(_row(model="same", model_config={"gateway_runtime": {
+        "model": "same", "provider": "custom:feather", "base_url": "https://saved.invalid/v1",
+        "api_mode": "anthropic_messages"}}))
+    assert (stub.model, stub.provider, stub.base_url, stub.api_mode) == (
+        "same", "custom:feather", "https://saved.invalid/v1", "anthropic_messages")
+    assert calls and stub.api_key == "resolved"
+
+
+def test_same_provider_explicit_launch_endpoint_still_wins(monkeypatch):
+    calls = []
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider",
+                        lambda **kw: calls.append(kw) or {})
+    stub = _make_stub(model="same", provider="custom:feather", requested_provider="custom:feather",
+                      base_url="https://explicit.invalid/v1", api_mode="chat_completions",
+                      _explicit_base_url="https://explicit.invalid/v1")
+    stub._restore_session_model(_row(model="same", model_config={"gateway_runtime": {
+        "model": "same", "provider": "custom:feather", "base_url": "https://saved.invalid/v1",
+        "api_mode": "anthropic_messages"}}))
+    assert stub.base_url == "https://explicit.invalid/v1"
+    assert stub.api_mode == "chat_completions"
+    assert calls == []
 
 
 def test_stored_session_route_heals_an_empty_provider_row_unless_the_main_slot_serves_it(monkeypatch):

@@ -1,3 +1,4 @@
+import json
 import os
 from unittest.mock import MagicMock, patch
 
@@ -8,6 +9,12 @@ from cli import HermesCLI
 
 def _make_cli():
     cli_obj = HermesCLI.__new__(HermesCLI)
+    # __init__ normally resolves the complete route before runtime/resume setup.
+    cli_obj.model = "ambient-model"
+    cli_obj.provider = cli_obj.requested_provider = "openrouter"
+    cli_obj.base_url = "https://openrouter.ai/api/v1"
+    cli_obj.api_mode = "chat_completions"
+    cli_obj.api_key = None
     cli_obj.session_id = "current_session"
     cli_obj._resumed = False
     cli_obj._pending_title = None
@@ -302,3 +309,48 @@ class TestResumeOpensTheTargetOnTheGateway:
         assert conn.states["current_session"].subscription_id == "sub-current_session"
         assert calls == [("session.resume", {"session_id": "target"})]  # asked once, nothing detached
         assert t("gateway.resume.switch_failed") in printed and refusal in printed
+
+
+@pytest.mark.parametrize('saved,expected_model', [
+    ({}, 'ambient-model'),
+    ({'model': None, 'model_config': json.dumps({'gateway_runtime': {
+        'model': 'saved-model', 'provider': 'openrouter', 'api_mode': 'chat_completions'}})}, 'saved-model'),
+])
+def test_resume_preserves_or_restores_initialized_route(saved, expected_model):
+    cli_obj = _make_cli()
+    cli_obj._session_db.get_session.return_value = {'id': 'target', **saved}
+    cli_obj._session_db.resolve_resume_session_id.return_value = 'target'
+    cli_obj._session_db.get_resume_conversations.return_value = ([], [])
+    with (patch('hermes_cli.main._resolve_session_by_name_or_id', return_value='target'),
+          patch('cli._cprint'), patch.object(cli_obj, '_console_print')):
+        cli_obj._handle_resume_command('/resume target')
+    assert cli_obj.session_id == 'target'
+    assert cli_obj.model == expected_model
+    assert cli_obj.provider == 'openrouter'
+    assert cli_obj.base_url == 'https://openrouter.ai/api/v1'
+    assert cli_obj.api_mode == 'chat_completions'
+
+
+def test_constructed_cli_restores_complete_saved_route_without_row_model(monkeypatch):
+    import cli as cli_module
+
+    monkeypatch.setitem(cli_module.CLI_CONFIG['model'], 'default', 'ambient-model')
+    monkeypatch.setattr('hermes_cli.model_switch.resolve_startup_model_route', lambda *args, **kwargs: None)
+    monkeypatch.setattr('hermes_cli.gateway_session_store.session_store', lambda: MagicMock())
+    monkeypatch.setattr('hermes_cli.left_core_migration.serve_notices_on_stderr', lambda: None)
+    monkeypatch.setattr(HermesCLI, '_write_terminal_breadcrumb', lambda self: None)
+    cli_obj = HermesCLI(provider='openrouter', api_key='fixture')
+    assert cli_obj.model == 'ambient-model'
+    assert cli_obj.provider == 'openrouter'
+    cli_obj._session_db.get_session.return_value = {
+        'id': 'target', 'model': None,
+        'model_config': json.dumps({'gateway_runtime': {'model': 'saved-model', 'provider': 'openrouter'}}),
+    }
+    cli_obj._session_db.resolve_resume_session_id.return_value = 'target'
+    cli_obj._session_db.get_resume_conversations.return_value = ([], [])
+    with (patch('hermes_cli.main._resolve_session_by_name_or_id', return_value='target'),
+          patch('cli._cprint'), patch.object(cli_obj, '_console_print')):
+        cli_obj._handle_resume_command('/resume target')
+    assert cli_obj.model == 'saved-model'
+    assert cli_obj.provider == 'openrouter'
+    assert cli_obj.session_id == 'target'

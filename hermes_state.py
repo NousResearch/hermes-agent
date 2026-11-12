@@ -638,10 +638,17 @@ class SessionDB(
         self._fts_unavailable_warned = False
         self._conn = None
         # Async token accounting; distinct from self._lock so enqueue/flush never contends with writes.
+        self._token_batch_write_context = threading.local()
         self._token_queue: deque = deque()
         self._token_queue_cond = threading.Condition(threading.Lock())
         self._token_writer_thread: Optional[threading.Thread] = None
         self._token_writer_stop = self._token_writer_busy = False
+        self._token_writer_uncertain = []
+        self._token_writer_claim = None
+        self._token_writer_claim_owner = None
+        self._token_pending_marker = None
+        self._token_pending_marker_path = None
+        self._token_pending_marker_identity = None
         self._token_atexit_hook: Optional[Callable[[], None]] = None
         # Opened via hermes_state_registry.acquire(): close() releases a refcount instead.
         # Set True when this instance is opened via hermes_state_registry.acquire(). Makes close() a no-op so the
@@ -1021,7 +1028,9 @@ class SessionDB(
         and the WHOLE callback retried — *fn* must stay idempotent under retry."""
         if patience_s is None:
             patience_s = self._WRITE_PATIENCE_S
-        deadline = time.monotonic() + patience_s
+        from hermes_state_transactions import write_deadline
+        caller_deadline = getattr(self._token_batch_write_context, "deadline", None)
+        deadline = write_deadline(patience_s, caller_deadline)
         compression_deadline: Optional[float] = None  # set on the first compression-busy collision
         # One retry for SQLITE_IOERR raised by BEGIN IMMEDIATE itself (callback not run: nothing
         # replayed). Once fn has started, an IOERR leaves settlement unknown and must propagate.
@@ -1030,6 +1039,7 @@ class SessionDB(
         # settlement unknown and must propagate — this helper owns non-idempotent transcript/counter
         # mutations, not just idempotent UPSERTs.
         ioerr_begin_retried = False
+        token_batch_receipt = getattr(self._token_batch_write_context, "receipt", None)
         while True:
             self._raise_if_db_corrupt(storage=True)
             # NOTE: the replaced/generation live probe runs INSIDE the lock below,
@@ -1042,23 +1052,15 @@ class SessionDB(
             # raising a sticky DeletedWalGenerationError that permanently refuses
             # later writes (#105567). Inside the lock the probe only ever sees the
             # stable post-close state (identity cleared → adopt / reopen path).
-            fn_started = False
+            from hermes_state_transactions import WriteAttempt, retry_locked_write, accounting_write_lock, accounting_busy_timeout
+            attempt = WriteAttempt(token_batch_receipt)
             try:
-                with self._lock:
+                with accounting_write_lock(self, caller_deadline):
                     self._raise_if_db_replaced()
                     if self._conn is None:  # close() raced this writer
                         self._reopen_after_close_locked(context="write")
-                    self._conn.execute("BEGIN IMMEDIATE")
-                    try:
-                        fn_started = True
-                        result = fn(self._conn)
-                        self._conn.commit()
-                    except BaseException:
-                        try:
-                            self._conn.rollback()
-                        except Exception:
-                            pass
-                        raise
+                    with accounting_busy_timeout(self._conn, caller_deadline):
+                        result = attempt.execute(self._conn, fn)
                 # Success — periodic best-effort checkpoint + FTS merge.
                 self._write_count += 1
                 if self._write_count % self._CHECKPOINT_EVERY_N_WRITES == 0:
@@ -1085,26 +1087,22 @@ class SessionDB(
             except sqlite3.Error as exc:
                 # 'no more rows' is a transient engine error on contended WAL appends (some builds
                 # raise it as InterfaceError, a sibling of DatabaseError): retry like locked/busy.
-                if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
-                    continue
+                transaction_retry_safe = attempt.retry_safe(exc)
+                if _is_no_more_rows(exc):
+                    if transaction_retry_safe and self._sleep_before_write_retry(deadline, patience_s):
+                        continue
+                    if transaction_retry_safe and token_batch_receipt is not None:
+                        token_batch_receipt.retryable_lock_timeout(exc)
+                    raise
                 err_msg = str(exc).lower()
                 if isinstance(exc, sqlite3.OperationalError):
                     if is_sqlite_lock_error(exc):
-                        if self._sleep_before_write_retry(deadline, patience_s):
+                        if retry_locked_write(self, exc, transaction_retry_safe, deadline, patience_s,
+                                              token_batch_receipt, log_write_lock_holders):
                             continue
-                        # Say what actually happened, not disk/permission damage. The holder goes to
-                        # the log, not the message: classify_persistence_error() buckets by phrase and
-                        # a holder's argv (a worktree named fix-corrupt-db) would flip the bucket.
-                        log_write_lock_holders(self.db_path, patience_s)
-                        raise sqlite3.OperationalError(
-                            f"database is locked (another Hermes process held the "
-                            f"state.db write lock for over {patience_s:.0f}s — "
-                            "likely a long maintenance operation such as VACUUM, "
-                            "a large WAL checkpoint, or an older pre-update "
-                            "process; the database itself is healthy)"
-                        ) from exc
                     if (
-                        _DISK_IO_ERROR_MARKER in err_msg and not fn_started and not ioerr_begin_retried
+                        _DISK_IO_ERROR_MARKER in err_msg and not attempt.fn_started
+                        and transaction_retry_safe and not ioerr_begin_retried
                         and self._sleep_before_write_retry(deadline, patience_s)
                     ):
                         # Retry on the SAME connection: close()+reopen would cancel this process's
@@ -1541,7 +1539,8 @@ class SessionDB(
             from hermes_state_registry import release
             release(self)
             return
-        self._stop_token_writer()
+        if self._stop_token_writer() is False:
+            raise TimeoutError("cannot close session database with pending token accounting")
         hook, self._token_atexit_hook = self._token_atexit_hook, None
         if hook is not None:
             atexit.unregister(hook)

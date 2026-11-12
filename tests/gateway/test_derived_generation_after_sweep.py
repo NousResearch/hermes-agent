@@ -6,6 +6,8 @@ there. Once the swept id's retry horizon passes, the next turn must still land o
 generation. If the swept id's fence aged out, the generation walk would fall back to generation 0
 and split the conversation across two sessions.
 """
+import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -91,6 +93,40 @@ def test_an_ordinary_swept_session_still_ages_out(owner):
     assert owner.db.get_meta(RETIRED_PREFIX + 'cron_job_run_1') is not None
     _past_the_horizon(owner)
     assert owner.db.get_meta(RETIRED_PREFIX + 'cron_job_run_1') is None
+
+
+@pytest.mark.asyncio
+async def test_hosted_room_fallback_refuses_sibling_profile_owner(owner, monkeypatch):
+    from gateway.platforms.api_server_room_dispatch import _ensure_hosted_member_session
+    from hermes_state import SessionDB
+    from hermes_state_lineage import SessionIdOwnedElsewhereError
+    from tests.gateway.test_hosted_room_execution_policy import _dispatch, _policy
+
+    root = Path(owner.db.db_path).parent
+    monkeypatch.setenv('HERMES_HOME', str(root))
+    dispatch = _dispatch(_policy())
+    seed = (f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
+            f"{dispatch.member_id}\0{dispatch.target_profile}")
+    session_id = f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
+    profile_home = root / 'profiles' / 'science'
+    profile_home.mkdir(parents=True)
+    profile_db = SessionDB(profile_home / 'state.db')
+    try:
+        profile_db.create_session(session_id, 'bot_room')
+        profile_db.set_session_title(session_id, f"Group: {dispatch.room_id}")
+        profile_db.set_session_hidden(session_id, True)
+        monkeypatch.setattr('gateway.session_authorities.active_authority', lambda _runner: None)
+
+        async def get_db():
+            return owner.db
+
+        fallback = SimpleNamespace(gateway_runner=object(), _ensure_session_db_async=get_db)
+        with pytest.raises(SessionIdOwnedElsewhereError):
+            await _ensure_hosted_member_session(fallback, dispatch)
+        assert owner.db.get_session(session_id) is None
+        assert profile_db.get_session(session_id) is not None
+    finally:
+        profile_db.close()
 
 
 @pytest.mark.asyncio

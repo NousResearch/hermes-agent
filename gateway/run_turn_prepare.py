@@ -330,7 +330,7 @@ class GatewayTurnPrepareMixin:
         route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})
         return route
 
-    def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
+    def _sync_session_model_from_agent(self, session_id: str, agent: Any, *, expected_fence=None) -> None:
         """Persist the runtime model/provider a gateway turn actually used (provider fallback can
         switch them after the row was created). Runs in the ``run_sync`` executor thread, so it
         uses the sync ``SessionDB`` (``_db``), not the AsyncSessionDB forwarder."""
@@ -341,6 +341,7 @@ class GatewayTurnPrepareMixin:
             return
         from hermes_cli.runtime_provider_custom import session_provider_identity
         runtime = {
+            "model": model,
             "provider": session_provider_identity(getattr(agent, "provider", None),
                                                   getattr(agent, "requested_provider", None),
                                                   getattr(agent, "base_url", None), model),
@@ -370,7 +371,11 @@ class GatewayTurnPrepareMixin:
             if row.get("model") == model and all(gateway_runtime.get(k) == v for k, v in runtime.items()):
                 return
             config["gateway_runtime"] = runtime
-            db.update_session_meta(session_id, json.dumps(config), model=model)
+            if expected_fence is None:
+                db.update_session_meta(session_id, json.dumps(config), model=model)
+            else:
+                db.update_session_meta(session_id, json.dumps(config), model=model,
+                                       expected_fence=(*expected_fence, raw_config))
         except Exception:
             logger.debug("Failed to sync gateway session model metadata", exc_info=True)
 

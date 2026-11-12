@@ -479,7 +479,8 @@ class _ProviderCollector:
         provider's instance claim: a provider refused for the calling profile (another profile's
         manager bound this same instance) must not answer through its registry tools either, or a
         process-wide singleton serves the refused profile the owner's store (#147659)."""
-        is_async = kwargs.get("is_async", args[3] if len(args) > 3 else False)
+        # After handler: check_fn, requires_env, is_async (PluginContext.register_tool order).
+        is_async = kwargs.get("is_async", args[2] if len(args) > 2 else False)
         return self.__getattr__("register_tool")(
             name, toolset, schema, _ClaimGatedHandler(self, name, handler, bool(is_async)), *args, **kwargs)
 

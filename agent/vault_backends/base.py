@@ -30,6 +30,7 @@ class LoginBackend(ABC):
     display_name: str        # user-facing
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
+    supports_app_unlock: bool = False
 
     def owns(self, handle: str) -> bool:
         return handle.startswith(self.prefix)

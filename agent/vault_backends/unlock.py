@@ -1,7 +1,8 @@
 """Per-process unlock state for external password managers.
 
 An unlock is a session token minted by the manager's CLI from the master
-password (``op signin --raw`` / ``bw unlock --raw``). The token lives in
+password (``op signin --raw`` / ``bw unlock --raw``), or an empty native-app
+authorization lease (None means locked). The lease lives in
 process memory only, keyed by backend, and expires after an idle TTL or an
 explicit lock. The master password itself is consumed by the CLI call and
 dropped; nothing is written to disk or env.
@@ -22,7 +23,7 @@ from typing import Callable, Dict, Optional
 _IDLE_TTL_S = 30 * 60
 
 _lock = threading.Lock()
-_sessions: dict[tuple[str, str], tuple[str, float]] = {}   # (profile home, backend) → (token, last_used)
+_sessions: dict[tuple[str, str], tuple[str, float, Optional[str]]] = {}   # (profile home, backend) → (token, last_used, account context)
 _callback_tls = threading.local()
 
 UnlockPrompt = Callable[[str, str], str]  # (backend_name, display_name) -> master password ("" = cancelled)
@@ -84,24 +85,26 @@ def set_current_session_id(session_id: Optional[str]) -> None:
     _current_session_tls.sid = session_id
 
 
-def _live(backend: str, *, touch: bool) -> Optional[str]:
+def _live(backend: str, *, touch: bool, context: Optional[str] = None) -> Optional[str]:
     key = _key(backend)
     with _lock:
         entry = _sessions.get(key)
         if entry is None:
             return None
-        token, last = entry
+        token, last, stored_context = entry
+        if context is not None and context != stored_context:
+            return None
         if time.monotonic() - last > _IDLE_TTL_S:
             del _sessions[key]
             return None
         if touch:
-            _sessions[key] = (token, time.monotonic())
+            _sessions[key] = (token, time.monotonic(), stored_context)
         return token
 
 
-def get_session_token(backend: str) -> Optional[str]:
+def get_session_token(backend: str, *, context: Optional[str] = None, touch: bool = True) -> Optional[str]:
     """Token for a real manager call; refreshes the idle timer."""
-    return _live(backend, touch=True)
+    return _live(backend, touch=touch, context=context)
 
 
 def begin_unlock(backend: str) -> int:
@@ -110,13 +113,14 @@ def begin_unlock(backend: str) -> int:
         return _generation.get(_key(backend), 0)
 
 
-def store_session_token(backend: str, token: str, generation: Optional[int] = None) -> bool:
+def store_session_token(backend: str, token: str, generation: Optional[int] = None,
+                        *, context: Optional[str] = None) -> bool:
     """Commit an unlock. Returns False (and drops the token) when a Lock happened since ``begin_unlock``."""
     key = _key(backend)
     with _lock:
         if generation is not None and generation != _generation.get(key, 0):
             return False
-        _sessions[key] = (token, time.monotonic())
+        _sessions[key] = (token, time.monotonic(), context)
         _owner_session[key] = getattr(_current_session_tls, "sid", None)
         return True
 
@@ -154,9 +158,9 @@ def lock_all_profiles() -> None:
             _forget(key)
 
 
-def is_unlocked(backend: str) -> bool:
+def is_unlocked(backend: str, *, context: Optional[str] = None) -> bool:
     """Status probe: does NOT extend the idle TTL (only real manager calls do)."""
-    return _live(backend, touch=False) is not None
+    return _live(backend, touch=False, context=context) is not None
 
 
 def can_prompt_here() -> bool:

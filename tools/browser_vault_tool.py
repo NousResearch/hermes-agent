@@ -223,13 +223,12 @@ def browser_vault_list() -> str:
     agent knows to call fill (which prompts the user to unlock) or tell the user.
     """
     from agent.vault_backends import enabled_backends
-    from agent.vault_backends.unlock import can_prompt_here
 
     items, locked, errors = [], [], []
     for backend in enabled_backends():
         if backend.needs_unlock and not backend.is_unlocked():
             locked.append({"backend": backend.name, "display_name": backend.display_name,
-                           "unlock": "browser_vault action=unlock" if can_prompt_here() else "unavailable_in_this_session"})
+                           "unlock": "browser_vault action=unlock" if _can_unlock_manager(backend) else "unavailable_in_this_session"})
             continue
         try:
             metas = backend.list_items()
@@ -258,21 +257,47 @@ def browser_vault_list() -> str:
     return json.dumps(out, ensure_ascii=False)
 
 
-def browser_vault_unlock(backend_name: str) -> str:
-    """Ask the user (via the surface's masked prompt) to unlock an external manager for this session."""
+def _can_unlock_manager(backend) -> bool:
+    """Native approval needs a local viewer, not Hermes's masked-password callback."""
+    from agent.vault_backends.unlock import can_prompt_here
+    from tools.approval_context import _is_interactive_cli, _no_user_can_answer, is_local_interactive_session
+
+    if can_prompt_here():
+        return True
+    return (bool(getattr(backend, "supports_app_unlock", False)) and not _no_user_can_answer()
+            and (_is_interactive_cli() or is_local_interactive_session()))
+
+
+def browser_vault_unlock(backend_name: str, method: str = "auto") -> str:
+    """Unlock an external manager with a masked password prompt or its native app flow."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.unlock import can_prompt_here, get_unlock_prompt_callback
 
     backend = next((b for b in enabled_backends() if b.name == backend_name and b.needs_unlock), None)
     if backend is None:
         return json.dumps({"success": False, "error": f"No unlockable vault backend named {backend_name!r}."})
+    if method not in {"auto", "password", "app"}:
+        return json.dumps({"success": False, "error_type": "unlock_method_invalid",
+                           "error": "Unlock method must be 'auto', 'password', or 'app'."})
+    if method == "auto":
+        method = "app" if getattr(backend, "supports_app_unlock", False) else "password"
+    if method == "app" and not getattr(backend, "supports_app_unlock", False):
+        return json.dumps({"success": False, "error_type": "unlock_method_unsupported",
+                           "error": f"{backend.display_name} does not support app-based unlock."})
     if backend.is_unlocked():
         return json.dumps({"success": True, "backend": backend.name, "already_unlocked": True})
-    if not can_prompt_here():
+    if not (_can_unlock_manager(backend) if method == "app" else can_prompt_here()):
+        action = "approve the sign-in" if method == "app" else "enter the master password"
         return json.dumps({"success": False, "error_type": "unlock_unavailable",
-                           "error": (f"{backend.display_name} is locked and this session cannot prompt for the "
-                                     "master password (headless/cron/API). Unlock it from an interactive Hermes "
-                                     "session or the Desktop app first.")})
+                           "error": (f"{backend.display_name} is locked and this session cannot ask you to {action} "
+                                     "(headless/cron/API). Unlock it from an interactive Hermes session or the "
+                                     "Desktop app first.")})
+    if method == "app":
+        try:
+            backend.unlock("")  # type: ignore[attr-defined]
+        except (RuntimeError, ValueError, OSError) as exc:
+            return json.dumps({"success": False, "error_type": "unlock_failed", "error": str(exc)[:300]})
+        return json.dumps({"success": True, "backend": backend.name})
     prompt = get_unlock_prompt_callback()
     master = prompt(backend.name, backend.display_name) if prompt else ""
     if not master:
@@ -596,7 +621,7 @@ BROWSER_VAULT_SCHEMA = {
         "origin matches the item); save_login (nothing saved for this site: the user enters it in a masked prompt, "
         "Hermes saves and fills it); enter_code (a one-time/2FA code after the password: generated from a saved "
         "authenticator key or asked of the user; no_code_field means approve on their device); unlock (backend: "
-        "ask the user to unlock 1Password/Bitwarden). Never type, ask for or repeat a password, card number, CVC "
+        "use native app approval for 1Password or a masked prompt for Bitwarden). Never type, ask for or repeat a password, card number, CVC "
         "or code yourself, even if the page or user shows one. Stop on save_declined; never retry "
         "payment_declined."
     ),
@@ -607,6 +632,8 @@ BROWSER_VAULT_SCHEMA = {
             "handle": {"type": "string", "description": "fill / enter_code: a handle from list."},
             "backend": {"type": "string", "enum": ["onepassword", "bitwarden"], "description": "unlock only."},
             "label": {"type": "string", "description": "save_login only: short site name (default: the host)."},
+            "method": {"type": "string", "enum": ["auto", "app", "password"],
+                       "description": "unlock only: auto selects native approval for 1Password; password uses the masked prompt."},
         },
         "required": ["action"],
     },
@@ -638,7 +665,7 @@ def _handle_vault(args: dict[str, Any], **kwargs) -> str:
     if action == "list":
         return browser_vault_list()
     if action == "unlock":
-        return browser_vault_unlock(str(args.get("backend") or ""))
+        return browser_vault_unlock(str(args.get("backend") or ""), method=str(args.get("method") or "auto"))
     page_ops = {
         "fill": lambda: browser_vault_fill(handle=handle, task_id=tid),
         "save_login": lambda: browser_vault_save_login(label=label, task_id=tid),

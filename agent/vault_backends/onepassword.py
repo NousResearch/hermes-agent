@@ -1,7 +1,8 @@
 """1Password Login items as a vault backend (``op`` CLI).
 
-Unlock: ``op signin --raw`` with the master password on stdin (desktop-app
-integration or account-level auth) mints an ``OP_SESSION_<account>`` token.
+Unlock: ``op signin --raw`` mints a session token for manual account auth.
+Desktop-app integration instead authorizes through 1Password without a token;
+a metadata-only command verifies access before Hermes grants its unlock lease.
 A configured service-account token skips the prompt entirely (headless).
 List: ``op item list --categories Login --format json`` → title, urls,
 username, vault. Resolve: ``op item get <id> --vault <vault-id> ...`` (service
@@ -26,6 +27,11 @@ from agent.vault_store import VaultItemMeta, normalize_origin
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
+_APP_UNLOCK_HINT = (
+    "Unlock the 1Password app on the computer running the Hermes backend, enable "
+    "Settings > Developer > Integrate with 1Password CLI, and approve its request "
+    "(Windows Hello on Windows)."
+)
 
 
 class OnePasswordLoginBackend(LoginBackend):
@@ -33,9 +39,11 @@ class OnePasswordLoginBackend(LoginBackend):
     display_name = "1Password"
     prefix = "op:"
     needs_unlock = True
+    supports_app_unlock = True
 
     def __init__(self, cfg: Optional[dict] = None):
         self.cfg = cfg or {}
+        self._account = str(self.cfg.get("account") or os.environ.get("OP_ACCOUNT") or "")
         from agent.secret_scope import get_secret
         env_name = str(self.cfg.get("service_account_token_env") or "OP_SERVICE_ACCOUNT_TOKEN")
         self._service_token = get_secret(env_name, "") or ""
@@ -54,14 +62,21 @@ class OnePasswordLoginBackend(LoginBackend):
         env = {k: os.environ[k] for k in _OP_ENV_ALLOWLIST if k in os.environ and not k.startswith("OP_CONNECT_")}
         # Connect credentials outrank OP_SERVICE_ACCOUNT_TOKEN inside op, so they must come from the
         # profile's own secret scope like the service token does — never from the launch environment.
-        for k in ("OP_CONNECT_HOST", "OP_CONNECT_TOKEN"):
-            if v := get_secret(k, ""):
-                env[k] = v
+        if session_token != "":  # native authorization must not be proven by Connect
+            for k in ("OP_CONNECT_HOST", "OP_CONNECT_TOKEN"):
+                if v := get_secret(k, ""):
+                    env[k] = v
+        if session_token == "":
+            # These locate the user's desktop approval surface; no ambient auth is inherited.
+            for k in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "XDG_SESSION_TYPE",
+                      "OP_BIOMETRIC_UNLOCK_ENABLED"):
+                if k in os.environ:
+                    env[k] = os.environ[k]
         env["NO_COLOR"] = "1"
-        account = str(self.cfg.get("account") or "")
+        account = self._account
         if account:
             env["OP_ACCOUNT"] = account
-        if self._service_token:
+        if self._service_token and session_token != "":
             env["OP_SERVICE_ACCOUNT_TOKEN"] = self._service_token
         elif session_token:
             # op signin --raw prints the bare token; the env var name carries the account shorthand,
@@ -70,32 +85,59 @@ class OnePasswordLoginBackend(LoginBackend):
         return env
 
     def is_unlocked(self) -> bool:
-        return bool(self._service_token) or _unlock.is_unlocked(self.name)
+        return bool(self._service_token) or _unlock.is_unlocked(self.name, context=self._account)
 
     def unlock(self, master_password: str) -> None:
-        """Mint a session token from the master password (consumed on stdin, never argv)."""
+        """Authorize explicitly, using the app or a password consumed only on stdin."""
         generation = _unlock.begin_unlock(self.name)
-        cmd = [str(self._op()), "signin", "--raw"]
-        if account := str(self.cfg.get("account") or ""):
-            cmd += ["--account", account]
-        proc = run_with_stdin_secret(cmd, env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="op")
-        token = (proc.stdout or "").strip()
-        if proc.returncode != 0 or not token:
-            raise RuntimeError(f"1Password unlock failed: {_scrub(proc.stderr or '')[:200] or 'no session token'}")
-        if not _unlock.store_session_token(self.name, token, generation):
+        token = ""
+        if master_password:
+            cmd = [str(self._op()), "signin", "--raw"]
+            if self._account:
+                cmd += ["--account", self._account]
+            proc = run_with_stdin_secret(cmd, env=self._env(None), secret=master_password, timeout=_TIMEOUT, label="op")
+            token = (proc.stdout or "").strip()
+            if proc.returncode != 0:
+                error = _scrub(proc.stderr or "").replace(master_password, "[REDACTED]")
+                raise RuntimeError(f"1Password unlock failed: {error[:200] or 'sign-in was not authorized'}. {_APP_UNLOCK_HINT}")
+        if not token:
+            _require_native_viewer()
+            # Desktop integration deliberately exports no OP_SESSION token. Do not
+            # mistake account registration (or `whoami`) for usable authorization.
+            probe = run_cli([str(self._op()), "vault", "list", "--format", "json"],
+                            env=self._env(""), timeout=_TIMEOUT, label="op",
+                            timeout_message=f"1Password authorization timed out. {_APP_UNLOCK_HINT}",
+                            stdin=subprocess.DEVNULL)
+            try:
+                verified = probe.returncode == 0 and isinstance(json.loads(probe.stdout or ""), list)
+            except ValueError:
+                verified = False
+            if not verified:
+                raise RuntimeError(f"1Password desktop authorization could not be verified. {_APP_UNLOCK_HINT}")
+        # Empty string is a verified desktop lease, not a credential. The existing
+        # profile/owner/TTL/generation store remains the sole unlock authority.
+        if not _unlock.store_session_token(self.name, token, generation, context=self._account):
             raise RuntimeError("1Password was locked while unlocking; try again")
 
     def _run(self, *args: str) -> str:
-        token = None if self._service_token else _unlock.get_session_token(self.name)
-        if not self._service_token and not token:
-            raise UnlockRequired(self)
+        token = None if self._service_token else _unlock.get_session_token(self.name, context=self._account, touch=False)
+        if not self._service_token:
+            if token is None:
+                raise UnlockRequired(self)
+            if token == "":
+                _require_native_viewer()
+            token = _unlock.get_session_token(self.name, context=self._account)
+            if token is None:
+                raise UnlockRequired(self)
         proc = run_cli([str(self._op()), *args], env=self._env(token), timeout=_TIMEOUT, label="op",
                        timeout_message="op timed out", stdin=subprocess.DEVNULL)
         if proc.returncode != 0:
             err = _scrub(proc.stderr or "")
             # A service account never holds a session, so an auth failure there is not a lock to undo:
             # surface op's own error instead of an unlock prompt that reports "already unlocked".
-            if not self._service_token and any(w in err.lower() for w in ("session", "sign in", "not signed in")):
+            if not self._service_token and any(w in err.lower() for w in (
+                "session", "sign in", "not signed in", "authorization prompt dismissed",
+            )):
                 _unlock.lock(self.name)
                 raise UnlockRequired(self)
             raise RuntimeError(f"op failed: {err[:200]}")
@@ -150,6 +192,12 @@ class OnePasswordLoginBackend(LoginBackend):
         except Exception:
             return None
         return code if code.isdigit() else None
+
+
+def _require_native_viewer() -> None:
+    from tools.approval_context import _no_user_can_answer
+    if _no_user_can_answer():
+        raise RuntimeError("Native 1Password access requires an interactive session; use a service account for unattended jobs")
 
 
 def _web_origins(origins: list[str]) -> tuple:

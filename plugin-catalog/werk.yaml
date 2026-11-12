@@ -8,7 +8,9 @@ description: >-
   release), and writes a COVER.md with the gaps it found written down.
   Proof of concept, NOT FOR CONSTRUCTION. Disclosure — `hermes werk doctor --setup` (after consent)
   creates two worker profiles and a Kanban board `werk`, and uses uv to download a CPython 3.12 build
-  and hash-pinned pack wheels (build123d/OCP, SKiDL) from PyPI into the plugin's data dir; `hermes werk
+  and hash-pinned pack packages from PyPI (mostly wheels, including build123d/OCP) into the plugin's
+  data dir; the elec pack's sdist-only skidl, hierplace and kinet2pcb are built locally with setuptools
+  fetched unpinned at build time, in a minimal environment with no provider keys; `hermes werk
   run` is a long foreground run (default caps 60M tokens / 24 h) that spends model tokens through your
   configured providers and runs `hermes kanban` CLI calls; pack tools run as subprocesses in their own
   venvs with the network cut via `unshare -rn` when available, and the elec pack calls the system

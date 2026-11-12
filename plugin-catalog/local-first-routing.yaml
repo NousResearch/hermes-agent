@@ -1,0 +1,16 @@
+name: local-first-routing
+repo: https://github.com/1anter/hermes-research-plugins
+sha: 48befeaf71f0bfed7916553d1a511c81a37a9c4b
+subdir: plugins/local-first-routing
+description: Pinned local delegation with explicit manual escalation and no fallback.
+maintainer: 1anter
+tier: community
+category: tools
+requires_hermes: '>=0.23.0'
+version: 0.2.0
+capabilities:
+  provides_tools:
+  - local_route_policy
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

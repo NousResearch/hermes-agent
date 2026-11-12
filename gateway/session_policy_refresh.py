@@ -277,6 +277,8 @@ def drop_session_terminal(authority, ref):
             # The turn's workspace binding goes with them: it wins over the new binding's cwd too.
             unbind_turn_workspace(key)
             clear_session_cwd(key)
+        from gateway.session_terminal_cwd import forget_turn_cwd
+        forget_turn_cwd(authority.runner, route)  # its saved copy too, or the next turn restores it
     for key in keys:
         cleanup_vm(key)
 
@@ -284,7 +286,12 @@ def drop_session_terminal(authority, ref):
 async def _publish(authority, ref, moved=False):
     from gateway.session_local import local_session_info, publish_local_policy
     if moved:  # before the drain can run a turn on the new binding with the old environment
-        await asyncio.to_thread(drop_session_terminal, authority, ref)
+        try:
+            await asyncio.to_thread(drop_session_terminal, authority, ref)
+        except Exception:  # health: allow BLE001 -- the policy is committed: a failed cleanup must still publish it
+            # Unpublished, restore refuses the stored/live pair and a retry sees nothing moved.
+            logger.warning('Session %s refreshed without dropping its terminal environment', ref.session_id,
+                           exc_info=True)
     publish_local_policy(authority, ref.session_id)
     # A drain that ran during the off-loop commit saw the new stored policy beside the old live one and
     # paused; with both equal again, anything admitted meanwhile runs.

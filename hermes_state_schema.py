@@ -26,6 +26,7 @@ from hermes_state_common import (
     FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
     SCHEMA_VERSION, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
+    fts_trigram_session_sql,
 )
 from hermes_state_fts import (_drop_orphan_fts_shadow_tables, base_index_recognised, base_source_view_is_stale,
                               drop_retired_cjk_index, fts_layout_current)
@@ -838,6 +839,52 @@ class SessionSchemaMixin:
             "FROM gateway_routing_legacy_pk ORDER BY updated_at ASC",
         )
 
+    def _heal_reset_rows_carrying_a_delegate_marker(self, cursor: sqlite3.Cursor) -> None:
+        """Strip ``_delegate_from`` from a chat's /new continuation (``session_key`` set, ``_reset_from``
+        set) that picked it up: the marker hides the row from every session list while the gateway keeps
+        routing the chat into it (#109073). ``_reset_from`` already says what the row is, so the pair is
+        contradictory and the delegate marker is the stray. A keyed row WITHOUT ``_reset_from`` is a real
+        delegate child that captured a route (#138210) and keeps its marker: routing moves the chat off
+        it instead. Idempotent; probes first so a clean store takes no write lock on open."""
+        polluted = (
+            "session_key IS NOT NULL AND session_key != '' AND json_valid(model_config) "
+            f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NOT NULL "
+            f"AND {_sql_json_extract('model_config', '$._reset_from')} IS NOT NULL"
+        )
+        try:
+            ids = [row[0] for row in cursor.execute(f"SELECT id FROM sessions WHERE {polluted}").fetchall()]
+            if not ids:
+                return
+            healed = cursor.execute(
+                f"UPDATE sessions SET model_config = json_remove(model_config, '$._delegate_from') WHERE {polluted}"
+            ).rowcount
+        except sqlite3.OperationalError as exc:
+            logger.debug("reset-row delegate-marker heal skipped: %s", exc)
+            return
+        self._index_healed_rows_for_trigram(cursor, ids)
+        logger.warning("Healed %d chat session(s) hidden by a stray _delegate_from marker (#109073)", healed)
+
+    def _index_healed_rows_for_trigram(self, cursor: sqlite3.Cursor, session_ids: list[str]) -> None:
+        """The marker kept these sessions' messages out of the external-content trigram index (the triggers
+        skipped them on write), so a heal that admits them must index them too, or substring search misses
+        them and a later edit sends the index a delete for a row it never held. Same window rule as the
+        triggers: ids a pending deferred rebuild will still backfill are left to it. A legacy inline layout
+        indexed every row already; a missing table or tokenizer has nothing to keep consistent."""
+        if self._db_has_legacy_inline_fts(cursor) or not self._fts_table_probe(cursor, "messages_fts_trigram"):
+            return
+        marks = ", ".join("?" for _ in session_ids)
+        cursor.execute(
+            "INSERT INTO messages_fts_trigram(rowid, content, tool_name) "
+            "SELECT m.id, m.content, m.tool_name FROM messages m JOIN sessions s ON s.id = m.session_id "
+            f"WHERE m.session_id IN ({marks}) AND m.role <> 'tool' AND {fts_trigram_session_sql('s')} "
+            "AND (m.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta "
+            "WHERE key = 'fts_rebuild_high_water'), -1) "
+            "OR m.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta "
+            "WHERE key = 'fts_rebuild_progress'), -1)) "
+            "AND NOT EXISTS (SELECT 1 FROM messages_fts_trigram_docsize d WHERE d.id = m.id)",
+            session_ids,
+        )
+
     def _heal_session_model_usage_pk(self, cursor: sqlite3.Cursor) -> None:
         """Rebuild ``session_model_usage`` when its PRIMARY KEY lacks ``task``: installs already at
         v22+ when ``task`` landed carry the 5-column PK, the reconciler ADDs ``task`` but
@@ -929,6 +976,7 @@ class SessionSchemaMixin:
         # already at v22+ when the column landed — the version-gated rebuild is unreachable there, #73823).
         # Same PK-rebuild constraint as gateway_routing above.
         self._heal_session_model_usage_pk(cursor)
+        self._heal_reset_rows_carrying_a_delegate_marker(cursor)
 
         # Indexes referencing reconciler-added columns must be created AFTER _reconcile_columns
         # (in SCHEMA_SQL the executescript would fail on legacy DBs).
@@ -1072,6 +1120,24 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
+        if current_version < 33:
+            # v33: re-tag delegate subagent rows whose reservation-time row lost ``_delegate_from`` to the
+            # keep-existing upsert (an early first-turn model_config patch froze it). Untagged, the parent's
+            # resume tip walk followed the child as a continuation and opened the subagent transcript.
+            # source='subagent' alone: the reservation path always wrote it, and v16 already covered the rest.
+            # Skip compression continuations of subagent rows: a misrouted child resumed as the chat wrote
+            # its continuation as source='subagent' without the marker, and it must stay a continuation.
+            # json_valid: one malformed model_config would make json_set raise and drop the whole UPDATE.
+            with contextlib.suppress(sqlite3.OperationalError):
+                cursor.execute(
+                    "UPDATE sessions SET model_config = json_set("
+                    "COALESCE(model_config, '{}'), '$._delegate_from', parent_session_id) "
+                    "WHERE source = 'subagent' AND parent_session_id IS NOT NULL "
+                    "AND json_valid(COALESCE(model_config, '{}')) "
+                    f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM sessions p WHERE p.id = sessions.parent_session_id "
+                    "AND p.source = 'subagent' AND p.end_reason = 'compression')"
+                )
         self._advance_message_uid_backfill(cursor)
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:

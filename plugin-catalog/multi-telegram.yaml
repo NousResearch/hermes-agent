@@ -1,0 +1,24 @@
+name: multi-telegram
+title: Multi-Telegram
+repo: https://github.com/sergio-dev1-py/multibot_telegram
+sha: 52dc0735ea8cb1fe8402c4cc6671c2328963a92c
+description: "Run an arbitrary number of Telegram bot identities through one Hermes profile and agent. Each bot has its own token reference, display identity, allowlists, role prompt, welcome message and session policy; replies always leave through the bot that received the triggering message. Optional shared-session groups continue one stored Hermes transcript for the same external chat/user/topic. Disclosure - long polling to the Telegram Bot API uses one bot token per bot, read from the active profile's secret scope via a per-bot token_env; no telemetry, subprocess, self-update or core overrides; authorized inbound attachments are cached through Hermes; non-secret status and proactive routes are stored under HERMES_HOME/plugin-data. Transcript isolation is not memory isolation: MEMORY.md, USER.md, session_search and tools are profile-wide; use separate profiles or restrict toolsets for hard isolation. Webhooks, inline clarify/approval keyboards and out-of-process cron delivery are not implemented. Disclosure — runs one Telegram Bot API long-poll connection per configured bot, using a per-bot token read from the active profile's secret scope by its `token_env` name (optional operator-set proxy / custom Bot API base URL); inbound messages from allowlisted senders (deny-all by default; `allow_all_users` makes a bot public) reach this profile's one agent, whose memory, USER.md, session_search and tools are shared by every bot unless per-bot `toolsets` restrict them; attachments are cached through Hermes and status/route files are kept under HERMES_HOME/plugin-data/multi-telegram; may lazily install Hermes's own `telegram` extra through Hermes's package manager; adds a token-redacting filter to the process's root log handlers."
+maintainer: sergio-dev1-py
+tier: community
+category: platform
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/sergio-dev1-py/multibot_telegram#readme
+version: "1.1.1"
+readme: true
+platforms: []
+known_issues:
+  - "Long polling only; webhooks are not implemented."
+  - "Inline clarify/approval keyboards are not implemented; text fallback is used."
+  - "Out-of-process cron delivery is not implemented."
+  - "Isolated transcripts do not isolate profile memory, USER.md, session_search or tools; use separate profiles or restrict toolsets."
+  - "Telegram DM topics are unverified."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

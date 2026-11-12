@@ -63,6 +63,14 @@ MagicMock/
 # symlink node_modules to the main checkout; the dir-only pattern let one
 # slip into a commit and break `npm ci` on CI with ENOTDIR).
 node_modules
+# pnpm-lock.yaml is the workspaces' only lock: an npm run anywhere in the tree must not add
+# another (npm 11's `npm shrinkwrap` is not refused). The standalone npm projects keep theirs;
+# a new standalone npm project must add its own `!` line here, or git silently skips its lock.
+**/package-lock.json
+**/npm-shrinkwrap.json
+!/website/package-lock.json
+!/scripts/whatsapp-bridge/package-lock.json
+!/plugins/platforms/photon/sidecar/package-lock.json
 browser-use/
 agent-browser/
 # Private keys

@@ -1,0 +1,25 @@
+name: data
+title: Hermes Data
+repo: https://github.com/Adolanium/hermes-data
+sha: b7706c8a4445726b03aeee6dc3b6fbc23bd79775
+description: "An agentic report page. Open an Excel workbook, a CSV or a JSON file and Hermes finds the story: it suggests a headline and a handful of charts, and you accept the ones you want onto the page. Every number on a chart is computed from your rows; the model picks columns and wording, never figures. Ask about the table or about one chart and an agent answers with a chart and its sources. Split a chart by a second column, point at any mark, export the report as a web page, Markdown or SVG. Once you allow it, any chat can read your reports and propose charts. Disclosure — Find the story starts a hidden Hermes session told to use no tools (your Hermes tools stay available to it, stopped after 2.5 minutes or 6 tool calls), which sees column summaries, grouped totals and the first eight rows, never the whole table; Ask starts a hidden session that uses your Hermes tools and reads third-party web pages, stopped after 4 minutes or 24 tool calls; approval prompts inside these sessions are denied; open and export go through the system dialog and the plugin's own backend, which reads workbooks with the Python standard library and refuses paths inside the Hermes home folder; a CSV or JSON file dragged onto the page is read in the page; reports live in Desktop plugin storage, with a copy of the columns, charts and first 400 rows under plugin-data/data/ only after you turn on chat access, which starts off; no telemetry, no credentials, no shell commands or background processes of its own. Independent community project, not affiliated with Nous Research."
+maintainer: Adolanium
+tier: community
+category: desktop
+requires_hermes: ">=0.22.6"
+docs_url: https://github.com/Adolanium/hermes-data#readme
+version: "0.1.0"
+image: https://raw.githubusercontent.com/Adolanium/hermes-data/b7706c8a4445726b03aeee6dc3b6fbc23bd79775/docs/assets/catalog.png
+screenshots:
+  - https://raw.githubusercontent.com/Adolanium/hermes-data/b7706c8a4445726b03aeee6dc3b6fbc23bd79775/docs/assets/report.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-data/b7706c8a4445726b03aeee6dc3b6fbc23bd79775/docs/assets/suggestions.jpg
+  - https://raw.githubusercontent.com/Adolanium/hermes-data/b7706c8a4445726b03aeee6dc3b6fbc23bd79775/docs/assets/answer.jpg
+capabilities:
+  provides_tools:
+    - data_list
+    - data_read
+    - data_propose
+    - data_create
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

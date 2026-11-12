@@ -311,10 +311,13 @@ def _fs_backend(profile: Optional[str] = None):
     which each route answers on its own.
     """
     from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError, get_ssh_workspace_fs
+    from tools.terminal_tool_config import coerce_ssh_remote_cwd
 
     with _profile_scope(profile):
         terminal = dict(load_config().get("terminal") or {})
         profile_env = load_env()
+        # The adapter dials outside this scope; map the profile's own Hermes dirs while its home is bound.
+        terminal["cwd"] = coerce_ssh_remote_cwd(terminal.get("cwd"), "ssh")
     for key, env_name in {
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",

@@ -1,0 +1,24 @@
+name: intentrivet
+title: IntentRivet
+repo: https://github.com/MrRosc/IntentRivet
+sha: fd3990e05a3f5d4e886345d6b26e9b108482d34b
+subdir: plugin
+version: "0.4.2"
+description: "Your existing Hermes prepares posts for your own Telegram channels; a post is published only after you allow that exact version for that channel with Allow once in Telegram. Needs the separately installed IntentRivet executor, which holds the publisher bot's token and your decisions. Disclosure — sends the post text and channel key you prepare to the IntentRivet executor at INTENTRIVET_URL with your agent key; the executor (installed separately, holding the publisher bot token) publishes a version to Telegram only after you allow that exact version with Allow once in the bot."
+maintainer: MrRosc
+tier: community
+category: automation
+requires_hermes: ">=0.20.1"
+docs_url: https://github.com/MrRosc/IntentRivet/blob/fd3990e05a3f5d4e886345d6b26e9b108482d34b/README.md
+known_issues:
+  - "Installing this entry does not deploy the IntentRivet executor: set it up first, as the README describes. The install asks for INTENTRIVET_URL (the executor's address) and INTENTRIVET_AGENT_KEY (issued on the executor host)."
+capabilities:
+  provides_tools:
+    - intentrivet_prepare_post
+    - intentrivet_publish_post
+    - intentrivet_list_channels
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - INTENTRIVET_URL
+    - INTENTRIVET_AGENT_KEY

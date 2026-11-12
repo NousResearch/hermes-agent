@@ -227,6 +227,13 @@ the gallery. There is no separate listing to maintain.
    record (never a file inside the plugin). Local-directory, Git URL, `--ref`,
    `--allow-removed`, project and pip installs are refused, and no setting
    relaxes it.
+19. **No plugins built to reach infringing content.** A plugin whose main
+   purpose is to find, stream or download copyrighted films, shows, music, books,
+   games or software from sources that are not licensed to distribute them
+   (piracy aggregators, unofficial mirrors, cracked-release indexes) is declined,
+   however clean its code. A general-purpose tool such as a browser, downloader
+   or media player is fine; one that ships with those sources built in, or whose
+   description points users at them, is not.
 <!-- admission-rules:end -->
 
 ## Updating your entry
@@ -252,6 +259,11 @@ changed or removed, open a PR on its file. Owners keep control of their entries.
   fixed. When a new rule affects plugins that are already listed, their
   authors get an issue on their repository explaining the change and time to
   update before anything is removed.
+- **Dead entries are delisted automatically.** If your repository is deleted,
+  or the commit your entry pins disappears (a force-push that drops it), a
+  weekly check opens a PR deleting the entry, since it can no longer be
+  installed. Keep the pinned commit reachable; to come back, resubmit with a
+  live repository and pin.
 - **Removal** adds the plugin to
   [`removed.yaml`](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/README.md#removedyaml--the-blocklist),
   which is reserved for security and policy incidents. Installers refuse

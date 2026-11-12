@@ -1,0 +1,21 @@
+name: briq
+repo: https://github.com/briq-cloud/hermes-briq
+sha: "fda15c47bcfb4acf0944f013e6dd9417a3a9d09e"
+version: "0.1.0"
+description: "Run Hermes' terminal, file and execute_code tools in a briq sandbox, a microVM with its own disk, instead of on this machine. Select it with terminal.backend: briq. Disclosure — every command and file operation is sent over HTTPS to the briq API (https://api.briq.cloud, or the URL in BRIQ_API_URL) and runs inside the sandbox; Hermes' file sync uploads the credential, skill and cache files it syncs for every remote backend to that sandbox; the sandbox has outbound network access; a sandbox the plugin creates is billed to the briq account of the key and sleeps when idle (terminal.briq_sleep); at cleanup it is stopped and kept with its disk when container_persistent is true (the default), its id recorded in a small JSON file under the Hermes sandbox directory so the next session reuses it, or destroyed when it is false. The API key is read only through agent.secret_scope.get_secret (BRIQ_API_KEY), is stripped from the environment of every command, and is never written to disk or logged. The plugin sends no environment variables into the sandbox and makes no network calls other than to the briq API. It imports private Hermes modules for its environment base classes (tools.environments.base, base_output and file_sync), as the built-in remote backends do."
+maintainer: briq-cloud
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/briq-cloud/hermes-briq#readme
+platforms: [linux, macos, windows]
+known_issues:
+  - "A running command cannot be interrupted: cancelling a command stops the sandbox, and the next command wakes it."
+  - "A command longer than about 6 KB, or one that reads stdin, is staged as a file in the sandbox first."
+  - "Imports private Hermes modules (tools.environments.*); a Hermes release can change them."
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - BRIQ_API_KEY

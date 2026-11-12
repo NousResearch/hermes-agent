@@ -1,0 +1,29 @@
+name: hackertube
+title: HackerTube for Hermes
+repo: https://github.com/rcmiller01/hackertube
+sha: 3e65af3b424bb932de944731340d99122f0a67ed
+subdir: hackertube
+description: "Source-backed media discovery with existing Hermes providers and a profile-local library. Disclosure — each explicit Search sends your question and candidate metadata to the Hermes auxiliary model you pick and your Hermes web-search backend (this may spend credits). It also queries hn.algolia.com, itunes.apple.com, openlibrary.org, librivox.org and, with your key, www.googleapis.com (YouTube) and api.podcastindex.org. Searches run in a Python worker subprocess that re-launches the `hermes` CLI from PATH with Hermes's environment (YOLO vars stripped). An hourly local thread purges expired records from plugin-data/hackertube/profile.db."
+maintainer: rcmiller01
+tier: community
+category: web
+requires_hermes: ">=0.23.0"
+version: "0.2.2"
+readme: true
+platforms: [linux, macos]
+screenshots:
+  - https://raw.githubusercontent.com/rcmiller01/hackertube/3776106fafe492e36565050812152ad9c8ed9524/docs/receipts/final-demo/videos.jpg
+  - https://raw.githubusercontent.com/rcmiller01/hackertube/3776106fafe492e36565050812152ad9c8ed9524/docs/receipts/final-demo/podcasts.jpg
+  - https://raw.githubusercontent.com/rcmiller01/hackertube/3776106fafe492e36565050812152ad9c8ed9524/docs/receipts/final-demo/audiobooks.jpg
+  - https://raw.githubusercontent.com/rcmiller01/hackertube/3776106fafe492e36565050812152ad9c8ed9524/docs/receipts/final-demo/about.jpg
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+  - Requires macOS/Linux and Hermes CLI on PATH; macOS verified, Linux integration unrun.
+  - Local cancellation cannot revoke remote processing or billing already accepted by a provider.
+  - Model rankings can be partial or omit categories; no broad relevance guarantee is claimed.
+  - Podcast Index is optional and not live-tested; Reddit remains disabled pending approval.
+  - Local retention cannot execute while Hermes is stopped; cleanup precedes access after restart and exported backups are operator-managed.

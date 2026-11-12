@@ -49,7 +49,7 @@ def _drive(agent, monkeypatch, responses):
     return api_calls
 
 
-def test_reasoning_only_streak_reaches_fallback_with_one_grace_call(monkeypatch):
+def test_reasoning_only_streak_reaches_fallback_with_one_grace_call(monkeypatch, caplog):
     agent = _build_agent(monkeypatch)
     agent.max_iterations = 3
     agent.iteration_budget = run_agent.IterationBudget(3)
@@ -61,11 +61,14 @@ def test_reasoning_only_streak_reaches_fallback_with_one_grace_call(monkeypatch)
         _codex_message_response("Fallback answered."),
     ])
 
-    result = agent.run_conversation("keep thinking")
+    with caplog.at_level("WARNING", logger="agent.conversation_loop"):
+        result = agent.run_conversation("keep thinking")
 
     assert result["completed"] is True
     assert result["final_response"] == "Fallback answered."
     assert calls == [FailoverReason.incomplete_response]
+    # The trigger survives the fallback's success in the log (#152101).
+    assert "Codex reasoning-only stall after 3 attempts — switched to fallback" in caplog.text
     # Three budgeted calls + exactly one grace call; the grace flag is consumed.
     assert api_calls["n"] == 4
     assert agent._budget_grace_call is False

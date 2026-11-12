@@ -1,0 +1,32 @@
+name: myradio
+repo: https://github.com/newjordan/myradio
+sha: 66d611bad24f069a41b136b0672b39b9ab3cde12
+subdir: integrations/hermes
+description: >-
+  Hermes DJs your own myradio station. /radio shows a now-playing card, plays a song by title and sends song
+  requests to the station's music maker, all without a model turn. The agent gets 12 tools to read the station,
+  search the library, plan the queue, write the DJ's lines and ask for new songs, plus the myradio:dj skill and the
+  myradio:dj-shift blueprint for unattended DJ shifts. Going live and deleting audio are not agent tools.
+  Disclosure: each tool call starts myradio's own MCP adapter as a short-lived child process (no shell, small
+  environment without API keys); that adapter reads the station's control.token from its data folder
+  (~/.myradio by default) and talks only to the station on 127.0.0.1. /radio request makes one completion with
+  the user's configured Hermes model (Hermes 0.23+). No other network calls, no files written, no background
+  process, no telemetry. Needs a running myradio station.
+maintainer: newjordan
+tier: community
+category: tools
+title: myradio
+requires_hermes: ">=0.16.0"
+docs_url: https://github.com/newjordan/myradio/tree/main/integrations/hermes#readme
+image: https://raw.githubusercontent.com/newjordan/myradio/66d611bad24f069a41b136b0672b39b9ab3cde12/docs/hermes/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/newjordan/myradio/66d611bad24f069a41b136b0672b39b9ab3cde12/docs/hermes/radio-card.png
+version: "0.2.0"
+platforms: [linux, macos]
+capabilities:
+  provides_tools: [myradio_status, myradio_library, myradio_queue_add, myradio_queue_move, myradio_queue_remove,
+                   myradio_start, myradio_skip, myradio_fade_next, myradio_schedule_add, myradio_make,
+                   myradio_operations, myradio_run]
+  provides_hooks: [pre_tool_call]
+  provides_middleware: []
+  requires_env: []

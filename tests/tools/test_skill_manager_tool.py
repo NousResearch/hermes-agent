@@ -1664,6 +1664,8 @@ class TestStagedWritePreflight:
         pytest.param(
             {"action": "create", "name": "category/valid-skill", "content": VALID_SKILL_CONTENT},
             "flat", id="TC-018-create-requires-bare-name"),
+        *[pytest.param({**_EXISTING_WRITE_PAYLOADS[1], "name": "中文測試"}, via,
+                       id=f"unicode-name-{via}") for via in ("flat", "batch")],
     ])
     def test_invalid_payloads_never_stage(self, tmp_path, monkeypatch, kwargs, via):
         from tools import write_approval as wa
@@ -1672,7 +1674,7 @@ class TestStagedWritePreflight:
         # Arrange: the first batch op could change a real skill, but must never run.
         skill = _skill_on_disk(tmp_path)
         before = (skill / "SKILL.md").read_bytes()
-        payload = {"name": "budget-skill", **kwargs}
+        payload = {"name": "new-skill" if kwargs["action"] == "create" else "budget-skill", **kwargs}
         request = payload if via == "flat" else {"operations": [
             {"action": "patch", "name": "budget-skill", "old_string": "Step 1.", "new_string": "Step 2."},
             payload,
@@ -1691,7 +1693,7 @@ class TestStagedWritePreflight:
         assert ungated.get("success") is False, ungated
         prefix = "operations[1]: " if via == "batch" else ""
         assert gated["error"] == prefix + ungated["error"]
-        if "system-prompt budget" in gated["error"]:
+        if "skill index" in gated["error"]:
             assert f"Description is {SKILL_PROMPT_DESC_LIMIT + 1} chars" in gated["error"]
         assert (skill / "SKILL.md").read_bytes() == before
 
@@ -1699,6 +1701,8 @@ class TestStagedWritePreflight:
         *[pytest.param(payload, "category/valid-skill", id=f"TC-{i + 6:03d}-{payload['action']}-categorized")
           for i, payload in enumerate(_EXISTING_WRITE_PAYLOADS)],
         pytest.param(_EXISTING_WRITE_PAYLOADS[1], "s" * 64, id="TC-017-name-at-limit"),
+        pytest.param({"action": "patch", "content": VALID_SKILL_CONTENT_2},
+                     "category/valid-skill", id="content-mode-patch"),
         pytest.param({"operations": [
             {"action": "create", "name": "new-skill", "content": _skill_md("Use when testing staged batches.")},
             {"action": "patch", "name": "new-skill", "old_string": "Step 1.", "new_string": "Step 2."},
@@ -1717,6 +1721,7 @@ class TestStagedWritePreflight:
             (skill / "references").mkdir()
             (skill / "references/a.md").write_text("original", encoding="utf-8")
         before = {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+        before_text = None if batch else (skill / "SKILL.md").read_text(encoding="utf-8")
         request = payload if batch else {"name": name, **payload}
 
         with _approval_home(monkeypatch, True), _skill_dir(tmp_path):
@@ -1739,7 +1744,7 @@ class TestStagedWritePreflight:
         else:
             expected = {
                 "edit": payload.get("content"),
-                "patch": before[str((skill / "SKILL.md").relative_to(tmp_path))].decode().replace("Step 1.", "Step 2."),
+                "patch": payload.get("content") or before_text.replace("Step 1.", "Step 2."),
                 "write_file": "new",
                 "remove_file": None,
             }[payload["action"]]

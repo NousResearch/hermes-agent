@@ -737,7 +737,8 @@ def _collection_enabled_now() -> Optional[bool]:
 #: (shared_metrics_update._STOP_REASON_PREFIX_CLASSES); never the message after it.
 _PARKED_REASON_LABEL = re.compile(
     r"(?:[A-Z][A-Za-z0-9_]{0,63}:(?: \[(?:Errno|WinError) \d+\])?"
-    r"|historical takeover preparation failed|Windows gateway recovery failed)")
+    r"|historical takeover preparation failed|gateway recovery failed"
+    r"|Windows gateway recovery failed)")
 _STOP_CLASS_TOKEN = re.compile(r"[a-z][a-z0-9_]{0,39}")
 
 

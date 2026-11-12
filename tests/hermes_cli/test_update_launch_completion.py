@@ -333,7 +333,7 @@ def test_failed_launch_keeps_previous_completion_and_retries(tmp_path, monkeypat
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     fact = runtime_facts_path(root)
     fact.parent.mkdir(parents=True)
-    previous = '{"packages":{"venv":{"stamp":"previous","extras":["all","anthropic"]}}}'
+    previous = '{"schema":1,"packages":{"venv":{"stamp":"previous","extras":["all","anthropic"]}}}'
     fact.write_text(previous)
     monkeypatch.setattr(pm, "venv_is_current", lambda **kw: False)
     calls = []
@@ -349,7 +349,8 @@ def test_failed_launch_keeps_previous_completion_and_retries(tmp_path, monkeypat
     assert not (root / ".update-incomplete").exists()
 
 
-def test_failed_dependency_sync_backs_off_only_for_the_same_inputs(tmp_path, monkeypatch):
+@pytest.mark.parametrize("corrected", ["uv.lock", "setup.py"])
+def test_failed_dependency_sync_backs_off_only_for_the_same_inputs(tmp_path, monkeypatch, corrected):
     """A failed launch sync counts toward the retry bound, so relaunches stop redoing the same
     failing repair (#139952); a corrected source update is a different repair and runs."""
     import pm
@@ -373,7 +374,7 @@ def test_failed_dependency_sync_backs_off_only_for_the_same_inputs(tmp_path, mon
     assert venv_sync.prepare_launch(root, []) is None, "a backed-off stale launch must not relaunch"
     assert len(syncs) == venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS, "the same failing repair re-ran"
 
-    (root / "uv.lock").write_text("# corrected source update\n", encoding="utf-8")
+    (root / corrected).write_text("# corrected source update\n", encoding="utf-8")
     with pytest.raises(RuntimeError, match="sync failed"):
         venv_sync.prepare_launch(root, [])
     assert len(syncs) == venv_sync.COMPLETION_RETRY_BACKOFF_ATTEMPTS + 1, "changed inputs were not retried"

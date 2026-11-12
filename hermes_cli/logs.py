@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from hermes_constants import display_hermes_home, get_default_hermes_root, get_hermes_home
+from hermes_logging import canonical_logger_name
 
 # Known log files (name → filename)
 LOG_FILES = {
@@ -109,7 +110,7 @@ def _extract_logger_name(line: str) -> Optional[str]:
 
 def _line_matches_component(line: str, prefixes: Sequence[str]) -> bool:
     name = _extract_logger_name(line)
-    return name is not None and name.startswith(tuple(prefixes))
+    return name is not None and canonical_logger_name(name).startswith(tuple(prefixes))
 
 
 def _matches_filters(

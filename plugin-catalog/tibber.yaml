@@ -1,0 +1,21 @@
+name: tibber
+title: Tibber Electricity
+repo: https://github.com/mehdishahdoost/tibber-plugin
+sha: 2d2df9c7c7d1c2112e0f925390107aadf4adef1f
+description: "Read-only Tibber account, electricity prices, and consumption history via MCP, with a cached cost-summary skill. Disclosure — on first load with TIBBER_ACCESS_TOKEN set it adds an mcp_servers.tibber entry (npx -y tibber-mcp-server@0.2.2, token passed as an env reference) to the active profile's config.yaml, which stays after uninstall until the user removes it; the server sends authenticated requests to api.tibber.com and reads account details, home addresses, prices and consumption history; the skill caches home addresses, IDs, costs and consumption (no credentials) in $HERMES_HOME/plugin-data/tibber/tibber.json."
+maintainer: mehdishahdoost
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/mehdishahdoost/tibber-plugin#readme
+version: "1.0.4"
+readme: true
+known_issues:
+  - Requires Node.js 18+, npx, and a Tibber personal access token.
+  - A native MCP entry created by the plugin remains until manually removed from config.yaml when uninstalling.
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - TIBBER_ACCESS_TOKEN

@@ -1,0 +1,25 @@
+name: veille
+title: Veille
+repo: https://github.com/veilleio/hermes-plugin-veille
+sha: cac7ce677087070bd2942cdc5a2e2b594ea6a0b8
+version: "1.0.0"
+description: "Tools to check emails, domains, IPs, phone numbers, VAT numbers and IBANs for fraud and validity, through the Veille API. Disclosure — sends the tool arguments to api.veille.io with your VEILLE_API_KEY, and calls can use Veille credits. Reads the key only through Hermes's secret scope. Registers 6 tools, no hooks or middleware, writes no files, starts no processes, has no telemetry or self-updater, and uses only the Python standard library."
+maintainer: veilleio
+tier: community
+category: tools
+requires_hermes: ">=0.21.6"
+docs_url: https://github.com/veilleio/hermes-plugin-veille#readme
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - veille_check_email
+    - veille_check_domain
+    - veille_check_ip
+    - veille_check_phone
+    - veille_check_vat
+    - veille_check_iban
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - VEILLE_API_KEY

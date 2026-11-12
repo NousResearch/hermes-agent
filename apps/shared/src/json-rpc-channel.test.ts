@@ -304,6 +304,16 @@ describe('JsonRpcRequestChannel', () => {
     expect(unhandled).toEqual(['tour'])
   })
 
+  it('reports an error frame with no request id (the parse-error reply) instead of dropping it', () => {
+    const uncorrelated: Array<{ code?: number; message: string }> = []
+    const channel = new JsonRpcRequestChannel({ onUncorrelatedError: error => void uncorrelated.push({ code: error.code, message: error.message }) })
+
+    channel.attach(spyTransport().transport)
+    channel.handleFrame(JSON.stringify({ jsonrpc: '2.0', error: { code: -32700, message: 'parse error' }, id: null }))
+
+    expect(uncorrelated).toEqual([{ code: -32700, message: 'parse error' }])
+  })
+
   it('re-delivers open_requests from a response before the caller sees the result, tagged replayed', async () => {
     const delivered: Array<{ id: string; replayed?: boolean }> = []
     const channel = new JsonRpcRequestChannel()

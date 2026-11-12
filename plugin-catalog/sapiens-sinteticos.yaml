@@ -1,0 +1,21 @@
+name: sapiens-sinteticos
+title: "Sapiens Sintéticos"
+repo: https://github.com/inhabitants/sapiens-mcp
+sha: 03a000b2ca7f355d717204bf2f215250ce08054c
+subdir: hermes
+description: "Operate your Sapiens Sintéticos account from Hermes: images, video, music, voice, characters, your repertoire and the members' forum, through the hosted Sapiens MCP server (Streamable HTTP, OAuth 2.1 + DCR), with the 18 house skills bundled (prompting rules, engine choice, cost traps, publishing flows). Portable Agent Plugins v1 package (skills/ only; the server is added by the sign-in command below). Disclosure — hosted-only connector with no local code; every tool call goes to the Sapiens server at https://www.sapiensinteticos.com/api/mcp/mcp, added with `hermes mcp add sapiens --auth oauth` (the README then has you set `trust: untrusted` on mcp_servers.sapiens so Hermes asks before each generation, publish or delete call); generation tools debit Sinapses, the prepaid credit of your Sapiens account, and publishing tools post to the members' forum and to social accounts you connected on Sapiens, only when asked; in companion mode the agent speaks in the persona your Sapiens account sends and, after telling you once per session, saves condensed notes of your conversation (your decisions, preferences, what you tell about yourself) to your Sapiens notebook, which you can view and delete on the site, and skips them if you say no; on request the skills write `.claude/skills/sapiens-voz/SKILL.md` and `.claude/skills/sapiens-soul/SKILL.md` into the current project; the skills are in Brazilian Portuguese."
+maintainer: inhabitants
+tier: community
+category: tools
+version: "1.113.1"
+docs_url: https://www.sapiensinteticos.com/en/connect-claude
+image: https://raw.githubusercontent.com/inhabitants/sapiens-mcp/03a000b2ca7f355d717204bf2f215250ce08054c/hermes/assets/banner.jpg
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+known_issues:
+- "Sign-in needs one extra command after install, because a portable plugin cannot declare an OAuth MCP server: hermes mcp add sapiens --url https://www.sapiensinteticos.com/api/mcp/mcp --auth oauth --connect-timeout 300. Then set trust: untrusted on mcp_servers.sapiens in config.yaml, so Hermes asks before each generation, publish or delete call."
+- "A new user needs a Sapiens Sintéticos account; the sign-in page links to the invite request."

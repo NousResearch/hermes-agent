@@ -588,13 +588,11 @@ def resolve_pricing_provider(provider: str, *, base_url: str = "") -> str:
         profile = get_provider_profile(inferred) if inferred else None
     except Exception:
         return ""
-    # ``_infer_provider_from_url`` is deliberately broad for user-facing hints. Pricing is a
-    # trust boundary: require an exact official hostname (or one of its explicit subdomains),
-    # never a mere substring such as ``openrouter.ai.attacker.invalid``. A profile's claimed
-    # hosts count only when named exactly.
+    # Pricing is a trust boundary: beyond ``_infer_provider_from_url``'s host-or-subdomain match,
+    # require a host-specific table entry. A profile's claimed hosts count only when named exactly.
     claimed = (*profile.hostnames, *profile.metadata_hostnames) if profile is not None else ()
     if not inferred or not (base_url_hostname(base_url) in claimed or any(
-        provider == inferred and not host.startswith(".") and base_url_host_matches(base_url, host)
+        provider == inferred and base_url_host_matches(base_url, host)
         for host, provider in _URL_TO_PROVIDER.items()
     )):
         return ""

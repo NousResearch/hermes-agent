@@ -474,6 +474,7 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
                 print(f"\n{diff}")
 
     def _rollback_restore(self, mgr, cwd, target_hash: str, file_path, restore_all: bool) -> None:
+        taken = self._checkpoint_taken_at(cwd, target_hash)
         result = mgr.restore(cwd, target_hash, file_path=file_path,
                              safe=not restore_all and not file_path)
         if not result["success"]:
@@ -483,10 +484,8 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
               else f"  {_t('rollback.restored_all', **restored)}")
         _rollback_kept(result)
         print(f"  {_t('rollback.snapshot_saved')}")
-        # Also undo the last conversation turn so the agent's context matches the restored files.
-        if self.conversation_history:
-            self.undo_last(prefill=False)
-            print(f"  {_t('rollback.chat_turn_undone')}")
+        # Also undo the last chat turn so the agent's context matches the files (not one /undo kept).
+        self._rollback_chat_turn(taken)
 
     # ---- /diff ----------------------------------------------------------------------------
     def _handle_diff_command(self, command: str):

@@ -157,8 +157,18 @@ inflation, real-over-threshold controls, reload/restore anchors, and local HTTP
 overflow/usage-less recovery with real compression but fixed local summary text.
 These are scripted control-flow checks, not vendor tokenizer or billing evidence.
 
-Opaque provider blobs (`encrypted_content` on Codex reasoning / compaction
-items) contribute 0 to every local estimate; only real usage ever prices them.
+Opaque provider blobs are never priced by their bytes (a native compaction
+checkpoint alone can be 5 million characters). Replayed **reasoning** is priced
+at the reasoning-token count the provider reported for the turn that produced it:
+each assistant row carries that count (`display_metadata.reasoning_tokens`), and
+every local estimate (preflight trigger, tail-budget walk, gateway hygiene)
+charges it. Providers bill the replay as input at that count: in a live A/B with
+the same request sent with and without the reasoning, gpt-5.6-sol reported 2,765
+and billed +2,767, grok-4.7 reported 73 and billed +76, and claude-opus-5.5
+reported 3,959 and billed +3,959 while its readable summary was about 1,016.
+Compaction checkpoints still contribute 0; only real usage prices them. Rows
+saved before the count existed fall back to a per-provider estimate from the
+ciphertext length.
 
 Images are priced at the per-image cost **learned from the provider's usage**
 (`agent/image_token_cost.py`), not a vendor formula: on a response whose delta

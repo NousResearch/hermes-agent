@@ -1,0 +1,34 @@
+name: hermagotchi
+title: Hermagotchi
+repo: https://github.com/mojomast/hermagotchi
+sha: 0ed7793fbf238e32fb86506ad2b587ae4eb90963
+description: "Co-op virtual pets for Hermes: raise a pet, fight deterministic async battles, earn Bits, unlock cosmetics up to mythic tier, climb a seasonal leaderboard, and chat, DM, challenge and taunt other players in a native pane in the Hermes web app and Desktop (Habitat, Battle, Shop, Leaderboard and Social tabs plus a persistent lobby rail). Hermes gets 8 composable tools (hermagotchi_status, hermagotchi_pet, hermagotchi_goals, hermagotchi_challenge, hermagotchi_battle, hermagotchi_shop, hermagotchi_social, hermagotchi_meta). Disclosure — by default the tools run an offline practice simulation (in-memory, no network, reset on Hermes restart). Only when the owner sets the network_enabled plugin setting do they act on the real game server, using the device session the pane paired; that state persists server-side. hermagotchi_status health/me report the active backend. Agent autonomy (autonomy-gated game actions such as practice battles) and agent chat need their own settings and are off by default; the agent can never buy items, and pet care/adopt are not gated by the autonomy setting. The network, autonomy and chat settings can also be switched on by the HERMAGOTCHI_NETWORK_ENABLED, HERMAGOTCHI_AGENT_AUTONOMY_ENABLED and HERMAGOTCHI_AGENT_CHAT_ENABLED environment variables. Network traffic goes over HTTPS only (plain HTTP is refused except loopback) to the game API base URL the user configures (the optional hosted API at api.hermagotchi.rizz.click run by the maintainer, or a self-hosted server from docs/deploy). It sends pet, battle, shop and social actions and, if agent chat is enabled, lobby messages, DMs and taunts, which that server stores; other players' messages come back to the agent marked as third-party text. The pairing session token lives in a 0600 file under Hermes plugin data and is never returned by tools or logged. Online, hermagotchi_status op=pair refuses user_code/revoke_device_id (unsupported_online); approve and revoke stay human pane actions so lobby/DM prompt injection cannot attach a stranger's device. The dashboard tab renders with the dashboard SDK's React and authedFetch, used only for same-origin plugin asset and API routes; the Desktop pane uses ctx.rest only (no remote code, no host-token access). No hooks, no middleware, no subprocesses, no inbound ports, and no secrets are requested (requires_env is empty). The dashboard plugin API only proxies an allowlisted set of game routes for the pane."
+maintainer: mojomast
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/mojomast/hermagotchi#readme
+version: "0.1.3"
+screenshots:
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/0ed7793fbf238e32fb86506ad2b587ae4eb90963/docs/images/hero-hermes-habitat.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/0ed7793fbf238e32fb86506ad2b587ae4eb90963/docs/images/shop-don-piedro.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/0ed7793fbf238e32fb86506ad2b587ae4eb90963/docs/images/battle-teknium.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/0ed7793fbf238e32fb86506ad2b587ae4eb90963/docs/images/leaderboard-southpaw.png
+  - https://raw.githubusercontent.com/mojomast/hermagotchi/0ed7793fbf238e32fb86506ad2b587ae4eb90963/docs/images/social-nous-girl.png
+platforms: []
+known_issues:
+  - "Agent tools default to an offline practice simulation; set network_enabled (plugin setting) to play the real shared game with the pane's paired account. pet rename/set_mode are sim-only. Online pair approve/revoke is pane-only (tool returns unsupported_online)."
+  - "Multiplayer (ranked battles, leaderboard, social) needs a game server; the hosted API has a signup cap and no self-serve account deletion yet."
+capabilities:
+  provides_tools:
+    - hermagotchi_status
+    - hermagotchi_pet
+    - hermagotchi_goals
+    - hermagotchi_challenge
+    - hermagotchi_battle
+    - hermagotchi_shop
+    - hermagotchi_social
+    - hermagotchi_meta
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

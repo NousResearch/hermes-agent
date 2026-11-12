@@ -310,6 +310,13 @@ export const ar = defineLocale({
     authRequired: "مصادقة مطلوبة",
     authRequiredHint: "شغِّل هذا الأمر للمصادقة:",
     updateGit: "سحب من Git",
+    updateAll: "تحديث الكل",
+    updatingAll: "جارٍ تحديث المكوِّنات…",
+    updateAllDone: (updated: number, needsReview: number, failed: number) =>
+      `تم التحديث ${updated}، يحتاج مراجعة ${needsReview}، فشل ${failed}`,
+    autoUpdate: "التحديث التلقائي",
+    autoUpdateDesc: (hours: number) =>
+      `طبّق تحديثات المكوِّنات تلقائيًا عند فحص البوابة (كل ${hours} ساعة). تُحمَّل الشيفرة المحدّثة في الجلسات الجديدة.`,
     versionBadge: "الإصدار",
     showInSidebar: "إظهار في الشريط الجانبي",
     hideFromSidebar: "إخفاء من الشريط الجانبي",

@@ -191,6 +191,9 @@ export interface ClientSessionState {
   /** `turn_id` of the newest message.start (tui_gateway/stream_segments.py): a
    *  re-sent start of the same turn is not a new occurrence. */
   streamTurnId?: null | string
+  /** The owner admission the live turn executes, from its frames' execution stamp (`admission_id`). The in-flight
+   *  journal stores it so a reopen can ask the owner whether that exact execution is still pending. */
+  turnAdmissionId?: null | string
   /** Newest row on screen when that message.start arrived: rows above it are
    *  earlier turns, even when an interim seal left them marked `interim`. */
   turnAnchorId?: null | string

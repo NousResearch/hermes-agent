@@ -3,7 +3,6 @@ import type { AuxTaskCopyMap } from './types_aux_tasks'
 export const zhAuxTasks: AuxTaskCopyMap = {
   vision: { label: '视觉', hint: '图片分析' },
   compression: { label: '压缩', hint: '上下文压缩' },
-  skills_hub: { label: '技能中心', hint: '技能搜索' },
   approval: { label: '审批', hint: '智能自动批准' },
   mcp: { label: 'MCP', hint: 'MCP 工具路由' },
   title_generation: { label: '标题生成', hint: '会话标题' },

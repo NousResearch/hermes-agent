@@ -227,7 +227,7 @@ def _recover_payload_too_large(st: _Recovery, _retry: TurnRetryState) -> Overflo
     if exhausted is not None:
         return exhausted
     agent._buffer_diagnostic_status(
-        f"⚠️  Request payload too large (413) — compression attempt "
+        f"⚠️  Request payload too large — compression attempt "
         f"{st.compression_attempts}/{st.max_compression_attempts}..."
     )
 

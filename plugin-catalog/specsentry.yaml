@@ -1,0 +1,17 @@
+name: specsentry
+repo: https://github.com/birdcoin0/SpecSentry
+sha: 87edf75b29cfcc388efc6b96e778902943f4d599
+description: Evidence-backed API contract drift analysis using OpenAPI and HAR traffic, with deterministic verdicts, coverage intelligence, and reproducible regression tests.
+maintainer: birdcoin0
+tier: community
+category: tools
+version: "0.1.0"
+readme: true
+capabilities:
+  provides_tools:
+    - specsentry_scope_check
+    - specsentry_drift
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []
+requires_hermes: ">=0.21.6"

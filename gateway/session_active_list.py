@@ -14,8 +14,12 @@ from hermes_state_runtime import RuntimeStoreError
 
 def _status(live, handle, pending) -> str:
     if handle.execution_state == 'running':
-        prompts = live.controls.snapshot(handle.ref.session_id, handle.execution_generation)
-        return 'waiting' if prompts else 'working'
+        from gateway.session_server_requests import open_requests
+        sid = handle.ref.session_id
+        # A question holds the turn: a shared control (approval) or a viewer request (clarify batch,
+        # sudo, secret, vault) still open on the stream.
+        asked = live.controls.snapshot(sid, handle.execution_generation) or open_requests(live.event_stream, sid)
+        return 'waiting' if asked else 'working'
     # Admitted, not yet claimed by the drain: the turn exists, its agent has not started.
     return 'starting' if any(row['status'] == 'queued' for row in pending) else 'idle'
 

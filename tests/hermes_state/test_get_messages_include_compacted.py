@@ -421,7 +421,8 @@ class TestDisplayDedupe:
 
         changes = db._conn.total_changes
         db.set_message_reaction(sid, row_ids[1], "👍", author="user")
-        assert db._conn.total_changes - changes == 1
+        # The reacted row and its session's transcript_revision (a transcript poller's cursor keys on it).
+        assert db._conn.total_changes - changes == 2
         assert db._conn.execute(
             "SELECT id, display_order, display_identity FROM messages WHERE session_id = ? ORDER BY id",
             (sid,),

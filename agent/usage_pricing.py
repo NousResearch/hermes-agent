@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone, UTC
 from decimal import Decimal
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, Literal, Optional, cast
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
@@ -197,9 +197,9 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         "claude-opus-5": _OPUS,
         "claude-opus-5-5": _OPUS_5_5,
     }),
-    # Fable 5.2 and Mythos 5.2 share rates; cache hits are 0.025x input.
+    # Fable 5.2: cache hits are 0.025x input.
     ("anthropic", _ANTHROPIC_URL, "anthropic-pricing-2026-11", {
-        ("claude-fable-5-2", "claude-mythos-5-2"): _FABLE_5_2,
+        "claude-fable-5-2": _FABLE_5_2,
     }),
     ("openai", "https://openai.com/api/pricing/", "openai-pricing-2026-03-16", {
         "gpt-4o": ("2.50", "10.00", "1.25"), "gpt-4o-mini": ("0.15", "0.60", "0.075"),
@@ -213,10 +213,7 @@ _SNAPSHOTS: tuple[tuple[str, Optional[str], str, dict], ...] = (
         ("deepseek-flash", "deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"): ("0.15", "0.60", "0.003"),
         "deepseek-v4-pro": ("0.66", "1.98", "0.022"),
     }),
-    # Gemini 4 introductory rates through 2026-11-30; from 2026-12-01 they double ($4 / $20 / $0.20).
-    ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-11-10", {
-        "gemini-4-carbon": ("2.00", "10.00", "0.10"),
-    }),
+    # Introductory rates through 2026-11-30; from 2026-12-01 they double ($4 / $20 / $0.20).
     ("google", "https://ai.google.dev/gemini-api/docs/pricing", "google-pricing-2026-10-13", {
         "gemini-4-argon": ("2.00", "10.00", "0.10"),
     }),
@@ -356,7 +353,7 @@ _ANTHROPIC_FAST_MODE_PRICING: dict[str, PricingEntry] = {
     for _models, _rates in (
         (("claude-opus-4-8", "claude-opus-5"), ("10.00", "50.00", "1.00", "12.50")),
         (("claude-opus-5-5",), ("8.00", "40.00", "0.40", "10.00")),
-        (("claude-fable-5-2", "claude-mythos-5-2"), ("16.00", "80.00", "0.40", "20.00")),
+        (("claude-fable-5-2",), ("16.00", "80.00", "0.40", "20.00")),
     )
     for _model in _models
 }
@@ -678,11 +675,9 @@ def normalize_usage(
 
     # Responses API: output_tokens_details.reasoning_tokens. Chat Completions
     # (OpenAI, OpenRouter, DeepSeek, ...): completion_tokens_details.reasoning_tokens.
-    # Anthropic Messages: output_tokens_details.thinking_tokens (the full thinking, not the summary).
-    # Hidden thinking dominates output spend on reasoning models, so read all three.
+    # Hidden thinking dominates output spend on reasoning models, so read both.
     reasoning_tokens = _first_nonzero(
-        u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens"),
-        ("output_tokens_details", "thinking_tokens"),
+        u, ("output_tokens_details", "reasoning_tokens"), ("completion_tokens_details", "reasoning_tokens")
     )
 
     # On MiniMax-M3's Anthropic wire, cache_read_input_tokens carries a constant
@@ -718,16 +713,30 @@ def estimate_usage_cost(
     from providers import get_provider_profile
     profile = get_provider_profile(provider or '')
     reported = profile.get_usage_cost(model_name, usage) if profile else None
+    try:
+        open("/Users/olsen.cheung/.hermes/cache/scratch/pricing_trace.log","a").write(f"FILE={__file__} model={model_name!r} provider={provider!r} key={bool(api_key)}\n")
+    except Exception:
+        pass
     if reported is not None:
         return reported
-    route = resolve_billing_route(model_name, provider=provider, base_url=base_url)
+    # OpenRouter presets are account-scoped aliases with no /models row, so price the
+    # model the preset actually routes to (cached probe; falls back to the alias, which
+    # then prices as unknown rather than as a guess). Never replaces the reported model.
+    try:
+        from agent import openrouter_presets
+
+        priced_model = openrouter_presets.underlying_model(model_name, api_key=api_key or "")
+    except Exception:
+        priced_model = None
+    pricing_model = priced_model or model_name
+    route = resolve_billing_route(pricing_model, provider=provider, base_url=base_url)
     if route.billing_mode == "subscription_included":
         return CostResult(
             amount_usd=_ZERO, status="included", source="none", label="included",
             pricing_version="included-route", notes=(_INCLUDED_NOTE,),
         )
 
-    entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
+    entry = get_pricing_entry(pricing_model, provider=provider, base_url=base_url, api_key=api_key)
     if route.provider == "anthropic" and _served_fast(usage):
         entry = _anthropic_fast_mode_entry(route.model)
         if not entry:
@@ -776,6 +785,52 @@ def estimate_usage_cost(
         amount_usd=amount, status=status, source=entry.source, label=label,
         fetched_at=entry.fetched_at, pricing_version=entry.pricing_version, notes=tuple(notes),
     )
+
+
+def estimate_session_cost(agent: Any) -> Optional[CostResult]:
+    """Session-to-date spend for a live agent, priced from its own token counters.
+
+    ``agent.session_estimated_cost_usd`` is only populated when the turn loop prices each
+    response; on builds/routes where it stays zero, computing from the cumulative
+    counters gives the same answer without touching the loop. Returns None when the
+    route has no rate card — callers must render nothing rather than a fake ``$0.00``.
+    """
+    if agent is None:
+        return None
+    status = str(getattr(agent, "session_cost_status", "") or "")
+    if status == "included":
+        return CostResult(
+            amount_usd=_ZERO, status="included", source="none", label="included",
+        )
+    usd = getattr(agent, "session_estimated_cost_usd", None)
+    if isinstance(usd, (int, float)) and usd > 0 and status in {"actual", "estimated"}:
+        return CostResult(
+            amount_usd=Decimal(str(usd)), status="estimated", source=cast(CostSource, "models_api"),
+            label=format_cost_label(Decimal(str(usd))),
+        )
+    model = str(getattr(agent, "model", "") or "")
+    try:
+        from agent import openrouter_presets
+
+        priced_model = openrouter_presets.underlying_model(
+            model, api_key=getattr(agent, "api_key", "") or "") or model
+    except Exception:
+        priced_model = model
+    usage = CanonicalUsage(
+        input_tokens=int(getattr(agent, "session_input_tokens", 0) or 0),
+        output_tokens=int(getattr(agent, "session_output_tokens", 0) or 0),
+        cache_read_tokens=int(getattr(agent, "session_cache_read_tokens", 0) or 0),
+        cache_write_tokens=int(getattr(agent, "session_cache_write_tokens", 0) or 0),
+    )
+    if not usage.total_tokens:
+        return None
+    try:
+        return estimate_usage_cost(
+            priced_model, usage, provider=getattr(agent, "provider", None),
+            base_url=getattr(agent, "base_url", None), api_key=getattr(agent, "api_key", "") or "",
+        )
+    except Exception:
+        return None
 
 
 def has_known_pricing(

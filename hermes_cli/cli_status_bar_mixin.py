@@ -231,6 +231,12 @@ class CLIStatusBarMixin:
             "battery_category": "dim",
             "focus_label": "",  # /focus badge: the reduced-output mode is never invisible.
             "git_branch": "",
+            # Cost meter (display.show_cost): session-to-date estimate, plus the per-turn
+            # delta the turn summary line appends. Label is pre-formatted by the shared
+            # pricing helper so the status bar and /usage can never disagree.
+            "session_estimated_cost_usd": 0.0,
+            "session_cost_status": "unknown",
+            "session_cost_label": "",
             "goal_active": False,
             "goal_turns_used": 0,
             "goal_max_turns": 0}
@@ -296,6 +302,39 @@ class CLIStatusBarMixin:
 
         for key in _AGENT_COUNTERS:
             snapshot[key] = getattr(agent, key, 0) or 0
+
+        # Cost meter: only pay for the formatting when the user turned it on (or an
+        # explicit fields list asks for "cost"). ``status`` mirrors agent.session_cost_status:
+        # "included" routes render "included", "unknown" renders "" (no pricing → never a
+        # fake $0.00), everything else the shared ~$ label.
+        try:
+            if self._status_bar_cost_visible():
+                from agent.usage_pricing import estimate_session_cost
+
+                # Repaints are frequent; the counters only move on an API call, so memo on
+                # (model, tokens, calls) instead of re-pricing every frame.
+                _key = (
+                    str(getattr(agent, "model", "")),
+                    int(getattr(agent, "session_total_tokens", 0) or 0),
+                    int(getattr(agent, "session_api_calls", 0) or 0),
+                )
+                if getattr(self, "_cost_memo_key", None) != _key:
+                    _result = estimate_session_cost(agent)
+                    self._cost_memo_key = _key
+                    self._cost_memo = _result
+                _result = getattr(self, "_cost_memo", None)
+                if _result is None:
+                    snapshot["session_cost_label"] = ""
+                elif _result.status == "included":
+                    snapshot["session_cost_label"] = t("cli.status_bar.cost_included")
+                elif _result.amount_usd is None:
+                    snapshot["session_cost_label"] = ""
+                else:
+                    snapshot["session_estimated_cost_usd"] = float(_result.amount_usd)
+                    snapshot["session_cost_status"] = _result.status
+                    snapshot["session_cost_label"] = _result.label
+        except Exception:
+            pass
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:
@@ -620,6 +659,10 @@ class CLIStatusBarMixin:
             self._turn_token_baseline = (
                 getattr(agent, "session_output_tokens", 0) or 0
             ) if agent is not None else 0
+            # Cost baseline for the per-turn delta appended to the summary line.
+            self._turn_cost_baseline = (
+                float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+            ) if agent is not None else 0.0
         except Exception:
             self._turn_summary_collector = None
 
@@ -633,6 +676,31 @@ class CLIStatusBarMixin:
         except Exception:
             pass
 
+    def _append_turn_cost(self, line: str) -> str:
+        """Append this turn's estimated spend to the summary line (display.show_cost).
+
+        The delta comes from the agent's session counter, which ``agent.turn_usage``
+        increments per API response — so delegated subagent spend folded into the parent
+        shows up here too. No label when pricing is unknown: a silent meter beats a lie.
+        """
+        if not self._status_bar_cost_visible():
+            return line
+        try:
+            from decimal import Decimal
+            from agent.usage_pricing import format_cost_label
+
+            agent = getattr(self, "agent", None)
+            if agent is None or str(getattr(agent, "session_cost_status", "")) in {"", "unknown"}:
+                return line
+            total = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+            delta = total - float(getattr(self, "_turn_cost_baseline", 0.0) or 0.0)
+            if delta <= 0:
+                return line
+            label = format_cost_label(Decimal(str(round(delta, 6))))
+            return f"{line} · {label}" if line else f"⋯ {label}"
+        except Exception:
+            return line
+
     def _turn_summary_emit(self) -> None:
         """Print the post-turn accounting line, when enabled for this surface."""
         from cli import _DIM as _D, _RST, _cprint, logger
@@ -642,6 +710,7 @@ class CLIStatusBarMixin:
         try:
             started = getattr(self, "_turn_summary_start", 0.0) or 0.0
             line = collector.render(max(0.0, time.monotonic() - started) if started else 0.0)
+            line = self._append_turn_cost(line)
             if line and getattr(self, "_modern_layout", False):
                 from hermes_cli.cli_modern_layout import turn_footer
                 _cprint(turn_footer(line))
@@ -999,7 +1068,8 @@ class CLIStatusBarMixin:
         Fields: model, context_detail, context_pct, cache_hit, latency, tps, compressions,
         bg_tasks, bg_processes, bg_subagents, goal, git_branch (opt-in only), duration,
         prompt_elapsed, idle_since, focus, yolo, stash, battery, title, total_tokens
-        (opt-in only). Order is fixed; the config controls visibility only.
+        (opt-in only), cost (also enabled by ``display.show_cost``). Order is fixed; the
+        config controls visibility only.
         """
         from cli import CLI_CONFIG
         if hasattr(self, "_status_bar_field_set_cache"):
@@ -1015,6 +1085,30 @@ class CLIStatusBarMixin:
             result = None
         self._status_bar_field_set_cache = result
         return result
+
+    def _status_bar_cost_visible(self) -> bool:
+        """Whether the cost meter renders: ``display.show_cost: true`` (the documented
+        switch) or an explicit ``display.status_bar.fields`` list naming ``cost``.
+
+        An explicit fields list wins over show_cost — a user who enumerated the segments
+        gets exactly those, so cost stays out unless it is in the list.
+        """
+        if hasattr(self, "_status_bar_cost_visible_cache"):
+            return self._status_bar_cost_visible_cache
+        visible = False
+        try:
+            from cli import CLI_CONFIG
+            display = CLI_CONFIG.get("display") if isinstance(CLI_CONFIG, dict) else None
+            if isinstance(display, dict):
+                fields = (display.get("status_bar") or {}).get("fields")
+                if isinstance(fields, list) and fields:
+                    visible = "cost" in {str(f) for f in fields}
+                else:
+                    visible = bool(display.get("show_cost"))
+        except Exception:
+            visible = False
+        self._status_bar_cost_visible_cache = visible
+        return visible
 
     def _status_bar_segments(
         self, snapshot, width: int, field_set, yolo_active: bool, *, styled: bool) -> list:
@@ -1046,6 +1140,12 @@ class CLIStatusBarMixin:
                 segs.append([(_SB, " ☤ "), (_STRONG, model_short)])
             else:
                 segs.append([("", f"☤ {model_short}")])
+        # $ session meter (display.show_cost). Sits next to the model so the headline
+        # numbers stay left-aligned where the eye lands, and so a narrow bar trims the
+        # tail (git/elapsed) before it ever drops the spend.
+        cost_label = snapshot.get("session_cost_label") or ""
+        if cost_label and _ok("cost"):
+            add("cost", _DIM, cost_label)
         narrow, wide = width < 52, width >= 76
         if narrow:
             # Narrow bars put duration ahead of the goal segment; the other tiers reverse it.

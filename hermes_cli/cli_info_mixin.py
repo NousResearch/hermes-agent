@@ -714,6 +714,23 @@ class CLIInfoMixin:
             print(f"  {line}")
         print()
 
+    def _session_cost_row(self, agent) -> str:
+        """``~$0.0421`` for the session, ``"unknown"``/``"included"`` when pricing says so,
+        ``""`` when the estimate is unusable (never render a reassuring fake zero)."""
+        try:
+            from decimal import Decimal
+            from agent.usage_pricing import format_cost_label
+
+            status = str(getattr(agent, "session_cost_status", "unknown") or "unknown")
+            if status == "unknown":
+                return t("cli.usage.cost_unknown")
+            if status == "included":
+                return t("cli.status_bar.cost_included")
+            usd = float(getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0)
+            return format_cost_label(Decimal(str(round(usd, 6))))
+        except Exception:
+            return ""
+
     def _show_usage(self):
         """Rate limits + session token usage (when a live agent exists) + Nous credits.
 
@@ -771,6 +788,13 @@ class CLIInfoMixin:
         _label_row("cli.usage.label_completion_tokens", f"{agent.session_completion_tokens:>10,}")
         _label_row("cli.usage.label_total_tokens", f"{agent.session_total_tokens:>10,}")
         _label_row("cli.usage.label_api_calls", f"{calls:>10,}")
+        # Session spend estimate — same source and formatter as the status-bar meter
+        # (agent.session_estimated_cost_usd). A lower bound by design: only main-agent
+        # responses carry usage (aux calls, retries and cache writes are missed), so label
+        # it as such rather than implying a bill.
+        cost_row = self._session_cost_row(agent)
+        if cost_row:
+            _label_row("cli.usage.label_estimated_cost", f"{cost_row:>10}")
         _label_row("cli.usage.label_session_duration", f"{elapsed:>10}")
         print(f"  {'─' * 40}")
         from agent.context_breakdown import context_display_source

@@ -62,7 +62,7 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     except FileNotFoundError:
         return None
     except OSError as exc:
-        raise ValueError(f"could not read plugin selection: {config_path}") from exc
+        raise ValueError(f"could not read plugin selection: {config_path}: {exc.strerror or exc}") from exc
     # Missing YAML support is a broken runtime, not an empty plugin selection.
     from ruamel.yaml.error import YAMLError
     try:
@@ -70,9 +70,17 @@ def read_home_selection(home: Path) -> Optional[dict[str, Any]]:
     except FileNotFoundError:
         return None
     except (OSError, UnicodeError) as exc:
-        raise ValueError(f"could not read plugin selection: {config_path}") from exc
+        raise ValueError(f"could not read plugin selection: {exc}") from exc
     except YAMLError as exc:
-        raise ValueError(f"could not parse plugin selection: {config_path}") from exc
+        # Name the YAML problem and where it is: this is the message a bootstrap install
+        # prints when an existing config.yaml keeps dependencies from installing, so
+        # "could not parse" alone leaves the user nothing to act on (#152306).
+        from hermes_cli.config_read_errors import config_parse_failure_reason
+        raise ValueError(
+            f"{config_path} cannot be parsed, so the plugins it selects cannot be installed: "
+            f"{config_parse_failure_reason(exc)}. Fix it with `hermes config edit`, then run "
+            "`hermes config check`."
+        ) from exc
     if config is None:
         return {}
     if not isinstance(config, dict):

@@ -299,10 +299,10 @@ _BEDROCK_PROBE_FAILURE_CACHE: dict[tuple, float] = {}
 DEFAULT_CONTEXT_LENGTHS = {
     # Anthropic — bare ids only (prefixed ids resolve via OpenRouter/models.dev
     # and would collide: "anthropic/claude-sonnet-4" ⊂ "anthropic/claude-sonnet-4.6").
-    "claude-fable-5": 1000000, "claude-fable": 1000000, "claude-mythos": 1000000, "claude-opus-5": 1000000, "claude-sonnet-5": 1000000,
+    "claude-fable-5": 1000000, "claude-fable": 1000000, "claude-mythos": 1000000, "claude-opus-5": 1000000, "claude-sonnet-5": 1000000, "claude-haiku-5": 1000000,
     "claude-opus-4-8": 1000000, "claude-opus-4.8": 1000000, "claude-opus-4-7": 1000000, "claude-opus-4.7": 1000000,
     "claude-opus-4-6": 1000000, "claude-sonnet-4-6": 1000000, "claude-opus-4.6": 1000000, "claude-sonnet-4.6": 1000000,
-    "claude": 200000,  # catch-all for older Claude models
+    "claude": 200000,  # catch-all for older Claude models (Haiku 4.5 too; Haiku 5.5 is 1M)
     # OpenAI direct-API windows (Codex OAuth has its own caps). 5.4-nano/-mini are 400k, not 1.05M;
     # gpt-5.3-codex-spark is OAuth-only and listed so "gpt-5" (400k) doesn't win.
     "gpt-6.2-astra": 1050000, "gpt-6.2-sol": 1050000,

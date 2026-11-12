@@ -1,15 +1,15 @@
 name: hermes-arcade-tui
 title: "Hermes Arcade"
 repo: https://github.com/Takumixbt/Hermes-Arcade
-sha: 65b31f602efa46312c5680084d7083d95745d006
+sha: 22130a45c252d9b451790020bc3ea9e67f10a23d
 description: "Three terminal games inside the terminal Hermes already runs in: chess against the model Hermes is using, a side-view kart racer, and Chrome's dino wearing the Hermes cap."
 maintainer: Takumixbt
 tier: community
 category: general
 requires_hermes: ">=0.23.0"
-version: "3.0.2"
+version: "3.0.3"
 screenshots:
-  - https://raw.githubusercontent.com/Takumixbt/Hermes-Arcade/cbcda3bbad2d5f03007594a6ef87d757131cbb29/docs/arcade.gif
+  - https://raw.githubusercontent.com/Takumixbt/Hermes-Arcade/22130a45c252d9b451790020bc3ea9e67f10a23d/docs/arcade.gif
 capabilities:
   provides_tools: []
   provides_hooks:

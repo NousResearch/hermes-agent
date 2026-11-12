@@ -15,11 +15,21 @@ pytest.importorskip("markdown")
     '<a href="data:text/html,x">x</a>',
 ])
 def test_standalone_payload_formatted_body_is_sanitized(message):
+    from html.parser import HTMLParser
+
     from plugins.platforms.matrix.adapter import _standalone_payloads
 
     html = "".join(p.get("formatted_body", "") for p in _standalone_payloads(message)).lower()
     for needle in ("<img", "onerror", "<script", "javascript:", "data:"):
         assert needle not in html, (needle, html)
+    hrefs = []
+
+    class _Hrefs(HTMLParser):  # attribute values arrive entity-decoded, as a client sees them
+        def handle_starttag(self, tag, attrs):
+            hrefs.extend(v or "" for k, v in attrs if k == "href")
+
+    _Hrefs().feed(html)
+    assert not [h for h in hrefs if h.strip().startswith(("javascript:", "data:"))], (hrefs, html)
 
 
 def test_standalone_payload_keeps_safe_formatting():

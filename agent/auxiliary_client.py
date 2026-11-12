@@ -4612,9 +4612,8 @@ def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optio
 
 
 def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_base: str, model: Optional[str] = None) -> Any:
-    """Credential for a named custom provider: inline api_key → key_env → key_cmd → credential pool → placeholder.
-    Aux resolves named custom providers here, not via _resolve_named_custom_runtime, so key_cmd must be
-    honoured at the same precedence or every aux call 401s."""
+    """Named-entry credentials, then its built-in profile when no credential was declared."""
+    from hermes_cli.runtime_provider_custom import builtin_credential_for_named_entry
     custom_key: Any = (custom_entry.get("api_key") or "").strip()
     custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
     if not custom_key and custom_key_env:
@@ -4640,7 +4639,7 @@ def _named_custom_api_key(custom_entry: dict[str, Any], provider: str, custom_ba
                 if str(pool_api_key).strip():
                     custom_key = str(pool_api_key).strip()
                     break
-    return custom_key or "no-key-required"
+    return custom_key or builtin_credential_for_named_entry(custom_entry, custom_base) or "no-key-required"
 
 
 def _build_bedrock_client(provider: str, model: Optional[str], *, raw_codex: bool) -> tuple[Optional[Any], Optional[str]]:
@@ -5007,8 +5006,8 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
     from hermes_cli.runtime_provider import _get_named_custom_provider
     provider = req.provider
     # If the raw name is an alias (``kimi`` → ``kimi-coding``) and a custom_providers entry exists
-    # under it, the custom entry wins over alias rewriting. Only for aliases, so entries matching a
-    # canonical name (e.g. ``nous``) still defer to the built-in.
+    # under it, the custom entry wins over alias rewriting. Canonical names also honour
+    # configured endpoints; tuning-only entries still defer to the built-in.
     custom_entry = None
     if req.original_provider and req.original_provider != provider:
         custom_entry = _get_named_custom_provider(req.original_provider)

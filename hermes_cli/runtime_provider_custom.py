@@ -129,12 +129,11 @@ def _lift_common_custom_fields(entry: dict[str, Any], result: dict[str, Any], *,
 
 
 def _shadowed_by_builtin(requested_norm: str) -> bool:
-    """Raw names map to custom providers only when they are not canonical built-ins. Explicit
-    ``custom:<name>`` keys always target the saved entry, and bare ``custom`` is exempt: a user may
-    literally name a ``providers:`` entry "custom" (returning None before the config scan made such
-    cron jobs fail with ``auth_unavailable``). Defer to the built-in only when the raw name IS the
-    canonical provider (``nous``); an entry matching merely an alias (``kimi`` → ``kimi-coding``)
-    is the user's target."""
+    """Whether a bare name is a canonical built-in, requiring an exact config-name match.
+
+    Explicit ``custom:<name>`` keys and bare ``custom`` target saved entries directly.
+    Aliases (``kimi`` → ``kimi-coding``) may target a user's entry before alias rewriting.
+    """
     if requested_norm == "custom" or requested_norm.startswith("custom:"):
         return False
     rp = _rp()
@@ -146,7 +145,7 @@ def _shadowed_by_builtin(requested_norm: str) -> bool:
 
 
 def builtin_named_entries(requested_norm: str, providers: dict[str, Any]) -> dict[str, Any]:
-    """The ``providers:`` entries whose KEY spells ``requested_norm`` in any case: the only entries a
+    """The ``providers:`` entries whose KEY spells ``requested_norm`` in any case: the only keyed entries a
     bare built-in name may mean (a display ``name:`` never claims a built-in)."""
     return {k: v for k, v in providers.items() if isinstance(k, str) and _normalize_custom_provider_name(k) == requested_norm}
 
@@ -278,14 +277,19 @@ def _select_named_custom_provider(
     )
     if found:
         return found[0], ("providers", found[1])
-    if shadowed:
-        return None
     if isinstance(config.get("custom_providers"), dict):
         logger.warning("custom_providers in config.yaml is a dict, not a list. "
                        "Each entry must be prefixed with '-' in YAML. "
                        "Run 'hermes doctor' for details.")
         return None
-    custom_providers = rp.get_compatible_custom_providers(config)
+    legacy_config = {"custom_providers": config.get("custom_providers", [])} if shadowed else config
+    custom_providers = rp.get_compatible_custom_providers(legacy_config)
+    if shadowed:
+        # Legacy entries with an endpoint have the same override contract as providers:.
+        # Match the name itself, never a display alias claiming a canonical built-in.
+        custom_providers = [entry for entry in custom_providers
+                            if _normalize_custom_provider_name(str(entry.get("name") or "")) == requested_norm
+                            and _clean(entry.get("base_url"))]
     found = _match_legacy_custom_provider(requested_norm, custom_providers) if custom_providers else None
     return (found[0], _compatible_entry_path(config, found[1])) if found else None
 
@@ -573,6 +577,23 @@ def _entry_credential(rp, entry: dict[str, Any], name: str) -> Any:
     return next((c for c in candidates if rp.has_usable_secret(c)), "")
 
 
+def builtin_credential_for_named_entry(entry: dict[str, Any], base_url: str) -> str:
+    """Borrow the profile's credential only for the entry's configured endpoint.
+
+    Declared credentials fail closed, including an unset key_env. An explicit URL override
+    must not inherit a key intended for the named entry's endpoint.
+    """
+    if entry_declares_credential(entry) or base_url.rstrip("/") != str(entry.get("base_url") or "").rstrip("/"):
+        return ""
+    from hermes_cli.auth import AuthError, resolve_api_key_provider_credentials, resolve_provider
+
+    try:
+        provider = resolve_provider(str(entry.get("provider_key") or entry.get("name") or ""))
+        return resolve_api_key_provider_credentials(provider).get("api_key") or ""
+    except AuthError:
+        return ""
+
+
 def _try_resolve_from_custom_pool(
     base_url: str, provider_label: str, api_mode_override: Optional[str] = None, provider_name: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
@@ -806,6 +827,7 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
         _entry_credential(rp, custom_provider, str(custom_provider.get("name", requested_provider) or "custom"))
         or next((c for c in ([] if entry_declares_credential(custom_provider)
                              else rp._host_gated_env_key_candidates(base_url, ollama=False)) if rp.has_usable_secret(c)), ""))
+    api_key = api_key or builtin_credential_for_named_entry(custom_provider, base_url)
     result = _custom_runtime(rp, base_url, api_key, custom_provider.get("api_mode"),
                              source=f"custom_provider:{custom_provider.get('name', requested_provider)}",
                              requested_provider=requested_provider)

@@ -1,0 +1,34 @@
+name: rookery
+title: Rookery
+repo: https://github.com/ethanjones1132-lab/rookery
+sha: "b1d2afba8f1f3b309b80690a411e7d758493ac8d"
+description: "A step-sequencer DAW inside Hermes Desktop: tell the agent the beat and watch the grid fill in, then add free Soundza loops (Openverse CC0 fallback), arrange a song, and render locally at an exact length, checked for clipping, loudness and the loop seam and reproducible byte for byte. Exports WAV, stems, MIDI and cues.json for video. Disclosure — writes projects, history, renders and exports under plugin_data_dir(\"rookery\") and reads the configured user_kit_dir; loads a VST3 effect in-process through pedalboard when corvus_vst3_path is set (third-party native code); rookery_samples makes network calls to api.soundza.com plus Soundza's signed Cloudflare R2 download links, or api.openverse.org and cdn.freesound.org with source=\"openverse\" (search needs no key; downloads need the optional free SOUNDZA_API_KEY, which Rookery reads through Hermes's env and never logs or stores); no telemetry."
+maintainer: ethanjones1132-lab
+tier: community
+category: tools
+requires_hermes: ">=0.23.0"
+version: "0.2.0"
+docs_url: https://github.com/ethanjones1132-lab/rookery#readme
+readme: true
+platforms: [windows]
+known_issues:
+  - The Desktop page, live audio playback and Corvus knobs are verified on Windows 11 only; macOS and Linux are untested for the UI and audio path.
+  - The Flock melodic layer is edited in the Rookery page only; the agent has no Flock tool and cannot add or re-voice the wire.
+  - No MIDI import, no audio recording, and no note-to-note 808 portamento.
+  - An arrangement can change mutes, steps and notes per section, but not tempo, meter or automation inside the song.
+capabilities:
+  provides_tools:
+    - rookery_new
+    - rookery_steps
+    - rookery_track
+    - rookery_mix
+    - rookery_apply
+    - rookery_render
+    - rookery_export
+    - rookery_state
+    - rookery_undo
+    - rookery_kits
+    - rookery_samples
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

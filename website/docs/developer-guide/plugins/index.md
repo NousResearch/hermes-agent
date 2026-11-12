@@ -1286,6 +1286,30 @@ validate` accepts those spellings and reports a bare `import agent.file_safety` 
 To read Hermes's own settings, use `load_config_readonly()` from `hermes_cli.config` rather than
 parsing `config.yaml` yourself.
 
+### Look up a model's prices
+
+A plugin that reports or weighs a cost (spend avoided by a local model, whether rewriting a cached
+prompt prefix pays back) should read the prices Hermes uses for its own usage accounting rather than
+keep a copy of the pricing tables:
+
+| Import | What it gives you |
+|---|---|
+| `agent.usage_pricing.get_pricing_entry(model, provider=None, base_url=None, api_key=None)` | The `PricingEntry` for that model and provider, or `None` when no price is known. |
+| `agent.usage_pricing.PricingEntry` | Prices per million tokens as `Decimal` or `None`: `input_cost_per_million`, `output_cost_per_million`, `cache_read_cost_per_million`, `cache_write_cost_per_million`. A model billed through a subscription returns an entry whose prices are all `0`. |
+
+```python
+from agent.usage_pricing import get_pricing_entry
+
+def cache_write_premium(model, provider):
+    entry = get_pricing_entry(model, provider=provider)
+    if entry is None or not entry.input_cost_per_million or entry.cache_write_cost_per_million is None:
+        return None  # unknown or subscription-billed: fall back to your own default
+    return float(entry.cache_write_cost_per_million / entry.input_cost_per_million)
+```
+
+A lookup can query the provider's `/models` endpoint or models.dev the first time a model is priced
+(the answer is cached); call it once per model and keep the result, not on every request.
+
 ### Ship a language pack
 
 A plugin can add a UI language or override the wording of an existing one for every surface at once —

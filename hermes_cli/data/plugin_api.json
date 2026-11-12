@@ -165,6 +165,13 @@
         "hermes_yaml:safe_load",
         "hermes_yaml:safe_dump"
       ]
+    },
+    {
+      "source": "plugins/index.md § Look up a model's prices",
+      "entries": [
+        "agent.usage_pricing:get_pricing_entry",
+        "agent.usage_pricing:PricingEntry"
+      ]
     }
   ]
 }

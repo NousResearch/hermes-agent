@@ -609,9 +609,14 @@ def release_unstarted(child: Any) -> None:
         return
     child._delegate_claim = None
     path, sid, state = claim
+    # A stop that reached this registered child before it ran (an automatic run failing closed) is the parent's
+    # decision: the row ends ``stopped``, never handed back for the scheduler to resume.
+    stopped = (getattr(child, "_delegate_run_origin", None) == "auto"
+               and getattr(child, "_delegate_stop_requested", False) is True)
     _write(path, lambda conn: conn.execute(
-        "UPDATE resumable_subagents SET state=? WHERE subagent_id=? AND state='claimed' AND owner_pid=?",
-        (state, sid, os.getpid())))
+        "UPDATE resumable_subagents SET state=?, record_json=json_remove(record_json, '$.auto_claim') "
+        "WHERE subagent_id=? AND state='claimed' AND owner_pid=?",
+        ("stopped" if stopped else state, sid, os.getpid())))
 
 
 def last_workspace(parent_agent: Any, sid: str) -> Optional[dict[str, Any]]:

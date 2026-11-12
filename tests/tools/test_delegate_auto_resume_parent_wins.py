@@ -188,3 +188,47 @@ def test_a_cancelled_automatic_run_never_hands_back_the_parents_own_continue(tmp
         if dispatched:
             _completion(dispatched[-1])
     assert len(model.turns) == 0 and _db_rows(parent)[sid][0] == 'claimed'
+
+
+def _busy_run_record(dr, on_busy=lambda: None):
+    real_write, failed = dr._write, []
+
+    def busy_once(path, fn):
+        if fn.__qualname__ == 'record_start.<locals>._do' and not failed:
+            failed.append(on_busy())
+            return None  # what _write returns when the busy timeout expires
+        return real_write(path, fn)
+    return busy_once
+
+
+def test_failing_closed_leaves_no_marker_that_turns_a_manual_continue_into_a_dismiss(tmp_path):
+    import tools.delegate_tool_resumable as dr
+    from tools.delegate_tool import delegate_task
+    from tools.delegate_tool_auto_resume import tick
+    _enable()
+    parent, dispatched = _parent(), []
+    sid, _first = _limited_child(tmp_path, parent)
+    with patch.object(dr, '_write', _busy_run_record(dr)), patch('run_agent.AIAgent', side_effect=_ScriptedModel()):
+        tick(_scheduler(parent, dispatched), capacity=3)
+        if dispatched:
+            _completion(dispatched[-1])
+    assert dr.claim(parent, sid)[0] is not None  # the parent continues it by hand
+    assert 'error' in json.loads(delegate_task(action='stop', subagent_id=sid, parent_agent=parent))
+    assert _db_rows(parent)[sid][0] == 'claimed'  # the manual continue is not dismissed as an automatic one
+
+
+def test_a_stop_while_the_automatic_run_fails_closed_is_kept(tmp_path):
+    import tools.delegate_tool_resumable as dr
+    from tools.delegate_tool import delegate_task
+    from tools.delegate_tool_auto_resume import tick
+    _enable()
+    parent, dispatched = _parent(), []
+    sid, _first = _limited_child(tmp_path, parent)
+    stop = lambda: json.loads(delegate_task(action='stop', subagent_id=sid, parent_agent=parent))['status']
+    model = _ScriptedModel()
+    with patch.object(dr, '_write', _busy_run_record(dr, stop)), patch('run_agent.AIAgent', side_effect=model):
+        tick(_scheduler(parent, dispatched), capacity=3)
+        if dispatched:
+            _completion(dispatched[-1])
+        assert tick(_scheduler(parent, dispatched), capacity=3) == []
+    assert len(model.turns) == 0 and _db_rows(parent)[sid][0] == 'stopped'

@@ -64,13 +64,13 @@ def _phase_message_items(message: dict, phases: frozenset[str | None]) -> list[s
         normalized_phase = phase.strip().lower() if isinstance(phase, str) else None
         if normalized_phase not in phases or not isinstance(content, list):
             continue
+        # Keep whitespace-only parts, as live delivery does: a newline can make the next tag a block.
         text = "".join(
             part["text"]
             for part in content
             if isinstance(part, dict)
             and part.get("type") == "output_text"
             and isinstance(part.get("text"), str)
-            and part["text"].strip()
         ).strip()
         if text:
             result.append(text)

@@ -42,6 +42,9 @@ class _ApprovalEntry:
         # Who may answer (gateway.approval_actor): the turn's actor, approvers and admins. Kept off
         # ``data`` so the prompt and replay payloads sent to clients stay exactly what was raised.
         self.authority = _ctx.prompt_authority()
+        # Pin the exec-specific policy with the request, not a later config reload.
+        if _ctx._get_approval_config().get("approvers_only") is True:
+            self.authority["approvers_only"] = True
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
         self.settle = None
@@ -64,6 +67,8 @@ def _same_answerers(leader: dict, follower: dict) -> bool:
     """A follower adopts its leader's answer only when the same people may give it: the default
     (``approvers: ["*"]``, anyone admitted) or the same requester. Otherwise another requester's
     deny (or grant) would answer this wait without its own requester's say."""
+    if leader.get("approvers_only") != follower.get("approvers_only"):
+        return False
     if "*" in (follower.get("approvers") or []) and "*" in (leader.get("approvers") or []):
         return True
     return leader.get("requester_id") == follower.get("requester_id") and leader.get("approvers") == follower.get("approvers")

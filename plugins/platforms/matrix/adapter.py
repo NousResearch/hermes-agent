@@ -2396,6 +2396,17 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._send_invalid_reaction_feedback(room_id, reacts_to, invalid_text)
         return True, prompt, selection
 
+    @staticmethod
+    def _approval_uses_list_only(prompt: _MatrixApprovalPrompt) -> bool:
+        """Use the policy pinned to this exact approval, not today's profile config."""
+        if not prompt.request_id:
+            return False
+        from tools.approval import list_gateway_approval_authority
+        return any(
+            entry.get("request_id") == prompt.request_id and entry.get("approvers_only") is True
+            for entry in list_gateway_approval_authority(prompt.session_key)
+        )
+
     async def _handle_approval_reaction(self, room_id: str, reacts_to: str, key: str, sender: str) -> bool:
         """Resolve a pending exec-approval prompt from a reaction. True if it was the target."""
         handled, prompt, choice = await self._claim_reaction_prompt(
@@ -2409,7 +2420,9 @@ class MatrixAdapter(BasePlatformAdapter):
             return True
         if requester := approval_refusal(prompt.session_key, sender, extra=self.config.extra, request_id=prompt.request_id,
                                          choice=choice):
-            await self._send_invalid_reaction_feedback(room_id, reacts_to, refusal_text(requester))
+            # Silent refusal in peer-bot rooms: feedback can itself become another bot's input.
+            if not self._approval_uses_list_only(prompt):
+                await self._send_invalid_reaction_feedback(room_id, reacts_to, refusal_text(requester))
             return True
         try:
             from tools.approval import resolve_gateway_approval_card
@@ -2486,7 +2499,10 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._send_invalid_reaction_feedback(room_id, target_event_id, t("platform.matrix.reaction.unauthorized"))
             return False
         # getattr: object.__new__-built test doubles may lack the attributes.
-        if getattr(self, "_approval_require_sender", True) and (requester := getattr(prompt, "requester_user_id", None)) and sender != requester:
+        # Independent approvers must be able to react even when Matrix normally
+        # requires the prompt requester. The shared approval gate still checks ids.
+        list_only = prompt_label == "approval" and self._approval_uses_list_only(prompt)
+        if not list_only and getattr(self, "_approval_require_sender", True) and (requester := getattr(prompt, "requester_user_id", None)) and sender != requester:
             logger.info("Matrix: ignoring %s reaction from %s; requester is %s", prompt_label, sender, requester)
             await self._send_invalid_reaction_feedback(room_id, target_event_id, t("platform.matrix.reaction.not_requester"))
             return False

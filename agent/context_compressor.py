@@ -1371,7 +1371,7 @@ def _content_text_for_contains(content: Any) -> str:
 # stripped, which over-counts the request and keeps the conservative anchor.
 _GATEWAY_REPLY_POINTER_RE = re.compile(
     r'\A(?:\[Triggering message id: [^\n]*\]\n\n)?'
-    r'\[Replying to(?: your previous message)?: ".*?"\]\n\n',
+    r'\[Replying to(?: your previous message| an earlier scheduled cron delivery \([^)\n]*\))?: ".*?"\]\n\n',
     re.DOTALL,
 )
 

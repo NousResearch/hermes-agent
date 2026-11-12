@@ -27,11 +27,17 @@ CREATE_RPC_TIMEOUT = 300
 #: Answered before the handler runs, so nothing was made there. 4000: a gateway that predates these
 #: fields (unknown param); 5035: one retiring between discovery and the request.
 _OLDER_OR_RETIRING = (4000, 5035)
-#: The profile the request runs in was refused before any handler ran: the authority socket's routing
-#: (``profile_mismatch``: a profile this gateway doesn't serve, or a profile-bound grant naming another) or
-#: ``ws_legacy_fallback`` (``profile_unavailable``). A bare 4064 is neither: the dispatcher also answers
-#: it for a config outage raised after the profile was made.
-_PROFILE_REFUSED = ("profile_mismatch", "profile_unavailable")
+#: Refused before any handler ran, by code AND ``data.reason`` (a handler failure is 5062 whatever its text):
+#: the authority socket's routing (4001 ``profile_mismatch``: a profile this gateway doesn't serve, or a
+#: profile-bound grant naming another) and ``ws_legacy_fallback`` (4064 ``profile_unavailable``; a bare 4064
+#: is not this: the dispatcher also answers it for a config outage raised after the profile was made).
+_PROFILE_REFUSED = ((4001, "profile_mismatch"), (4064, "profile_unavailable"))
+#: The authority socket's refusal of a draining owner, before routing: like a retiring gateway.
+_DRAINING = (4001, "runtime_draining")
+
+
+def _refusal_key(exc) -> tuple:
+    return exc.code, exc.data.get("reason")
 
 
 class GatewayCreateError(RuntimeError):
@@ -85,13 +91,22 @@ def _is_profile(local: Optional[Path]) -> bool:
 
 
 def _made_here(made: ProfileCreateReceipt, local: Optional[Path], was_profile: bool) -> bool:
-    """Whether this create made the profile ``-p <name>`` selects on this machine: not a profile before the
-    request, one now, at the path the gateway reports. Path equality alone is not enough (another machine
-    with the same home layout reports the same path), nor is a loopback URL (a tunnel or container can
-    serve another home)."""
+    """Whether this create made the profile ``-p <name>`` selects on this machine, given the gateway is this
+    home's owner: not a profile before the request, one now, at the path the gateway reports."""
     from hermes_cli.profiles import profile_matches_home
     return (not was_profile and _is_profile(local)
             and profile_matches_home(local.name, Path(made.path)))
+
+
+async def _described_instance(client) -> Optional[str]:
+    """The ``instance_id`` the connected gateway reports (``runtime.describe``), or None when it doesn't."""
+    try:
+        described = await client.rpc("runtime.describe")
+    except Exception:  # an older or refusing gateway: its identity is unproven, so no wrapper
+        logger.debug("profile create: runtime.describe failed", exc_info=True)
+        return None
+    instance = described.get("instance_id") if isinstance(described, dict) else None
+    return instance if isinstance(instance, str) and instance else None
 
 
 def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCreateReceipt]:
@@ -117,24 +132,31 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
         if not profile:
             raise GatewayCreateError(f"this terminal's HERMES_HOME is not a named profile, so {where} cannot "
                                      "create from it; nothing was created")
-    else:
+    if not remote or request.alias:
         try:
             endpoint = live_owner()
         except Exception:
-            logger.debug("profile create: gateway discovery failed; creating locally", exc_info=True)
-        if endpoint is None:
-            return None
+            logger.debug("profile create: gateway discovery failed", exc_info=True)
+    if not remote and endpoint is None:
+        return None
     from hermes_cli.gateway_client import GatewayRPCError, NOT_SENT, connect_gateway
     machine = " on the gateway's machine" if remote else ""
     unknown = f"{where} may have created '{request.name}'; check `hermes profile list`{machine} before retrying"
     local = _local_profile_dir(request.name)
     was_profile = _is_profile(local)
+    # A discovered owner serves this home. A URL's gateway is this home's owner only if it reports the
+    # instance this home's discovery names: path equality is no proof (another machine with the same home
+    # layout reports the same path while a local create of the name runs), nor is a loopback URL.
+    ours = not remote
+    owner_here = endpoint.instance_id if remote and endpoint is not None else None
     attached = False
 
     async def _run():
-        nonlocal attached
-        async with connect_gateway(endpoint) as client:
+        nonlocal attached, ours
+        async with connect_gateway(None if remote else endpoint) as client:
             attached = True
+            if owner_here is not None:
+                ours = await _described_instance(client) == owner_here
             return await client.rpc("profiles.create", _timeout=CREATE_RPC_TIMEOUT, **_wire(request, profile))
 
     try:
@@ -144,8 +166,9 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
             raise
         raise GatewayCreateError(f"interrupted; {unknown}") from None
     except GatewayRPCError as exc:
-        draining = str(exc) == "runtime_draining"  # the authority socket's refusal before routing
-        if exc.code in _OLDER_OR_RETIRING or exc.unknown_method or draining:
+        draining = _refusal_key(exc) == _DRAINING
+        unknown_method = exc.unknown_method and exc.code in (None, -32601)
+        if exc.code in _OLDER_OR_RETIRING or unknown_method or draining:
             if remote:
                 why = "is restarting; retry" if exc.code == 5035 or draining else (
                     "predates this version; update it, or unset HERMES_TUI_GATEWAY_URL to create locally")
@@ -154,7 +177,7 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
         refused = refusal_from(exc.data)
         if refused is not None:
             raise refused from exc
-        if str(exc) in _PROFILE_REFUSED:
+        if _refusal_key(exc) in _PROFILE_REFUSED:
             raise GatewayCreateError(f"{where} cannot serve this terminal's profile "
                                      f"({profile or 'its profile'}); nothing was created") from exc
         # Not a refusal of the request: the handler failed, possibly after the profile was made.
@@ -172,7 +195,8 @@ def create_through_gateway(request: ProfileCreateRequest) -> Optional[ProfileCre
         # It made a profile without a full, well-typed receipt (``--clone`` / ``--sync-imports`` may be ignored).
         raise GatewayCreateError(f"{where} answered without the details this version needs; {unknown}")
     made = dataclasses.replace(made, warnings=[redact_create_text(w) for w in made.warnings])
-    return _with_local_alias(made, request) if request.alias and _made_here(made, local, was_profile) else made
+    here = request.alias and ours and _made_here(made, local, was_profile)
+    return _with_local_alias(made, request) if here else made
 
 
 def _with_local_alias(made: ProfileCreateReceipt, request: ProfileCreateRequest) -> ProfileCreateReceipt:

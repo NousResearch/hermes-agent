@@ -11,12 +11,14 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
+from hermes_constants import socket_safe_tmpdir
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager, iter_sync_files, quoted_mkdir_command, quoted_rm_command, unique_parent_dirs)
 from tools.environments.remote_common import (
     bash_argv, client_env_with, load_hermes_env_vars, prepend_unset, resolve_passthrough_env, run_capture)
+from tools.spill_safety import ensure_owned_private_dir
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,39 @@ def _ensure_ssh_available() -> None:
 def _sync_error(reason: str, subject: str, what: str = "the SSH connection") -> EnvironmentConnectionError:
     return EnvironmentConnectionError(
         reason, retry_hint=f"{subject} failed — verify {what} is healthy, then retry.")
+
+
+# A control dir must leave room for ``/<16 hex>.sock`` plus the 17-byte suffix OpenSSH appends to
+# its temporary ControlMaster listener, inside macOS's 103 usable ``sun_path`` bytes (Linux: 107).
+_CONTROL_DIR_MAX_BYTES = 103 - len("/0123456789abcdef.sock") - 17
+_SHORT_TMP_ROOT = "/tmp"  # no-tmp: ok — AF_UNIX sun_path budget; every dir under it is ownership-checked
+
+
+def _open_control_dir() -> tuple[Path, bool]:
+    """Per-user ControlMaster socket dir that fits ``sun_path`` (#133436) and is proven ours (#80284).
+
+    Candidates, best first: ``$XDG_RUNTIME_DIR`` (per-user 0700), then a per-uid name under the
+    socket-safe temp root and under ``/tmp`` (a deep profile scratch TMPDIR does not fit). Those
+    names are predictable and the roots may be shared, so a candidate that is not a real directory
+    we own (pre-created by another user, or a planted symlink) is refused rather than adopted;
+    when every one is squatted, a fresh ``mkdtemp`` dir keeps the backend up. The flag is True
+    only for that fallback: it belongs to this instance alone and goes when the instance does."""
+    if not _SSH_MULTIPLEX:  # no Unix-socket ControlMaster; %TEMP% is per-user
+        return Path(ensure_owned_private_dir(Path(tempfile.gettempdir()) / "hermes-ssh")), False
+    per_user = f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — POSIX only (_SSH_MULTIPLEX)
+    roots = list(dict.fromkeys(r for r in (socket_safe_tmpdir(), _SHORT_TMP_ROOT) if os.path.isdir(r)))
+    candidates = [Path(root) / per_user for root in roots]
+    xdg = os.environ.get("XDG_RUNTIME_DIR", "")
+    if os.path.isabs(xdg) and os.path.isdir(xdg):
+        candidates.insert(0, Path(xdg) / "hermes-ssh")
+    for candidate in candidates:
+        if len(os.fsencode(candidate)) > _CONTROL_DIR_MAX_BYTES:
+            continue
+        try:
+            return Path(ensure_owned_private_dir(candidate)), False
+        except OSError as exc:
+            logger.warning("SSH: not using control-socket dir %s: %s", candidate, exc)
+    return Path(tempfile.mkdtemp(prefix="hssh-", dir=min(roots, key=len))), True
 
 
 class SSHEnvironment(BaseEnvironment):
@@ -68,8 +103,7 @@ class SSHEnvironment(BaseEnvironment):
         # idempotent, so callers that already coerced are unaffected.
         super().__init__(cwd=coerce_ssh_remote_cwd(cwd, "ssh"), timeout=timeout, persist_env=persistent)
         self.host, self.user, self.port, self.key_path = host, user, port, key_path
-        self.control_dir = Path(tempfile.gettempdir()) / "hermes-ssh"
-        self.control_dir.mkdir(parents=True, exist_ok=True)
+        self.control_dir, self._owns_control_dir = _open_control_dir()
         # Short, deterministic socket name: the path must stay under macOS's 104-byte sun_path
         # limit (raw user@host:port + SSH's 16-byte suffix under a deep $TMPDIR exceeds it), and
         # stability across reconnects keeps ControlMaster reuse working. A probe gets its own
@@ -79,14 +113,18 @@ class SSHEnvironment(BaseEnvironment):
             socket_key = f"{socket_key}:probe:{self._session_id}"
         _socket_id = hashlib.sha256(socket_key.encode()).hexdigest()[:16]
         self.control_socket = self.control_dir / f"{_socket_id}.sock"
-        _ensure_ssh_available()
-        self._establish_connection()
+        self._sync_manager = None  # cleanup() reads it; set before anything below can raise
+        try:
+            _ensure_ssh_available()
+            self._establish_connection()
+        except BaseException:
+            if self._owns_control_dir:  # no instance survives to clean up this private fallback
+                shutil.rmtree(self.control_dir, ignore_errors=True)
+            raise
         if probe_only:
-            self._sync_manager = None
             return
         self._remote_home_detected = False
         self._remote_home = self._detect_remote_home()
-        self._sync_manager = None
         if sync_files:
             self._ensure_remote_dirs()
             self._sync_manager = FileSyncManager(
@@ -294,6 +332,14 @@ class SSHEnvironment(BaseEnvironment):
         cmd = self._build_ssh_command(send_env=values) + bash_argv(shlex.quote(prepend_unset(cmd_string, unset_names)), login)
         client_env = client_env_with(values)
         return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+
+    def __del__(self):
+        # The fallback dir goes only after the LAST cleanup() (a poller still reconnects through a
+        # cleaned-up env), and after it, not before: a weakref finalizer runs ahead of __del__ in
+        # cyclic GC and at exit, and sync_back() would then connect through a deleted ControlPath.
+        super().__del__()
+        if getattr(self, "_owns_control_dir", False):
+            shutil.rmtree(self.control_dir, ignore_errors=True)
 
     def cleanup(self):
         self.stop_all_processes()

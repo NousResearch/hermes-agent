@@ -332,6 +332,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — 제목 없이 세션을 시작했습니다."
     title_empty_untitled: "\n⚠️ 정리 후 제목이 비어 있습니다 — 제목 없이 세션을 시작했습니다."
     tip: "\n✦ 팁: {tip}"
+    paused_left: "\n⚠️ 이전 대화가 일시 중지된 동안 보낸 메시지 {count}개가 이전 대화에 저장된 채 답변되지 않았습니다. 실행하려면: /resume {session_id} 후 {discard}."
   restart:
     in_progress: "⏳ 게이트웨이 재시작이 이미 진행 중입니다..."
     restarting: "♻ 게이트웨이를 재시작 중입니다. 60초 이내에 알림이 오지 않으면 콘솔에서 `hermes gateway restart`로 재시작하세요."
@@ -746,6 +747,8 @@ gateway:
     reject_loop: "에이전트가 실행 중이에요 — 실행 중에는 /loop status / pause / stop을 사용하거나, 새 루프를 설정하기 전에 /stop하세요."
     draining_maintenance: "⏳ 이 에이전트는 유지 관리 작업을 위해 정리 중이어서 지금은 새 턴을 받지 않아요. 곧 돌아올 테니 잠시 후 다시 보내 주세요."
     another_turn_running: "⏳ 이 세션에서 다른 턴이 아직 실행 중이에요. 대화 기록을 보호하기 위해 이 메시지는 처리하지 않았어요. 활성 턴이 끝난 뒤 다시 보내 주세요."
+    setup_timeout: "⏳ 에이전트 활동 없이 턴 준비가 멈춰 취소되었습니다. 메시지를 다시 보내 주세요."
+    setup_waiting: "⏳ 이 턴은 아직 시작 중입니다({minutes}분, 아직 에이전트 활동 없음). 메시지는 대기열에 있습니다. /stop을 사용하면 이 턴과 대기열의 모든 메시지가 취소됩니다."
     behavior_queue_short: "다음 턴 대기열에 추가"
     behavior_queue_long: "Hermes가 바쁠 때 받은 메시지는 다음 턴 대기열에 추가돼요."
     behavior_steer_short: "현재 실행에 조정 메시지로 전달 (다음 도구 호출 뒤)"

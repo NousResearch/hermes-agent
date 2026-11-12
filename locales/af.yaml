@@ -332,6 +332,7 @@ gateway:
     title_error_untitled: "\n⚠️ {error} — sessie sonder titel begin."
     title_empty_untitled: "\n⚠️ Titel is leeg na opruiming — sessie sonder titel begin."
     tip: "\n✦ Wenk: {tip}"
+    paused_left: "\n⚠️ {count} boodskap(pe) wat jy gestuur het terwyl die vorige gesprek gepouseer was, is nog op die vorige gesprek gestoor en nie beantwoord nie. Om hulle te laat loop: /resume {session_id}, dan {discard}."
   restart:
     in_progress: "⏳ Gateway-herbegin reeds aan die gang..."
     restarting: "♻ Herbegin van gateway. As jy nie binne 60 sekondes in kennis gestel word nie, herbegin vanaf die konsole met `hermes gateway restart`."
@@ -746,6 +747,8 @@ gateway:
     reject_loop: "Agent loop — gebruik /loop status / pause / stop tydens die lopie, of /stop voordat jy 'n nuwe lus stel."
     draining_maintenance: "⏳ Hierdie agent word vir 'n onderhoudsaksie gedreineer en aanvaar nie nou nuwe beurte nie. Dit sal oor 'n oomblik terug wees — stuur asseblief binnekort weer."
     another_turn_running: "⏳ Nog 'n beurt loop steeds op hierdie sessie. Om die transkripsie te beskerm, is hierdie boodskap nie verwerk nie. Wag tot die aktiewe beurt klaar is en stuur dit dan weer."
+    setup_timeout: "⏳ Die beurt se opstelling het vasgehaak sonder agentaktiwiteit en is gekanselleer. Stuur asseblief jou boodskap weer."
+    setup_waiting: "⏳ Begin steeds hierdie beurt ({minutes} min, nog geen agentaktiwiteit nie). Jou boodskap is in die tou. Gebruik /stop om dit en alles in die tou te kanselleer."
     behavior_queue_short: "gaan in die tou vir die volgende beurt"
     behavior_queue_long: "Boodskappe sal in die tou geplaas word vir die volgende beurt terwyl Hermes besig is."
     behavior_steer_short: "stuur in die huidige lopie in (na die volgende gereedskapsoproep)"

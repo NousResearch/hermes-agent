@@ -1,0 +1,25 @@
+name: inset
+title: INSET
+repo: https://github.com/winsznx/inset
+sha: 790cb11c7b8871e5c773f1ecab257f0205205eee
+description: "Opens your site in headless Chromium at phone, tablet and desktop widths, inspects every page section separately (the Section Atlas) and measures overflow, clipped text, covered controls, section spill-over and failed media with DOM selectors and pixel boxes. Hermes fixes the source with its normal tools and approvals; INSET then rechecks the same URL and viewport and reports resolved, reproduced, needs review or not verified, never a pass it could not observe. Disclosure — INSET launches a headless Chromium (installed separately with Playwright) that opens any localhost/loopback port the agent asks for without an approval prompt and returns screenshots and page text to the model; other origins open only when you add them to INSET's allowed_origins setting, and private-network addresses are refused. It also runs read-only git commands in the session workspace."
+maintainer: winsznx
+tier: community
+category: tools
+requires_hermes: ">=0.23.1"
+docs_url: https://github.com/winsznx/inset
+version: "0.1.0"
+image: https://raw.githubusercontent.com/winsznx/inset/790cb11c7b8871e5c773f1ecab257f0205205eee/docs/banner.png
+screenshots:
+  - https://raw.githubusercontent.com/winsznx/inset/790cb11c7b8871e5c773f1ecab257f0205205eee/docs/screenshots/atlas.png
+  - https://raw.githubusercontent.com/winsznx/inset/790cb11c7b8871e5c773f1ecab257f0205205eee/docs/screenshots/issue.png
+  - https://raw.githubusercontent.com/winsznx/inset/790cb11c7b8871e5c773f1ecab257f0205205eee/docs/screenshots/hermes-fix.png
+  - https://raw.githubusercontent.com/winsznx/inset/790cb11c7b8871e5c773f1ecab257f0205205eee/docs/screenshots/before-after.png
+platforms: []
+known_issues:
+  - Needs Chromium for Playwright (python -m playwright install chromium in Hermes' environment) and a gateway restart after install.
+capabilities:
+  provides_tools: [inset_scan, inset_inspect, inset_compare, inset_export, inset_status]
+  provides_hooks: [post_tool_call]
+  provides_middleware: []
+  requires_env: []

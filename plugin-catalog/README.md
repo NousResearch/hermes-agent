@@ -256,6 +256,10 @@ problem is fixed; a name squatter comes back under a distinct name. When a new r
 entries that are already listed, their authors get an issue on their repository explaining
 the change and time to update before anything is delisted.
 
+Entries whose repository was deleted, or whose pinned commit no longer exists (force-pushed
+away), are delisted automatically: `.github/workflows/catalog-dead-repos.yml` checks every entry
+each week and opens one PR deleting the dead ones, for a maintainer to review.
+
 ## Names
 
 The catalog key and the manifest `name:` are what users search, install, and — for memory

@@ -1,0 +1,19 @@
+name: interview-prep-coach
+title: Interview Prep Coach
+repo: https://github.com/KellerAI/hermes-plugins
+sha: cf34342f951cb5dffcaea34c1c2a44f6d8ddbe22
+subdir: interview-prep-coach
+description: "Prepares the user for their own interview: researches only the people they will meet, from public professional sources; predicts and tiers likely questions; builds STAR answers only from real experience; runs scored mock interviews; writes questions to ask; assembles a cheat sheet; lists post-interview signals with evidence (no grade or prediction); drafts application materials and thank-you notes the user sends. Disclosure: no tools, hooks, MCP servers, scripts or stored credentials; uses the agent's own web search, never with the user's name, resume or notes; never sends, applies or contacts anyone; never signs in; candidate-side only, its profiles are not consumer reports; never records or infers race, color, religion, sex (including pregnancy, sexual orientation and gender identity), national origin, age, disability, genetic information, veteran, marital, family, citizenship or immigration status, health, politics, home address, personal accounts, graduation years, photos or other protected traits."
+maintainer: KellerAI
+tier: community
+category: general
+requires_hermes: ">=0.23.0"
+docs_url: https://github.com/KellerAI/hermes-plugins/tree/main/interview-prep-coach#readme
+version: "1.0.0"
+readme: true
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

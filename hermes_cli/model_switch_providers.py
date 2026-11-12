@@ -548,6 +548,16 @@ def _split_chain_entries(models: list) -> None:
             _extend_unique(models, [part.strip() for part in model.split(",")])
 
 
+def _merge_live_models(configured: list, discovered: list) -> list:
+    """Return the live catalog with configured IDs it still serves first.
+
+    Large router catalogs can otherwise push configured models many picker pages down.
+    Configured IDs missing from the live catalog stay out."""
+    live = set(discovered)
+    pinned = list(dict.fromkeys(model for model in configured if model in live))
+    return [*pinned, *(model for model in discovered if model not in set(pinned))]
+
+
 def _extend_unique(target: list, items) -> None:
     """Append each truthy item of *items* not already in *target* (order preserved)."""
     for item in items:
@@ -1037,7 +1047,7 @@ def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
             grp["has_explicit_models"], headers=grp["headers"] or None, api_mode=grp["api_mode"],
             discovery_allowed=grp["discovery_allowed"], is_current=is_current)
         if discovered is not None:
-            models_list = discovered
+            models_list = _merge_live_models(models_list, discovered)
 
         b.add_endpoint_row(ep_name, display_name, api_url, models_list, is_current, native_catalog_empty)
         b.seen_slugs.update(ep_aliases)
@@ -1171,7 +1181,7 @@ def _lap_custom_provider_rows(b: _PickerBuild, custom_providers: list) -> None:
             api_mode=grp.get("api_mode"), discovery_allowed=bool(api_url) and grp.get("discover_models", True),
             is_current=is_current)
         if discovered is not None:
-            grp["models"] = discovered
+            grp["models"] = _merge_live_models(grp["models"], discovered)
             if probe_live:  # a successful live probe persists the catalog for no-probe surfaces
                 try:
                     _save_discovered_models_to_config(

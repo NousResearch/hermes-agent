@@ -2,14 +2,7 @@ name: hermes-reliability
 repo: https://github.com/MadBonzz/hermes-reliability
 sha: 4db5b6b5f1a12c505b89efbf5dcc3b41ae0e829b
 title: Reliability Lab
-description: >-
-  Architecture-aware reliability testing for agent repositories: discover real usage datasets, generate
-  scenarios, review them independently, execute configured targets and inspect evidence in Hermes web
-  and Desktop dashboards. Freeze audited benchmarks and compare regressions across code changes, with
-  baseline references for native Hermes memory. Disclosure: sends source excerpts and sampled user messages
-  to the configured model provider, queries Hugging Face/Zenodo, clones supplied repositories, starts
-  background workers, and runs target/evaluator code on the host when execution is enabled; OpenHands/DeerFlow
-  targets use configured containers. Campaign evidence is stored in the active profile.
+description: "Architecture-aware reliability testing for agent repositories: discover real usage datasets, generate scenarios, review them independently, execute configured targets and inspect evidence in Hermes web and Desktop dashboards. Freeze audited benchmarks and compare regressions across code changes, with baseline references for native Hermes memory. Disclosure — Sends source excerpts from the repository you point it at and sampled public dataset messages to your active Hermes model, queries huggingface.co and zenodo.org (HF_TOKEN only to Hugging Face), clones the supplied HTTPS repositories into profile plugin data, and starts a detached background worker per campaign; execution is off by default, and when enabled and approved through Hermes' prompt it runs generated evaluator tests, model-authored reference actions and the target agent (a cloned Hermes) on this host outside any sandbox, sending the target API key to your configured target base_url, while OpenHands/DeerFlow targets run in a network-disabled Docker image you build."
 maintainer: MadBonzz
 tier: community
 category: tools
@@ -21,10 +14,8 @@ screenshots:
 platforms:
   - linux
 known_issues:
-  - The Hermes target adapter uses version-sensitive runtime interfaces in separate evaluation
-    workers; compatibility warnings and tested revisions are documented.
-  - End-to-end workflows are verified with deterministic models. Live Command A target smoke and
-    Muse scenario generation/preflight passed; a complete autonomous live campaign remains unverified.
+  - The Hermes target adapter uses version-sensitive runtime interfaces in separate evaluation workers; compatibility warnings and tested revisions are documented.
+  - End-to-end workflows are verified with deterministic models. Live Command A target smoke and Muse scenario generation/preflight passed; a complete autonomous live campaign remains unverified.
 capabilities:
   provides_tools:
     - reliability_start

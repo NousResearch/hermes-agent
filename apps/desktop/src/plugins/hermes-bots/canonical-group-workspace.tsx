@@ -3,12 +3,13 @@ import { type ClipboardEvent, type DragEvent, useEffect, useRef, useState } from
 
 import { type CanonicalDriverStatus, CanonicalGroupCycle, CanonicalGroupNotices, CanonicalGroupTyping, canonicalMemberName, useCanonicalRoomLive } from './canonical-group-activity'
 import { CanonicalGroupAttachments, type CanonicalGroupUploader } from './canonical-group-attachments'
-import { offersGroupMethod, offersGroupSafetyMethod, useGroupMethods } from './canonical-group-capabilities'
+import { offersGroupMethod, offersGroupSafetyMethod, useGroupOffers } from './canonical-group-capabilities'
 import { CanonicalGroupDetails, CanonicalPendingCard, holdCanonicalRoomLive, publishCanonicalRoomLive, useStickToBottom } from './canonical-group-details'
 import { CanonicalGroupHeader } from './canonical-group-header'
 import { type CanonicalGroupEvent, CanonicalGroupHistory } from './canonical-group-history'
 import { useCanonicalGroupLabels } from './canonical-group-labels'
 import { markRoomLead } from './canonical-group-lead'
+import { advertisesRoomMentionAliases, roomMentionTag } from './canonical-group-mentions'
 import { peerRenewalBeforeSend, usePeerRenewal } from './canonical-group-peer-join'
 import { forgetCanonicalGroup, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupRoomSettings } from './canonical-group-room-settings'
@@ -108,7 +109,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
 }) {
   const [binding] = useState(() => ({ ...initialBinding }))
   const labels = useCanonicalGroupLabels()
-  const methods = useGroupMethods(binding, visible)
+  const { features, methods } = useGroupOffers(binding, visible)
   const [state, setState] = useState<RoomState | null>(null)
   const [events, setEvents] = useState<RoomEvent[]>([])
   const [error, setError] = useState('')
@@ -634,6 +635,12 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
   const members = state?.room.members ?? []
   const { cycle, statuses, working } = useCanonicalRoomLive(events, driver, members, reply?.thread)
   const mentionMembers = members.map(member => ({ name: member.handle, handle: member.handle, display_name: member.display_name }))
+  // A room whose owner advertises friendly aliases completes on the frozen display name;
+  // every other owner keeps the immutable handle the gateway has always resolved.
+  const mentionAliases = advertisesRoomMentionAliases(features)
+
+  const mentionTagFor = (member: { display_name?: string; handle?: string }) =>
+    roomMentionTag({ handle: String(member.handle ?? ''), display_name: member.display_name }, mentionMembers, mentionAliases)
   const memberById = new Map(members.map(member => [member.member_id, member]))
   const avatarFor = (name: string, size: number) => <RoomBotAvatar name={name} size={size} />
 
@@ -653,7 +660,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
     setReply({ member, name: member ? canonicalMemberName(member) : author, quote: text.split('\n').map(line => line.trim()).find(Boolean) ?? '', thread })
 
     if (member) {
-      const tag = `@${member.handle}`
+      const tag = `@${mentionTagFor(member)}`
       setDraft(current => current.trimStart().startsWith(tag) ? current : `${tag} ${current}`)
     }
 
@@ -721,7 +728,7 @@ function CanonicalRoomView({ binding: initialBinding, visible, onBack, onReplace
         onSubmit={send}
         sendLabel={pending ? labels.retry : labels.send}
         status={<CanonicalGroupCycle cycle={cycle} driver={driver} labels={labels} members={members} statuses={statuses} />}>
-        <GroupMentionInput aria-label={labels.groupMessage} className={ROOM_COMPOSER_INPUT_CLASS} disabled={composerLocked} handleFor={member => member.handle}
+        <GroupMentionInput aria-label={labels.groupMessage} className={ROOM_COMPOSER_INPUT_CLASS} disabled={composerLocked} handleFor={member => mentionTagFor(member)}
           members={mentionMembers} onChange={setDraft} onSubmitDraft={send} placeholder={labels.composerPlaceholder} ref={composerInput} value={draft} />
       </RoomComposer>
       </div>

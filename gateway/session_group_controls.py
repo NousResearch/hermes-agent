@@ -6,6 +6,7 @@ from pathlib import Path
 import uuid
 import weakref
 
+from gateway.hosted_room_mentions import MENTION_ALIAS_FEATURE
 from hermes_state_runtime import RuntimeStoreError
 
 logger = logging.getLogger(__name__)
@@ -171,7 +172,8 @@ def _group(authority, actor, method, params, *, host_scope=False):
         return {'protocol_version': rooms.PROTOCOL_VERSION, 'driver': service is not None,
                 'persistent_process': True, 'authority_gateway_id': gateway_id,
                 'room_link': room_link(authority),
-                'features': ['room_identity', 'monotonic_log', 'replayable_disband', 'peer_renewal_horizon'],
+                'features': ['room_identity', 'monotonic_log', 'replayable_disband', 'peer_renewal_horizon',
+                             MENTION_ALIAS_FEATURE],
                 'methods': list(GROUP_METHODS), 'max_log_limit': rooms.MAX_LOG_LIMIT,
                 'seatable_profiles': sorted(name for name in homes if name not in refused)}
 

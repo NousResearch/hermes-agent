@@ -103,6 +103,23 @@ def test_auto_room_records_the_routers_pick_before_any_turn_and_only_that_member
     assert _queued(restarted) == ["build"] and len(answers.calls) == 1
 
 
+def test_a_friendly_tag_addresses_its_member_through_the_service_without_the_router(tmp_path, answers):
+    """#89720 end to end: a room created with an unchanged technical handle and a renamed member
+    dispatches ``@ash`` to that member alone, never through the router."""
+    service = _service(tmp_path)
+    service.create_room(room_id=ROOM_ID, name="Friendly", members=[
+        {"member_id": "member-ash", "profile": "research",
+         "handle": "default-device-a1b2c3d4", "display_name": "Ash"},
+        {"member_id": "member-build", "profile": "build", "handle": "build", "display_name": "Build"},
+        {"member_id": "member-review", "profile": "review", "handle": "review", "display_name": "Review"}])
+    _send(service, "m1", "@ash what is the status?")
+
+    service.prepare_room(service.bindings()[0])
+
+    assert answers.calls == []
+    assert _queued(service) == ["member-ash"]
+
+
 @pytest.mark.parametrize("answer", [None, RuntimeError("provider down")])
 def test_router_failure_falls_back_to_everyone(tmp_path, answers, answer):
     service = _service(tmp_path)
@@ -242,9 +259,12 @@ def test_router_prompt_carries_roles_and_recent_messages_and_answer_parsing_is_s
         room_name="Ops", purpose="Ship", notes="", roster=[
             {"handle": "build", "name": "Builder", "description": "CI and packaging"}],
         recent=[{"author": "user", "text": "hello " * 200}], message="Fix CI")
-    assert "@build (Builder): CI and packaging" in prompt and "..." in prompt and "Fix CI" in prompt
-    handles = {"build": "m-build", "review": "m-review"}
+    # The roster names each member's frozen friendly tag next to its canonical handle (#89720).
+    assert "@build (Builder, also @builder): CI and packaging" in prompt
+    assert "..." in prompt and "Fix CI" in prompt
+    handles = {"build": "m-build", "review": "m-review", "builder": "m-build"}
     assert router.parse_router_answer('{"members": ["@Build"]}', handles) == ("m-build",)
+    assert router.parse_router_answer('{"members": ["builder"]}', handles) == ("m-build",)
     assert router.parse_router_answer('{"members": "everyone"}', handles) == ()
     for bad in ('{"members": ["nobody"]}', '{"members": []}', '{"members": ["build"], "why": "x"}',
                 "build", '{"assign": ["build"]}', '{"members": ["build", "build"]}'):

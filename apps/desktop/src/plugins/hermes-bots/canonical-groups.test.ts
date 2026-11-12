@@ -188,3 +188,35 @@ it('classifies both gateway surfaces by their driver and offers only the methods
   expect(offersGroupMethod(groupAdvertisedMethods({ driver: true }), 'groups.discard')).toBe(true)
   expect(offersGroupMethod(undefined, 'groups.discard')).toBe(false)
 })
+
+it('freezes the name a person chose for a local Bot into its member descriptor, leaving the handle intact', async () => {
+  const route = { connectionId: 'source-a', profile: 'default' }
+  const members = [
+    { name: 'default-long', handle: 'default-long', connectionId: 'source-a', title: 'Scout' },
+    { name: 'builder', connectionId: 'source-a' }
+  ]
+
+  host.requestProfile.mockImplementation(async (_route, method, params) => method === 'groups.create'
+    ? { room: { room_id: params.room_id, name: params.name, members: params.members } } : { accepted: true })
+  const { room } = await createCanonicalGroup(route, 'Team', members)
+  expect(room.members).toEqual([
+    { member_id: 'default-long', profile: 'default-long', handle: 'default-long', display_name: 'Scout', target: { kind: 'local', profile: 'default-long' } },
+    { member_id: 'builder', profile: 'builder', handle: 'builder', target: { kind: 'local', profile: 'builder' } }
+  ])
+})
+
+
+it('clamps a copied title to the gateway’s 200-character display_name schema', async () => {
+  const route = { connectionId: 'source-a', profile: 'default' }
+  const members = [
+    { name: 'default-long', handle: 'default-long', connectionId: 'source-a', title: '🚀'.repeat(240) },
+    { name: 'builder', connectionId: 'source-a' }
+  ]
+
+  host.requestProfile.mockImplementation(async (_route, method, params) => method === 'groups.create'
+    ? { room: { room_id: params.room_id, name: params.name, members: params.members } } : { accepted: true })
+  const { room } = await createCanonicalGroup(route, 'Team', members)
+  const display = room.members[0].display_name as string
+  expect(Array.from(display)).toHaveLength(200)
+  expect(display).toBe('🚀'.repeat(200))
+})

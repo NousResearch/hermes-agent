@@ -24,6 +24,9 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+from gateway.hosted_room_mentions import (
+    has_addressing_mention, mention_index, preferred_mention_tag, roster_mention_line)
+
 if TYPE_CHECKING:
     from gateway.hosted_room_discussion import (
         DiscussionMember, DiscussionRoom, DiscussionTaskPlan, EventPlan, _ValidatedEvent)
@@ -48,12 +51,11 @@ def lead_member(room: DiscussionRoom, context: Mapping[str, str]) -> DiscussionM
 def routes_through_lead(discussion: _ValidatedEvent, room: DiscussionRoom, events: Sequence[_ValidatedEvent]) -> bool:
     """A human message that opens a new thread and addresses nobody goes to the lead first."""
     from gateway.hosted_room_context import scheduled_post_kind
-    from gateway.hosted_room_discussion import _MENTION_RE
 
     if scheduled_post_kind(discussion.actor) is not None:
         return False
-    handles = {member.handle.casefold() for member in room.members} | {"all", "everyone"}
-    if any(match.group(1).casefold() in handles for match in _MENTION_RE.finditer(str(discussion.payload["text"]))):
+    # A friendly tag addresses a member just as its handle does: the lead never re-routes it.
+    if has_addressing_mention((str(discussion.payload["text"]),), room.members):
         return False
     thread_id = discussion.payload["thread_id"]
     return not any(
@@ -68,10 +70,13 @@ def is_routing_task(task: DiscussionTaskPlan) -> bool:
 def routing_prompt(
     *, room: DiscussionRoom, lead: DiscussionMember, discussion: _ValidatedEvent, context_lines: Sequence[str]
 ) -> str:
-    roster = [f"- @{member.handle}" + (f" ({member.display_name})" if member.display_name else "")
+    roster = [roster_mention_line(member, members=room.members)
               + (" (you)" if member.member_id == lead.member_id else "") for member in room.members]
     return "\n".join([
-        f'[Discussion: "{room.name}"] You are @{lead.handle}, the lead of this room.', "",
+        f'[Discussion: "{room.name}"] You are @{lead.handle}'
+        + (f" (also @{tag})"
+           if (tag := preferred_mention_tag(lead, room.members)) and tag != lead.handle.casefold() else "")
+        + ", the lead of this room.", "",
         *context_lines, "Members:", *roster, "",
         "The message (from the user):", f"  {discussion.payload['text']}", *_attachment_lines(discussion), "",
         *_ROUTING_INSTRUCTIONS])
@@ -102,13 +107,18 @@ def _first_assign_object(text: str) -> Mapping[str, Any] | None:
 
 
 def parse_assignment(text: Any, room: DiscussionRoom) -> tuple[str, ...]:
-    """Member ids the lead's answer names, in roster order; empty when it names none (or is not JSON)."""
+    """Member ids the lead's answer names, in roster order; empty when it names none (or is not JSON).
+
+    A member may be named by its canonical handle or by a tag derived from its frozen display name.
+    """
     answer = _first_assign_object(str(text or ""))
     picked = answer.get("assign") if answer is not None else None
     if not isinstance(picked, list):
         return ()
-    handles = {str(item).strip().lstrip("@").casefold() for item in picked if isinstance(item, str)}
-    return tuple(member.member_id for member in room.members if member.handle.casefold() in handles)
+    mentions = mention_index(room.members)
+    chosen = {member.member_id for item in picked if isinstance(item, str)
+              and (member := mentions.member(item)) is not None}
+    return tuple(member.member_id for member in room.members if member.member_id in chosen)
 
 
 def assignment(events: Sequence[_ValidatedEvent], discussion_event_id: str) -> _ValidatedEvent | None:

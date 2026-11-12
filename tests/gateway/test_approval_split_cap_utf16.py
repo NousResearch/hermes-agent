@@ -1,7 +1,7 @@
-"""The full-command send ahead of a truncated approval card refuses a command that Telegram's real
-``send()`` would cap (#152012). Telegram splits in UTF-16 code units, so an astral-heavy command can fit
-``MAX_SPLIT_MESSAGES`` chunks counted with ``len`` yet split past the cap on the wire; the check must
-count the way ``send()`` does, or approval proceeds after a silently capped preview."""
+"""The full-command send ahead of a truncated approval card refuses a command that splits past
+Telegram's ``MAX_SPLIT_MESSAGES`` (#152012: past it a chat floods into a ban). Telegram splits in UTF-16
+code units, so an astral-heavy command can fit the cap counted with ``len`` yet split past it on the
+wire; the check must count the way ``send()`` does."""
 from __future__ import annotations
 
 import asyncio

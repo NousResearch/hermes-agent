@@ -15,6 +15,7 @@ reserved character outside an entity must be backslash-escaped, else ``400 can't
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import itertools
 import re
 import time
@@ -190,7 +191,9 @@ class TelegramStandin(StandinServer):
             reader = await request.multipart()
             async for part in reader:
                 if part.filename:
-                    params[part.name] = {"filename": part.filename, "size": len(await part.read())}
+                    data = await part.read()
+                    params[part.name] = {"filename": part.filename, "size": len(data),
+                                         "sha256": hashlib.sha256(data).hexdigest()}
                 else:
                     params[part.name] = decode_value(await part.text())
         elif request.can_read_body:

@@ -980,6 +980,7 @@ platform:
     denied: "❌ 已拒絕。"
     approval_expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）。"
   shared:
+    response_as_file: "📎 回覆較長：完整內容已附為檔案。"
     truncated_suffix: "\n...（已截斷）"
     unknown: "未知"
     approval_expired: "⌛ 批准已逾期 — 指令未執行（已逾時或已在其他地方處理）。"
@@ -1193,8 +1194,6 @@ platform:
       upload_too_large: "⚠️ 無法附加 `{filename}` — {size_mb} MB 超過 Discord 在此頻道的 {limit_mb} MB 上傳上限。請壓縮檔案或改為分享連結。"
       image_skipped_too_large: "⚠️ 已略過 `{filename}` — {size_mb} MB 超過 Discord 的 {limit_mb} MB 上傳上限。"
   telegram:
-    limits:
-      response_truncated: "⚠️ **回應已截斷** — 此回覆超過傳送上限（{max_messages} 則訊息）。有 {dropped_chars} 個字元未送達；完整回應請見工作階段記錄。"
     approval:
       action_once: "✅ 允許一次"
       action_session: "✅ 本次工作階段"

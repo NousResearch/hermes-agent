@@ -1,78 +1,60 @@
-"""Telegram split-delivery cap, and the MarkdownV2 strip a split chunk's plain-text fallback uses.
+"""Telegram long-reply handoff, and the MarkdownV2 strip a split chunk's plain-text fallback uses.
 
-The cap (#152012): a degenerate 415,742-char final once went out as 402 back-to-back
-``sendMessage`` calls and held the chat in multi-minute flood control. Like Discord (#86581),
-a reply that splits past ``MAX_SPLIT_MESSAGES`` keeps its first N-1 chunks and replaces the
-rest with one visible notice; the full text stays in the session history. The cap runs before
-delivery, so a partial send's resumable remainder never includes the dropped tail.
+A degenerate 415,742-char final once went out as 402 back-to-back ``sendMessage`` calls and held
+the chat in multi-minute flood control (#152012). A reply that needs more than the adapter's
+``MAX_SPLIT_MESSAGES`` messages goes out whole as one ``.md`` file instead (the stream consumer
+does the same for a streamed reply). The adapter facade imports these helpers so it stays under
+its line cap.
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Optional
 
-# The ``(N/M)`` marker ``truncate_message`` appends: raw on edit-overflow chunks, MarkdownV2-escaped
-# (``\(N/M\)``, possibly moved onto its own line after a closing fence) on send chunks.
-_RAW_INDICATOR_RE = re.compile(r" \((\d+)/(\d+)\)$")
-_MDV2_INDICATOR_RE = re.compile(r"\\\((\d+)/(\d+)\\\)$")
-_MDV2_ESCAPE_RE = re.compile(r"\\(.)", re.DOTALL)
-# A dropped chunk's marker together with the separator before it (a space, or the newline that moves it
-# off a closing fence): neither is reply text, so neither counts as a dropped character.
-_DROPPED_MARKER_RE = {False: _RAW_INDICATOR_RE, True: re.compile(r"\s*" + _MDV2_INDICATOR_RE.pattern)}
+# Telegram's ``sendDocument`` cap is 50 MB; keep each reply file well inside it.
+REPLY_FILE_MAX_BYTES = 45 * 1024 * 1024
 
 
-class CappedChunks(list):
-    """``cap_split_chunks`` output that the cap cut: ``dropped`` counts the reply text it dropped,
-    ``cut`` holds the dropped chunks and ``notice`` the notice it ends with (``None`` when hidden)."""
-    dropped = 0
-    cut: tuple = ()
-    notice: Any = None
+def reply_message_count(adapter: Any, content: str, metadata: Optional[dict[str, Any]]) -> int:
+    """Messages ``send(content)`` would post: its rich parts when it goes out rich, else its
+    MarkdownV2 chunks (escaping can push a raw-sized text past 4,096 UTF-16 units)."""
+    from gateway.platforms.base import utf16_len
+    from plugins.platforms.telegram.rich_parts import rich_part_count
+    parts = rich_part_count(adapter, content, metadata)
+    if parts is not None:
+        return parts
+    limit = adapter.MAX_MESSAGE_LENGTH
+    formatted = adapter.format_message(content)
+    size = utf16_len(formatted)
+    if size <= limit:
+        return 1
+    return len(adapter.truncate_message(formatted, limit, len_fn=utf16_len))
 
 
-def split_budget(adapter: Any, metadata: Any) -> int:
-    """The ceiling for one delivery: ``MAX_SPLIT_MESSAGES``, lowered by the stream consumer's
-    ``_split_budget`` (the messages this call may still open inside the reply's ceiling)."""
-    budget = metadata.get("_split_budget") if isinstance(metadata, dict) else None
-    cap = adapter.MAX_SPLIT_MESSAGES
-    return max(1, min(cap, budget)) if type(budget) is int else cap
+async def send_reply_document(adapter: Any, chat_id: str, file_path: str, caption: Optional[str] = None,
+                              file_name: Optional[str] = None, reply_to: Optional[str] = None,
+                              metadata: Optional[dict[str, Any]] = None) -> Any:
+    """``sendDocument`` for a long reply file whose failure is a failed result (``send_document``
+    would post a text notice and report it sent). A short flood wait is retried inline; a longer
+    one fails, and the deferred re-upload it schedules does nothing: the reply has already gone out
+    as messages by then."""
+    from gateway.platforms.base import SendResult
+    from plugins.platforms.telegram.telegram_media_flood import _FLOOD_STAGE
 
+    def build(handle: Any) -> dict[str, Any]:
+        return {"document": handle, "filename": file_name or file_path.rsplit("/", 1)[-1],
+                "caption": adapter._caption_1024(caption)}
 
-def capped_raw(chunks: Any, raw: Any) -> Any:
-    """``raw_response`` for a delivery of ``chunks``: a capped one says so (``split_capped``)."""
-    if not isinstance(chunks, CappedChunks):
-        return raw
-    return {**(raw if isinstance(raw, dict) else {}), "split_capped": True, "dropped_chars": chunks.dropped}
+    async def failed(error: Exception) -> Any:
+        return SendResult(success=False, error=str(error))
 
-
-def cap_split_chunks(adapter: Any, chunks: list[str], *, formatted: bool, metadata: Any = None,
-                     numbered: bool = True) -> list[str]:
-    """Keep the first ``cap - 1`` chunks plus the truncation notice (when warnings are shown),
-    renumbering the ``(N/M)`` markers to the capped count; ``cap`` is :func:`split_budget`.
-    ``formatted`` chunks are MarkdownV2 already, so the notice is formatted the same way and escapes
-    are not counted as dropped characters; raw chunks get their formatting at send time.
-    ``numbered=False`` chunks (rich parts) carry no markers, so none are renumbered or discounted."""
-    cap = split_budget(adapter, metadata)
-    if len(chunks) <= cap:
-        return chunks
-    marker = _MDV2_INDICATOR_RE if formatted else _RAW_INDICATOR_RE
-    kept, dropped = chunks[: cap - 1], chunks[cap - 1:]
-    dropped_text = (_DROPPED_MARKER_RE[formatted].sub("", chunk) if numbered else chunk for chunk in dropped)
-    if formatted:
-        dropped_text = (_MDV2_ESCAPE_RE.sub(r"\1", chunk) for chunk in dropped_text)
-    dropped_chars = sum(len(chunk) for chunk in dropped_text)
-    notice = adapter._split_cap_notice(dropped_chars)
-    tail = [adapter.format_message(notice) if formatted else notice] if notice else []
-    total = len(kept) + len(tail)
-    if not numbered:
-        out = CappedChunks(kept)
-    elif formatted:
-        out = CappedChunks(marker.sub(lambda m: f"\\({m.group(1)}/{total}\\)", chunk) for chunk in kept)
-    else:
-        out = CappedChunks(marker.sub(lambda m: f" ({m.group(1)}/{total})", chunk) for chunk in kept)
-    out += tail
-    out.dropped, out.cut, out.notice = dropped_chars, tuple(dropped), tail[0] if tail else None
-    return out
+    async def redo(path: Optional[str]) -> Any:
+        if _FLOOD_STAGE.get() >= 2:  # the deferred re-upload: the messages fallback already delivered it
+            return SendResult(success=False, error="long reply file superseded by messages")
+        return await adapter._send_local_file("File", path or file_path, chat_id, reply_to, metadata, "document",
+                                              build, failed, redo=redo, source=file_path)
+    return await redo(None)
 
 
 def _strip_mdv2(text: str) -> str:

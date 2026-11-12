@@ -980,6 +980,7 @@ platform:
     denied: "❌ Reddedildi."
     approval_expired: "⌛ Onay süresi doldu — komut çalıştırılmadı (zaten zaman aşımına uğradı veya başka bir yerde sonuçlandı)."
   shared:
+    response_as_file: "📎 Uzun yanıt: metnin tamamı ekte."
     truncated_suffix: "\n...(kısaltıldı)"
     unknown: "bilinmiyor"
     approval_expired: "⌛ Onay süresi doldu — komut çalıştırılmadı (zaten zaman aşımına uğradı veya başka bir yerde sonuçlandı)."
@@ -1193,8 +1194,6 @@ platform:
       upload_too_large: "⚠️ `{filename}` eklenemedi — {size_mb} MB, Discord'un bu kanal için {limit_mb} MB yükleme sınırını aşıyor. Dosyayı sıkıştırın veya bunun yerine bir bağlantı paylaşın."
       image_skipped_too_large: "⚠️ `{filename}` atlandı — {size_mb} MB, Discord'un {limit_mb} MB yükleme sınırını aşıyor."
   telegram:
-    limits:
-      response_truncated: "⚠️ **Yanıt kısaltıldı** — bu yanıt teslim sınırını ({max_messages} mesaj) aştı. {dropped_chars} karakter teslim edilmedi; yanıtın tamamı oturum günlüklerinde."
     approval:
       action_once: "✅ Bir Kez"
       action_session: "✅ Oturum"

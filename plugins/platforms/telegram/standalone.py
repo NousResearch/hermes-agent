@@ -8,7 +8,6 @@ copies of ``tools.send_message_senders``' (private core names a plugin may not i
 
 import asyncio
 import contextlib
-import html
 import logging
 import os
 import re
@@ -358,39 +357,11 @@ def _rich_send_result(rich, chat_id, outcome) -> dict:
     """Envelope for a finished rich send. ``retryable`` (nothing sent) only on the adapter's
     ``never_sent`` proof: a lost answer or a server error may already be in the chat."""
     if rich.success:
-        raw = rich.raw_response if isinstance(rich.raw_response, dict) else {}
-        warnings = [f"Telegram rich message capped at {len(raw.get('message_ids') or ())} messages; dropped "
-                    f"{raw.get('dropped_chars', 0)} characters to stay under flood limits"] if raw.get("split_capped") else None
-        if warnings:
-            logger.warning(warnings[0])
+        as_file = isinstance(rich.raw_response, dict) and rich.raw_response.get("sent_as_file")
+        warnings = ["Message was longer than the Telegram split cap; sent it as a file"] if as_file else None
         return _success(chat_id, warnings, message_id=rich.message_id)
     never_sent = isinstance(rich.raw_response, dict) and rich.raw_response.get("never_sent") is True
     return outcome.failure(_error(f"Telegram send failed: {rich.error}"), never_sent=never_sent)
-
-
-def _cap_standalone_chunks(chunks: list, warnings: list, *, formatted: bool) -> list:
-    """The live adapter's split cap (#152012) for a one-shot send: past ``MAX_SPLIT_MESSAGES`` chunks
-    a degenerate report would flood the chat into a ban. The last kept message says the rest was cut,
-    and the caller (``hermes send``, the ``send_message`` tool, cron) gets a warning naming the size."""
-    from plugins.platforms.telegram.adapter import TelegramAdapter
-    from plugins.platforms.telegram.telegram_split import cap_split_chunks
-    dropped: list = []
-
-    def notice(chars: int) -> str:
-        dropped.append(chars)
-        text = TelegramAdapter.split_cap_notice_text(chars)
-        # The chat's notice is localized like the live adapter's. MarkdownV2 chunks format its
-        # Markdown below; an HTML message would show the ``**`` markers and needs its text escaped.
-        return text if formatted else html.escape(text.replace("**", ""), quote=False)
-    escape = TelegramAdapter.__new__(TelegramAdapter).format_message if formatted else (lambda text: text)
-    cap = SimpleNamespace(MAX_SPLIT_MESSAGES=TelegramAdapter.MAX_SPLIT_MESSAGES, _split_cap_notice=notice,
-                          format_message=escape)
-    kept = cap_split_chunks(cap, chunks, formatted=formatted)
-    if dropped:
-        warnings.append(f"Telegram message split into {len(chunks)} parts; sent {len(kept)} "
-                        f"(the last says it was cut) and dropped {dropped[0]} characters to stay under flood limits")
-        logger.warning(warnings[-1])
-    return kept
 
 
 async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False,
@@ -447,7 +418,6 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             # " (1/2)" markers come back MarkdownV2-escaped (#74004).
             from plugins.platforms.telegram.telegram_chunking import split_formatted_mdv2
             chunks = split_formatted_mdv2(formatted, 4096, BasePlatformAdapter.truncate_message, utf16_len)
-        chunks = _cap_standalone_chunks(chunks, warnings, formatted=not _has_html)
         for chunk in chunks:
             last_msg = await _telegram_send_text_chunk(
                 bot, int_chat_id, chunk, send_parse_mode, _has_html, text_kwargs, outcome=outcome)

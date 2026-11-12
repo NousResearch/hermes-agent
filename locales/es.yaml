@@ -980,6 +980,7 @@ platform:
     denied: "❌ Denegado."
     approval_expired: "⌛ Aprobación expirada — el comando no se ejecutó (ya se agotó el tiempo o se resolvió en otro lugar)."
   shared:
+    response_as_file: "📎 Respuesta larga: el texto completo va adjunto."
     truncated_suffix: "\n...(truncado)"
     unknown: "desconocido"
     approval_expired: "⌛ Aprobación expirada — el comando no se ejecutó (ya se agotó el tiempo o se resolvió en otro lugar)."
@@ -1193,8 +1194,6 @@ platform:
       upload_too_large: "⚠️ No se pudo adjuntar `{filename}` — {size_mb} MB supera el límite de subida de Discord de {limit_mb} MB para este canal. Comprime el archivo o comparte un enlace."
       image_skipped_too_large: "⚠️ Se omitió `{filename}` — {size_mb} MB supera el límite de subida de Discord de {limit_mb} MB."
   telegram:
-    limits:
-      response_truncated: "⚠️ **Respuesta truncada** — esta respuesta superó el límite de entrega ({max_messages} mensajes). No se entregaron {dropped_chars} caracteres; la respuesta completa está en los registros de la sesión."
     approval:
       action_once: "✅ Permitir una vez"
       action_session: "✅ Sesión"

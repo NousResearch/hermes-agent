@@ -33,14 +33,12 @@ class StreamTransportMixin:
         # Contract: adapters must accept finalize= even when False (test-guarded).
         kwargs = dict(chat_id=self.chat_id, message_id=message_id, content=content,
                       finalize=finalize)
-        # A capped adapter also learns how many messages an overflow split of this edit may open.
-        meta = self._add_split_budget(dict(self.metadata or {}), editing=True)
-        if meta:
+        if self.metadata:
             try:
                 params = inspect.signature(self.adapter.edit_message).parameters
                 if "metadata" in params or any(
                     param.kind is inspect.Parameter.VAR_KEYWORD for param in params.values()):
-                    kwargs["metadata"] = meta
+                    kwargs["metadata"] = self.metadata
             except (TypeError, ValueError):
                 pass
         return await self.adapter.edit_message(**kwargs)
@@ -391,7 +389,7 @@ class StreamTransportMixin:
                                         is_turn_final=is_turn_final)
             if ok is not None:
                 return ok
-        self._last_edit_overflowed = self._last_edit_capped = False
+        self._last_edit_overflowed = False
         try:
             if self._message_id is None:
                 if not self._edit_supported and not finalize:
@@ -562,11 +560,6 @@ class StreamTransportMixin:
             return True
         self._already_sent = True
         self._track_preview_ids_from_result(result)
-        # The adapter capped this split delivery (Telegram's MAX_SPLIT_MESSAGES): its notice stands in
-        # for the dropped tail, so the full final can never match what landed.
-        self._last_edit_capped = bool(finalize and isinstance(raw_response, dict) and raw_response.get("split_capped"))
-        if self._last_edit_capped and is_turn_final:
-            self._split_capped = self._capped_source(self._accumulated)  # raw: ``text`` has closed fences
         # Oversized edit split across continuations: message_id is now the LAST
         # continuation, which holds only the final chunk — retarget edits and reset
         # skip-if-same.  getattr keeps SimpleNamespace test mocks working.

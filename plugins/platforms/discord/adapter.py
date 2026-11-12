@@ -3135,21 +3135,25 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             logger.debug("Could not build reply-to reference: %s", e)
             return None
 
-    def _cap_split_chunks(self, chunks: list[str], metadata: Optional[dict] = None) -> list[str]:
-        """Cap one response at ``MAX_SPLIT_MESSAGES`` (#86581: 60,698 chars once went out as 31 messages),
-        or at the stream consumer's ``_split_budget`` (what is left of the reply's ceiling): keep the first
-        N-1 chunks, then the notice. The full response stays in the session history."""
-        budget = (metadata or {}).get("_split_budget")
-        cap = max(1, min(self.MAX_SPLIT_MESSAGES, budget)) if type(budget) is int else self.MAX_SPLIT_MESSAGES
-        if len(chunks) <= cap:
-            return chunks
-        notice = self._split_cap_notice(sum(len(c) for c in chunks[cap - 1:]))
-        return chunks[: cap - 1] + (["\n\n" + notice] if notice else [])
+    def _cap_split_chunks(self, chunks: list[str]) -> list[str]:
+        """Cap chunks at ``MAX_SPLIT_MESSAGES``: keep the first N-1 and replace the rest with a
+        notice so a degenerate turn can't flood the channel (full text stays in session history).
 
-    def _split_cap_notice(self, dropped_chars: int) -> Optional[str]:
-        """The localized truncation notice (the stream consumer's ceiling posts it too); None when hidden."""
-        return self.warning_text(t("platform.discord.limits.response_truncated",
-                                   max_messages=str(self.MAX_SPLIT_MESSAGES), dropped_chars=str(dropped_chars)))
+        Cap the number of chunks sent for one logical response (#86581).
+        A degenerate turn can produce tens of thousands of characters; the 86581 incident delivered 60,698
+        chars as 31 back-to-back Discord messages. The full response remains available in the gateway
+        session history / logs. See #86581.
+        """
+        if len(chunks) <= self.MAX_SPLIT_MESSAGES:
+            return chunks
+        kept = chunks[: self.MAX_SPLIT_MESSAGES - 1]
+        dropped_chars = sum(len(c) for c in chunks[self.MAX_SPLIT_MESSAGES - 1 :])
+        notice = "\n\n" + t(
+            "platform.discord.limits.response_truncated",
+            max_messages=str(self.MAX_SPLIT_MESSAGES), dropped_chars=str(dropped_chars))
+        if self.warning_text(notice):
+            kept.append(notice)
+        return kept
 
     async def send(
         self,
@@ -3191,7 +3195,9 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 result = await self._send_to_forum(channel, content)
                 return await self._record_response_async(reply_to, result, content, final_delivery, metadata)
             formatted = self.format_message(content)
-            chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH), metadata)
+            chunks = self._cap_split_chunks(
+                self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            )
             message_ids = []
             reference = self._reply_reference_for_send(reply_to, channel)
             for i, chunk in enumerate(chunks):
@@ -3355,7 +3361,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
             # Pre-flight oversize: final edits split-and-deliver; streaming edits truncate in place.
             if len(formatted) > self.MAX_MESSAGE_LENGTH:
                 if finalize:
-                    return await self._edit_overflow_split(channel, msg, message_id, content, metadata)
+                    return await self._edit_overflow_split(channel, msg, message_id, content)
                 formatted = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
                 _saturated_preview = True
                 # Saturated-preview dedup: past the cap every edit is the same text; skip until finalize.
@@ -3374,7 +3380,7 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
                 # Reactive split: format_message inflation can exceed 2,000 (50035) even after pre-flight.
                 if self._is_length_overflow_error(edit_err):
                     if finalize:
-                        return await self._edit_overflow_split(channel, msg, message_id, content, metadata)
+                        return await self._edit_overflow_split(channel, msg, message_id, content)
                     truncated = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)[0]
                     if self._last_overflow_preview.get(_preview_key) == truncated:
                         # Saturated-preview dedup (see pre-flight path above).
@@ -3409,14 +3415,14 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         )
 
     async def _edit_overflow_split(
-        self, channel: Any, msg: Any, message_id: str, content: str, metadata: Optional[dict] = None,
+        self, channel: Any, msg: Any, message_id: str, content: str,
     ) -> SendResult:
         """Deliver an oversized final edit: edit ``message_id`` with chunk 1, send chunks 2..N as
         replies to the previous. Returns ``message_id=<last-id>`` + ``continuation_message_ids``.
         A continuation failure still reports success plus ``partial_overflow`` so the consumer
         delivers the tail; only a first-chunk edit failure returns ``success=False``."""
         formatted = self.format_message(content)
-        chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH), metadata)
+        chunks = self._cap_split_chunks(self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH))
         if len(chunks) <= 1:
             # Defensive: pre-flight should guarantee >1 chunk; otherwise edit normally.
             await msg.edit(content=chunks[0] if chunks else formatted)

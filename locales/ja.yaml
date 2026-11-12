@@ -980,6 +980,7 @@ platform:
     denied: "❌ 拒否しました。"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
   shared:
+    response_as_file: "📎 長い返信のため、全文をファイルで添付しました。"
     truncated_suffix: "\n...(省略)"
     unknown: "不明"
     approval_expired: "⌛ 承認の有効期限が切れました — コマンドは実行されませんでした（すでにタイムアウトしたか、別の場所で処理済みです）。"
@@ -1193,8 +1194,6 @@ platform:
       upload_too_large: "⚠️ `{filename}` を添付できませんでした — {size_mb} MB はこのチャンネルの Discord アップロード上限 {limit_mb} MB を超えています。ファイルを圧縮するか、代わりにリンクを共有してください。"
       image_skipped_too_large: "⚠️ `{filename}` をスキップしました — {size_mb} MB は Discord のアップロード上限 {limit_mb} MB を超えています。"
   telegram:
-    limits:
-      response_truncated: "⚠️ **応答を省略しました** — この返信は配信上限 ({max_messages} メッセージ) を超えました。{dropped_chars} 文字が配信されていません。完全な応答はセッションログにあります。"
     approval:
       action_once: "✅ 一度だけ許可"
       action_session: "✅ セッション中"

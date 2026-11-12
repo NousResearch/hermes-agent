@@ -1024,6 +1024,7 @@ platform:
     denied: "❌ Denied."
     approval_expired: "⌛ Approval expired — command was not run (already timed out or resolved elsewhere)."
   shared:
+    response_as_file: "📎 Long reply: the full text is attached."
     truncated_suffix: "\n...(truncated)"
     unknown: "unknown"
     approval_expired: "⌛ Approval expired — the command was not run (it already timed out or was resolved elsewhere)."
@@ -1244,8 +1245,6 @@ platform:
       image_skipped_too_large: "⚠️ Skipped `{filename}` — {size_mb} MB exceeds Discord's {limit_mb} MB upload limit."
 
   telegram:
-    limits:
-      response_truncated: "⚠️ **Response truncated** — this reply exceeded the delivery limit ({max_messages} messages). {dropped_chars} characters were not delivered; the full response is in the session logs."
     # Inline-keyboard labels: keep short (2-per-row layout truncates around ~20 chars on mobile).
     # Every toast (answerCallbackQuery) is cut at 200 chars by the adapter.
     approval:

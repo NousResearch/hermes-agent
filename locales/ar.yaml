@@ -980,6 +980,7 @@ platform:
     denied: "❌ تم الرفض."
     approval_expired: "⌛ انتهت صلاحية الموافقة — لم يُنفَّذ الأمر (انتهت مهلته أو حُسم في مكان آخر)."
   shared:
+    response_as_file: "📎 ردّ طويل: النص الكامل مرفق."
     truncated_suffix: "\n...(مقتطع)"
     unknown: "غير معروف"
     approval_expired: "⌛ انتهت صلاحية الموافقة — لم يُنفَّذ الأمر (انتهت مهلته أو حُسم في مكان آخر)."
@@ -1193,8 +1194,6 @@ platform:
       upload_too_large: "⚠️ تعذّر إرفاق `{filename}` — حجمه {size_mb} MB يتجاوز حد الرفع في Discord لهذه القناة وهو {limit_mb} MB. اضغط الملف أو شارك رابطًا بدلًا من ذلك."
       image_skipped_too_large: "⚠️ تم تخطّي `{filename}` — حجمه {size_mb} MB يتجاوز حد الرفع في Discord وهو {limit_mb} MB."
   telegram:
-    limits:
-      response_truncated: "⚠️ **تم اقتطاع الردّ** — تجاوز هذا الردّ حد التسليم ({max_messages} رسائل). لم يتم تسليم {dropped_chars} حرفًا؛ الردّ الكامل موجود في سجلات الجلسة."
     approval:
       action_once: "✅ السماح مرة"
       action_session: "✅ للجلسة"

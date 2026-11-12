@@ -980,6 +980,7 @@ platform:
     denied: "❌ Diúltaithe."
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
   shared:
+    response_as_file: "📎 Freagra fada: tá an téacs iomlán ceangailte."
     truncated_suffix: "\n...(giorraithe)"
     unknown: "anaithnid"
     approval_expired: "⌛ Tá an cead imithe in éag — níor ritheadh an t-ordú (chuaigh sé thar am cheana nó réitíodh é in áit eile)."
@@ -1193,8 +1194,6 @@ platform:
       upload_too_large: "⚠️ Níorbh fhéidir `{filename}` a cheangal — sáraíonn {size_mb} MB teorainn uaslódála {limit_mb} MB Discord don chainéal seo. Dlúthaigh an comhad nó roinn nasc ina ionad."
       image_skipped_too_large: "⚠️ Léimeadh thar `{filename}` — sáraíonn {size_mb} MB teorainn uaslódála {limit_mb} MB Discord."
   telegram:
-    limits:
-      response_truncated: "⚠️ **Freagra giorraithe** — sháraigh an freagra seo an teorainn seachadta ({max_messages} teachtaireacht). Níor seachadadh {dropped_chars} carachtar; tá an freagra iomlán i logaí an tseisiúin."
     approval:
       action_once: "✅ Uair amháin"
       action_session: "✅ Seisiún"

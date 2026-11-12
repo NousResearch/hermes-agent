@@ -980,6 +980,7 @@ platform:
     denied: "❌ 거부됨."
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
   shared:
+    response_as_file: "📎 긴 답변이라 전체 내용을 파일로 첨부했습니다."
     truncated_suffix: "\n...(잘림)"
     unknown: "알 수 없음"
     approval_expired: "⌛ 승인이 만료되어 명령이 실행되지 않았어요 (이미 시간 초과되었거나 다른 곳에서 처리됨)."
@@ -1193,8 +1194,6 @@ platform:
       upload_too_large: "⚠️ `{filename}`을(를) 첨부할 수 없었어요 — {size_mb} MB는 이 채널의 Discord 업로드 한도 {limit_mb} MB를 초과해요. 파일을 압축하거나 링크로 공유해 주세요."
       image_skipped_too_large: "⚠️ `{filename}` 건너뜀 — {size_mb} MB는 Discord 업로드 한도 {limit_mb} MB를 초과해요."
   telegram:
-    limits:
-      response_truncated: "⚠️ **응답 잘림** — 이 답변이 전송 한도({max_messages}개 메시지)를 초과했어요. {dropped_chars}자가 전송되지 않았고, 전체 응답은 세션 로그에 있어요."
     approval:
       action_once: "✅ 한 번 허용"
       action_session: "✅ 세션"

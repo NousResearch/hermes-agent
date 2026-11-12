@@ -172,8 +172,9 @@ class StreamFallbackMixin:
                 return
 
         _len_fn, raw_limit = self._fallback_len_budget()
-        chunk_limit = max(500, self._ceiling_chunk_limit(raw_limit) - 100)
-        chunks = self._ceiling_cap_chunks(self._split_text_chunks(continuation, chunk_limit, len_fn=_len_fn))
+        chunks = self._split_text_chunks(continuation, max(500, raw_limit - 100), len_fn=_len_fn)
+        if await self._ceiling_fallback_file(final_text, chunks):
+            return  # the continuation would pass the reply's message cap: the whole reply went as a file
 
         stale_message_id = self._message_id  # partial message to clean up
         last_message_id: Optional[str] = None
@@ -222,8 +223,6 @@ class StreamFallbackMixin:
             last_successful_chunk = chunk
             last_message_id = result.message_id or last_message_id
             self._notify_new_message()
-            if self._ceiling_spent(result):
-                break  # the reply's last message slot is used: the rest is in the session log
 
         # Best-effort delete of the frozen partial — ONLY when the FULL final was
         # re-sent.  If only the missing tail went out, the partial IS the head of

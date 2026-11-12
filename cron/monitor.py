@@ -102,10 +102,12 @@ def _fetch_monitor_url(url: str) -> tuple[bool, str]:
         return False, f"monitor_url must be http(s): {url!r}"
     try:
         with create_ssrf_safe_client(timeout=URL_TIMEOUT_SECONDS, follow_redirects=False,
-                                     headers={"User-Agent": "hermes-cron-monitor"}) as client:
+                                     headers={"User-Agent": "hermes-cron-monitor",
+                                              "Accept-Encoding": "identity"}) as client:
             for _ in range(MAX_URL_REDIRECTS + 1):
                 if not is_safe_url(current_url):
-                    return False, "monitor_url blocked: private/internal or unsafe destination"
+                    return False, ("monitor_url blocked: private/internal or unsafe destination "
+                                   "(intranet monitors need security.allow_private_urls: true)")
                 with client.stream("GET", current_url) as resp:
                     if resp.is_redirect:
                         location = resp.headers.get("location")
@@ -115,7 +117,9 @@ def _fetch_monitor_url(url: str) -> tuple[bool, str]:
                         continue
                     resp.raise_for_status()
                     body = bytearray()
-                    for chunk in resp.iter_bytes():
+                    # Raw bytes, as urllib read them: decoding happens before this cap sees a
+                    # chunk, and one read of a hostile br/gzip body inflates to GBs.
+                    for chunk in resp.iter_raw():
                         body += chunk
                         if len(body) > MAX_URL_BYTES:
                             break

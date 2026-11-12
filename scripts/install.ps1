@@ -1029,10 +1029,12 @@ function Invoke-WithoutGitLocationEnv([scriptblock]$Body) {
     $saved = @{}
     foreach ($name in $script:GitLocationEnv) {
         $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
-        [Environment]::SetEnvironmentVariable($name, $null, 'Process')
+        # Not SetEnvironmentVariable($name, $null): PowerShell passes $null as '', which .NET 9+
+        # (pwsh 7.5+) stores as an empty variable, and git reads GIT_DIR= as a path.
+        Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
     }
     try { & $Body } finally {
-        foreach ($name in $saved.Keys) { [Environment]::SetEnvironmentVariable($name, $saved[$name], 'Process') }
+        foreach ($name in $saved.Keys) { if ($null -ne $saved[$name]) { Set-Item -LiteralPath "Env:$name" -Value $saved[$name] } }
     }
 }
 

@@ -288,6 +288,12 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         candidate = match.group(1).rstrip(".,;:")
         parsed = urlsplit(candidate)
         raw = unquote(parsed.path)
+        # Prose `file:line` / `file:line:col` refs (e.g. `scripts/eval.ts:8`) are
+        # citations, not paths: strip the numeric suffix before validation so the
+        # file still resolves (#149748). A non-numeric colon suffix
+        # (``scripts/a.py:payload``) keeps failing closed in
+        # _validate_bundle_rel_path (#82946).
+        raw = re.sub(r":\d+(?::\d+)?$", "", raw)
         if (candidate.endswith("?") or any(char in raw for char in "*?[]")
                 or (parsed.query and not _query_is_concrete(parsed.query))):
             continue

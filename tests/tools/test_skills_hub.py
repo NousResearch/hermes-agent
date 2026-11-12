@@ -2159,6 +2159,24 @@ class TestReferencedSupportPaths:
             "references/guide.md",
         }
 
+    def test_strips_file_line_refs_before_validation(self):
+        # Regression for #149748: prose `file:line` / `file:line:col` refs are
+        # citations, not paths — they must resolve to the file, not fail the
+        # whole install.
+        md = (
+            "See `scripts/eval.ts:8` for the loop, and `scripts/eval.ts:8:3` "
+            "for the column. Real files: `scripts/run.py`.\n"
+        )
+        assert _referenced_support_paths(md) == {
+            "scripts/eval.ts",
+            "scripts/run.py",
+        }
+
+    def test_non_numeric_colon_suffix_still_fails_closed(self):
+        # The #82946 colon rule survives the #149748 fix: a non-numeric colon
+        # suffix is still a rejected path, not a citation.
+        assert _referenced_support_paths("See `scripts/a.py:payload`.") is None
+
 class TestGitHubSourceFetchMissingReferencedFile:
     def _source(self):
         auth = MagicMock(spec=GitHubAuth)

@@ -1221,13 +1221,13 @@ def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool =
 
 
 def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> Optional[dict]:
-    """--clone-all: full copytree minus infrastructure/history, then strip runtime files
-    and cloned single-use OAuth grants."""
+    """--clone-all: full copytree minus infrastructure/history, then strip runtime files and single-use OAuth grants."""
     _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
-    materialized = _materialize_symlinked_files(source_dir, profile_dir)
-    if materialized:
+    if materialized := _materialize_symlinked_files(source_dir, profile_dir):
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
                     canon, materialized, source_dir)
+    with contextlib.suppress(OSError):  # copytree keeps a loose source mode; owner-only like --clone
+        os.chmod(str(profile_dir / ".env"), 0o600)
     # Excluded history dirs (sessions/, cron/) must still exist as empty dirs so the clone runs.
     for subdir in _PROFILE_DIRS:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)

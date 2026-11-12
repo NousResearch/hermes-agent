@@ -134,3 +134,20 @@ def test_member_less_generation_still_installs_core_lock_frozen(update):
     ship("pkgb", "1.3")
     lock = sync()
     assert lock.read_bytes() == (core / "uv.lock").read_bytes()
+
+
+def test_a_bump_to_one_platform_fork_moves_that_fork(tmp_path):
+    """core forks a package by platform; bumping only the lower fork must still move it."""
+    def lock(path, packages):
+        body = "".join(
+            f'[[package]]\nname = "{n}"\nversion = "{v}"\nsource = {{ registry = "https://pypi.org/simple" }}\n'
+            f'resolution-markers = ["{marker}"]\n\n'
+            for n, v, marker in packages)
+        path.write_text("version = 1\n\n" + body, encoding="utf-8")
+        return path
+
+    win, other = "sys_platform == 'win32'", "sys_platform != 'win32'"
+    seed = lock(tmp_path / "seed.lock", [("numpy", "1.26.4", win), ("numpy", "2.1.0", other)])
+    core = lock(tmp_path / "core.lock", [("numpy", "1.26.5", win), ("numpy", "2.1.0", other)])
+
+    assert ws.core_lock_upgrades(core, seed) == ["numpy==1.26.5; (sys_platform == 'win32')"]

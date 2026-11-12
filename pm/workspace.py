@@ -733,13 +733,16 @@ def core_lock_upgrades(core_lock: Path, seed_lock: Path) -> list[str]:
         return tomllib.loads(lock.read_text(encoding="utf-8-sig")).get("package", [])
 
     seeded: dict[str, list[Version]] = {}
+    forks: dict[tuple[str, tuple[str, ...]], list[Version]] = {}
     for package in entries(seed_lock):
         if "registry" not in package.get("source", {}):
             continue
         try:
-            seeded.setdefault(canonicalize_name(package["name"]), []).append(Version(package["version"]))
+            name, pinned = canonicalize_name(package["name"]), Version(package["version"])
         except (KeyError, InvalidVersion):
             continue
+        seeded.setdefault(name, []).append(pinned)
+        forks.setdefault((name, tuple(package.get("resolution-markers", []))), []).append(pinned)
     upgrades = []
     for package in entries(core_lock):
         name = canonicalize_name(package.get("name", ""))
@@ -749,7 +752,9 @@ def core_lock_upgrades(core_lock: Path, seed_lock: Path) -> list[str]:
             version = Version(package["version"])
         except (KeyError, InvalidVersion):
             continue
-        if all(version > pinned for pinned in seeded[name]):
+        # A platform fork compares against the seed's same fork, so a bump to one fork still moves.
+        prior = forks.get((name, tuple(package.get("resolution-markers", []))), seeded[name])
+        if all(version > pinned for pinned in prior):
             # A name core forks by platform carries each fork's markers, or the exact pins clash.
             markers = " or ".join(f"({marker})" for marker in package.get("resolution-markers", []))
             upgrades.append(f"{name}=={version}" + (f"; {markers}" if markers else ""))

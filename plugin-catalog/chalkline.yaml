@@ -1,20 +1,20 @@
 name: chalkline
 title: Chalkline — Voice note in. Paperwork out.
 repo: https://github.com/levi-lvjp/chalkline
-sha: "e10ba31d612d07e529e757654574d89c63d92cca"
+sha: "211a2609d784b7898286216ef9521c30483e34c5"
 maintainer: levi-lvjp
 tier: community
 category: automation
 version: "0.1.0"
 requires_hermes: ">=0.22.2"
-docs_url: https://github.com/levi-lvjp/chalkline/blob/e10ba31d612d07e529e757654574d89c63d92cca/README.md
-image: https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/banner.png
+docs_url: https://github.com/levi-lvjp/chalkline/blob/211a2609d784b7898286216ef9521c30483e34c5/README.md
+image: https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/approval.png
-  - https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/pipeline.png
-  - https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/job.png
-  - https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/quote.png
-  - https://raw.githubusercontent.com/levi-lvjp/chalkline/e10ba31d612d07e529e757654574d89c63d92cca/docs/assets/export.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/approval.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/pipeline.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/job.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/quote.png
+  - https://raw.githubusercontent.com/levi-lvjp/chalkline/211a2609d784b7898286216ef9521c30483e34c5/docs/assets/export.png
 readme: true
 description: >-
   A Hermes back office for solo tradespeople: capture enquiries, prepare quote

@@ -174,15 +174,29 @@ def _toplevel(cwd: Optional[str]) -> Optional[str]:
     return os.path.realpath(lines[0]) if lines else None
 
 
+def _new_worktrees(cwd: Optional[str], baseline: Iterable[str]) -> list[str]:
+    known = set(baseline)
+    return [p for p in _worktrees_of(cwd) if p not in known] if known else []
+
+
 def _pin_paths(record: dict[str, Any]) -> list[str]:
     """Where the child was when it STOPPED: its last terminal cwd's worktree, its isolation worktree, and every
-    worktree its repository gained during the run (a ``git worktree add`` it ran without cd-ing into it)."""
+    worktree a repository it worked in gained since it first entered it (a ``git worktree add`` it ran without
+    cd-ing into it), wherever its cwd went afterwards. Each repository is compared with its own baseline."""
     cwd = record.get("cwd")
     paths = [p for p in (_toplevel(cwd), (record.get("worktree") or {}).get("path")) if p]
-    baseline = set(record.get("worktrees_at_start") or ())
-    if baseline or cwd:
-        paths += [p for p in _worktrees_of(cwd or record.get("start_cwd")) if p not in baseline]
+    paths += _new_worktrees(record.get("start_cwd") or cwd, record.get("worktrees_at_start") or ())
+    for main, baseline in (record.get("repo_baselines") or {}).items():
+        paths += _new_worktrees(main, baseline)
     return sorted({os.path.realpath(p) for p in paths})
+
+
+def _note_repo(baselines: dict[str, list[str]], start_main: Optional[str], cwd: Optional[str]) -> None:
+    """Record the baseline of the repository *cwd* is in when the child first enters it (the start repository's
+    is ``worktrees_at_start``)."""
+    trees = _worktrees_of(cwd)
+    if trees and trees[0] != start_main and trees[0] not in baselines:  # the main worktree is always listed first
+        baselines[trees[0]] = trees
 
 
 # ── run lifecycle ──────────────────────────────────────────────────────────
@@ -216,6 +230,13 @@ def record_start(run: Any) -> None:
     from tools.delegate_tool_registry import _recent_subagents, _active_subagents_lock
     owners = {str(getattr(child, "_parent_session_id", "") or "") or str(getattr(run.parent_agent, "session_id", "")
                                                                          or "")}
+    # The git probes run before the write transaction (seconds on a slow repo; no state.db lock held through them).
+    earlier = _write(path, lambda conn: _row(conn, sid)) or {}
+    start_cwd = earlier.get("start_cwd") or cwd
+    start_trees = _worktrees_of(start_cwd)
+    durable: dict[str, Any] = {"db": path, "cwd": cwd, "start_main": start_trees[0] if start_trees else None,
+                               "baselines": dict(earlier.get("repo_baselines") or {})}
+    _note_repo(durable["baselines"], durable["start_main"], cwd)
 
     def _do(conn):
         prev = _row(conn, sid) or {}
@@ -228,17 +249,18 @@ def record_start(run: Any) -> None:
                   "delegation_id": getattr(child, "_delegation_id", None), "owners": sorted(owners),
                   # The async unit whose ledger row reports this run (``<call>-k`` with independent completions).
                   "unit_id": getattr(child, "_delegation_unit_id", None),
-                  "start_cwd": prev.get("start_cwd") or cwd, "cwd": cwd, "worktree": prev.get("worktree")
+                  "start_cwd": start_cwd, "cwd": cwd, "worktree": prev.get("worktree")
                   or run.worktree_info, "outcome": "running", "resume_mode": None,
                   # Kept across continues: a tree the child made in an earlier run is still its own.
-                  "worktrees_at_start": prev.get("worktrees_at_start") or _worktrees_of(cwd),
+                  "worktrees_at_start": prev.get("worktrees_at_start") or start_trees,
                   "auto_attempts": prev.get("auto_attempts", 0)}
+        record["repo_baselines"] = durable["baselines"]
         # A running record pins too (its paths are resolved at sweep time): a crash before boot recovery ran must
         # not hand its tree to the sweep. Bounded by the same TTL.
         _upsert(conn, sid, record, state="running", pinned=True, expires_at=time.time() + _settings()[0] * 3600)
 
     _write(path, _do)
-    child._delegate_durable = {"db": path, "cwd": cwd}
+    child._delegate_durable = durable
 
 
 def _ancestor_sessions(child: Any) -> set[str]:
@@ -271,10 +293,13 @@ def checkpoint(run: Any) -> None:
     if not cwd or cwd == durable.get("cwd"):
         return
     durable["cwd"] = cwd
+    baselines = durable["baselines"]
+    _note_repo(baselines, durable["start_main"], cwd)
 
     def _do(conn):
-        conn.execute("UPDATE resumable_subagents SET record_json=json_set(record_json, '$.cwd', ?), updated_at=? "
-                     "WHERE subagent_id=? AND state='running'", (cwd, time.time(), run.subagent_id))
+        conn.execute("UPDATE resumable_subagents SET record_json=json_set(record_json, '$.cwd', ?, "
+                     "'$.repo_baselines', json(?)), updated_at=? WHERE subagent_id=? AND state='running'",
+                     (cwd, json.dumps(baselines), time.time(), run.subagent_id))
     _write(durable.get("db"), _do)
 
 

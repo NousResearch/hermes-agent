@@ -110,14 +110,56 @@ def _mark_background_review_read(path: Path) -> None:
         logger.debug("Could not record background-review skill read for %s", path, exc_info=True)
 
 
+_PREPROCESS_FAILURE_WARNING = (
+    "[WARNING: Skill preprocessing failed — template variables "
+    "(${HERMES_SKILL_DIR}, ${HERMES_SESSION_ID}) and inline shell snippets "
+    "(!`cmd`) in this skill were NOT resolved. Treat them as literal text.]\n\n"
+)
+
+
+def _preprocess_failure_fallback(content: str, skills_cfg: dict | None) -> str:
+    """Raw-content fallback for a raised ``preprocess_skill_content``.
+
+    Returns *content* unchanged, prefixed with a warning banner when — and
+    only when — it contains tokens the preprocessor would actually have
+    rewritten under *skills_cfg*: the two supported ``${HERMES_*}`` template
+    variables when ``template_vars`` is enabled, or an inline ``!`cmd```
+    shell snippet when ``inline_shell`` is enabled (per
+    ``agent/skill_preprocessing.py``). Ordinary shell syntax such as
+    ``${HOME}``, and any token whose gate is disabled, is never flagged.
+    ``None`` (the config could not be resolved) suppresses the banner rather
+    than guessing.
+    """
+    try:
+        from agent.skill_preprocessing import has_preprocessable_tokens
+
+        if not has_preprocessable_tokens(content, skills_cfg):
+            return content
+    except Exception:
+        # Token detection itself failing must not mask the skill content;
+        # serve it raw rather than guessing about a banner.
+        logger.debug("Could not inspect skill content for preprocessable tokens", exc_info=True)
+        return content
+    return _PREPROCESS_FAILURE_WARNING + content
+
+
 def _preprocess_skill(content: str, skill_dir, session_id, debug_msg: str, *args) -> str:
     """Apply the configured SKILL.md preprocessing; on failure log and serve raw."""
+    skills_cfg = None
     try:
-        from agent.skill_preprocessing import preprocess_skill_content
-        return preprocess_skill_content(content, skill_dir, session_id=session_id)
+        from agent.skill_preprocessing import load_skills_config, preprocess_skill_content
+        # Resolve once and hand the same dict to both sides, so the warning
+        # reflects the gates the preprocessor was actually using.
+        skills_cfg = load_skills_config()
+        return preprocess_skill_content(
+            content, skill_dir, session_id=session_id, skills_cfg=skills_cfg)
     except Exception:
         logger.debug(debug_msg, *args, exc_info=True)
-        return content
+        # Surface a warning (when tokens preprocessing would have rewritten
+        # are present) so the agent knows they were NOT resolved — otherwise
+        # it may treat ${HERMES_SKILL_DIR} as a literal path. Covers the
+        # local-skill and plugin-skill paths alike.
+        return _preprocess_failure_fallback(content, skills_cfg)
 
 
 def _serve_plugin_skill(

@@ -157,3 +157,33 @@ def test_destination_missing_profile_home_does_not_borrow_default(profile_homes)
     for profile in ([], {}, 1):
         with pytest.raises(RuntimeStoreError):
             validate_destination({"deliver": "log", "deliver_extra": {}, "profile": profile})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("own", [{}, {Platform.LOCAL: object()}], ids=["no-adapters", "local-only"])
+async def test_shared_bot_satellite_webhook_egress_is_route_scoped(profile_homes, tmp_path, own):
+    """``sec`` owns no bot; one route maps slack:ROUTED to it. Its ``/p/sec/`` webhook rides the
+    primary bot only to a target a route maps to ``sec`` (the cron rule, #147602): the routed chat
+    succeeds, an unrouted chat and the home-channel fallback fail closed with no outbound send."""
+    from unittest.mock import patch
+
+    from gateway.profile_routing import parse_profile_routes
+
+    profile_homes.multiplex_profiles = True
+    profile_homes.profile_routes = parse_profile_routes(
+        [{"name": "sec-room", "platform": "slack", "profile": "sec", "chat_id": "ROUTED"}])
+    primary = _target()
+    webhook = _webhook(_Runner({Platform.SLACK: primary}, {"sec": dict(own)}, profile_homes))
+
+    async def deliver(extra):
+        return await webhook._deliver_cross_platform(
+            "slack", "hi", {"deliver": "slack", "deliver_extra": extra, "profile": "sec"})
+
+    with patch("gateway.run._multiplex_profile_homes", return_value=[("sec", tmp_path / "sec")]):
+        assert (await deliver({"chat_id": "ROUTED"})).success
+        assert primary.send.await_args.args[0] == "ROUTED"
+        primary.send.reset_mock()
+        for extra in ({"chat_id": "UNROUTED"}, {}):  # {} → SEC-HOME home channel, also unrouted
+            res = await deliver(extra)
+            assert not res.success and "not routed" in res.error
+        primary.send.assert_not_awaited()

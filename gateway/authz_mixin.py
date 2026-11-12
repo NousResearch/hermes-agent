@@ -236,6 +236,26 @@ class GatewayAuthorizationMixin:
                 primary_profile = self._active_profile_name()
         return self._primary_adapters() if profile_name == primary_profile else {}
 
+    def _shared_bot_target_allowed(self, platform: Platform, profile: Optional[str], chat_id,
+                                   thread_id=None) -> bool:
+        """Whether *profile* may send to a caller-chosen target through the adapter
+        ``_adapters_for_profile`` gave it. A shared-bot satellite's map borrows the primary's bots
+        unscoped (restored sources need that), so a target it picks itself — config- or
+        payload-rendered — must be one an enabled default-bot route maps to it: the cron rule
+        (``SharedRouteAdapters``). Its own adapter, the primary and every non-satellite pass. The
+        target only exists at send time, so this check cannot move into the adapter map."""
+        profile_name = (profile or "").strip()
+        if not profile_name or profile_name == "default" or not self._is_shared_bot_satellite(profile_name):
+            return True
+        if platform in (self._profile_adapters_map().get(profile_name) or {}):
+            return True
+        from cron.scheduler_preflight import SharedRouteAdapters
+        routes = [r for r in getattr(self.config, "profile_routes", None) or []
+                  if r.enabled and r.profile == profile_name and r.bot_profile is None]
+        sentinel = object()
+        target = {"chat_id": str(chat_id or ""), "thread_id": str(thread_id) if thread_id else None}
+        return SharedRouteAdapters({platform: sentinel}, routes).get(platform, target) is sentinel
+
     def _routed_primary_adapter(self, source: Optional[SessionSource]):
         """The primary's transport for *source* when it is a routed destination of a shared-bot satellite.
 

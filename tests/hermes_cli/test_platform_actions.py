@@ -38,7 +38,7 @@ def _runner_with(adapters: dict):
     return patch("gateway.run._gateway_runner_ref", lambda: runner)
 
 
-def _multiplex_runner_with(*, default: dict, profiles: dict, active_profile: str = "default"):
+def _multiplex_runner_with(*, default: dict, profiles: dict, active_profile: str = "default", config=None):
     """A runner using the REAL GatewayAuthorizationMixin resolution ladder."""
     from gateway.authz_mixin import GatewayAuthorizationMixin
 
@@ -46,6 +46,8 @@ def _multiplex_runner_with(*, default: dict, profiles: dict, active_profile: str
     runner.adapters = default
     runner._profile_adapters = profiles
     runner._active_profile_name = lambda: active_profile
+    if config is not None:
+        runner.config = config
     return patch("gateway.run._gateway_runner_ref", lambda: runner)
 
 
@@ -304,6 +306,29 @@ class TestMultiplexProfileRouting:
             result = asyncio.run(actions.add_reaction("telegram", "1", "2", "x"))
         assert result["error"] == "adapter_not_registered"
         default_adapter._set_reaction.assert_not_awaited()
+
+    def test_shared_bot_satellite_acts_only_on_routed_chats(self, tmp_path):
+        """A bot-less satellite borrows the primary bot only for a chat a route maps to it (#147602)."""
+        from gateway.config import GatewayConfig
+        from gateway.profile_routing import parse_profile_routes
+
+        actions = PlatformActions("p")
+        primary = _telegram_adapter()
+        cfg = GatewayConfig()
+        cfg.multiplex_profiles = True
+        cfg.profile_routes = parse_profile_routes(
+            [{"name": "sec-room", "platform": "telegram", "profile": "sec", "chat_id": "100"}])
+        with (
+            _grant(True),
+            _multiplex_runner_with(default={Platform.TELEGRAM: primary}, profiles={"sec": {}}, config=cfg),
+            patch("hermes_cli.profiles.get_active_profile_name", return_value="sec"),
+            patch("gateway.run._multiplex_profile_homes", return_value=[("sec", tmp_path / "sec")]),
+        ):
+            assert asyncio.run(actions.add_reaction("telegram", "100", "2", "x"))["ok"] is True
+            primary._set_reaction.reset_mock()
+            result = asyncio.run(actions.add_reaction("telegram", "200", "2", "x"))
+        assert result["error"] == "adapter_not_registered"
+        primary._set_reaction.assert_not_awaited()
 
 
 class TestPluginContextWiring:

@@ -461,7 +461,10 @@ using the default listener's existing credentials.
   with `GH_TOKEN` / `GITHUB_TOKEN` from `profiles/coder/.env`. If coder has no
   adapter for that platform the delivery fails (502) rather than posting as
   another profile's bot; a default route likewise never borrows a platform that
-  is enabled only on a secondary profile.
+  is enabled only on a secondary profile. A shared-bot satellite (no bot of
+  its own, reached through `profile_routes`) delivers through the shared bot
+  only to a chat a route maps to it, the same rule as its cron jobs; any other
+  target, including an unrouted home channel, fails (502).
 - `/p/coder/api/platforms/<platform>/events` callbacks are verified and
   dispatched by coder's adapter; when coder has none the callback is a 503.
 

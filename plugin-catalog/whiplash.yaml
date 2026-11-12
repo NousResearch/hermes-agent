@@ -2,32 +2,7 @@ name: whiplash
 title: Whiplash
 repo: https://github.com/hejijunhao/whiplash
 sha: "3f4f883346167dfcb31e06d0fc5ac3cf57e0f1dd"
-description: >-
-  Let Hermes jam live on an Elektron Digitakt II over USB MIDI: genre/mood beats with MIDI clock, routed
-  onto a session kit map of what each track holds (tracks 1-16), in any key with chord progressions,
-  arranged into song sections (whiplash_arrange: intro, build, drop, outro on bar lines), written melodies
-  and rhythms, bar-quantized pattern switches with DJ-style transitions (filter swap, drop swap, riser),
-  track levels and pan with saved mixes (whiplash_mix), listening to the unit's real output over USB audio
-  (whiplash_listen: loudness, clipping, band balance, timing and kick offsets as numbers, never audio) with a
-  loudness guard that refuses level increases after clipping, a kit scan (whiplash_scan_kit: with the beat
-  stopped, one note per track, heard and classified into proposed kit-map labels that are never applied
-  without the user's yes), play along (whiplash_play_along / whiplash_follow: reads the unit's MIDI input to
-  show the user's knob moves, stop a ramp on a knob they grab, and answer phrases they play in key on another
-  track; whiplash_undo reverts the last part, mix or arrangement change), named sound parameters, clock-synced parameter ramps, live
-  fills/drops/density/swing/humanize, switching a track among samples already in the project pool, mutes
-  and tempo. Disclosure: controls MIDI hardware (MIDI Start also starts the unit's own sequencer; a
-  clock-only mode is available), can change which already-loaded sample a track plays, runs a background
-  sequencer thread while a pattern plays, and opens a virtual MIDI port named "Whiplash" when no Digitakt
-  is connected. Optional visualiser (whiplash_open_view): a read-only local web page served on 127.0.0.1 from
-  a background thread, opened in the default browser, showing the beat and the live Hermes conversation
-  (taken from in-memory observer hooks; nothing is stored). whiplash_listen opens an audio input (the Digitakt's
-  USB audio, or WHIPLASH_AUDIO_INPUT) only for the length of one call (at most 24 s), through the optional
-  numpy/sounddevice extra, which needs microphone permission on macOS; the audio is analysed in memory and
-  dropped. whiplash_scan_kit does the same for at most about 35 s and sends only note-on/off. whiplash_play_along
-  and whiplash_follow open the Digitakt's MIDI input (never another device) on a background reader thread that
-  only reads; what it hears is never sent back, and the session (notes and CCs sent and heard) is kept in memory
-  only, at most 65,536 events, never written to disk. Never sends SysEx or program changes; no file
-  transfer, project writes, shell or credentials, and no network beyond that localhost page.
+description: "Let Hermes jam live on an Elektron Digitakt II over USB MIDI: genre/mood beats with MIDI clock, routed onto a session kit map of what each track holds (tracks 1-16), in any key with chord progressions, arranged into song sections (whiplash_arrange: intro, build, drop, outro on bar lines), written melodies and rhythms, bar-quantized pattern switches with DJ-style transitions (filter swap, drop swap, riser), track levels and pan with saved mixes (whiplash_mix), listening to the unit's real output over USB audio (whiplash_listen: loudness, clipping, band balance, timing and kick offsets as numbers, never audio) with a loudness guard that refuses level increases after clipping, a kit scan (whiplash_scan_kit: with the beat stopped, one note per track, heard and classified into proposed kit-map labels that are never applied without the user's yes), play along (whiplash_play_along / whiplash_follow: reads the unit's MIDI input to show the user's knob moves, stop a ramp on a knob they grab, and answer phrases they play in key on another track; whiplash_undo reverts the last part, mix or arrangement change), named sound parameters, clock-synced parameter ramps, live fills/drops/density/swing/humanize, switching a track among samples already in the project pool, mutes and tempo. Disclosure — controls MIDI hardware (MIDI Start also starts the unit's own sequencer; a clock-only mode is available), can change which already-loaded sample a track plays, runs a background sequencer thread while a pattern plays, and opens a virtual MIDI port named \"Whiplash\" when no Digitakt is connected. Optional visualiser (whiplash_open_view): an unauthenticated read-only local web page served on 127.0.0.1 from a background thread, opened in the default browser, showing the beat and the live Hermes conversation including tool calls and results (taken from in-memory observer hooks; nothing is stored), readable by any local process while it is open. whiplash_listen opens an audio input (the Digitakt's USB audio by default, or WHIPLASH_AUDIO_INPUT or any input named in the tool call, which can be a microphone) only for the length of one call (at most 24 s), through the optional numpy/sounddevice extra, which needs microphone permission on macOS; the audio is analysed in memory and dropped. whiplash_scan_kit does the same for at most about 35 s and sends only note-on/off. whiplash_play_along and whiplash_follow open the Digitakt's MIDI input (never another device) on a background reader thread that only reads; what it hears is never sent back, and the session (notes and CCs sent and heard) is kept in memory only, at most 65,536 events, never written to disk. Never sends SysEx or program changes; no file transfer, project writes, shell or credentials, and no network beyond that localhost page."
 maintainer: pgbouncer
 tier: community
 category: tools

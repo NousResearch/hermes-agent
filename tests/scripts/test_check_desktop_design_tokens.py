@@ -133,3 +133,11 @@ def test_docs_tables_list_dark_and_light_values_per_token(tmp_path):
     assert "| `--portal-radius-card` | `4px` | ″ | Cards, tables, menus. |" in docs
     assert "| `--portal-shadow-floating` | `0 8px 24px var(--portal-raw-shadow-50)` | `none` |" in docs
     assert GUARD.docs_block(f"intro\n{docs}\noutro") == docs
+
+
+def test_a_tree_without_the_tokens_folder_has_nothing_to_judge(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(GUARD, "SRC", tmp_path / "apps" / "desktop" / "src")
+    monkeypatch.setattr(GUARD, "DESIGN_MD", tmp_path / "apps" / "desktop" / "DESIGN.md")
+
+    assert GUARD.main([]) == 0
+    assert "nothing to check" in capsys.readouterr().out

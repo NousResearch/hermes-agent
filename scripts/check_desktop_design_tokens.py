@@ -426,6 +426,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--write-docs", action="store_true", help="regenerate DESIGN.md token tables")
     args = parser.parse_args(argv)
 
+    # A tree without the redesign's tokens folder (a partial checkout, a hook's snapshot of an older
+    # commit) has nothing to judge.
+    if not (SRC / TOKENS).is_dir():
+        print("desktop design tokens: no tokens folder in this tree, nothing to check")
+        return 0
+
     found = collect(SRC)
     counts: dict[str, int] = {}
     for f in found:

@@ -30,6 +30,7 @@ _GUARD_SCRIPTS = (
     "scripts/check_profile_create_entry.py", "scripts/ci/check_os_marker_fakes.py", "scripts/check-case-collisions.py",
     "scripts/ci/check_lazy_deps_imports.py", "scripts/ci/check_profile_archive_boundary.py",
     "scripts/ci/check_agents_md_size.py", "scripts/ci/check_blob_size.py", "scripts/ci/check_line_endings.py",
+    "scripts/check_desktop_design_tokens.py",
 )
 _SUPPORT = ("scripts/ci/profile_scope_patterns.json", "scripts/install_root_lint_baseline.json", "agent/subdirectory_hints.py", *_GUARD_SCRIPTS)
 # The config guards fail when a tree they scan is missing, so the fixture carries an empty stand-in.

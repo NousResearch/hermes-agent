@@ -21,9 +21,11 @@ from hermes_cli.web_deps import late
 from hermes_cli.web_server_mcp import _mcp_oauth_flows, _mcp_server_summary, normalize_mcp_server_create
 from hermes_cli.web_models import MCPCatalogInstall, MCPEnabledToggle, MCPServerCreate, MCPServersReplace
 from hermes_cli.web_routers._common import (
-    _profile_cli_args, _profile_scope, _spawn_hermes_action, config_write_scope, http_failure,
+    _profile_cli_args, _profile_scope, _spawn_hermes_action, config_failure_http, config_write_scope, http_failure,
     log as _log, scoped_to_thread,
 )
+
+from hermes_cli.config_backend import ConfigWriteError
 
 router = APIRouter()
 
@@ -151,6 +153,8 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
         await asyncio.to_thread(_run)
     except HTTPException:
         raise
+    except ConfigWriteError as exc:
+        raise config_failure_http(exc) from exc
     except Exception as exc:
         _log.exception("POST /api/mcp/servers failed")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -533,6 +537,8 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
         )
     except HTTPException:
         raise
+    except ConfigWriteError as exc:
+        raise config_failure_http(exc) from exc
     except Exception as exc:
         _log.exception("install_mcp_catalog_entry failed")
         raise HTTPException(status_code=400, detail=str(exc))

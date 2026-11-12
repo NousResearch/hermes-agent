@@ -25,6 +25,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Optional
 
+from hermes_cli.config_backend import ConfigWriteError
+from hermes_cli.config_worker_save import USER_CONFIG_IGNORED, saving_raw_file
+
 logger = logging.getLogger(__name__)
 
 # ``create_profile`` stages in ``profiles/.<name>.staging-<pid>``, so two in-process creates of one
@@ -239,6 +242,11 @@ def provision_profile(request: ProfileCreateRequest) -> ProvisionResult:
     def step(label: str, fn: Callable[[], Any], default: Any = None) -> Any:
         try:
             return fn()
+        except ConfigWriteError as exc:
+            logger.warning("profile %s: %s config save failed", request.name, label, exc_info=True)
+            detail = str(exc) if exc.code == USER_CONFIG_IGNORED else "Configuration could not be saved."
+            result.warnings.append(f"{label}: {detail}")
+            return default
         except Exception as exc:
             logger.warning("profile %s: %s failed", request.name, label, exc_info=True)
             result.warnings.append(f"{label}: {exc}")
@@ -435,7 +443,8 @@ def _mirror_voice_sections(path: Path) -> bool:
         profile_raw = read_user_config_raw() or {}
         missing = {k: v for k, v in sections.items() if k not in profile_raw}
         if missing:
-            save_config({**profile_raw, **missing})
+            with saving_raw_file():
+                save_config({**profile_raw, **missing})
     return bool(missing)
 
 
@@ -457,7 +466,8 @@ def inherit_launch_model(path: Path) -> bool:
     seed = launch_model_seed(read_user_config_raw())
     if seed.get("providers") or seed.get("custom_providers"):
         with profile_config_scope(path), CONFIG_MUTATION_LOCK:
-            save_config(merge_endpoint_seed(read_user_config_raw(), seed))
+            with saving_raw_file():
+                save_config(merge_endpoint_seed(read_user_config_raw(), seed))
     # Validation needs the expanded base_url; the profile then gets back the launch file's ${VAR} spelling.
     write_profile_model(path, str(model_cfg["provider"]), str(model_cfg["default"]),
                          base_url=str(model_cfg.get("base_url") or ""))
@@ -467,7 +477,8 @@ def inherit_launch_model(path: Path) -> bool:
             cfg = read_user_config_raw() or {}
             if isinstance(cfg.get("model"), dict) and cfg["model"].get("base_url") == model_cfg.get("base_url"):
                 cfg["model"]["base_url"] = raw_url
-                save_config(cfg)
+                with saving_raw_file():
+                    save_config(cfg)
     return True
 
 

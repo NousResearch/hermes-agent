@@ -22,8 +22,8 @@ from hermes_cli.web_server_memory import (
     _coerce_bool, _field_default, _field_is_set, _field_value, _field_visible, _load_memory_provider, _memory_provider_manifest, _memory_provider_setup_info, _memory_provider_setup_manifest, _normalize_memory_provider_schema, _read_memory_provider_existing_values, _require_memory_provider_ready, _run_setup_command,
 )
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
-from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-from hermes_cli.web_routers._common import scoped_to_thread
+from hermes_cli.config_backend import CONFIG_MUTATION_LOCK, ConfigWriteError
+from hermes_cli.web_routers._common import config_failure_http, scoped_to_thread
 from plugins.memory.config_schema import (
     STORAGE_FLAT_JSON, STORAGE_PROVIDER, ProviderConfigSchema, ProviderField, get_provider_config_schema,
 )
@@ -59,6 +59,8 @@ def _value_errors_as_http(log_msg: str, name: str, *, passthrough_http: bool = T
             raise
         _log.exception(log_msg, name)
         raise HTTPException(status_code=500, detail="Internal server error")
+    except ConfigWriteError as exc:
+        raise config_failure_http(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception:

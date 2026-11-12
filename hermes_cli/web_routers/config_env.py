@@ -132,6 +132,9 @@ async def update_config(
             with CONFIG_MUTATION_LOCK:
                 # Strict read: the merge below builds a new dict, so a swallowed read error here
                 # would save the PUT body alone over the whole file.
+                from hermes_cli.config import get_config_path
+                from hermes_cli.config_worker_save import refuse_ignored_whole_file_save
+                refuse_ignored_whole_file_save(get_config_path(), merge_existing=False)
                 existing = require_readable_config_before_write()
                 incoming = _denormalize_config_from_web(body.config)
                 merged = _deep_merge(existing, incoming)

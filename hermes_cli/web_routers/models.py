@@ -370,7 +370,9 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                 updated["moa"]["presets"] = {
                     name: merged_presets[name] for name in normalized["presets"]
                 }
-            save_config(updated)
+            from hermes_cli.config_worker_save import saving_raw_file
+            with saving_raw_file():
+                save_config(updated)
             return {"ok": True, **normalized}
 
 

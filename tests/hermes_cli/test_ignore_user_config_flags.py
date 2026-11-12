@@ -373,7 +373,7 @@ class TestRefusalReachesTheUserCleanly:
         return client
 
     @pytest.mark.parametrize("method_path_body", [
-        ("/api/config/raw", {"yaml_text": "display:\n  skin: mono\n"}),
+        ("/api/config", {"config": {"display": {"skin": "mono"}}}),
         ("/api/skills/toggle", {"name": "some-skill", "enabled": False}),
     ])
     def test_a_dashboard_whole_file_save_is_a_409(self, tmp_path, monkeypatch, method_path_body):
@@ -410,12 +410,34 @@ class TestRefusalReachesTheUserCleanly:
         assert "Traceback" not in err
         assert path.read_bytes() == before
 
-    def test_the_bare_chat_path_reports_a_refusal_the_same_way(self, capsys):
-        """``hermes`` with no subcommand runs chat inside the same reporter as every subcommand."""
+    def test_the_bare_chat_path_reports_a_refusal_the_same_way(self, tmp_path, monkeypatch, capsys):
+        """Drive main -> no-subcommand dispatch -> _default_to_chat; only the provider launch and
+        host maintenance are stubbed, not the dispatch or its error reporter."""
+        import sys
+        import hermes_cli.main as main_mod
         from hermes_cli.config_backend import ConfigWriteError
-        from hermes_cli.main_dispatch import config_refusals_reported
 
-        with pytest.raises(SystemExit) as exit_, config_refusals_reported():
+        self._home(tmp_path, monkeypatch)
+        for name in ("_try_termux_fast_tui_launch", "_try_termux_fast_cli_launch",
+                     "_try_fast_serve_launch", "_try_fast_chat_launch"):
+            monkeypatch.setattr(main_mod, name, lambda: False)
+        for name in ("_set_process_title", "_warn_if_unsupervised_pid1", "_advertise_agent_env",
+                     "_cleanup_quarantined_exes", "_sweep_stale_bytecode_if_checkout_changed",
+                     "_recover_update_debts_on_startup", "_prepare_agent_startup"):
+            monkeypatch.setattr(main_mod, name, lambda *args: None)
+        monkeypatch.setattr("hermes_cli.boot_bootstrap.maybe_run_boot_bootstrap", lambda *args: None)
+        monkeypatch.setattr("hermes_cli.venv_sync.check_runtime", lambda *args: None)
+        monkeypatch.setattr("hermes_cli.config.get_container_exec_info", lambda: None)
+        called = []
+
+        def refuse(args):
+            called.append(args.command)
             raise ConfigWriteError("not saved", code="config_user_ignored")
+
+        monkeypatch.setattr(main_mod, "cmd_chat", refuse)
+        monkeypatch.setattr(sys, "argv", ["hermes"])
+        with pytest.raises(SystemExit) as exit_:
+            main_mod.main()
+        assert called == [None]
         assert exit_.value.code == 1
-        assert capsys.readouterr().err == "Error: not saved\n"
+        assert "Error: not saved\n" in capsys.readouterr().err

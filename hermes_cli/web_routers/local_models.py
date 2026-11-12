@@ -30,8 +30,8 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from hermes_cli import config as config_mod, web_deps
-from hermes_cli.config_backend import CONFIG_MUTATION_LOCK
-from hermes_cli.web_routers._common import _config_profile_scope
+from hermes_cli.config_backend import CONFIG_MUTATION_LOCK, ConfigWriteError
+from hermes_cli.web_routers._common import _config_profile_scope, config_failure_http
 from hermes_cli.local_runtime import (
     binaries, bootstrap, catalog, context_policy, estimator, growth, hardware, hf_browse,
     load_progress, presets, supervisor,
@@ -239,6 +239,9 @@ def _spawn_job(job: dict[str, Any], name: str, body: Callable[[], None], *, fail
                 _refresh_runtime("post-download runtime refresh skipped")
         except DownloadPaused:
             status = "paused"
+        except ConfigWriteError as exc:
+            status = "error"
+            job["error"] = config_failure_http(exc).detail
         except Exception as exc:
             if fail_msg:
                 logger.warning(fail_msg, exc)
@@ -937,6 +940,8 @@ async def local_models_server(body: ServerActionBody):
         await asyncio.to_thread(_SERVER_ACTIONS[action])
     except HTTPException:
         raise
+    except ConfigWriteError as exc:
+        raise config_failure_http(exc) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {"ok": True, "action": action}

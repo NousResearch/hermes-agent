@@ -102,6 +102,15 @@ def config_refusal_http(exc: ConfigWriteError) -> Optional[HTTPException]:
     return None
 
 
+def config_failure_http(exc: ConfigWriteError) -> HTTPException:
+    """Preserve expected refusals; never expose unexpected backend error text to a client."""
+    refusal = config_refusal_http(exc)
+    if refusal is not None:
+        return refusal
+    log.error("Unexpected config write failure", exc_info=(type(exc), exc, exc.__traceback__))
+    return HTTPException(status_code=500, detail="Internal server error")
+
+
 @contextlib.contextmanager
 def http_failure(log_msg: str, status: int, prefix: Optional[str] = None, *, detail: Optional[str] = None):
     """Map unexpected exceptions to an ``HTTPException``.
@@ -116,11 +125,7 @@ def http_failure(log_msg: str, status: int, prefix: Optional[str] = None, *, det
     except HTTPException:
         raise
     except ConfigWriteError as exc:
-        refusal = config_refusal_http(exc)
-        if refusal is None:
-            log.exception(log_msg)
-            raise HTTPException(status_code=status, detail=detail if detail is not None else f"{prefix}: {exc}")
-        raise refusal from exc
+        raise config_failure_http(exc) from exc
     except Exception as exc:
         log.exception(log_msg)
         raise HTTPException(status_code=status, detail=detail if detail is not None else f"{prefix}: {exc}")

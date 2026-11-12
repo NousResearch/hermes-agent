@@ -31,6 +31,8 @@ from fastapi import APIRouter, HTTPException, Query
 from hermes_cli.session_listing import subagent_listing_scope
 from hermes_cli.web_deps import late
 from hermes_cli.config import get_process_hermes_home
+from hermes_cli.config_backend import ConfigWriteError
+from hermes_cli.web_routers._common import config_failure_http
 from hermes_cli.profiles import ProfileIdentitySettlementPending
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_profiles import (
@@ -119,6 +121,8 @@ def _profile_errors(log_msg: str, *args, not_found=(FileNotFoundError,),
         yield
     except HTTPException:
         raise
+    except ConfigWriteError as exc:
+        raise config_failure_http(exc) from exc
     except not_found as e:
         raise HTTPException(status_code=404, detail=str(e))
     except bad_request as e:

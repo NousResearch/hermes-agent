@@ -21,7 +21,8 @@ from typing import Any, Iterator
 USER_CONFIG_IGNORED = "config_user_ignored"
 USER_CONFIG_IGNORED_MESSAGE = (
     "This change was not saved: --ignore-user-config is set, so the loaded config is defaults, "
-    "not your file. Single settings (`hermes config set`) still save.")
+    "not your file. Explicit single-setting edits and raw-file edits remain available "
+    "when the file can be read.")
 
 _SAVING_RAW_FILE: contextvars.ContextVar[bool] = contextvars.ContextVar("hermes_saving_raw_file", default=False)
 

@@ -209,6 +209,18 @@ def _get_pty_active_session_files(app: FastAPI) -> dict[str, Path]:
 
 app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=app_lifespan)
 
+
+async def _config_write_error_response(request, exc):
+    from starlette.responses import JSONResponse
+    from hermes_cli.web_routers._common import config_failure_http
+
+    failure = config_failure_http(exc)
+    return JSONResponse(status_code=failure.status_code, content={"detail": failure.detail})
+
+
+from hermes_cli.config_backend import ConfigWriteError
+app.add_exception_handler(ConfigWriteError, _config_write_error_response)
+
 from hermes_cli.dashboard_auth.body_limit import AuthBodyLimitMiddleware
 
 # Register first (innermost): auth gates run before this, JSON parsing after it.

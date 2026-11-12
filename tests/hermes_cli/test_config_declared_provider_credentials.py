@@ -130,3 +130,56 @@ def test_fast_model_catalog_sends_the_declared_credential(hermes_home, monkeypat
 
     assert aux._fast_model_from_catalog(PROVIDER) == "proxy-small-mini"
     assert seen == ["Bearer sk-declared-catalog"]
+
+
+@pytest.fixture
+def two_catalog_servers():
+    """Two real loopback ``/v1/models`` servers; each records the Authorization it received."""
+    import http.server
+    import threading
+
+    servers = []
+    for _ in range(2):
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            seen: list[str | None] = []
+
+            def do_GET(self):
+                type(self).seen.append(self.headers.get("Authorization"))
+                body = json.dumps({"data": [{"id": "relay-mini"}]}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+    yield [(f"http://127.0.0.1:{s.server_port}/v1", s.RequestHandlerClass.seen) for s in servers]
+    for server in servers:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("same_origin", [True, False])
+def test_relay_probe_sends_declared_key_only_to_its_own_origin(
+        hermes_home, monkeypatch, two_catalog_servers, same_origin):
+    """The picker's relay probe hits ``model.base_url``. The declared key belongs to
+    ``providers.<id>.base_url``, and inference resolves there, so a stale or edited
+    ``model.base_url`` on another origin is probed keyless, never with that key."""
+    (url_a, seen_a), (url_b, seen_b) = two_catalog_servers
+    monkeypatch.setenv("ROUTE_KEY", "route-key-secret")
+    probed_url, seen = (url_a, seen_a) if same_origin else (url_b, seen_b)
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+        "model": {"default": "my-combo", "provider": PROVIDER, "base_url": probed_url},
+        "providers": {PROVIDER: {"name": "my proxy", "base_url": url_a, "key_env": "ROUTE_KEY"}},
+    }), encoding="utf-8")
+
+    assert models_mod.provider_model_ids(PROVIDER, force_refresh=True) == ["relay-mini"]
+
+    assert seen == (["Bearer route-key-secret"] if same_origin else [None])
+    if not same_origin:
+        assert seen_a == []

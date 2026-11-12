@@ -80,3 +80,19 @@ def resolve_declared_api_key_provider(provider_id: str) -> dict[str, Any]:
     return {
         "provider": provider_id, "api_key": api_key, "base_url": base_url,
         "source": source}
+
+
+def relay_probe_api_key(provider_id: str, relay: str, api_key: str, cred_base_url: str) -> str:
+    """*api_key* when it may ride a catalog probe of *relay*, else ``""`` (probe keyless).
+
+    A registry provider's key is meant for the relay: inference sends it there too (#121387). A
+    declared ``providers.<id>`` key belongs to that entry's own base_url, which is where inference
+    resolves, so a ``model.base_url`` on another origin (stale or edited) must not receive it.
+    """
+    from hermes_cli.auth import is_known_auth_provider
+    from utils import base_url_origin
+
+    if not api_key or is_known_auth_provider(provider_id):
+        return api_key
+    origin = base_url_origin(relay)
+    return api_key if origin[1] and origin == base_url_origin(cred_base_url) else ""

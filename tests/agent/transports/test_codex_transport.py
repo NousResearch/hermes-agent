@@ -1866,6 +1866,21 @@ class TestCodexTransportXaiServiceTierStrip:
 
         assert kw.get("service_tier") == "priority"
 
+    @pytest.mark.parametrize("model", ["grok-4.5", "x-ai/grok-4.5"])
+    def test_grok_45_preserves_priority_service_tier(self, transport, model):
+        """Grok 4.5 accepts Priority Processing but still tops out at high effort."""
+        kw = transport.build_kwargs(
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": "xhigh"},
+            request_overrides={"service_tier": "priority"},
+        )
+
+        assert kw.get("service_tier") == "priority"
+        assert kw["reasoning"] == {"effort": "high"}
+
     def test_grok_47_strips_non_priority_service_tier(self, transport):
         kw = transport.build_kwargs(
             model="grok-4.7",

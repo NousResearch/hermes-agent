@@ -398,16 +398,26 @@ def is_grok_46_family(model: str) -> bool:
     return name == "grok-4.6" or name.startswith("grok-4.6-")
 
 
-# Grok families that accept the xhigh effort rung AND ``service_tier: "priority"`` on xAI's
-# /v1/responses (verified live: grok-4.7 echoes ``reasoning.effort`` low..xhigh and returns
-# ``service_tier: "priority"``; /v1/language-models lists low/medium/high/xhigh, default high).
-_GROK_PRIORITY_FAMILIES = ("grok-4.6", "grok-4.7")
+# Grok families that accept ``service_tier: "priority"`` on xAI's /v1/responses (verified live:
+# grok-4.5/4.6/4.7 return ``service_tier: "priority"`` when asked, ``default`` otherwise).
+_GROK_PRIORITY_FAMILIES = ("grok-4.5", "grok-4.6", "grok-4.7")
+# Subset that also accepts the xhigh effort rung (/v1/language-models lists low/medium/high/xhigh).
+_GROK_XHIGH_FAMILIES = ("grok-4.6", "grok-4.7")
+
+
+def _grok_family_in(model: str, families: tuple[str, ...]) -> bool:
+    name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
+    return any(name == fam or name.startswith(fam + "-") for fam in families)
 
 
 def is_grok_priority_family(model: str) -> bool:
-    """Grok 4.6+ family: xhigh effort rung and Priority Processing on api.x.ai."""
-    name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
-    return any(name == fam or name.startswith(fam + "-") for fam in _GROK_PRIORITY_FAMILIES)
+    """Grok 4.5+ family: Priority Processing on api.x.ai."""
+    return _grok_family_in(model, _GROK_PRIORITY_FAMILIES)
+
+
+def is_grok_xhigh_family(model: str) -> bool:
+    """Grok 4.6+ family: accepts the xhigh effort rung on api.x.ai."""
+    return _grok_family_in(model, _GROK_XHIGH_FAMILIES)
 
 
 # Claude models that accept ``speed: "fast"`` (https://platform.claude.com/docs/en/build-with-claude/fast-mode).

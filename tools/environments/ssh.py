@@ -56,7 +56,9 @@ def _is_private_runtime_dir(path: str) -> bool:
     test the gateway's control socket applies: an inherited or mis-set value naming a shared dir must
     not host a ``hermes-ssh`` leaf another user could create first."""
     try:
-        st = os.lstat(path)
+        # Path drops trailing / and /. before lstat (which would otherwise follow a symlink),
+        # while retaining .. components so lstat checks the actual traversed directory.
+        st = Path(path).lstat()
     except OSError:
         return False
     return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077  # windows-footgun: ok — POSIX only (_SSH_MULTIPLEX)

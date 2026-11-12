@@ -6,6 +6,8 @@ takes the SSH backend down (#80284, #133436). ``tmp_path`` stands in for the sha
 import gc
 import os
 import stat
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -188,3 +190,31 @@ def test_shared_xdg_runtime_dir_is_not_trusted(shared_root, tmp_path, monkeypatc
 
     assert not (xdg / "hermes-ssh").exists()
     assert control_dir == shared_root / f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — posix-only test
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("suffix", ["/", "/."])
+def test_trailing_component_does_not_trust_symlinked_xdg_runtime_dir(monkeypatch, suffix):
+    """POSIX lstat() follows a final symlink with / or /. appended; a mutable
+    shared-parent link must not masquerade as a real private runtime directory."""
+    # Keep both candidates under the actual 64-byte macOS ControlPath budget.
+    with tempfile.TemporaryDirectory(prefix="hxdg-", dir="/tmp") as root_name:
+        root = Path(root_name)
+        private = root / "private"
+        private.mkdir(mode=0o700)
+        private.chmod(0o700)
+        link = root / "runtime-link"
+        link.symlink_to(private, target_is_directory=True)
+        monkeypatch.setenv("XDG_RUNTIME_DIR", f"{link}{suffix}")
+        monkeypatch.setattr(ssh_mod, "socket_safe_tmpdir", lambda: str(root))
+        monkeypatch.setattr(ssh_mod, "_SHORT_TMP_ROOT", str(root))
+        monkeypatch.setattr(ssh_mod, "_ensure_ssh_available", lambda: None)
+        monkeypatch.setattr(ssh_mod.SSHEnvironment, "_establish_connection", lambda self: None)
+        assert len(os.fsencode(link / "hermes-ssh")) <= ssh_mod._CONTROL_DIR_MAX_BYTES
+
+        env = ssh_mod.SSHEnvironment(host="h", user="u", probe_only=True)
+        try:
+            assert env.control_dir == root / f"hermes-ssh-{os.getuid()}"  # windows-footgun: ok — posix-only test
+            assert not (private / "hermes-ssh").exists()
+        finally:
+            env.cleanup()

@@ -83,6 +83,27 @@ def profile_gateway_restart_env(home: Optional[str]) -> Optional[dict[str, str]]
     return env
 
 
+def pin_host_profile_selector(argv: list[str]) -> list[str]:
+    """Insert ``--profile default`` before the ``gateway`` subcommand when a host respawn names no profile.
+
+    A selector-less ``gateway run`` resolves its home from the sticky ``active_profile`` (#22502) unless a
+    supervisor marker is set, and the restart watcher sets none (and now sheds them). With ``hermes profile
+    use <named>`` in effect the respawned host re-homed into that profile and was refused ("Profile '<named>'
+    does not get a gateway of its own"), so ``hermes update`` left the multiplex host down (#132645).
+    """
+    if any(part in ("--profile", "-p") or part.startswith("--profile=") for part in argv) or "gateway" not in argv:
+        return list(argv)
+    idx = argv.index("gateway")
+    return [*argv[:idx], "--profile", "default", *argv[idx:]]
+
+
+def settle_host_respawn(argv: list[str], host: Optional[bool], classify) -> tuple[list[str], bool]:
+    """``(argv, host)`` for a watcher respawn: *host* settled by the caller, else by *classify(argv)*; a host
+    argv carries ``--profile default`` so the respawn never follows the sticky ``active_profile``."""
+    host = classify(argv) if host is None else host
+    return (pin_host_profile_selector(argv) if host else list(argv)), host
+
+
 def restart_watcher_env(run_argv: list[str], *, host: bool, home: Optional[str]) -> dict[str, str]:
     """The watcher's ``env=``. Every respawn sheds the supervisor markers, the launcher's own profile
     included: an update armed under a systemd unit carries its ``INVOCATION_ID``, and a respawn holding

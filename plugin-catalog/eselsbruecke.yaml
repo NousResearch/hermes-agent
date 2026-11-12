@@ -2,11 +2,7 @@ name: eselsbruecke
 title: Eselsbrücke
 repo: https://github.com/studioluftbruecke/hermes-eselsbruecke
 sha: 9a67182b7d03595680c52340c5d105541458a839
-description: >-
-  A helper toolbox for Hermes with tools you switch on and off: a today pad, a pomodoro, a billable
-  time log, a formatter, a colour picker and small tools, which your agent can call for exact
-  answers. Disclosure: no network calls beyond your own Hermes backend, local files only, an
-  optional per-minute alert job (off by default), no credentials, no telemetry.
+description: "A helper toolbox for Hermes with tools you switch on and off: a today pad, a pomodoro, a billable time log, a formatter, a colour picker and small tools, which your agent can call for exact answers. Disclosure — local files only, no credentials, no telemetry. The optional \"Alerts while Desktop is closed\" switch (off by default) writes `scripts/eselsbruecke_alerts.py` into your Hermes profile and adds a no-model Hermes job, `eselsbruecke-alerts`, that runs every minute and delivers due timer and reminder alerts to all of the profile's home channels."
 maintainer: studioluftbruecke
 tier: community
 category: desktop

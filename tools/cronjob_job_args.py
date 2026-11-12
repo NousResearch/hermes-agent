@@ -69,6 +69,25 @@ def _origin_from_env(
     # fire (#69304). No origin => the home-channel fallback + creation-time notice apply.
     if not async_delivery_supported():
         return None
+    # A session can declare async delivery yet bind a platform that is only its own identity,
+    # not a real transport: WebUI sets HERMES_SESSION_PLATFORM='webui' and is NOT stateless, so
+    # the guard above passes it. Fire-time delivery resolves each target with
+    # ``Platform(platform_name.lower())`` (cron/scheduler_delivery.py) and records
+    # ``unknown platform '<name>'`` for anything that raises — 'webui' is neither a Platform
+    # member nor a registered plugin adapter, so a 'webui' origin fails on EVERY fire with no
+    # warning. Validate through that SAME Platform resolution (static members + dynamically
+    # registered plugin adapters) and drop unresolvable ones, so the job falls back to the home
+    # channel + creation-time notice instead of carrying a guaranteed-to-fail origin.
+    from gateway.config import Platform
+    try:
+        Platform(str(origin_platform).lower())
+    except (ValueError, KeyError):
+        logger.debug(
+            "Cron origin: platform %r is not a resolvable Platform (no delivery adapter); "
+            "dropping origin so deliver=origin falls back to the home channel",
+            origin_platform,
+        )
+        return None
     thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
     # Slack stamps every TOP-LEVEL message's own id as the session thread (a per-message
     # KEY, not a location); persisting it would pin all future deliveries inside an

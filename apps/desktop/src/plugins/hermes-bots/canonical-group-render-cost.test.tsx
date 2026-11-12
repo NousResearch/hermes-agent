@@ -1,7 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
-import { type ComponentProps, useLayoutEffect, useRef } from 'react'
+import type { ComponentProps } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import type * as History from './canonical-group-history'
@@ -195,28 +195,18 @@ it('ticks every busy part of one member on one clock: the chip and its details r
 })
 
 
-it('shows a chip that turns busy with its real elapsed time on its first busy render', async () => {
-  // The chip alone, so its very first busy render is the one asserted (no poll or effect in between).
+it('shows a chip that turns busy with fresh elapsed time before its first busy paint', async () => {
   const { MemberStatusChip } = await import('./group-room-ui')
   const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
   vi.setSystemTime(new Date(3_000_000_000))
   const labels = CANONICAL_GROUP_LOCALES.en as never
 
-  const painted: string[] = []
-
-  // A layout effect sees each committed frame before passive effects (the clock's setState) can fix it up.
-  const Probe = ({ status }: { status: Parameters<typeof MemberStatusChip>[0]['status'] }) => {
-    const box = useRef<HTMLDivElement>(null)
-    useLayoutEffect(() => { painted.push(box.current?.textContent ?? '') })
-
-    return <div ref={box}><MemberStatusChip avatar={null} labels={labels} name="Ops" status={status} /></div>
-  }
-
-  const view = render(<Probe status={{ kind: 'idle' }} />)
+  const view = render(<ul><MemberStatusChip avatar={null} labels={labels} name="Ops" status={{ kind: 'idle' }} /></ul>)
   vi.setSystemTime(new Date(3_000_090_000))  // 90 s later, with no tick on the idle chip
-  view.rerender(<Probe status={{ kind: 'working', startedAt: 3_000_060 }} />)
-  expect(painted.at(-1)).toContain('30s')  // the first busy frame, not a frozen idle-time clock
+  view.rerender(<ul><MemberStatusChip avatar={null} labels={labels} name="Ops" status={{ kind: 'working', startedAt: 3_000_060 }} /></ul>)
+  // Layout activation refreshes the shared snapshot and this leaf synchronously before browser paint.
+  expect(view.container.textContent).toContain('30s')
 })
 
 it('turns a requested Stop into stopped when the state confirms it, with the same log and no live rows', async () => {
@@ -279,4 +269,41 @@ it('synchronises existing busy views when another mounts across a second boundar
   expect(vi.getTimerCount()).toBe(1)
   second.rerender(<ul><MemberStatusChip {...props} status={{ kind: 'queued' }} /></ul>)
   expect(vi.getTimerCount()).toBe(0)
+})
+
+it('keeps existing subscribers on the published second during independent renders', async () => {
+  const { MemberStatusChip } = await import('./group-room-ui')
+  const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+  const start = 5_000_000
+  vi.setSystemTime(new Date((start + 119.9) * 1000))
+
+  const props = { avatar: null, name: 'Ops', labels: CANONICAL_GROUP_LOCALES.en as never,
+    status: { kind: 'working' as const, startedAt: start, lastSignAt: start } }
+
+  const first = render(<ul><MemberStatusChip {...props} /></ul>)
+  const second = render(<ul><MemberStatusChip {...props} /></ul>)
+  const kinds = () => [first, second].map(view => view.container.querySelector('li')?.getAttribute('data-member-status'))
+  await act(async () => { vi.advanceTimersByTime(200) })
+  first.rerender(<ul><MemberStatusChip {...props} name="Ops updated" /></ul>)
+  expect(kinds()).toEqual(['working', 'working'])
+  await act(async () => { vi.advanceTimersByTime(800) })
+  expect(kinds()).toEqual(['stalled', 'stalled'])
+})
+
+it('preserves fractional start and progress times through elapsed, stall and recovery', async () => {
+  const { MemberStatusChip } = await import('./group-room-ui')
+  const { CANONICAL_GROUP_LOCALES } = await import('./canonical-group-locales')
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'] })
+  vi.setSystemTime(new Date(1_030_900))
+  const props = { avatar: null, name: 'Ops', labels: CANONICAL_GROUP_LOCALES.en as never }
+
+  const view = render(<ul><MemberStatusChip {...props} status={{ kind: 'working', startedAt: 1000.1, lastSignAt: 1000.1 }} /></ul>)
+  expect(view.container.textContent).toContain('30s')
+  await act(async () => { vi.advanceTimersByTime(90_000) })
+  expect(view.container.querySelector('li')?.getAttribute('data-member-status')).toBe('stalled')
+  expect(view.container.textContent).toContain('2m00s')
+  view.rerender(<ul><MemberStatusChip {...props} status={{ kind: 'working', startedAt: 1000.1, lastSignAt: 1120.9 }} /></ul>)
+  expect(view.container.querySelector('li')?.getAttribute('data-member-status')).toBe('working')
+  expect(view.container.textContent).toContain('2m00s')
 })

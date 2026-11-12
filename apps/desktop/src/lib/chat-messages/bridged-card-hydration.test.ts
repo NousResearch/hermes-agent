@@ -16,7 +16,11 @@ function bridgedRow(name: string, args: Record<string, unknown>): SessionMessage
     role: 'assistant',
     timestamp: 2,
     tool_calls: [
-      { function: { arguments: JSON.stringify({ calls: [{ arguments: args, name }] }), name: 'tool_call' }, id: 'call_1', type: 'function' }
+      {
+        function: { arguments: JSON.stringify({ calls: [{ arguments: args, name }] }), name: 'tool_call' },
+        id: 'call_1',
+        type: 'function'
+      }
     ]
   } as SessionMessage
 }
@@ -51,7 +55,10 @@ describe('a card tool reached through the tool_call bridge', () => {
       toolCallId: 'call_1'
     }
 
-    const projected = projectPendingConnection(toChatMessages([user, bridgedRow('manage_connections', install)]), request)
+    const projected = projectPendingConnection(
+      toChatMessages([user, bridgedRow('manage_connections', install)]),
+      request
+    )
 
     expect(partsWithId(projected!.messages).map(part => part.toolName)).toEqual(['manage_connections'])
   })

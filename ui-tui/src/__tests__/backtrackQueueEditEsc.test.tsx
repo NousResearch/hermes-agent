@@ -35,6 +35,7 @@ class FakeInput extends EventEmitter {
 }
 
 const wait = () => new Promise(resolve => setTimeout(resolve, 70))
+
 let unmount = () => {}
 
 beforeEach(() => {
@@ -75,7 +76,12 @@ function mount(queueEditIdx: null | number) {
     return null
   }
 
-  const instance = renderSync(<Harness />, { exitOnCtrlC: false, patchConsole: false, stdin: stdin as any, stdout: stdout as any })
+  const instance = renderSync(<Harness />, {
+    exitOnCtrlC: false,
+    patchConsole: false,
+    stdin: stdin as any,
+    stdout: stdout as any
+  })
 
   unmount = () => instance.unmount()
 

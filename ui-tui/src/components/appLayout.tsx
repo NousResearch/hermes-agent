@@ -388,7 +388,13 @@ const ComposerPane = memo(function ComposerPane({
     height: inputHeight,
     rows: inputRows,
     scroll: inputScroll
-  } = composerViewport(composer.input, inputSel, inputColumns, composer.pasteHint === 'collapse', composer.pagerPageSize)
+  } = composerViewport(
+    composer.input,
+    inputSel,
+    inputColumns,
+    composer.pasteHint === 'collapse',
+    composer.pagerPageSize
+  )
 
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
@@ -523,26 +529,26 @@ const ComposerPane = memo(function ComposerPane({
 
               <Box flexGrow={0} flexShrink={0} height={inputRows} overflow="hidden" width={inputColumns}>
                 <Box flexShrink={0} height={inputHeight} marginTop={-inputScroll} width={inputColumns}>
-                {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
-                <TextInput
-                  accentColor={ui.theme.color.accent}
-                  color={ui.theme.color.text}
-                  columns={inputColumns}
-                  cursorSnapshotRef={cursorSnapshotRef}
-                  mouseApiRef={inputMouseRef}
-                  onChange={composer.updateInput}
-                  onPaste={composer.handleTextPaste}
-                  onSubmit={composer.submit}
-                  placeholder={composerHint(voicePartial, composer.empty, ui.busy ? T.composer.interruptHint : '')}
-                  // Exactly the "(and N more toolsets…)" tone. `muted` is a
-                  // MID-luminance family tone, so it reads receded on both
-                  // poles even when polarity detection is wrong (transparent
-                  // terminals lie about their background); anything blended
-                  // toward the resolved surface inherits that wrong polarity.
-                  placeholderColor={ui.theme.color.muted}
-                  value={composer.input}
-                  voiceRecordKey={composer.voiceRecordKey}
-                />
+                  {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
+                  <TextInput
+                    accentColor={ui.theme.color.accent}
+                    color={ui.theme.color.text}
+                    columns={inputColumns}
+                    cursorSnapshotRef={cursorSnapshotRef}
+                    mouseApiRef={inputMouseRef}
+                    onChange={composer.updateInput}
+                    onPaste={composer.handleTextPaste}
+                    onSubmit={composer.submit}
+                    placeholder={composerHint(voicePartial, composer.empty, ui.busy ? T.composer.interruptHint : '')}
+                    // Exactly the "(and N more toolsets…)" tone. `muted` is a
+                    // MID-luminance family tone, so it reads receded on both
+                    // poles even when polarity detection is wrong (transparent
+                    // terminals lie about their background); anything blended
+                    // toward the resolved surface inherits that wrong polarity.
+                    placeholderColor={ui.theme.color.muted}
+                    value={composer.input}
+                    voiceRecordKey={composer.voiceRecordKey}
+                  />
                 </Box>
               </Box>
 

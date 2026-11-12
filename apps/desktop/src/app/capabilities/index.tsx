@@ -162,7 +162,14 @@ export function CapabilitiesView({
       />
     ),
     toolsets: () => (
-      <ToolsetsTab hints={toolsetHints} key={`toolsets-${scope.key}`} onQueryChange={setQuery} profile={scope.profile} query={query} toolsets={toolsets ?? []} />
+      <ToolsetsTab
+        hints={toolsetHints}
+        key={`toolsets-${scope.key}`}
+        onQueryChange={setQuery}
+        profile={scope.profile}
+        query={query}
+        toolsets={toolsets ?? []}
+      />
     )
   } satisfies Record<CapabilityMode, () => React.ReactNode>
 
